@@ -311,7 +311,14 @@ state updates never clear a new draft, even when it equals the submitted text.
 
 The Activity list owns its per-operation disclosures: tool arguments/results,
 model-round receipts and Advertised tools expand in place and default to
-collapsed. Original tool call IDs and model round IDs correlate new records;
+collapsed. The running attempt's Activity list initially opens so execution
+is visible; explicitly collapsing or expanding it survives refresh and completion.
+Builtin read/search/find/edit/save/list/program rows describe their recorded
+request targets, including requested line ranges and query scope, without
+requiring the arguments to be expanded. Native tool dispatch shows the selected
+tool name; unknown third-party schemas are not guessed. Harness tool graphs use
+the same descriptions. Full recorded names and arguments remain inspectable.
+Original tool call IDs and model round IDs correlate new records;
 old records without these IDs remain readable without guessing a match by
 tool name. Reported model-round `in / out` usage appears before elapsed time.
 Tools without independent provider usage show `usage n/a`; request usage is not
@@ -320,12 +327,23 @@ shown as a flat grey list; when no Session todos exist, explicit agent-reported
 planning possibilities are shown instead. Neither is a guarantee of future
 execution. Old activity records retain their own recorded plans.
 
+Reported reasoning tokens, when available, are shown as a subset of the round's
+output tokens, not an extra amount to add again. Row time is the recorded
+dispatch/result interval including waits, not CPU time or proof of remote-job
+completion. Missing accounting remains unknown.
+
 Direct HTTP providers can supply explicit public `reasoning_summary` deltas;
 these are bounded, persisted and displayed inside the corresponding model
 activity and Harness output graph. Hidden `reasoning_content` and opaque native
 `thinking` metadata are not exposed or interpreted as a public summary. When
 no public summary is reported, the UI says so; it does not generate one using
 an extra model call.
+
+User and Agent Profiles are a separate proposed product concept, not existing
+model connection profiles, Skills or Notes. Their identity, always-inspectable
+persona cards, context evidence and development order are defined in
+[Profiles and Chat priorities](design/pkm-profiles-and-chat-priorities.md);
+Profile persistence and UI are not implemented by the Activity changes.
 
 Agent Sessions' shared native renderer starts with a full-width diagnostic log
 (latest recorded errors/warnings/status), a runtime-parameter table, and

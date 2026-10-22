@@ -142,7 +142,7 @@ seen by the library watcher, push at most one tree update per 400 ms and only
 while the window is visible. Switching Chat cancels pending requests; late
 results are ignored. Removing the selected Chat clears the dashboard.
 
-### Activity list target (pending implementation and acceptance)
+### Activity list target (partial implementation; full acceptance pending)
 
 The requested primary execution UI is a VS Code-style chronological activity
 list, not a graph or raw JSON inspector. Readable rows identify the actual
@@ -163,6 +163,12 @@ state. Existing generic tool rows, timers, usage and collapsed summaries are
 partial infrastructure, not acceptance of this interaction target. Acceptance
 must cover live updates, disclosure preservation, historical inspection and a
 real long-task scenario, not just the presence of receipt fields.
+
+The first slice uses a shared request-description formatter for Chat rows and
+Harness call nodes, initially opens live Activity with user-controlled
+collapse/expand, and identifies reported reasoning tokens as part of output.
+It does not infer arbitrary external-tool schemas, expose private thinking,
+or complete the real long-task acceptance gate.
 
 Implementation: [host](../../src/chat/visualization-window.ts),
 [page](../../src/webview/visualization-window.html),

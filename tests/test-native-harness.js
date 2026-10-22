@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { fixture, sessionId, actionId, runId, childId } = require("./native-harness-fixture");
-const { build, layout, terminal } = require("../src/webview/agent-harness");
+const { build, layout, terminal, describeToolCall } = require("../src/webview/agent-harness");
 const { apiChatHarnessSnapshot, apiChatSessionHarnessSnapshot } = require("../dist/chat/api-chat-store");
 const { ChatHistoryStorage } = require("../dist/chat/chat-history-storage");
 const { recordedActionReferences, readHarnessActions } = require("../dist/runtime/native-harness-actions");
@@ -15,6 +15,38 @@ function temporary(t) {
   t.after(() => fs.rmSync(directory, { recursive:true, force:true }));
   return directory;
 }
+
+test("readable tool activity uses recorded inputs without changing identity or inventing external semantics", () => {
+  for (const [name, args, expected] of [
+    ["read_file", { path:"src/main.ts", startLine:94, endLine:130 }, "Read src/main.ts, lines 94-130"],
+    ["read_file", { path:"src/main.ts", startLine:94 }, "Read src/main.ts, from line 94"],
+    ["read_file", { path:"src/main.ts" }, "Read src/main.ts"],
+    ["find_files", { glob:"**/*{harness,memory,retrieval}*" }, "Find files matching **/*{harness,memory,retrieval}*"],
+    ["search_text", { query:"memory", glob:"src/**/*.ts" }, 'Search for "memory" in src/**/*.ts'],
+    ["replace_text", { path:"todo.md", oldText:"old", newText:"new" }, "Edit todo.md"],
+    ["save_file", { path:"src/main.ts" }, "Save src/main.ts"],
+    ["list_directory", { path:"src" }, "List directory src"],
+    ["run_process", { program:"npm", arguments:["test", "--token=secret"] }, "Run npm"],
+    ["invoke_vscode_tool", { name:"external_reader", input:{ path:"private", query:"not our schema" } }, "Invoke external_reader"],
+    ["external_reader", { path:"not necessarily a file" }, "external_reader"],
+  ]) {
+    const call = { id:"call", name, arguments:JSON.stringify(args), status:"running" };
+    const before = JSON.stringify(call);
+    assert.equal(describeToolCall(call), expected);
+    assert.equal(JSON.stringify(call), before);
+  }
+  assert.equal(describeToolCall({ name:"read_file", arguments:"{" }), "read_file (invalid recorded arguments)");
+  assert.equal(describeToolCall({ name:"read_file", arguments:"null" }), "read_file (invalid recorded arguments)");
+  assert.equal(describeToolCall({ name:"read_file", arguments:'{"path":"x","startLine":3,"endLine":1}' }), "Read x");
+  assert(describeToolCall({ name:"search_text", arguments:JSON.stringify({ query:"x\n".repeat(1000) }) }).length <= 240);
+  const data = fixture();
+  Object.assign(data.harness.attempts[1].toolCalls[0], { name:"read_file", arguments:'{"path":"src/main.ts","startLine":94,"endLine":130}' });
+  const model = build(data);
+  const graph = model.graphs.get(k("calls", "m2"));
+  assert.equal(graph.nodes[0].title, "Read src/main.ts, lines 94-130");
+  assert.equal(graph.nodes[0].info.name, "read_file");
+  assert.equal(graph.nodes[0].id, data.harness.attempts[1].toolCalls[0].id);
+});
 
 test("native graphs retain real hierarchy, Recipe versions, terminal ports and direct execution", () => {
   const data = fixture(), model = build(data);

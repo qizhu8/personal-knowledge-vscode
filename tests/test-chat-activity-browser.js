@@ -31,6 +31,7 @@ async function open(t, width = 1280) {
   await page.addScriptTag({ path:path.join(webview, "marked.umd.js") });
   await page.addScriptTag({ path:path.join(webview, "purify.min.js") });
   await page.addScriptTag({ path:path.join(webview, "api-chat-library.js") });
+  await page.addScriptTag({ path:path.join(webview, "agent-harness.js") });
   await page.addScriptTag({ path:path.join(webview, "chat-visualization.js") });
   await page.addScriptTag({ path:path.join(webview, "api-chat.js") });
   assert(await page.evaluate(() => window.__posts.some(item => item.type === "ready")), "Chat renderer initialized");
@@ -353,6 +354,95 @@ test("an over-budget composer explains why Send is disabled and clears the warni
   assert.deepEqual(errors, []);
 });
 
+test("readable search/edit activity stays safe, localized and inspectable without inferring external arguments", async t => {
+  const { page, errors } = await open(t, 320);
+  await page.evaluate(() => {
+    const now = Date.now() - 1000;
+    const calls = [
+      { id:"find", name:"find_files", arguments:JSON.stringify({ glob:"**/*{harness,memory,retrieval}*" }) },
+      { id:"search", name:"search_text", arguments:JSON.stringify({ query:'<img src=x onerror="window.__unsafe=true">', glob:"src/**/*.ts" }) },
+      { id:"edit", name:"replace_text", arguments:JSON.stringify({ path:"next-step/todo.md", newText:"content stays in details" }) },
+      { id:"external", name:"external_tool", arguments:'{"path":"not-our-schema","token":"do-not-promote-to-label"}' },
+    ].map(call => ({ ...call, status:"complete", startedAt:now, finishedAt:now + 100 }));
+    window.__state.chat.messages = [{ id:"operations", role:"assistant", status:"complete", content:"Recorded operations",
+      progress:{ attemptId:"operations-attempt", startedAt:now, finishedAt:now + 100, status:"complete", steps:[] }, toolCalls:calls }];
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  const activity = page.locator('[data-message-id="operations"] .workflow');
+  await activity.locator(":scope > summary").click();
+  const summaries = activity.locator(".activity-event > summary");
+  assert.match(await summaries.nth(0).innerText(), /Find files matching \*\*\/\*\{harness,memory,retrieval\}\*/);
+  assert.match(await summaries.nth(1).innerText(), /Search for.*<img.*in src\/\*\*\/\*\.ts/);
+  assert.match(await summaries.nth(2).innerText(), /Edit next-step\/todo\.md/);
+  assert.match(await summaries.nth(3).innerText(), /external_tool/);
+  assert(!await summaries.nth(2).innerText().then(text => text.includes("content stays in details")));
+  assert(!await summaries.nth(3).innerText().then(text => text.includes("do-not-promote-to-label")));
+  assert.equal(await activity.locator("img").count(), 0);
+  assert.equal(await page.evaluate(() => Boolean(window.__unsafe)), false);
+  await page.evaluate(localization => {
+    window.__state.localization = localization;
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  }, { locale:"zh-hans", english:JSON.parse(fs.readFileSync(path.join(__dirname, "../resources/locales/en.json"))).strings,
+    strings:JSON.parse(fs.readFileSync(path.join(__dirname, "../resources/locales/zh-hans.json"))).strings });
+  assert.match(await summaries.nth(0).innerText(), /查找匹配/);
+  assert.match(await summaries.nth(2).innerText(), /编辑 next-step\/todo\.md/);
+  assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+  assert.deepEqual(errors, []);
+});
+
+test("live activity starts readable and expanded, preserves collapse and separates reported reasoning usage", async t => {
+  const { page, errors } = await open(t, 390);
+  await page.evaluate(() => {
+    const now = Date.now() - 3000;
+    const progress = { attemptId:"live-attempt", startedAt:now, status:"running", steps:[
+      { label:"Generating response", kind:"model", round:0, at:now, status:"complete" },
+      { label:"Running tool: read_file", kind:"tool", toolCallId:"read", round:0, at:now + 1000, status:"running" },
+    ] };
+    Object.assign(window.__state, { busy:true });
+    window.__state.chat.progress = progress;
+    window.__state.chat.messages = [{ id:"live", role:"assistant", status:"streaming", content:"", progress,
+      budgetReceipts:[{ round:0, ledger:{ providerUsage:{ inputTokens:100, outputTokens:20, reasoningTokens:7 } } }],
+      reasoningSummaries:[{ round:0, text:"Check the requested range." }],
+      toolCalls:[{ id:"read", name:"read_file", arguments:'{"path":"src/main.ts","startLine":94,"endLine":130}', status:"running", startedAt:now + 1000 }],
+    }];
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  const activity = page.locator('[data-message-id="live"] .workflow');
+  assert.notEqual(await activity.getAttribute("open"), null);
+  const tool = activity.locator(".activity-event").filter({ hasText:"Read src/main.ts, lines 94-130" });
+  assert(await tool.locator("summary").isVisible(), "operation is readable without expanding its arguments");
+  assert.equal(await tool.getAttribute("open"), null);
+  assert.match(await activity.locator(":scope > summary").innerText(), /Read src\/main.ts, lines 94-130/);
+  assert.equal(await tool.locator(".activity-usage").innerText(), "usage n/a");
+  const model = activity.locator(".activity-event").filter({ hasText:"Generating response" });
+  assert.equal(await model.locator(".activity-usage").innerText(), "100 in / 20 out · 7 reasoning");
+  assert.match(await model.locator(".activity-usage").getAttribute("title"), /included in output/);
+  await activity.locator(":scope > summary").click();
+  await page.waitForTimeout(20);
+  await page.evaluate(() => {
+    window.__state.chat.messages[0].toolCalls[0].status = "complete";
+    window.__state.chat.messages[0].toolCalls[0].finishedAt = Date.now();
+    window.__state.chat.progress.steps.push({ label:"Completed tool: read_file", kind:"tool", toolCallId:"read", round:0, at:Date.now(), status:"complete" });
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  assert.equal(await activity.getAttribute("open"), null, "manual collapse survives live updates");
+  await page.evaluate(() => {
+    window.__state.busy = false;
+    window.__state.chat.progress.status = "complete";
+    window.__state.chat.progress.finishedAt = Date.now();
+    window.__state.chat.messages[0].status = "complete";
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  assert.equal(await activity.getAttribute("open"), null, "manual collapse survives completion");
+  await activity.locator(":scope > summary").click();
+  await tool.locator("summary").click();
+  assert.match(await tool.innerText(), /read_file/);
+  assert.equal(await tool.locator(".elapsed").getAttribute("data-finished") !== null, true);
+  await model.locator("summary").click();
+  assert.match(await model.innerText(), /Check the requested range/);
+  assert.deepEqual(errors, []);
+});
+
 for (const width of [1280, 390, 320]) test(`activity rows contain their own details, tools, public summaries, plan and truthful usage (${width}px)`, async t => {
   const { page, errors } = await open(t, width);
   await page.evaluate(() => {
@@ -379,7 +469,7 @@ for (const width of [1280, 390, 320]) test(`activity rows contain their own deta
   const details = activity.locator(".activity-event");
   assert.equal(await details.count(), 3, "one model, one tool and advertised tools; no duplicate grey tool list");
   assert.equal(await page.locator(".debug-information .tool-call").count(), 0);
-  const tool = details.filter({ hasText:"read_file · complete" });
+  const tool = details.filter({ hasText:"Read fixture · complete" });
   assert.equal(await tool.getAttribute("open"), null);
   await tool.locator("summary").click();
   assert.match(await tool.innerText(), /"path":"fixture"/);

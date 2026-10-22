@@ -4,6 +4,40 @@
   const list = value => Array.isArray(value) ? value : [];
   const key = (...parts) => JSON.stringify(parts);
 
+  function describeToolCall(call, translate) {
+    const label = (template, params = {}) => {
+      let value = translate ? translate(template, params) : template;
+      if (!translate) for (const [name, text] of Object.entries(params)) value = value.split(`{${name}}`).join(String(text));
+      value = value.replace(/\s+/g, ' ').trim();
+      return value.length > 240 ? `${value.slice(0, 237)}...` : value;
+    };
+    let args;
+    try { args = JSON.parse(call.arguments); }
+    catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      return label('{tool} (invalid recorded arguments)', { tool:call.name });
+    }
+    if (!args || typeof args !== 'object' || Array.isArray(args)) return label('{tool} (invalid recorded arguments)', { tool:call.name });
+    const path = typeof args.path === 'string' && args.path;
+    if (call.name === 'read_file' && path) {
+      const start = Number.isSafeInteger(args.startLine) && args.startLine > 0;
+      const end = Number.isSafeInteger(args.endLine) && args.endLine >= (start ? args.startLine : 1);
+      if (end) return label('Read {path}, lines {start}-{end}', { path, start:start ? args.startLine : 1, end:args.endLine });
+      if (start && args.endLine === undefined) return label('Read {path}, from line {start}', { path, start:args.startLine });
+      return label('Read {path}', { path });
+    }
+    if (call.name === 'find_files' && typeof args.glob === 'string') return label('Find files matching {glob}', { glob:args.glob });
+    if (call.name === 'search_text' && typeof args.query === 'string') return typeof args.glob === 'string' && args.glob
+      ? label('Search for "{query}" in {glob}', { query:args.query, glob:args.glob })
+      : label('Search for "{query}"', { query:args.query });
+    if (call.name === 'replace_text' && path) return label('Edit {path}', { path });
+    if (call.name === 'save_file' && path) return label('Save {path}', { path });
+    if (call.name === 'list_directory' && path) return label('List directory {path}', { path });
+    if (call.name === 'run_process' && typeof args.program === 'string') return label('Run {program}', { program:args.program });
+    if (call.name === 'invoke_vscode_tool' && typeof args.name === 'string') return label('Invoke {tool}', { tool:args.name });
+    return label('{tool}', { tool:call.name });
+  }
+
   function build(session) {
     if (session.origin !== 'pkm-native') throw new Error('The native Harness requires a PKM-native Session.');
     const graphs = new Map(), warnings = [...list(session.harnessWarnings), ...list(session.actionWarnings)];
@@ -275,8 +309,9 @@
           const owner = graphs.get(key('step-attempt', attempt.messageId, call.harnessBinding?.stepAttemptId))
             || (call.harnessBinding?.stepId && reportSteps.has(call.harnessBinding.stepId)
               ? graphs.get(key('reported-step', attempt.messageId, call.harnessBinding.stepId)) : c);
-          const details = graph(key('call', attempt.messageId, call.id), call.name, owner.id);
-          add(owner, call.id, 'Function / MCP call', call.name, call.status, call, { child:details.id });
+          const title = describeToolCall(call);
+          const details = graph(key('call', attempt.messageId, call.id), title, owner.id);
+          add(owner, call.id, 'Function / MCP call', title, call.status, call, { child:details.id });
           if (call.harnessBinding?.recipeRunId && call.harnessBinding.recipeStageId) {
             const runGraph = runGraphs.get(call.harnessBinding.recipeRunId);
             const recipeStep = runGraph?.nodes.find(node => node.id === call.harnessBinding.recipeStageId);
@@ -288,7 +323,7 @@
                 nested.parent = evidence.id;
               }
               recipeStep.child = evidence.id;
-              add(evidence, key(attempt.messageId, call.id), 'Function / MCP call', call.name, call.status,
+              add(evidence, key(attempt.messageId, call.id), 'Function / MCP call', title, call.status,
                 { ...call, note:'Explicit recorded Recipe Stage binding; this link is not inferred from tool names.' }, { child:details.id });
             } else warnings.push(`Call ${call.id}: recorded Recipe Stage binding is unavailable.`);
           }
@@ -997,7 +1032,7 @@
       dispose() { disposed = true; sequence++; clearInterval(timer); document.removeEventListener('visibilitychange', visible); root.remove(); }
     };
   }
-  const api = { build, layout, terminal, mount };
+  const api = { build, layout, terminal, mount, describeToolCall };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.PkmAgentHarness = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

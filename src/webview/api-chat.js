@@ -39,7 +39,7 @@
   let library;
   const drafts = saved.drafts || {};
   const workflowSelection = new Map();
-  const workflowExpanded = new Set();
+  const workflowExpanded = new Map();
   const messageExpanded = new Set(saved.expandedMessageDetails || []);
   let state;
   let historyStart = 0;
@@ -142,7 +142,7 @@
     const key = run.attemptId || messageId || String(run.startedAt);
     const active = state.busy && (run.attemptId ? state.chat.progress?.attemptId === run.attemptId : run === state.chat.progress);
     const statusOf = (step, index) => step.status || (index < run.steps.length - 1 ? "complete" : active ? "running" : run.status === "running" ? "failed" : run.status);
-    const section = document.createElement("details"); section.className = "workflow activity"; section.dataset.attempt = key; section.open = workflowExpanded.has(key);
+    const section = document.createElement("details"); section.className = "workflow activity"; section.dataset.attempt = key; section.open = workflowExpanded.get(key) ?? active;
     const summary = document.createElement("summary"); summary.className = "workflow-summary";
     summary.dataset.status = active && run.steps.length ? statusOf(run.steps[run.steps.length - 1], run.steps.length - 1) : run.status;
     const icon = active ? globalThis.PkmChatWorkingIcon(chatRole()) : document.createElement("span");
@@ -150,7 +150,8 @@
     if (!active) { icon.className = "workflow-dot"; icon.setAttribute("aria-hidden", "true"); }
     const label = document.createElement("span"); label.className = "activity-label";
     const completed = (run.completedDroppedSteps || 0) + run.steps.filter((step, index) => statusOf(step, index) === "complete").length;
-    label.textContent = `Activity [${completed} / ${(run.droppedSteps || 0) + run.steps.length}] ${active ? run.steps[run.steps.length - 1]?.label || "Preparing request" : { complete: "Completed", cancelled: "Cancelled", failed: "Failed or interrupted" }[run.status] || run.status}`;
+    const latestStep = run.steps[run.steps.length - 1], latestTool = latestStep?.toolCallId && message.toolCalls?.find(tool => tool.id === latestStep.toolCallId);
+    label.textContent = `Activity [${completed} / ${(run.droppedSteps || 0) + run.steps.length}] ${active ? latestTool ? globalThis.PkmAgentHarness.describeToolCall(latestTool, t) : latestStep?.label || "Preparing request" : { complete: "Completed", cancelled: "Cancelled", failed: "Failed or interrupted" }[run.status] || run.status}`;
     label.title = `${run.model || ""} · Completed / recorded events; future work is shown only from recorded plans`;
     const currentStep = run.steps[run.steps.length - 1];
     const timer = document.createElement("span"); timer.className = "elapsed"; timer.dataset.started = currentStep?.at ?? run.startedAt;
@@ -172,9 +173,11 @@
       const glyph = document.createElement("span"); glyph.className = "workflow-dot"; glyph.setAttribute("aria-hidden", "true");
       const text = document.createElement("span"); text.className = "activity-label"; text.textContent = label;
       const tokens = document.createElement("span"); tokens.className = "activity-usage";
-      tokens.textContent = usage ? `${usage.inputTokens.toLocaleString()} in / ${usage.outputTokens.toLocaleString()} out` : "usage n/a";
-      tokens.title = usage ? "Provider-reported usage for this model round; not a token charge for each tool." : "No independent provider token usage is reported for this operation.";
+      const reasoning = usage && Number.isSafeInteger(usage.reasoningTokens) && usage.reasoningTokens >= 0 && usage.reasoningTokens <= usage.outputTokens ? usage.reasoningTokens : undefined;
+      tokens.textContent = usage ? `${usage.inputTokens.toLocaleString()} in / ${usage.outputTokens.toLocaleString()} out${reasoning === undefined ? "" : ` · ${t("{tokens} reasoning", { tokens:reasoning.toLocaleString() })}`}` : "usage n/a";
+      tokens.title = usage ? t("Provider-reported usage for this model round; reasoning tokens are included in output, not added again. Not a token charge for each tool.") : "No independent provider token usage is reported for this operation.";
       const timer = document.createElement("span"); timer.className = "elapsed";
+      timer.title = t("Elapsed dispatch/result time, including waits; not CPU time or proof of remote-job completion.");
       if (Number.isFinite(at)) {
         timer.dataset.started = at;
         if (Number.isFinite(finishedAt)) timer.dataset.finished = finishedAt;
@@ -195,7 +198,7 @@
       let body;
       if (tool || receipt || summaries?.length) {
         body = document.createElement("div"); body.className = "activity-event-detail";
-        if (tool) { const pre = document.createElement("pre"); pre.textContent = `${tool.arguments}\n\n${tool.result || ""}`; body.append(pre); }
+        if (tool) { const pre = document.createElement("pre"); pre.textContent = `${tool.name}\n${tool.arguments}\n\n${tool.result || ""}`; body.append(pre); }
         for (const summary of summaries || []) {
           const heading = document.createElement("strong"); heading.textContent = "Public reasoning summary (provider)";
           const pre = document.createElement("pre"); pre.textContent = summary.text; body.append(heading, pre);
@@ -204,12 +207,12 @@
       }
       const usage = receipt?.ledger?.providerUsage;
       const reported = usage && [usage.inputTokens, usage.outputTokens].every(value => Number.isSafeInteger(value) && value >= 0) ? usage : undefined;
-      appendRow(id, `${tool?.name || step.label} · ${step.status}`, step.status, tool?.startedAt ?? step.firstAt,
+      appendRow(id, `${tool ? globalThis.PkmAgentHarness.describeToolCall(tool, t) : step.label} · ${step.status}`, step.status, tool?.startedAt ?? step.firstAt,
         tool?.finishedAt ?? (["complete", "failed", "cancelled"].includes(step.status) ? run.steps[step.index + 1]?.at ?? run.finishedAt : undefined), body, reported);
     }
     for (const tool of tools.values()) {
-      const body = document.createElement("pre"); body.textContent = `${tool.arguments}\n\n${tool.result || ""}`;
-      appendRow(`tool:${tool.id}`, `${tool.name} · ${tool.status}`, tool.status, tool.startedAt, tool.finishedAt, body);
+      const body = document.createElement("pre"); body.textContent = `${tool.name}\n${tool.arguments}\n\n${tool.result || ""}`;
+      appendRow(`tool:${tool.id}`, `${globalThis.PkmAgentHarness.describeToolCall(tool, t)} · ${tool.status}`, tool.status, tool.startedAt, tool.finishedAt, body);
     }
     if (run.tools) {
       const body = document.createElement("pre"); body.textContent = run.tools.join("\n") || "No tools advertised";
@@ -233,7 +236,7 @@
     section.append(list);
     if (run.droppedSteps) { const omitted = document.createElement("div"); omitted.className = "workflow-tools"; omitted.textContent = `${run.droppedSteps} earlier activity events omitted; tool results retained below.`; section.append(omitted); }
     if (debug) section.append(debug);
-    section.ontoggle = () => { if (section.isConnected) { if (section.open) workflowExpanded.add(key); else workflowExpanded.delete(key); } };
+    section.ontoggle = () => { if (section.isConnected) workflowExpanded.set(key, section.open); };
     return section;
   }
   function error(text) { element("error").textContent = text; element("error").hidden = !text; }
@@ -458,9 +461,9 @@
         const detail = messageDisclosure(message.id, tool.id, "", "activity tool-call");
         const summary = document.createElement("summary");
         const glyph = document.createElement("span"); glyph.className = tool.status === "running" && state.busy ? "codicon codicon-loading codicon-modifier-spin" : `codicon codicon-${tool.status === "complete" ? "check" : "error"}`;
-        const name = document.createElement("span"); name.className = "activity-label"; name.textContent = `${tool.name} · ${tool.status === "running" && !state.busy ? "interrupted" : tool.status}`;
+        const name = document.createElement("span"); name.className = "activity-label"; name.textContent = `${globalThis.PkmAgentHarness.describeToolCall(tool, t)} · ${tool.status === "running" && !state.busy ? "interrupted" : tool.status}`;
         summary.append(glyph, name);
-        const result = document.createElement("pre"); result.textContent = `${tool.arguments}\n\n${tool.result || ""}`;
+        const result = document.createElement("pre"); result.textContent = `${tool.name}\n${tool.arguments}\n\n${tool.result || ""}`;
         detail.firstElementChild.replaceWith(summary); detail.append(result); debug.append(detail);
       }
       if (run) article.insertBefore(activity(run, message.id, debug, message), content);

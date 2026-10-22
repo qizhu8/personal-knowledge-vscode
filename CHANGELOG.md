@@ -5,6 +5,7 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Make PKM Chat Activity readable from builtin file/search/edit request targets, reuse descriptions in Harness graphs, initially expand live Activity while preserving user collapse choices, and show reported reasoning tokens as part of model-round output rather than per-tool usage.
 - Hide Chat-specific Portal details while the Chat List is visible, including background connection updates; preserve details when reopening the Chat.
 - Drain isolated Sync services and authenticate retrieval-worker shutdown before startup/context test fixture removal; reuse the cleanup in four-window acceptance and preserve fixtures on cleanup failure.
 - Prefer declared Rule L2 formats over content guesses, canonicalize materialization labels from verified sources, and fail closed for malformed explicit JSON. Keep uncertain multi-array/duplicate-key JSON atomic and retain code module preambles as required exact context instead of emitting unqualified symbol fragments.
