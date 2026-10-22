@@ -4,6 +4,7 @@ const os = require("os");
 const path = require("path");
 const { execFileSync, spawn, spawnSync } = require("child_process");
 const { runTests } = require("@vscode/test-electron");
+const { stopFixtureServices } = require("./stop-fixture-services");
 
 async function main() {
   const suiteStartedAt = Date.now();
@@ -125,8 +126,14 @@ async function main() {
     throw error;
   } finally {
     clearInterval(heartbeat);
-    virtualDisplay?.process.kill("SIGTERM");
-    fs.rmSync(testRoot, { recursive: true, force: true });
+    try {
+      await stopFixtureServices({
+        fixtureRoot: testRoot, extensionRoot: packagedExtensionPath,
+        storage: path.join(userDataDir, "User", "globalStorage", "uone.personal-knowledge"),
+        knowledge: storeDir, home: homeDir,
+      });
+      fs.rmSync(testRoot, { recursive: true, force: true });
+    } finally { virtualDisplay?.process.kill("SIGTERM"); }
   }
 }
 

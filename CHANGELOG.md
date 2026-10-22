@@ -5,6 +5,8 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Hide Chat-specific Portal details while the Chat List is visible, including background connection updates; preserve details when reopening the Chat.
+- Drain isolated Sync services and authenticate retrieval-worker shutdown before startup/context test fixture removal; reuse the cleanup in four-window acceptance and preserve fixtures on cleanup failure.
 - Prefer declared Rule L2 formats over content guesses, canonicalize materialization labels from verified sources, and fail closed for malformed explicit JSON. Keep uncertain multi-array/duplicate-key JSON atomic and retain code module preambles as required exact context instead of emitting unqualified symbol fragments.
 - Make ordinary and Portal-controlled Chat names selectable in Agent Sessions, showing their real read-only Harness records without requiring or creating a managed Task. Preserve keyboard/folder behavior, selection on refresh, late-reply isolation and existing Task dashboards.
 - Read oversized Recipe definitions through revision/hash-pinned exact JSON text ranges while preserving complete small-Recipe responses; never execute read fragments or accept stale/trashed sources.

@@ -118,6 +118,29 @@ test("current Chat Portal keeps the draft and binds the exact Chat without openi
   assert.deepEqual(errors, []);
 });
 
+test("Chat List hides chat-specific Portal details across updates and restores them only in the Chat", async t => {
+  for (const width of [390, 1280]) {
+    const { page, errors } = await open(t, width);
+    await page.evaluate(() => {
+      window.__state.portal = {
+        connected: true,
+        binding: { role: "controller", peerMachine: "fixture-peer", peerChatName: "Remote fixture" },
+      };
+      window.dispatchEvent(new MessageEvent("message", { data: window.__state }));
+    });
+    assert(await page.locator("#portal-state").isVisible());
+    await page.locator("#back").click();
+    assert(await page.locator("#library-view").isVisible());
+    assert.equal(await page.locator("#portal-state").isVisible(), false);
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent("message", { data: window.__state })));
+    assert.equal(await page.locator("#portal-state").isVisible(), false, "A Portal refresh must not consume Chat List space.");
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "showChat" } })));
+    assert(await page.locator("#portal-state").isVisible(), "Chat-specific connection evidence remains available in its Chat.");
+    assert.deepEqual(errors, []);
+    await page.close();
+  }
+});
+
 test("Portal roles, permission matrix and truthful remote snapshots render without impersonating the user", async t => {
   const { page, errors } = await open(t, 390);
   assert.equal(await page.locator("#chat-portal .portal-closed .portal-ring").count(), 1);

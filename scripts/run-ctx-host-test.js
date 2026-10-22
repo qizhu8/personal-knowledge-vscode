@@ -6,10 +6,11 @@ const net = require("node:net");
 const { execFileSync } = require("node:child_process");
 const { runTests, downloadAndUnzipVSCode } = require("@vscode/test-electron");
 const { packageExtension, startVirtualDisplay } = require("./run-extension-startup-test");
+const { stopFixtureServices } = require("./stop-fixture-services");
 
 async function main() {
   const root = path.resolve(__dirname, ".."), temporary = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-ctx-host-"));
-  let display;
+  let display, packaged;
   try {
     const user = path.join(temporary, "user"), extensions = path.join(temporary, "extensions");
     const workspace = path.join(temporary, "workspace"), knowledge = path.join(temporary, "knowledge");
@@ -21,7 +22,7 @@ async function main() {
       "security.workspace.trust.enabled":false, "telemetry.telemetryLevel":"off",
       "update.mode":"none", "extensions.autoUpdate":false,
     }));
-    const packaged = packageExtension(root, temporary);
+    packaged = packageExtension(root, temporary);
     display = await startVirtualDisplay(root);
     const executable = await downloadAndUnzipVSCode("1.90.0");
     execFileSync(path.join(path.dirname(executable), "bin", "code"), [
@@ -71,8 +72,14 @@ async function main() {
       console.log(`VIS runtime chain ${phase}: ${result.visualizationChain.tags.join(", ")}, ${result.visualizationChain.requests} model requests; evidence=${result.visualizationChain.evidenceHash}`);
     }
   } finally {
-    display?.process.kill("SIGTERM");
-    fs.rmSync(temporary, { recursive:true, force:true });
+    try {
+      if (packaged) await stopFixtureServices({
+        fixtureRoot: temporary, extensionRoot: packaged,
+        storage: path.join(temporary, "user", "User", "globalStorage", "uone.personal-knowledge"),
+        knowledge: path.join(temporary, "knowledge"), home: path.join(temporary, "home"),
+      });
+      fs.rmSync(temporary, { recursive:true, force:true });
+    } finally { display?.process.kill("SIGTERM"); }
   }
 }
 

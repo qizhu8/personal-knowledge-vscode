@@ -1405,6 +1405,7 @@
     "test:knowledge-trash": "npm run build && node --test tests/test-knowledge-trash.js tests/test-knowledge-trash-ui.js tests/test-knowledge-trash-feedback.js",
     "test:sync-operation-journal": "npm run build && node --test tests/test-sync-operation-journal.js tests/test-knowledge-trash.js tests/test-skill-trash.js tests/test-knowledge-contracts.js tests/test-github-sync-two-machine.js",
     "test:performance-telemetry": "npm run build && node tests/test-performance-telemetry.js",
+    "test:resource-consumption": "npm run build && node tests/test-resource-polling.js && node tests/test-fixture-service-cleanup.js",
     "test:root-storage-policy": "npm run build && node tests/test-root-storage-policy.js",
     "test:github-sync-controls": "npm run build && node tests/test-github-sync-model.js && node tests/test-github-sync-scheduler.js && node tests/test-github-sync-coordinator.js && node tests/test-cross-process-lock.js && node tests/test-github-sync-concurrency.js && node tests/test-github-sync-ui.js && node tests/test-github-sync-conflicts.js && node tests/test-github-sync-stable-id.js && node tests/test-github-sync-migration.js",
     "build:github-sync-coordinator": "tsc -p tsconfig.json",

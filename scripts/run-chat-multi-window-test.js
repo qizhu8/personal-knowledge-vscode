@@ -6,6 +6,7 @@ const net = require("node:net");
 const { execFileSync } = require("node:child_process");
 const { runTests, downloadAndUnzipVSCode } = require("@vscode/test-electron");
 const { packageExtension, startVirtualDisplay } = require("./run-extension-startup-test");
+const { stopFixtureServices } = require("./stop-fixture-services");
 
 async function waitFor(check, description, timeout = 120000) {
   const deadline = Date.now() + timeout;
@@ -24,42 +25,6 @@ async function freePort() {
   const port = server.address().port;
   await new Promise(resolve => server.close(resolve));
   return port;
-}
-
-async function stopFixtureServices(temporary, packaged) {
-  const storage = path.join(temporary, "storage"), knowledge = path.join(temporary, "knowledge");
-  const retrieval = path.join(storage, "retrieval");
-  for (const entry of fs.existsSync(retrieval) ? fs.readdirSync(retrieval) : []) {
-    const endpointPath = path.join(retrieval, entry, "worker.json");
-    if (!fs.existsSync(endpointPath)) continue;
-    const endpoint = JSON.parse(fs.readFileSync(endpointPath, "utf8"));
-    const url = `http://127.0.0.1:${endpoint.port}`;
-    const headers = { "X-PKM-Retrieval-Token": endpoint.token, "Content-Type": "application/json" };
-    const response = await fetch(url + "/status", { headers, signal: AbortSignal.timeout(5000) });
-    assert(response.ok);
-    assert.equal((await response.json()).pid, endpoint.pid, "only stop this fixture's authenticated worker");
-    const stopped = await fetch(url + "/shutdown", { method: "POST", headers, body: "{}", signal: AbortSignal.timeout(5000) });
-    assert(stopped.ok);
-    await waitFor(() => !fs.existsSync(endpointPath), "fixture retrieval worker shutdown", 10000);
-  }
-  const api = require(path.join(packaged, "dist/runtime/pkm-service"));
-  const options = { knowledgeRoot: knowledge, globalStoragePath: storage,
-    extensionVersion: require(path.join(packaged, "package.json")).version, extensionPath: packaged,
-    execute: async () => { throw new Error("No Sync execution is authorized in the Chat fixture."); } };
-  const previousHome = process.env.HOME, previousProfile = process.env.USERPROFILE;
-  try {
-    process.env.HOME = process.env.USERPROFILE = path.join(temporary, "home");
-    const identity = api.pkmServiceIdentity(options);
-    const endpointPath = path.join(identity.serviceDirectory, "endpoint.json");
-    if (fs.existsSync(endpointPath)) {
-      const client = await api.PkmServiceClient.connect(options);
-      try { await client.drain(); } finally { client.dispose(); }
-      await waitFor(() => !fs.existsSync(endpointPath), "fixture PKM service shutdown", 10000);
-    }
-  } finally {
-    if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
-    if (previousProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = previousProfile;
-  }
 }
 
 async function main() {
@@ -175,7 +140,12 @@ async function main() {
   } finally {
     fs.writeFileSync(path.join(temporary, "abort"), "");
     await Promise.allSettled(executions);
-    try { if (packaged) await stopFixtureServices(temporary, packaged); }
+    try {
+      if (packaged) await stopFixtureServices({
+        fixtureRoot: temporary, extensionRoot: packaged, storage: path.join(temporary, "storage"),
+        knowledge: path.join(temporary, "knowledge"), home: path.join(temporary, "home"),
+      });
+    }
     finally { display?.process.kill("SIGTERM"); }
     fs.rmSync(temporary, { recursive: true, force: true });
   }

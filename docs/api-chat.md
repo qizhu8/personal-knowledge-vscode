@@ -152,6 +152,10 @@ new companion, even if the label matches. Existing titles alone do not prove
 provenance; historical Chats are not automatically hidden, merged or deleted.
 Opening a Portal on a normal existing Chat does not regroup that Chat.
 
+The Chat List does not display the selected Chat's Portal details; those remain
+inside that Chat. Returning to the list or receiving a background Portal update
+must not reserve space below the list for that connection.
+
 Dedicated `pkm.peer/v1` frames are directed to one authenticated Room participant.
 The Hub replaces supplied sender identities and does not store peer frames in
 chat history; ordinary messages and catch-up history never trigger remote work.

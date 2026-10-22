@@ -78,6 +78,43 @@ test("managed PKM list/update execute through MCP without native confirmations, 
   assert.throws(() => make(["mcp_pkm_missing"]), /unavailable/);
 });
 
+test("PKM tool discovery is local, selected-only and cancellable without native search or embeddings", async () => {
+  const unexpected = [];
+  const forbidden = name => async () => { unexpected.push(name); throw new Error(`Unexpected ${name}`); };
+  const host = {
+    workspace: { isTrusted: true },
+    LanguageModelTextPart: class {},
+    commands: { executeCommand: forbidden("command/server start") },
+    lm: {
+      tools: [{ name: "unselected_native_tool", description: "List notes" }],
+      invokeTool: forbidden("native invocation"),
+      computeEmbeddings: forbidden("native embeddings"),
+    },
+  };
+  const managed = {
+    catalog: Array.from({ length: 8 }, (_, index) => ({
+      name: `mcp_pkm_note_${index}`, description: "List notes",
+      inputSchema: { type: "object", properties: { category: { type: "string" } } },
+    })),
+    invoke: forbidden("managed invocation"),
+  };
+  const tools = createVscodeTools(managed.catalog.slice(0, 7).map(tool => tool.name), host,
+    forbidden("permission prompt"), undefined, managed);
+  const signal = new AbortController().signal;
+  const first = JSON.parse(await tools[0].execute({ query: "notes" }, signal));
+  assert.equal(first.total, 7);
+  assert.equal(first.nextOffset, 6);
+  assert.deepEqual(first.tools.map(tool => tool.name), managed.catalog.slice(0, 6).map(tool => tool.name));
+  assert.deepEqual(first.tools[0].inputSchema, managed.catalog[0].inputSchema);
+  const last = JSON.parse(await tools[0].execute({ query: "notes", offset: first.nextOffset }, signal));
+  assert.deepEqual(last.tools.map(tool => tool.name), ["mcp_pkm_note_6"]);
+  assert.equal(last.nextOffset, null);
+  const cancelled = new AbortController();
+  cancelled.abort();
+  await assert.rejects(tools[0].execute({ query: "notes" }, cancelled.signal), /cancelled/);
+  assert.deepEqual(unexpected, [], "Discovery must not invoke tools, request embeddings, start servers or prompt.");
+});
+
 test("cancelling a managed MCP wait returns promptly without replaying or hanging on close", async t => {
   const lifetime = new AbortController();
   const connection = await connectManagedChatMcp({

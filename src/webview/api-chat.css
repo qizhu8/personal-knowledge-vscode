@@ -108,7 +108,7 @@ select { min-width: 0; max-width: 100%; padding: 4px; border: 1px solid transpar
 .chat-backgrounded .portal-ring-glow, .chat-role-still .portal-ring-glow { animation-play-state:paused; }
 @media(prefers-reduced-motion:reduce) { .portal-ring-glow { animation:none; } }
 .chat-trash-delete-all { display: inline-flex; width: auto; padding: 0 4px; gap: 4px; white-space: nowrap; font-size: 11px; }
-.chat-library-visible > .toolbar, .chat-library-visible > #messages, .chat-library-visible > #workers, .chat-library-visible > #applied-edits, .chat-library-visible > #composer { display: none; }
+.chat-library-visible > .toolbar, .chat-library-visible > #portal-state, .chat-library-visible > #messages, .chat-library-visible > #workers, .chat-library-visible > #applied-edits, .chat-library-visible > #composer { display: none; }
 #library-view { display: flex; flex: 1; flex-direction: column; min-height: 0; }
 .chat-list-heading { flex: 1; font-size: 13px; font-weight: 600; }
 #chat-list { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow-y: auto; padding: 4px 8px; }

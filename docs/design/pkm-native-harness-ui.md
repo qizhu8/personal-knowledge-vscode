@@ -142,6 +142,28 @@ seen by the library watcher, push at most one tree update per 400 ms and only
 while the window is visible. Switching Chat cancels pending requests; late
 results are ignored. Removing the selected Chat clears the dashboard.
 
+### Activity list target (pending implementation and acceptance)
+
+The requested primary execution UI is a VS Code-style chronological activity
+list, not a graph or raw JSON inspector. Readable rows identify the actual
+operation: file glob, search query/scope, file and line range, or edit target.
+Arguments, results and errors expand per operation; the useful operation label
+must not require opening them. Running, waiting, completed, failed and cancelled
+states follow recorded events, and the history remains available after completion.
+
+PKM additionally exposes recorded elapsed time and provider-reported token usage.
+Time is dispatch/wait/result time, not CPU time. Token usage belongs to its model
+round, with input/output and reasoning tokens separated when reported. Missing
+usage is unknown, not zero; a round's usage must not be charged to every tool.
+Explicit public reasoning summaries are inspectable alongside their model round;
+hidden reasoning is not inferred or generated to fill gaps.
+
+Chat and Dashboard reuse the same call IDs, attempt/round identities and recorded
+state. Existing generic tool rows, timers, usage and collapsed summaries are
+partial infrastructure, not acceptance of this interaction target. Acceptance
+must cover live updates, disclosure preservation, historical inspection and a
+real long-task scenario, not just the presence of receipt fields.
+
 Implementation: [host](../../src/chat/visualization-window.ts),
 [page](../../src/webview/visualization-window.html),
 [script](../../src/webview/visualization-window.js) and
