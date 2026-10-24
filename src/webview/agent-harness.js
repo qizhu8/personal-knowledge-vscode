@@ -130,6 +130,51 @@
     return svg;
   }
 
+  function toolActivityDetails(call) {
+    const object = value => value && typeof value === 'object' && !Array.isArray(value);
+    const parse = value => {
+      try { return JSON.parse(value); }
+      catch (error) { if (!(error instanceof SyntaxError)) throw error; return undefined; }
+    };
+    let args = parse(call.arguments), name = call.name;
+    if (!object(args)) return undefined;
+    if (name === 'invoke_vscode_tool') {
+      name = args.name;
+      args = args.input;
+      if (typeof name !== 'string' || !object(args)) return undefined;
+    }
+    const operation = /(?:^|_)(read_file|readFile|view)$/.test(name) ? 'Read'
+      : /(?:^|_)(replace_text|replace_string_in_file|multi_replace_string_in_file|edit_file|editFile|edit)$/.test(name) ? 'Edit'
+      : /(?:^|_)(save_file)$/.test(name) ? 'Save'
+      : /(?:^|_)(write_file|writeFile|create_file)$/.test(name) ? 'Write'
+      : /(?:^|_)(apply_patch|applyPatch|patch)$/.test(name) ? 'Patch' : undefined;
+    if (operation) {
+      const paths = [];
+      const add = value => { if (typeof value === 'string' && value && !paths.includes(value)) paths.push(value); };
+      const target = input => { add(input.path); add(input.filePath); add(input.file_path); add(input.filename); };
+      target(args);
+      if (Array.isArray(args.replacements)) args.replacements.filter(object).forEach(target);
+      if (operation === 'Patch') {
+        const patch = args.patch ?? args.input;
+        if (typeof patch === 'string') for (const match of patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)\r?$/gm)) add(match[1].trim());
+      }
+      if (!paths.length) return undefined;
+      const result = call.status === 'complete' && call.name === 'replace_text' ? parse(call.result) : undefined;
+      const exact = object(result) && result.applied === true && result.attribution === 'exact' && result.path === args.path
+        && Number.isSafeInteger(result.added) && result.added >= 0 && Number.isSafeInteger(result.removed) && result.removed >= 0;
+      return { operation, paths, ...(exact ? { added:result.added, removed:result.removed } : {}) };
+    }
+    if (name === 'run_process' && typeof args.program === 'string') {
+      const quote = value => /^[\w./:=@%+,-]+$/.test(value) ? value : JSON.stringify(value);
+      const command = [args.program, ...(Array.isArray(args.arguments) ? args.arguments.filter(value => typeof value === 'string') : [])].map(quote).join(' ');
+      return { operation:'Run', command, cwd:typeof args.cwd === 'string' ? args.cwd : undefined, argv:true };
+    }
+    if (/(?:^|_)(run_in_terminal|runInTerminal|bash|shell|execute_command)$/.test(name) && typeof args.command === 'string') {
+      return { operation:'Run', command:args.command, cwd:typeof args.cwd === 'string' ? args.cwd : undefined };
+    }
+    return undefined;
+  }
+
   function describeToolCall(call, translate) {
     const label = (template, params = {}) => {
       let value = translate ? translate(template, params) : template;
@@ -1298,7 +1343,7 @@
       dispose() { disposed = true; sequence++; clearInterval(timer); document.removeEventListener('visibilitychange', visible); root.remove(); }
     };
   }
-  const api = { build, layout, terminal, mount, describeToolCall, memoryPyramid };
+  const api = { build, layout, terminal, mount, describeToolCall, toolActivityDetails, memoryPyramid };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.PkmAgentHarness = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

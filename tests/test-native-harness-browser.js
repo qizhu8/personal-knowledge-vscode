@@ -5,6 +5,52 @@ const { chromium } = require(process.env.PKM_PLAYWRIGHT_PATH || "playwright");
 const { createNativeHarnessServer } = require("../dist/runtime/native-harness-server");
 const { fixture, sessionId } = require("./native-harness-fixture");
 const { createChatBudgetLedger, recordChatBudgetUsage, recordChatBudgetRuntime } = require("../dist/chat/chat-budget-ledger");
+const { themes, applyTheme } = require("./ui-theme-fixtures");
+
+test("release Dashboard themes preserve controls, compact diagrams and high-contrast stages", async t => {
+  const browser = await chromium.launch({ headless:true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport:{ width:1280, height:900 } });
+  const errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  await page.setContent('<main id="host"></main>');
+  await page.addStyleTag({ path:path.join(__dirname, "../src/webview/agent-harness.css") });
+  await page.addScriptTag({ path:path.join(__dirname, "../src/webview/agent-harness.js") });
+  const data = fixture();
+  await page.evaluate(initial => {
+    window.controller = PkmAgentHarness.mount(document.getElementById("host"), { initial, request:async () => initial });
+    window.controller.showLifecycle();
+  }, data);
+  for (const theme of Object.keys(themes)) for (const width of [320, 390, 1280]) {
+    await page.setViewportSize({ width, height:900 });
+    await applyTheme(page, theme);
+    const tabs = page.getByRole("tab");
+    assert.equal(await tabs.count(), 4);
+    for (const tab of await tabs.all()) {
+      await tab.click();
+      const bounds = await tab.boundingBox();
+      assert(bounds.x >= 0 && bounds.x + bounds.width <= width + 1, `${theme}/${width}: detail tab fits`);
+    }
+    const dashboard = page.getByRole("region", { name:"Agent runtime dashboard" });
+    assert(await dashboard.evaluate(node => node.scrollWidth <= node.clientWidth + 1), `${theme}/${width}: Dashboard overflow`);
+    const secondary = page.locator(".pkm-harness-diagram-tabs button").first();
+    const colors = await secondary.evaluate(node => {
+      const probe = document.createElement("span"); probe.style.color="var(--vscode-button-secondaryForeground)"; document.body.append(probe);
+      const expected = getComputedStyle(probe).color; probe.remove();
+      return { expected, actual:getComputedStyle(node).color };
+    });
+    assert.equal(colors.actual, colors.expected, `${theme}: paired secondary foreground`);
+    await page.getByRole("tab", { name:"Harness flow", exact:true }).click();
+    const stages = page.locator(".pkm-harness-stage");
+    assert.equal(await stages.count(), 6);
+    if (theme.startsWith("high-contrast")) {
+      assert(await stages.evaluateAll(nodes => nodes.every(node => getComputedStyle(node).opacity === "1")), `${theme}: stages must not be faded out`);
+    }
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `${theme}/${width}: page bounds`);
+    if (process.env.PKM_RELEASE_UI_SCREENSHOT && width === 390) await page.screenshot({ path:`${process.env.PKM_RELEASE_UI_SCREENSHOT}-dashboard-${theme}.png`, fullPage:true });
+  }
+  assert.deepEqual(errors, []);
+});
 
 test("Run uses a rounded rectangle, displays only live activity, and distinguishes missing records from zero", { timeout:30000 }, async t => {
   const browser = await chromium.launch({ headless:true });

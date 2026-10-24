@@ -8,6 +8,7 @@ const ts = require("typescript");
 const sync = require("../dist/sync/github-sync");
 const { GitHubSyncCoordinator } = require("../dist/sync/github-sync-coordinator");
 const { withCrossProcessLock } = require("../dist/runtime/cross-process-lock");
+const { validatePortablePersonaChanges } = require("../dist/chat/persona-profiles");
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate) {
@@ -38,7 +39,7 @@ function rollback(root) {
     let applied = false, injected = false;
     const syncSource = source("sync/github-sync.ts");
     const globals = {
-        path, os: { tmpdir: () => root },
+        path, os: { tmpdir: () => root }, validatePortablePersonaChanges,
         fs: { ...fs, existsSync: destination => {
           if (applied && !injected && destination === b) {
             injected = true;
@@ -55,11 +56,13 @@ function rollback(root) {
           if (destination === a) applied = true;
         },
     };
+    const mutationHelper = section(syncSource, "function withActionSyncMutation<", "\nexport function replaceGitHubSyncFilesAtomically(", globals);
     const rollbackHelper = section(syncSource, "function rollbackGitHubSyncMutation(", "\nexport function replaceGitHubSyncFilesAtomically(", globals);
     const context = section(syncSource,
       core ? "interface GitHubSyncLocalWrite" : "export function replaceGitHubSyncFilesAtomically(",
       core ? "\ntype GitHubSyncEntityMap" : "\ninterface GitHubSyncLocalWrite", {
         ...globals, rollbackGitHubSyncMutation: rollbackHelper.rollbackGitHubSyncMutation,
+        withActionSyncMutation: mutationHelper.withActionSyncMutation,
       });
     assert.throws(() => core ? context.applyLocalChanges(root, [
       { file: { path: "a.md", type: "notes" }, content: Buffer.from("remote-a"), expectedLocal: Buffer.from("original-a") },

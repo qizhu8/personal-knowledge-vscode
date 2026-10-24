@@ -10,7 +10,7 @@ const { GitHubSyncConflictError, GitHubSyncExtensionCompatibilityError, githubSy
 const { PkmServiceRecoveryPersistenceError } = require("../dist/runtime/pkm-service.js");
 const { sameKnowledgeRoot } = require("../dist/sync/github-sync-coordinator.js");
 const { GitHubSyncContentRepairError } = require("../dist/sync/github-sync-content-repair.js");
-const { GitHubSyncDeferredError } = require("../dist/sync/github-sync-scheduler.js");
+const { GitHubSyncDeferredError, githubSyncFailureDetails } = require("../dist/sync/github-sync-scheduler.js");
 
 const extension = fs.readFileSync(path.join(__dirname, "../src/extension.ts"), "utf8");
 const start = extension.indexOf("async function finalizeGitHubSyncServiceResult(");
@@ -49,7 +49,7 @@ const context = vm.createContext({
   githubSyncScheduler: undefined, githubSyncCoordinatorStatePath: undefined,
   githubSyncTasks: new Map(), githubSyncForceUpdateAudit: new Map(),
   path, os, randomUUID, createHash, sameKnowledgeRoot, githubSyncResultIsNoChange, GitHubSyncConflictError, GitHubSyncExtensionCompatibilityError, PkmServiceRecoveryPersistenceError,
-  GitHubSyncContentRepairError, GitHubSyncDeferredError,
+  GitHubSyncContentRepairError, GitHubSyncDeferredError, githubSyncFailureDetails,
   readGitHubSyncContentRepair: (_directory, targetId) => repairRecords.get(targetId),
   clearGitHubSyncContentRepair: (_directory, targetId) => { calls.push(["clear-repair"]); repairRecords.delete(targetId); },
   storeGitHubSyncContentRepair: (_directory, error) => {

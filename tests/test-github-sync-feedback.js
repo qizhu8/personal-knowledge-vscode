@@ -4,6 +4,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { test } = require("node:test");
 const ts = require("typescript");
+const { githubSyncFailureDetails } = require("../dist/sync/github-sync-scheduler");
 
 const root = path.resolve(__dirname, "..");
 const source = fs.readFileSync(path.join(root, "src/webview/panel/46-github-sync.js"), "utf8");
@@ -146,6 +147,7 @@ test("host snapshots reread target state after async work and tag overlapping re
     listGitHubSyncConflicts: () => [], readGitHubSyncContentRepair: () => undefined,
     GITHUB_SYNC_CONTENT_TYPES: [], githubSyncScheduler: { snapshot: () => ({}) },
     githubSyncSecretKey: () => "key", githubPublicationMigration: () => ({ status: () => undefined }),
+    readGitHubSyncCredentials: host => host.secrets.get("key"), githubSyncFailureDetails,
   });
   vm.runInContext(ts.transpileModule(declaration.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context);
   const host = { secrets: { get: () => new Promise(resolve => pending.push(resolve)) } };

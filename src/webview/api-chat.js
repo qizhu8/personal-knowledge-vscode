@@ -139,6 +139,34 @@
     const overviewRole = globalThis.PkmChatRole(state.workerOverview?.nodes.find(node => node.chatId === chat.id));
     return role === "manager" || overviewRole === "manager" ? "manager" : role || overviewRole;
   }
+  function toolActivityPresentation(line, body, tool) {
+    const info = globalThis.PkmAgentHarness.toolActivityDetails(tool);
+    if (!info) return;
+    const targets = document.createElement("span"); targets.className = "activity-targets";
+    if (info.paths) {
+      for (const path of info.paths) {
+        const chip = document.createElement("span"); chip.className = "activity-file";
+        chip.title = path;
+        chip.setAttribute("aria-label", `${info.operation}: ${path}`);
+        const icon = document.createElement("span"); icon.className = "codicon codicon-file-code"; icon.setAttribute("aria-hidden", "true");
+        const name = document.createElement("span"); name.textContent = path.split(/[\\/]/).pop() || path;
+        chip.append(icon, name); targets.append(chip);
+      }
+      if (info.added !== undefined) {
+        for (const [kind, value, prefix] of [["added", info.added, "+"], ["removed", info.removed, "-"]]) {
+          const count = document.createElement("span"); count.className = `activity-lines-${kind}`; count.textContent = `${prefix}${value}`; targets.append(count);
+        }
+      }
+    } else {
+      const preview = document.createElement("code"); preview.className = "activity-command-preview";
+      preview.textContent = info.command.replace(/\s+/g, " ").trim(); preview.title = info.command; targets.append(preview);
+      const command = document.createElement("pre"); command.className = "activity-command";
+      command.textContent = `${info.cwd ? `Working directory: ${info.cwd}\n` : ""}${info.argv ? "Program and arguments (display only; no automatic shell):\n" : ""}${info.command}`;
+      body.prepend(command);
+    }
+    targets.setAttribute("aria-label", info.operation);
+    line.querySelector(".activity-label").after(targets);
+  }
   function activity(run = state.chat.progress, messageId = "", debug, message = {}) {
     if (!run) return null;
     const key = run.attemptId || messageId || String(run.startedAt);
@@ -176,7 +204,7 @@
       const previous = rows.get(identity);
       rows.set(identity, { ...step, firstAt: previous?.firstAt ?? step.at, status: statusOf(step, index), index });
     });
-    const appendRow = (id, label, status, at, finishedAt, body, usage, category = "info", operation = "display") => {
+    const appendRow = (id, label, status, at, finishedAt, body, usage, category = "info", operation = "display", tool) => {
       const row = document.createElement("li"); row.dataset.status = status; row.dataset.category = category; row.dataset.operation = operation;
       const line = body ? document.createElement("summary") : document.createElement("div");
       line.className = "workflow-event-line";
@@ -199,6 +227,7 @@
         else if (!active) timer.dataset.finished = run.finishedAt ?? at;
       } else timer.textContent = "-";
       line.append(glyph, badge, text, tokens, timer);
+      if (tool) toolActivityPresentation(line, body, tool);
       if (body) {
         const detail = messageDisclosure(messageId || key, id, "", "activity-event");
         detail.firstElementChild.replaceWith(line); detail.append(body); row.append(detail);
@@ -226,11 +255,12 @@
         : step.kind === "model" || /^Memory: (understanding the question|summarizing topic)$/.test(step.label) ? "llm" : "info");
       const operation = step.operation || (category === "llm" ? "inference" : category === "cmd" ? "command" : "display");
       appendRow(id, `${tool ? globalThis.PkmAgentHarness.describeToolCall(tool, t) : step.label} · ${step.status}`, step.status, tool?.startedAt ?? step.firstAt,
-        tool?.finishedAt ?? step.finishedAt ?? (["complete", "failed", "cancelled"].includes(step.status) ? run.steps[step.index + 1]?.at ?? run.finishedAt : undefined), body, reported, category, operation);
+        tool?.finishedAt ?? step.finishedAt ?? (["complete", "failed", "cancelled"].includes(step.status) ? run.steps[step.index + 1]?.at ?? run.finishedAt : undefined), body, reported, category, operation, tool);
     }
     for (const tool of tools.values()) {
       const body = document.createElement("pre"); body.textContent = `${tool.name}\n${tool.arguments}\n\n${tool.result || ""}`;
-      appendRow(`tool:${tool.id}`, `${globalThis.PkmAgentHarness.describeToolCall(tool, t)} · ${tool.status}`, tool.status, tool.startedAt, tool.finishedAt, body, undefined, "cmd", "command");
+      const content = document.createElement("div"); content.className = "activity-event-detail"; content.append(body);
+      appendRow(`tool:${tool.id}`, `${globalThis.PkmAgentHarness.describeToolCall(tool, t)} · ${tool.status}`, tool.status, tool.startedAt, tool.finishedAt, content, undefined, "cmd", "command", tool);
     }
     if (run.tools) {
       const body = document.createElement("pre"); body.textContent = run.tools.join("\n") || "No tools advertised";
@@ -513,7 +543,9 @@
         const name = document.createElement("span"); name.className = "activity-label"; name.textContent = `${globalThis.PkmAgentHarness.describeToolCall(tool, t)} · ${tool.status === "running" && !state.busy ? "interrupted" : tool.status}`;
         summary.append(glyph, name);
         const result = document.createElement("pre"); result.textContent = `${tool.name}\n${tool.arguments}\n\n${tool.result || ""}`;
-        detail.firstElementChild.replaceWith(summary); detail.append(result); debug.append(detail);
+        const body = document.createElement("div"); body.className = "activity-event-detail"; body.append(result);
+        toolActivityPresentation(summary, body, tool);
+        detail.firstElementChild.replaceWith(summary); detail.append(body); debug.append(detail);
       }
       if (run) article.insertBefore(activity(run, message.id, debug, message), content);
       else if (message.unattributedFileChanges || message.toolCalls?.length) { const log = messageDisclosure(message.id, "activity", "Activity", "activity"); log.append(debug); article.insertBefore(log, content); }

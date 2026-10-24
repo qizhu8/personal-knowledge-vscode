@@ -1,7 +1,60 @@
 # 4.0.0 Release Readiness
 
-Review date: 2026-10-23. Development version remains **3.2.106**.
+Review date: 2026-10-24. Development version remains **3.2.106**.
 **4.0.0 is a target, not a published or installed release.**
+
+## Latest Pre-Release Regression and UI Review
+
+**Local regression evidence is complete; publication is still blocked by the
+unchanged version and the remaining acceptance items below.** The final full
+build passed, including bundled UI syntax, source ownership and 36 required UI
+artifact checks (build `5eae92f1b4a5`). This build has not been packaged or installed.
+
+| Check | Result | Boundary |
+|---|---|---|
+| Complete top-level test inventory | **318 files executed: 271 JavaScript, 47 Python** | First pass: 302 successful, 16 failed, no timeouts. All 16 subsequently passed targeted reruns; the original failures remain recorded. This is not a new all-files run after the fixes. |
+| Exact full browser release plan | **9/9 suites passed**, about 82 seconds | Includes Panel, standalone Recipe, PKM Chat/Profiles, Router, Portal/Sync fixtures, feature introduction and isolated Extension Host startup. |
+| Isolated startup | **5/5 scenarios passed** | Clean install, persisted upgrade, offline, malformed state and repeated reload; no running user window was reloaded. |
+| Activity/Harness/Panel theme regressions | **66/66 passed, no skips** | Dark, light, high-contrast and high-contrast-light; Chat widths 280/390/1280, Dashboard and Panel widths 320/390/1280. Narrow Panel checks explicitly collapse the existing category sidebar first. |
+| Real offline encoder feedback audit | **1/1 passed** | Actual imported encoder, persisted attribution, restart, private-query non-persistence and frozen-weight checks; existing local runtime and weights, no download or paid inference. |
+| Nested Memory Engine suite | **51 Python + 15 JavaScript cases passed, no skips** | All three module-level Python test files plus the configured service/client/accounting integration runner; full bundles were preserved instead of rerunning plain `tsc`. |
+| Release simulation wrapper | **Passed** | Actual configured deterministic Chatroom/Project simulation command, not live external services. |
+| Chatroom coverage gate | **Passed** | Statements/lines 99.74%, branches 72.29%, functions 100%; this covers the two configured Meeting modules, not all PKM Chat. |
+| Publication version gate | **Failed, unresolved** | Product files changed, but the version is still 3.2.106 and must increase. No version change was made during this review. |
+
+The inventory retains **six JavaScript and three Python skipped cases** from
+environment/optional-runtime gates. Successful file exits do not mean every
+optional case executed. The real encoder audit above is separate evidence, not
+a replacement for those skipped scenarios.
+
+### Corrections Made During This Review
+
+- Tool-command details now use the theme foreground instead of inheriting
+  success green or muted text. Settings/Profile and Harness secondary buttons
+  pair their backgrounds with the corresponding theme foreground.
+- Native checkbox/select color schemes follow light/dark VS Code theme classes.
+  High-contrast Harness stages remain opaque and have explicit borders/focus,
+  rather than fading pending stages into the background.
+- Browser checks verify on-screen, unobstructed Send controls, contained settings,
+  reachable tabs/selectors and horizontal bounds. The sampled narrow-window
+  screenshots were inspected; no text overlap or missing controls was found in
+  the exercised surfaces. This is not an exhaustive accessibility certification.
+- Outdated test fixtures now supply the actual Sync mutation/failure helpers,
+  asynchronous MCP probes, Chat startup tracing and execution projections.
+  Historical Recipe Run fixtures use valid identities. Chat assertions follow
+  startup grace, lossless draft recovery, default-open running Activity, wizard
+  sizes and counted history pagination without weakening the underlying checks.
+- Recipe health acceptance refreshes the synthetic heartbeat immediately before
+  asserting healthy running. Production stale-heartbeat detection is unchanged.
+  Snapshot tests were rerun against an explicitly started preview server.
+- Retrieval suites use the integrity-verified bundled engine with an existing
+  dependency-complete Python environment, rather than an unrelated interpreter
+  or an older separately installed engine.
+
+Earlier sections below retain evidence from preceding development stages.
+This review did not publish, push, commit, install, enable Profile Sync, upload
+private data, or invoke a paid model/cloud job. The previously installed candidate
+does not contain these new Activity/theme changes.
 
 ## Current Outcome
 
@@ -91,9 +144,10 @@ Passing one level does not imply the others.
   not provide the client authentication prompt/session events or a direct
   log-directory-to-window mapping.
 
-There are 313 directly named JavaScript/Python test files. Filename families
-overlap and are an inventory, not coverage percentages or a claim that all 313
-files ran in this review.
+There are now 318 directly named JavaScript/Python test files. Filename families
+overlap and are not coverage percentages. The complete 2026-10-24 execution and
+targeted-rerun results are recorded above; the following matrix also retains
+earlier focused acceptance evidence.
 
 ## Feature-to-Test Matrix
 

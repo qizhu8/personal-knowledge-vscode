@@ -130,7 +130,7 @@ async function checkStagedSignatures() {
   const signatureFunction = ast.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "knowledgeTreeSignature");
   assert(signatureFunction);
   const scanRoot = "/signature-test-root";
-  const areas = ["notes", "skills", "papers", "prompts", "scripts", "packages", "servers", "recipes", "actions", "action-module-sets"];
+  const areas = ["notes", "skills", "papers", "prompts", "scripts", "packages", "servers", "recipes", "actions", "action-module-sets", "profiles"];
   const directories = {
     notes: [...Array.from({ length: 65 }, (_unused, index) => `note-${index}.md`), "_assets", ".hidden.md"],
     skills: ["SKILL.md"], scripts: ["__pycache__", "review.py"], packages: ["node_modules", "source.js"],

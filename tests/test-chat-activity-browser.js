@@ -3,8 +3,98 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { chromium } = require(process.env.PKM_PLAYWRIGHT_PATH || "playwright");
+const { themes, applyTheme } = require("./ui-theme-fixtures");
 
 const webview = path.join(process.env.PKM_ACTIVITY_EXTENSION_ROOT || path.join(__dirname, ".."), "dist", "webview");
+test("release themes keep Chat controls, settings and tool details readable and reachable", async t => {
+  const { page, errors } = await open(t);
+  for (const theme of Object.keys(themes)) for (const width of [280, 390, 1280]) {
+    await page.setViewportSize({ width, height:720 });
+    await applyTheme(page, theme);
+    await page.evaluate(() => {
+      window.__state.chat.messages = [{ id:"theme-message", role:"assistant", status:"complete", content:"Theme audit",
+        toolCalls:[{ id:"theme-command", name:"run_process", status:"complete",
+          arguments:JSON.stringify({ program:"python", arguments:["-m","pytest","tests/a_very_long_test_file_name.py"], cwd:"/work/long/project" }), result:"Tests passed" }] }];
+      window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+    });
+    const activity = page.locator('[data-message-id="theme-message"] > .activity');
+    if (!await activity.evaluate(node => node.open)) await activity.locator(":scope > summary").click();
+    const tool = activity.locator(".tool-call");
+    if (!await tool.evaluate(node => node.open)) await tool.locator(":scope > summary").click();
+    const code = tool.locator(".activity-command");
+    assert.equal(await code.evaluate(node => getComputedStyle(node).color),
+      await page.locator("body").evaluate(node => getComputedStyle(node).color), `${theme}: command text must use theme foreground, not status green`);
+    const send = page.locator("#send");
+    assert(await send.isVisible(), `${theme}/${width}: send button exists`);
+    assert(await send.evaluate(node => {
+      const box = node.getBoundingClientRect(), center = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+      return box.left >= 0 && box.right <= innerWidth && box.top >= 0 && box.bottom <= innerHeight && (center === node || node.contains(center));
+    }), `${theme}/${width}: send must be on-screen and not covered`);
+    await page.getByRole("button", { name:"Model settings", exact:true }).click();
+    const settings = page.getByRole("region", { name:"Model settings", exact:true });
+    const profile = settings.locator('[data-agent-config="profiles"]');
+    assert(await profile.isVisible());
+    assert.equal(await profile.evaluate(node => getComputedStyle(node).color),
+      await page.evaluate(() => {
+        const probe=document.createElement("span");probe.style.color="var(--vscode-button-secondaryForeground)";document.body.append(probe);
+        const color=getComputedStyle(probe).color;probe.remove();return color;
+      }), `${theme}: secondary button foreground`);
+    assert.equal(await settings.evaluate(node => node.scrollWidth <= node.clientWidth + 1), true, `${theme}/${width}: settings containment`);
+    await page.getByRole("button", { name:"Model settings", exact:true }).click();
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `${theme}/${width}: no horizontal page overflow`);
+    assert.equal(await page.locator("#history").evaluate(node => getComputedStyle(node).colorScheme), theme.endsWith("light") ? "light" : "dark");
+    if (process.env.PKM_RELEASE_UI_SCREENSHOT && width === 390) await page.screenshot({ path:`${process.env.PKM_RELEASE_UI_SCREENSHOT}-chat-${theme}.png`, fullPage:true });
+  }
+  assert.deepEqual(errors, []);
+});
+
+for (const width of [390, 1280]) test(`file chips and full command disclosures remain safe and readable at ${width}px`, async t => {
+  const { page, errors } = await open(t, width);
+  await page.evaluate(() => {
+    const now = Date.now() - 5000;
+    const calls = [
+      { id:"read", name:"read_file", arguments:JSON.stringify({ path:"src/runtime.py", startLine:4, endLine:9 }) },
+      { id:"edit", name:"replace_text", arguments:JSON.stringify({ path:"tests/test_runtime.py" }),
+        result:JSON.stringify({ path:"tests/test_runtime.py", applied:true, attribution:"exact", added:8, removed:7 }) },
+      { id:"patch", name:"invoke_vscode_tool", arguments:JSON.stringify({ name:"apply_patch", input:{ input:"*** Begin Patch\n*** Update File: src/a.py\n@@\n-a\n+b\n*** Add File: src/b.py\n+b\n*** End Patch" } }) },
+      { id:"write", name:"invoke_vscode_tool", arguments:JSON.stringify({ name:"create_file", input:{ filePath:"src/new.py", content:"fixture" } }) },
+      { id:"cmd", name:"run_process", arguments:JSON.stringify({ program:"python", arguments:["-m","pytest","tests/test_runtime.py","<img src=x onerror=window.__unsafe=true>"], cwd:"/work/project" }) },
+      { id:"terminal", name:"invoke_vscode_tool", arguments:JSON.stringify({ name:"run_in_terminal", input:{ command:"cd /work/project && npm test\nprintf done" } }) },
+    ].map(call => ({ ...call, status:"complete", startedAt:now, finishedAt:now + 100 }));
+    window.__state.chat.messages = [{ id:"targets", role:"assistant", status:"complete", content:"Fixture only",
+      toolCalls:calls, progress:{ attemptId:"targets", status:"complete", startedAt:now, finishedAt:now + 100,
+        steps:calls.map(call => ({ label:`Completed tool: ${call.name}`, toolCallId:call.id, kind:"tool", at:now, status:"complete" })) } }];
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  const activity = page.locator('[data-message-id="targets"] .workflow');
+  await activity.locator(":scope > summary").click();
+  assert.deepEqual(await activity.locator(".activity-file").allTextContents(), ["runtime.py","test_runtime.py","a.py","b.py","new.py"]);
+  assert.equal(await activity.locator(".activity-file").first().getAttribute("title"), "src/runtime.py");
+  assert.equal(await activity.locator(".activity-lines-added").innerText(), "+8");
+  assert.equal(await activity.locator(".activity-lines-removed").innerText(), "-7");
+  assert.equal(await activity.locator(".activity-command-preview").count(), 2);
+  const command = activity.locator(".activity-event").filter({ has:page.locator(".activity-command-preview") }).first();
+  assert.equal(await command.locator(".activity-command").isVisible(), false);
+  await command.locator("summary").click();
+  assert.match(await command.locator(".activity-command").innerText(), /Working directory: \/work\/project/);
+  assert.match(await command.locator(".activity-command").innerText(), /python -m pytest/);
+  assert.equal(await command.locator("img").count(), 0);
+  assert.equal(await page.evaluate(() => Boolean(window.__unsafe)), false);
+  assert(await activity.locator(".activity-targets").evaluateAll(nodes => nodes.every(node => node.getBoundingClientRect().right <= innerWidth)));
+  if (process.env.PKM_ACTIVITY_TARGET_SCREENSHOT) await page.screenshot({ path:`${process.env.PKM_ACTIVITY_TARGET_SCREENSHOT}-${width}.png`, fullPage:true });
+  await page.evaluate(() => {
+    delete window.__state.chat.messages[0].progress;
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  const fallback = page.locator('[data-message-id="targets"] .tool-call');
+  assert.equal(await fallback.locator(".activity-file").count(), 5);
+  const fallbackCommand = fallback.filter({ has:page.locator(".activity-command-preview") }).first();
+  await page.locator('[data-message-id="targets"] details.activity').first().locator(":scope > summary").click();
+  await fallbackCommand.locator(":scope > summary").click();
+  assert.match(await fallbackCommand.locator(".activity-command").innerText(), /python -m pytest/);
+  assert.deepEqual(errors, []);
+});
+
 test("feature introduction shows real Chat UI with synthetic messages and no model request", async t => {
   const { page, errors } = await open(t);
   await page.evaluate(() => {

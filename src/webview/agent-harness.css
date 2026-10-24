@@ -72,7 +72,7 @@
 .pkm-harness-flow-preview > :nth-child(3)::after,.pkm-harness-flow-mini > :nth-child(3)::after { top:50%; right:calc(100% + 6px); transform:translateY(-50%) rotate(135deg); }
 .pkm-harness header,.pkm-harness nav,.pkm-harness-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
 .pkm-harness h2 { flex:1 1 100%; font-size:19px; margin:0 0 8px; }
-.pkm-harness button { background:var(--vscode-button-secondaryBackground,#303e4e); color:inherit; border:1px solid var(--vscode-panel-border,#556779); border-radius:5px; padding:6px 10px; cursor:pointer; font:inherit; }
+.pkm-harness button { background:var(--vscode-button-secondaryBackground,#303e4e); color:var(--vscode-button-secondaryForeground,#fff); border:1px solid var(--vscode-panel-border,#556779); border-radius:5px; padding:6px 10px; cursor:pointer; font:inherit; }
 .pkm-harness button:focus-visible,.pkm-harness input:focus-visible { outline:2px solid var(--vscode-focusBorder,#70c2ff); outline-offset:2px; }
 .pkm-harness button[aria-current=true] { border-color:var(--vscode-focusBorder,#70c2ff); }
 .pkm-harness button:disabled { opacity:.5; cursor:default; }
@@ -162,3 +162,10 @@
   .pkm-harness .pkm-harness-stage[data-status=pending] { opacity:.55; }
 }
 .pkm-harness [hidden] { display:none !important; }
+body:is(.vscode-high-contrast,.vscode-high-contrast-light) .pkm-harness .pkm-harness-stage {
+  opacity:1; color:var(--vscode-foreground); background:var(--vscode-editor-background);
+  border-color:var(--vscode-contrastBorder,var(--vscode-foreground)); box-shadow:none; animation:none;
+}
+body:is(.vscode-high-contrast,.vscode-high-contrast-light) .pkm-harness .pkm-harness-stage[aria-current=step] {
+  border-color:var(--vscode-focusBorder); outline:2px solid var(--vscode-focusBorder); outline-offset:2px;
+}

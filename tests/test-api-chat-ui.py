@@ -41,7 +41,8 @@ class ChatUiTests(unittest.TestCase):
                     page.goto('http://panel.test/index.html')
                     page.clock.fast_forward(15_000)
                     warning = page.locator('#pkm-host-warning')
-                    expect(warning).to_contain_text('PKM failed to load')
+                    expect(warning).to_contain_text('PKM is still starting')
+                    expect(warning).to_have_attribute('role', 'status')
                     geometry = warning.bounding_box()
                     self.assertAlmostEqual(geometry['x'] + geometry['width'], width - 8, delta=1)
                     self.assertAlmostEqual(geometry['y'], 8, delta=1)
@@ -138,7 +139,10 @@ class ChatUiTests(unittest.TestCase):
                         page.locator('#composer').evaluate("node=>node.requestSubmit()")
                         self.assertEqual(page.evaluate("window.__posts.filter(message=>message.type==='send').length"), 0)
                         page.clock.fast_forward(15_000)
-                        expect(page.locator('#pkm-host-warning')).to_contain_text('PKM failed to load')
+                        expect(page.locator('#pkm-host-warning')).to_contain_text('PKM is still starting')
+                        expect(page.locator('#pkm-chat-loading')).to_be_visible()
+                        page.clock.fast_forward(20_000)
+                        expect(page.locator('#pkm-host-warning')).to_contain_text('PKM is not responding while starting')
                         expect(page.locator('#pkm-chat-loading')).to_be_hidden()
                         expect(page.locator('#copy-chat-id')).to_have_attribute('aria-label', 'Copy PKM URL')
                         banner = page.locator('#pkm-host-warning').bounding_box()
@@ -247,7 +251,7 @@ class ChatUiTests(unittest.TestCase):
                             page.locator('#prompt').fill(text)
                             page.locator('#send').click()
                             page.clock.run_for(32)
-                            page.wait_for_function("() => window.__posts.some(message=>message.type==='send'&&message.text===document.getElementById('prompt').value)")
+                            page.wait_for_function("text => window.__posts.some(message=>message.type==='send'&&message.text===text)", arg=text)
                             sent = page.evaluate("window.__posts.filter(message=>message.type==='send').at(-1)")
                             self.assertIsNotNone(sent, {'errors': errors, 'form': page.locator('#composer').evaluate("node=>({valid:node.checkValidity(),invalid:Array.from(node.querySelectorAll(':invalid')).map(item=>({id:item.id,message:item.validationMessage}))})"), 'hostUnavailable': page.evaluate('window.PkmHostHealth.unavailable')})
                             self.assertEqual(sent['text'], text)
@@ -316,7 +320,7 @@ class ChatUiTests(unittest.TestCase):
                         page.locator('#prompt').fill('New draft typed while sending')
                         page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", {'type': 'error', 'message': 'Explicit fixture rejection', 'chatId': failed_send['chatId'], 'submissionId': failed_send['submissionId']})
                         expect(page.locator('.optimistic-message')).to_have_count(0)
-                        expect(page.locator('#prompt')).to_have_value('New draft typed while sending')
+                        expect(page.locator('#prompt')).to_have_value('Failure draft\n\nNew draft typed while sending')
                         expect(page.locator('#send')).to_be_enabled()
                         page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", fixture)
                         self.assertLessEqual(page.evaluate('document.documentElement.scrollWidth'), width)
@@ -563,9 +567,10 @@ class ChatUiTests(unittest.TestCase):
                         self.assertEqual(page.evaluate("window.__posts.filter(message=>message.type==='chooseModel').length"), 1)
                         page.evaluate("window.dispatchEvent(new MessageEvent('message',{data:{type:'modelPickerClosed'}}))")
                         self.assertIsNone(page.locator("#model").get_attribute("aria-busy"))
-                        page.locator(".workflow > summary").click()
+                        if page.locator(".workflow").get_attribute("open") is None:
+                            page.locator(".workflow > summary").click()
                         expect(page.locator(".workflow-events")).to_be_visible()
-                        expect(page.locator(".tool-call")).to_be_visible()
+                        expect(page.locator(".workflow .activity-event").filter(has_text="read_file")).to_be_visible()
                         page.screenshot(path=str(Path(screenshots) / f"chat-{width}.png"), full_page=True)
                         idle = {**fixture, "busy": False, "chat": {**fixture["chat"], "progress": {**progress, "status": "complete"}}}
                         page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", idle)
@@ -584,7 +589,8 @@ class ChatUiTests(unittest.TestCase):
                         self.assertEqual(statuses[6]['state'], 'waiting-result')
                         self.assertEqual(statuses[6]['color'], 'rgb(227, 179, 65)')
                         self.assertEqual(statuses[7]['state'], 'stopped')
-                        self.assertTrue(all(status['width'] == '16px' for status in statuses))
+                        self.assertEqual([status['width'] for status in statuses],
+                                         ['16px', '24px', '24px', '24px', '16px', '16px', '16px', '16px'])
                         long_text = '\n\n'.join(f'History paragraph {index}: retained Chat result.' for index in range(150))
                         long_chat = {**idle, 'chat': {**idle['chat'], 'messages': [{'id': 'long_reply', 'role': 'assistant', 'status': 'complete', 'content': long_text}]}}
                         page.locator('#back').click()
@@ -656,7 +662,7 @@ class ChatUiTests(unittest.TestCase):
                         paging_fixture = {**retry_fixture, "busy": False, "history": {"start": 2, "total": 4},
                             "chat": {**retry_fixture["chat"], "id": "history_fixture", "messages": [original_user, failed_response]}}
                         page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", paging_fixture)
-                        older_button = page.get_by_role('button', name='Load older messages', exact=True)
+                        older_button = page.get_by_role('button', name='Load older messages (2)', exact=True)
                         expect(older_button).to_be_enabled()
                         page.evaluate("()=>{const m=document.getElementById('messages');m.scrollTop=0;m.dispatchEvent(new Event('scroll'))}")
                         self.assertEqual(page.evaluate("window.__posts.filter(message=>message.type==='historyPage').length"), 1)
@@ -672,7 +678,7 @@ class ChatUiTests(unittest.TestCase):
                                         "start": 0, "total": 4, "messages": older_messages}
                         page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", history_page)
                         expect(page.locator('#messages .message')).to_have_count(4)
-                        expect(page.get_by_role('button', name='Load older messages', exact=True)).to_have_count(0)
+                        expect(page.get_by_role('button', name='Load older messages (2)', exact=True)).to_have_count(0)
                         page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", paging_fixture)
                         expect(page.locator('#messages .message')).to_have_count(4)
                         paging_fixture["chat"]["messages"] = [original_user, retry_fixture["chat"]["messages"][-1]]

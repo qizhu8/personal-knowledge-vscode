@@ -33,6 +33,7 @@ const context = vm.createContext({
   checkContents: () => calls.push("signature"),
   _treeProvider: { refresh: () => calls.push("tree") },
   panel: { webview: { postMessage: () => calls.push("ui") } },
+  postToPanel: () => calls.push("ui"),
   schedulePublishedShareRefresh: () => calls.push("share"),
   scheduleRetrievalRefresh: () => calls.push("retrieval"),
   refreshKnowledgeInventory: () => calls.push("inventory"),

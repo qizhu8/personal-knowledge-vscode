@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { chromium } = require(process.env.PKM_PLAYWRIGHT_PATH || 'playwright');
+const { themes, applyTheme } = require('./ui-theme-fixtures');
 const root=path.join(__dirname,'..'),webview=path.join(root,'dist/webview');
 const exportsObject={};
 vm.runInNewContext(fs.readFileSync(path.join(root,'dist/ui/action-browser.js'),'utf8'),{
@@ -114,6 +115,17 @@ html=html.replaceAll('%%I18N_PAYLOAD_B64%%',Buffer.from(JSON.stringify({setting:
   await revisit.locator('#item-list .tree-cat-hdr').click();
   assert.match(await revisit.locator('#item-list').innerText(),/New note/,'changed background data still updates the view');
 
+  const themeAudit=await pageFor({tab:'notes',workspace:'knowledge'});
+  await themeAudit.evaluate(()=>renderServerDashboard([]));
+  await themeAudit.locator('#sidebar-toggle').click();
+  for(const theme of Object.keys(themes))for(const width of [320,390,1280]){
+   await themeAudit.setViewportSize({width,height:900});await applyTheme(themeAudit,theme);
+   const network=themeAudit.locator('.srv-global-controls select');
+   assert.equal(await network.evaluate(node=>getComputedStyle(node).colorScheme),theme.endsWith('light')?'light':'dark',`${theme}: server dropdown native theme`);
+   assert(await themeAudit.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),`${theme}/${width}: Panel page overflow`);
+   const box=await network.boundingBox();assert(box&&box.x>=0&&box.x+box.width<=width+1,`${theme}/${width}: server network selector remains reachable: ${JSON.stringify(box)}`);
+  }
+  await themeAudit.close();
   assert.deepEqual(await second.evaluate(()=>window.__cspViolations),[]);
   const child=second.frames().find(frame=>frame.parentFrame());assert(child);assert.deepEqual(await child.evaluate(()=>window.__cspViolations),[],'embedded renderer must satisfy CSP');
   assert.deepEqual(errors,[]);

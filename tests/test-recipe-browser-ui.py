@@ -776,6 +776,12 @@ with sync_playwright() as playwright:
     assert page.locator('.recipe-graph-node[data-node-id="test-full-e2e"]').count() == 1
     assert page.locator('.recipe-graph-node[data-node-id="independent-acceptance"]').count() == 1
 
+    page.evaluate("""() => {
+        const node = projectSnapshot.agentSessions.flatMap(session => session.runs || [])
+            .find(run => run.runId === 'recipe_run_demo_observable').nodes
+            .find(node => node.nodeId === 'browser-validation');
+        node.lastHeartbeatAt = node.lastProgressAt = new Date().toISOString();
+    }""")
     page.locator('.tab[data-tab="agentSessions"]').click()
     session_run = page.locator('.agent-session-task', has_text="Validate recovery").locator('.agent-runtime-run')
     session_run.locator('summary').click()

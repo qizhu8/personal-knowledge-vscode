@@ -33,6 +33,12 @@ stopping a response cannot undo prior actions. Older generic cancellation
 messages are clarified when displayed, without rewriting stored evidence.
 Animations stop in hidden views and honor reduced-motion preferences.
 
+Model settings and Activity tool details follow VS Code light, dark and
+high-contrast themes, including paired secondary-button foregrounds and native
+checkbox color schemes. Expanded commands use normal theme foreground rather
+than the tool's success/warning color. High-contrast Harness stages remain opaque
+with explicit borders and focus indicators.
+
 When context estimates exceed the budget, the composer explains why Send is
 disabled. A first send needing PKM tools initializes and waits for the
 configured managed service even when the previously selected Chat was read-only;
@@ -460,6 +466,15 @@ request targets, including requested line ranges and query scope, without
 requiring the arguments to be expanded. Native tool dispatch shows the selected
 tool name; unknown third-party schemas are not guessed. Harness tool graphs use
 the same descriptions. Full recorded names and arguments remain inspectable.
+File operations also show compact filename chips (full paths on hover), including
+recognized native read/write/edit/patch tools forwarded through `invoke_vscode_tool`.
+Multi-file patches show each recorded target; unknown third-party schemas keep
+their original tool label and arguments. Exact `+added/-removed` counts appear only
+for successful builtin edits with an attributed result, not from proposed patch text.
+Program/terminal operations show a truncated command preview and an expandable,
+wrapping command block with the recorded working directory. Native program argv
+is explicitly display-only, not a shell command or a rerun action. These details
+are derived from retained tool records, so live and historical Activity rows agree.
 Original tool call IDs and model round IDs correlate new records;
 old records without these IDs remain readable without guessing a match by
 tool name. Reported model-round `in / out` usage appears before elapsed time.

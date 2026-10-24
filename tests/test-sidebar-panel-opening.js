@@ -63,10 +63,13 @@ const messages = [];
 let deferredLoad;
 const shellProvider = { isBusy: false };
 const sandbox = {
-  context: {}, __importStar: value => value,
+  context: {}, activationStartedAt: Date.now(), __importStar: value => value,
   require: () => { throw new Error("fixture Chat dependency failure"); },
-  api_chat_shell_1: { registerApiChatShell: (_context, load) => { deferredLoad = load; return shellProvider; } },
-  log: { error: message => messages.push(message) },
+  api_chat_shell_1: {
+    setChatStartupTrace() {},
+    registerApiChatShell: (_context, load) => { deferredLoad = load; return shellProvider; },
+  },
+  log: { info() {}, error: message => messages.push(message) },
   vscode: { window: { showErrorMessage: message => { messages.push(message); return Promise.resolve(); } } },
 };
 require("vm").runInNewContext(`(async () => { ${compiled.slice(chatStart, chatEnd)} return apiChat; })()`, sandbox)
@@ -103,7 +106,7 @@ require("vm").runInNewContext(`(async () => { ${compiled.slice(chatStart, chatEn
       if (loads === 1) throw new Error("fixture backend unavailable");
       return { attachWebviewView: (view, retainHtml) => { handoff = { view, retainHtml }; }, isBusy: false };
     });
-    assert.strictEqual(commands, 5);
+    assert.strictEqual(commands, 6);
     assert.strictEqual(loads, 0);
     const listeners = new Set();
     const posted = [];
@@ -269,7 +272,7 @@ require("vm").runInNewContext(`(async () => { ${compiled.slice(chatStart, chatEn
         assert.strictEqual(registrationCalls[0][0], integrationContext);
         assert.strictEqual(typeof registrationCalls[0][1], "function");
         assert.strictEqual(registrationCalls[0][2], false, "The backend must not register another view or command facade");
-        assert.strictEqual(providers.size, 1); assert.strictEqual(commandNames.size, 5);
+        assert.strictEqual(providers.size, 1); assert.strictEqual(commandNames.size, 6);
         assert.strictEqual(modelListeners, 1, "Backend lifecycle listeners must remain registered");
         assert.strictEqual(instances[0].attached.view, integrationView);
         assert.strictEqual(instances[0].attached.retainHtml, true);

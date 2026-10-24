@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { fixture, sessionId, actionId, runId, childId } = require("./native-harness-fixture");
-const { build, layout, terminal, describeToolCall } = require("../src/webview/agent-harness");
+const { build, layout, terminal, describeToolCall, toolActivityDetails } = require("../src/webview/agent-harness");
 const { apiChatHarnessSnapshot, apiChatSessionHarnessSnapshot } = require("../dist/chat/api-chat-store");
 const { ChatHistoryStorage } = require("../dist/chat/chat-history-storage");
 const { recordedActionReferences, readHarnessActions } = require("../dist/runtime/native-harness-actions");
@@ -46,6 +46,22 @@ test("readable tool activity uses recorded inputs without changing identity or i
   assert.equal(graph.nodes[0].title, "Read src/main.ts, lines 94-130");
   assert.equal(graph.nodes[0].info.name, "read_file");
   assert.equal(graph.nodes[0].id, data.harness.attempts[1].toolCalls[0].id);
+});
+
+test("activity targets decode known file and command schemas without inventing successful edits", () => {
+  const call = (name, args, extra = {}) => toolActivityDetails({ name, arguments:JSON.stringify(args), status:"complete", ...extra });
+  assert.deepEqual(call("invoke_vscode_tool", { name:"vscode_readFile", input:{ filePath:"C:\\work\\main.py" } }), { operation:"Read", paths:["C:\\work\\main.py"] });
+  assert.deepEqual(call("apply_patch", { input:"*** Begin Patch\n*** Update File: src/a.ts\n@@\n-x\n+y\n*** Add File: src/b.ts\n+z\n*** End Patch" }), { operation:"Patch", paths:["src/a.ts","src/b.ts"] });
+  assert.deepEqual(call("multi_replace_string_in_file", { replacements:[{ filePath:"a" },{ filePath:"b" },{ filePath:"a" }] }), { operation:"Edit", paths:["a","b"] });
+  const result = JSON.stringify({ path:"a", applied:true, attribution:"exact", added:8, removed:7 });
+  assert.deepEqual(call("replace_text", { path:"a" }, { result }), { operation:"Edit", paths:["a"], added:8, removed:7 });
+  for (const extra of [{ status:"failed", result }, { status:"running", result }, { result:"{" }, { result:JSON.stringify({ path:"b", applied:true, attribution:"exact", added:8, removed:7 }) }]) {
+    assert.deepEqual(call("replace_text", { path:"a" }, extra), { operation:"Edit", paths:["a"] });
+  }
+  assert.deepEqual(call("run_process", { program:"python", arguments:["-m","pytest","path with spaces.py"], cwd:"/work" }), { operation:"Run", command:'python -m pytest "path with spaces.py"', cwd:"/work", argv:true });
+  assert.equal(call("external_reader", { path:"not necessarily a file" }), undefined);
+  assert.equal(toolActivityDetails({ name:"read_file", arguments:"{" }), undefined);
+  assert.equal(call("invoke_vscode_tool", { name:"read_file", input:null }), undefined);
 });
 
 test("native graphs retain real hierarchy, Recipe versions, terminal ports and direct execution", () => {

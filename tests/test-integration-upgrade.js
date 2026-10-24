@@ -26,19 +26,21 @@ globalThis.integration = () => ({ state: integrationMaintenanceState, error: int
 async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-integration-upgrade-"));
   const model = { serverCurrent: false, healthy: true, newer: false, pythonValid: true, fail: false };
-  const calls = { generate: 0, repair: 0, refresh: 0, retrieval: 0, dialogs: 0, compiler: 0 };
+  const calls = { generate: 0, repair: 0, refresh: 0, retrieval: 0, dialogs: 0, probes: 0 };
   const registries = [];
   const host = () => {
     const backgroundTaskRegistry = new BackgroundTaskRegistry();
     registries.push(backgroundTaskRegistry);
     const sandbox = vm.createContext({
       path, process, withCrossProcessLock, backgroundTaskRegistry,
-      ensureRecipeCompiler: () => { calls.compiler++; },
+      warmMcpPythonProbes: async () => { calls.probes++; },
+      activePanel: () => undefined,
       managedMcpServerDirectory: () => root,
       mcpStatus: () => ({ newerThanExpected: model.newer, current: model.serverCurrent,
         installedVersion: "fixture", expectedVersion: "target" }),
       detectMcpPython: () => ({ valid: model.pythonValid, error: "Python unavailable" }),
       mcpRuntimeStatus: () => ({ healthy: model.healthy }),
+      mcpRuntimeStatusAsync: async () => ({ healthy: model.healthy }),
       ensureMcpRuntime: async () => {
         calls.repair++;
         await new Promise(resolve => setTimeout(resolve, 10));
@@ -54,6 +56,7 @@ async function main() {
       refreshMcpDefinitions: () => { calls.refresh++; },
       scheduleRetrievalRefresh: () => { calls.retrieval++; },
       mcpPanelStatusData: () => ({}),
+      postToPanel: () => { calls.refresh++; },
       log: { info() {}, warn() {} },
       panel: undefined,
       openMcpSetup() {},
@@ -71,13 +74,13 @@ async function main() {
     assert(["running", "ready"].includes(first.integration().state), "A synchronous code-only upgrade may already be ready");
     assert.strictEqual(first.maintain({}), running, "Duplicate checks in one Host share one background job");
     await running;
-    assert.equal(first.integration().state, "ready");
+    assert.equal(first.integration().state, "ready", first.integration().error);
     assert.equal(calls.generate, 1);
     assert.equal(calls.dialogs, 0, "Successful migrations need no user action");
     assert.equal(registries[0].snapshot().tasks.length, 0);
     await first.maintain({});
     assert.equal(calls.generate, 1, "Repeated healthy checks do not rewrite server code");
-    assert.equal(calls.compiler, 2, "Even a current MCP version must recheck compiler paths on maintenance");
+    assert.equal(calls.probes, 2, "Even a current MCP version must refresh asynchronous Python/runtime probes on maintenance");
 
     model.healthy = false;
     model.serverCurrent = false;

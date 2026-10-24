@@ -25,6 +25,8 @@ html[dir="rtl"] pre, html[dir="rtl"] code, html[dir="rtl"] .retrieval-flow {
 #retrieval-status { font-size: 11px; overflow-wrap: anywhere; padding: 6px 0; }
 #memory-panel select { flex: 1; min-width: 70px; }
 :root { color-scheme: light dark; }
+body.vscode-dark, body.vscode-high-contrast { color-scheme: dark; }
+body.vscode-light, body.vscode-high-contrast-light { color-scheme: light; }
 * { box-sizing: border-box; }
 body { margin: 0; height: 100vh; display: flex; flex-direction: column; font-family: var(--vscode-font-family, sans-serif); font-size: var(--vscode-font-size, 13px); color: var(--vscode-foreground, #ddd); background: var(--vscode-sideBar-background, #202020); letter-spacing: 0; }
 button, select, textarea, input { font: inherit; color: inherit; }
@@ -224,7 +226,7 @@ textarea { resize: vertical; min-height: 72px; max-height: 230px; width: 100%; p
 #window-slider { padding: 0; border: 0; background: transparent; accent-color: var(--vscode-button-background, #0078d4); }
 .advanced-budget { padding: 8px; font-size: 12px; color: var(--vscode-foreground, #ddd); line-height:1.5; }
 .advanced-budget > strong { display:block; margin-bottom:8px; }
-.advanced-budget > button[data-agent-config] { width:100%; height:auto; min-height:28px; padding:6px 8px; margin-bottom:8px; white-space:normal; overflow-wrap:anywhere; text-align:start; justify-items:start; background:var(--vscode-button-secondaryBackground,#3a3d41); }
+.advanced-budget > button[data-agent-config] { width:100%; height:auto; min-height:28px; padding:6px 8px; margin-bottom:8px; white-space:normal; overflow-wrap:anywhere; text-align:start; justify-items:start; background:var(--vscode-button-secondaryBackground,#3a3d41); color:var(--vscode-button-secondaryForeground,#fff); border:1px solid var(--vscode-button-border,transparent); }
 .advanced-budget .setting-help { margin:2px 0 10px; color:var(--vscode-descriptionForeground,#aaa); overflow-wrap:anywhere; }
 .advanced-budget summary { width: fit-content; cursor: pointer; min-height: 22px; line-height: 22px; }
 .advanced-budget .budget-controls { padding: 2px 0; }
@@ -295,6 +297,18 @@ textarea { resize: vertical; min-height: 72px; max-height: 230px; width: 100%; p
 .activity-filter { display:flex; align-items:center; gap:6px; padding:4px 0; font-size:11px; color:var(--vscode-descriptionForeground,#aaa); }
 .activity-filter select { background:var(--vscode-input-background,#222); color:var(--vscode-input-foreground,#ddd); border:1px solid var(--vscode-input-border,#444); border-radius:3px; font:inherit; }
 .activity-event { min-width:0; }
+.activity-event-detail { color:var(--vscode-foreground,#ddd); }
+.activity-targets { display:flex; align-items:center; gap:6px; min-width:0; max-width:55%; flex-wrap:wrap; color:var(--vscode-foreground,#ddd); }
+.workflow-event-line:has(.activity-targets) .activity-label { flex:0 1 auto; }
+.workflow-event-line:has(.activity-targets) .elapsed { margin-left:auto; }
+.activity-file { display:inline-flex; align-items:center; gap:5px; min-width:0; max-width:100%; padding:2px 6px; border:1px solid var(--vscode-panel-border,#444); border-radius:5px; }
+.activity-file > span:last-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.activity-lines-added { color:var(--vscode-gitDecoration-addedResourceForeground,#81b88b); }
+.activity-lines-removed { color:var(--vscode-gitDecoration-deletedResourceForeground,#c74e39); }
+.activity-command-preview { display:block; min-width:0; max-width:100%; padding:2px 6px; border-radius:3px; background:var(--vscode-textCodeBlock-background,#222); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.activity-event-detail .activity-command { margin:6px 0; padding:8px; border:1px solid var(--vscode-panel-border,#444); border-radius:5px; font-family:var(--vscode-editor-font-family,monospace); }
+.tool-call > summary { display:flex; align-items:center; gap:6px; min-width:0; }
+@media (max-width:480px) { .activity-targets { max-width:100%; flex-basis:100%; margin-left:12px; } .tool-call > summary { flex-wrap:wrap; } }
 .activity-event-detail pre, .activity-event > pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:240px; overflow:auto; font-size:11px; }
 .activity-planned, .activity-availability { color:var(--vscode-descriptionForeground,#aaa); font-size:11px; }
 @media (max-width:480px) { .workflow-event-line { flex-wrap:wrap; } .workflow-event-line .activity-label { flex-basis:calc(100% - 24px); } .workflow-event-line .activity-usage { margin-left:12px; } }
