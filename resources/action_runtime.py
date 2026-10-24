@@ -543,18 +543,24 @@ def register_action_tools(mcp, store, runtime=None):
         """Set explicit PRIVATE local Cosmos host/VC/account bindings; never exported or provided by default. Operator approval required."""
         return runtime.configure_cosmos(bindings)
 
-    async def action_run_wait(run_id: str, wait_seconds: float = 30):
+    async def action_run_wait(run_id: str, wait_seconds: float = 30, after_sequence: int | None = None):
         """Wait without model polling for the ORIGINAL Run. A wait_expired result is not completion or cancellation; attach to that Run again."""
         if type(wait_seconds) not in {int, float} or not 0 <= wait_seconds <= 300:
             raise ValueError("wait_seconds must be finite and between 0 and 300.")
         until = time.monotonic() + wait_seconds
+        from action_monitoring import event_page
+        if after_sequence is not None and (type(after_sequence) is not int or after_sequence < 0):
+            raise ValueError("after_sequence must be a nonnegative integer.")
         while True:
             runtime.modules.recovery.safety_scan()
             record = runtime.get(run_id)
+            delivery = event_page(record, after_sequence or 0)
             if record["state"] not in {"running", "waiting"}:
-                return record
+                return {**record, "event_delivery": delivery}
+            if after_sequence is not None and (delivery["events"] or delivery["gap"]):
+                return {**record, "event_update": True, "completed": False, "event_delivery": delivery}
             if time.monotonic() >= until:
-                return {**record, "wait_expired": True, "completed": False}
+                return {**record, "wait_expired": True, "completed": False, "event_delivery": delivery}
             await asyncio.sleep(min(0.25, max(0, until - time.monotonic())))
 
     def action_call(action_id: str, inputs: dict, idempotency_key: str, content_hash: str, trigger: dict | None = None, project_id: str | None = None):
@@ -587,21 +593,37 @@ def register_action_tools(mcp, store, runtime=None):
         """Read a durable Action run; submission is not transfer verification."""
         return runtime.get(run_id)
 
+    def action_run_events(run_id: str, after_sequence: int = 0):
+        """Deliver retained monitor notifications after a durable cursor; repeat the cursor to replay after reconnect. Gaps are explicit."""
+        from action_monitoring import event_page
+        return {"run_id": run_id, **event_page(runtime.get(run_id), after_sequence)}
+
     def action_run_cancel(run_id: str):
         """Request local invocation cancellation; remote writes are not rolled back."""
         return runtime.cancel(run_id)
 
     def action_capabilities():
         """Discover Action registration, qualification, nesting and artifact lifecycle; workspace selection is a machine setting."""
+        from action_authoring import authoring_contract
+        import socket
         return {"schema": "pkm.action.capabilities/v1", "version": "1.0.0", "registry": str(runtime.modules.registry),
+                "authoring": authoring_contract(),
+                "execution_host": {"hostname": socket.gethostname(), "platform": platform.system(),
+                    "architecture": platform.machine(), "filesystem": "Paths refer to this MCP execution host, not the caller shell.",
+                    "identity": "Execution host OS account; credentials stay on that host.",
+                    "selection": "Operator-managed local workspace/toolchain settings; not a per-call host selector."},
                 "scheduler_error": runtime.scheduler_error,
                 "workspace_setting": "personalKnowledge.actions.workspaceRoots", "settings": runtime.modules.settings(),
                 "platform": platform.system(), "trusted_host_execution_is_sandboxed": False,
                 "tools": [function.__name__ for function in tools], "builtins": [item["action_id"] for item in runtime.modules.list()],
                 "basic_components": runtime.modules.components(), "enabled_platform_actions": runtime.enabled_platform_actions()}
 
+    def action_definition_check(definition: dict):
+        """Check definition/schema and pinned dependencies without saving, executing or granting; readiness is checked separately."""
+        return runtime.modules.definition_check(definition)
+
     def action_register(definition: dict):
-        """Persist a versioned module contract. Registration grants neither execution permission nor platform readiness."""
+        """Persist a versioned contract. Read action_capabilities.authoring first; implementation kinds are program, pipeline, mcp. No grant or readiness."""
         return runtime.modules.register(definition)
 
     def action_get(action_id: str):
@@ -678,17 +700,17 @@ def register_action_tools(mcp, store, runtime=None):
         """Register a language-neutral graphical composition as a callable pinned Action."""
         return runtime.modules.graph_save(graph)
 
-    tools = [action_retrieve, action_call, action_run_get, action_run_cancel, action_capabilities, action_register,
+    tools = [action_retrieve, action_call, action_run_get, action_run_cancel, action_capabilities, action_definition_check, action_register,
              action_templates, action_template_create, action_cosmos_configure, action_run_wait,
              action_get, action_validate, action_artifact_import, action_artifact_export, action_run_gc, action_run_recover,
              action_validation_enqueue, action_validation_status, action_validation_cancel, action_validation_resume,
              action_module_sets, action_module_set_load, action_module_set_import, action_module_set_export, action_module_set_remove,
              action_implementation_select, action_graph_check, action_graph_save, action_run_checkpoints,
-             action_checkpoint_respond, action_run_wake, action_run_safety_scan, action_run_reconcile]
+             action_checkpoint_respond, action_run_wake, action_run_safety_scan, action_run_reconcile, action_run_events]
     for function in tools:
         function.__annotations__["return"] = dict
-        mcp.tool(annotations={"readOnlyHint": function in [action_retrieve, action_run_get, action_get, action_capabilities,
-                                 action_module_sets, action_graph_check, action_run_checkpoints, action_templates]})(function)
+        mcp.tool(annotations={"readOnlyHint": function in [action_retrieve, action_run_get, action_get, action_capabilities, action_definition_check,
+                                 action_module_sets, action_graph_check, action_run_checkpoints, action_templates, action_run_events]})(function)
 
 
 if __name__ == "__main__":

@@ -50,7 +50,8 @@ assert.doesNotMatch(panel, /function chatPaintStoredRooms\(/);
 assert.doesNotMatch(panel, /function chatPaintRecents\(/);
 assert.match(panel, /id="chat-host-toggle"/);
 assert.match(panel, /id="chat-admin-closeall"/);
-assert.doesNotMatch(panel, /label:'Magic Link'/, "Room cards must not duplicate the Settings-owned Magic Link action");
+assert.match(panel, /label:'Copy magic link',onclick:`ask\('chatCopyInvite',\{roomId:/,
+  "hosted Room cards retain a directly accessible Copy magic link action");
 assert.match(panel, /Browser/);
 assert.match(panel, /Force Close/);
 assert.match(panel, /Rehost/);

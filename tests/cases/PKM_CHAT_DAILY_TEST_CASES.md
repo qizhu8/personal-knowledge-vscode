@@ -10,6 +10,34 @@ cannot pass its browser phase while omitting this daily-use gate.
 [The plan contract](../test-browser-test-plan.js) checks that the commands
 stay aligned.
 
+The daily/release browser gate also includes the private Profile store, native
+card controller, real-browser entry points, context/model switching, explicit
+Portal snapshot wiring and manager/worker no-Profile compatibility. Its
+[installed helper self-check](../test-persona-installed-helper.js) uses two
+isolated Node processes and loopback HTTP to check immutable attempt snapshots,
+deletion boundaries and retained evidence. This self-check uses VS Code doubles:
+it does **not** replace `npm run test:chat-context:host`, which installs the VSIX
+and repeats initial/restart acceptance in actual Extension Hosts.
+
+Use `npm run test:mcp-lifecycle` for the separate generated-runtime and real
+FastMCP concurrency gate (generation changes, fencing, actual drain and uncertain
+writes). It needs the existing repository `.venv` plus a `python` on PATH with
+the test FastMCP dependencies; it neither installs dependencies nor touches live
+MCP registrations. Keep this environment-dependent gate distinct from browser
+coverage and Windows acceptance.
+
+The controller suite measures burst summary persistence: 100 public-summary
+fragments share one stream flush, hidden summary flushes do not rebuild the
+library, and Stop persists the final fragment immediately. Managed/HTTP MCP
+tests also cover a total discovery deadline across distinct empty cursor pages.
+
+For reconnect safety, run `node tests/test-pkm-service.js` and
+`node tests/test-pkm-service-integration.js` against a coherent build, plus the
+Sync scheduler/coordinator tests. The real isolated service must survive more
+than three host-offline intervals without changing Auto or recording failures,
+resume after reconnect, and block replay when a host disappears during execution.
+No live target or remote account is used.
+
 This is scenario coverage, not a percentage inferred from test counts.
 The older `test:chat-coverage` command instruments two **Chatroom meeting**
 modules; its percentage does not measure PKM Chat coverage.

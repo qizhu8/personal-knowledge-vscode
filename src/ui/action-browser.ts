@@ -235,7 +235,9 @@ export function openActionWorkbench(context: vscode.ExtensionContext, runId?: st
 
 function actionWorkbenchHtml(webview: vscode.Webview, context: vscode.ExtensionContext, runId?: string, actionId?: string, library = false): string {
   const nonce = randomBytes(24).toString("hex");
-  const icons = webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "dist", "webview", "codicon.css"));
+  const font = fs.readFileSync(path.join(context.extensionPath, "dist", "webview", "codicon.ttf")).toString("base64");
+  const icons = fs.readFileSync(path.join(context.extensionPath, "dist", "webview", "codicon.css"), "utf8")
+    .replace(/url\(["']?\.\/codicon\.ttf[^)]*\)/, `url("data:font/ttf;base64,${font}")`);
   let document = fs.readFileSync(path.join(context.extensionPath, "resources", "action-workbench.html"), "utf8");
   if (library) document = document.replace("initialView=vscode?.getState()||null",
     "initialView={...(vscode?.getState()||{}),libraryOpen:true}");
@@ -243,7 +245,7 @@ function actionWorkbenchHtml(webview: vscode.Webview, context: vscode.ExtensionC
     `initialView={...(vscode?.getState()||{}),currentRun:${JSON.stringify(runId)}}`);
   else if (actionId) document = document.replace("initialView=vscode?.getState()||null",
     `initialView={targetAction:${JSON.stringify(actionId)}}`);
-  return document.replace("<head>", `<head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; font-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${icons}">`)
+  return document.replace("<head>", `<head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; font-src data:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';"><style>${icons}</style>`)
     .replace(/<script>/g, `<script nonce="${nonce}">`);
 }
 

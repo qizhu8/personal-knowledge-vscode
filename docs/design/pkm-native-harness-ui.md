@@ -23,10 +23,11 @@ and confirmed-sent context, function calls and Actions, submission and remote
 completion, and agent reports and independent validation. Reuse recorded runtime
 identities; do not invent a chronological pipeline between unrelated evidence.
 
-## Inline Chat visualization
+## Chat visualization entry
 
-**Visualization**, beside **Memory**, opens the shared Harness renderer inside
-the current Chat without replacing its conversation. It starts at the deepest
+**Visualization**, beside **Memory**, directly opens the dedicated Visualization
+window for the current Chat; no inline panel crowds the conversation. It uses the
+same Harness renderer as Agent Sessions. It starts at the deepest
 recorded active node, or the latest attempt when none is active. **Current
 execution** returns there after inspecting another subgraph; ordinary refresh
 preserves the user's inspection rather than forcibly moving it.
@@ -48,9 +49,54 @@ explicit managed-Task, planning, step-report or tool-call bindings. Action Runs
 appear only through recorded call references. Missing bindings read "no explicit
 binding recorded", and referenced but unloaded records are marked unavailable.
 
-The root view is a **lifecycle ring**: Configure → Run → Monitor → Evaluate →
-Meets goals? → End, with a dashed Iterate loop counting retries. Exactly one
-stage is current, chosen only from recorded evidence:
+Both Agent Sessions and the dedicated Visualization window mount the same
+**four-diagram Dashboard**. A fixed **2 x 2** grid shows Harness, Recipe / Action,
+Memory / Profiles and Retrieval thumbnails. Below it, four detail tabs select one
+full view; clicking a thumbnail selects its tab. Left/Right and Home/End navigate
+tabs, and refresh preserves selection. Runtime parameters and diagnostics expand
+on demand. Retrieval shows a sampled pool of up to 32 recorded candidate blocks
+on the left, with curved links from selected blocks to the right-hand shortlist.
+All six selections are shown when a receipt records six; larger selections are
+bounded at 24 and explicitly labelled. Selected pieces take priority in sampling,
+so selecting a late candidate never loses its connection. Total, displayed,
+selected and sent counts remain distinct; the pool is not the entire Memory
+database. Green markers require recorded sent evidence, not selection alone.
+The thumbnail uses the same diagram. Category/count evidence remains available
+in a collapsed legend; hashes, source IDs and per-item labels are never shown.
+The flow continues through a selection gate into the selected set and then the
+model-context box. Only candidates with recorded sent evidence have a context
+connection. Clicking a candidate or selection (Enter/Space also work) highlights
+its path and reveals the recorded source URI, retrieval method, score, reason
+and evidence state. Missing metadata is labelled, not inferred. This is a
+read-only process view, not a new retrieval algorithm or crawler animation.
+Visual inspiration: the process-as-objects approach of
+[@rybinfx](https://www.rybinfx.com/) and the independently credited
+[WebCrawlerMY demo](https://felixyu9722.github.io/WebCrawlerMY/), not copied code
+or a claim that this visualization is a crawler.
+
+Memory uses the same visual-first approach: a shared pyramid renderer draws
+actual stored levels, sampled piece blocks (up to six per level), and only the
+recorded relationships between displayed pieces. Profiles stay separate; they
+are not invented learned-memory levels. Prepared references are blue and sent
+reference membership is green. An ID match in a historical sent manifest does
+not prove that the current mutable stored revision was sent.
+
+Opening the Memory detail tab lazily reads the existing scoped Memory overview;
+the four-thumbnail overview alone does not scan the database. Refresh is
+explicit, errors remain visible, and clicking a block reads its bounded evidence.
+The detailed Visualization view uses the same pyramid, with the inventory,
+provenance and source reader kept behind disclosure. Inventory expansion
+survives refresh. Native Agent Session webviews/browser pages use the existing
+owning Chat reader through an authenticated, Session-bound read-only bridge;
+they cannot choose a foreign Chat or mutate Memory. Unsupported/missing owning
+records fail explicitly. Neither inspection path invokes a model or changes
+retrieval selection, historical snapshots or meaningful-access timestamps.
+
+The default Harness detail is a **compact arrow-connected flow**:
+Configure → Run → Monitor → Evaluate → Check → End. Recorded Check-to-Configure
+iterations are noted separately. There is no additional large lifecycle ring or
+duplicate Last recorded / Run summary. Exactly one stage is current, chosen only
+from recorded evidence:
 
 - Live attempt with a started validation report → Evaluate.
 - Dependency wait, awaiting result, or non-terminal referenced Action Run →
@@ -64,12 +110,13 @@ stage is current, chosen only from recorded evidence:
   marked "done, not validated" and End stays dark.
 
 Earlier stages are visited; Monitor/Evaluate passed without evidence are
-skipped. Selecting a circle lists its recorded items and opens their records.
+skipped. Selecting a stage lists its recorded items and opens their records.
 **Current execution** and **Full execution graph** lead to the detailed graph.
-Below 560 px the ring becomes a vertical list.
+The four thumbnails retain two columns even on narrow screens; the stage flow
+uses two columns with small connecting arrows.
 
-**Steer current task** focuses the existing composer in Steer mode without
-sending or replacing a draft. The existing Stop control stays available; remote
+Steer and Stop remain in the existing Chat composer; visualization does not
+create another intervention toolbar or replace the draft. Remote
 execution retains its existing intervention restrictions. Merely opening or
 navigating this panel never starts a Task, model request or tool execution.
 
@@ -78,25 +125,26 @@ Ordinary Chats use their recorded Chat evidence and explicitly say that managed
 Task/Recipe bindings are unavailable, rather than manufacturing them. Full tool
 results are read only by their recorded message/call identity.
 
-Chat state/stream changes coalesce refresh notifications; the shared renderer
-also reconciles every 30 seconds while visible. This does not claim that an
-external engine's unreported internal search stages are observable. Closing,
-returning to the library, switching Chat or disposing the view releases pending
+Record changes coalesce refresh notifications; the shared renderer also
+reconciles every 30 seconds while visible. This does not claim that an
+external engine's unreported internal search stages are observable. Switching
+Chat, closing or disposing the view releases pending
 requests, timers and renderer listeners. Late responses cannot populate another
 Chat. Trust/access failures are shown as errors.
 
 ## Visualization window
 
 **Personal Knowledge Manager: Open Visualization Window** (also the
-link-external button in the inline panel toolbar) opens one editor-area window.
+Chat's Visualization button) opens one editor-area window.
 Opening it again reveals the same window and selects the requesting Chat. The
-inline panel stays available.
+conversation and its draft stay unchanged.
 
 - **Left: Chat tree.** Mirrors the Chat List: Ungroup, then user folders;
   workers nest under their manager; Trash is excluded. Active Chats sort first.
   Arrow keys, Home/End, Enter/Space and Left/Right navigate and expand.
-- **Right: dashboard.** The lifecycle ring is the main view. Six tiles
-  summarize the Chat; selecting a tile enlarges it into the main area:
+- **Right: dashboard.** The same four-thumbnail, four-detail-tab core used in
+  Agent Sessions is the main view. A compact navigation strip retains additional
+  views without duplicating diagram previews:
   - **Lifecycle** and **Execution graph** use the shared renderer (current
     stage / current execution).
   - **Recipe / Action** lists every explicit Recipe Run/stage and Action Run
@@ -137,7 +185,7 @@ Any non-Trash Chat in the current Knowledge Root can be inspected, including
 Chats not open in the sidebar. A Chat running in this window is read from its
 live record; otherwise the stored record is read without creating anything.
 Every read passes the same trust, Trash and read-only (`snapshot`/`result`)
-gate as the inline panel. Record writes, including other VS Code windows' writes
+gate as the Agent Sessions reader. Record writes, including other VS Code windows' writes
 seen by the library watcher, push at most one tree update per 400 ms and only
 while the window is visible. Switching Chat cancels pending requests; late
 results are ignored. Removing the selected Chat clears the dashboard.

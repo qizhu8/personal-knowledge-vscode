@@ -33,6 +33,53 @@ test("native transport is prepared before dispatch and confirmed only after prov
   assert(timings[0].firstPublicOutputMs <= timings[0].elapsedMs);
 });
 
+test("native automatic-reference cap uses actual token counts and rejects 8001 before dispatch", async () => {
+  for (const referenceTokens of [7936, 7937]) {
+    const reference = { role:"system", content:"Automatic reference" };
+    let dispatches = 0, receipt;
+    const model = { id:"fixture", name:"Fixture", vendor:"copilot", family:"fixture", version:"1", maxInputTokens:32768,
+      countTokens:async value => typeof value === "object" && value.content.includes("Automatic reference") ? referenceTokens : 1,
+      sendRequest:async () => { dispatches++; return { text:(async function* () { yield "done"; })() }; } };
+    const run = streamVscodeChat(model, { messages:[reference, { role:"user", content:"User input outside this budget" }],
+      signal:new AbortController().signal, contextWindow:32768, maxOutputTokens:1024,
+      automaticKnowledge:{ inputBudget:8000, includes:message => message === reference },
+      onTransportPrepared:value => { receipt = value; },
+    }, () => {}, host);
+    if (referenceTokens === 7936) {
+      await run;
+      assert.equal(dispatches, 1);
+      assert.deepEqual(receipt.automaticKnowledge, { inputBudget:8000, inputTokens:8000, countingMethod:"vscode-countTokens-plus-overhead" });
+    } else {
+      await assert.rejects(run, /Automatic PKM reference input budget exceeded/);
+      assert.equal(dispatches, 0);
+      assert.equal(receipt, undefined);
+    }
+  }
+});
+
+test("HTTP automatic-reference cap is independent of required input and enforced before fetch", async () => {
+  for (const size of [7936, 7937]) {
+    const reference = { role:"system", content:"x".repeat(size) };
+    let dispatches = 0, receipt;
+    const run = streamApiChat({ provider:"openai-compatible", endpoint:"http://127.0.0.1:1/v1", apiKey:"",
+      model:"fixture", messages:[reference, { role:"user", content:"Pinned manual content ".repeat(1000) }],
+      signal:new AbortController().signal, maxOutputTokens:1024,
+      automaticKnowledge:{ inputBudget:8000, includes:message => message === reference },
+      onTransportPrepared:value => { receipt = value; },
+      fetch:async () => { dispatches++; return new Response('data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+        { headers:{ "Content-Type":"text/event-stream" } }); },
+    }, () => {});
+    if (size === 7936) {
+      await run;
+      assert.equal(dispatches, 1);
+      assert.deepEqual(receipt.automaticKnowledge, { inputBudget:8000, inputTokens:8000, countingMethod:"utf8-byte-upper-bound" });
+    } else {
+      await assert.rejects(run, /Automatic PKM reference input budget exceeded/);
+      assert.equal(dispatches, 0);
+    }
+  }
+});
+
 test("failed native preparation or rejected dispatch cannot emit a confirmed-sent receipt", async () => {
   for (const failure of ["prepare", "dispatch"]) {
     let dispatched = 0, sent = 0;

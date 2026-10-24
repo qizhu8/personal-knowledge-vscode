@@ -5,6 +5,118 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.106] - 2026-10-23
+
+- Admit background-service clients by protocol and advertised capabilities rather than exact extension version. Adapt original protocol-v1 registration, make installed-version drift a deduplicated advisory instead of an automatic daemon drain, and restrict unsupported features individually. Keep IPC identity, mutation fencing, no replay, explicit safe-idle drain and daemon downgrade protection.
+- Keep compatible old MCP sessions and Chat catalogs usable across generation/build updates. Preserve a legacy admission baseline while new launchers select the latest immutable runtime; incompatible API/storage contracts, removed domains and explicit maintenance/quiesce still fence admission.
+- Simplify Router to necessary state and actions. Move explanations, model IDs/paths, resource budgets, provenance and diagnostics into viewport-bounded, hoverable floating panels with keyboard focus and Escape support; preserve focus/details across updates and leave real failures visible.
+
+## [3.2.105] - 2026-10-23
+
+- Show live optional Semantic / Dual availability beside the default Exact + BM25 route, including preparation, ready, disabled and failure transitions. Do not confuse available embeddings with the undeployed learned-coordination design or claim every query used a model; keep the synthetic benchmark labeled lexical.
+- Open Router on Skill sources for new UI state and keep optional model setup in its own tab. Treat an unconfigured model as neutral, without setup prompts, missing-model alerts or background navigation.
+
+## [3.2.104] - 2026-10-23
+
+- Add explicitly confirmed download/enable of a revision- and SHA-256-pinned Multilingual E5 Small from Hugging Face, with streamed byte progress, cancellation and a connected-step setup view. Add verified local default-model directory import while retaining complete offline solution ZIP import. Do not bundle weights, install inference dependencies automatically or claim unmeasured local quality.
+- Organize Router into Retrieval models, Skill sources, Diagnostics and Privacy. Collapse runtime/resource/connection diagnostics and undeployed design previews; keep actionable errors and the actual setup/build stage visible.
+- Keep retrieval helpers and the engine in immutable data-directory runtimes and check loaded worker builds before reuse. Gracefully replace legacy same-engine workers instead of reusing paths under an uninstalled extension, preventing missing-helper errors during embedding index preparation.
+
+## [3.2.103] - 2026-10-23
+
+- Support pasting PNG/JPEG screenshots into the PKM Chat composer with the existing vision-model guards, persisted attachment preview/removal and real binary model input. Keep ordinary text paste unchanged and reject wrong-Chat, oversized or unsupported images explicitly.
+- Preserve Chatroom member names in narrow participant lists by placing moderation controls below the identity row. Show elapsed state/presence time as `6 sec` rather than `updated 6s ago`.
+- Collapse neutral unverified MCP observations without claiming that a client handshake succeeded; keep actual draining/uncertain observations actionable. New instrumented managed MCP generations gracefully retire their own superseded stdio session only after tracked work and responses drain, without signalling legacy processes or replaying calls.
+- Stop historical persisted Sync display state from blocking a safe-idle service upgrade. Continue waiting for live callbacks, raw Sync execution and Host postprocessing before stopping the owned service.
+
+## [3.2.102] - 2026-10-23
+
+- Fix repeated coordinator polls queueing the same durable Sync intent while host preflight is still pending. Skip unclaimed work superseded by a higher-priority intent or removed by an Auto pause without recording a false Sync failure; retain distinct same-reason follow-ups and exact-sequence claims under the existing leadership fence. Do not clear historical failures, change Auto settings or replay production Sync.
+
+## [3.2.101] - 2026-10-23
+
+- Restore the directly accessible Copy magic link action on hosted Chatroom cards. Resolve UUID-based copy actions to the actual Room name so the copied link uses the correct join path.
+- Stop creating a persistent Chatroom Room for each new Portal. Share the existing WebSocket listener/client infrastructure through a dedicated peer-only endpoint, with isolated two-endpoint channels outside Room history, Meeting, credentials, navigation and administration. Preserve pairing approvals, task receipts and re-attachment without automatic task replay; keep existing Room-backed links/connections compatible without deleting user data.
+
+## [3.2.100] - 2026-10-23
+
+- Label chronological Chat Activity as LLM, CMD or INFO with a per-attempt filter. Distinguish native model token counting from inference, retain provider-reported inference usage without attributing it to tools, and persist explicit stage completion boundaries so Memory preparation no longer includes subsequent retrieval.
+- Reuse connected VS Code models across turns and Memory preparation, share concurrent discovery without sharing caller cancellation, and invalidate stale results on model changes or explicit refresh. Revalidate once after explicit model-access errors without replaying the failed request or treating ordinary failures as authentication errors.
+
+## [3.2.99] - 2026-10-23
+
+- Fix Portal Connections Open Chat, Remove and invitation-copy buttons generating malformed inline event handlers. Use attribute-safe data and bound listeners with the shared themed button style.
+- Show each Portal pair once, with Controlled on the left and Controller on the right, retaining an Open Chat action for each local side. Keep newly created one-sided invitations visible with Copy magic code; only unredeemed, unexpired invitations can be copied, and a live side prevents history removal.
+
+## [3.2.98] - 2026-10-23
+
+- Restore Action Workbench button icons in the embedded sandbox by embedding the bundled Codicon stylesheet/font instead of relying on cross-origin font loading from an opaque iframe origin. Permit data fonts in the parent/child CSP without relaxing the sandbox or script policy, and retain accessible button names and the standalone browser's existing asset serving.
+
+## [3.2.97] - 2026-10-22
+
+- Bound VS Code GitHub credential reads to 10 seconds and classify storage timeout, cancellation, failure, missing credentials and account mismatch before GitHub is contacted. Ignore late read results, avoid automatic sign-in on storage failures, and keep failed account checks from hiding the Sync dashboard.
+- Preserve Sync failure codes, phases and retry counts across reloads and the background service. Show a short actionable error on collapsed target cards, restore the failed phase, and avoid repeating the full error in the metadata column. Give historical bare cancellations an explicit generic code without inventing their cause.
+
+## [3.2.96] - 2026-10-22
+
+- Compact the shared Sync Diagnostic Log to the latest 1,000 records once per 24 hours, using a persisted cross-window retention marker and a bounded backwards tail read rather than scanning on every event. Retain a 4 MiB emergency cap, remove obsolete size-rotation archives, batch writes for 250 ms and coordinate updated writers with atomic replacement under the existing process lock. Flush on log opening/normal deactivation and surface cleanup failures without changing Sync behavior.
+
+## [3.2.95] - 2026-10-22
+
+- Bound automatically retrieved PKM knowledge references to a separate 8,000-token input budget per model round. Prefer query-matched structural passages over long whole-source injection even in large model windows; preserve manual/task context, atomic passage dependencies and complete local evidence. Check native token counts before dispatch and expose the limit in the budget ledger.
+- Add compact, hash-free context cost summaries to Chat control reads and diagnostic exports instead of requiring full budget manifests. Keep five recent rounds/attempts with explicit omitted counts, cap workflow steps and support read-only diagnostics by Chat URL as well as native Session ID. Full retrieval/hash evidence remains local and inspectable.
+
+## [3.2.94] - 2026-10-22
+
+- Respect upward mouse-wheel scrolling while a response streams instead of pulling readers back to the bottom on the next update. Resume following when the reader returns to the bottom or sends a message. Allow upward wheel gestures to retrieve earlier history even when the current page is too short to scroll, and size the history button to its label.
+
+## [3.2.93] - 2026-10-22
+
+- Expose the number of earlier Chat messages with a localized load button, including short pages that cannot trigger scroll-based history loading. Preserve automatic paging and the visible message while prepending history.
+- Reuse a model catalog discovered during the current send's connection or Memory preparation for the main native request. Cache unchanged native input-message and tool-schema token counts within one invocation, with a bounded cache and unchanged budget checks.
+- Make read-only Chat MCP command IDs optional, retain strict explicit IDs for mutations, and replace raw UUID validation errors with actionable Host guidance. Clarify that Allow All does not bypass hidden/excluded-directory restrictions.
+
+## [3.2.92] - 2026-10-22
+
+- Replace the ambiguous Background Processes "cleanup review" count with separate old-version/generation and suspected-leftover counts. Keep missing-entry test leftovers distinct from still-connected older runtimes, retain yellow evidence labels and never imply a process is safe to stop solely from its category.
+- Keep the default Background Processes overview compact: total processes and RSS, with sampling/scope/version notes under Snapshot details. Show compact PID/status/version/age/memory rows and move ownership/runtime evidence under per-PID Details without hiding observation errors.
+
+## [3.2.91] - 2026-10-22
+
+- Organize Background Processes into three initially collapsed PKM MCP, Retrieval worker and PKM service lists. Show PID totals, latest runtime-reported versions, cleanup-review candidates and other/unverified counts in each header, retain zero-count groups and expansion across refreshes, and mark older versions/generations with yellow Old labels without authorizing termination of active or uncertain work.
+
+## [3.2.90] - 2026-10-22
+
+- Group Background Processes by historical test leftovers, missing entries, superseded generations, older/current runtime reports, path-only evidence and unknown state. Show the installed/loaded extension baseline, parent executable, approximate start time and explicit next actions. Correlate live MCP registry reports by PID to expose reported extension/server versions, build, generation, phase and in-flight/uncertain calls; never treat age, stale records or matching paths as a verified current runtime or permission to terminate.
+
+## [3.2.89] - 2026-10-22
+
+- Retire old Sync daemons after detecting a verified newer installed extension, draining current execution and host postprocessing before exit. Preserve Auto Sync and recovery receipts, prevent stale windows from respawning old code, and let disconnected daemons self-retire when their entry or IPC ownership disappears without treating normal offline operation as an orphan.
+
+## [3.2.88] - 2026-10-22
+
+- Bound managed and HTTP MCP discovery by one 30-second deadline across connection, catalog pagination and managed handshake, preventing distinct empty cursor pages from prolonging initialization indefinitely.
+- Coalesce streamed public reasoning summaries with the existing 500 ms text persistence flush, instead of synchronously saving history and publishing the whole Chat library per fragment. Skip hidden-Webview summary refreshes and preserve immediate final/Stop persistence.
+- Preserve Auto Sync while no matching Extension Host is connected or a read-side clone/fetch encounters a recognized network outage. Defer at the configured interval without consuming failure attempts; retain bounded authentication/conflict handling and never treat an uncertain push as a safe retry.
+- Make historical Chat retrieval context and budget/transport evidence inspectable per attempt and model round, including missing receipts, source revisions/ranges, ordered HTTP message-hash comparison and explicit native-conversion boundaries. Do not label prepared context as sent.
+- Keep the PKM Chat daily and release-browser regression gates aligned, including private Profiles, Portal snapshot wiring, worker compatibility and cross-process Profile evidence checks.
+- Separate the managed MCP drain-observation deadline from the control RPC timeout so a short local observation budget does not cancel a delayed lifecycle request. Preserve explicit action-required and no automatic replay.
+
+## [3.2.87] - 2026-10-22
+
+- Simplify the status-bar entry to "PKM Status"; clicking opens the Status dashboard, with build, index and sync details retained in its tooltip.
+- Add explicitly edited private User/Agent Profiles with revision conflicts, inspectable cards, explicit Chat assignment and immutable per-attempt context evidence. Count the actual applied preferences in model budgets; require explicit review before sharing a bounded snapshot through Portal.
+- Migrate legacy Markdown attachments into each document's owned `.assets` directory during move/Trash, copy shared resources safely, and remove the old file only after its final reference migrates. Keep attachments with Trash/restore/permanent deletion, support reviewed recovery of historical broken links, and record old-path deletion intent for Sync.
+- Explain yellow Sync shields using per-target file differences and privacy/selection changes instead of treating every successful Sync as proof that all selected content matches.
+- Stage coherent immutable managed MCP generations, fence stale generations against new calls, drain real in-flight work without replaying uncertain writes, and verify successor identity/capabilities before reporting a managed connection ready. Legacy external connections still require explicit reconnect.
+
+## [3.2.86] - 2026-10-22
+
+- Reuse immutable raw embedding batches across corpus edits and cancelled builds instead of repeatedly encoding the entire corpus. Preserve current-revision index/PCA admission, check cache integrity, prune unused vectors and expose reuse/disk observations; include the cache in Rebuild/Delete.
+- Expose explicit semantic/dual routes consistently on Skill, Script and Research MCP searches and the Paper alias; retain lexical defaults and status envelopes for empty/unavailable model results. Advertise the additive schema through knowledge MCP 1.6.0 / unified MCP 2.18.0.
+- Connect Router offline-model import, existing-Python validation, enable/rebuild/disable/delete and preparation/resource status. Pin the full bundled engine independently of the installed MCP/SI package, persist the model-runtime choice and gracefully replace its worker. Correlate operation completion, preserve narrow-screen focus/details, and fence status polling after disposal. Keep model acquisition and default query routing explicit.
+- Restore Ctrl+F's default literal filtered file tree instead of flooding the sidebar with ranked BM25 candidates. Keep keyword/semantic/dual retrieval explicit, group their hits by source folders with collapsed evidence, and resolve current local/subscribed identities before opening details. Expose actual semantic/package/frozen-release readiness and errors in Router separately from lexical worker readiness.
+- Show a read-only, refreshable host-local PKM MCP/service/retrieval process inventory in Settings > Background Tasks, including PID/parent, age, RSS, entry path/version and missing-entry/test-fixture evidence. Keep observed processes separate from active task counts; do not infer runtime compatibility or terminate processes.
 - Make PKM Chat Activity readable from builtin file/search/edit request targets, reuse descriptions in Harness graphs, initially expand live Activity while preserving user collapse choices, and show reported reasoning tokens as part of model-round output rather than per-tool usage.
 - Hide Chat-specific Portal details while the Chat List is visible, including background connection updates; preserve details when reopening the Chat.
 - Drain isolated Sync services and authenticate retrieval-worker shutdown before startup/context test fixture removal; reuse the cleanup in four-window acceptance and preserve fixtures on cleanup failure.
@@ -32,7 +144,6 @@ This project follows [Semantic Versioning](https://semver.org/).
 - Add Portal-role filters and a connection-overview shortcut to the Agent Sessions tree; keep role labels for Chats with Tasks, explain Task counts and expose Open PKM Chat on Chat Groups.
 - Make Run a rounded rectangle with a live-only activity label. Distinguish terminal attempt position and missing records from current execution and zero counts; add historical attempt selection and recorded graph previews to the runtime dashboard.
 - Retain the main panel and Chat sidebar while hidden so ordinary editor/view switches preserve their live DOM and drafts. Revalidate the active main-panel view silently on return; retain snapshots for actual disposal/restart.
-- Clarify that the documented retrieval-solution model management workflow is not yet wired into the current Router UI.
 - Simplify the top-right Chat Portal button to open/closed portal states only; keep role-specific wizards in status/details and retain the connection-controls click behavior.
 
 ## [3.2.85] - 2026-10-21

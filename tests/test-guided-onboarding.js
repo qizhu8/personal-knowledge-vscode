@@ -99,7 +99,7 @@ for (const marker of [
   "maybeStartPendingExperience",
 ]) assert.ok(source.includes(marker), `guided onboarding is missing behavior: ${marker}`);
 assert.doesNotMatch(source, /localStorage|sessionStorage/, "one-time state must remain extension-owned and durable");
-assert.ok(FEATURE_TOUR_MODULES.reduce((count, module) => count + module.steps.length, 0) >= 9,
+assert.ok(FEATURE_TOUR_MODULES.reduce((count, module) => count + module.steps.length, 0) >= 7,
   "composable tour modules must point to real controls across the product");
 
 const css = fs.readFileSync(path.join(root, "src", "webview", "panel.css"), "utf8");
@@ -109,6 +109,16 @@ assert.match(css, /prefers-reduced-motion:reduce/);
 
 const english = JSON.parse(fs.readFileSync(path.join(root, "resources", "locales", "en.json"), "utf8")).strings;
 const chinese = JSON.parse(fs.readFileSync(path.join(root, "resources", "locales", "zh-hans.json"), "utf8")).strings;
+assert.deepStrictEqual(FEATURE_TOUR_MODULES.map(module => module.id), ["pkm-chat","retrieval-system","router","github-sync","portal"]);
+assert.deepStrictEqual(decideInitialExperience({ version:"4.0.0", previousVersion:"3.2.106",
+  onboardingPending:false, onboardingCompleted:true,
+  seenModuleIds:["core-navigation","agent-workflows","runtime-and-sharing"] })?.moduleIds,
+  FEATURE_TOUR_MODULES.map(module => module.id), "a future major release introduces unseen capabilities without replaying patch tours");
+for (const module of FEATURE_TOUR_MODULES) {
+  for (const key of [module.highlightTitleKey, module.highlightBodyKey]) {
+    assert(english[key] && chinese[key], `missing feature introduction: ${key}`);
+  }
+}
 for (const key of ["experience.whatsNewTitle", "experience.tourWelcomeTitle", "experience.tourMcpBody", "experience.takeTour"]) {
   assert.ok(english[key], `English onboarding copy is missing: ${key}`);
   assert.ok(chinese[key] && chinese[key] !== english[key], `Chinese onboarding copy is missing: ${key}`);

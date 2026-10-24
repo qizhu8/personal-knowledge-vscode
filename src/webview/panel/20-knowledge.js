@@ -400,9 +400,10 @@ function renderGroupedKnowledgeTree(root, area, renderLeaf, q, folderAttr, order
   for (const { group, folders: groupFolders } of byGroup.values()) {
     if (!groupFolders.length && group.id === 'unnamed') continue;
     const key = `${area}:${group.id}`;
-    const expanded = paperGroupExpanded[key] !== false;
+    const expanded = !!q || paperGroupExpanded[key] !== false;
     const groupRoot = { folders: Object.fromEntries(groupFolders.map(folder => [folder, root.folders[folder]])), items: [] };
     const count = countTreeLeaves(groupRoot);
+    if (q && count === 0 && !treeFolderPathMatches(groupRoot, [], q)) continue;
     html += `<div class="pk-group knowledge-visual-group" style="--knowledge-group-color:${esc(group.color)}">
       <div class="pk-group-hdr" onclick="togglePaperGroup(${JSON.stringify(key).replace(/"/g, '&quot;')})" oncontextmenu="knowledgeGroupMenu(event,${JSON.stringify(area).replace(/"/g, '&quot;')},${JSON.stringify(group.id).replace(/"/g, '&quot;')},${JSON.stringify(group.name).replace(/"/g, '&quot;')},${JSON.stringify(group.color).replace(/"/g, '&quot;')})">
         <span class="pk-group-arrow">${uiIcon(expanded ? 'chevron-down' : 'chevron-right')}</span>
@@ -889,7 +890,7 @@ function renderCatTree(node, path, depth, renderLeaf, q, folderAttr, order, opti
         <span class="tree-cat-arrow">${expandable ? uiIcon(open ? 'chevron-down' : 'chevron-right') : ''}</span>
         <span class="tree-cat-label">${folderLabel}${githubSyncTypes.includes(syncType) ? githubSyncFolderMarker(syncType, syncFolder) : ''}</span>
         <span class="tree-cat-count">${options.countLabel ? esc(options.countLabel(countTreeLeaves(child))) : countTreeLeaves(child)}</span>
-        ${['skills', 'notes', 'papers'].includes(state.tab) ? `<button class="tree-cat-add" type="button" title="Add inside ${esc(name)}" aria-label="Add inside ${esc(name)}" onclick="openCatFolderAddMenu(event,${JSON.stringify(state.tab).replace(/"/g, '&quot;')},${JSON.stringify(addPath).replace(/"/g, '&quot;')})">${uiIcon('add')}</button>` : ''}
+        ${!options.readOnly && ['skills', 'notes', 'papers'].includes(state.tab) ? `<button class="tree-cat-add" type="button" title="Add inside ${esc(name)}" aria-label="Add inside ${esc(name)}" onclick="openCatFolderAddMenu(event,${JSON.stringify(state.tab).replace(/"/g, '&quot;')},${JSON.stringify(addPath).replace(/"/g, '&quot;')})">${uiIcon('add')}</button>` : ''}
       </div>
       ${expandable ? `<div class="tree-cat-body" style="${open ? '' : 'display:none'}">${renderCatTree(child, path.concat(name), depth + 1, renderLeaf, q, folderAttr, order, options)}</div>` : ''}
     </div>`;

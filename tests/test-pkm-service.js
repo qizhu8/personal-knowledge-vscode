@@ -15,6 +15,7 @@ process.env.PKM_SERVICE_BUILD_DIR = buildRoot;
 const api = require(path.join(buildRoot, "runtime", "pkm-service.js"));
 const syncApi = require(path.join(buildRoot, "sync", "github-sync.js"));
 const repairApi = require(path.join(buildRoot, "sync", "github-sync-content-repair.js"));
+const credentialsApi = require(path.join(buildRoot, "sync", "github-sync-credentials.js"));
 const version = require(path.join(extensionRoot, "package.json")).version;
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const fixtureBytes = Buffer.from(Array.from({ length: 256 }, (_, index) => index));
@@ -242,10 +243,12 @@ async function main() {
       },
     });
     assert.strictEqual(readMetadata(persistenceOptions).pid, descriptor.pid);
-    await assert.rejects(
-      () => api.PkmServiceClient.connect({ ...persistenceOptions, extensionVersion: "0.0.1", execute: async () => {} }),
-      error => error instanceof api.PkmServiceVersionError,
-    );
+    const compatibilityWarnings = [];
+    const olderClient = await connect({ ...persistenceOptions, extensionVersion:"0.0.1",
+      execute:async () => {}, onCompatibilityWarning:message => compatibilityWarnings.push(message) });
+    assert.strictEqual(readMetadata(persistenceOptions).pid, descriptor.pid);
+    assert.equal(compatibilityWarnings.length, 1, "version drift is advisory, not an admission failure");
+    olderClient.dispose();
     await second.configure([{ id: "manual", enabled: false, intervalMinutes: 1440, syncOnChange: false }]);
     assert.strictEqual(await second.request("manual", "force-local-authority"), true);
     await until(() => releaseExecute, "requesting host execute callback");
@@ -254,23 +257,30 @@ async function main() {
     await until(() => first.snapshot().manual?.phase === "authenticating", "state broadcast to both hosts");
     assert.deepStrictEqual(first.snapshot().manual.service, { pid: descriptor.pid, version, protocol: api.PKM_SERVICE_PROTOCOL });
     const newerVersion = `${Number(version.split(".")[0]) + 1}.0.0`;
-    let upgradeFinished = false;
-    const replacementPromise = connect({
+    const mixedClient = await connect({
       ...persistenceOptions, extensionVersion: newerVersion, execute: async () => {},
-    }).then(client => { upgradeFinished = true; return client; });
+      onCompatibilityWarning:message => compatibilityWarnings.push(message),
+    });
+    assert.strictEqual(readMetadata(persistenceOptions).pid, descriptor.pid, "compatible clients must reuse the daemon");
+    mixedClient.dispose();
+    let upgradeFinished = false;
+    const drainPromise = first.drain().then(() => { upgradeFinished = true; });
     await wait(200);
     assert.strictEqual(upgradeFinished, false, "upgrade must wait for complete host postprocessing");
     assert(live(descriptor.pid), "idle upgrade must never kill active execution");
-    await assert.rejects(() => first.request("manual", "manual"), /draining/);
+    await assert.rejects(() => second.request("manual", "manual"), /draining/);
     releaseExecute();
-    const replacement = await replacementPromise;
+    await drainPromise;
+    second.dispose();
+    const replacement = await connect({
+      ...persistenceOptions, extensionVersion:newerVersion, execute:async () => {},
+    });
     assert.notStrictEqual(readMetadata(persistenceOptions).pid, descriptor.pid);
     assert.strictEqual(live(descriptor.pid), false);
-    await assert.rejects(
-      () => api.PkmServiceClient.connect({ ...persistenceOptions, execute: async () => {} }),
-      error => error instanceof api.PkmServiceVersionError,
-      "an older window must never downgrade a newer daemon",
-    );
+    const compatibleOldWindow = await connect({ ...persistenceOptions, execute:async () => {} });
+    assert.strictEqual(readMetadata(persistenceOptions).extensionVersion, newerVersion,
+      "an older window must reuse, not downgrade, a compatible newer daemon");
+    compatibleOldWindow.dispose();
     await replacement.drain();
     await until(() => !live(readMetadataPidSafe(persistenceOptions)), "replacement drain");
     await assert.rejects(
@@ -279,12 +289,136 @@ async function main() {
       "even an idle/dead service must retain its monotonic version pin",
     );
 
+    const offlineOptions = optionsFor("offline-auto");
+    let offlineRuns = 0;
+    const offline = await connect({ ...offlineOptions, execute: async () => { offlineRuns++; } });
+    await offline.configure([{
+      id: "offline", enabled: true, intervalMinutes: 0.001, syncOnChange: true,
+      lastSuccessAt: new Date().toISOString(),
+    }]);
+    offline.dispose();
+    const offlineIdentity = api.pkmServiceIdentity(offlineOptions);
+    const offlineState = () => JSON.parse(fs.readFileSync(path.join(offlineIdentity.stateDirectory, "coordinator.json"), "utf8"));
+    await wait(5500);
+    assert.equal(offlineState().targets.offline.enabled, true,
+      "an independent service without any connected host must preserve the user's Auto setting");
+    assert.equal(offlineState().targets.offline.lastFailure, undefined,
+      "waiting for a host must not consume automatic failure attempts");
+    assert.match(offlineState().runtime.offline.detail, /connected|host/i);
+    const reconnected = await connect({ ...offlineOptions, execute: async () => { offlineRuns++; } });
+    await until(() => offlineRuns > 0, "automatic sync after host reconnection without re-enabling Auto");
+    await reconnected.configure([]);
+    await reconnected.drain();
+
+    function installationFor(name) {
+      const options = optionsFor(name);
+      const extensions = path.join(runtimeRoot, name, "extensions");
+      const entries = new Map();
+      for (const [installedVersion, digest] of [[version, "a"], [newerVersion, "b"]]) {
+        const directory = path.join(extensions, `uone.personal-knowledge-${installedVersion}`);
+        const entry = path.join(directory, "dist", "runtime", "pkm-service-entry.js");
+        fs.mkdirSync(path.dirname(entry), { recursive: true });
+        fs.writeFileSync(entry, `
+          const { startPkmService } = require(${JSON.stringify(path.join(buildRoot, "runtime", "pkm-service.js"))});
+          startPkmService(JSON.parse(process.argv[2])).then(runtime => runtime.stopped)
+            .then(() => process.exit(0), error => { console.error(error); process.exit(1); });
+        `);
+        fs.writeFileSync(path.join(directory, "dist", "build-info.json"), JSON.stringify({
+          schema: "pkm.extension-build/v1", version: installedVersion, buildId: digest.repeat(64),
+          builtAt: new Date().toISOString(),
+        }));
+        entries.set(installedVersion, entry);
+      }
+      const publish = installedVersion => fs.writeFileSync(path.join(extensions, "extensions.json"), JSON.stringify([{
+        identifier: { id: "uone.personal-knowledge" }, version: installedVersion,
+        location: { scheme: "file", fsPath: path.resolve(entries.get(installedVersion), "../../..") },
+      }]));
+      publish(version);
+      return { options: { ...options, serviceEntryPath: entries.get(version) }, entries, publish };
+    }
+    const installed = installationFor("installed-upgrade");
+    const upgradeErrors = [], installedWarnings = [];
+    let finishInstalledExecution;
+    const installedClient = await connect({
+      ...installed.options, onError: error => upgradeErrors.push(error),
+      onCompatibilityWarning:message => installedWarnings.push(message),
+      execute: async () => { await new Promise(resolve => { finishInstalledExecution = resolve; }); },
+    });
+    const installedPid = readMetadata(installed.options).pid;
+    await installedClient.configure([
+      { id: "held-upgrade", enabled: false, intervalMinutes: 1440, syncOnChange: false },
+      { id: "preserved-auto", enabled: true, intervalMinutes: 1440, syncOnChange: false, lastSuccessAt: new Date().toISOString() },
+    ]);
+    await installedClient.request("held-upgrade", "manual");
+    await until(() => finishInstalledExecution, "held operation before installed upgrade");
+    installed.publish(newerVersion);
+    try {
+      await until(() => installedWarnings.length > 0, "non-blocking installed upgrade advisory");
+      assert(live(installedPid), "disk upgrade must not kill a running callback");
+      assert.equal(upgradeErrors.length, 0, "a compatible disk upgrade must not become a service error");
+    } finally { finishInstalledExecution(); }
+    await until(() => !["syncing", "authenticating"].includes(installedClient.snapshot()["held-upgrade"]?.phase),
+      "held callback completion");
+    const compatibleInstalledClient = await connect({
+      ...installed.options, extensionVersion:newerVersion, serviceEntryPath:installed.entries.get(newerVersion),
+      execute:async () => {},
+    });
+    assert.strictEqual(readMetadata(installed.options).pid, installedPid);
+    compatibleInstalledClient.dispose();
+    await installedClient.drain();
+    await until(() => !live(installedPid), "explicit safe-idle upgrade");
+    const olderWindowAfterDrain = await connect({
+      ...installed.options, execute:async () => {}, onError:() => {}, onCompatibilityWarning:() => {},
+    });
+    assert.strictEqual(readMetadata(installed.options).extensionVersion, newerVersion,
+      "an old compatible window must boot the verified installed successor, not respawn older code");
+    olderWindowAfterDrain.dispose();
+    const upgradedClient = await connect({
+      ...installed.options, extensionVersion: newerVersion, serviceEntryPath: installed.entries.get(newerVersion),
+      execute: async () => {},
+    });
+    assert.notStrictEqual(readMetadata(installed.options).pid, installedPid);
+    const upgradedState = JSON.parse(fs.readFileSync(path.join(api.pkmServiceIdentity(installed.options).stateDirectory, "coordinator.json"), "utf8"));
+    assert.strictEqual(upgradedState.targets["preserved-auto"].enabled, true, "retirement preserves Auto intent");
+    await upgradedClient.drain();
+
+    const orphan = installationFor("deleted-installation");
+    const orphanClient = await connect({ ...orphan.options, execute: async () => {} });
+    const orphanMetadata = readMetadata(orphan.options);
+    orphanClient.dispose();
+    try {
+      fs.unlinkSync(orphan.options.serviceEntryPath);
+      fs.unlinkSync(path.join(orphanMetadata.serviceDirectory, "endpoint.json"));
+      if (process.platform !== "win32") fs.unlinkSync(orphanMetadata.endpoint);
+      await until(() => !live(orphanMetadata.pid), "idle daemon with removed entry and metadata to retire itself");
+    } finally {
+      if (live(orphanMetadata.pid)) process.kill(orphanMetadata.pid, "SIGTERM");
+    }
+
+    const removedEntry = installationFor("deleted-entry-only");
+    const removedEntryClient = await connect({ ...removedEntry.options, execute: async () => {} });
+    const removedEntryPid = readMetadata(removedEntry.options).pid;
+    removedEntryClient.dispose();
+    try {
+      fs.unlinkSync(removedEntry.options.serviceEntryPath);
+      await until(() => !live(removedEntryPid), "idle daemon whose entry was removed despite remaining metadata");
+    } finally {
+      if (live(removedEntryPid)) process.kill(removedEntryPid, "SIGTERM");
+    }
+
     const fixtureOptions = optionsFor("binary-and-recovery", version, true);
     let job, completed, failed, releasePostprocess;
     const fixtureClient = await connect({
       ...fixtureOptions,
       execute: async (targetId) => {
         try {
+          if (job.name === "credential-timeout") {
+            fixtureClient.report(targetId, "authenticating", "Reading credentials");
+            await credentialsApi.readStoredGitHubSyncCredentials(() => new Promise(() => {}),
+              syncApi.normalizeGitHubSyncTarget({ id:targetId, name:"Credential timeout fixture", repository:"https://github.com/example/fixture.git",
+                authentication:{ method:"vscode", expectedLogin:"fixture" } }), 5);
+            throw new Error("Timed-out credential access must never reach raw Sync.");
+          }
           const result = await fixtureClient.sync(
             { ...syncApi.normalizeGitHubSyncTarget({ id: targetId, name: job.name, repository: "unused", branch: "main" }), ...job.target },
             job.catalog || emptyCatalog(), job.checkoutRoot || path.join(runtimeRoot, "checkout"),
@@ -318,6 +452,11 @@ async function main() {
       await until(() => completed || failed || releasePostprocess, `${job.name} completion`);
       return completed;
     }
+    await submit({ name: "credential-timeout" });
+    await until(() => fixtureClient.snapshot().fixture?.status === "error", "credential failure across Host/service RPC");
+    assert.equal(fixtureClient.snapshot().fixture.lastErrorCode, "CREDENTIAL_READ_TIMEOUT");
+    assert.equal(fixtureClient.snapshot().fixture.lastErrorPhase, "authenticating");
+    assert.match(fixtureClient.snapshot().fixture.lastError, /GitHub was not contacted/);
     const catalog = emptyCatalog();
     catalog.skills.push({ extra: { nested: [fixtureBytes, Buffer.alloc(0)], literalTag: { $pkm: "buffer", data: "not an encoding" } } });
     const progress = [];
@@ -512,6 +651,11 @@ async function main() {
     assert.deepStrictEqual(recoveredResult.recipeDeletes[0].expectedLocal, fixtureBytes);
     assert.strictEqual(recoveredResult.commit, `daemon-${fixturePid}`);
     await until(() => recoveryClient.snapshot().fixture?.status !== "syncing", "disconnect settlement");
+    assert.match(recoveryClient.snapshot().fixture.lastError, /uncertain.*automatic replay is blocked/i);
+    const uncertainState = JSON.parse(fs.readFileSync(
+      path.join(api.pkmServiceIdentity(fixtureOptions).stateDirectory, "coordinator.json"), "utf8"));
+    assert.equal(uncertainState.targets.fixture.lastFailure.attempts, 3,
+      "an interrupted execution is not retried as a safe preflight deferral");
     await recoveryClient.acknowledgeRecoveredResult(success.operationId);
     assert(!(await recoveryClient.listRecoverableResults()).some(item => item.operationId === success.operationId));
     await recoveryClient.drain();

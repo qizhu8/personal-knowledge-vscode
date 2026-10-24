@@ -35,14 +35,36 @@ const taskCatalog = {
     args: ["--test", "tests/test-api-chat.js", "tests/test-chat-managed-mcp.js", "tests/test-chat-library-actions.js",
       "tests/test-host-health-startup.js", "tests/test-chat-activity-browser.js", "tests/test-chat-history-storage.js",
       "tests/test-agent-session-tree-groups.js", "tests/test-agent-session-tree-browser.js", "tests/test-panel-instances-browser.js",
-      "tests/test-portal-connections.js", "tests/test-portal-permissions.js"],
+      "tests/test-portal-connections.js", "tests/test-portal-permissions.js",
+      "tests/test-persona-profiles.js", "tests/test-persona-profile-ui.js", "tests/test-persona-profile-browser.js",
+      "tests/test-chat-context-contracts.js", "tests/test-peer-collaboration.js", "tests/test-portal-profile-wiring.js",
+      "tests/test-chat-workers.js", "tests/test-persona-installed-helper.js"],
     budgetMs: 120_000,
+  },
+  "retrieval-router": {
+    command: process.execPath,
+    args: ["--test", "tests/test-retrieval-learning-browser.js", "tests/test-retrieval-solutions-browser.js",
+      "tests/test-skill-router-ui.js", "tests/test-retrieval-contracts.js", "tests/test-retrieval-boundary.js",
+      "tests/test-dual-path-search.js"],
+    budgetMs: 60_000,
+  },
+  "sharing-sync": {
+    command: process.execPath,
+    args: ["--test", "tests/test-portal-connections-browser.js", "tests/test-portal-transport.js",
+      "tests/test-portal-files.js", "tests/test-portal-resume.js", "tests/test-github-sync-two-machine.js",
+      "tests/test-github-sync-script-recovery-e2e.js"],
+    budgetMs: 120_000,
+  },
+  experience: {
+    command: process.execPath,
+    args: ["--test", "tests/test-guided-onboarding.js", "tests/test-localization.js", "tests/test-feature-tour-browser.js"],
+    budgetMs: 60_000,
   },
 };
 
 const plans = {
   smoke: ["panel", "startup"],
-  full: ["plan", "contract", "standalone", "panel", "startup", "pkm-chat"],
+  full: ["plan", "contract", "standalone", "panel", "startup", "pkm-chat", "retrieval-router", "sharing-sync", "experience"],
 };
 
 function parsePositiveInteger(value, fallback, label) {

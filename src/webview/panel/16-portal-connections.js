@@ -16,24 +16,54 @@ function portalConnectionStateLabel(item) {
   return item.resumable ? 'Ended · re-attach available' : 'Ended';
 }
 
+function portalConnectionAttribute(value) {
+  return esc(value).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function portalConnectionButton(command, key, value, label, title) {
+  return `<button type="button" class="pk-button" data-portal-command="${command}" data-portal-key="${key}" data-portal-value="${portalConnectionAttribute(value)}" title="${portalConnectionAttribute(title)}">${esc(label)}</button>`;
+}
+
+function portalConnectionGroups(connections) {
+  const groups = new Map();
+  const priority = { active:0, reconnecting:1, elsewhere:2, ended:3 };
+  for (const item of connections) {
+    const group = groups.get(item.pairId);
+    if (!group) groups.set(item.pairId, { ...item, members:[item] });
+    else {
+      group.members.push(item);
+      group.resumable ||= item.resumable;
+      if (priority[item.state] < priority[group.state]) group.state = item.state;
+      group.lastSeenAt = Math.max(group.lastSeenAt, item.lastSeenAt);
+    }
+  }
+  return [...groups.values()];
+}
+
+function portalConnectionSide(role, local, peer) {
+  const machine = local?.localMachine || peer?.peerMachine || peer?.peerName || '';
+  const label = local?.chatLabel || peer?.peerChatName || peer?.peerName || '';
+  return `<span class="portal-connection-side" data-portal-role="${role}"><small>${role === 'controlled' ? 'Controlled' : 'Controller'}</small><strong>${esc(machine || (local ? 'This machine' : 'Awaiting peer'))}</strong><span>${esc(label)}${local?.external ? ' · external' : ''}</span>${local ? portalConnectionButton('portalConnectionOpenChat', 'chatId', local.chatId, 'Open Chat', 'Open this local Chat') : ''}</span>`;
+}
+
 function portalConnectionRow(item) {
-  const controller = item.role === 'controller';
-  const peer = item.peerMachine || item.peerName || 'peer';
-  const local = `<span class="portal-connection-side"><strong>${esc(item.localMachine || 'This machine')}</strong><span>${esc(item.chatLabel)}${item.external ? ' · external' : ''}</span></span>`;
-  const remote = `<span class="portal-connection-side"><strong>${esc(peer)}</strong><span>${esc(item.peerChatName || item.peerName || '')}</span></span>`;
-  const arrow = `<span class="portal-connection-arrow" title="${controller ? 'This Chat controls the peer' : 'The peer controls this Chat'}"><span class="codicon codicon-arrow-${controller ? 'right' : 'left'}" aria-hidden="true"></span><span>${controller ? 'controls' : 'controlled by'}</span></span>`;
+  const controlled = item.members.find(member => member.role === 'controlled');
+  const controller = item.members.find(member => member.role === 'controller');
+  const left = portalConnectionSide('controlled', controlled, controller);
+  const right = portalConnectionSide('controller', controller, controlled);
+  const arrow = '<span class="portal-connection-arrow" title="Controller controls the left side"><span class="codicon codicon-arrow-left" aria-hidden="true"></span></span>';
   const times = item.state === 'ended'
     ? `Paired ${esc(portalConnectionTime(item.connectedAt))} · ended ${esc(portalConnectionTime(item.endedAt || item.lastSeenAt))}`
     : `Paired ${esc(portalConnectionTime(item.connectedAt))} · seen ${esc(portalConnectionTime(item.lastSeenAt))}`;
-  return `<article class="portal-connection-row ${esc(item.state)}" role="listitem" data-pair-id="${esc(item.pairId)}">
+  return `<article class="portal-connection-row ${esc(item.state)}" role="listitem" data-pair-id="${portalConnectionAttribute(item.pairId)}">
     <span class="portal-connection-icon codicon codicon-${item.state === 'ended' ? 'debug-disconnect' : 'remote'}" aria-hidden="true"></span>
     <div class="portal-connection-copy">
-      <div class="portal-connection-title">${local}${arrow}${remote}<span class="portal-connection-status"><i></i>${esc(portalConnectionStateLabel(item))}</span></div>
+      <div class="portal-connection-title">${left}${arrow}${right}</div>
+      <span class="portal-connection-status"><i></i>${esc(portalConnectionStateLabel(item))}</span>
       <div class="portal-connection-detail">${times}${item.endpoint ? ` · ${esc(item.endpoint)}` : ''}</div>
     </div>
     <div class="portal-connection-actions">
-      <button type="button" class="secondary" onclick="ask('portalConnectionOpenChat', { chatId:${esc(JSON.stringify(item.chatId))} })" title="Open the local Chat that owns this Portal">Open Chat</button>
-      ${item.state === 'ended' ? `<button type="button" class="secondary" onclick="ask('portalConnectionForget', { pairId:${esc(JSON.stringify(item.pairId))} })" title="Remove this ended connection from the history">Remove</button>` : ''}
+      ${item.state === 'ended' ? portalConnectionButton('portalConnectionForget', 'pairId', item.pairId, 'Remove', 'Remove this ended pairing from history') : ''}
     </div>
   </article>`;
 }
@@ -41,17 +71,17 @@ function portalConnectionRow(item) {
 function portalPendingInvitationRow(item) {
   return `<article class="portal-connection-row" role="listitem">
     <span class="portal-connection-icon codicon codicon-link" aria-hidden="true"></span>
-    <div class="portal-connection-copy"><strong>${esc(item.chatLabel)}</strong>
-      <div class="portal-connection-detail">Awaiting peer · ${esc(item.role)} · expires ${esc(new Date(item.expiresAt).toLocaleTimeString())} · ${esc(item.endpoint)}</div>
+    <div class="portal-connection-copy"><div class="portal-connection-title">${portalConnectionSide('controlled', item.role === 'controlled' ? item : undefined)}<span class="portal-connection-arrow">←</span>${portalConnectionSide('controller', item.role === 'controller' ? item : undefined)}</div>
+      <div class="portal-connection-detail">Awaiting peer · expires ${esc(new Date(item.expiresAt).toLocaleTimeString())} · ${esc(item.endpoint)}</div>
     </div>
-    <div class="portal-connection-actions"><button type="button" class="secondary" onclick="ask('portalConnectionCopyMagicLink', { chatId:${esc(JSON.stringify(item.chatId))} })" title="Copy the unredeemed one-time Portal magic link to the clipboard">Copy magic link</button></div>
+    <div class="portal-connection-actions">${portalConnectionButton('portalConnectionCopyMagicLink', 'chatId', item.chatId, 'Copy magic code', 'Copy the unredeemed one-time Portal magic code')}</div>
   </article>`;
 }
 
 function renderPortalConnections() {
   const detail = document.getElementById('detail');
   if (!detail) return;
-  const connections = Array.isArray(portalConnectionSnapshot?.connections) ? portalConnectionSnapshot.connections : [];
+  const connections = portalConnectionGroups(Array.isArray(portalConnectionSnapshot?.connections) ? portalConnectionSnapshot.connections : []);
   const live = connections.filter(item => item.state !== 'ended');
   const past = connections.filter(item => item.state === 'ended');
   const pending = (portalConnectionSnapshot?.pendingInvitations || []).filter(item => item.expiresAt > Date.now());
@@ -64,7 +94,7 @@ function renderPortalConnections() {
     <header class="portal-connections-head">
       <div><h2>Portal Connections</h2><p>Named PKM Portal pairings on this machine: who is connected to whom, and which are still live.</p></div>
       <div class="portal-connections-head-actions"><span class="portal-connection-total">${live.filter(item => item.state === 'active').length} active</span>
-      <button type="button" class="secondary" onclick="ask('portalConnections', {})" title="Refresh Portal connections" aria-label="Refresh Portal connections"><span class="codicon codicon-refresh" aria-hidden="true"></span></button></div>
+      <button type="button" class="pk-button" data-portal-command="portalConnections" title="Refresh Portal connections" aria-label="Refresh Portal connections"><span class="codicon codicon-refresh" aria-hidden="true"></span></button></div>
     </header>
     ${pending.length ? `<h3 class="portal-connections-section">Awaiting peer</h3><div class="portal-connection-list" role="list">${pending.map(portalPendingInvitationRow).join('')}</div>` : ''}
     <h3 class="portal-connections-section">Live</h3>
@@ -72,6 +102,12 @@ function renderPortalConnections() {
     <h3 class="portal-connections-section">History</h3>
     ${list(past, 'No past Portal connections are recorded.')}
   </section>`;
+  detail.querySelectorAll('[data-portal-command]').forEach(button => {
+    button.addEventListener('click', () => {
+      const { portalCommand, portalKey, portalValue } = button.dataset;
+      ask(portalCommand, portalKey ? { [portalKey]:portalValue } : {});
+    });
+  });
 }
 
 function showPortalConnectionsTab() {

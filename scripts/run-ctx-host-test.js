@@ -54,10 +54,15 @@ async function main() {
       });
       const result = JSON.parse(fs.readFileSync(path.join(temporary, `${phase}.json`), "utf8"));
       assert(result.installed && result.webview && result.browser && result.nativeEnvelope && result.inlineVisualization && result.refinements === 1);
+      assert.equal(result.retrievalInspector, true);
       assert(result.standaloneVisualization?.panels === 6 && result.standaloneVisualization.reopen && result.standaloneVisualization.recordChange);
       assert(result.liveVisualization?.recovered && result.liveVisualization.reopen && result.liveVisualization.requests === 4);
       assert(result.visualizationChain.tags.includes("terminal") && result.visualizationChain.tags.includes("recipe"));
       assert.equal(result.durableProcess.state, phase === "initial" ? "running" : "complete");
+      assert.equal(result.persona?.historicalSnapshots, 2);
+      assert.equal(result.persona?.historicalEvidenceRetained, true);
+      assert.equal(result.persona?.deletedProfilesNotReused, true);
+      assert.equal(result.persona?.requests, phase === "initial" ? 2 : 0);
       if (!first) first = result;
       else {
         assert.notEqual(result.pid, first.pid);
@@ -66,8 +71,11 @@ async function main() {
         assert.equal(result.visualizationChain.evidenceHash, first.visualizationChain.evidenceHash);
         assert.equal(result.durableProcess.handle, first.durableProcess.handle);
         assert.equal(result.durableProcess.recovered, true);
+        assert.equal(result.persona.firstEvidenceHash, first.persona.firstEvidenceHash);
+        assert.equal(result.persona.secondEvidenceHash, first.persona.secondEvidenceHash);
       }
       console.log(`CTX-M18 installed Extension Host ${phase}: webview/browser, actual HTTP receipts and evidence OK`);
+      console.log(`Profiles installed ${phase}: two immutable snapshots, prepared/sent evidence, deletion boundary and restart retention OK`);
       console.log(`VIS installed ${phase}: ${result.liveVisualization.phases.join(" -> ")}, deny/approve-once/approve-once, six panels, reopen, once-only process effect; evidence=${result.liveVisualization.evidenceHash}`);
       console.log(`VIS runtime chain ${phase}: ${result.visualizationChain.tags.join(", ")}, ${result.visualizationChain.requests} model requests; evidence=${result.visualizationChain.evidenceHash}`);
     }

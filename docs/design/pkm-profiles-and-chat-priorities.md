@@ -1,8 +1,9 @@
 # User / Agent Profiles and PKM Chat priorities
 
-Status: proposed design, 2026-10-22. Profile storage, UI and request integration
-are not implemented. The first implementation slice is readable Chat Activity;
-it does not depend on introducing a Profile system or another harness framework.
+Status: v1 Profile storage, cards and Chat attempt integration implemented,
+2026-10-22. Portal snapshot protocol and runner are implemented; the parent-owned
+`extension.ts` glue below must be connected before Portal disclosure is enabled.
+Readable Chat Activity remains independent of Profiles.
 
 ## Product intent
 
@@ -116,7 +117,8 @@ a deliberate execution-schema revision becomes necessary.
 
 ## Storage and lifecycle proposal
 
-These are design recommendations, not authorization to migrate user data:
+The original v1 storage/privacy defaults remain in place unless the user
+explicitly enables the optional repository storage described below:
 
 - User Profile belongs to user-scoped private state, not a synced Note/Skill
   and not exclusively to one Knowledge Root. User/account and Remote Host
@@ -128,14 +130,241 @@ These are design recommendations, not authorization to migrate user data:
 - Cross-machine transport should send only an explicitly assigned, bounded
   Profile snapshot through an authorized execution request. A Portal pairing
   must not imply access to the controller's entire user profile or history.
-- Deletion stops future use. Retention of historical persona snapshots needs
-  an explicit privacy policy and user-visible behavior before implementation.
+- Deletion stops future use. The approved retention policy preserves historical
+  persona snapshots until the corresponding Chat history is deleted; cards
+  explain this before deletion.
 - Validate revisions/conflicts across windows. Never overwrite concurrent
   edits with an old loaded card or recover a deleted profile silently.
 
-Storage identity across local/remote hosts and historical deletion semantics
-are implementation gates to settle before shipping Profile persistence.
-They do not block the Activity work below.
+By default, v1 resolves identity to the current OS user, VS Code profile and
+extension Host's private `globalStorageUri`. This is **not** a cloud account
+identity, shared Host identity or cross-device synchronization promise. A local
+Host and SSH/remote Host have separate User Profiles. Agent ownership is the
+resolved Knowledge Root path within that same private Host storage.
+
+### Implemented v1 behavior
+
+- Open **Profiles** in the Chat toolbar, **User / Agent Profiles** in Chat
+  Settings / Agent configuration, or the same card in Projects / Agent Sessions.
+  Native cards can be inspected/edited without inference, tool calls, a new
+  Chat or a Task, including while an attempt runs. Configured focus is not a
+  verified outcome. Historical cards show recorded revisions, not current ones.
+- User and Agent card fields are name, role, focus, working preferences and
+  responsibility boundaries. Total limits are 2,000 / 4,000 UTF-16 characters
+  across all card fields; name/role are individually limited to 120. These
+  character limits are not token counts. Oversized edits fail without saving.
+- Private files live under `globalStorageUri/profiles/user` and
+  `globalStorageUri/profiles/roots/<root-path-hash>`, outside Note/Skill/Sync
+  assets by default. Schema `pkm.profile/v1` uses UUID identity, monotonically increasing
+  revision and update time. Cross-process locks, revision CAS, atomic writes and
+  0600 files prevent stale windows from overwriting accepted changes. Each
+  registry is capped at 1,000 records including deletion tombstones.
+
+### Optional root-owned Profiles and GitHub Sync
+
+This phase includes **User / Agent Profiles only**. Long-term SQLite Memory,
+Chat history, credentials, local consent and execution state are not Profile
+Sync content.
+
+1. Open **Profiles → Profile storage / GitHub Sync**. The confirmation previews
+   both private and repository cards, including identities, revisions and
+   deletion tombstones. Cancel leaves storage unchanged.
+2. If the Knowledge Root has no `profiles` directory, accepted migration
+   atomically copies current cards into `profiles/user/<uuid>.json` and
+   `profiles/agent/<uuid>.json`. Original private copies and historical attempt
+   snapshots remain unchanged. If the directory already exists (including an
+   empty directory), explicitly adopt those repository cards instead; never
+   overwrite or automatically merge them with this Host's private cards.
+3. Local approval lives under
+   `globalStorageUri/profiles/sync/<root-path-hash>.json`, outside Sync content.
+   User Profiles in repository mode belong to that Knowledge Root, **not**
+   every knowledge library on the Host. Other roots stay private by default.
+   A fresh device does not use downloaded cards until it separately approves
+   local repository storage. Existing Chat Agent assignments do not change.
+4. In **GitHub Sync**, explicitly select **User / Agent Profiles** under
+   **Private**, then save and approve the destination. Approval binds the
+   Knowledge Root, repository, branch and exact item/folder rules, including
+   future cards covered by those rules. Changing destination or expanding the
+   rules requires confirmation again. Profiles cannot be selected as Public;
+   both public and private Profile selections start empty.
+
+**Private is a content classification, not encryption or proof of a private
+GitHub repository.** Cards are plaintext; anyone with repository access can
+read them. Prefer a private repository and exclude secrets from cards. Future
+edits within an approved selection may transfer normally. Older versions can
+remain in Git history and other devices after a card is deleted.
+
+Concurrent edits use revision plus loaded-card comparisons. Sync shares the
+repository mutation lock with local editing and attempt capture. Divergent
+Profile edits and independently created User identities go to the existing
+manual conflict workbench; Profiles do not use automatic JSON field merges or
+Agent-assisted merge. A resulting registry must have at most one active User.
+Missing assigned Agents, malformed cards, unsupported manifests and stale
+approval raise explicit errors, not a current-card fallback. Profile
+publications declare the `profile-cards` manifest capability so older readers
+cannot silently rewrite unsupported content.
+
+**To stop transfer**, deselect Profiles in **every** Sync target and save.
+**Use private Profiles** only switches this Host back to its preserved private
+cards; it does not revoke target transfer, delete repository cards, remove
+published copies/history or change other devices. Re-enable local repository
+mode only after reviewing the current cards again. Sync deletion uses an
+identity/revision tombstone with empty card fields; historical Chat snapshots
+remain immutable until their Chat history is deleted.
+
+### Shared behavior in both storage modes
+
+- Creating an Agent does not assign it. Assignment is explicit per Chat, also
+  usable by its native Agent Session / Project entry; temporary workers do not
+  inherit Agent identity. No agent-selection inference from title, model or role.
+- Every local attempt (including Retry) captures current applicable cards once.
+  That snapshot is a mandatory separate system message, stable through tool
+  rounds and included in existing context planning, native/HTTP budget validation
+  and transport accounting. If it cannot fit, no model round is dispatched.
+  No configured cards means no added Profile message.
+- `ChatMessage.profileContext` uses `pkm.chat.profiles/v1`, separate from the
+  strict execution context schema. It records full bounded card snapshots,
+  ID/revision, per-card hashes, combined hash, exact context-message hash and
+  `mandatory-context-plan` accounting. Existing round budget manifests prove
+  inclusion; their prepared/sent status and transport receipts determine whether
+  dispatch happened. A snapshot alone is not proof of a sent model request.
+  Snapshots are immutable on history save, and use existing segmented history
+  storage when needed, not a separate profile event store.
+- Deletion erases the active card content and retains an identity/revision
+  tombstone. It stops future use, does not modify running attempts and does not
+  rewrite/remove historical Chat snapshots. Those remain until the corresponding
+  Chat history is deleted. Other Chats referencing a deleted Agent must explicitly
+  unassign it; a missing/deleted/corrupt card raises an error, never a fallback.
+- A Portal attempt does **not** automatically load the controlled user's private
+  cards. Only a bounded, explicitly supplied request snapshot can be applied.
+  Protocol capability `profiles-v1` is advertised only when the executor wiring
+  declares support. Unsupported Hosts reject explicit snapshots instead of
+  dropping them. Request deduplication binds both prompt and snapshot; pairing,
+  permission grants and model/MCP sends do not automatically disclose profiles.
+
+### Parent integration: exact `extension.ts` wiring
+
+No `extension.ts` edits are part of this slice. The existing Chat registration
+already handles Profile cards. The remaining Portal forwarding is:
+
+```ts
+import type { PersonaSnapshot } from "./chat/persona-profiles";
+
+// Alongside remoteChatExecutor / portalChatContext:
+let portalProfileReview:
+  ((chatId: string) => Promise<PersonaSnapshot | undefined>) | undefined;
+// Add the optional final parameter to the existing executor declaration:
+let remoteChatExecutor: ((prompt: string, signal: AbortSignal,
+  requestId: string, chatId: string, observer?: PortalObserver,
+  source?: PortalSource, profileSnapshot?: PersonaSnapshot) => Promise<unknown>) | undefined;
+```
+
+In `ensurePeer`'s `new PeerSession({...})` options, add
+`profileSnapshots: true` **only after** connecting every forwarding step below:
+
+```ts
+execute: async (prompt, signal, requestId, profileSnapshot) => {
+  // Preserve ALL existing authorization, cancellation and observation code.
+  // Add profileSnapshot as the final argument to the existing call:
+  const result = await remoteChatExecutor(
+    prompt, localController.signal, requestId, owner.id,
+    /* existing observer callback */,
+    /* existing PortalSource object */,
+    profileSnapshot);
+  // Preserve existing result-sharing authorization / finally cleanup.
+}
+```
+
+At API Chat shell initialization, replace the executor forwarding and add:
+
+```ts
+remoteChatExecutor = (prompt, signal, requestId, chatId, observer, source, profileSnapshot) => {
+  if (!apiChat) throw new Error("PKM Chat is unavailable.");
+  return apiChat.executeRemoteTask(prompt, signal, requestId, chatId, observer, source, profileSnapshot);
+};
+portalProfileReview = chatId => {
+  if (!apiChat) throw new Error("PKM Chat is unavailable.");
+  return apiChat.reviewPortalProfiles(chatId);
+};
+```
+
+In the **local human** `"Send task"` branch, replace `peer.submit(prompt)`:
+
+```ts
+const owner = [...this.chatPortals.values()].find(item => item.room === room);
+if (!owner || !portalProfileReview) throw new Error("Portal Profile review is unavailable.");
+const snapshot = await portalProfileReview(owner.id);
+const requestId = peer.submit(prompt, undefined, snapshot);
+```
+
+Keep the MCP `peer.submit(args.prompt, args.requestId)` path unchanged: no
+implicit local-profile export and no model-triggered disclosure dialog.
+Optionally show `profileSnapshot` in the existing controlled-side `approveTask`
+dialog by accepting its third argument; never add it to generic telemetry or
+public observations. Full explicit snapshots remain inspectable in local history.
+
+Validation (no installation required):
+
+```sh
+./node_modules/.bin/tsc -p tsconfig.json --pretty false --noEmit
+# Runtime tests require the full build: bare tsc overwrites bundled shared dist.
+npm run build
+# Keep runner-created fixture files inside this checkout:
+mkdir -p tests/.profile-test-runtime
+TMPDIR="$PWD/tests/.profile-test-runtime" node --test --test-reporter=dot \
+  tests/test-persona-profiles.js tests/test-persona-profile-ui.js \
+  tests/test-chat-context-contracts.js tests/test-peer-collaboration.js \
+  tests/test-persona-profile-browser.js
+rmdir tests/.profile-test-runtime
+```
+
+These cover private scopes, limits, concurrent edits/deletes, corrupted records,
+immutable historical evidence, no-inference viewing/editing, explicit assignment,
+actual HTTP model/tool rounds, mid-attempt edits, next-attempt/retry revisions,
+budget rejection without dispatch, Portal default isolation/explicit snapshots,
+capability rejection and snapshot-bound duplicate suppression. Live installed
+UI / cross-Host Portal acceptance still requires parent integration and release;
+isolated tests are not evidence that an installed Host has this build.
+
+Combination/adoption coverage additionally exercises one explicitly assigned
+Chat through HTTP model selection, native provider discovery/selection, a second
+native model and a switch back through the real Settings handler. Every
+successful request retains the User/Agent snapshot and exact pinned text; both
+native image requests contain actual PNG data parts and counted transport
+receipts. A Profile-assigned HTTP image attempt fails explicitly without dropping
+the image, switching providers or dispatching a request. Assignment, attachments
+and historical snapshots survive persistence across these switches.
+
+The Chromium Profile test mounts the built Projects/Agent configuration renderer
+and the complete built Chat webview. Mouse/keyboard activation propagates the
+exact Session identity and `profiles` section into the actual Chat configuration
+handler; mocked native VS Code dialogs inspect/edit cards and persist an explicit
+assignment. Chat toolbar, Settings and Agent menu entries work with a busy Chat
+state, without model discovery/inference or creating another Task. This verifies
+browser-to-handler adoption with native dialog API doubles, not an installed
+VS Code window or live provider/vision service. Project-wide defaults/inheritance
+remain intentionally outside the v1 scope.
+
+Fixture contract: every `ApiChatView` that sends must receive an explicit
+fixture-private `globalStorageUri`, just as a real VS Code `ExtensionContext`
+does. Worker and installed ctx-host fixtures now supply it; missing context is
+not interpreted as an unconfigured Profile. The actual worker regression
+verifies ordinary unconfigured manager/worker HTTP dispatch with no Profile
+message/card creation, and verifies that missing Host storage and genuine
+`ENOTDIR` Profile storage errors still stop dispatch explicitly.
+
+`tests/ctx-host/persona.js` exports `run(extension, fixtureRoot, phase)` for the
+existing installed ctx-host runner after its installed-VSIX / isolated-root
+gates. It loads the supplied extension's actual modules, stores cards only under
+`fixtureRoot/persona/private-host`, and uses the fixture Knowledge Root's real
+Chat state directory to satisfy execution ownership checks. Initial acceptance
+makes exactly two loopback-only HTTP requests, edits/deletes the cards, checks
+the actual sent budget manifests/transport hashes and writes bounded fixture
+evidence. The restart phase requires a different process, makes no model
+request and checks the same immutable historical evidence and deleted-card
+non-reuse. `tests/test-persona-installed-helper.js` smoke-tests both phases in
+fresh Node processes with a VS Code API double; it is not itself evidence of an
+installed VSIX run.
 
 ## Development order
 
@@ -165,11 +394,12 @@ Isolated regression success or this document does not mark them resolved.
 
 ### P1: profile vertical slice
 
-Settle the storage/privacy gates; then deliver User/Agent Profile CRUD and
-persona cards together with request snapshots and context accounting. Do not
-ship a role picker that only changes a visible name. Verify unconfigured
-compatibility, concurrent edits, deletion, historical inspection, overrides,
-read-only viewing and zero model/tool calls when opening cards.
+The local v1 slice above delivers User/Agent Profile CRUD, persona cards,
+snapshots and context accounting together. Portal forwarding and installed
+cross-Host acceptance remain the explicit parent-owned integration/release gate.
+Verify unconfigured compatibility, concurrent edits, deletion, historical
+inspection, overrides, read-only viewing and zero model/tool calls when opening
+cards; do not ship a role picker that only changes a visible name.
 
 ### P1: Memory / Retrieval transparency
 

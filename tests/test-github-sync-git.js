@@ -13,6 +13,7 @@ const {
   fetchGitHubRemoteSnapshot,
   formatGitMergeFileFailure,
   GITHUB_SYNC_CONTENT_TYPES,
+  githubSyncReadNetworkUnavailable,
   GitHubSyncConflictError,
   normalizeGitHubSyncTarget,
   readGitHubRemoteFile,
@@ -35,6 +36,19 @@ const rememberSync = (target, result) => {
 };
 
 (async () => {
+  for (const detail of [
+    "fatal: unable to access 'https://example.invalid/': Could not resolve host: example.invalid",
+    "ssh: connect to host example.invalid port 22: Network is unreachable",
+    "Failed to connect to example.invalid port 443: Connection timed out",
+    "Connection reset by peer",
+  ]) {
+    assert(githubSyncReadNetworkUnavailable("fetch", detail));
+    assert(githubSyncReadNetworkUnavailable("clone", detail));
+    assert(!githubSyncReadNetworkUnavailable("push", detail), "a lost push response cannot be classified as safe to repeat");
+  }
+  for (const detail of ["Authentication failed", "Permission denied (publickey)", "repository not found", "certificate verify failed"]) {
+    assert(!githubSyncReadNetworkUnavailable("fetch", detail), "authentication/configuration failures retain bounded retry policy");
+  }
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-github-sync-"));
   try {
     const cleanMerge = await deterministicTextMerge(

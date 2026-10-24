@@ -23,6 +23,14 @@ try {
 } finally { Module._load = originalLoad; }
 const { indexBuildPercent, dashboardSyncTargets, StatusDashboard } = dashboardModule;
 
+test("Status bar has a stable PKM Status label and opens the Status dashboard", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../src/extension.ts"), "utf8");
+  const runtime = source.slice(source.indexOf("function registerExtensionHostRuntime("));
+  assert.match(runtime, /status\.text = "PKM Status";/);
+  assert.match(runtime, /status\.command = "personalKnowledge\.hostStatus";/);
+  assert.match(runtime, /registerCommand\("personalKnowledge\.hostStatus", async \(\) => \{\s*await dashboard\.open\(\);/);
+});
+
 test("Index percentages require real valid counters, never null coercion or guessed completion", () => {
   for (const progress of [undefined, { current: null, total: 100 }, { current: 0, total: null },
     { current: 0, total: 0 }, { current: 3, total: 2 }, { current: -1, total: 3 },

@@ -87,6 +87,11 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
   assert.strictEqual(executions.at(-1)[1].runId, runId);
   const embedded = moduleExports.renderEmbeddedActionWorkbench(webview, context, {currentRun:runId, graph:{name:"</script>"}});
   assert.match(embedded, /channel:'pkm-actions'/);
+  assert.match(embedded, /font-src data:/);
+  assert.match(embedded, /data:font\/ttf;base64,/);
+  assert(!embedded.includes('<link rel="stylesheet"'), "sandboxed icons must not depend on external stylesheet/font CORS");
+  assert.match(fs.readFileSync(path.join(root, "src/webview/panel.html"), "utf8"), /font-src data:/,
+    "the inherited parent policy must also permit the embedded icon font");
   assert.match(embedded, /open-browser/);
   assert(!embedded.includes('name:"</script>"'));
   trusted = false;
@@ -98,7 +103,8 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
   assert.strictEqual((webview.html.match(/<script>/g)||[]).length, 0, "every Workbench script must be nonce bound");
   moduleExports.openActionWorkbenchTab(context, undefined, undefined, true);
   assert(webview.html.includes("libraryOpen:true"), "main Library entry opens the searchable catalog, not an empty graph");
-  assert.match(webview.html, /codicon\.css/);
+  assert.match(webview.html, /data:font\/ttf;base64,/);
+  assert.match(webview.html, /font-src data:/);
   moduleExports.openActionWorkbenchTab(context, runId);
   assert(webview.html.includes(`currentRun:"${runId}"`), "Project source link preselects the exact Action Run in the real Workbench");
   profiling = true;

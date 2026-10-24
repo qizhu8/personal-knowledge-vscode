@@ -6,6 +6,38 @@ const { test } = require("node:test");
 const { ChatMemoryService, chatMemoryScope } = require("../dist/memory/chat-memory-service");
 const { MemoryEngineClient } = require("../dist/memory/memory-engine-client");
 
+test("Stored Memory inspection exposes real levels and revision-bound provenance without touching LRU or invoking models", async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-memory-inspection-"));
+  const service = new ChatMemoryService({ extensionRoot:path.resolve(__dirname, ".."), python:process.env.PYTHON || "python3",
+    database:path.join(directory, "memory.sqlite3"), identity:"inspection" });
+  t.after(async () => { await service.close(); fs.rmSync(directory, { recursive:true, force:true }); });
+  const scope = chatMemoryScope("namespace", "chat");
+  const log = [], signal = new AbortController().signal, run = scriptedModel(log);
+  const prepared = await service.prepare(scope, "inspection-turn", { id:"u1", text:"Skill preferences" }, [], 10000, run, signal);
+  await service.commit(scope, "inspection-turn", { id:"u1", text:"Skill preferences" }, { id:"a1", text:"Prefer exact evidence." }, run, signal);
+  const client = await service.client, before = await client.request({ method:"changes", params:{ limit:100 } });
+  const overview = await service.inspect(scope);
+  assert(overview.pieces.length >= 3);
+  assert(overview.pieces.some(piece => piece.kind === "topic" && piece.level > 0));
+  assert(overview.edges.some(edge => edge.relation === "abstracts"));
+  const times = overview.pieces.map(piece => [piece.id, piece.last_used]);
+  const calls = log.length;
+  const page = await service.inspect(scope, prepared.focus[0]);
+  assert.equal(page.piece.scope, scope);
+  assert(page.statements.some(statement => statement.sources.some(source => source.locator === "message:a1" && source.revision)));
+  assert.equal(page.next, null);
+  assert.equal(log.length, calls, "inspection must not invoke a model");
+  assert.deepEqual(await client.request({ method:"changes", params:{ limit:100 } }), before);
+  assert.deepEqual((await service.inspect(scope)).pieces.map(piece => [piece.id, piece.last_used]), times);
+  await assert.rejects(service.inspect("other/chat", prepared.focus[0]), /this Chat/);
+  await client.request({ method:"create", operationId:"forged-prefix", params:{
+    piece:`${scope}|forged`, label:"Foreign scope", scope:"other/chat", kind:"topic",
+  } });
+  await assert.rejects(service.inspect(scope, `${scope}|forged`), /another Chat/, "a plausible ID prefix is not authorization");
+  await assert.rejects(service.inspect(scope, prepared.focus[0], -1), /cursor/);
+  assert.equal((await service.inspect("empty/chat")).usage.pieces, 0);
+});
+
 // Scripted memory model with the same contract as modules/pkm-memory-engine/tests/fake_model.py.
 function scriptedModel(log, fail = new Set()) {
   return async request => {

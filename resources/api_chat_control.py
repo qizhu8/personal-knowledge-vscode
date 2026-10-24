@@ -13,9 +13,15 @@ from agent_session_runtime import _atomic_write, _file_lock
 SCHEMA_VERSION = "1.0.0"
 
 
-def _host_id(value):
-    if not isinstance(value, str) or str(uuid.UUID(value)) != value:
-        raise ValueError("Use an exact host_id returned by api_chat_capabilities.")
+def _host_id(value, field="host_id"):
+    try:
+        valid = isinstance(value, str) and str(uuid.UUID(value)) == value
+    except (ValueError, TypeError, AttributeError):
+        valid = False
+    if not valid:
+        if field == "host_id":
+            raise ValueError("Use an exact host_id returned by api_chat_capabilities (canonical UUID).")
+        raise ValueError(f"{field} must be a canonical UUID.")
     return value
 
 
@@ -25,10 +31,10 @@ def _chat_locator(value):
         match = re.fullmatch(r"/[a-f0-9]{16}/([a-f0-9-]{36})", parsed.path)
         if parsed.netloc != "chats" or parsed.query or parsed.fragment or not match:
             raise ValueError("Use a PKM Chat URL returned by api_chat_list: pkm://chats/<workspace>/<Chat UUID>.")
-        _host_id(match.group(1))
+        _host_id(match.group(1), "chat_id")
         return value
     try:
-        return _host_id(value)
+        return _host_id(value, "chat_id")
     except (ValueError, TypeError, AttributeError) as error:
         raise ValueError("Use a PKM Chat URL returned by api_chat_list; legacy Chat UUIDs are also accepted.") from error
 
@@ -116,14 +122,14 @@ def register_api_chat_tools(mcp, store):
                 "policy": "Select a Host explicitly. Chats are visible and Group-only; no automatic Tasks. Sends use real selected models and Chat permissions, can incur credits, and are never retried automatically."}
 
     @mcp.tool(annotations={"readOnlyHint": True})
-    def api_chat_models(host_id: str, command_id: str) -> dict:
-        """Request the Host's actual callable VS Code model catalog; poll its returned request_id."""
-        return _submit(root, host_id, "models", {}, command_id)
+    def api_chat_models(host_id: str, command_id: str = "") -> dict:
+        """Request the Host's actual callable VS Code model catalog; poll its returned request_id. Select host_id from api_chat_capabilities; command_id is optional for this read."""
+        return _submit(root, host_id, "models", {}, command_id or str(uuid.uuid4()))
 
     @mcp.tool(annotations={"readOnlyHint": True})
-    def api_chat_list(host_id: str, command_id: str) -> dict:
-        """List up to 100 non-Trash Chats with chatUrl PKM URLs in the selected Host's workspace, without conversation bodies."""
-        return _submit(root, host_id, "list", {}, command_id)
+    def api_chat_list(host_id: str, command_id: str = "") -> dict:
+        """List up to 100 non-Trash Chats with chatUrl PKM URLs in the selected Host's workspace, without conversation bodies. Select host_id from api_chat_capabilities; command_id is optional for this read."""
+        return _submit(root, host_id, "list", {}, command_id or str(uuid.uuid4()))
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True})
     def api_chat_create(host_id: str, title: str, command_id: str, model_id: str = "") -> dict:
@@ -143,10 +149,10 @@ def register_api_chat_tools(mcp, store):
         return _submit(root, host_id, "send", {"chatId": chat_id, "prompt": prompt}, command_id)
 
     @mcp.tool(annotations={"readOnlyHint": True})
-    def api_chat_get(host_id: str, chat_id: str, command_id: str) -> dict:
-        """Read a chatUrl from api_chat_list (legacy UUID accepted): status, bounded assistant answer, actual tool statuses and usage. No hidden reasoning; missing public API credits remain null."""
+    def api_chat_get(host_id: str, chat_id: str, command_id: str = "") -> dict:
+        """Read a full pkm://chats/<workspace>/<UUID> URL (legacy UUID accepted): status, bounded answer, tool statuses, usage and compact context costs/source counts. Full hashes/manifests stay local in the Chat retrieval inspector. Select host_id from api_chat_capabilities; command_id is optional for this read. No hidden reasoning; missing public API credits remain null."""
         chat_id = _chat_locator(chat_id)
-        return _submit(root, host_id, "get", {"chatId": chat_id}, command_id)
+        return _submit(root, host_id, "get", {"chatId": chat_id}, command_id or str(uuid.uuid4()))
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True})
     def api_chat_cancel(host_id: str, chat_id: str, command_id: str) -> dict:
@@ -166,13 +172,13 @@ def register_api_chat_tools(mcp, store):
         if operation not in {"open", "status", "send", "get", "cancel", "disconnect", "switch", "permissions", "files", "reattach"}:
             raise ValueError("Unsupported Portal operation.")
         if context_id:
-            _host_id(context_id)
+            _host_id(context_id, "context_id")
         elif operation != "open":
             raise ValueError("Use the contextId from this conversation's Portal open receipt.")
         if not isinstance(prompt, str) or len(prompt) > 16000:
             raise ValueError("Portal prompt must contain at most 16000 characters.")
         if operation in {"send", "get", "cancel"}:
-            _host_id(request_id)
+            _host_id(request_id, "request_id")
         if operation == "send" and not prompt.strip():
             raise ValueError("Portal send requires an explicit nonempty instruction.")
         if file_paths is not None and (operation != "files" or not file_paths or len(file_paths) > 64

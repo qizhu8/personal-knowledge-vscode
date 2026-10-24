@@ -1,5 +1,7 @@
 import * as fs from "fs";
+import { validPersonaSnapshot, type PersonaSnapshot } from "./persona-profiles";
 import { classifyTaskProgress, type TaskProgressRecord } from "./task-progress";
+import { validWorkGoal, type ChatWorkGoal } from "./chat-work-goal";
 import * as path from "path";
 import { createHash, randomUUID } from "crypto";
 import { hostname } from "os";
@@ -24,7 +26,7 @@ import { agentSnapshotRecovery, AgentSnapshotContents, AgentSnapshotSummary } fr
 import { assertHarnessRecipeBinding, currentHarnessTaskState, HarnessBinding } from "./chat-harness-records";
 
 export interface ChatContext { id: string; label: string; content: string; }
-export interface QueuedChatInput { id: string; text: string; mode: "steer" | "task"; attemptId?: string; executionContext?: ChatExecutionContext; portalReview?: PortalReview; }
+export interface QueuedChatInput { id: string; text: string; mode: "steer" | "task"; editToken?: string; attemptId?: string; executionContext?: ChatExecutionContext; portalReview?: PortalReview; }
 export interface ChatDelegation {
   id: string;
   chatId: string;
@@ -60,7 +62,8 @@ export interface ApiChatProgress {
   droppedSteps?: number;
   completedDroppedSteps?: number;
   steps: Array<{ label: string; at: number; status?: "running" | "waiting" | "complete" | "cancelled" | "failed";
-    kind?: "model" | "tool"; round?: number; toolCallId?: string }>;
+    kind?: "model" | "tool"; round?: number; toolCallId?: string; finishedAt?: number;
+    category?: "llm" | "cmd" | "info"; operation?: "inference" | "token-count" | "model-access" | "retrieval" | "preparation" | "command" | "display" }>;
 }
 export interface ChatPlanningPossibility {
   id: string;
@@ -90,6 +93,7 @@ export interface ChatMemoryRecord {
   error?: string;
 }
 export interface ChatMessage {
+  profileContext?: PersonaSnapshot;
   id: string;
   recordedAt?: string;
   executionContext?: ChatExecutionContext;
@@ -135,6 +139,7 @@ export interface ChatMessage {
     harnessBinding?: import("./chat-harness-records").HarnessBinding; startedAt?: number; finishedAt?: number }>;
 }
 export interface ApiConversation {
+  agentProfileId?: string;
   version: 1;
   revision?: number;
   workspaceNamespace?: string;
@@ -152,6 +157,8 @@ export interface ApiConversation {
   updatedAt: string;
   messages: ChatMessage[];
   queuedInputs?: QueuedChatInput[];
+  debugRequest?: { inputId: string; status: "investigating" | "completed" | "blocked" | "needs_input"; goal: string; reason?: string; evidenceCallIds?: string[] };
+  workGoal?: ChatWorkGoal;
   memoryTasks?: Array<{ id: string; title: string; createdAt: string }>;
   context: ChatContext[];
   images?: import("./api-chat-client").ChatImage[];
@@ -188,6 +195,47 @@ export function chatHistoryPage(chat: ApiConversation, beforeId?: string) {
 
 export type ApiChatStatus = "running" | "idle" | "completed" | "new-result" | "awaiting-input" | "awaiting-result" | "paused" | "failed" | "stopped";
 
+export function apiChatContextSummary(message: ChatMessage) {
+  const budgets = message.budgetReceipts || [];
+  const candidates = message.retrieval?.candidates || [];
+  const selected = candidates.filter(candidate => candidate.selected);
+  const kinds = new Map<string, number>();
+  for (const candidate of selected) {
+    const kind = candidate.kind.replace(/\b[a-f0-9]{64}\b/gi, "[hash]").slice(0, 64);
+    kinds.set(kind, (kinds.get(kind) || 0) + 1);
+  }
+  return {
+    roundCount: budgets.length,
+    rounds: budgets.slice(-5).map(budget => ({
+      round: budget.round, status: budget.status,
+      estimatedInputTokens: budget.consumed.estimatedInputTokens,
+      transportInputTokens: budget.transport?.inputTokens,
+      countingMethod: budget.transport?.countingMethod || budget.countingMethod,
+      transportAutomaticKnowledge: budget.transport?.automaticKnowledge ? {
+        inputBudget: budget.transport.automaticKnowledge.inputBudget,
+        inputTokens: budget.transport.automaticKnowledge.inputTokens,
+        countingMethod: budget.transport.automaticKnowledge.countingMethod,
+      } : undefined,
+      selectedReferenceCount: budget.selectedReferenceIds.length,
+      omittedReferenceCount: budget.contextPlan?.omittedIds.length || 0,
+      unresolvedReferenceCount: budget.contextPlan?.unresolved.length || 0,
+      stopReason: budget.contextPlan?.stopReason,
+      automaticKnowledge: budget.contextPlan?.automaticKnowledge ? {
+        inputBudget: budget.contextPlan.automaticKnowledge.inputBudget,
+        estimatedBefore: budget.contextPlan.automaticKnowledge.estimatedBefore,
+        estimatedAfter: budget.contextPlan.automaticKnowledge.estimatedAfter,
+        countingMethod: budget.contextPlan.automaticKnowledge.countingMethod,
+      } : undefined,
+    })),
+    omittedRounds: Math.max(0, budgets.length - 5),
+    retrieval: { candidateCount: candidates.length, selectedCount: message.retrieval?.selectedCount || 0,
+      selectedKinds: Object.fromEntries([...kinds].slice(0, 8)), omittedKinds: Math.max(0, kinds.size - 8),
+      warningPresent: !!message.retrieval?.warning,
+    },
+    evidence: "Full source identities, hashes and manifests are retained locally in the Chat retrieval inspector; not included in this summary.",
+  };
+}
+
 export function apiChatDiagnostics(chat: ApiConversation) {
   const tokenUsage = (usage: ChatMessage["usage"]) => usage && [usage.inputTokens, usage.outputTokens].every(value => Number.isSafeInteger(value) && value >= 0) ? {
     inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,
@@ -202,7 +250,8 @@ export function apiChatDiagnostics(chat: ApiConversation) {
     startedAt: run.startedAt, finishedAt: run.finishedAt, status: run.status, model: run.model,
     tools: run.tools?.slice(0, 80),
     droppedSteps: run.droppedSteps, completedDroppedSteps: run.completedDroppedSteps,
-    steps: run.steps.slice(0, 512).map(step => ({ at: step.at, status: step.status,
+    stepCount: run.steps.length, omittedSteps: Math.max(0, run.steps.length - 12),
+    steps: run.steps.slice(-12).map(step => ({ at: step.at, finishedAt: step.finishedAt, status: step.status, category:step.category, operation:step.operation,
       label: /^(Running|Completed|Failed) tool:/.test(step.label) ? step.label.split(":")[0] : /^Waiting/.test(step.label) ? "Waiting" : ["Preparing context", "Checking VS Code model access", "Requesting VS Code model", "Connecting to model API", "Generating response", "Receiving image"].includes(step.label) ? step.label : "Other activity" })),
   });
   return {
@@ -212,12 +261,14 @@ export function apiChatDiagnostics(chat: ApiConversation) {
     configuredBuiltinTools: (chat.builtinTools || []).slice(0, 32),
     configuredVscodeTools: (chat.vscodeTools || []).slice(0, 512),
     mcp: (chat.mcpServers || []).slice(0, 4).map(server => ({ enabled: server.enabled, allowedTools: server.tools.slice(0, 16) })),
-    attempts: chat.messages.filter(message => message.role === "assistant").slice(-20).map(message => ({
+    omittedAttempts: Math.max(0, chat.messages.filter(message => message.role === "assistant").length - 5),
+    attempts: chat.messages.filter(message => message.role === "assistant").slice(-5).map(message => ({
       id: message.id, status: message.status, errorKind: errorKind(message.error), model: message.model,
       contextWindow: message.contextWindow, maxOutputTokens: message.maxOutputTokens, elapsedMs: message.elapsedMs,
       outputBudgetWarning: message.outputBudgetWarning,
       outputCharacters: message.content.length, imageCount: message.images?.length || 0,
       reportedTokenUsage: tokenUsage(message.usage), usageMetadata: usageMetadata(message.usageMetadata),
+      context: apiChatContextSummary(message),
       tools: (message.toolCalls || []).slice(0, 128).map(tool => ({ name: tool.name, status: tool.status })),
       progress: progress(message.progress),
     })),
@@ -298,6 +349,7 @@ export function apiChatHarnessSnapshot(chat: ApiConversation, fullResults = fals
         ...segment, text:message.content.slice(segment.start, segment.end),
       })),
       reasoningSummaries: message.reasoningSummaries,
+      profileContext: message.profileContext,
       associatedProblem: input?.content || "",
       problemSource: input?.workerEventIds?.length ? "worker-event" : input?.inputKind || "user-input",
       planning: message.planning ? {
@@ -368,8 +420,9 @@ export function apiChatHarnessSnapshot(chat: ApiConversation, fullResults = fals
     currentProblem: latestUser?.content || "",
     currentProblemSource: latestUser?.workerEventIds?.length ? "worker-event" : latestUser?.inputKind || "user-input",
     ...(taskWorkingState ? { taskWorkingState } : {}),
+    ...(chat.workGoal ? { workGoal: chat.workGoal } : {}),
     waiting: current.kind === "waiting" ? { kind: /answer|approval|input/i.test(current.label) ? "user" : "dependency", detail: current.label } : undefined,
-    queuedInputs: (chat.queuedInputs || []).map(input => ({ id: input.id, mode: input.mode, text: input.text })),
+    queuedInputs: (chat.queuedInputs || []).map(input => ({ id: input.id, mode: input.mode, text: input.text, ...(input.editToken ? { editToken: input.editToken } : {}) })),
     attempts,
   };
 }
@@ -427,14 +480,18 @@ export class ApiChatStore {
   }
 
   private reconcileQueue(chat: ApiConversation, current: ApiConversation): void {
-    if ((current.revision || 0) === (chat.revision || 0)) return;
     const snapshot = this.queueSnapshots.get(chat);
+    const local = chat.queuedInputs || [];
+    const removed = new Set((snapshot?.inputs || []).filter(input => !local.some(item => item.id === input.id)).map(input => input.id));
+    for (const input of current.queuedInputs || []) if (removed.has(input.id)) {
+      const previous = snapshot?.inputs.find(item => item.id === input.id);
+      if (input.editToken || previous?.text !== input.text) throw new Error("Queued input was edited before consumption. It remains queued; finish editing before continuing.");
+    }
+    if ((current.revision || 0) === (chat.revision || 0)) return;
     const { revision, updatedAt, queuedInputs, ...state } = current;
     if (!snapshot || JSON.stringify(state) !== snapshot.fingerprint || current.progress?.status !== "running"
       || !chat.progress?.attemptId || current.progress.attemptId !== chat.progress.attemptId
       || current.progress.ownerPid !== process.pid || current.progress.ownerHost !== hostname()) return;
-    const local = chat.queuedInputs || [];
-    const removed = new Set(snapshot.inputs.filter(input => !local.some(item => item.id === input.id)).map(input => input.id));
     const merged = (queuedInputs || []).filter(input => !removed.has(input.id));
     for (const input of local.filter(input => !snapshot.inputs.some(item => item.id === input.id))) {
       if (!merged.some(item => item.id === input.id)) merged.push(input);
@@ -719,6 +776,15 @@ export class ApiChatStore {
     const file = this.file(chat.id);
     if (!fs.existsSync(file) && chat.revision !== undefined) throw new Error("This Chat was deleted in another window. Choose another Chat.");
     const previousChat = fs.existsSync(file) ? this.load(chat.id, false) : undefined;
+    if (chat.agentProfileId !== undefined && (typeof chat.agentProfileId !== "string" || !/^[a-f0-9-]{36}$/.test(chat.agentProfileId))) throw new Error("Invalid Agent Profile assignment.");
+    const previousProfiles = new Map(previousChat?.messages.filter(message => message.profileContext).map(message => [message.id, message.profileContext]));
+    for (const message of chat.messages) {
+      if (message.profileContext !== undefined && !validPersonaSnapshot(message.profileContext)) throw new Error("Invalid Profile snapshot.");
+      const previousProfile = previousProfiles.get(message.id);
+      if (previousProfile && JSON.stringify(previousProfile) !== JSON.stringify(message.profileContext)) {
+        throw new Error("Historical attempt Profile snapshots are immutable.");
+      }
+    }
     if (previousChat) this.reconcileQueue(chat, previousChat);
     const storedRevision = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")).revision || 0 : 0;
     if ((chat.revision || 0) !== storedRevision) throw new Error("This Chat changed in another window. Reopen it before making changes.");
@@ -828,14 +894,19 @@ export class ApiChatStore {
       && Array.isArray(run.steps) && run.steps.length <= 512 && run.steps.every(step => step && typeof step.label === "string" && Number.isFinite(step.at)
         && (step.status === undefined || ["running", "waiting", "complete", "cancelled", "failed"].includes(step.status))
         && (step.kind === undefined || ["model", "tool"].includes(step.kind))
+        && (step.finishedAt === undefined || Number.isFinite(step.finishedAt) && step.finishedAt >= step.at)
+        && (step.category === undefined || ["llm", "cmd", "info"].includes(step.category))
+        && (step.operation === undefined || ["inference", "token-count", "model-access", "retrieval", "preparation", "command", "display"].includes(step.operation))
         && (step.round === undefined || Number.isSafeInteger(step.round) && step.round >= 0)
         && (step.toolCallId === undefined || typeof step.toolCallId === "string" && step.toolCallId.length > 0 && step.toolCallId.length <= 200));
     const changesValid = (items: NonNullable<ChatMessage["changes"]>) => Array.isArray(items) && items.length <= 4096 && items.every(item => item && typeof item.path === "string" && item.path.length <= 4096 && Number.isSafeInteger(item.workspace) && item.workspace >= 0 && typeof item.appliedAt === "string" && Number.isFinite(Date.parse(item.appliedAt)) && /^[a-f0-9]{64}$/.test(item.beforeHash) && /^[a-f0-9]{64}$/.test(item.afterHash) && item.saved === false && ["exact", "unknown"].includes(item.attribution) && (item.attribution !== "exact" || Number.isSafeInteger(item.added) && item.added! >= 0 && Number.isSafeInteger(item.removed) && item.removed! >= 0));
     if (!chat || chat.version !== 1 || chat.id !== id || chat.sessionId !== undefined && !/^agent_session_[a-f0-9]{32}$/.test(chat.sessionId) || typeof chat.title !== "string" || typeof chat.updatedAt !== "string" || !Number.isFinite(Date.parse(chat.updatedAt)) || typeof chat.createdAt !== "string" || !Number.isFinite(Date.parse(chat.createdAt)) || typeof chat.includeHistory !== "boolean" || !Array.isArray(chat.messages) || !contextsValid(chat.context)
       || chat.memoryPolicy !== undefined && !validMemoryPolicy(chat.memoryPolicy)
+      || chat.agentProfileId !== undefined && (typeof chat.agentProfileId !== "string" || !/^[a-f0-9-]{36}$/.test(chat.agentProfileId))
       || chat.messages.some(message => !message || typeof message.id !== "string" || typeof message.content !== "string" || !["user", "assistant"].includes(message.role) || !["complete", "streaming", "cancelled", "failed", "interrupted"].includes(message.status)
         || message.recordedAt !== undefined && (typeof message.recordedAt !== "string" || !Number.isFinite(Date.parse(message.recordedAt)))
         || message.executionContext !== undefined && !validExecutionContext(message.executionContext)
+        || message.profileContext !== undefined && !validPersonaSnapshot(message.profileContext)
         || message.portalSource !== undefined && !validPortalSource(message.portalSource)
         || message.portalReview !== undefined && !validPortalReview(message.portalReview)
         || message.taskId !== undefined && (typeof message.taskId !== "string" || message.taskId.length > 128)
@@ -875,7 +946,14 @@ export class ApiChatStore {
       || chat.revision !== undefined && (!Number.isSafeInteger(chat.revision) || chat.revision < 0)
       || chat.workspaceNamespace !== undefined && chat.workspaceNamespace !== path.basename(path.dirname(file))
       || chat.customTitle !== undefined && typeof chat.customTitle !== "boolean"
-      || chat.queuedInputs !== undefined && (!Array.isArray(chat.queuedInputs) || chat.queuedInputs.length > 20 || chat.queuedInputs.some(input => !input || typeof input.id !== "string" || !/^[a-f0-9-]{36}$/.test(input.id) || typeof input.text !== "string" || !input.text.trim() || input.text.length > 16_000 || !["steer", "task"].includes(input.mode) || input.attemptId !== undefined && (typeof input.attemptId !== "string" || input.attemptId.length > 80) || input.executionContext !== undefined && !validExecutionContext(input.executionContext) || input.portalReview !== undefined && !validPortalReview(input.portalReview)) || new Set(chat.queuedInputs.map(input => input.id)).size !== chat.queuedInputs.length)
+      || chat.queuedInputs !== undefined && (!Array.isArray(chat.queuedInputs) || chat.queuedInputs.length > 20 || chat.queuedInputs.some(input => !input || typeof input.id !== "string" || !/^[a-f0-9-]{36}$/.test(input.id) || typeof input.text !== "string" || !input.text.trim() || input.text.length > 16_000 || !["steer", "task"].includes(input.mode) || input.editToken !== undefined && (typeof input.editToken !== "string" || !/^[a-f0-9-]{36}$/.test(input.editToken)) || input.attemptId !== undefined && (typeof input.attemptId !== "string" || input.attemptId.length > 80) || input.executionContext !== undefined && !validExecutionContext(input.executionContext) || input.portalReview !== undefined && !validPortalReview(input.portalReview)) || new Set(chat.queuedInputs.map(input => input.id)).size !== chat.queuedInputs.length)
+      || chat.workGoal !== undefined && !validWorkGoal(chat.workGoal)
+      || chat.debugRequest !== undefined && (!chat.debugRequest || typeof chat.debugRequest.inputId !== "string"
+        || !["investigating", "completed", "blocked", "needs_input"].includes(chat.debugRequest.status)
+        || typeof chat.debugRequest.goal !== "string" || chat.debugRequest.goal.length > 16_000
+        || chat.debugRequest.reason !== undefined && (typeof chat.debugRequest.reason !== "string" || chat.debugRequest.reason.length > 2000)
+        || chat.debugRequest.evidenceCallIds !== undefined && (!Array.isArray(chat.debugRequest.evidenceCallIds)
+          || chat.debugRequest.evidenceCallIds.length > 32 || chat.debugRequest.evidenceCallIds.some(id => typeof id !== "string" || id.length > 200)))
       || chat.memoryTasks !== undefined && (!Array.isArray(chat.memoryTasks) || chat.memoryTasks.length > 4096 || chat.memoryTasks.some(task => !task || typeof task.id !== "string" || task.id.length > 128 || typeof task.title !== "string" || task.title.length > 512 || typeof task.createdAt !== "string" || !Number.isFinite(Date.parse(task.createdAt))))
       || chat.paused !== undefined && typeof chat.paused !== "boolean"
       || chat.workerActivity !== undefined && !validWorkerActivity(chat.workerActivity)
@@ -904,6 +982,10 @@ export class ApiChatStore {
       || chat.progress && !progressValid(chat.progress)) throw new Error("Unsupported chat history format.");
     chat.workspaceNamespace ||= path.basename(path.dirname(file));
     this.rememberQueue(chat);
+    if (recoverInterrupted && chat.workGoal?.status === "active") {
+      chat.workGoal.status = "interrupted";
+      chat.workGoal.reason = "The previous host stopped before the objective was settled. Explicitly resume and reconcile recorded effects before continuing.";
+    }
     for (const message of chat.messages) if (recoverInterrupted && message.status === "streaming") {
       message.status = "interrupted";
       message.error = "The previous request was interrupted. Partial output was preserved.";
@@ -1033,6 +1115,7 @@ export class ApiChatStore {
       this.assertAvailable(current);
       if (!input.executionContext || !/^[a-f0-9-]{36}$/.test(input.id) || !input.text.trim() || input.text.length > 16_000 || !["steer", "task"].includes(input.mode)) throw new Error("Choose a valid input with sending-window context.");
       if (input.portalReview !== undefined && !validPortalReview(input.portalReview)) throw new Error("Invalid Portal status event.");
+      if (input.editToken !== undefined) throw new Error("New queued messages cannot claim an editor.");
       this.assertExecutionContext(input.executionContext);
       if (current.paused && !input.portalReview) throw new Error("This Chat is paused. Resume it before sending another request.");
       if (input.mode === "steer" && (current.progress?.status !== "running" || current.progress.executionContext?.digest !== input.executionContext.digest)) throw new Error("Steering belongs to a different execution context. Submit a separate task instead.");
@@ -1042,6 +1125,7 @@ export class ApiChatStore {
         if (text !== input.text || prior.executionContext?.digest !== input.executionContext.digest) throw new Error("Submission identity was already used with different text or execution context.");
         return current;
       }
+
       const priorReview = input.portalReview ? current.queuedInputs?.findIndex(item => item.portalReview?.pairId === input.portalReview!.pairId && item.portalReview.requestId === input.portalReview!.requestId) ?? -1 : -1;
       if (priorReview < 0 && (current.queuedInputs?.length || 0) >= 20) throw new Error("The Chat already has 20 queued inputs.");
       const queued = { ...input, ...(input.mode === "steer" ? { attemptId: current.progress?.attemptId } : {}) };
@@ -1049,6 +1133,32 @@ export class ApiChatStore {
       else (current.queuedInputs ||= []).push(queued);
       current.updatedAt = new Date().toISOString();
       this.saveUnlocked(current, false);
+      return current;
+    });
+  }
+
+  editQueuedInput(chat: ApiConversation, id: string, operation: "begin" | "save" | "cancel", token: string, text?: string): ApiConversation {
+    if (!/^[a-f0-9-]{36}$/.test(token)) throw new Error("Invalid queued editor identity.");
+    return withCrossProcessLockSync(path.join(this.stateDirectory, "api-chats", "chats.lock"), "Chat queued editor", () => {
+      const current = this.load(chat.id, false);
+      this.assertAvailable(current);
+      const input = current.queuedInputs?.find(input => input.id === id);
+      if (!input || input.portalReview) throw new Error("This queued message is no longer editable.");
+      if (input.editToken && input.editToken !== token) throw new Error("This queued message is being edited in another window.");
+      if (operation === "begin") input.editToken = token;
+      else {
+        if (input.editToken !== token) throw new Error("The queued editor changed. Reopen the message before saving.");
+        if (operation === "save") {
+          if (typeof text !== "string" || !text.trim() || text.length > 16_000) throw new Error("Enter a queued message up to 16,000 characters.");
+          input.text = text;
+        }
+        delete input.editToken;
+      }
+      current.updatedAt = new Date().toISOString();
+      this.saveUnlocked(current, false);
+      chat.queuedInputs = current.queuedInputs;
+      chat.revision = current.revision;
+      this.rememberQueue(chat);
       return current;
     });
   }

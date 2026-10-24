@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const http = require("node:http");
+const vscode = require("vscode");
 const { createHash } = require("node:crypto");
 
 const evidenceHash = chat => createHash("sha256").update(JSON.stringify(chat.messages)).digest("hex");
@@ -46,7 +47,10 @@ async function checkLiveVisualization(extension, store, root) {
     response.end(`data: ${JSON.stringify({ choices:[{ delta, finish_reason:mode ? "tool_calls" : "stop" }] })}\n\ndata: [DONE]\n\n`);
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-  const provider = new ApiChatView({ secrets:{ get:async () => "isolated-vis-fixture" } }, async () => {
+  const provider = new ApiChatView({
+    secrets:{ get:async () => "isolated-vis-fixture" },
+    globalStorageUri:vscode.Uri.file(path.join(root, "ctx-private-host")),
+  }, async () => {
     await new Promise(resolve => setTimeout(resolve, 1100));
     return [];
   });

@@ -15,11 +15,14 @@ import { GitHubSyncContentIssue, GitHubSyncContentRepairError, inspectConflictMa
 import { GitHubSyncBaseEvidence, verifyGitHubSyncBaseDigest } from "./github-sync-base-integrity";
 import { planGitHubSyncPublication } from "./github-sync-publication-plan";
 import { isMarkdownAssetDirectory } from "../knowledge/markdown-assets";
+import { GitHubSyncDeferredError } from "./github-sync-scheduler";
+import { validatePersona, portablePersonaPath, withPersonaRepositoryMutation, validatePortablePersonaChanges } from "../chat/persona-profiles";
+import { githubSyncProfilesAuthorized, githubSyncProfilesSelected } from "./github-sync-profiles";
 
 const execFileAsync = promisify(execFile);
 
 export const GITHUB_SYNC_CONTENT_TYPES = [
-  "skills", "notes", "papers", "prompts", "scripts", "packages", "servers", "recipes", "agentSnapshots", "actions", "action-module-sets"
+  "skills", "notes", "papers", "prompts", "scripts", "packages", "servers", "recipes", "agentSnapshots", "actions", "action-module-sets", "profiles"
 ] as const;
 
 export type GitHubSyncContentType = typeof GITHUB_SYNC_CONTENT_TYPES[number];
@@ -102,6 +105,7 @@ export interface GitHubSyncTarget {
     initialSyncCompleted: boolean;
   };
   conflictResolution: "manual" | "agent";
+  profileSyncConsent?: { root:string; scope:string; authorizedAt:string };
   selection: Record<GitHubSyncPrivacy, GitHubSyncSelectionScope>;
   pausedItems?: Array<{ type: GitHubSyncContentType; itemId: string }>;
   lastSync?: {
@@ -120,6 +124,8 @@ export interface GitHubSyncTarget {
     error: string;
     reason: string;
     attempts?: number;
+    errorCode?: string;
+    phase?: string;
   };
   lastResolutionReport?: GitHubSyncResolutionReport;
   pendingDeletions?: GitHubSyncDeletionEvidence[];
@@ -561,7 +567,7 @@ export function completeGitHubRemoteAuthorityBackup(backupDirectory: string): vo
 function emptyScope(includeAll: boolean): GitHubSyncSelectionScope {
   const scope = {} as GitHubSyncSelectionScope;
   for (const type of GITHUB_SYNC_CONTENT_TYPES) {
-    const selectedByDefault = !["packages", "servers", "agentSnapshots", "actions", "action-module-sets"].includes(type);
+    const selectedByDefault = !["packages", "servers", "agentSnapshots", "actions", "action-module-sets", "profiles"].includes(type);
     scope[type] = { items: [], folders: includeAll && selectedByDefault ? [""] : [] };
   }
   return scope;
@@ -622,6 +628,12 @@ export function normalizeGitHubSyncTarget(value: any, createId: () => string = r
     conflictResolution: value?.conflictResolution === "agent" ? "agent" : "manual",
     selection
   };
+  if (value?.profileSyncConsent !== undefined) {
+    const consent = value.profileSyncConsent;
+    if (typeof consent?.root !== "string" || !path.isAbsolute(consent.root) || !/^[a-f0-9]{64}$/.test(consent.scope)
+      || typeof consent.authorizedAt !== "string" || !Number.isFinite(Date.parse(consent.authorizedAt))) throw new Error("Invalid Profile Sync consent.");
+    target.profileSyncConsent = {root:consent.root,scope:consent.scope,authorizedAt:consent.authorizedAt};
+  }
   if (value?.pausedItems !== undefined) {
     if (!Array.isArray(value.pausedItems) || value.pausedItems.length > 10000) throw new Error("Invalid paused Sync items.");
     const paused = new Map<string, { type: GitHubSyncContentType; itemId: string }>();
@@ -699,6 +711,9 @@ export function normalizeGitHubSyncTarget(value: any, createId: () => string = r
       at: String(value.lastFailure.at),
       error: String(value.lastFailure.error),
       reason: String(value.lastFailure.reason || "automatic"),
+      ...(Number.isInteger(value.lastFailure.attempts) && value.lastFailure.attempts > 0 ? { attempts: value.lastFailure.attempts } : {}),
+      ...(typeof value.lastFailure.errorCode === "string" ? { errorCode: value.lastFailure.errorCode } : {}),
+      ...(typeof value.lastFailure.phase === "string" ? { phase: value.lastFailure.phase } : {}),
     };
   }
   if (Array.isArray(value?.pendingDeletions)) {
@@ -1000,6 +1015,28 @@ export function githubSyncEntryShields(
   return result;
 }
 
+export function githubSyncShieldReasons(
+  targets: GitHubSyncTarget[], type: GitHubSyncContentType,
+  currentFiles: Readonly<Record<string, Partial<GitHubSyncFolderFingerprints>>>,
+  baseFiles: Readonly<Record<string, Partial<GitHubSyncFolderFingerprints>>>,
+  catalog: GitHubSyncCatalog,
+): string[] {
+  return targets.filter(target => selectionIncludesType(target, type)).flatMap(target => {
+    const current = currentFiles[target.id]?.[type], base = baseFiles[target.id]?.[type];
+    if (!current || !base) return [`${target.name}: file baseline unavailable; content equality is unverified.`];
+    const added = Object.keys(current).filter(file => base[file] === undefined);
+    const changed = Object.keys(current).filter(file => base[file] !== undefined && current[file] !== base[file]);
+    const baselineOnly = Object.keys(base).filter(file => current[file] === undefined);
+    if (!added.length && !changed.length && !baselineOnly.length) return [];
+    const outsideScope = baselineOnly.filter(file => catalog[type].some(item =>
+      item.destination === file && !selectedItem(target, type, item)));
+    const examples = [...added, ...changed, ...baselineOnly].slice(0, 3);
+    return [`${target.name}: ${added.length} local-only, ${changed.length} changed, ${baselineOnly.length} baseline-only file(s).`
+      + (outsideScope.length ? ` ${outsideScope.length} baseline-only file(s) are now outside the selected scope (including privacy changes); retained remote copies are not automatically deleted.` : "")
+      + (examples.length ? ` Examples: ${examples.join("; ")}.` : "")];
+  });
+}
+
 export function githubSyncFolderShields(
   targets: GitHubSyncTarget[],
   currentFingerprints: Readonly<Record<string, Partial<Record<GitHubSyncContentType, string>>>>,
@@ -1035,6 +1072,7 @@ function selectionMatches(
   category: string,
   destination = ""
 ): boolean {
+  if (type === "profiles" && (privacy !== "private" || !githubSyncProfilesAuthorized(target))) return false;
   if (target.pausedItems?.some(item => item.type === type && item.itemId === itemId)) return false;
   if (githubSyncIsSystemContent(type, category, itemId, destination) || destination && githubSyncIgnoredPath(destination)) return false;
   const selection = target.selection[privacy][type];
@@ -1195,7 +1233,7 @@ interface GitHubSyncManifest {
 const GITHUB_SYNC_MANIFEST_SCHEMA = 3;
 const GITHUB_SYNC_EXTENSION_VERSION = String(require("../../package.json").version || "");
 const GITHUB_SYNC_REQUIRED_CAPABILITIES = ["explicit-deletions", "stable-entity-identity"] as const;
-const GITHUB_SYNC_SUPPORTED_CAPABILITIES = new Set<string>([...GITHUB_SYNC_REQUIRED_CAPABILITIES, "entity-partial-progress", "action-library-assets"]);
+const GITHUB_SYNC_SUPPORTED_CAPABILITIES = new Set<string>([...GITHUB_SYNC_REQUIRED_CAPABILITIES, "entity-partial-progress", "action-library-assets", "profile-cards"]);
 
 function legacyManifestMetadata(filePath: string, type: GitHubSyncContentType): Pick<GitHubSyncManagedFile, "itemId" | "category" | "privacy"> {
   const relative = filePath.slice(type.length + 1);
@@ -1230,6 +1268,8 @@ function legacyManifestMetadata(filePath: string, type: GitHubSyncContentType): 
     case "action-module-sets":
       itemId = segments.slice(0, 2).join("/");
       break;
+    case "profiles":
+      throw new Error("Profile cards require a current identity-bearing manifest.");
   }
   if (!itemId) throw new Error(`Cannot infer legacy manifest identity for ${filePath}.`);
   return { itemId, category, privacy: "public" };
@@ -1356,8 +1396,9 @@ export function manifestJson(files: GitHubSyncManagedFile[], deletions: GitHubSy
     schema: GITHUB_SYNC_MANIFEST_SCHEMA,
     minimumExtensionVersion: GITHUB_SYNC_EXTENSION_VERSION,
     capabilities: {
-      required: [...GITHUB_SYNC_SUPPORTED_CAPABILITIES].filter(capability => capability !== "action-library-assets"
-        || [...ordered, ...deletions].some(file => file.type === "actions" || file.type === "action-module-sets")),
+      required: [...GITHUB_SYNC_SUPPORTED_CAPABILITIES].filter(capability =>
+        (capability !== "action-library-assets" || [...ordered, ...deletions].some(file => file.type === "actions" || file.type === "action-module-sets"))
+        && (capability !== "profile-cards" || [...ordered, ...deletions].some(file => file.type === "profiles"))),
       storage: "pkm.github.publication/v1",
     },
     // Review-only evidence is machine-local, never publication metadata.
@@ -1415,7 +1456,7 @@ export function parseManagedManifest(raw: string): GitHubSyncManifest {
   }
   if (manifest.files.length > 10000) throw new Error("Remote PKM manifest contains too many files.");
   const seen = new Set<string>();
-  const files = manifest.files.map((value: any): GitHubSyncManagedFile => {
+  const files: GitHubSyncManagedFile[] = manifest.files.map((value: any): GitHubSyncManagedFile => {
     const filePath = githubSyncSafeRelativePath(String(manifest.schema >= 2 ? value?.path : value));
     const portable = filePath.toLocaleLowerCase("en-US");
     if (seen.has(portable)) throw new Error(`Remote manifest paths differ only by case: ${filePath}.`);
@@ -1440,9 +1481,14 @@ export function parseManagedManifest(raw: string): GitHubSyncManifest {
       || (member && githubSyncSafeRelativePath(member) !== member)) {
       throw new Error(`Remote manifest metadata is invalid for ${filePath}.`);
     }
+    if (type === "profiles" && (privacy !== "private" || !/^profiles\/(user|agent)\/[a-f0-9-]{36}\.json$/.test(filePath)
+      || category !== filePath.split("/")[1] || `${category}/${path.posix.basename(filePath, ".json")}` !== itemId || member)) throw new Error("Invalid private Profile manifest identity.");
     return { path: filePath, type, itemId, member, category, privacy, digest };
   });
   if (manifest.schema < 3) inferLegacyMembers(files);
+  if (files.some(file => file.type === "profiles") && (manifest.schema !== 3 || !manifest.capabilities.required.includes("profile-cards"))) {
+    throw new Error("Profile cards require the profile-cards manifest capability.");
+  }
   const deletionValues = manifest.schema === 3 ? manifest.deletions : [];
   if (!Array.isArray(deletionValues) || deletionValues.length > 10000) throw new Error("Remote PKM manifest deletion evidence is invalid.");
   const deletions = deletionValues.map((value: any): GitHubSyncDeletionEvidence => {
@@ -1450,6 +1496,9 @@ export function parseManagedManifest(raw: string): GitHubSyncManifest {
     const itemId = String(value?.itemId || "");
     const deletedAt = String(value?.deletedAt || "");
     const privacy = value?.privacy;
+    if (type === "profiles" && (manifest.schema !== 3 || !manifest.capabilities.required.includes("profile-cards")
+      || privacy !== "private" || !/^(user|agent)\/[a-f0-9-]{36}$/.test(itemId)
+      || value.category !== itemId.split("/")[0])) throw new Error("Invalid private Profile deletion identity or capability.");
     if (!(GITHUB_SYNC_CONTENT_TYPES as readonly string[]).includes(type) || !itemId || !Number.isFinite(Date.parse(deletedAt))
       || (privacy !== undefined && privacy !== "public" && privacy !== "private")) {
       throw new Error("Remote PKM manifest deletion evidence is invalid.");
@@ -1500,10 +1549,12 @@ export function githubSyncTargetFingerprintState(
   return { fingerprints: selected.fingerprints, folders: selected.folderFingerprints, files, localChangeFingerprint, deferredEntities: [...selected.deferredEntities] };
 }
 
-export function githubSyncManifestFileFingerprints(target: GitHubSyncTarget, rawManifest: string, excluded: ReadonlySet<string> = new Set()): GitHubSyncFolderFingerprints {
+export function githubSyncManifestFileFingerprints(target: GitHubSyncTarget, rawManifest: string, excluded: ReadonlySet<string> = new Set(),
+  builtInRecipeIds: ReadonlySet<string> = new Set()): GitHubSyncFolderFingerprints {
   const manifest = parseManagedManifest(rawManifest);
   return Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type => [type,
     Object.fromEntries(manifest.files.filter(file => !excluded.has(file.path) && file.type === type
+      && !(file.type === "recipes" && builtInRecipeIds.has(file.itemId))
       && selectionMatches(target, file.type, file.privacy, file.itemId, file.category, file.path))
       .map(file => [file.path, file.digest])),
   ])) as GitHubSyncFolderFingerprints;
@@ -1513,6 +1564,7 @@ export function githubSyncManifestFolderFingerprints(
   target: GitHubSyncTarget,
   rawManifest: string,
   excluded: ReadonlySet<string> = new Set(),
+  builtInRecipeIds: ReadonlySet<string> = new Set(),
 ): GitHubSyncFolderFingerprints {
   const manifest = parseManagedManifest(rawManifest);
   const entries = Object.fromEntries(
@@ -1520,6 +1572,7 @@ export function githubSyncManifestFolderFingerprints(
   ) as Record<GitHubSyncContentType, Map<string, GitHubSyncFingerprintEntry[]>>;
   for (const file of manifest.files) {
     if (excluded.has(file.path)) continue;
+    if (file.type === "recipes" && builtInRecipeIds.has(file.itemId)) continue;
     if (!selectionMatches(target, file.type, file.privacy, file.itemId, file.category, file.path)) continue;
     for (const folder of githubSyncCategoryFolders(file.category)) {
       const folderEntries = entries[file.type].get(folder) || [];
@@ -1555,6 +1608,11 @@ export function githubSyncGitDependencyGuidance(error: { code?: string; path?: s
     : "The managed Git working directory is missing. Refresh the target and check its checkout path; no synchronization was completed.";
 }
 
+export function githubSyncReadNetworkUnavailable(command: string, detail: string): boolean {
+  return ["fetch", "clone"].includes(command)
+    && /could not resolve (?:host|hostname|proxy)|failed to connect|network is unreachable|no route to host|connection (?:timed out|refused|reset)|couldn't connect to server|temporary failure in name resolution/i.test(detail);
+}
+
 async function git(cwd: string, args: string[], target?: GitHubSyncTarget, allowFailure = false, credentials?: GitHubSyncCredentials): Promise<string> {
   try {
     const result = await execFileAsync("git", githubSyncGitArguments(args, target), { cwd, encoding: "utf8", maxBuffer: 4 * 1024 * 1024, timeout: 120_000, env: gitEnvironment(target, credentials), windowsHide: process.platform === "win32" });
@@ -1565,7 +1623,9 @@ async function git(cwd: string, args: string[], target?: GitHubSyncTarget, allow
     if (allowFailure) return "";
     const detail = String(error?.stderr || error?.stdout || error?.message || error).trim();
     const guidance = githubSyncAuthenticationFailureGuidance(target, detail);
-    throw new Error(`git ${args[0]} failed${detail ? `: ${detail}` : "."}${guidance ? ` ${guidance}` : ""}`);
+    const message = `git ${args[0]} failed${detail ? `: ${detail}` : "."}${guidance ? ` ${guidance}` : ""}`;
+    if (githubSyncReadNetworkUnavailable(args[0], detail)) throw new GitHubSyncDeferredError(message);
+    throw new Error(message);
   }
 }
 
@@ -2275,6 +2335,14 @@ function syncLocalPath(storeRoot: string, relative: string): string {
 function validateManagedContent(file: GitHubSyncManagedFile, content: Buffer, existingRemote = false): void {
   if (fileDigest(content) !== file.digest) throw new Error(`GitHub Sync content digest does not match the manifest: ${file.path}`);
   const text = content.toString("utf8");
+  if (file.type === "profiles") {
+    if (content.length > 32_000 || !Buffer.from(text, "utf8").equals(content)) throw new Error("Profile is not bounded UTF-8 JSON.");
+    const record: unknown = JSON.parse(text);
+    validatePersona(record);
+    if (file.path !== portablePersonaPath(record) || file.privacy !== "private"
+      || file.itemId !== `${record.kind}/${record.id}` && file.itemId !== file.path) throw new Error("Profile path or privacy mismatch.");
+    return;
+  }
   if (!existingRemote && githubSyncIsTextContent(file.path, content)
     && /^(?:<<<<<<<(?: .*)?|>>>>>>>(?: .*)?)\r?$/m.test(text)) {
     throw new Error(`GitHub Sync content still contains merge conflict markers: ${file.path}`);
@@ -2348,7 +2416,7 @@ export function validateGitHubSyncCandidate(relative: string, content: Buffer, m
     itemId: safe,
     member,
     category: "",
-    privacy: "public",
+    privacy: type === "profiles" ? "private" : "public",
     digest: fileDigest(content),
   }, content);
 }
@@ -2356,6 +2424,11 @@ export function validateGitHubSyncCandidate(relative: string, content: Buffer, m
 /** Collect blockers without treating any failed validation as successful content. */
 export async function inspectGitHubSyncLocalContent(target: GitHubSyncTarget, catalog: GitHubSyncCatalog, storeRoot?: string) {
   const normalized = normalizeGitHubSyncTarget(target, () => target.id);
+  if (normalized.selection.public.profiles.items.length || normalized.selection.public.profiles.folders.length
+    || githubSyncProfilesSelected(normalized) && (!githubSyncProfilesAuthorized(normalized)
+      || !storeRoot || !sameKnowledgeRoot(normalized.profileSyncConsent!.root, storeRoot))) {
+    throw new Error("Profile Sync requires separate approval for this Knowledge Root, repository, branch and selection. Save the target to review it.");
+  }
   const issues: GitHubSyncContentIssue[] = [];
   const materialized = selectedFiles(normalized, catalog, new Set(), issues);
   const scopeSnapshot = [...materialized.files];
@@ -2457,6 +2530,12 @@ function rollbackGitHubSyncMutation(destination: string, original: Buffer | unde
 }
 
 function withActionSyncMutation<T>(storeRoot:string | undefined, destinations:string[], apply:() => T):T {
+  const action = () => withActionSyncMutationUnlocked(storeRoot, destinations, apply);
+  return storeRoot && destinations.some(destination => /^profiles\//.test(path.relative(storeRoot, destination).replace(/\\/g, "/")))
+    ? withPersonaRepositoryMutation(storeRoot, action) : action();
+}
+
+function withActionSyncMutationUnlocked<T>(storeRoot:string | undefined, destinations:string[], apply:() => T):T {
   const affected = storeRoot ? destinations.map(destination => path.relative(storeRoot, destination).replace(/\\/g, "/"))
     .filter(relative => /^(?:actions|action-module-sets)\//.test(relative)) : [];
   if (!storeRoot || !affected.length) return apply();
@@ -2500,7 +2579,12 @@ export function replaceGitHubSyncFilesAtomically(
   operation = "GitHub Sync",
   actionStoreRoot?:string
 ): void {
-  withActionSyncMutation(actionStoreRoot, replacements.map(item => item.destination), () => replaceGitHubSyncFilesUnlocked(replacements, operation));
+  withActionSyncMutation(actionStoreRoot, replacements.map(item => item.destination), () => {
+    if (actionStoreRoot) validatePortablePersonaChanges(actionStoreRoot, replacements.map(item => ({
+      relative:path.relative(actionStoreRoot, item.destination).replace(/\\/g, "/"), content:item.content,
+    })));
+    replaceGitHubSyncFilesUnlocked(replacements, operation);
+  });
 }
 
 function replaceGitHubSyncFilesUnlocked(
@@ -2582,6 +2666,10 @@ function applyLocalChangesUnlocked(
     .map(item => [item.file.itemId, { itemId: item.file.itemId, path: item.file.path, expectedLocal: item.expectedLocal }])).values()];
   const privateTopLevels = new Map<GitHubSyncContentType, Set<string>>();
   if (!storeRoot) return { pulled, deletedLocal, privateTopLevels: {}, recipePulls: [], recipeDeletes: [] };
+  validatePortablePersonaChanges(storeRoot, [
+    ...localWrites.map(item => ({relative:item.file.path,content:item.content})),
+    ...localDeletes.map(item => ({relative:item.file.path,content:undefined})),
+  ]);
   const replacements = localWrites.filter(item => item.file.type !== "recipes").map(item => ({
     item,
     destination: syncLocalPath(storeRoot, item.file.path),
@@ -2642,7 +2730,7 @@ function applyLocalChangesUnlocked(
   }
   for (const item of localWrites) {
     pulled.push(item.file.path);
-    if (item.file.privacy === "private" && item.file.type !== "agentSnapshots") {
+    if (item.file.privacy === "private" && item.file.type !== "agentSnapshots" && item.file.type !== "profiles") {
       const topLevel = item.file.type === "actions" ? item.file.itemId : item.file.category.split("/").filter(Boolean)[0];
       if (topLevel) {
         const values = privateTopLevels.get(item.file.type) || new Set<string>();
@@ -3032,7 +3120,7 @@ export function deterministicJsonMerge(base: Buffer, local: Buffer, remote: Buff
 }
 
 async function mergeManagedContent(file: GitHubSyncManagedFile, base: Buffer, local: Buffer, remote: Buffer): Promise<Buffer | undefined> {
-  if (file.type === "actions" || file.type === "action-module-sets") return undefined;
+  if (file.type === "actions" || file.type === "action-module-sets" || file.type === "profiles") return undefined;
   if ([base, local, remote].some(content => !githubSyncIsTextContent(file.path, content))) return undefined;
   const merged = file.type === "recipes" || (file.path.endsWith(".json") && file.type !== "agentSnapshots")
     ? deterministicJsonMerge(base, local, remote, file.type === "recipes")
@@ -3681,6 +3769,14 @@ async function syncGitHubTargetAttempt(
           }
         }
       }
+    }
+  }
+  const activeUsers = [...candidateEntities].filter(([,files]) => files.some(file =>
+    file.type === "profiles" && file.category === "user" && file.content && !JSON.parse(file.content.toString("utf8")).deleted));
+  if (activeUsers.length > 1) {
+    for (const [key] of activeUsers) {
+      recordResolution("human-required", candidateEntities.get(key));
+      await conflictEntity(baseEntities.get(key), localEntities.get(key), remoteEntities.get(key));
     }
   }
   const initialBlocked = new Set([...deferredEntities, ...(normalized.pausedItems || []).map(item => entityKey(item.type, item.itemId)),

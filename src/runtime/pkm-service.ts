@@ -10,7 +10,7 @@ import {
   GitHubSyncCoordinatorOptions,
 } from "../sync/github-sync-coordinator";
 import {
-  AutomaticGitHubSyncTarget, GitHubSyncBlockedError, GitHubSyncReason, GitHubSyncRuntimeState,
+  AutomaticGitHubSyncTarget, GitHubSyncBlockedError, GitHubSyncDeferredError, GitHubSyncReason, GitHubSyncRuntimeState,
 } from "../sync/github-sync-scheduler";
 import {
   GitHubSyncCatalog, GitHubSyncConflictError, GitHubSyncCredentials,
@@ -19,8 +19,13 @@ import {
 } from "../sync/github-sync";
 import { compareVersionOrder } from "./version-order";
 import { GitHubSyncContentRepairError } from "../sync/github-sync-content-repair";
+import { readInstalledExtensionBuild, readInstalledExtensionRuntime } from "./extension-host-runtime";
 
 export const PKM_SERVICE_PROTOCOL = "pkm-github-sync/1";
+const SERVICE_METHODS = ["health", "register", "drain", "configure", "request", "report",
+  "acknowledgeExecutionErrors", "notifyContentChanged", "sync", "listRecoverableResults",
+  "recoverSyncResult", "acknowledgeRecoveredResult"];
+const HOST_CALLBACKS = ["shouldExecute", "execute", "onAutoPaused"];
 export const PKM_SERVICE_MAX_MESSAGE_BYTES = 64 * 1024 * 1024;
 const LONG_TIMEOUT = 15 * 60 * 1000;
 const SHORT_TIMEOUT = 30 * 1000;
@@ -40,19 +45,28 @@ export interface PkmServiceClientOptions {
   onAutoPaused?: (targetId: string) => void | Promise<void>;
   onState?: GitHubSyncCoordinatorOptions["onState"];
   onError?: (error: Error) => void;
+  onCompatibilityWarning?: (message: string) => void;
 }
 
 export class PkmServiceVersionError extends Error {
   constructor(readonly requiredVersion: string, readonly installedVersion: string) {
-    super(`PKM service ${requiredVersion} requires a matching extension window; this window is ${installedVersion}. Reload or upgrade this window. No sync was submitted.`);
+    super(`PKM service ${requiredVersion} cannot be replaced by older code ${installedVersion}. Connect to a running compatible service or reload this window. No sync was submitted.`);
     this.name = "PkmServiceVersionError";
   }
 }
 
 export class PkmServiceOfflineError extends Error {
-  constructor(message = "PKM service has no connected matching-version extension host to provide authentication and sync orchestration.") {
+  constructor(message = "PKM service has no connected protocol-compatible extension host to provide authentication and sync orchestration.") {
     super(message);
     this.name = "PkmServiceOfflineError";
+  }
+}
+
+export class PkmServiceExecutionUncertainError extends PkmServiceOfflineError {
+  readonly serviceShouldRetry = false;
+  constructor() {
+    super("The Sync host disconnected during execution. Its result is uncertain; automatic replay is blocked. Recover the saved result or inspect the transaction before retrying.");
+    this.name = "PkmServiceExecutionUncertainError";
   }
 }
 
@@ -95,6 +109,7 @@ export interface PkmServiceBootOptions {
   knowledgeRoot: string;
   stateDirectory?: string;
   extensionVersion: string;
+  serviceEntryPath?: string;
 }
 interface WireMessage {
   protocol: string;
@@ -227,10 +242,14 @@ function reviveError(data: any): Error {
       error = new GitHubSyncExtensionCompatibilityError(data.requiredVersion, data.installedVersion); break;
     case "GitHubSyncBlockedError":
       error = new GitHubSyncBlockedError(data.requiredVersion, data.installedVersion, data.originalReason); break;
+    case "GitHubSyncDeferredError":
+      error = new GitHubSyncDeferredError(data.message); break;
     case "PkmServiceVersionError":
       error = new PkmServiceVersionError(data.requiredVersion, data.installedVersion); break;
     case "PkmServiceOfflineError":
       error = new PkmServiceOfflineError(data.message); break;
+    case "PkmServiceExecutionUncertainError":
+      error = new PkmServiceExecutionUncertainError(); break;
     case "PkmServiceRecoveryPersistenceError":
       error = new PkmServiceRecoveryPersistenceError(data.operationId, data.targetId, data.outcome,
         data.primaryError ? reviveError(data.primaryError) : undefined, reviveError(data.persistenceError),
@@ -246,10 +265,13 @@ function reviveError(data: any): Error {
 }
 
 class RpcPeer {
+  serviceMethods: ReadonlySet<string> = new Set(SERVICE_METHODS);
+  draining = false;
+  disconnectedWithPendingOperations = false;
   private buffered: Buffer = Buffer.alloc(0);
   private expected = 0;
   private closed = false;
-  private pending = new Map<string, { resolve: (value: any) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
+  private pending = new Map<string, { method: string; resolve: (value: any) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   handler?: (method: string, value: any, message: WireMessage) => any;
   event?: (method: string, value: any) => void;
   onClose?: () => void;
@@ -273,7 +295,7 @@ class RpcPeer {
         // A timed-out reverse execution must not leave a live stale host executing.
         if (method === "execute" || method === "shouldExecute") this.close(error);
       }, timeout);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { method, resolve, reject, timer });
       try { this.send({ kind: "request", id, method, value }); }
       catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error); }
     });
@@ -285,6 +307,8 @@ class RpcPeer {
   close(error = new PkmServiceOfflineError()): void {
     if (this.closed) return;
     this.closed = true;
+    this.disconnectedWithPendingOperations = [...this.pending.values()]
+      .some(request => !["health", "register", "listRecoverableResults"].includes(request.method));
     for (const request of this.pending.values()) { clearTimeout(request.timer); request.reject(error); }
     this.pending.clear();
     this.socket.destroy();
@@ -365,6 +389,24 @@ function checkVersionPin(identity: ServiceIdentity, version: string): void {
   const order = compareVersionOrder(pinned, version);
   if (order === undefined || order > 0 || (order === 0 && pinned !== version)) throw new PkmServiceVersionError(pinned, version);
 }
+function newerInstalledVersion(options: PkmServiceBootOptions): string | undefined {
+  const entry = options.serviceEntryPath || path.join(__dirname, "pkm-service-entry.js");
+  if (path.basename(entry) !== "pkm-service-entry.js") return undefined;
+  const installed = readInstalledExtensionBuild(path.resolve(path.dirname(entry), "../.."), "uone.personal-knowledge");
+  return installed && compareVersionOrder(installed.version, options.extensionVersion) === 1 ? installed.version : undefined;
+}
+function checkInstalledVersion(options: PkmServiceBootOptions): void {
+  const installed = newerInstalledVersion(options);
+  if (installed) throw new PkmServiceVersionError(installed, options.extensionVersion);
+}
+function serviceBootOptions(options: PkmServiceClientOptions): PkmServiceBootOptions {
+  const entry = options.serviceEntryPath || path.join(__dirname, "pkm-service-entry.js");
+  if (path.basename(entry) !== "pkm-service-entry.js") return options;
+  const installed = readInstalledExtensionRuntime(path.resolve(path.dirname(entry), "../.."), "uone.personal-knowledge");
+  if (!installed || compareVersionOrder(installed.build.version, options.extensionVersion) !== 1) return options;
+  return { ...options, extensionVersion:installed.build.version,
+    serviceEntryPath:path.join(installed.directory, "dist", "runtime", "pkm-service-entry.js") };
+}
 function pinVersion(identity: ServiceIdentity, version: string): void {
   checkVersionPin(identity, version);
   const file = path.join(identity.serviceDirectory, "service-version.json");
@@ -401,6 +443,33 @@ async function connectPeer(metadata: EndpointMetadata, version: string): Promise
     socket.once("error", rejectConnection);
   });
   return new RpcPeer(socket, metadata, version, value => value === metadata.extensionVersion);
+}
+
+async function compatiblePeer(metadata: EndpointMetadata, version: string): Promise<RpcPeer> {
+  let peer = await connectPeer(metadata, version);
+  try {
+    let health = await peer.request("health");
+    if (health.pid !== metadata.pid || health.nonce !== metadata.nonce
+      || health.extensionVersion !== metadata.extensionVersion) throw new Error("PKM service health identity mismatch.");
+    if (health.capabilities === undefined && version !== metadata.extensionVersion) {
+      // Original protocol-v1 servers bind the wire version before registration.
+      peer.close();
+      peer = await connectPeer(metadata, metadata.extensionVersion);
+      health = await peer.request("health");
+      if (health.pid !== metadata.pid || health.nonce !== metadata.nonce
+        || health.extensionVersion !== metadata.extensionVersion) throw new Error("PKM service health identity mismatch.");
+    }
+    if (health.capabilities !== undefined) {
+      const methods: unknown = health.capabilities?.methods;
+      if (!Array.isArray(methods) || !methods.every(method => typeof method === "string")
+        || !["health", "register"].every(method => methods.includes(method))) {
+        throw new Error("PKM service advertised an invalid protocol capability contract.");
+      }
+      peer.serviceMethods = new Set(methods);
+    }
+    peer.draining = health.draining === true;
+    return peer;
+  } catch (error) { peer.close(); throw error; }
 }
 
 async function lifecycleLock<T>(identity: ServiceIdentity, action: () => Promise<T>, lockName = "lifecycle.lock"): Promise<T> {
@@ -449,36 +518,25 @@ async function ensureService(options: PkmServiceClientOptions): Promise<RpcPeer>
   const identity = pkmServiceIdentity(options);
   prepareDirectories(identity);
   return lifecycleLock(identity, async () => {
-    checkVersionPin(identity, options.extensionVersion);
     let existing = readMetadata(identity);
-    if (existing) {
-      const order = compareVersionOrder(existing.extensionVersion, options.extensionVersion);
-      if (order === undefined || order > 0 || (order === 0 && existing.extensionVersion !== options.extensionVersion)) {
-        throw new PkmServiceVersionError(existing.extensionVersion, options.extensionVersion);
-      }
-    }
     if (existing && alive(existing.pid)) {
-      const peer = await connectPeer(existing, options.extensionVersion);
-      try {
-        const health = await peer.request("health");
-        if (health.pid !== existing.pid || health.nonce !== existing.nonce) throw new Error("PKM service health identity mismatch.");
-        const order = compareVersionOrder(existing.extensionVersion, options.extensionVersion);
-        if (order === 0 && existing.extensionVersion === options.extensionVersion) return peer;
-        if (order === undefined || order >= 0) throw new PkmServiceVersionError(existing.extensionVersion, options.extensionVersion);
-        await peer.request("drain", undefined, LONG_TIMEOUT);
-      } catch (error) { peer.close(); throw error; }
-      finally { if (existing.extensionVersion !== options.extensionVersion) peer.close(); }
-      const deadline = Date.now() + SHORT_TIMEOUT;
+      const peer = await compatiblePeer(existing, options.extensionVersion);
+      if (!peer.draining) return peer;
+      peer.close();
+      const deadline = Date.now() + LONG_TIMEOUT;
       while (alive(existing.pid)) {
-        if (Date.now() >= deadline) throw new Error("PKM service drained but did not exit; no replacement was started.");
+        if (Date.now() >= deadline) throw new Error("PKM service has not completed its explicit drain; no replacement was started.");
         await delay(50);
       }
     }
+    const boot = serviceBootOptions(options);
+    checkInstalledVersion(boot);
+    checkVersionPin(identity, boot.extensionVersion);
     if (existing) cleanupEndpoint(identity, existing);
     else if (identity.ipcDirectory && fs.existsSync(identity.endpoint)) {
       throw new Error("PKM endpoint has no ownership metadata; refusing to unlink it.");
     }
-    const entry = options.serviceEntryPath || path.join(__dirname, "pkm-service-entry.js");
+    const entry = boot.serviceEntryPath || path.join(__dirname, "pkm-service-entry.js");
     if (!fs.statSync(entry).isFile()) throw new Error("Bundled PKM service entry is missing.");
     const logPath = path.join(identity.serviceDirectory, "service.log");
     if (fs.existsSync(logPath)) privateFile(logPath);
@@ -487,7 +545,8 @@ async function ensureService(options: PkmServiceClientOptions): Promise<RpcPeer>
     try {
       child = spawn(process.execPath, [entry, JSON.stringify({
         globalStoragePath: identity.globalStoragePath, knowledgeRoot: identity.knowledgeRoot,
-        stateDirectory: identity.stateDirectory, extensionVersion: options.extensionVersion,
+        stateDirectory: identity.stateDirectory, extensionVersion: boot.extensionVersion,
+        serviceEntryPath: entry,
       })], {
         detached: true, windowsHide: true, stdio: ["ignore", log, log],
         env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
@@ -503,10 +562,10 @@ async function ensureService(options: PkmServiceClientOptions): Promise<RpcPeer>
       if (child.exitCode !== null) throw new Error("PKM service failed to start; inspect the private service log.");
       existing = readMetadata(identity);
       if (existing) {
-        const peer = await connectPeer(existing, options.extensionVersion);
+        const peer = await compatiblePeer(existing, options.extensionVersion);
         try {
           const health = await peer.request("health");
-          if (health.pid !== existing.pid || health.nonce !== existing.nonce || health.extensionVersion !== options.extensionVersion) throw new Error("PKM service startup identity mismatch.");
+          if (health.pid !== existing.pid || health.nonce !== existing.nonce || health.extensionVersion !== boot.extensionVersion) throw new Error("PKM service startup identity mismatch.");
           return peer;
         } catch (error) { peer.close(); throw error; }
       }
@@ -538,6 +597,8 @@ export class PkmServiceClient {
   private readonly ready: Promise<void>;
   private reconnecting?: Promise<void>;
   private intentionalDrain = false;
+  private activeCallbacks = 0;
+  private warnings = new Set<string>();
   private runtime: Record<string, GitHubSyncRuntimeState> = {};
   private readonly execution = new AsyncLocalStorage<ExecuteContext>();
   private readonly progress = new Map<string, Progress>();
@@ -593,16 +654,30 @@ export class PkmServiceClient {
     if (this.options.onError) { try { this.options.onError(normalized); } catch { /* Error callbacks must not reject the transport. */ } }
     else console.error("[PKM service] operation failed; configure onError to receive details.");
   }
+  private warn(message: string): void {
+    if (this.warnings.has(message)) return;
+    this.warnings.add(message);
+    if (this.options.onCompatibilityWarning) {
+      try { this.options.onCompatibilityWarning(message); }
+      catch (error) { this.handleError(error); }
+    }
+    else console.warn(`[PKM service] ${message}`);
+  }
   private async initialize(): Promise<void> {
     const peer = await ensureService(this.options);
     if (this.disposed) { peer.close(); throw new PkmServiceOfflineError("PKM client was disposed during startup."); }
     this.peer = peer;
+    if (peer.metadata.extensionVersion !== this.options.extensionVersion) {
+      this.warn(`PKM service ${peer.metadata.extensionVersion} and this window ${this.options.extensionVersion} use compatible protocol ${PKM_SERVICE_PROTOCOL}. Existing operations remain available; reload/update is recommended for newer features.`);
+    }
     peer.handler = async (method, value) => {
       if (this.disposed) throw new PkmServiceOfflineError();
+      this.activeCallbacks++;
+      try {
       switch (method) {
-        case "shouldExecute": return this.options.shouldExecute ? this.options.shouldExecute(value.targetId, value.reason) : true;
+        case "shouldExecute": return this.options.shouldExecute ? await this.options.shouldExecute(value.targetId, value.reason) : true;
         case "execute":
-          return this.execution.run(value, async () => {
+          return await this.execution.run(value, async () => {
             try { await this.options.execute(value.targetId, value.reason, value.fencingToken); }
             catch (error) {
               const detail = errorData(error);
@@ -611,9 +686,10 @@ export class PkmServiceClient {
               throw reviveError(detail);
             }
           });
-        case "onAutoPaused": return this.options.onAutoPaused?.(value.targetId);
+        case "onAutoPaused": return await this.options.onAutoPaused?.(value.targetId);
         default: throw new Error("Unknown PKM reverse callback.");
       }
+      } finally { this.activeCallbacks--; }
     };
     peer.event = (method, value) => {
       if (method === "onState") {
@@ -621,13 +697,20 @@ export class PkmServiceClient {
         this.options.onState?.(value.targetId, value.state);
       } else if (method === "progress") {
         this.progress.get(value.operationId)?.(value.phase, value.detail);
-      } else if (method === "onError") this.handleError(reviveError(value));
+      } else if (method === "onError") {
+        const error = reviveError(value);
+        if (error instanceof PkmServiceVersionError) this.warn(`PKM ${error.requiredVersion} is available. Update/reload when convenient; compatible operations are not blocked solely by the version number.`);
+        else this.handleError(error);
+      }
+      else if (method === "onCompatibilityWarning") this.warn(value.message);
     };
-    try { this.runtime = await peer.request("register", undefined, LONG_TIMEOUT); }
+    try { this.runtime = await peer.request("register", { clientVersion:this.options.extensionVersion, callbacks:HOST_CALLBACKS }, LONG_TIMEOUT); }
     catch (error) { peer.close(); throw error; }
     peer.onClose = () => {
       if (this.disposed || this.intentionalDrain) return;
-      this.handleError(new PkmServiceOfflineError("PKM service disconnected. Pending operations failed explicitly and were not retried; an idle connection restart is being attempted."));
+      if (peer.disconnectedWithPendingOperations || this.activeCallbacks) {
+        this.handleError(new PkmServiceOfflineError("PKM service disconnected. Pending operations failed explicitly and were not retried; an idle connection restart is being attempted."));
+      } else this.warn("PKM service connection closed while idle; reconnecting without replaying operations.");
       if (!this.reconnecting) {
         this.reconnecting = delay(100).then(async () => {
           if (!this.disposed) await this.initialize();
@@ -639,11 +722,12 @@ export class PkmServiceClient {
     await this.ready;
     await this.reconnecting;
     if (this.disposed || !this.peer) throw new PkmServiceOfflineError("PKM client is disposed.");
+    if (!this.peer.serviceMethods.has(method)) throw new Error(`PKM service does not support '${method}' under ${PKM_SERVICE_PROTOCOL}. Update/reload to use this feature; other compatible operations remain available.`);
     return this.peer.request(method, value, timeout);
   }
 }
 
-interface Connection { peer: RpcPeer; registered: boolean; version?: string; }
+interface Connection { peer: RpcPeer; registered: boolean; version?: string; callbacks?: Set<string>; }
 interface ActiveExecution extends ExecuteContext {
   connection: Connection;
   syncs: Set<Promise<any>>;
@@ -674,6 +758,7 @@ export async function startPkmService(options: PkmServiceBootOptions): Promise<{
 }
 
 async function startPkmServiceRuntime(options: PkmServiceBootOptions): Promise<{ metadata: EndpointMetadata; stopped: Promise<void> }> {
+  checkInstalledVersion(options);
   const identity = pkmServiceIdentity(options);
   prepareDirectories(identity);
   checkVersionPin(identity, options.extensionVersion);
@@ -691,21 +776,22 @@ async function startPkmServiceRuntime(options: PkmServiceBootOptions): Promise<{
   privateDirectory(recoveryDirectory);
   const drainWaiters = new Set<(stopped: boolean) => void>();
   let draining = false, reverseCount = 0;
+  let lifecycleTimer: NodeJS.Timeout | undefined;
   let stopResolve!: () => void;
   const stopped = new Promise<void>(resolve => { stopResolve = resolve; });
   function notifyError(connection: Connection, error: unknown): void { connection.peer.emit("onError", errorData(error)); }
   function matching(connection: Connection): boolean {
-    return connection.registered && connection.version === options.extensionVersion && connection.peer.connected;
+    return connection.registered && HOST_CALLBACKS.every(method => connection.callbacks?.has(method)) && connection.peer.connected;
   }
   function choose(targetId: string, reason: GitHubSyncReason): Connection {
     if (draining) throw new PkmServiceOfflineError("PKM service is draining for a safe-idle upgrade; new sync callbacks are suspended.");
     if (reason === "manual" || reason === "force-local-authority") {
       const requester = initiating.get(targetId);
-      if (!requester || requester.reason !== reason || !matching(requester.connection)) throw new PkmServiceOfflineError("The extension host that requested this manual/force sync is disconnected. Resubmit explicitly from a live matching-version window.");
+      if (!requester || requester.reason !== reason || !matching(requester.connection)) throw new PkmServiceOfflineError("The extension host that requested this manual/force sync is disconnected or lacks the required callbacks. Resubmit explicitly from a live compatible window.");
       return requester.connection;
     }
     const client = [...connections].find(matching);
-    if (!client) throw new PkmServiceOfflineError();
+    if (!client) throw new GitHubSyncDeferredError(new PkmServiceOfflineError().message);
     return client;
   }
   async function reverse(connection: Connection, method: string, value: any): Promise<any> {
@@ -733,12 +819,23 @@ async function startPkmServiceRuntime(options: PkmServiceBootOptions): Promise<{
           if (initiating.get(targetId)?.connection === connection && initiating.get(targetId)?.reason === reason) initiating.delete(targetId);
         }
         return result;
-      } catch (error) { selected.delete(targetId); throw error; }
+      } catch (error) {
+        selected.delete(targetId);
+        if (!connection.peer.connected && reason !== "manual" && reason !== "force-local-authority") {
+          throw new GitHubSyncDeferredError("The Sync host disconnected before execution. Waiting for a connected protocol-compatible host.");
+        }
+        throw error;
+      }
     },
     execute: async (targetId, reason, fencingToken) => {
+      if (draining) throw new GitHubSyncDeferredError("PKM service upgrade fenced this Sync before execution; no Sync callback was started.");
       const connection = selected.get(targetId);
       selected.delete(targetId);
-      if (!connection || !matching(connection)) throw new PkmServiceOfflineError("The selected Sync host disconnected before execution.");
+      if (!connection || !matching(connection)) {
+        const message = "The selected Sync host disconnected before execution.";
+        if (reason !== "manual" && reason !== "force-local-authority") throw new GitHubSyncDeferredError(message);
+        throw new PkmServiceOfflineError(message);
+      }
       if (initiating.get(targetId)?.connection === connection && initiating.get(targetId)?.reason === reason) initiating.delete(targetId);
       const execution: ActiveExecution = { executionId: randomUUID(), targetId, reason, fencingToken, connection, syncs: new Set(), operations: new Set(), persistedOperations: new Set(), accepting: true };
       active.set(execution.executionId, execution);
@@ -747,6 +844,7 @@ async function startPkmServiceRuntime(options: PkmServiceBootOptions): Promise<{
         await reverse(connection, "execute", { executionId: execution.executionId, targetId, reason, fencingToken });
         succeeded = true;
       } catch (error) {
+        if (!connection.peer.connected) throw new PkmServiceExecutionUncertainError();
         if (error instanceof Error && error.name === "GitHubSyncConflictError" && "partialResult" in error && error.partialResult) {
           succeeded = true;
         }
@@ -860,7 +958,8 @@ async function startPkmServiceRuntime(options: PkmServiceBootOptions): Promise<{
     draining = true;
     drainPromise = (async () => {
       const deadline = Date.now() + LONG_TIMEOUT;
-      while (active.size || reverseCount || Object.values(coordinator.snapshot()).some(state => state.status === "syncing")) {
+      // Persisted runtime is display history, not evidence of an in-flight callback.
+      while (active.size || reverseCount) {
         if (Date.now() >= deadline) {
           draining = false; drainPromise = undefined;
           for (const resume of drainWaiters) resume(false);
@@ -869,6 +968,7 @@ async function startPkmServiceRuntime(options: PkmServiceBootOptions): Promise<{
         }
         await delay(50);
       }
+      clearInterval(lifecycleTimer);
       coordinator.dispose();
       for (const resume of drainWaiters) resume(true);
       drainWaiters.clear();
@@ -878,7 +978,7 @@ async function startPkmServiceRuntime(options: PkmServiceBootOptions): Promise<{
         server.close(() => {
           const current = readMetadata(identity);
           if (current?.nonce === metadata.nonce) fs.unlinkSync(metadataPath(identity));
-          if (identity.ipcDirectory) {
+          if (identity.ipcDirectory && (!current || current.nonce === metadata.nonce)) {
             if (fs.existsSync(identity.endpoint)) { owned(identity.endpoint); fs.unlinkSync(identity.endpoint); }
             try { fs.rmdirSync(identity.ipcDirectory); } catch { /* An unexpected file is never removed. */ }
           }
@@ -896,15 +996,18 @@ async function startPkmServiceRuntime(options: PkmServiceBootOptions): Promise<{
     peer.handler = async (method, value, message) => {
       if (connection.version && connection.version !== message.extensionVersion) throw new Error("PKM client changed its version within a connection.");
       connection.version = message.extensionVersion;
-      if (method === "health") return { pid: process.pid, nonce: metadata.nonce, extensionVersion: options.extensionVersion, draining, activeExecutions: active.size };
+      if (method === "health") return { pid: process.pid, nonce: metadata.nonce, extensionVersion: options.extensionVersion, draining, activeExecutions: active.size,
+        capabilities:{ methods:SERVICE_METHODS, callbacks:HOST_CALLBACKS } };
       if (method === "drain") {
         const order = compareVersionOrder(message.extensionVersion, options.extensionVersion);
         if (order === undefined || order < 0) throw new PkmServiceVersionError(options.extensionVersion, message.extensionVersion);
         await drain(); return undefined;
       }
-      if (message.extensionVersion !== options.extensionVersion) throw new PkmServiceVersionError(options.extensionVersion, message.extensionVersion);
       if (method === "register") {
         if (draining) throw new PkmServiceOfflineError("PKM service is draining.");
+        const callbacks: unknown = value?.callbacks === undefined ? HOST_CALLBACKS : value.callbacks;
+        if (!Array.isArray(callbacks) || !callbacks.every(callback => typeof callback === "string")) throw new Error("Invalid PKM host callback capabilities.");
+        connection.callbacks = new Set(callbacks);
         await leadership();
         connection.registered = true;
         return snapshot();
@@ -1026,5 +1129,41 @@ async function startPkmServiceRuntime(options: PkmServiceBootOptions): Promise<{
     coordinator.dispose(); server.close(); throw error;
   }
   server.on("error", () => { for (const connection of connections) notifyError(connection, new Error("PKM private IPC listener failed.")); });
+  let checkingLifecycle = false, lastLifecycleError = "", lastInstalledWarning = "";
+  lifecycleTimer = setInterval(() => {
+    if (checkingLifecycle || draining) return;
+    checkingLifecycle = true;
+    void (async () => {
+      const installed = newerInstalledVersion(options);
+      if (installed && installed !== lastInstalledWarning) {
+        lastInstalledWarning = installed;
+        for (const connection of connections) connection.peer.emit("onCompatibilityWarning", {
+          message:`PKM ${installed} is installed. Compatible service ${options.extensionVersion} remains available; reload/update when convenient for newer features.`,
+        });
+      }
+      if (![...connections].some(matching)) {
+        const current = readMetadata(identity);
+        let entryMissing = false;
+        try { fs.statSync(options.serviceEntryPath || path.join(__dirname, "pkm-service-entry.js")); }
+        catch (error: unknown) {
+          if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") entryMissing = true;
+          else throw error;
+        }
+        if (entryMissing || !current || (identity.ipcDirectory && !fs.existsSync(identity.endpoint))) {
+          console.log(`${new Date().toISOString()} PKM_SERVICE_ORPHAN_DRAIN`);
+          await drain();
+        }
+      }
+      lastLifecycleError = "";
+    })().catch(error => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== lastLifecycleError) {
+        lastLifecycleError = message;
+        console.error(`${new Date().toISOString()} PKM_SERVICE_LIFECYCLE_FAILED`);
+        for (const connection of connections) notifyError(connection, error);
+      }
+    }).finally(() => { checkingLifecycle = false; });
+  }, 5_000);
+  lifecycleTimer.unref();
   return { metadata, stopped };
 }

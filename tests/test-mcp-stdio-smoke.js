@@ -60,7 +60,7 @@ try {
     fs.readFileSync(path.join(repositoryRoot, "resources", "chat_server.py.template"), "utf8")
       .replaceAll("%%CHAT_MCP_VERSION%%", "chat-test"),
   );
-  for (const name of ["recipe_runtime.py", "action_runtime.py", "action_modules.py", "action_run_store.py", "action_recovery.py", "action_components.py", "recipe_health.py", "agent_session_runtime.py", "api_chat_control.py", "mcp_call_guard.py", "diagnostic_log.py"]) {
+  for (const name of ["recipe_runtime.py", "action_runtime.py", "action_modules.py", "action_authoring.py", "action_monitoring.py", "action_azuredevops.py", "action_run_store.py", "action_recovery.py", "action_components.py", "recipe_health.py", "agent_session_runtime.py", "api_chat_control.py", "mcp_call_guard.py", "diagnostic_log.py"]) {
     fs.copyFileSync(path.join(repositoryRoot, "resources", name), path.join(moduleDirectory, name));
   }
   for (const name of ["knowledge_recovery.py", "knowledge_mutations.py", "knowledge_mutations.js", "knowledge_snapshots.py", "asset_classification.py", "asset_classification.js"]) {
@@ -80,6 +80,8 @@ import sys
 import time
 import types
 import uuid
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
@@ -123,7 +125,50 @@ def verify_module_usage(module_directory):
   assert sum(event.get("nodeId") == "first" for event in events) == 2, events
 
 
-async def main():
+class RetrievalBridge:
+    def __enter__(self):
+        self.calls = []
+        owner = self
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def do_POST(self):
+                assert self.headers["X-PKM-Retrieval-Token"] == "local-stdio-fixture"
+                data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                owner.calls.append((self.path, data))
+                status = 200
+                if self.path == "/search":
+                    model = data["route"] in {"semantic", "dual"}
+                    result = {"ok": True, "hits": [], "model_invoked": model,
+                        "retrieval_id": "stdio-receipt" if model else None,
+                        "adaptive": {"applied": False, "original_count": data.get("output_limit", data["limit"]), "returned_count": 0}}
+                elif data["retrieval_id"] == "expired":
+                    status, result = 404, {"ok": False, "error": "Unknown or expired receipt"}
+                elif not data["complete"]:
+                    status, result = 400, {"ok": False, "error": "Complete relevance judgments required"}
+                else:
+                    result = {"ok": True, "recall": 1.0}
+                encoded = json.dumps(result).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        state = pathlib.Path(sys.argv[1]).parent / "retrieval"
+        state.mkdir()
+        (state / "worker.json").write_text(json.dumps({"port": self.server.server_port, "token": "local-stdio-fixture"}))
+        return self
+
+    def __exit__(self, *args):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=3)
+        assert not self.thread.is_alive()
+
+
+async def main(bridge):
     module_directory = pathlib.Path(sys.argv[1])
     verify_module_usage(module_directory)
     sys.path.insert(0, str(module_directory))
@@ -144,6 +189,33 @@ async def main():
             async with Client(transport, timeout=3, init_timeout=3) as client:
                 tools = await asyncio.wait_for(client.list_tools(), 3)
                 by_name = {tool.name: tool for tool in tools}
+                feedback = by_name["retrieval_feedback"]
+                assert feedback.annotations.readOnlyHint is False
+                assert feedback.inputSchema["properties"]["complete"]["default"] is False
+                for route in ["semantic", "dual", "lexical"]:
+                    search = (await client.call_tool("search_knowledge", {"query": "fixture", "limit": 3,
+                        "route": route, "capability_source_ids": ["source-0"]})).structured_content
+                    path, payload = bridge.calls[-1]
+                    assert path == "/search" and payload["limit"] == 15
+                    assert payload["scope"]["source_ids"] == ["source-0"]
+                    if route != "lexical":
+                        assert payload["output_limit"] == 3
+                        assert search["retrieval_id"] == "stdio-receipt" and search["model_invoked"] is True
+                        assert search["adaptive"]["original_count"] == 3
+                    else:
+                        assert "output_limit" not in payload and search["model_invoked"] is False
+                incomplete = (await client.call_tool("retrieval_feedback", {
+                    "retrieval_id": "stdio-receipt", "relevant_source_ids": ["source-0"]})).structured_content
+                assert incomplete["ok"] is False and "Complete" in incomplete["error"]
+                assert bridge.calls[-1][1]["complete"] is False
+                trained = (await client.call_tool("retrieval_feedback", {
+                    "retrieval_id": "stdio-receipt", "relevant_source_ids": ["source-0"], "complete": True})).structured_content
+                assert trained == {"ok": True, "recall": 1.0}
+                assert bridge.calls[-1] == ("/retrieval-feedback", {"retrieval_id": "stdio-receipt",
+                    "relevant_source_ids": ["source-0"], "complete": True})
+                expired = (await client.call_tool("retrieval_feedback", {
+                    "retrieval_id": "expired", "relevant_source_ids": [], "complete": True})).structured_content
+                assert expired["ok"] is False and "expired" in expired["error"]
                 assert {"knowledge_recovery_preview", "knowledge_recovery_apply", "knowledge_snapshot_create",
                     "knowledge_snapshot_status", "knowledge_snapshot_configure",
                     "knowledge_snapshot_restore_preview", "knowledge_snapshot_restore_apply",
@@ -198,7 +270,8 @@ async def main():
                 assert {"action_retrieve", "action_call", "action_run_get", "action_run_cancel"} <= set(by_name)
                 assert {"action_templates", "action_template_create", "action_run_wait", "action_cosmos_configure"} <= set(by_name)
                 templates = (await client.call_tool("action_templates", {})).structured_content
-                assert {"wait", "wait-five-minutes", "user-input", "chatroom-alias", "poll"} == {item["template_id"] for item in templates["templates"]}
+                assert {"wait", "wait-five-minutes", "user-input", "chatroom-alias", "poll", "monitor", "azuredevops-pipeline-status"} == {item["template_id"] for item in templates["templates"]}
+                assert by_name["action_run_events"].annotations.readOnlyHint is True
                 assert {"action_validation_enqueue", "action_validation_status", "action_validation_cancel", "action_validation_resume",
                     "action_module_sets", "action_module_set_load", "action_module_set_import", "action_module_set_export",
                     "action_module_set_remove", "action_implementation_select", "action_graph_check", "action_graph_save"} <= set(by_name)
@@ -206,6 +279,16 @@ async def main():
                 assert by_name["action_call"].annotations.readOnlyHint is False
                 assert by_name["action_module_sets"].annotations.readOnlyHint is True
                 assert by_name["action_graph_check"].annotations.readOnlyHint is True
+                assert by_name["action_definition_check"].annotations.readOnlyHint is True
+                capabilities = (await client.call_tool("action_capabilities", {})).structured_content
+                assert capabilities["authoring"]["implementation_kinds"] == ["program", "pipeline", "mcp"]
+                assert "caller shell" in capabilities["execution_host"]["filesystem"]
+                example = capabilities["authoring"]["examples"]["cli"]
+                checked = (await client.call_tool("action_definition_check", {"definition": example})).structured_content
+                assert checked["ok"] and checked["persisted"] is False and checked["executed"] is False, checked
+                example["implementations"][0]["kind"] = "python"
+                checked = (await client.call_tool("action_definition_check", {"definition": example})).structured_content
+                assert checked["ok"] is False and checked["diagnostics"][0]["allowed_values"] == ["program", "pipeline", "mcp"], checked
                 assert (await client.call_tool("action_module_sets", {})).structured_content["module_sets"] == []
                 assert (await client.call_tool("action_validation_status", {})).structured_content["jobs"] == []
                 block = (await client.call_tool("action_get", {"action_id": "core.date.parse"})).structured_content
@@ -309,11 +392,12 @@ async def main():
                         assert advertised_tool in by_name, (name, advertised_tool)
 
 
-asyncio.run(main())
+with RetrievalBridge() as bridge:
+    asyncio.run(main(bridge))
 `;
   const smokePath = path.join(root, "smoke.py");
   fs.writeFileSync(smokePath, smokeTest);
-  execFileSync("python", [smokePath, moduleDirectory], {
+  execFileSync(process.env.PYTHON || "python", [smokePath, moduleDirectory], {
     cwd: repositoryRoot,
     encoding: "utf8",
     timeout: 30000,

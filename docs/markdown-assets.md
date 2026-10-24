@@ -32,13 +32,16 @@ an unsaved title/category change. Save or close inline Markdown forms before
 managing resources; dirty native Markdown editors also block mutation.
 
 Moving/renaming a document moves its owned resource folder and rebases its managed
-relative references. Copying creates a new Knowledge identity and copies owned
+relative references. Existing legacy `_assets/` references are first migrated
+into that document's owned directory; folder moves do the same for their documents.
+Copying creates a new Knowledge identity and owns the copy's legacy attachments
+without changing the source document. It copies owned
 resources, including unattached diagram sources. Folder move/promote operations
 retain resources and rebase references. A destination collision is refused rather
 than merged or overwritten.
 
 Trash stores an individual document and its resource folder in the same entry,
-records deletion intent for both and restores both without overwriting a
+first owning any legacy attachments, records deletion intent for both and restores both without overwriting a
 destination. Folder Trash includes its contents. Permanent deletion/Empty Trash
 remove that entry's resources with it. Operations that would invalidate another
 document's shared resource references are refused, with the referencing document
@@ -50,10 +53,23 @@ removed; it is never silently removed from another document.
 Existing category `_assets/` references continue to work. Opening a document,
 listing resources, previewing an image or upgrading the extension never migrates
 them. **Preview legacy resource migration** displays a hash-bound copy plan and
-candidate document. Only **Apply reviewed migration** copies the resources into
-the document's `.assets/` folder and rewrites that document. Changed sources,
+candidate document. **Apply reviewed migration**, or an explicit document
+move/Trash operation, copies the resources into the document's `.assets/` folder
+and rewrites that document. Changed sources,
 changed documents, symlinks, escaping paths and conflicting destinations are
-refused. Every old resource is retained, including shared or unowned originals.
+refused. Shared originals are retained until their last Markdown reference
+migrates; then the old file is removed with deletion intent recorded for Sync.
+Unreferenced unrelated files are not swept or guessed to belong to a document.
+An existing document still owns unattached files in its `.assets` folder.
+Selecting one as an explicit recovery source copies it without deleting the
+other document's original, even when no Markdown link currently references it.
+Missing legacy sources fail explicitly instead of moving a document with another
+broken reference.
+For an already broken historical link, **Repair missing legacy resource** lets
+the user explicitly choose its original file from an existing resource directory
+in the same content root. The reviewed, hash-bound plan copies it into the
+document's owned directory, rewrites the link and removes an unshared old source.
+The system never searches by basename and silently guesses an owner.
 
 JSON export/import, Sync bundle/subscription materialization, subscription Fork
 and GitHub dependency transport include owned resources and referenced legacy

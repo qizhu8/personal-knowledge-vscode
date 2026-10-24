@@ -16,6 +16,10 @@
   let library, selected = saved.chatId, panel = PANELS.some(([id]) => id === saved.panel) ? saved.panel : 'lifecycle';
   let view, ui, generation = 0, sequence = 0, attemptChoice, retrievalChoice = 0, retrievalFilter = 'all';
   const fullResults = new Map();
+  const memoryObservations = new Map();
+  const expandedMemoryPieces = new Set();
+  const expandedMemoryInventories = new Set();
+  const memoryPiecePages = new Map();
   const panelGraphs = new Map();
   const list = value => Array.isArray(value) ? value : [];
   const el = (tag, text, className) => {
@@ -165,12 +169,12 @@
     const tileMap = new Map();
     for (const [id, label] of PANELS) {
       const tile = el('button', undefined, 'pkm-vis-tile'); tile.type = 'button'; tile.dataset.panel = id;
-      const name = el('strong', label), body = el('div', undefined, 'pkm-vis-tile-body');
-      tile.append(name, body);
+      const name = el('strong', label);
+      tile.append(name);
       tile.addEventListener('click', () => enlarge(id));
-      tiles.append(tile); tileMap.set(id, { tile, body, label });
+      tiles.append(tile); tileMap.set(id, { tile, label });
     }
-    grid.append(main, tiles);
+    grid.append(tiles, main);
     dashboard.replaceChildren(head, error, grid);
     return { title, status, error, mainTitle, bindings, harness, detail, tileMap };
   }
@@ -279,6 +283,7 @@
       scroller.scrollTop = top; return;
     }
     const attempt = chosenAttempt();
+    if (!attempt && panel === 'memory') { renderMemory(detail); scroller.scrollTop = top; return; }
     if (!attempt) { detail.append(el('p', 'No Harness attempt recorded yet.', 'pkm-vis-muted')); scroller.scrollTop = top; return; }
     detail.append(attemptPicker());
     if (panel === 'retrieval') renderRetrieval(detail, attempt);
@@ -414,20 +419,189 @@
       error => { if (current === generation && chatId === selected) { fullResults.set(key, { error: error.message }); renderDetail(); } });
   }
 
+  function memoryObservation(method, params = {}, refresh = false) {
+    const key = JSON.stringify([selected, method, params]);
+    if (refresh) memoryObservations.delete(key);
+    if (!memoryObservations.has(key)) {
+      if (memoryObservations.size >= 200) memoryObservations.delete(memoryObservations.keys().next().value);
+      const state = { loading:true }, chatId = selected, current = generation;
+      memoryObservations.set(key, state);
+      request(method, params).then(data => { state.data = data; }, error => { state.error = error.message; }).finally(() => {
+        state.loading = false;
+        if (current === generation && chatId === selected && panel === 'memory') {
+          if (method === 'memoryPiece') state.render?.();
+          else renderDetail();
+        }
+      });
+    }
+    return memoryObservations.get(key);
+  }
+  function memoryReadState(host, state) {
+    if (state.loading) host.append(el('p', 'Reading stored Memory…', 'pkm-vis-muted'));
+    else if (state.error) host.append(el('p', state.error, 'pkm-vis-error'));
+    return !state.loading && !state.error;
+  }
+  function renderStoredMemory(detail, attempt) {
+    detail.append(el('h3', '1. Stored Memory — live Chat scope'));
+    if (!view.session.memoryStoreReader) {
+      detail.append(el('p', 'This Host does not provide scoped stored-Memory inspection. Load a compatible Host to inspect it.', 'pkm-vis-muted')); return;
+    }
+    const refresh = button('Refresh stored Memory', () => { memoryObservations.clear(); renderDetail(); });
+    detail.append(refresh);
+    const state = memoryObservation('memoryOverview');
+    if (!memoryReadState(detail, state)) return;
+    const data = state.data, pieces = list(data.pieces);
+    detail.append(el('p', `${data.usage?.pieces ?? 'unknown'} live piece(s), ${data.usage?.bytes ?? 'unknown'} logical bytes. Observed ${new Date(data.observedAt).toLocaleString()}.`));
+    detail.append(el('p', data.note, 'pkm-vis-muted'));
+    if (data.recallPolicy) detail.append(el('p', `History ${data.recallPolicy.historyEnabled ? 'on' : 'off'} · recall window: ${data.recallPolicy.recallDays === null ? 'unlimited' : `${data.recallPolicy.recallDays} days`}${data.recallPolicy.clearedAt ? ` · derived recall cleared through ${new Date(data.recallPolicy.clearedAt).toLocaleString()}` : ''}. Stored pieces are not proof of eligibility for automatic recall.`));
+    if (data.possiblyTruncated) detail.append(el('p', `Bounded view: at most ${data.pieceLimitPerKind} pieces per kind and ${data.edgeLimitPerPiece} edges per topic. Totals and displayed counts differ.`, 'pkm-vis-muted'));
+    const pyramid = el('div', undefined, 'pkm-vis-memory-pyramid');
+    pyramid.setAttribute('role', 'list'); pyramid.setAttribute('aria-label', 'Stored Memory abstraction levels');
+    const inventory = el('details'), pieceItems = new Map();
+    const inventoryChat = selected;
+    inventory.open = expandedMemoryInventories.has(inventoryChat);
+    inventory.addEventListener('toggle',() => {
+      if (inventory.open) expandedMemoryInventories.add(inventoryChat); else expandedMemoryInventories.delete(inventoryChat);
+    });
+    inventory.append(el('summary','Stored piece inventory and provenance'));
+    detail.append(globalThis.PkmAgentHarness.memoryPyramid(data,attempt,piece => {
+      const item = pieceItems.get(piece.id);
+      if (item) { inventory.open = true; item.open = true; item.scrollIntoView({block:'nearest'}); }
+    }),el('small','Blue: prepared reference. Green: recorded sent reference, not proof the current stored revision was sent. Click a block to inspect its source.'));
+    const levels = [...new Set(pieces.map(piece => piece.level))].sort((a, b) => b - a);
+    for (const level of levels) {
+      const members = pieces.filter(piece => piece.level === level);
+      const row = el('section', undefined, 'pkm-vis-memory-level'); row.setAttribute('role', 'listitem');
+      row.style.marginInline = `${Math.min(15, (levels.length - levels.indexOf(level) - 1) * 3)}%`;
+      row.append(el('h4', `Level ${level} · ${members.length} displayed piece(s) · ${members.reduce((sum, p) => sum + p.bytes, 0)} logical bytes`));
+      for (const piece of members) {
+        const item = el('details'), title = el('summary', `${piece.label} · ${piece.kind} · r${piece.revision} · ${piece.summary_current ? 'summary current' : piece.summary ? 'summary stale' : 'no summary'}`);
+        pieceItems.set(piece.id,item);
+        const body = el('div');
+        item.append(title, body);
+        const key = `${selected}:${piece.id}`;
+        item.addEventListener('toggle', () => {
+          if (item.open) {
+            expandedMemoryPieces.add(key);
+            if (!body.childNodes.length) renderMemoryPiece(body, piece.id);
+          } else expandedMemoryPieces.delete(key);
+        });
+        if (expandedMemoryPieces.has(key)) { item.open = true; renderMemoryPiece(body, piece.id, memoryPiecePages.get(key) || 0); }
+        row.append(item);
+      }
+      pyramid.append(row);
+    }
+    if (!pieces.length) pyramid.append(el('p', 'No live stored pieces in this Chat. This does not mean its original history was deleted.'));
+    inventory.append(pyramid);
+    detail.append(inventory, el('small', 'Levels come from stored abstraction edges. Shape is schematic; width is not tokens, capacity or compression.'));
+    if (list(data.edges).length) {
+      const labels = new Map(pieces.map(p => [p.id, p.label]));
+      inventory.append(table(['Parent', 'Relation', 'Child'], data.edges.map(edge => [labels.get(edge.parent), edge.relation, labels.get(edge.child)])));
+    }
+  }
+  function renderMemoryPiece(host, piece, after = 0) {
+    host.replaceChildren();
+    memoryPiecePages.set(`${selected}:${piece}`, after);
+    const state = memoryObservation('memoryPiece', { piece, after });
+    state.render = () => { if (host.isConnected) renderMemoryPiece(host, piece, after); };
+    if (state.loading) {
+      host.append(el('p', 'Loading piece…'));
+      return;
+    }
+    if (!memoryReadState(host, state)) return;
+    const data = state.data;
+    host.append(el('p', `${data.status} · revision ${data.piece.revision} · ${data.summary_current ? 'current summary' : 'summary unavailable or stale'}`));
+    if (data.summary) host.append(el('pre', data.summary.body));
+    for (const statement of list(data.statements)) {
+      const section = el('section');
+      section.append(el('strong', `Statement ${statement.sequence} · ${statement.status}`), el('pre', statement.body ?? 'Content unavailable'));
+      for (const source of list(statement.sources)) {
+        const sourceView = el('div');
+        section.append(el('p', `${source.locator} · revision ${source.revision}`),
+          button('Read original source', async () => {
+            sourceView.replaceChildren(el('p', 'Reading original revision…'));
+            try {
+              const match = /^message:([a-f0-9-]{36})$/.exec(source.locator);
+              if (!match) throw new Error('This source locator is not supported by the Chat reader.');
+              const result = await request('memorySource', { messageId:match[1], revision:source.revision });
+              sourceView.replaceChildren(el('pre', result.content));
+              if (result.truncated) sourceView.append(el('p', `Preview limited to 12,000 of ${result.characters} characters. Open the Chat for the full original.`));
+            } catch (error) { sourceView.replaceChildren(el('p', error.message, 'pkm-vis-error')); }
+          }), sourceView);
+      }
+      section.append(el('small', `Up to ${statement.sourceLimit} source references shown; absence is not proof of verification.`));
+      host.append(section);
+    }
+    if (data.next !== null) host.append(button('Next statement page', () => renderMemoryPiece(host, piece, data.next)));
+    if (after) host.append(button('First statement page', () => renderMemoryPiece(host, piece)));
+  }
   function renderMemory(detail, attempt) {
-    const memory = attempt.memory;
-    detail.append(el('p', 'Memory recalled and sent with this turn, from the recorded Chat memory receipt. Memory organization (writes) after a reply is reported in the Chat Memory panel and is not part of this receipt.', 'pkm-vis-muted'));
+    detail.append(el('h3', 'Collaboration Profiles'));
+    const profiles = attempt?.profileContext;
+    const profileRows = [];
+    for (const kind of ['user', 'agent']) {
+      const profile = profiles?.[kind];
+      const sent = list(attempt?.budgetReceipts).filter(receipt => receipt.status === 'sent' &&
+        list(receipt.contextPlan?.manifest).some(message => message.hash === profiles?.messageHash));
+      profileRows.push([kind === 'user' ? 'User Profile' : 'Agent Profile',
+        profile ? `${profile.name} · r${profile.revision}` : 'Not recorded',
+        profile ? sent.length ? `Sent in ${sent.length} recorded round(s)` : 'Snapshot recorded; transmission not established' : '—']);
+    }
+    detail.append(table(['Persistent context', 'Attempt snapshot', 'Transmission'], profileRows));
+    if (profiles) {
+      const card = el('details'); card.append(el('summary', 'Inspect recorded Profile fields'));
+      const rows = [];
+      for (const kind of ['user', 'agent']) for (const field of ['role','focus','preferences','boundaries']) {
+        if (profiles[kind]?.[field]) rows.push([kind, field, profiles[kind][field]]);
+      }
+      card.append(table(['Profile', 'Field', 'Value'], rows));
+      card.append(el('small', 'Explicit private Profiles, separate from learned Chat topics. Historical snapshot; not the current editable card.'));
+      detail.append(card);
+    }
+    renderStoredMemory(detail,attempt);
+    const memory = attempt?.memory;
+    detail.append(el('h3', '2. This attempt — prepared versus sent'));
     if (!memory) { detail.append(el('p', 'No memory receipt recorded for this attempt.', 'pkm-vis-muted')); return; }
-    const blocks = list(memory.blocks), facts = el('dl', undefined, 'pkm-vis-facts');
+    const blocks = list(memory.blocks), facts = [];
     const byKind = blocks.reduce((map, block) => map.set(block.kind, (map.get(block.kind) || 0) + 1), new Map());
     for (const [term, value] of [
       ['Turn', memory.turn || 'not recorded'], ['Memory model', memory.model || 'not recorded'], ['Duration', duration(memory.durationMs)],
       ['Blocks', blocks.length ? [...byKind].map(([kind, count]) => `${kind}: ${count}`).join(', ') : 'none'],
-      ['Characters sent', String(blocks.reduce((sum, block) => sum + (block.characters || 0), 0))],
+      ['Characters prepared', String(blocks.reduce((sum, block) => sum + (block.characters || 0), 0))],
       ...(memory.error ? [['Error', memory.error]] : []),
-    ]) facts.append(el('dt', term), el('dd', value));
-    detail.append(facts);
-    if (blocks.length) detail.append(table(['Kind', 'Piece', 'Characters'], blocks.map(block => [block.kind, block.piece, block.characters])));
+    ]) facts.push([term, value]);
+    const preparation = el('details'); preparation.append(el('summary', 'Preparation metadata'), table(['Field', 'Recorded value'], facts));
+    detail.append(preparation);
+    if (blocks.length) detail.append(table(['Kind', 'Piece', 'Characters prepared', 'Budget-admitted plans', 'Sent-round membership'], blocks.map(block => {
+      const plans = list(attempt.budgetReceipts).filter(receipt => receipt.contextPlan?.manifest);
+      const includes = receipt => receipt.contextPlan.manifest.some(message => list(message.referenceIds).includes(`memory:${block.piece}`));
+      const admitted = plans.filter(includes), rounds = plans.filter(receipt => receipt.status === 'sent'), sent = rounds.filter(includes);
+      return [block.kind, block.piece, block.characters,
+        !plans.length ? 'Not recorded' : admitted.length ? admitted.map(receipt => `#${receipt.round} (${receipt.status})`).join(', ') : 'Not in recorded plans',
+        !rounds.length ? 'Not recorded' : sent.length ? sent.map(receipt => `#${receipt.round}`).join(', ') : 'Not in recorded sent manifests'];
+    })));
+    if (view.session.memoryStoreReader) for (const block of blocks.filter(block => block.piece)) {
+      const item = el('details'), body = el('div');
+      item.append(el('summary', `Inspect current stored piece: ${block.kind} / ${block.piece}`), body);
+      item.addEventListener('toggle', () => { if (item.open && !body.childNodes.length) renderMemoryPiece(body, block.piece); });
+      detail.append(item);
+    }
+    detail.append(el('h3', '3. Post-reply organization — durable receipt'));
+    if (!view.session.memoryReceiptReader) { detail.append(el('p', 'Durable receipt reader unavailable on this Host.')); return; }
+    const state = memoryObservation('memoryReceipt', { messageId:attempt.messageId });
+    if (memoryReadState(detail, state)) {
+      const receipt = state.data;
+      detail.append(el('p', `Phase: ${receipt.phase || 'not recorded'} · extraction: ${receipt.extract?.status || 'not recorded'} · model calls: ${receipt.accounting?.calls ?? receipt.calls?.length ?? 'not recorded'}`));
+      if (receipt.extract?.error) detail.append(el('p', receipt.extract.error, 'pkm-vis-error'));
+      const accounting = receipt.accounting;
+      if (accounting) detail.append(table(['Independent Memory accounting', 'Recorded value'], [
+        ['Reported input / output tokens', accounting.reportedUsage ? `${accounting.reportedUsage.inputTokens} / ${accounting.reportedUsage.outputTokens}` : 'unknown'],
+        ['Usage coverage: reported / unreported calls', `${accounting.reportedCalls ?? 'unknown'} / ${accounting.unreportedCalls ?? 'unknown'}`],
+        ['Observed local model-call time', duration(accounting.observedDurationMs)],
+      ]), el('p', 'Memory inference is separate from main Chat usage. Missing usage is not zero; local duration is not CPU time or a bill.', 'pkm-vis-muted'));
+      detail.append(el('p', 'This is the latest organization receipt, not the preparation snapshot or a guarantee of semantic truth.', 'pkm-vis-muted'));
+      const raw = el('details'); raw.append(el('summary', 'Inspect durable receipt'), el('pre', JSON.stringify(receipt, null, 2))); detail.append(raw);
+    }
   }
 
   function timelineData(attempt) {
@@ -483,46 +657,11 @@
   function refreshTiles() {
     if (!ui || !view) return;
     renderBindings();
-    const model = view.model, session = view.session, overview = model.overview, ring = model.lifecycle, attempt = chosenAttempt();
+    const session = view.session, overview = view.model.overview;
     const chat = library?.chats.find(item => item.id === selected);
     ui.title.textContent = session.task || chat?.title || 'PKM Chat';
     ui.status.textContent = `${overview.state}${overview.phase?.label ? ` / ${overview.phase.label}` : ''}`;
     ui.status.dataset.state = overview.waiting ? 'waiting' : overview.phase?.kind || overview.state;
-    const fill = (id, ...nodes) => ui.tileMap.get(id).body.replaceChildren(...nodes);
-    const mini = el('div', undefined, 'pkm-vis-mini-ring'); mini.dataset.outcome = ring.outcome; mini.setAttribute('aria-hidden', 'true');
-    ring.stages.forEach(stage => {
-      const dot = el('span', stage.label[0]); dot.dataset.status = stage.status;
-      if (stage.current) dot.setAttribute('aria-current', 'step');
-      dot.title = `${stage.label}: ${stage.status}`; mini.append(dot);
-    });
-    const currentStage = ring.stages.find(stage => stage.current);
-    fill('lifecycle', mini, el('p', `${currentStage.label} / ${ring.outcome}`), el('small', ring.reason || ''));
-    const node = overview.path.at(-1);
-    fill('execution', el('p', node ? `${node.kind}: ${node.title}` : 'No running or waiting node'),
-      el('small', overview.attempt ? `${attempts().length} attempt(s) / ${overview.attempt.toolCalls} tool call(s) / ${overview.attempt.preparedRounds} model round(s)` : 'No attempt recorded'));
-    const steps = list(attempt?.retrieval), lastStep = steps.at(-1)?.receipt;
-    const searches = list(attempt?.toolCalls).filter(call => /search|retriev|recall|grep|find|query/i.test(call.name || '')).length;
-    const bar = el('div', undefined, 'pkm-vis-ratio'); bar.setAttribute('aria-hidden', 'true');
-    if (lastStep) {
-      const total = list(lastStep.candidates).length || 1, fillBar = el('span');
-      fillBar.style.width = `${Math.min(100, (lastStep.selectedCount || 0) / total * 100)}%`; bar.append(fillBar);
-    }
-    fill('retrieval', el('p', lastStep ? `${lastStep.selectedCount ?? 0} of ${list(lastStep.candidates).length} selected` : 'No retrieval receipt'),
-      ...(lastStep ? [bar] : []), el('small', `${steps.length} receipt(s) / ${searches} search-type call(s)`));
-    fill('recipeAction', el('p', `${overview.recipes.length} Recipe / ${overview.actions.length} Action binding(s)`),
-      el('small', [...overview.recipes.map(item => `${item.name}: ${item.status || 'unknown'}`), ...overview.actions.map(item => `${item.actionId || item.runId}: ${item.state || 'unavailable'}`)].slice(0, 3).join(' / ') || 'No explicit binding recorded'));
-    const memory = attempt?.memory;
-    fill('memory', el('p', memory ? memory.error ? 'Memory unavailable for this turn' : `${list(memory.blocks).length} block(s) recalled` : 'No memory receipt'),
-      el('small', memory ? `${memory.model || 'model not recorded'} / ${duration(memory.durationMs)}` : ''));
-    const data = attempt && timelineData(attempt);
-    const spark = el('div', undefined, 'pkm-vis-spark'); spark.setAttribute('aria-hidden', 'true');
-    if (data) for (const stage of data.stages) {
-      const part = el('span'); part.dataset.status = stage.status;
-      part.style.flexGrow = String(Math.max(1, stage.to - stage.from)); part.title = `${stage.label}: ${duration(stage.to - stage.from)}`;
-      spark.append(part);
-    }
-    fill('timeline', ...(data ? [spark, el('p', duration(data.end - data.start)),
-      el('small', `${data.stages.filter(stage => stage.status === 'waiting').length} wait(s) / ${data.calls.length} timed call(s)`)] : [el('p', 'No timed progress')]));
     if (!ui.detail.hidden) renderDetail();
   }
 

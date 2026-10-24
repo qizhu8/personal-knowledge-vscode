@@ -7,6 +7,15 @@ agreed direction; record layouts, SDK transport and default limits are proposals
 
 ## Goal and boundary
 
+The VS Code Workbench renders inside an `allow-scripts` sandbox without
+`allow-same-origin`. Its button icons embed the bundled Codicon stylesheet and
+font as a data URI: external font requests from this opaque origin require CORS
+and can otherwise leave icon-only buttons blank. Both parent and child CSP allow
+data fonts; script nonces and the frame sandbox remain unchanged. The standalone
+HTTP browser Workbench continues serving same-origin icon assets.
+Run `node tests/test-action-button-icons.js` with Playwright available to reproduce
+the legacy blocked font and verify actual sandboxed button glyphs.
+
 An Action is a registered, discoverable, typed functional module. An Action Run
 is one invocation, not the Action itself and not a remote job. A Script, compiled
 program or MCP tool adapter can implement an Action. A Recipe orchestrates Actions;
@@ -24,6 +33,14 @@ an Action.
 Registration does not grant execution permission. Dependency discovery does not
 prove readiness. Linux acceptance does not qualify Windows. Exit code zero does
 not prove a remote transfer completed or an output contract was satisfied.
+
+For the current machine-readable registration schema, non-executing definition
+check, working CLI/HTTP examples, host boundaries and remaining monitor
+limitations, see [Authoring Actions Through MCP](../guides/action-authoring.md).
+The explicit Azure DevOps status and `monitor` templates use the original Run
+and scheduler; they introduce neither a shell polling backend nor cloud writes.
+Monitor event delivery is active-wait/cursor replay, with explicit retention
+gaps, not guaranteed unsolicited wakeup of disconnected agents.
 
 The initial platform targets are Cosmos upload, download, directory listing and
 job progress, plus Singularity job progress. Cosmos here is the file/job platform,

@@ -8,6 +8,7 @@ import { diffLines } from "diff";
 import { ApiChatTool } from "./api-chat-client";
 import { QuestionSchema, questionSchema, validateQuestionAnswer } from "./chat-questions";
 import { cancelChatProcess, chatProcessEnvironment, getChatProcess, launchChatProcess, readChatProcessOutput } from "./chat-process-runtime";
+import { diagnosticLogs } from "./chat-diagnostic-logs";
 
 export interface ApiChatEditChange {
   path: string;
@@ -27,6 +28,7 @@ export const builtinToolCatalog = [
   { name: "list_directory", label: "List directory", permission: "Read directory names; outside-workspace access follows this Chat's permissions" },
   { name: "search_text", label: "Search text", permission: "Workspace literal text search" },
   { name: "session_info", label: "Session information", permission: "Current Session identity, model and advertised tools only" },
+  { name: "diagnostic_logs", label: "Read VS Code diagnostic logs", permission: "Approved host-local VS Code log roots and allowlisted log files only; bounded redacted excerpts, never credentials" },
   { name: "record_harness", label: "Record task / planning / validation", permission: "Explicit current-task observations only; does not execute or complete the managed Task" },
   { name: "list_chats", label: "List Chats", permission: "Read-only workspace Chat IDs, titles and status; no conversation bodies" },
   { name: "ask_chat", label: "Ask another Chat", permission: "Approval required; one idle target per turn; no recursive delegation or automatic Tasks" },
@@ -131,6 +133,14 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
     name, description, parameters: { type: "object", properties: { ...shared, ...properties }, required, additionalProperties: false }, execute,
   });
   const tools = [
+    definition("diagnostic_logs", "Discover/read host-local VS Code and Copilot diagnostic logs without opening arbitrary hidden files. Use discover first, then read with its exact root/file. Only allowlisted logs; redacted bounded diagnostic lines. beforeByte pages older bytes; omittedLines means excerpts within this window were omitted. No credentials, settings, complete prompts or client logs from other machines. This is a separate explicit diagnostic permission, not permission to bypass denied filesystem reads.",
+      { operation: { type:"string", enum:["discover", "read"] }, root:{ type:"string" }, file:{ type:"string", maxLength:1024 },
+        beforeByte:{ type:"integer", minimum:1 }, query:{ type:"string", maxLength:120, description:"Optional literal case-insensitive filter within diagnostic lines in this byte window." } }, ["operation"], async (args, signal) => {
+        active(signal);
+        if (await approve("diagnostic_logs", "Read host-local VS Code diagnostic logs?",
+          "Only approved VS Code log roots and allowlisted diagnostic filenames. Bounded redacted excerpts are sent to the selected model; no credential files or arbitrary hidden paths.", "Read diagnostic logs", signal) !== "Read diagnostic logs") throw new Error("Diagnostic log access declined by the user.");
+        return JSON.stringify(diagnosticLogs(args, signal));
+      }),
     definition("cross_machine_collaboration", "Open PKM Portal (peer-to-peer connection) controls when the user wants to pair two agents or send a remote task. The human can start a Portal (creates a private Room; the initiator controls), accept a Portal link (this machine becomes controlled) or manage an existing pairing over the Chat WebSocket, not SSH. The human selects pairing/target/instruction; opening controls is not evidence of pairing, task acceptance or execution. Never request or pass pairing secrets through the model.", {}, [], async (_args, signal) => {
       active(signal);
       if (!portalContextId) throw new Error("Portal controls require an owning Chat.");
@@ -337,7 +347,7 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
       for (const name of names.slice(0, 100)) { if (JSON.stringify([...chosen, name]).length > 12_000) break; chosen.push(name); }
       return JSON.stringify({ files: chosen, truncated: uris.length >= 200 || names.length > chosen.length });
     }),
-    definition("list_directory", "List up to 200 entries in one directory without reading files or following symlinks. Accepts workspace-relative or absolute paths. Outside-workspace access uses this Chat's permissions; prefer this to native directory tools with separate confirmations.", { path: { type: "string" } }, [], async (args, signal) => {
+    definition("list_directory", "List up to 200 entries in one directory without reading files or following symlinks. Accepts workspace-relative or absolute paths. Hidden dot-directories (including .vscode-server and .copilot), node_modules and sensitive paths are excluded even in Allow All; do not retry through another file/process tool to bypass that boundary. Outside-workspace access uses this Chat's permissions.", { path: { type: "string" } }, [], async (args, signal) => {
       const location = await physicalPath(args, args.path ?? ".", signal);
       if (location.outside && await approve("list_directory", `Read directory ${location.target}?`,
         `Directory: ${location.target}\nOnly entry names and types are sent to the model; files are not read.`, "Allow access", signal, "outside-workspace", location.target) !== "Allow access") throw new Error("Directory access declined by the user.");

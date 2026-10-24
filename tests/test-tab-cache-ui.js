@@ -36,7 +36,7 @@ assert.strictEqual(freshnessContext.isFresh(0, 120000), false);
 assert.strictEqual(freshnessContext.isFresh(1, 120000), true);
 assert.strictEqual(freshnessContext.isFresh(1, 120001), false);
 
-function verifyCachedTab(source, functionName, cacheName, updatedAtName, renderName, loadingName, command) {
+function verifyCachedTab(source, functionName, cacheName, updatedAtName, renderName, loadingName, command, liveRequests = []) {
   const calls = [];
   const context = {
     [cacheName]: { cached: true },
@@ -49,24 +49,25 @@ function verifyCachedTab(source, functionName, cacheName, updatedAtName, renderN
   vm.createContext(context);
   vm.runInContext(`${functionSource(source, functionName)};this.show=${functionName}`, context);
   context.show();
-  assert.deepStrictEqual(plain(calls), [["render", { cached: true }]], `${functionName} must reuse a fresh cache without requesting`);
+  assert.deepStrictEqual(plain(calls), [["render", { cached: true }], ...liveRequests], `${functionName} must reuse a fresh metadata cache while refreshing live state separately`);
 
   calls.length = 0;
   context[updatedAtName] = 50;
   context.show();
-  assert.deepStrictEqual(plain(calls), [["render", { cached: true }], ["ask", command, {}, null, true]],
+  assert.deepStrictEqual(plain(calls), [["render", { cached: true }], ["ask", command, {}, null, true], ...liveRequests],
     `${functionName} must render stale cache before silent revalidation`);
 
   calls.length = 0;
   context[cacheName] = null;
   context[updatedAtName] = 0;
   context.show();
-  assert.deepStrictEqual(plain(calls), [["loading"], ["ask", command, {}, null, true]],
+  assert.deepStrictEqual(plain(calls), [["loading"], ["ask", command, {}, null, true], ...liveRequests],
     `${functionName} must show loading only when no cached data exists`);
 }
 
 verifyCachedTab(mcp, "showMcpTab", "mcpStatusCache", "mcpStatusUpdatedAt", "renderMcpPane", "renderMcpLoading", "checkMcp");
-verifyCachedTab(skillRouter, "showSkillRouterTab", "skillRouterStatusCache", "skillRouterStatusUpdatedAt", "renderSkillRouterPane", "renderSkillRouterLoading", "skillRouterStatus");
+verifyCachedTab(skillRouter, "showSkillRouterTab", "skillRouterStatusCache", "skillRouterStatusUpdatedAt", "renderSkillRouterPane", "renderSkillRouterLoading", "skillRouterStatus",
+  [["ask", "retrievalSolutions", {}, null, true]]);
 
 const githubCalls = [];
 const githubRuntimeRequest = ["ask", "githubSyncRuntimeSnapshot", {}, null, true];

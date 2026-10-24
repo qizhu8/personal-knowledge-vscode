@@ -242,10 +242,44 @@ const copilotElements = {
 };
 const copilotSandbox = {
   window: {},
+  esc: value => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"),
   document: { getElementById: id => copilotElements[id] || null },
 };
 vm.createContext(copilotSandbox);
 vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "src", "webview", "panel", "50-mcp.js"), "utf8"), copilotSandbox);
+const lifecycle = {
+  connectionState:"unverified", configuredGeneration:"generation-a", reason:"Prepared; verify actual client",
+  instances:[
+    { instanceId:"old", pid:123, generation:"generation-old", observedState:"accepting", heartbeatFresh:false },
+    { instanceId:"new<script>", pid:456, generation:"generation-a", observedState:"draining", heartbeatFresh:true, inFlight:2, uncertainCalls:1 },
+  ],
+};
+const lifecycleHtml = copilotSandbox.renderMcpLifecycle(lifecycle);
+assert.match(lifecycleHtml, /actual client connection has been verified/);
+assert.match(lifecycleHtml, /Prepared; verify actual client/);
+assert.match(lifecycleHtml, /generation-old/);
+assert.doesNotMatch(lifecycleHtml, />accepting</, "stale heartbeat must not be displayed as accepting");
+assert.match(lifecycleHtml, />draining</);
+assert.match(lifecycleHtml, /new&lt;script&gt;/);
+assert.match(lifecycleHtml, /<td>2<\/td><td>1<\/td>/);
+assert.match(copilotSandbox.renderMcpLifecycle({ connectionState:"unverified" }), /legacy process state is unknown/);
+assert.equal(copilotSandbox.renderMcpLifecycle(undefined), "");
+const hidden = new Set(["hidden"]), regenerate = { hidden:false };
+copilotElements["mcp-global-warning"] = {
+  classList:{ add:value => hidden.add(value), remove:value => hidden.delete(value) },
+  querySelector:() => regenerate,
+};
+copilotElements["mcp-global-warning-text"] = { textContent:"" };
+copilotSandbox.updateGlobalMcpWarning({ installed:true, current:true, lifecycle:{ ...lifecycle, instances:[] } });
+assert.equal(hidden.has("hidden"), true, "unverified observations alone must not become a permanent global warning");
+assert.equal(copilotElements["mcp-global-warning-text"].textContent, "");
+assert.match(lifecycleHtml, /^<details id="mcp-lifecycle"/, "connection verification detail is collapsed and neutral");
+assert.match(lifecycleHtml, /id="mcp-lifecycle" open/, "actual draining/uncertain instances remain visible");
+copilotSandbox.updateGlobalMcpWarning({ installed:true, current:true, lifecycle });
+assert.equal(hidden.has("hidden"), false, "actual drain/uncertainty still raises an actionable warning");
+assert.equal(regenerate.hidden, true, "regeneration cannot resolve uncertain writes");
+copilotSandbox.updateGlobalMcpWarning({ installed:true, current:true });
+assert.equal(hidden.has("hidden"), true);
 for (const definition of [
   { type: "stdio", command: "/home/person/pkm runtime/bin/python", args: ["/home/person/knowledge/mcp-server/server.py"] },
   { type: "stdio", command: String.raw`C:\Program Files\Microsoft VS Code\Code.exe`, args: [String.raw`C:\PKM\pkm-stdio-proxy.js`, String.raw`C:\PKM\runtime\Scripts\python.exe`, String.raw`C:\PKM\server.py`], env: { ELECTRON_RUN_AS_NODE: "1" } },
@@ -264,6 +298,9 @@ assert.throws(() => copilotSandbox.renderMcpGenerated({ preview: true, configSni
   "invalid generated launch definitions must not produce a success-shaped CLI configuration");
 for (const locale of ["en", "zh-hans"]) {
   const contents = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "resources", "locales", `${locale}.json`), "utf8"));
+  for (const key of ["Title", "Boundary", "Generation", "Instance", "InstanceGeneration", "Observed", "InFlight", "Uncertain", "Empty"]) {
+    assert(contents.strings[`config.lifecycle${key}`], `${locale} must localize lifecycle ${key}`);
+  }
   for (const key of ["Title", "Description", "Prepare", "Merge", "NotReady", "Copy", "Copied", "Schema", "Verify", "Remote"]) {
     assert(contents.strings[`config.copilotRegistration${key}`],
       `${locale} must localize Copilot registration ${key}`);

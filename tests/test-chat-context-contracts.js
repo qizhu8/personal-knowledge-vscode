@@ -18,6 +18,7 @@ const host = {
   Uri:undefined,
   CancellationTokenSource:undefined, LanguageModelChatMessage:undefined,
   LanguageModelTextPart:undefined, LanguageModelToolCallPart:undefined, LanguageModelToolResultPart:undefined,
+  LanguageModelDataPart:undefined, ConfigurationTarget:undefined,
 };
 let ApiChatView;
 try {
@@ -34,6 +35,12 @@ const { chatMemorySegments, retrieveChatMemory, recentChatDialogue } = require("
 const { chatRetrievalReceipt } = require("../dist/chat/chat-retrieval");
 const { estimateInputTokens, validateBudget } = require("../dist/chat/api-chat-models");
 const { fitChatContext } = require("../dist/chat/chat-context");
+const { rootWorkCriterion, workGoalInputs } = require("../dist/chat/chat-work-goal");
+
+function workOutcome(chat, status, reason, evidenceCallIds = [], extra = {}) {
+  return { status, reason, sourceInputIds:workGoalInputs(chat),
+    acceptance:[{ criterion:rootWorkCriterion, verified:status === "resolved", evidenceCallIds }], ...extra };
+}
 
 const profile = {
   id: "synthetic-context-model", model: "synthetic-context-model", label: "Synthetic context model",
@@ -122,6 +129,33 @@ test("Visualization bridge rejects stale Chat requests and returns errors to the
   assert.deepEqual(messages[1].data, { fixture:true });
 });
 
+test("Memory observation is scoped, revision checked and does not create an absent database", async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-memory-observe-controller-"));
+  t.after(() => fs.rmSync(directory, { recursive:true, force:true }));
+  const { messageRevision } = require("../dist/memory/chat-memory-service");
+  const content = "Original evidence";
+  const chat = fixtures.conversation({ messages:[{ id:"original", role:"user", content, status:"complete" }] });
+  const calls = [];
+  const target = { store:{ assertAvailable() {} },
+    memoryDatabasePath:() => path.join(directory, "absent.sqlite3"),
+    memoryScope:() => "authorized/chat",
+    chatMemory:() => ({ inspect:async (...args) => { calls.push(args); return { pieces:[] }; } }),
+  };
+  const read = (method, params = {}) => ApiChatView.prototype.visualizationRequest.call(target, chat, method, params);
+  await assert.rejects(read("memoryOverview"), /did not create/);
+  assert.equal(fs.existsSync(target.memoryDatabasePath()), false);
+  assert.equal(calls.length, 0);
+  fs.writeFileSync(target.memoryDatabasePath(), "");
+  await read("memoryOverview", { scope:"foreign/chat" });
+  assert.deepEqual(calls[0], ["authorized/chat", undefined, 0], "caller cannot replace the owning scope");
+  await assert.rejects(read("memoryPiece", { piece:"piece", after:-1 }), /cursor/);
+  const revision = messageRevision(content);
+  assert.equal((await read("memorySource", { messageId:"original", revision })).content, content);
+  await assert.rejects(read("memorySource", { messageId:"foreign", revision }), /unavailable/);
+  chat.messages[0].content = "Edited evidence";
+  await assert.rejects(read("memorySource", { messageId:"original", revision }), /changed/);
+});
+
 test("managed Visualization uses the authoritative reader and cannot override the owning Session", async t => {
   const previous = host.commands.executeCommand;
   t.after(() => { host.commands.executeCommand = previous; });
@@ -135,7 +169,7 @@ test("managed Visualization uses the authoritative reader and cannot override th
   const target = { store:{ assertAvailable() {} } };
   assert.deepEqual(await ApiChatView.prototype.visualizationRequest.call(target, chat, "snapshot", {
     sessionId:"foreign",
-  }), { authoritative:true, memoryReceiptReader:true });
+  }), { authoritative:true, memoryReceiptReader:true, memoryStoreReader:true });
 });
 
 test("Visualization window reads any non-Trash Chat by id: live records while running, stored records otherwise", async () => {
@@ -336,6 +370,33 @@ test("CTX-R01: recent tool evidence remains retrievable instead of being exclude
     "Recent evidence must be eligible for retrieval once full tool history is no longer replayed");
 });
 
+test("debug follow-ups retain mandatory execution identities and current model configuration without replay", () => {
+  const chat = fixtures.conversation({ modelProvider: "vscode", vscodeModelId: "copilot:fixture-model", messages: [
+    fixtures.message("user", "Help debug the authentication problem"),
+    { ...fixtures.message("assistant", "The server-side network check completed."), toolCalls: [
+      { id: "verified-network", name: "run_process", arguments: '{"program":"python3","arguments":[]}',
+        result: '{"exitCode":0,"stdout":"DNS OK"}', status: "complete" },
+    ] },
+    fixtures.message("user", "PKM Chat still works while Copilot Chat does not"),
+  ] });
+  const automatic = new Map();
+  const messages = ApiChatView.prototype.requestMessages.call({
+    store: { namespace: fixtures.namespace },
+    toolGroups: () => [{ tools: [{ enabled: true, name: "read_file" }, { enabled: true, name: "run_process" }] }],
+  }, chat, "Continue the investigation", automatic);
+  const ledger = messages.find(message => message.content.includes("verified-network"));
+  assert(ledger, "Recent executed-tool identities must not depend on lexical retrieval matching the new question");
+  assert(!automatic.has(ledger), "Execution identities must not be dropped with optional recalled evidence");
+  assert.match(ledger.content, /execution is not undone/);
+  assert.match(ledger.content, /evidenceMessageId/);
+  assert.match(messages[0].content, /copilot:fixture-model/);
+  assert.match(messages[0].content, /actively collect evidence/);
+  assert.match(messages[0].content, /not necessarily the user's local computer/);
+  assert.match(messages[0].content, /Do not login\/logout/);
+  chat.includeHistory = false;
+  assert(!text(requestMessages(chat, "Continue")).includes("verified-network"), "History off must exclude earlier execution metadata");
+});
+
 for (const status of ["failed", "cancelled", "interrupted"]) {
   test(`CTX-R02/${status}: completed tool evidence survives failure of its containing response`, () => {
     const selected = retrieveChatMemory(fixtures.failedToolHistory(status), "docker-beta QPS");
@@ -391,7 +452,7 @@ async function transportFixture(t, source, options = {}) {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
   });
-  const extension = { secrets: { get: async () => "synthetic-key" } };
+  const extension = { secrets: { get: async () => "synthetic-key" }, globalStorageUri: { fsPath: path.join(directory, "private-host") } };
   const retriever = async query => {
     retrievalQueries.push(query);
     if (options.retrievalError) throw options.retrievalError;
@@ -416,10 +477,494 @@ async function transportFixture(t, source, options = {}) {
     profiles: [profile],
     endpoint: `http://127.0.0.1:${server.address().port}/v1`, model: profile.model,
     contextWindow: options.contextWindow || profile.contextWindow,
-    maxOutputTokens: 1024, timeoutMs: 10000, maxToolRounds: 3, loopReviewAfterMs: 60000,
+    maxOutputTokens: 1024, timeoutMs: 10000, maxToolRounds: options.maxToolRounds || 3, loopReviewAfterMs: 60000,
   });
   return { provider, requests, retrievalQueries, errors, directory };
 }
+
+test("debug controller rejects advice-only completion and executes real log/process diagnostics before an explicit outcome", async t => {
+  let logFile;
+  const call = (id, name, args) => ({ tool_calls:[{ index:0, id, type:"function", function:{ name, arguments:JSON.stringify(args) } }] });
+  const fixture = await transportFixture(t, fixtures.conversation({
+    permissionMode:"allow-all", builtinTools:["run_process", "session_info"], vscodeTools:[],
+  }), { tools:true, maxToolRounds:5, respond:(payload, round) => {
+    if (round < 3) assert(payload.tools.some(tool => tool.function.name === "report_work"));
+    if (round === 0) return { content:"You should inspect the logs." };
+    if (round === 1) {
+      assert(text(payload.messages).includes("The objective is still open"));
+      return call("debug-log-probe", "run_process", {
+        program:process.execPath, arguments:["-e", "const fs=require('fs');const s=fs.readFileSync(process.argv[1],'utf8');process.stdout.write(JSON.stringify({diagnosis:s.includes('ECONNREFUSED')?'local endpoint refused connection':'unknown'}))", logFile],
+      });
+    }
+    if (round === 2) {
+      assert(payload.messages.some(message => message.role === "tool" && message.content.includes("local endpoint refused connection")));
+      return call("debug-current-evidence", "session_info", {});
+    }
+    if (round === 3) {
+      const evidence = JSON.parse(payload.messages.filter(message => message.role === "tool").at(-1).content);
+      const diagnostic = evidence.currentAttemptCalls.find(item => item.name === "run_process" && item.status === "complete");
+      assert.equal(diagnostic.id, "debug-log-probe", "the model can discover exact native call identities without guessing");
+      return call("debug-outcome", "report_work", workOutcome(fixture.provider.chat, "resolved",
+        "The requested diagnostic identifies a refused local connection; the user prohibited repair.", [diagnostic.id]));
+    }
+    return { content:"The local log reports ECONNREFUSED; the diagnostic confirmed it. No repair was performed." };
+  } });
+  processWorkspace(t, fixture);
+  logFile = path.join(fixture.directory, "diagnostic.log");
+  fs.writeFileSync(logFile, "fixture endpoint: ECONNREFUSED 127.0.0.1:9999\n");
+  await fixture.provider.send("Please debug this local log and identify the cause; do not change anything. 不要停止调查，不得停止服务；不要把检查当作修复。");
+  const reply = fixture.provider.chat.messages.at(-1);
+  assert.deepEqual(fixture.errors, []);
+  assert.equal(reply.status, "complete", `${reply.error}\n${JSON.stringify(reply.toolCalls)}`);
+  assert.equal(fixture.requests.length, 5);
+  assert.equal(reply.toolCalls.find(call => call.id === "debug-log-probe").status, "complete");
+  assert.equal(fixture.provider.chat.debugRequest.status, "completed");
+  assert.deepEqual(fixture.provider.store.load(fixture.provider.chat.id, false).debugRequest.evidenceCallIds, ["debug-log-probe"]);
+  assert.equal(fs.readFileSync(logFile, "utf8"), "fixture endpoint: ECONNREFUSED 127.0.0.1:9999\n");
+  assert.deepEqual(fixture.errors, []);
+});
+
+test("debug controller bounds summary-only retries and accepts precise blockers without executing commands", async t => {
+  for (const blocked of [false, true]) {
+    const fixture = await transportFixture(t, fixtures.conversation({
+      permissionMode:"read-only", builtinTools:["read_file"], vscodeTools:[],
+    }), { tools:true, respond:(_payload, round) => blocked && round === 1 ? { tool_calls:[{
+      index:0, id:"debug-blocked", type:"function", function:{ name:"report_work", arguments:JSON.stringify(
+        workOutcome(fixture.provider.chat, "needs_input", "The target log path has not been provided.")) },
+    }] } : { content:"Please provide the target log path." } });
+    await fixture.provider.send("你去帮忙debug吧");
+    const reply = fixture.provider.chat.messages.at(-1);
+    assert.equal(reply.status, blocked ? "complete" : "failed", reply.error);
+    assert.equal(fixture.requests.length, blocked ? 3 : 2, `${reply.error}\n${JSON.stringify(fixture.errors)}`);
+    if (!blocked) assert.match(reply.error, /objective is still open/);
+    assert(!reply.toolCalls?.some(call => call.name === "run_process"));
+  }
+});
+
+test("delegated repair continues beyond a successful diagnostic and independently verifies the original symptom", async t => {
+  let target;
+  const call = (id, name, args) => ({ tool_calls:[{ index:0, id, type:"function", function:{ name, arguments:JSON.stringify(args) } }] });
+  const fixture = await transportFixture(t, fixtures.conversation({
+    permissionMode:"allow-all", builtinTools:["run_process"], vscodeTools:[],
+  }), { tools:true, maxToolRounds:10, respond:(payload, round) => {
+    const chat = fixture.provider.chat;
+    if (round === 0) return call("probe", "run_process", {
+      program:process.execPath, arguments:["-e", "console.log(require('fs').readFileSync(process.argv[1],'utf8'))", target],
+    });
+    if (round === 1) return call("partial", "report_work", workOutcome(chat, "continue",
+      "The diagnostic found the wrong value, but the requested fix remains open.", [], { nextAction:"Repair the fixture and run the symptom check." }));
+    if (round === 2) return { content:"The log was read; investigation complete." };
+    if (round === 3) {
+      assert(text(payload.messages).includes("The objective is still open"));
+      return call("repair-and-verify", "run_process", { program:process.execPath, arguments:["-e",
+        "const fs=require('fs'),assert=require('assert/strict');fs.writeFileSync(process.argv[1],'expected');assert.equal(fs.readFileSync(process.argv[1],'utf8'),'expected');console.log('SYMPTOM_CHECK_PASS')", target] });
+    }
+    if (round === 4) return call("resolved", "report_work", workOutcome(chat, "resolved",
+      "Repaired the wrong value and passed the actual symptom check.", ["repair-and-verify"]));
+    return { content:"The requested value is repaired and verified." };
+  } });
+  processWorkspace(t, fixture);
+  target = path.join(fixture.directory, "broken-value.txt");
+  fs.writeFileSync(target, "wrong");
+  await fixture.provider.send("Please fix this fixture's wrong value. It must contain expected, not merely produce a diagnostic.");
+  const chat = fixture.provider.store.load(fixture.provider.chat.id, false);
+  assert.equal(chat.messages.at(-1).status, "complete", chat.messages.at(-1).error);
+  assert.equal(chat.workGoal.status, "resolved");
+  assert.equal(fs.readFileSync(target, "utf8"), "expected", "independent symptom acceptance, not report/tool count");
+  assert.equal(chat.messages.filter(message => message.role === "user").length, 1, "no external next-step coaching");
+  assert.equal(fixture.requests.length, 6);
+  assert(chat.messages.at(-1).toolCalls.find(item => item.id === "repair-and-verify").result.includes("SYMPTOM_CHECK_PASS"));
+});
+
+test("a blocked work goal resumes on the answer without replacing its original objective", async t => {
+  const call = (id, args) => ({ tool_calls:[{ index:0, id, type:"function", function:{ name:"report_work", arguments:JSON.stringify(args) } }] });
+  const fixture = await transportFixture(t, fixtures.conversation({
+    permissionMode:"read-only", builtinTools:["read_file"], vscodeTools:[],
+  }), { tools:true, respond:(payload, round) => {
+    if (round === 0 || round === 2) return call(`waiting-${round}`, workOutcome(fixture.provider.chat, "needs_input",
+      round === 0 ? "The target address is missing." : "The provided address requires host access not currently granted."));
+    return { content:"The goal remains blocked, not resolved." };
+  } });
+  await fixture.provider.send("Please investigate this unavailable endpoint.");
+  const root = structuredClone(fixture.provider.chat.workGoal);
+  await fixture.provider.send("The target is https://example.invalid");
+  const goal = fixture.provider.store.load(fixture.provider.chat.id, false).workGoal;
+  assert.equal(goal.id, root.id);
+  assert.equal(goal.objective, root.objective);
+  assert.equal(goal.status, "needs_input");
+  assert.notEqual(goal.attemptInputId, root.attemptInputId);
+  assert.equal(fixture.requests.length, 4);
+  assert.equal(fixture.provider.chat.messages.at(-1).status, "complete");
+});
+
+test("cancelling delegated work disarms it and explicit resume checks prior effects without replay", async t => {
+  let target, release, entered;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  const call = (id, name, args) => ({ tool_calls:[{ index:0, id, type:"function", function:{ name, arguments:JSON.stringify(args) } }] });
+  const fixture = await transportFixture(t, fixtures.conversation({
+    permissionMode:"allow-all", builtinTools:["run_process"], vscodeTools:[],
+  }), { tools:true, maxToolRounds:8, respond:async (payload, round) => {
+    if (round === 0) return call("effect", "run_process", { program:process.execPath, arguments:["-e",
+      "require('fs').appendFileSync(process.argv[1],'once\\n');console.log('effect recorded')", target] });
+    if (round === 1) {
+      entered();
+      return await new Promise(resolve => { release = () => resolve({ content:"Interrupted answer." }); });
+    }
+    if (round === 2) {
+      assert(text(payload.messages).includes("never replay uncertain effects"));
+      return call("reconcile", "run_process", { program:process.execPath, arguments:["-e",
+        "require('assert/strict').equal(require('fs').readFileSync(process.argv[1],'utf8'),'once\\n');console.log('prior effect verified, not replayed')", target] });
+    }
+    if (round === 3) return call("finish", "report_work", workOutcome(fixture.provider.chat, "resolved",
+      "The authorized effect exists once and was independently rechecked.", ["reconcile"]));
+    return { content:"Verified the existing result without replay." };
+  } });
+  processWorkspace(t, fixture);
+  target = path.join(fixture.directory, "effect.txt");
+  const send = fixture.provider.send("Please implement this one-time fixture effect and verify it.");
+  await waiting;
+  fixture.provider.running.get(fixture.provider.chat.id).abort();
+  await send;
+  release();
+  assert.equal(fixture.provider.chat.workGoal.status, "paused");
+  assert.equal(fs.readFileSync(target, "utf8"), "once\n");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fixture.requests.length, 2, "cancellation cannot auto-start another model round");
+  const id = fixture.provider.chat.workGoal.id;
+  await fixture.provider.send("Continue the existing task, checking the previous effect before doing anything else.");
+  assert.equal(fixture.provider.chat.workGoal.id, id);
+  assert.equal(fixture.provider.chat.workGoal.status, "resolved");
+  assert.equal(fs.readFileSync(target, "utf8"), "once\n", "resume cannot blindly repeat the effect");
+});
+
+test("queue editor survives completion and releases all ordered inputs into a single model request", async t => {
+  let release, started;
+  const ready = new Promise(resolve => { started = resolve; });
+  const finishing = new Promise(resolve => { release = resolve; });
+  const fixture = await transportFixture(t, fixtures.conversation({ context:[], builtinTools:[], vscodeTools:[] }), {
+    respond:async (_payload, round) => {
+      if (round === 0) { started(); await finishing; }
+      return { content:"Fixture completed" };
+    },
+  });
+  const provider = fixture.provider, chat = provider.chat;
+  const running = provider.send("Current request");
+  await ready;
+  const context = provider.captureExecution(chat);
+  const first = { id:require("crypto").randomUUID(), text:"First queued instruction", mode:"task", executionContext:context };
+  const second = { ...first, id:require("crypto").randomUUID(), text:"Second queued instruction" };
+  await provider.handle({ type:"send", text:first.text, mode:"task", submissionId:first.id });
+  await provider.handle({ type:"send", text:second.text, mode:"task", submissionId:second.id });
+  const token = require("crypto").randomUUID();
+  await provider.handle({ type:"beginQueuedEdit", chatId:chat.id, id:first.id, editToken:token });
+  release();
+  await running;
+  await new Promise(resolve => setImmediate(resolve));
+  await provider.drainQueue(chat);
+  assert.equal(fixture.requests.length, 1, "editor holds dispatch after the active request completes");
+  assert.equal(provider.store.load(chat.id, false).queuedInputs[0].editToken, token);
+  await provider.handle({ type:"saveQueuedEdit", chatId:chat.id, id:first.id, editToken:token, text:"Edited first instruction" });
+  assert.equal(chat.messages.at(-1).status, "complete", chat.messages.at(-1).error);
+  assert.equal(fixture.requests.length, 2);
+  assert.deepEqual(fixture.requests[1].messages.filter(message => message.role === "user").slice(-2).map(message => message.content),
+    ["Edited first instruction", "Second queued instruction"]);
+  assert.deepEqual(chat.messages.filter(message => message.submissionId).map(message => message.submissionId), [first.id, second.id]);
+  assert.equal(chat.queuedInputs.length, 0);
+});
+
+test("oversized ordered batch fails before dispatch and retains every queued input without duplicating accepted history", async t => {
+  const fixture = await transportFixture(t, fixtures.conversation({ context:[], builtinTools:[], vscodeTools:[] }), { contextWindow:8192 });
+  const provider = fixture.provider, chat = provider.chat;
+  const context = provider.captureExecution(chat);
+  const batch = Array.from({ length:4 }, (_, index) => ({ id:require("crypto").randomUUID(), text:`${index}: ${"X".repeat(15000)}`,
+    mode:"task", executionContext:context }));
+  for (const input of batch) Object.assign(chat, provider.store.enqueueInput(chat, input));
+  await provider.drainQueue(chat);
+  assert.equal(fixture.requests.length, 0);
+  assert.equal(chat.messages.at(-1).status, "failed");
+  assert.deepEqual(chat.queuedInputs.map(input => input.id), batch.map(input => input.id));
+  assert.equal(chat.messages.filter(message => message.submissionId).length, 0);
+  assert.deepEqual(provider.store.load(chat.id, false).queuedInputs.map(input => input.id), batch.map(input => input.id));
+});
+
+test("four-turn Chat retains distinct retrieval queries and exact sent context manifests after reopening", async t => {
+  const fixture = await transportFixture(t, fixtures.conversation({ context:[], builtinTools:[], vscodeTools:[] }), {
+    candidates:[{ id:"four-turn-source", kind:"note", label:"Synthetic conditions", sourceUri:"pkm://fixture/four-turn",
+      score:1, method:"synthetic:four-turn", selected:false, reason:"Fixture evidence",
+      content:"SYNTHETIC_FOUR_TURN_CONDITION: latency must not exceed 125 ms; never deploy." }],
+  });
+  const evidence = [];
+  for (const query of [
+    "Find the synthetic latency condition.",
+    "Explain that condition without changing its limit.",
+    "Compare a synthetic 130 ms observation with that condition.",
+    "Summarize the conclusion; do not deploy anything.",
+  ]) {
+    await fixture.provider.send(query);
+    const reply = fixture.provider.chat.messages.at(-1);
+    assert.equal(reply.status, "complete", `${reply.error}\n${JSON.stringify(reply.toolCalls)}`);
+    assert.equal(reply.retrieval.query, query);
+    assert.equal(reply.retrieval.phase, "sent");
+    assert(reply.retrieval.candidates.some(candidate => candidate.id === "four-turn-source"
+      && candidate.selected && candidate.evidenceState === "sent"));
+    assertHttpManifests({ ...fixture, requests:[fixture.requests.at(-1)] });
+    assert(text(fixture.requests.at(-1).messages).includes("SYNTHETIC_FOUR_TURN_CONDITION"));
+    assert(text(fixture.requests.at(-1).messages).includes(query));
+    evidence.push({ id:reply.id, attempt:reply.progress.attemptId,
+      hash:createHash("sha256").update(JSON.stringify([reply.retrievalActivity, reply.budgetReceipts])).digest("hex") });
+  }
+  assert.equal(fixture.requests.length, 4);
+  assert.equal(new Set(evidence.map(item => item.attempt)).size, 4);
+  const reopened = new ApiChatStore(path.join(fixture.directory, ".pkm", "state"), fixtures.namespace).load(fixture.provider.chat.id, false);
+  for (const recorded of evidence) {
+    const reply = reopened.messages.find(message => message.id === recorded.id);
+    assert.equal(createHash("sha256").update(JSON.stringify([reply.retrievalActivity, reply.budgetReceipts])).digest("hex"), recorded.hash);
+  }
+  assert.deepEqual(fixture.errors, []);
+});
+
+test("large-window HTTP Chat sends only bounded matching PKM passages and exposes hash-free cost diagnostics", async t => {
+  const candidates = Array.from({ length:13 }, (_, index) => {
+    const content = `# Copilot diagnostics ${index}\n\nCopilot failure evidence ${index}: inspect the current session error; never replay a job.\n\n# Archive\n\n${"Unrelated historical archive content. ".repeat(400)}`;
+    return { id:`pkm://script/script_fixture_${index}`, sourceId:`pkm://script/script_fixture_${index}`,
+      level:"l1-source", kind:"script", label:`Archive ${index}.md`, sourceUri:`pkm://script/script_fixture_${index}`,
+      sourceRevision:`revision-${index}`, contentHash:createHash("sha256").update(content).digest("hex"),
+      score:1 / (60 + index), method:"lexical:fixture", selected:false, reason:"Lexical hit", content };
+  });
+  const pinned = "Pinned manual reference: preserve this exact instruction.\n".repeat(400);
+  const source = fixtures.conversation({ includeHistory:false, context:[{ id:"manual", label:"Manual attachment", content:pinned }],
+    builtinTools:[], vscodeTools:[] });
+  const fixture = await transportFixture(t, source, { candidates });
+  for (const query of ["Explain Copilot failure diagnostics.", "Review Copilot failure evidence without replay."]) {
+    await fixture.provider.send(query);
+    const reply = fixture.provider.chat.messages.at(-1);
+    assert.equal(reply.status, "complete", reply.error);
+    const payload = fixture.requests.at(-1);
+    const references = payload.messages.filter(message => message.content.startsWith("Automatically retrieved PKM references"));
+    assert(references.length > 0, "matching structural passages remain available");
+    assert(estimateInputTokens(references) <= 8000, "the actual dispatched automatic-reference payload must fit the independent budget");
+    assert(text(payload.messages).includes(pinned) && text(payload.messages).includes(query));
+    assert(!text(references).includes("Unrelated historical archive content"));
+    for (const parent of candidates) assert(!text(payload.messages).includes(parent.content));
+    const budget = reply.budgetReceipts.at(-1);
+    assert.equal(budget.contextPlan.automaticKnowledge.inputBudget, 8000);
+    assert.equal(budget.contextPlan.automaticKnowledge.estimatedAfter, estimateInputTokens(references));
+    assert(budget.contextPlan.refinements > 0);
+    assert(reply.retrieval.candidates.some(candidate => candidate.level === "l2-passage" && candidate.selected));
+    const result = await fixture.provider.agentControl("get", { chatId:fixture.provider.chat.id });
+    assert.equal(result.reply.context.roundCount, 1);
+    assert.equal(result.reply.context.rounds[0].automaticKnowledge.inputBudget, 8000);
+    assert(!/\b[a-f0-9]{64}\b/.test(JSON.stringify(result.reply.context)), "default diagnostics must not contain source hashes or manifests");
+    assert(Buffer.byteLength(JSON.stringify(result.reply.context)) < 3000);
+    assertHttpManifests({ ...fixture, requests:[payload] });
+  }
+  assert.deepEqual(fixture.errors, []);
+});
+
+test("Profile snapshots reach actual HTTP model rounds, remain stable during edits, and next attempts use current revisions", async t => {
+  const { PersonaProfileStore } = require("../dist/chat/persona-profiles");
+  let store, originalUser, agent;
+  const fixture = await transportFixture(t, fixtures.conversation({ includeHistory:false,
+    permissionMode:"allow-all", context:[], builtinTools:["session_info"], vscodeTools:[] }), {
+    tools:true, respond:(_payload, round) => {
+      if (round === 0) {
+        store.save("user", { ...originalUser, preferences:"PROFILE_REVISION_TWO" }, originalUser);
+        return { tool_calls:[{ index:0, id:"profile-session", type:"function", function:{ name:"session_info", arguments:"{}" } }] };
+      }
+      return { content:"Profile transport fixture answer" };
+    },
+  });
+  store = new PersonaProfileStore(path.join(fixture.directory, "private-host"), require("../dist/knowledge/filestore").getStorePath());
+  const card = { name:"Explicit developer", role:"SDE", focus:"Correctness", preferences:"PROFILE_REVISION_ONE", boundaries:"No extra authority" };
+  originalUser = store.save("user", card);
+  agent = store.save("agent", { ...card, preferences:"EXPLICIT_AGENT_PROFILE" });
+  fixture.provider.chat.agentProfileId = agent.id;
+  await fixture.provider.send("Inspect identity with explicit profile context.");
+  const first = fixture.provider.chat.messages.at(-1);
+  assert.equal(first.status, "complete", first.error);
+  assert.equal(fixture.requests.length, 2);
+  for (const payload of fixture.requests) {
+    assert(text(payload.messages).includes("PROFILE_REVISION_ONE"));
+    assert(!text(payload.messages).includes("PROFILE_REVISION_TWO"));
+    assert(text(payload.messages).includes("EXPLICIT_AGENT_PROFILE"));
+  }
+  assert.equal(first.profileContext.user.revision, 1);
+  assert(first.budgetReceipts.every(r => r.status === "sent" && r.contextPlan.manifest.some(m => m.hash === first.profileContext.messageHash)));
+  const originalSnapshot = JSON.stringify(first.profileContext);
+  assertHttpManifests(fixture);
+  await fixture.provider.send("Use next attempt preferences.");
+  assert(text(fixture.requests.at(-1).messages).includes("PROFILE_REVISION_TWO"));
+  assert.equal(fixture.provider.chat.messages.at(-1).profileContext.user.revision, 2);
+  store.delete(agent);
+  await assert.rejects(fixture.provider.send("Deleted assignment must not silently fall back."), /unavailable or deleted/);
+  const loaded = fixture.provider.store.load(fixture.provider.chat.id, false);
+  assert.equal(JSON.stringify(loaded.messages.find(m => m.id === first.id).profileContext), originalSnapshot);
+  assertHttpManifests({ ...fixture, requests:fixture.requests.slice(2) });
+});
+
+test("Profile retry is a new attempt, keeps historical snapshot, and budget overflow dispatches no model request", async t => {
+  const { PersonaProfileStore } = require("../dist/chat/persona-profiles");
+  const fixture = await transportFixture(t, fixtures.conversation({ includeHistory:false, context:[], builtinTools:[], vscodeTools:[] }), {
+    respond:(_payload, round) => round === 0 ? {} : { content:"Retried with edited Profile" },
+  });
+  const store = new PersonaProfileStore(path.join(fixture.directory, "private-host"), require("../dist/knowledge/filestore").getStorePath());
+  const card = { name:"User", role:"", focus:"", preferences:"RETRY_PROFILE_ONE", boundaries:"" };
+  const original = store.save("user", card);
+  const question = "Answer with current Profile";
+  await fixture.provider.send(question);
+  const first = fixture.provider.chat.messages.at(-1);
+  assert.equal(first.status, "failed");
+  store.save("user", { ...card, preferences:"RETRY_PROFILE_TWO" }, original);
+  await fixture.provider.send(question, fixture.provider.chat, undefined, { replyId:first.id, inputId:first.inputId });
+  const retry = fixture.provider.chat.messages.at(-1);
+  assert.equal(retry.status, "complete", retry.error);
+  assert.equal(retry.profileContext.user.revision, 2);
+  assert.equal(first.profileContext.user.revision, 1);
+  assert.equal(retry.progress.retryOf, first.progress.attemptId);
+  assert(text(fixture.requests.at(-1).messages).includes("RETRY_PROFILE_TWO"));
+  const settings = fixture.provider.settings();
+  fixture.provider.settings = () => ({ ...settings, contextWindow:1280 });
+  const sent = fixture.requests.length;
+  await fixture.provider.send("Required Profile must fit without truncation.");
+  assert.equal(fixture.requests.length, sent);
+  assert.equal(fixture.provider.chat.messages.at(-1).status, "failed");
+  assert.match(fixture.provider.chat.messages.at(-1).error, /budget|Context/);
+});
+
+test("Portal actual model send excludes controlled-user private Profiles unless an explicit request snapshot is provided", async t => {
+  const { PersonaProfileStore, portalPersonaSnapshot } = require("../dist/chat/persona-profiles");
+  const fixture = await transportFixture(t, fixtures.conversation({ includeHistory:false, context:[], builtinTools:[], vscodeTools:[] }));
+  const store = new PersonaProfileStore(path.join(fixture.directory, "private-host"), require("../dist/knowledge/filestore").getStorePath());
+  const card = { name:"Controlled user", role:"", focus:"", preferences:"CONTROLLED_PRIVATE_PROFILE", boundaries:"" };
+  store.save("user", card);
+  fixture.provider.openStore = () => fixture.provider.store;
+  fixture.provider.retrieval = undefined;
+  fixture.provider.requestPermission = async () => false;
+  await fixture.provider.executeRemoteTask("No implicit private profile", new AbortController().signal, require("node:crypto").randomUUID(), fixture.provider.chat.id);
+  assert(!text(fixture.requests.at(-1).messages).includes("CONTROLLED_PRIVATE_PROFILE"));
+  assert.equal(fixture.provider.chat.messages.at(-1).profileContext, undefined);
+  const controller = new PersonaProfileStore(path.join(fixture.directory, "controller-private"), fixture.directory);
+  controller.save("user", { ...card, preferences:"EXPLICIT_CONTROLLER_PROFILE" });
+  const snapshot = portalPersonaSnapshot(controller.capture());
+  await fixture.provider.executeRemoteTask("Apply only approved snapshot", new AbortController().signal, require("node:crypto").randomUUID(),
+    fixture.provider.chat.id, undefined, undefined, snapshot);
+  assert(text(fixture.requests.at(-1).messages).includes("EXPLICIT_CONTROLLER_PROFILE"));
+  assert(!text(fixture.requests.at(-1).messages).includes("CONTROLLED_PRIVATE_PROFILE"));
+  assert.equal(fixture.provider.chat.messages.at(-1).profileContext.source, "portal-explicit");
+  assert.equal(fixture.provider.remoteProfiles.size, 0);
+});
+
+test("Profile-assigned Chat adopts model/provider switches and preserves pinned text and native images without HTTP fallback", async t => {
+  const { PersonaProfileStore } = require("../dist/chat/persona-profiles");
+  const { vscodeModelProfile } = require("../dist/chat/api-chat-vscode");
+  const { decodeChatImage } = require("../dist/chat/api-chat-client");
+  class TextPart { constructor(value) { this.value = value; } }
+  class DataPart { constructor(data, mimeType) { Object.assign(this, { data, mimeType }); } }
+  const previous = { ...host }, nativeRequests = [];
+  const makeModel = id => ({
+    id, vendor:"profile-fixture", name:id, maxInputTokens:262144, capabilities:{ imageInput:true },
+    countTokens:async value => Buffer.byteLength(typeof value === "string" ? value : JSON.stringify(value), "utf8"),
+    sendRequest:async (messages, options) => {
+      nativeRequests.push({ id, messages, options });
+      return { stream:(async function* () { yield new TextPart(`Answer from ${id}`); })() };
+    },
+  });
+  const models = [makeModel("vision-one"), makeModel("vision-two")];
+  let providerChoice = "native", inputs = [];
+  const cfg = { get:(_key, fallback) => fallback, update:async () => {} };
+  Object.assign(host, {
+    lm:{ tools:[], selectChatModels:async () => models },
+    LanguageModelTextPart:TextPart, LanguageModelDataPart:DataPart,
+    LanguageModelChatMessage:{ User:content => ({ role:1, content }), Assistant:content => ({ role:2, content }) },
+    CancellationTokenSource:class { token = {}; cancel() {} dispose() {} },
+    ConfigurationTarget:{ Global:1 },
+    workspace:{ ...host.workspace, getConfiguration:() => cfg },
+    window:{ ...host.window,
+      showQuickPick:async items => providerChoice === "native" ? items[0] : items.find(item => item.value === "openai-compatible"),
+      showInputBox:async () => inputs.shift(),
+    },
+  });
+  t.after(() => { for (const key of Object.keys(host)) delete host[key]; Object.assign(host, previous); });
+  const pinned = { id:"pinned-text", label:"requirements.txt", content:"PINNED_PROFILE_REQUIREMENT\nKeep exact attachment text: <profile> & \"quoted\"." };
+  const fixture = await transportFixture(t, fixtures.conversation({ includeHistory:false,
+    context:[pinned], builtinTools:[], vscodeTools:[] }));
+  const provider = fixture.provider, base = provider.settings();
+  const httpModels = [profile, { ...profile, id:"profile-http-two", model:"profile-http-two", label:"HTTP two" }];
+  provider.settings = () => {
+    const native = provider.chat.modelProvider === "vscode";
+    const available = native ? models.map(vscodeModelProfile) : httpModels;
+    const selected = available.find(item => item.id === (native ? provider.chat.vscodeModelId : provider.chat.modelProfileId)) || available[0];
+    return { ...base, provider:native ? "vscode" : "openai-compatible", profiles:available,
+      selectedProfile:selected, model:selected.model,
+      contextWindow:provider.chat.contextWindow || base.contextWindow,
+      maxOutputTokens:provider.chat.maxOutputTokens || base.maxOutputTokens };
+  };
+  const profiles = new PersonaProfileStore(path.join(fixture.directory, "private-host"), require("../dist/knowledge/filestore").getStorePath());
+  profiles.save("user", { name:"User", role:"", focus:"", preferences:"COMBINATION_USER_PROFILE", boundaries:"" });
+  const agent = profiles.save("agent", { name:"Agent", role:"SDE", focus:"Tests", preferences:"COMBINATION_ASSIGNED_AGENT", boundaries:"No authority" });
+  provider.chat.agentProfileId = agent.id;
+  await provider.send("First HTTP model with pinned attachment");
+  await provider.handle({ type:"model", value:httpModels[1].id });
+  await provider.send("Second HTTP model keeps assigned Agent");
+  assert.equal(fixture.requests[0].model, profile.model);
+  assert.equal(fixture.requests[1].model, httpModels[1].model);
+  assert.equal(await provider.chooseVscodeModel(provider.chat), true);
+  const image = { label:"profile-image.png", mimeType:"image/png",
+    dataBase64:"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a5wAAAABJRU5ErkJggg==" };
+  provider.chat.images = [image];
+  await provider.send("Native image with Profile and pinned text");
+  assert.equal(provider.chat.messages.at(-1).status, "complete", provider.chat.messages.at(-1).error);
+  await provider.handle({ type:"model", value:vscodeModelProfile(models[1]).id });
+  provider.chat.images = [image];
+  await provider.send("Switch native model, keep Profile and image");
+  assert.equal(provider.chat.messages.at(-1).status, "complete", provider.chat.messages.at(-1).error);
+  assert.deepEqual(nativeRequests.map(request => request.id), ["vision-one", "vision-two"]);
+  for (const request of nativeRequests) {
+    const parts = request.messages.flatMap(message => message.content);
+    const data = parts.find(part => part instanceof DataPart);
+    assert(data, "The actual native request must contain an image data part, not a textual placeholder");
+    assert(Buffer.from(data.data).equals(decodeChatImage(image)));
+    assert.equal(data.mimeType, image.mimeType);
+    assert(parts.some(part => typeof part.value === "string" && part.value.includes(pinned.content)));
+    assert(JSON.stringify(request.messages).includes("COMBINATION_ASSIGNED_AGENT"));
+    assert(JSON.stringify(request.messages).includes("COMBINATION_USER_PROFILE"));
+  }
+  providerChoice = "http";
+  inputs = [base.endpoint, httpModels[1].id, ""];
+  await provider.handle({ type:"settings" });
+  await provider.send("Back to HTTP with same explicit assignment and pinned text");
+  assert.equal(fixture.requests.length, 3);
+  assert.equal(fixture.requests.at(-1).model, httpModels[1].model);
+  for (const payload of fixture.requests) {
+    assert(text(payload.messages).includes(pinned.content));
+    assert(text(payload.messages).includes("COMBINATION_ASSIGNED_AGENT"));
+    assert(text(payload.messages).includes("COMBINATION_USER_PROFILE"));
+  }
+  const sent = fixture.requests.length;
+  provider.chat.images = [image];
+  await provider.send("HTTP must explicitly reject image input, not drop it or switch models");
+  const rejected = provider.chat.messages.at(-1);
+  assert.equal(rejected.status, "failed");
+  assert.match(rejected.error, /Direct HTTP image transport/);
+  assert.equal(fixture.requests.length, sent);
+  assert.equal(nativeRequests.length, 2);
+  assert.equal(provider.chat.agentProfileId, agent.id);
+  const restored = provider.store.load(provider.chat.id, false);
+  assert.equal(restored.agentProfileId, agent.id);
+  assert.deepEqual(restored.context, [pinned]);
+  const replies = restored.messages.filter(message => message.role === "assistant");
+  assert.equal(replies.length, 6);
+  for (const reply of replies) {
+    assert.equal(reply.profileContext.agent.id, agent.id);
+    assert.equal(reply.profileContext.agent.revision, 1);
+    assert.equal(reply.profileContext.user.revision, 1);
+    if (reply.status === "complete") {
+      assert(reply.budgetReceipts.every(receipt => receipt.status === "sent"
+        && receipt.contextPlan.manifest.some(item => item.hash === reply.profileContext.messageHash)));
+    }
+  }
+  assert.equal(restored.messages.filter(message => message.role === "user" && message.images?.length).length, 3);
+});
 
 test("transport-child permission signals retain the original attempt owner", async () => {
   const owner = new AbortController(), child = new AbortController();
@@ -871,7 +1416,7 @@ test("public explanation and conclusion reuse actual streamed rounds, persist ex
     reply.publicOutputSegments.map(segment => reply.content.slice(segment.start, segment.end)));
 });
 
-test("CTX-M01/M02/M03: actual HTTP uses one measured selection, refines only one byte over and stops at the first fitting subset", async t => {
+test("CTX-M01/M02/M03: actual HTTP refines long automatic knowledge independently of the model window boundary", async t => {
   const body = "# Latency study\n\n" + "Unrelated background. ".repeat(400) + "\n\nlatency must not exceed 125 ms; do not deploy.\n";
   const candidate = { id:"measured-source", level:"l1-source", sourceId:"pkm://fixture/measured",
     sourceRevision:"r1", contentHash:"a".repeat(64), kind:"note", label:"Measured evidence",
@@ -889,17 +1434,13 @@ test("CTX-M01/M02/M03: actual HTTP uses one measured selection, refines only one
     assert.equal(fixture.retrievalQueries.length, 1);
     assert.equal(plan.estimatedBefore, before);
     assert.equal(plan.inputBudget, before + delta);
-    assert.equal(plan.refinements, delta < 0 ? 1 : 0);
+    assert.equal(plan.refinements, 1);
     assert(plan.estimatedAfter <= plan.inputBudget);
+    assert(plan.automaticKnowledge.estimatedAfter <= 8000);
     const transmitted = text(fixture.requests[0].messages);
-    if (delta < 0) {
-      assert(!transmitted.includes("Unrelated background."));
-      assert(transmitted.includes("latency must not exceed 125 ms; do not deploy."));
-      assert(reply.retrieval.candidates.some(item => item.selected && item.level === "l2-passage"));
-    } else {
-      assert(transmitted.includes(body), "A fitting whole source must not be rewritten or refined");
-      assert.equal(plan.stopReason, "fits");
-    }
+    assert(!transmitted.includes("Unrelated background."));
+    assert(transmitted.includes("latency must not exceed 125 ms; do not deploy."));
+    assert(reply.retrieval.candidates.some(item => item.selected && item.level === "l2-passage"));
     assertHttpManifests(fixture);
     assert.deepEqual(fixture.errors, []);
   }
@@ -1225,7 +1766,48 @@ test("CTX-M12: real HTTP steering is persisted once, or remains queued when the 
   }
 });
 
-test("CTX-M14: native transformed prompts and schemas match persisted transport hashes and tokenizer accounting", async t => {
+test("native VS Code debug completion uses the same bounded execution gate and counts tokens as INFO", async t => {
+  class TextPart { constructor(value) { this.value = value; } }
+  class CallPart { constructor(callId, name, input) { Object.assign(this, { callId, name, input }); } }
+  class ResultPart { constructor(callId, content) { Object.assign(this, { callId, content }); } }
+  const previous = { ...host }, prompts = [];
+  const model = { id:"native-debug", vendor:"fixture", name:"Native debug", maxInputTokens:262144,
+    capabilities:{ toolCalling:true }, countTokens:async () => 100,
+    sendRequest:async (messages, options) => {
+      prompts.push({ messages, options });
+      return { stream:(async function* () {
+        if (prompts.length === 1) yield new TextPart("Please paste the logs.");
+        else if (prompts.length === 2) yield new CallPart("native-debug-process", "run_process",
+          { program:process.execPath, arguments:["-e", "process.stdout.write('NATIVE_DEBUG_ACTUAL_DIAGNOSTIC')"] });
+        else if (prompts.length === 3) yield new CallPart("native-debug-finish", "report_work",
+          workOutcome(fixture.provider.chat, "resolved", "Executed the requested local diagnostic; the user did not request a repair.", ["native-debug-process"]));
+        else yield new TextPart("The actual local diagnostic completed.");
+      })() };
+    },
+  };
+  Object.assign(host, { lm:{ tools:[], selectChatModels:async () => [model] },
+    LanguageModelTextPart:TextPart, LanguageModelToolCallPart:CallPart, LanguageModelToolResultPart:ResultPart,
+    LanguageModelChatMessage:{ User:content => ({ role:1, content }), Assistant:content => ({ role:2, content }) },
+    CancellationTokenSource:class { token = {}; cancel() {} dispose() {} },
+  });
+  t.after(() => { for (const key of Object.keys(host)) delete host[key]; Object.assign(host, previous); });
+  const fixture = await transportFixture(t, fixtures.conversation({
+    builtinTools:["run_process"], vscodeTools:[], permissionMode:"allow-all",
+  }), { tools:true, nativeModel:model });
+  processWorkspace(t, fixture);
+  await fixture.provider.send("Debug this local diagnostic, without modifying anything.");
+  const reply = fixture.provider.chat.messages.at(-1);
+  assert.equal(reply.status, "complete", reply.error);
+  assert.equal(prompts.length, 4);
+  assert.equal(fixture.requests.length, 0);
+  assert.equal(JSON.parse(reply.toolCalls[0].result).stdout, "NATIVE_DEBUG_ACTUAL_DIAGNOSTIC");
+  assert.equal(fixture.provider.chat.debugRequest.status, "completed");
+  const counts = reply.progress.steps.filter(step => step.operation === "token-count");
+  assert(counts.length > 0);
+  assert(counts.every(step => step.category === "info"), "local tokenizer work is never a model inference activity");
+});
+
+test("CTX-M14: native transformed prompts, Profiles and schemas match persisted transport hashes and tokenizer accounting", async t => {
   class TextPart { constructor(value) { this.value = value; } }
   class CallPart { constructor(callId, name, input) { Object.assign(this, { callId, name, input }); } }
   class ResultPart { constructor(callId, content) { Object.assign(this, { callId, content }); } }
@@ -1254,6 +1836,9 @@ test("CTX-M14: native transformed prompts and schemas match persisted transport 
     builtinTools:["run_process"], vscodeTools:[], permissionMode:"allow-all",
   }), { tools:true, nativeModel:model });
   processWorkspace(t, fixture);
+  const { PersonaProfileStore } = require("../dist/chat/persona-profiles");
+  const profiles = new PersonaProfileStore(path.join(fixture.directory, "private-host"), require("../dist/knowledge/filestore").getStorePath());
+  profiles.save("user", { name:"Native user", role:"", focus:"", preferences:"NATIVE_PROFILE_REQUIRED_CONTEXT", boundaries:"" });
   await fixture.provider.send("Run the native local process probe.");
   const stored = fixture.provider.store.load(fixture.provider.chat.id, false).messages.at(-1);
   assert.equal(stored.status, "complete", stored.error);
@@ -1271,6 +1856,8 @@ test("CTX-M14: native transformed prompts and schemas match persisted transport 
   assert.equal(stored.budgetReceipts.length, 2);
   for (const [index, prompt] of prompts.entries()) {
     const receipt = stored.budgetReceipts[index];
+    assert(JSON.stringify(prompt.messages).includes("NATIVE_PROFILE_REQUIRED_CONTEXT"));
+    assert(receipt.contextPlan.manifest.some(item => item.hash === stored.profileContext.messageHash));
     assert.equal(receipt.transport.provider, "vscode");
     assert.equal(receipt.transport.countingMethod, "vscode-countTokens-plus-overhead");
     assert.deepEqual(receipt.transport.messageHashes, prompt.messages.map(digest));

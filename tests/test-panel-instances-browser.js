@@ -16,7 +16,10 @@ vm.runInNewContext(fs.readFileSync(path.join(root,'dist/ui/action-browser.js'),'
     return require(name);
   }
 });
-function embedded(snapshot){return exportsObject.renderEmbeddedActionWorkbench({cspSource:'http://pkm.test',asWebviewUri:uri=>uri.replace(root+'/dist/webview','http://pkm.test')},{extensionUri:root,extensionPath:root},snapshot);}
+function embedded(snapshot){
+ const document=exportsObject.renderEmbeddedActionWorkbench({cspSource:'http://pkm.test',asWebviewUri:uri=>uri.replace(root+'/dist/webview','http://pkm.test')},{extensionUri:root,extensionPath:root},snapshot);
+ return document.replace(/(<script nonce="[a-f0-9]+">)/, '$1window.__cspViolations=[];window.addEventListener("securitypolicyviolation",event=>window.__cspViolations.push(event.violatedDirective));');
+}
 let html=fs.readFileSync(path.join(webview,'panel.html'),'utf8').replaceAll('%%CSP_SOURCE%%',"'self'").replaceAll('%%PKM_VERSION%%','test');
 const assets={PANEL_JS:'panel.js',PANEL_CSS:'panel.css',CODICON_CSS:'codicon.css',AGENT_HARNESS_CSS:'agent-harness.css',MARKED_SRC:'marked.umd.js',HLJS_SRC:'hljs.js',HLJS_CSS:'hljs.css',KATEX_SRC:'katex.js',KATEX_CSS:'katex.css',CYTOSCAPE_SRC:'cytoscape.js',MERMAID_SRC:'mermaid.js',FORCEGRAPH3D_SRC:'forcegraph3d.js'};
 for(const [key,file]of Object.entries(assets))html=html.replaceAll('%%'+key+'%%','http://pkm.test/'+file);

@@ -3,6 +3,13 @@ import { GitHubSyncContentRepairError } from "./github-sync-content-repair";
 export type GitHubSyncReason = "startup" | "interval" | "change" | "configuration" | "manual" | "force-local-authority";
 export type GitHubSyncPhase = "scheduled" | "waiting-for-lock" | "authenticating" | "fetch" | "resolve-conflicts" | "commit" | "push" | "refresh-index" | "no-change";
 
+export class GitHubSyncDeferredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GitHubSyncDeferredError";
+  }
+}
+
 export class GitHubSyncBlockedError extends Error {
   constructor(
     readonly requiredVersion: string,
@@ -20,7 +27,7 @@ export interface AutomaticGitHubSyncTarget {
   intervalMinutes: number;
   syncOnChange: boolean;
   lastSuccessAt?: string;
-  lastFailure?: { at: string; error: string; reason: string; attempts?: number };
+  lastFailure?: { at: string; error: string; reason: string; attempts?: number; errorCode?: string; phase?: string };
   needsAttention?: boolean;
 }
 
@@ -35,9 +42,18 @@ export interface GitHubSyncRuntimeState {
   lastAttemptAt?: string;
   lastSuccessAt?: string;
   lastError?: string;
+  lastErrorCode?: string;
+  lastErrorPhase?: string;
   nextSyncAt?: string;
   blocked?: { requiredVersion: string; installedVersion: string };
   service?: { pid: number; version: string; protocol: string };
+}
+
+export function githubSyncFailureDetails(error: unknown, phase?: string): { errorCode: string; phase?: string } {
+  return {
+    errorCode: error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : "SYNC_FAILED",
+    phase: error && typeof error === "object" && "phase" in error && typeof error.phase === "string" ? error.phase : phase,
+  };
 }
 
 export interface GitHubSyncSchedulerOptions {
@@ -45,8 +61,8 @@ export interface GitHubSyncSchedulerOptions {
   execute: (targetId: string, reason: GitHubSyncReason) => Promise<void>;
   shouldRetryFailure?: (error: unknown) => boolean;
   onAutoPaused?: (targetId: string) => void;
-  beforeExecute?: (targetId: string, reason: GitHubSyncReason) => Promise<void>;
-  onSettled?: (targetId: string, reason: GitHubSyncReason, outcome: "skipped" | "succeeded" | "blocked" | "failed" | "attention") => void;
+  beforeExecute?: (targetId: string, reason: GitHubSyncReason) => Promise<boolean | void>;
+  onSettled?: (targetId: string, reason: GitHubSyncReason, outcome: "skipped" | "succeeded" | "blocked" | "failed" | "attention" | "deferred") => void;
   onState?: (targetId: string, state: GitHubSyncRuntimeState) => void;
   now?: () => number;
   setTimeout?: (callback: () => void, delay: number) => NodeJS.Timeout;
@@ -102,6 +118,8 @@ export class GitHubSyncScheduler {
           lastAttemptAt: activeFailure?.at || target.lastSuccessAt,
           lastSuccessAt: target.lastSuccessAt,
           lastError: activeFailure?.error,
+          lastErrorCode: activeFailure?.errorCode,
+          lastErrorPhase: activeFailure?.phase,
           ...(completedNoChange ? { phase: "no-change" as const, detail: previous.detail } : {}),
         });
         continue;
@@ -111,6 +129,8 @@ export class GitHubSyncScheduler {
         lastAttemptAt: previous?.lastAttemptAt || activeFailure?.at || target.lastSuccessAt,
         lastSuccessAt: target.lastSuccessAt,
         lastError: activeFailure?.error,
+        lastErrorCode: activeFailure?.errorCode,
+        lastErrorPhase: activeFailure?.phase,
         ...(completedNoChange ? { phase: "no-change" as const, detail: previous.detail } : {}),
       });
       if (!activeFailure || (activeFailure.attempts || 1) < MAX_GITHUB_SYNC_FAILURE_ATTEMPTS) this.enqueue(target.id, "startup");
@@ -231,7 +251,10 @@ export class GitHubSyncScheduler {
         const currentState = this.states.get(targetId);
         if (currentState) this.states.set(targetId, { ...currentState, lastAttemptAt: attemptedAt, nextSyncAt: undefined });
         try {
-          if (this.options.shouldExecute && !(await this.options.shouldExecute(targetId, reason))) {
+          if (this.options.shouldExecute && !(await this.options.shouldExecute(targetId, reason))
+            || this.disposed
+            || this.options.beforeExecute && await this.options.beforeExecute(targetId, reason) === false
+            || this.disposed) {
             this.updateState(targetId, {
               status: currentState?.lastError ? "error" : "scheduled",
               reason,
@@ -243,8 +266,7 @@ export class GitHubSyncScheduler {
             this.options.onSettled?.(targetId, reason, "skipped");
             continue;
           }
-          if (this.options.beforeExecute) await this.options.beforeExecute(targetId, reason);
-          this.updateState(targetId, { ...this.states.get(targetId), status: "syncing", phase: "waiting-for-lock", detail: "Waiting for Git lock", activityAt: attemptedAt, reason, lastAttemptAt: attemptedAt, lastError: undefined, nextSyncAt: undefined });
+          this.updateState(targetId, { ...this.states.get(targetId), status: "syncing", phase: "waiting-for-lock", detail: "Waiting for Git lock", activityAt: attemptedAt, reason, lastAttemptAt: attemptedAt, lastError: undefined, lastErrorCode: undefined, lastErrorPhase: undefined, nextSyncAt: undefined });
           await this.options.execute(targetId, reason);
           this.options.onSettled?.(targetId, reason, "succeeded");
           const succeededAt = new Date(this.now()).toISOString();
@@ -278,6 +300,19 @@ export class GitHubSyncScheduler {
             continue;
           }
           const message = error instanceof Error ? error.message : String(error);
+          if (error instanceof GitHubSyncDeferredError) {
+            const current = this.targets.get(targetId)!;
+            this.pending.delete(targetId);
+            this.updateState(targetId, {
+              status: current.enabled ? "scheduled" : "paused",
+              phase: "scheduled", reason, detail: message,
+              lastAttemptAt: attemptedAt, lastSuccessAt: current.lastSuccessAt,
+              lastError: message,
+            });
+            this.options.onSettled?.(targetId, reason, "deferred");
+            this.scheduleNextInterval(current);
+            continue;
+          }
           if (error instanceof Error && error.name === "GitHubSyncConflictError"
             && "partialResult" in error && error.partialResult) {
             const current = this.targets.get(targetId)!;
@@ -313,6 +348,8 @@ export class GitHubSyncScheduler {
               reason: error.originalReason,
               lastAttemptAt: attemptedAt,
               lastError: undefined,
+              lastErrorCode: undefined,
+              lastErrorPhase: undefined,
               nextSyncAt: undefined,
               detail: message,
               blocked: { requiredVersion: error.requiredVersion, installedVersion: error.installedVersion },
@@ -323,7 +360,8 @@ export class GitHubSyncScheduler {
           const attempts = this.options.shouldRetryFailure?.(error) === false
             ? MAX_GITHUB_SYNC_FAILURE_ATTEMPTS
             : Math.min(MAX_GITHUB_SYNC_FAILURE_ATTEMPTS, (target.lastFailure?.attempts || 0) + 1);
-          target.lastFailure = { at: attemptedAt, error: message, reason, attempts };
+          const failure = githubSyncFailureDetails(error, this.states.get(targetId)?.phase);
+          target.lastFailure = { at: attemptedAt, error: message, reason, attempts, ...failure };
           const current = this.targets.get(targetId)!;
           current.lastFailure = target.lastFailure;
           if (current.enabled && attempts >= MAX_GITHUB_SYNC_FAILURE_ATTEMPTS && reason !== "manual" && reason !== "force-local-authority") {
@@ -334,7 +372,7 @@ export class GitHubSyncScheduler {
           const changeTimer = this.changeTimers.get(targetId);
           if (changeTimer) this.clearTimer(changeTimer);
           this.changeTimers.delete(targetId);
-          this.updateState(targetId, { ...this.states.get(targetId), status: "error", reason, lastAttemptAt: attemptedAt, lastError: message, nextSyncAt: undefined });
+          this.updateState(targetId, { ...this.states.get(targetId), status: "error", reason, lastAttemptAt: attemptedAt, lastError: message, lastErrorCode: failure.errorCode, lastErrorPhase: failure.phase, nextSyncAt: undefined });
           if (current.enabled && attempts < MAX_GITHUB_SYNC_FAILURE_ATTEMPTS) {
             this.pending.set(targetId, "interval");
             this.scheduleWhenEligible(current);

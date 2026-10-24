@@ -34,12 +34,14 @@ test("Run uses a rounded rectangle, displays only live activity, and distinguish
   Object.assign(failed.harness.attempts[1], { status:"failed", toolCalls:undefined, validation:{error:"Failed before model output"} });
   await page.evaluate(value => window.controller.update(value, true), failed);
   assert.equal(await run.locator(".pkm-harness-current-activity").count(), 0, "past activities disappear");
+  await run.click();
   assert.match(await page.locator(".pkm-harness-inspector").innerText(), /Run \(last recorded\)/);
   assert.match(await page.locator(".pkm-harness-inspector").innerText(), /not recorded/);
   assert.match(await page.locator(".pkm-harness-inspector").innerText(), /Failed before model output/);
-  assert.match(await page.locator(".pkm-harness-ring-summary").innerText(), /Last recorded/);
+  assert.equal(await page.locator(".pkm-harness-ring-summary,.pkm-harness-ring").count(), 0);
   const dashboard = page.getByRole("region", { name:"Agent runtime dashboard" });
-  assert.match(await dashboard.locator('[data-diagram=memory]').innerText(), /No Memory preparation receipt/);
+  await page.getByRole("tab", {name:"Memory / Profiles",exact:true}).click();
+  assert.match(await page.getByRole("tabpanel").innerText(), /No Memory preparation receipt/);
   const recorded = JSON.parse(JSON.stringify(failed));
   Object.assign(recorded.harness.attempts[1], {
     toolCalls:[{id:"r1",name:"read_chat_result",status:"complete"},{id:"r2",name:"read_chat_result",status:"complete"}],
@@ -47,13 +49,19 @@ test("Run uses a rounded rectangle, displays only live activity, and distinguish
     retrieval:Array.from({length:6},()=>({kind:"sent-round",receipt:{candidates:[{id:"r",selected:true}]}}))
   });
   await page.evaluate(value => { window.controller.update(value, true); window.controller.showLifecycle(); }, recorded);
+  await run.click();
   assert.match(await page.locator(".pkm-harness-inspector").innerText(), /2 \(0 running, 0 failed\)/);
-  assert.match(await dashboard.locator('[data-diagram=memory]').innerText(), /earlier-message: 4 block/);
-  assert(await dashboard.locator('[data-diagram=retrieval] svg').count() > 0);
+  await page.getByRole("tab", {name:"Memory / Profiles",exact:true}).click();
+  assert.match(await page.getByRole("tabpanel").innerText(), /earlier-message: 4 block/);
+  await page.getByRole("tab", {name:"Retrieval flow",exact:true}).click();
+  await page.getByText("Piece categories and evidence",{exact:true}).click();
+  assert.equal(await page.getByRole("list",{name:"Retrieval piece categories"}).getByRole("listitem").count(),1);
   await page.getByRole("combobox", {name:"Attempt records"}).selectOption("earlier");
-  assert.match(await dashboard.locator('[data-diagram=memory]').innerText(), /focus-topic: 1 block/);
-  assert(await dashboard.locator('[data-diagram=retrieval] svg').count() > 0, "recorded historical retrieval renders a graph");
-  assert.match(await dashboard.locator('[data-diagram=recipes]').innerText(), /No available explicit Recipe/);
+  assert.match(await page.getByRole("tabpanel").innerText(), /Candidates: 1/);
+  await page.getByRole("tab", {name:"Memory / Profiles",exact:true}).click();
+  assert.match(await page.getByRole("tabpanel").innerText(), /focus-topic: 1 block/);
+  await page.getByRole("tab", {name:"Recipe / Action graphs",exact:true}).click();
+  assert.match(await page.getByRole("tabpanel").innerText(), /No available explicit Recipe/);
 });
 
 test("Agent runtime dashboard has a full-width diagnostic log, recorded parameters and simultaneous two-column diagrams", { timeout:30000 }, async t => {
@@ -78,9 +86,11 @@ test("Agent runtime dashboard has a full-width diagnostic log, recorded paramete
     const dashboard = page.getByRole("region", { name:"Agent runtime dashboard" });
     const log = page.getByRole("log", { name:"Latest runtime diagnostics" });
     await log.waitFor();
+    await log.locator("summary").click();
     assert.match(await log.innerText(), /ERROR \/.*<script>/);
     assert.equal(await page.evaluate(() => Boolean(window.__unsafe)), false);
     const parameters = page.getByRole("table", { name:"Recorded runtime parameters" });
+    await dashboard.getByText("Runtime parameters",{exact:true}).click();
     assert.match(await parameters.innerText(), /fixture-model/);
     assert.match(await parameters.innerText(), /100 \/ 20/);
     assert.match(await parameters.innerText(), /Provider default \(no override\)/);
@@ -89,18 +99,152 @@ test("Agent runtime dashboard has a full-width diagnostic log, recorded paramete
       return { width:node.clientWidth, columns:getComputedStyle(grid).gridTemplateColumns.split(" ").length,
         log:node.querySelector('[role="log"]').getBoundingClientRect().width };
     });
-    assert.equal(geometry.columns, geometry.width > 540 ? 2 : 1);
+    assert.equal(geometry.columns, 2);
     assert(geometry.log >= geometry.width - 2, "diagnostics span the entire dashboard");
-    assert.equal(await dashboard.locator(".pkm-harness-diagram-card").count(), 4);
-    assert.match(await dashboard.locator('[data-diagram="memory"]').innerText(), /focus-topic: 1 block/);
-    assert.match(await dashboard.locator('[data-diagram="retrieval"]').innerText(), /Selected: 1/);
-    await dashboard.getByRole("button", { name:"Inspect Harness flow", exact:true }).click();
+    assert.equal(await dashboard.locator(".pkm-harness-diagram-thumbnail").count(), 4);
+    assert.equal(await page.getByRole("tablist",{name:"Diagram details"}).getByRole("tab").count(),4);
+    assert.equal(await page.locator(".pkm-harness-ring-summary").count(),0);
+    await page.getByRole("tab", {name:"Memory / Profiles",exact:true}).click();
+    assert.match(await page.getByRole("tabpanel").innerText(), /focus-topic: 1 block/);
+    await page.getByRole("tab", {name:"Retrieval flow",exact:true}).click();
+    assert.match(await page.getByRole("tabpanel").innerText(), /Selected: 1/);
+    await page.getByRole("tab", {name:"Harness flow",exact:true}).click();
+    await page.getByRole("button", { name:"Current execution", exact:true }).click();
     await page.locator('.pkm-harness-node').first().waitFor();
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
     assert.deepEqual(errors, []);
     await page.close();
   }
   assert(methods.every(method => method === "snapshot"), "dashboard never dispatches execution or summary calls");
+});
+
+test("Dashboard shows recorded persistent Profiles and does not let an empty retrieval tail hide prior candidates", { timeout:30000 }, async t => {
+  const browser = await chromium.launch({ headless:true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport:{width:1000,height:900} });
+  await page.setContent('<main id="host"></main>');
+  await page.addScriptTag({path:path.join(__dirname,"../src/webview/agent-harness.js")});
+  const data = fixture(), attempt = data.harness.attempts[1];
+  attempt.profileContext = {user:{name:"Explicit user",revision:3,preferences:"Concise evidence",boundaries:"No production restarts"}};
+  attempt.retrieval = [
+    {kind:"knowledge-recall",receipt:{candidates:[
+      {id:"memory-deadbeef",label:"Actual source hash deadbeef",kind:"note",selected:true},
+      {id:"memory-cafebabe",label:"Another source hash cafebabe",kind:"note",selected:false},
+      {id:"profile-secret",label:"private profile locator",kind:"memory",selected:true,evidenceState:"sent"},
+    ]}},
+    {kind:"sent-round",receipt:{candidates:[]}},
+  ];
+  await page.evaluate(initial => { window.controller = PkmAgentHarness.mount(document.getElementById("host"),{initial,request:async()=>initial}); },data);
+  await page.getByRole("tab", {name:"Memory / Profiles",exact:true}).click();
+  const memory = page.getByRole("tabpanel");
+  assert.match(await memory.innerText(), /User Profile[\s\S]*Explicit user · r3[\s\S]*Agent Profile[\s\S]*Not recorded/);
+  await memory.getByText("Profile snapshot recorded for this attempt",{exact:true}).click();
+  assert.match(await memory.innerText(),/Concise evidence[\s\S]*No production restarts/);
+  await page.getByRole("tab", {name:"Retrieval flow",exact:true}).click();
+  await page.getByText("Piece categories and evidence",{exact:true}).click();
+  assert.match(await page.getByRole("tabpanel").innerText(),/note[\s\S]*2 piece[\s\S]*1 selected[\s\S]*memory[\s\S]*1 piece[\s\S]*1 selected \/ 1 sent/);
+  assert.doesNotMatch(await page.getByRole("tabpanel").innerText(),/Actual source|deadbeef|cafebabe|profile-secret|private profile locator/);
+  assert.doesNotMatch(await page.locator(".pkm-harness-diagram-grid").innerText(),/deadbeef|cafebabe|profile-secret/);
+  assert.equal(await page.getByRole("list",{name:"Retrieval piece categories"}).getByRole("listitem").count(),2);
+  const selectedTab = page.getByRole("tab",{name:"Retrieval flow",exact:true});
+  await selectedTab.focus(); await selectedTab.press("ArrowRight");
+  assert.equal(await page.getByRole("tab",{name:"Harness flow",exact:true}).getAttribute("aria-selected"),"true");
+  await page.getByRole("tab",{name:"Harness flow",exact:true}).press("Home");
+  assert.equal(await page.getByRole("tab",{name:"Harness flow",exact:true}).getAttribute("aria-selected"),"true");
+  await page.getByRole("tab", {name:"Harness flow",exact:true}).click();
+  assert.equal(await page.getByRole("heading",{name:"Harness flow",exact:true}).count(),1);
+});
+
+test("Retrieval pool samples 125 pieces, retains all six selected connections and scales without source hashes", {timeout:30000},async t=>{
+  const browser=await chromium.launch({headless:true});t.after(()=>browser.close());
+  const data=fixture(),attempt=data.harness.attempts[1];
+  attempt.retrieval=[{kind:"selection",receipt:{candidates:Array.from({length:125},(_,index)=>({
+    id:`private-hash-${index}`,label:`Secret source ${index}`,kind:index%2?"memory":"note",
+    sourceUri:`pkm://notes/source-${index}`,method:"lexical",score:0.9,
+    reason:index>=119?"Selected within budget":"Outside budget",
+    selected:index>=119,evidenceState:index>=122?"sent":"selected",
+  }))}}];
+  for(const width of [1280,390]){
+    const page=await browser.newPage({viewport:{width,height:1100}});
+    await page.setContent('<main id="host"></main>');
+    await page.addStyleTag({path:path.join(__dirname,"../src/webview/agent-harness.css")});
+    await page.addScriptTag({path:path.join(__dirname,"../src/webview/agent-harness.js")});
+    await page.evaluate(initial=>{window.flowController=PkmAgentHarness.mount(document.getElementById("host"),{initial,request:async()=>initial});},data);
+    await page.getByRole("tab",{name:"Retrieval flow",exact:true}).click();
+    const detail=page.getByRole("tabpanel"),svg=detail.getByRole("group",{name:/Retrieval selection/});
+    assert.equal(await svg.locator(".pkm-harness-pool-piece").count(),32);
+    assert.equal(await svg.locator(".pkm-harness-chosen-piece").count(),6);
+    assert.equal(await svg.locator(".pkm-harness-piece-link").count(),6);
+    assert.equal(await svg.locator('.pkm-harness-chosen-piece[data-sent=true]').count(),3);
+    assert.equal(await svg.locator(".pkm-harness-context-link").count(),3,"only sent evidence connects to model context");
+    assert.equal(await svg.locator(".pkm-harness-selection-gate").count(),1);
+    const matching=await svg.evaluate(node=>[...node.querySelectorAll(".pkm-harness-piece-link")].every(link=>
+      node.querySelector(`.pkm-harness-pool-piece[data-selected=true][data-piece="${link.dataset.piece}"]`)&&
+      node.querySelector(`.pkm-harness-chosen-piece[data-piece="${link.dataset.piece}"]`)));
+    assert(matching,"every connection originates in an actual sampled selected candidate");
+    assert.match(await detail.innerText(),/Candidates: 125[\s\S]*Selected: 6[\s\S]*Sent: 3/);
+    assert.match(await detail.innerText(),/32 \/ 125 recorded pieces shown/);
+    assert.doesNotMatch(await detail.innerHTML(),/private-hash|Secret source/);
+    await svg.getByRole("button",{name:"Inspect selected piece 120: memory",exact:true}).focus();
+    await page.keyboard.press("Enter");
+    assert.match(await detail.locator('[aria-label="Retrieval piece evidence"]').innerText(),/source-119[\s\S]*lexical[\s\S]*Selected within budget[\s\S]*transmission not established/);
+    assert.equal(await page.locator('.pkm-harness-diagram-thumbnail[data-diagram=retrieval] .pkm-harness-piece-link').count(),6);
+    const box=await svg.boundingBox();assert(box.width<=width&&box.width>0);
+    if(process.env.PKM_RING_SCREENSHOT) await detail.screenshot({path:`${process.env.PKM_RING_SCREENSHOT}-retrieval-${width}.png`});
+    const many=structuredClone(data);
+    many.harness.attempts[1].retrieval[0].receipt.candidates.forEach(item=>{item.selected=true;});
+    await page.evaluate(value=>window.flowController.update(value,true),many);
+    assert.equal(await detail.locator(".pkm-harness-piece-link").count(),24,"large selections remain explicitly bounded");
+    assert.match(await detail.innerText(),/Selected: 125[\s\S]*24 selected connections shown/);
+    many.harness.attempts[1].retrieval[0].receipt.candidates.forEach(item=>{item.selected=false;item.evidenceState="candidate";});
+    await page.evaluate(value=>window.flowController.update(value,true),many);
+    assert.equal(await detail.locator(".pkm-harness-piece-link").count(),0,"unselected samples never fabricate selection links");
+    assert.match(await detail.innerText(),/None recorded/);
+    await page.close();
+  }
+});
+
+test("Shared Memory pyramid uses stored levels and edges, lazily inspects pieces, and does not confuse prepared references with sent", {timeout:30000},async t=>{
+  const browser=await chromium.launch({headless:true});t.after(()=>browser.close());
+  const data=fixture(),attempt=data.harness.attempts[1];data.memoryStoreReader=true;
+  attempt.memory={blocks:[{kind:"focus-topic",piece:"topic:one"},{kind:"earlier-message",piece:"message:one"}]};
+  attempt.budgetReceipts=[{round:0,status:"sent",contextPlan:{manifest:[{referenceIds:["memory:topic:one"]}]}}];
+  const store={pieces:[
+    {id:"topic:one",kind:"topic",level:1,revision:2,summary:"stored summary",summary_current:false},
+    {id:"message:one",kind:"message",level:0,revision:1,summary_current:false},
+  ],edges:[{parent:"topic:one",child:"message:one",relation:"abstracts"}]};
+  for(const width of [1280,390]){
+    const page=await browser.newPage({viewport:{width,height:1100}});
+    await page.setContent('<main id="host"></main>');
+    await page.addStyleTag({path:path.join(__dirname,"../src/webview/agent-harness.css")});
+    await page.addScriptTag({path:path.join(__dirname,"../src/webview/agent-harness.js")});
+    await page.evaluate(({data,store})=>{
+      window.reads=[];window.memoryController=PkmAgentHarness.mount(document.getElementById("host"),{initial:data,request:async(method)=>{
+        window.reads.push(method);
+        if(method==="memoryOverview")return store;
+        if(method==="memoryPiece")return {status:"ready",summary:{body:"<img src=x>Stored source evidence"},statements:[]};
+        throw new Error(`Unexpected request: ${method}`);
+      }});
+    },{data,store});
+    assert.deepEqual(await page.evaluate(()=>window.reads),[],"the four-thumbnail overview does not scan the memory database");
+    await page.getByRole("tab",{name:"Memory / Profiles",exact:true}).click();
+    const detail=page.getByRole("tabpanel"),graph=detail.getByRole("group",{name:"Stored Memory pyramid",exact:true});
+    await graph.waitFor();
+    assert.equal(await graph.locator(".pkm-harness-memory-layer").count(),2);
+    assert.equal(await graph.locator(".pkm-harness-memory-edge").count(),1);
+    assert.equal(await graph.locator('[data-memory-state=sent]').count(),1);
+    assert.equal(await graph.locator('[data-memory-state=prepared]').count(),1);
+    await graph.getByRole("button",{name:"Inspect topic, level 1, piece 1",exact:true}).press("Enter");
+    const evidence=detail.locator('[aria-label="Stored Memory piece evidence"]');
+    await evidence.getByText(/Stored source evidence/).waitFor();
+    assert.equal(await evidence.locator("img,script").count(),0);
+    assert.deepEqual(await page.evaluate(()=>window.reads),["memoryOverview","memoryPiece"]);
+    if(process.env.PKM_RING_SCREENSHOT) await detail.screenshot({path:`${process.env.PKM_RING_SCREENSHOT}-memory-${width}.png`});
+    const prepared=structuredClone(data);prepared.harness.attempts[1].budgetReceipts[0].status="prepared";
+    await page.evaluate(value=>window.memoryController.update(value,true),prepared);
+    assert.equal(await graph.locator('[data-memory-state=sent]').count(),0,"a prepared round is never proof of transmission");
+    await page.close();
+  }
 });
 
 test("production browser: round ledger distinguishes provider usage, estimates and unknown thinking without model requests", { timeout:60000 }, async t => {
@@ -426,6 +570,7 @@ test("shared renderer: live overview locates the current path, bindings and bloc
   await page.addScriptTag({ path:path.join(__dirname, "../src/webview/agent-harness.js") });
   await page.evaluate(initial => {
     window.controller = PkmAgentHarness.mount(document.getElementById("host"), { initial, request:() => new Promise(() => {}) });
+    window.controller.focusCurrent();
   }, fixture());
   const overview = page.getByRole("region", { name:"Live execution overview" });
   await overview.getByRole("button", { name:"Locate Step Inspect evidence (running)" }).click();
@@ -439,7 +584,7 @@ test("shared renderer: live overview locates the current path, bindings and bloc
   Object.assign(waiting, { todos:[], runs:[], actionRuns:[] });
   waiting.harness = { ...waiting.harness, state:"awaiting-input", currentPhase:{ kind:"waiting", label:"Waiting for approval" },
     waiting:{ kind:"user", detail:"Waiting for approval" }, attempts:[{ ...waiting.harness.attempts[1], planning:undefined, toolCalls:[] }] };
-  await page.evaluate(data => window.controller.update(data, true), waiting);
+  await page.evaluate(data => { window.controller.update(data, true); window.controller.focusCurrent(); }, waiting);
   await overview.getByText("Waiting for you: Waiting for approval").waitFor();
   assert.equal(await overview.locator(".pkm-harness-phase").getAttribute("data-phase"), "waiting");
   await overview.getByText("no explicit binding recorded").waitFor();
@@ -447,7 +592,7 @@ test("shared renderer: live overview locates the current path, bindings and bloc
   await page.evaluate(() => window.controller.dispose());
 });
 
-test("shared renderer: lifecycle ring highlights the recorded stage and drills into evidence", { timeout:30000 }, async t => {
+test("shared renderer: compact Harness flow highlights recorded stages, draws arrows and drills into evidence", { timeout:30000 }, async t => {
   const browser = await chromium.launch({ headless:true });
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport:{ width:1100, height:900 } });
@@ -462,6 +607,16 @@ test("shared renderer: lifecycle ring highlights the recorded stage and drills i
     window.controller.showLifecycle();
   }, data);
   const ring = page.getByRole("group", { name:"Harness lifecycle" });
+  assert.equal(await page.locator(".pkm-harness-diagram-thumbnail").count(),4);
+  assert.equal(await page.getByRole("tablist",{name:"Diagram details"}).getByRole("tab").count(),4);
+  const shape = await page.locator(".pkm-harness-diagram-grid").evaluate(node=>{
+    const boxes=[...node.children].map(child=>child.getBoundingClientRect());
+    return {columns:getComputedStyle(node).gridTemplateColumns.split(" ").length,
+      rows:new Set(boxes.map(box=>Math.round(box.top))).size};
+  });
+  assert.deepEqual(shape,{columns:2,rows:2});
+  assert.equal(await ring.locator("li").first().evaluate(node=>getComputedStyle(node,"::after").content),'""');
+  assert.equal(await page.locator(".pkm-harness-ring-summary,.pkm-harness-ring").count(),0);
   const current = ring.locator('[aria-current="step"]');
   assert.equal(await current.count(), 1);
   assert.equal(await current.getAttribute("data-stage"), "monitor");

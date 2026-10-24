@@ -4,6 +4,132 @@
   const list = value => Array.isArray(value) ? value : [];
   const key = (...parts) => JSON.stringify(parts);
 
+  function svgShape(parent, tag, attrs, text) {
+    const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, String(value));
+    if (text !== undefined) node.textContent = text;
+    parent.append(node);
+    return node;
+  }
+
+  function pieceInteraction(svg, group, index, action) {
+    if (!action) return;
+    group.setAttribute('role', 'button'); group.setAttribute('tabindex', '0');
+    group.dataset.harnessFocus = key('piece',group.getAttribute('class'),index);
+    const inspect = () => {
+      svg.dataset.focused = 'true';
+      for (const node of svg.querySelectorAll('[data-piece]')) node.classList.toggle('is-active', node.dataset.piece === String(index));
+      action();
+    };
+    group.addEventListener('click', inspect);
+    group.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); inspect(); }
+    });
+  }
+
+  function memoryPyramid(data, attempt, onInspect) {
+    const pieces = list(data.pieces), levels = [...new Set(pieces.map(piece => piece.level))].sort((a,b) => b-a);
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    const height = Math.max(150, levels.length * 100 + 50);
+    svg.setAttribute('viewBox', `0 0 600 ${height}`);
+    svg.setAttribute('role', 'group'); svg.setAttribute('aria-label', 'Stored Memory pyramid');
+    svg.classList.add('pkm-harness-memory-graph');
+    const positions = new Map(), layers = [], sent = new Set(), prepared = new Set(list(attempt?.memory?.blocks).map(block => block.piece));
+    for (const receipt of list(attempt?.budgetReceipts).filter(receipt => receipt.status === 'sent')) {
+      for (const message of list(receipt.contextPlan?.manifest)) for (const reference of list(message.referenceIds)) {
+        if (reference.startsWith('memory:')) sent.add(reference.slice(7));
+      }
+    }
+    levels.forEach((level, row) => {
+      const members = pieces.filter(piece => piece.level === level), shown = members.slice(0, 6), y = 25 + row * 100;
+      const top = 240 + row * 320 / Math.max(1,levels.length), bottom = 240 + (row + 1) * 320 / Math.max(1,levels.length);
+      svgShape(svg,'path',{d:`M${300-top/2} ${y} L${300+top/2} ${y} L${300+bottom/2} ${y+92} L${300-bottom/2} ${y+92} Z`,class:'pkm-harness-memory-layer'});
+      svgShape(svg,'text',{x:300,y:y+19,'text-anchor':'middle'},`Level ${level} / ${members.length} pieces`);
+      shown.forEach((piece,index) => {
+        const x = 300 - Math.min(3,shown.length) * 36 + index % 3 * 72, py = y + 28 + Math.floor(index/3)*28;
+        positions.set(piece.id,{x:x+32,y:py+11});
+        layers.push({piece,index:pieces.indexOf(piece),x,y:py});
+      });
+      if (members.length > shown.length) svgShape(svg,'text',{x:300,y:y+89,'text-anchor':'middle'},`${shown.length} shown`);
+    });
+    for (const edge of list(data.edges)) {
+      const parent = positions.get(edge.parent), child = positions.get(edge.child);
+      if (parent && child) {
+        const path = svgShape(svg,'path',{d:`M${child.x} ${child.y} C${child.x} ${(child.y+parent.y)/2}, ${parent.x} ${(child.y+parent.y)/2}, ${parent.x} ${parent.y}`,
+          class:'pkm-harness-memory-edge'});
+        svgShape(path,'title',{},edge.relation || 'Recorded relation');
+      }
+    }
+    for (const {piece,index,x,y} of layers) {
+      const state = sent.has(piece.id) ? 'sent' : prepared.has(piece.id) ? 'prepared' : 'stored';
+      const group = svgShape(svg,'g',{'data-piece':index,'data-memory-state':state,class:'pkm-harness-memory-piece',
+        'aria-label':`Inspect ${piece.kind}, level ${piece.level}, piece ${index+1}`});
+      svgShape(group,'title',{},`${piece.kind} / ${state} / ${piece.summary_current ? 'summary current' : piece.summary ? 'summary stale' : 'no summary'}`);
+      svgShape(group,'rect',{x,y,width:64,height:22,rx:5});
+      svgShape(group,'text',{x:x+32,y:y+15,'text-anchor':'middle'},String(piece.kind).slice(0,9));
+      pieceInteraction(svg,group,index,onInspect && (() => onInspect(piece)));
+    }
+    return svg;
+  }
+
+  function retrievalPieceFlow(candidates, onInspect) {
+    const selected = candidates.map((item, index) => ({ item, index })).filter(({ item }) => item.selected);
+    const shown = selected.slice(0, 24);
+    const sample = [...shown, ...candidates.map((item, index) => ({ item, index }))
+      .filter(({ item }) => !item.selected).slice(0, 32 - shown.length)].sort((a, b) => a.index - b.index);
+    const height = Math.max(240, 70 + Math.ceil(sample.length / 4) * 30, 70 + shown.length * 32);
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', `0 0 800 ${height}`);
+    svg.setAttribute('role', onInspect ? 'group' : 'img');
+    svg.setAttribute('aria-label', `Retrieval selection: ${candidates.length} recorded candidates, ${selected.length} selected; showing ${sample.length} candidates and ${shown.length} selected connections.`);
+    svg.classList.add('pkm-harness-piece-flow');
+    svg.dataset.sampleSize = String(sample.length); svg.dataset.selectedSize = String(shown.length);
+    const shape = (tag, attrs, text, parent = svg) => svgShape(parent,tag,attrs,text);
+    shape('text', { x:16, y:23 }, 'Candidate pool');
+    shape('text', { x:278, y:23 }, 'Filter');
+    shape('text', { x:420, y:23 }, 'Selected pieces');
+    shape('text', { x:650, y:23 }, 'Model context');
+    shape('rect', { x:8, y:38, width:208, height:height - 52, rx:12, class:'pkm-harness-piece-pool' });
+    shown.forEach(({ index }, position) => {
+      const source = sample.findIndex(piece => piece.index === index);
+      const x = 24 + source % 4 * 46 + 36, y = 54 + Math.floor(source / 4) * 30 + 11;
+      const targetY = 54 + position * 32 + 11;
+      shape('path', { d:`M${x} ${y} C260 ${y}, 260 ${height/2}, 300 ${height/2} S370 ${targetY}, 420 ${targetY}`,
+        class:'pkm-harness-piece-link', 'data-piece':index });
+    });
+    shape('path',{d:`M300 ${height/2-20} l20 20 -20 20 -20 -20 Z`,class:'pkm-harness-selection-gate'});
+    const sentCount = candidates.filter(item => item.evidenceState === 'sent').length;
+    shape('rect',{x:650,y:height/2-28,width:134,height:56,rx:8,class:'pkm-harness-context-box'});
+    shape('text',{x:717,y:height/2-3,'text-anchor':'middle'},`${sentCount} sent`);
+    shape('text',{x:717,y:height/2+15,'text-anchor':'middle'},sentCount ? 'recorded evidence' : 'not established');
+    shown.forEach(({item,index},position) => {
+      if (item.evidenceState === 'sent') shape('path',{d:`M584 ${65+position*32} C620 ${65+position*32}, 610 ${height/2}, 650 ${height/2}`,
+        class:'pkm-harness-context-link','data-piece':index});
+    });
+    sample.forEach(({ item, index }, position) => {
+      const x = 24 + position % 4 * 46, y = 54 + Math.floor(position / 4) * 30;
+      const group = shape('g', { class:'pkm-harness-pool-piece', 'data-selected':!!item.selected, 'data-piece':index });
+      group.setAttribute('aria-label', `Inspect candidate ${index+1}: ${item.kind || 'unknown'}`);
+      pieceInteraction(svg,group,index,onInspect && (() => onInspect(item,index)));
+      shape('title', {}, `${item.kind || 'unknown'} / ${item.selected ? 'selected' : 'not selected'}`, group);
+      shape('rect', { x, y, width:36, height:22, rx:4 }, undefined, group);
+      shape('text', { x:x + 18, y:y + 15, 'text-anchor':'middle' }, String(item.kind || '?').slice(0, 4), group);
+    });
+    shown.forEach(({ item, index }, position) => {
+      const y = 54 + position * 32;
+      const group = shape('g', { class:'pkm-harness-chosen-piece', 'data-piece':index,
+        'data-sent':item.evidenceState === 'sent' });
+      group.setAttribute('aria-label', `Inspect selected piece ${index+1}: ${item.kind || 'unknown'}`);
+      pieceInteraction(svg,group,index,onInspect && (() => onInspect(item,index)));
+      shape('title', {}, `${item.kind || 'unknown'} / ${item.evidenceState === 'sent' ? 'sent evidence recorded' : 'selected, no sent evidence'}`, group);
+      shape('rect', { x:420, y, width:164, height:22, rx:5 }, undefined, group);
+      shape('text', { x:430, y:y + 15 }, String(item.kind || 'unknown').slice(0, 18), group);
+      if (item.evidenceState === 'sent') shape('circle', { cx:574, cy:y + 11, r:3 }, undefined, group);
+    });
+    if (!shown.length) shape('text', { x:420, y:70 }, 'None recorded');
+    return svg;
+  }
+
   function describeToolCall(call, translate) {
     const label = (template, params = {}) => {
       let value = translate ? translate(template, params) : template;
@@ -392,7 +518,6 @@
   }
 
   const stageIds = ['configure', 'run', 'monitor', 'evaluate', 'check', 'end'], stageOrder = stageIds, RING = 'lifecycle';
-  const ringPositions = { configure:[520, 80], run:[720, 200], monitor:[650, 380], evaluate:[420, 380], check:[330, 200], end:[90, 200] };
   function lifecycle(session, model, actions) {
     const harness = session.harness || {}, attempts = list(harness.attempts);
     const attempt = attempts.at(-1);
@@ -583,14 +708,18 @@
       deferred:graph.edges.filter(edge => !edges.includes(edge) || positions.get(edge.to).y <= positions.get(edge.from).y) };
   }
 
+  let mountCount = 0;
   function mount(container, options) {
+    const detailId = `pkm-harness-detail-${++mountCount}`;
     const document = container.ownerDocument;
     const el = (tag, text, className) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; };
     const button = (text, action, label) => { const node = el('button', text); node.type = 'button'; if (label) node.setAttribute('aria-label', label); node.addEventListener('click', action); return node; };
     const root = el('section', undefined, 'pkm-harness');
     root.setAttribute('aria-label', 'PKM native execution subgraphs');
     let session, model, active, sequence = 0, disposed = false, loading = false, pending = false, pendingForce = false;
-    let tabs = [], views = new Map(), auto = true, ringSelected, dashboardAttemptId;
+    let tabs = [], views = new Map(), auto = true, ringSelected, dashboardAttemptId, lifecycleInspection = false, dashboardDiagram = 'harness';
+    const memoryReads = new Map();
+    let memoryPieceChoice;
     const toolbar = el('header'), title = el('h2'), status = el('span'), error = el('p', '', 'pkm-harness-error');
     error.setAttribute('role', 'alert');
     const manual = button('Refresh', () => void refresh(true));
@@ -602,6 +731,20 @@
     const warning = el('p', '', 'pkm-harness-warning');
     const dashboard = el('section', undefined, 'pkm-harness-dashboard');
     dashboard.setAttribute('aria-label', 'Agent runtime dashboard');
+    const diagramTabs = el('nav', undefined, 'pkm-harness-diagram-tabs');
+    diagramTabs.setAttribute('role', 'tablist'); diagramTabs.setAttribute('aria-label', 'Diagram details');
+    const diagramDetail = el('section', undefined, 'pkm-harness-diagram-detail');
+    diagramDetail.setAttribute('role', 'tabpanel'); diagramDetail.id = detailId;
+    const diagramContent = el('div');
+    diagramTabs.addEventListener('keydown', event => {
+      const items = [...diagramTabs.querySelectorAll('[role="tab"]')], index = items.indexOf(document.activeElement);
+      const next = event.key === 'ArrowRight' ? (index + 1) % items.length
+        : event.key === 'ArrowLeft' ? (index + items.length - 1) % items.length
+        : event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : -1;
+      if (next < 0) return;
+      event.preventDefault(); items[next].click();
+      diagramTabs.querySelector('[aria-selected="true"]')?.focus();
+    });
     const overviewBox = el('section', undefined, 'pkm-harness-overview');
     overviewBox.setAttribute('aria-label', 'Live execution overview'); overviewBox.setAttribute('aria-live', 'polite');
     const tabbar = el('nav'); tabbar.setAttribute('aria-label', 'Open subgraphs');
@@ -615,7 +758,8 @@
     const inspector = el('section', undefined, 'pkm-harness-inspector');
     const dialog = el('dialog'), dialogTitle = el('h3'), dialogBody = el('pre');
     dialog.append(dialogTitle, button('Close preview', () => dialog.close()), dialogBody);
-    root.append(toolbar, error, dashboard, overviewBox, warning, tabbar, breadcrumbs, tools, viewport, inspector, dialog);
+    diagramDetail.append(diagramContent, overviewBox, tabbar, breadcrumbs, tools, viewport, inspector);
+    root.append(toolbar, error, dashboard, diagramTabs, diagramDetail, warning, dialog);
     container.append(root);
     function view() { if (!views.has(active)) views.set(active, { zoom:1, left:0, top:0, selected:'' }); return views.get(active); }
     function capture() { if (!active) return; Object.assign(view(), { left:viewport.scrollLeft, top:viewport.scrollTop }); }
@@ -663,68 +807,24 @@
       if (id !== RING && !model.graphs.has(id)) return;
       capture(); active = id; if (!tabs.includes(id)) tabs.push(id); draw();
     }
+    function dashboardLifecycle() {
+      const attempts = list(session.harness?.attempts), attempt = attempts.find(item => item.messageId === dashboardAttemptId);
+      return attempt && attempt !== attempts.at(-1)
+        ? lifecycle({ ...session, status:attempt.status, todos:[], harness:{ ...session.harness, attempts:[attempt], state:attempt.status,
+          currentPhase:attempt.progress?.phase, waiting:undefined } }, model, new Map(list(session.actionRuns).map(run => [run.runId, run])))
+        : model.lifecycle;
+    }
     function drawRing() {
-      const data = model.lifecycle, focused = document.activeElement?.dataset?.harnessFocus;
+      const data = dashboardLifecycle();
       if (!data.stages.some(stage => stage.id === ringSelected)) ringSelected = data.current;
-      back.disabled = true; zoom.disabled = true;
-      breadcrumbs.replaceChildren();
-      const ring = el('div', undefined, 'pkm-harness-ring');
-      ring.dataset.outcome = data.outcome;
-      ring.setAttribute('role', 'group'); ring.setAttribute('aria-label', 'Harness lifecycle');
-      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      svg.setAttribute('viewBox', '0 0 800 460'); svg.setAttribute('aria-hidden', 'true');
-      const defs = document.createElementNS(svg.namespaceURI, 'defs'), marker = document.createElementNS(svg.namespaceURI, 'marker');
-      marker.setAttribute('id', 'pkm-ring-arrow'); marker.setAttribute('viewBox', '0 0 10 10'); marker.setAttribute('refX', '8'); marker.setAttribute('refY', '5');
-      marker.setAttribute('markerWidth', '3.2'); marker.setAttribute('markerHeight', '3.2'); marker.setAttribute('orient', 'auto-start-reverse');
-      const head = document.createElementNS(svg.namespaceURI, 'path'); head.setAttribute('d', 'M0 0 L10 5 L0 10 z');
-      marker.append(head); defs.append(marker); svg.append(defs);
-      const arrows = [['configure', 'run'], ['run', 'monitor'], ['monitor', 'evaluate'], ['evaluate', 'check'], ['check', 'configure'], ['check', 'end']];
-      for (const [from, to] of arrows) {
-        const a = ringPositions[from], b = ringPositions[to], dx = b[0] - a[0], dy = b[1] - a[1], length = Math.hypot(dx, dy), r = 68;
-        const line = document.createElementNS(svg.namespaceURI, 'line');
-        line.setAttribute('x1', String(a[0] + dx / length * r)); line.setAttribute('y1', String(a[1] + dy / length * r));
-        line.setAttribute('x2', String(b[0] - dx / length * r)); line.setAttribute('y2', String(b[1] - dy / length * r));
-        line.setAttribute('marker-end', 'url(#pkm-ring-arrow)');
-        const fromIndex = stageOrder.indexOf(from), currentIndex = stageOrder.indexOf(data.current);
-        const taken = from === 'check' ? (to === 'end' ? data.check === 'passed' : data.check === 'failed' || data.iterations > 0)
-          : fromIndex < currentIndex;
-        line.setAttribute('class', `${taken ? 'taken' : ''} ${from === 'check' && to === 'configure' ? 'loop' : ''}`.trim());
-        svg.append(line);
-        if (from === 'check' && to === 'configure' && data.iterations) {
-          const label = document.createElementNS(svg.namespaceURI, 'text');
-          label.setAttribute('x', String((a[0] + b[0]) / 2 - 120)); label.setAttribute('y', String((a[1] + b[1]) / 2 - 18));
-          label.textContent = `Iterate x${data.iterations}`; svg.append(label);
-        }
-      }
-      ring.append(svg);
-      for (const stage of data.stages) {
-        const circle = button('', () => { ringSelected = stage.id; drawRing(); }, `${stage.label}: ${stage.current ? `${data.live ? 'current' : 'last recorded'}, ${stage.status}` : stage.status}`);
-        circle.className = 'pkm-harness-stage'; circle.dataset.stage = stage.id; circle.dataset.status = stage.status;
-        circle.dataset.harnessFocus = key('stage', stage.id);
-        if (stage.current) circle.setAttribute('aria-current', 'step');
-        circle.setAttribute('aria-pressed', String(stage.id === ringSelected));
-        const [x, y] = ringPositions[stage.id];
-        circle.style.left = `${x / 8}%`; circle.style.top = `${y / 4.6}%`;
-        circle.append(el('span', stage.label, 'pkm-harness-stage-label'),
-          el('small', stage.current ? { unverified:'done, not validated', waiting:'waiting', running:'running', failed:'failed', complete:'reached' }[stage.status] || stage.status
-            : stage.status === 'pending' ? '' : stage.status));
-        if (stage.id === 'run' && data.activity) {
-          circle.append(el('span', data.activity, 'pkm-harness-current-activity'));
-          circle.title = `Current activity: ${data.activity}`;
-        }
-        ring.append(circle);
-      }
-      const summary = el('p', undefined, 'pkm-harness-ring-summary');
-      summary.append(el('strong', `${data.live ? 'Current' : 'Last recorded'} / ${data.stages.find(stage => stage.current).label}: `), document.createTextNode(data.reason));
-      tools.hidden = true;
-      summary.append(button('Current execution', focusCurrent), button('Full execution graph', () => open(model.root)));
-      viewport.replaceChildren(summary, ring);
+      tools.hidden = true; viewport.hidden = true;
+      viewport.replaceChildren(); breadcrumbs.replaceChildren();
+      inspector.hidden = !lifecycleInspection;
       const selected = data.stages.find(stage => stage.id === ringSelected);
       inspector.replaceChildren(el('h3', `${selected.label}${selected.current ? data.live ? ' (current)' : ' (last recorded)' : ''}`));
       const items = el('dl', undefined, 'pkm-harness-stage-items');
       for (const [name, value] of selected.items) items.append(el('dt', name), el('dd', value));
       inspector.append(items, button('Open records', () => open(selected.graphId), `Open recorded evidence for ${selected.label}`));
-      if (focused) [...root.querySelectorAll('[data-harness-focus]')].find(node => node.dataset.harnessFocus === focused)?.focus({ preventScroll:true });
     }
     function locate(graphId, nodeId) {
       const graph = model.graphs.get(graphId), node = graph?.nodes.find(item => item.id === nodeId);
@@ -736,6 +836,19 @@
       viewport.scrollLeft = position.x * view().zoom;
       viewport.scrollTop = Math.max(0, position.y * view().zoom - 24);
     }
+    function readDashboardMemory(method, params = {}) {
+      const cacheKey = key(method,params);
+      if (!memoryReads.has(cacheKey)) {
+        if (memoryReads.size >= 200) memoryReads.delete(memoryReads.keys().next().value);
+        const state = {loading:true}, id = session.sessionId;
+        memoryReads.set(cacheKey,state);
+        options.request(method,params).then(data => { state.data = data; }, error => { state.error = error.message; }).finally(() => {
+          state.loading = false;
+          if (!disposed && session.sessionId === id && memoryReads.get(cacheKey) === state) drawDashboard();
+        });
+      }
+      return memoryReads.get(cacheKey);
+    }
     function drawDashboard() {
       const focused = document.activeElement?.dataset?.harnessFocus;
       const attempts = list(session.harness?.attempts);
@@ -743,7 +856,11 @@
       const receipts = list(attempt?.budgetReceipts), receipt = receipts.at(-1), usage = attempt?.validation?.reportedUsage;
       const diagnostics = el('section', undefined, 'pkm-harness-diagnostics');
       diagnostics.setAttribute('role', 'log'); diagnostics.setAttribute('aria-label', 'Latest runtime diagnostics');
-      diagnostics.append(el('h3', 'Latest errors / warnings / status'));
+      const diagnosticDetails = el('details');
+      diagnosticDetails.open = !!dashboard.querySelector('.pkm-harness-diagnostics details')?.open;
+      const diagnosticSummary = el('summary', 'Recent diagnostics');
+      diagnosticDetails.append(diagnosticSummary);
+      diagnostics.append(diagnosticDetails);
       const records = [];
       for (const item of list(session.harness?.attempts).slice(-5)) {
         for (const event of list(item.progress?.transitions).slice(-10)) records.push({
@@ -755,13 +872,14 @@
       }
       records.push(...model.warnings.map(text => ({ level:'warning', text })));
       records.push({ level:'status', text:`${session.harness?.state || session.status || 'unknown'} / ${session.harness?.currentPhase?.label || 'No current phase recorded'}` });
+      diagnosticSummary.textContent = `Recent diagnostics · ${records.filter(record => record.level === 'error').length} errors · ${records.filter(record => record.level === 'warning').length} warnings`;
       for (const record of records.slice(-10)) {
         const line = el('p', `${record.level.toUpperCase()} / ${record.text}`);
-        line.dataset.level = record.level; diagnostics.append(line);
+        line.dataset.level = record.level; diagnosticDetails.append(line);
       }
       const parameters = el('table', undefined, 'pkm-harness-parameters');
       parameters.setAttribute('aria-label', 'Recorded runtime parameters');
-      const caption = el('caption', 'Runtime parameters (latest attempt; reported usage may cover only some rounds)');
+      const caption = el('caption', 'Selected attempt · runtime parameters');
       parameters.append(caption);
       const body = el('tbody');
       const quantity = value => Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString() : 'not reported';
@@ -787,8 +905,15 @@
         option.value = item.messageId; option.selected = item === attempt; attemptSelect.append(option);
       });
       attemptSelect.disabled = !attempts.length;
-      attemptSelect.addEventListener('change', () => { dashboardAttemptId = attemptSelect.value; drawDashboard(); });
-      selection.append(attemptSelect, el('p', 'Diagrams and parameters use the selected attempt; Recipe / Action bindings are Session-wide. Missing receipts are not zero work. No model, Recipe or Action is run to populate this view.', 'pkm-harness-unknown'));
+      attemptSelect.addEventListener('change', () => {
+        dashboardAttemptId = attemptSelect.value; ringSelected = undefined; drawDashboard();
+        if (active === RING) drawRing();
+      });
+      selection.append(attemptSelect);
+      const cards = new Map();
+      const selectDiagram = id => {
+        dashboardDiagram = id; lifecycleInspection = false; drawDashboard(); open(RING);
+      };
       const card = (id, title, graphId) => {
         const node = el('section', undefined, 'pkm-harness-diagram-card'); node.dataset.diagram = id;
         const heading = el('h3', title); node.append(heading);
@@ -796,7 +921,7 @@
           const openGraph = button('Inspect recorded graph', () => locate(graphId), `Inspect ${title}`);
           openGraph.dataset.harnessFocus = key('dashboard', id); node.append(openGraph);
         }
-        grid.append(node); return node;
+        cards.set(id, {node, title}); return node;
       };
       const preview = (node, graphId) => {
         const graph = model.graphs.get(graphId), nodes = list(graph?.nodes).slice(0, 18);
@@ -829,20 +954,25 @@
         });
         node.append(svg, el('small', `${nodes.length} of ${graph.nodes.length} recorded nodes; open the graph for edges, nesting and full evidence.`));
       };
-      const attemptGraph = attempt && key('chat-attempt', attempt.messageId);
-      const harnessCard = card('harness', 'Harness flow', attemptGraph || model.root);
-      const selectedLifecycle = attempt && attempt !== attempts.at(-1)
-        ? lifecycle({ ...session, status:attempt.status, todos:[], harness:{ ...session.harness, attempts:[attempt], state:attempt.status,
-          currentPhase:attempt.progress?.phase, waiting:undefined } }, model, new Map(list(session.actionRuns).map(run => [run.runId, run])))
-        : model.lifecycle;
-      const stages = el('ol', undefined, 'pkm-harness-flow-preview');
-      for (const stage of selectedLifecycle.stages) {
-        const item = el('li', `${stage.label} / ${stage.status}`);
-        if (stage.current) item.setAttribute('aria-current', 'step');
-        stages.append(item);
+      const harness = card('harness', 'Harness flow');
+      const data = dashboardLifecycle(), stages = el('ol', undefined, 'pkm-harness-flow-preview');
+      stages.setAttribute('role', 'group'); stages.setAttribute('aria-label', 'Harness lifecycle'); stages.dataset.outcome = data.outcome;
+      for (const stage of data.stages) {
+        const item = el('li'), select = button('', () => {
+          ringSelected = stage.id; lifecycleInspection = true; drawDashboard(); open(RING);
+          root.querySelector(`[data-stage="${stage.id}"]`)?.focus({preventScroll:true});
+        }, `${stage.label}: ${stage.current ? `${data.live ? 'current' : 'last recorded'}, ${stage.status}` : stage.status}`);
+        select.className = 'pkm-harness-stage'; select.dataset.stage = stage.id; select.dataset.status = stage.status;
+        select.dataset.harnessFocus = key('stage', stage.id);
+        select.setAttribute('aria-pressed', String(lifecycleInspection && stage.id === ringSelected));
+        if (stage.current) select.setAttribute('aria-current', 'step');
+        select.append(el('span', stage.label, 'pkm-harness-stage-label'), el('small', stage.status));
+        if (stage.id === 'run' && data.activity) select.append(el('span', data.activity, 'pkm-harness-current-activity'));
+        item.append(select); stages.append(item);
       }
-      harnessCard.append(stages, el('small', selectedLifecycle.reason));
-      preview(harnessCard, attemptGraph || model.root);
+      harness.append(stages, el('small', data.reason));
+      if (data.iterations) harness.append(el('small', `Check -> Configure: ${data.iterations} recorded iteration(s)`));
+      harness.append(button('Current execution', focusCurrent), button('Full execution graph', () => open(model.root)));
       const recipe = card('recipes', 'Recipe / Action graphs');
       const bindings = [...model.overview.recipes, ...model.overview.actions].filter(item => item.available && item.graphId);
       if (!bindings.length) recipe.append(el('p', 'No available explicit Recipe / Action binding.', 'pkm-harness-unknown'));
@@ -852,22 +982,73 @@
         link.dataset.harnessFocus = key('dashboard-binding', binding.runId); recipe.append(link);
         preview(recipe, binding.graphId);
       }
-      const memory = card('memory', 'Memory pyramid', attempt?.memory?.accounting && key('memory-accounting', attempt.messageId));
+      const memory = card('memory', 'Memory / Profiles', attempt?.memory?.accounting && key('memory-accounting', attempt.messageId));
+      let memoryOverview;
+      if (session.memoryStoreReader && (dashboardDiagram === 'memory' || memoryReads.has(key('memoryOverview',{})))) {
+        const state = readDashboardMemory('memoryOverview');
+        memory.append(button('Refresh stored Memory', () => { memoryReads.clear(); memoryPieceChoice = undefined; drawDashboard(); }));
+        if (state.loading) memory.append(el('p','Reading stored Memory...'));
+        else if (state.error) memory.append(el('p',state.error,'pkm-harness-error'));
+        else {
+          memoryOverview = state.data;
+          memory.append(memoryPyramid(memoryOverview,attempt,piece => { memoryPieceChoice = piece; drawDashboard(); }),
+            el('small','Live stored levels and recorded edges. Blue: prepared reference; green: sent reference, not proof the current revision was sent. Click a piece for evidence.'));
+          if (memoryPieceChoice) {
+            const evidence = el('section'); evidence.setAttribute('aria-label','Stored Memory piece evidence');
+            const piece = readDashboardMemory('memoryPiece',{piece:memoryPieceChoice.id,after:0});
+            evidence.append(el('h4',`${memoryPieceChoice.kind} / level ${memoryPieceChoice.level}`));
+            if (piece.loading) evidence.append(el('p','Reading stored piece...'));
+            else if (piece.error) evidence.append(el('p',piece.error,'pkm-harness-error'));
+            else {
+              const data = piece.data;
+              evidence.append(el('p',`${data.status} / revision ${data.piece?.revision ?? 'not recorded'}`));
+              if (data.summary) evidence.append(el('pre',data.summary.body));
+              for (const statement of list(data.statements)) {
+                evidence.append(el('h4',`Statement ${statement.sequence} / ${statement.status}`),el('pre',statement.body ?? 'Content unavailable'));
+                for (const source of list(statement.sources)) evidence.append(el('small',`${source.locator} / revision ${source.revision}`));
+              }
+              if (data.next !== null && data.next !== undefined) evidence.append(el('small','First statement page shown; more statements are available in the scoped Memory view.'));
+            }
+            memory.append(evidence);
+          }
+        }
+      }
+      const profiles = attempt?.profileContext;
+      const profileTable = el('table', undefined, 'pkm-harness-parameters'), profileBody = el('tbody');
+      profileTable.setAttribute('aria-label', 'Recorded collaboration Profiles');
+      for (const kind of ['user', 'agent']) {
+        const profile = profiles?.[kind], row = el('tr');
+        row.append(el('th', kind === 'user' ? 'User Profile' : 'Agent Profile'), el('td', profile ? `${profile.name} · r${profile.revision}` : 'Not recorded'));
+        profileBody.append(row);
+      }
+      profileTable.append(profileBody); memory.append(profileTable);
+      if (profiles) {
+        const details = el('details'); details.append(el('summary', 'Profile snapshot recorded for this attempt'));
+        const fields = el('table', undefined, 'pkm-harness-parameters'), body = el('tbody');
+        for (const kind of ['user', 'agent']) for (const field of ['role', 'focus', 'preferences', 'boundaries']) if (profiles[kind]?.[field]) {
+          const row = el('tr'); row.append(el('th', `${kind} / ${field}`), el('td', profiles[kind][field])); body.append(row);
+        }
+        fields.append(body); details.append(fields); memory.append(details);
+      }
       if (!attempt?.memory) memory.append(el('p', 'No Memory preparation receipt recorded for this attempt. This does not establish that Memory is disabled or empty.', 'pkm-harness-unknown'));
       else {
+        const preparation = memoryOverview ? el('details') : memory;
+        if (memoryOverview) { preparation.append(el('summary','Attempt preparation details')); memory.append(preparation); }
         const pyramid = el('div', undefined, 'pkm-harness-memory-pyramid');
         const blocks = list(attempt.memory.blocks);
         const kinds = [...new Set(blocks.map(block => block.kind))];
         kinds.forEach((kind, index) => {
           const level = el('div', `${kind}: ${blocks.filter(block => block.kind === kind).length} block(s)`);
-          level.style.width = `${55 + (index + 1) / kinds.length * 45}%`; pyramid.append(level);
+          pyramid.append(level);
         });
-        memory.append(pyramid, el('small', kinds.length ? 'Recorded preparation blocks grouped by kind; widths are illustrative, not token usage or inferred storage hierarchy.' : 'Receipt recorded no preparation blocks.'));
-        if (attempt.memory.error) memory.append(el('p', `Memory preparation error: ${attempt.memory.error}`, 'pkm-harness-unknown'));
-        if (attempt.memory.accounting) preview(memory, key('memory-accounting', attempt.messageId));
+        preparation.append(pyramid, el('small', kinds.length ? 'Recorded preparation blocks grouped by kind, not stored abstraction levels. Open Visualization / Memory for the scoped storage pyramid and provenance.' : 'Receipt recorded no preparation blocks.'));
+        if (attempt.memory.error) preparation.append(el('p', `Memory preparation error: ${attempt.memory.error}`, 'pkm-harness-unknown'));
+        if (attempt.memory.accounting) preview(preparation, key('memory-accounting', attempt.messageId));
       }
       const retrieval = card('retrieval', 'Retrieval flow', attempt && key('retrieval', attempt.messageId));
-      const last = list(attempt?.retrieval).at(-1), candidates = list(last?.receipt?.candidates);
+      const retrievalRecords = list(attempt?.retrieval);
+      const last = [...retrievalRecords].reverse().find(record => list(record.receipt?.candidates).length) || retrievalRecords.at(-1);
+      const candidates = list(last?.receipt?.candidates);
       if (!last) retrieval.append(el('p', 'No retrieval receipt recorded.', 'pkm-harness-unknown'));
       else {
         const flow = el('div', undefined, 'pkm-harness-retrieval-stages');
@@ -875,11 +1056,94 @@
           ['Candidates', candidates.length], ['Selected', candidates.filter(item => item.selected).length],
           ['Sent', candidates.filter(item => item.evidenceState === 'sent').length]
         ]) flow.append(el('div', `${label}: ${count}`));
-        retrieval.append(flow, el('small', `Latest receipt: ${last.kind} / ${last.receipt?.phase || 'unknown'}. Selection alone does not prove transmission.`));
-        preview(retrieval, key('retrieval', attempt.messageId));
+        retrieval.append(flow, el('small', `Displayed receipt: ${last.kind} / ${last.receipt?.phase || 'unknown'}. Selection is not transmission.`));
+        if (last !== retrievalRecords.at(-1)) retrieval.append(el('small', 'The latest receipt has no candidates; showing the most recent populated receipt.'));
+        const pieces = el('div', undefined, 'pkm-harness-retrieval-pieces');
+        pieces.setAttribute('role', 'list'); pieces.setAttribute('aria-label', 'Retrieval piece categories');
+        const kinds = new Map();
+        for (const candidate of candidates) {
+          const kind = candidate.kind || 'unknown';
+          if (!kinds.has(kind)) kinds.set(kind, []);
+          kinds.get(kind).push(candidate);
+        }
+        for (const [kind, items] of kinds) {
+          const block = el('div'); block.setAttribute('role', 'listitem');
+          block.append(el('strong', kind), el('span', `${items.length} piece(s)`),
+            el('small', `${items.filter(item => item.selected).length} selected / ${items.filter(item => item.evidenceState === 'sent').length} sent`));
+          pieces.append(block);
+        }
+        if (candidates.length) {
+          const evidence = el('section');
+          evidence.setAttribute('aria-label','Retrieval piece evidence');
+          const diagram = retrievalPieceFlow(candidates,(item,index) => {
+            evidence.replaceChildren(el('h4',`Piece ${index+1} / ${item.kind || 'unknown'}`));
+            const fields = el('dl');
+            for (const [label,value] of [
+              ['Source',item.sourceUri],['Method',item.method],['Score',item.score],
+              ['Selection reason',item.reason],['Evidence',item.evidenceState === 'sent' ? 'Sent evidence recorded'
+                : item.selected ? 'Selected; transmission not established' : 'Not selected'],
+            ]) fields.append(el('dt',label),el('dd',value === undefined || value === '' ? 'Not recorded' : String(value)));
+            evidence.append(fields);
+          });
+          retrieval.append(diagram, el('small', `${diagram.dataset.sampleSize} / ${candidates.length} recorded pieces shown; ${diagram.dataset.selectedSize} selected connections shown. Sampled view, not the entire Memory database.`));
+          retrieval.append(evidence);
+          const legend = el('details');
+          legend.append(el('summary', 'Piece categories and evidence'), pieces);
+          retrieval.append(legend);
+        }
+        else retrieval.append(el('p', 'This receipt recorded no candidates. Open Retrieval / Search for stage details.', 'pkm-harness-unknown'));
       }
-      dashboard.replaceChildren(diagnostics, selection, parameters, grid);
-      if (focused) [...dashboard.querySelectorAll('[data-harness-focus]')].find(node => node.dataset.harnessFocus === focused)?.focus({ preventScroll:true });
+      diagramTabs.replaceChildren();
+      for (const [id, {node, title}] of cards) {
+        const thumb = button('', () => selectDiagram(id), `Show ${title} details`);
+        thumb.className = 'pkm-harness-diagram-thumbnail'; thumb.dataset.diagram = id;
+        thumb.dataset.harnessFocus = key('thumbnail', id);
+        thumb.setAttribute('aria-pressed', String(id === dashboardDiagram));
+        thumb.append(el('strong', title));
+        if (id === 'harness') {
+          const mini = el('div', undefined, 'pkm-harness-flow-mini');
+          for (const stage of data.stages) {
+            const block = el('span', stage.label); block.dataset.status = stage.status;
+            if (stage.current) block.setAttribute('aria-current', 'step');
+            mini.append(block);
+          }
+          thumb.append(mini);
+        } else if (id === 'recipes') {
+          const svg = node.querySelector('svg');
+          if (svg) { const mini = svg.cloneNode(true); mini.setAttribute('aria-hidden', 'true'); thumb.append(mini); }
+          thumb.append(el('small', `${model.overview.recipes.length} Recipe / ${model.overview.actions.length} Action binding(s)`));
+        } else if (id === 'memory') {
+          if (memoryOverview) {
+            const mini = memoryPyramid(memoryOverview,attempt); mini.setAttribute('aria-hidden','true'); thumb.append(mini);
+          }
+          const groups = el('div', undefined, 'pkm-harness-category-mini');
+          for (const kind of new Set(list(attempt?.memory?.blocks).map(block => block.kind))) groups.append(el('span', kind));
+          thumb.append(groups, el('small', attempt?.memory ? `${list(attempt.memory.blocks).length} preparation block(s)` : 'No preparation receipt'),
+            el('small', profiles ? `${profiles.user ? 'User' : ''}${profiles.user && profiles.agent ? ' / ' : ''}${profiles.agent ? 'Agent' : ''} Profile recorded` : 'No Profile snapshot'));
+        } else {
+          if (candidates.length) {
+            const mini = retrievalPieceFlow(candidates);
+            mini.removeAttribute('role'); mini.removeAttribute('aria-label'); mini.setAttribute('aria-hidden', 'true');
+            thumb.append(mini);
+          }
+          thumb.append(el('small', last ? `${candidates.length} candidates / ${candidates.filter(candidate => candidate.selected).length} selected` : 'No retrieval receipt'));
+        }
+        grid.append(thumb);
+        const tab = button(title, () => selectDiagram(id));
+        tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(id === dashboardDiagram));
+        tab.id = `${detailId}-${id}`; tab.setAttribute('aria-controls', detailId);
+        tab.tabIndex = id === dashboardDiagram ? 0 : -1; tab.dataset.harnessFocus = key('diagram-tab', id);
+        diagramTabs.append(tab);
+        if (id === dashboardDiagram) {
+          diagramDetail.setAttribute('aria-labelledby', tab.id); diagramContent.replaceChildren(node);
+        }
+      }
+      const parameterDetails = el('details');
+      parameterDetails.open = !!dashboard.querySelector('.pkm-harness-runtime-parameters')?.open;
+      parameterDetails.className = 'pkm-harness-runtime-parameters';
+      parameterDetails.append(el('summary', 'Runtime parameters'), parameters);
+      dashboard.replaceChildren(diagnostics, selection, parameterDetails, grid);
+      if (focused) [...root.querySelectorAll('[data-harness-focus]')].find(node => node.dataset.harnessFocus === focused)?.focus({ preventScroll:true });
     }
     function focusCurrent() {
       const current = currentNode(model);
@@ -932,6 +1196,8 @@
       overviewBox.append(bindings);
     }
     function draw() {
+      overviewBox.hidden = active === RING; tabbar.hidden = active === RING;
+      diagramContent.hidden = active !== RING;
       tabbar.replaceChildren();
       for (const id of tabs) {
         const tab = button(id === RING ? 'Lifecycle' : model.graphs.get(id)?.title || 'Unavailable subgraph', () => open(id));
@@ -939,7 +1205,7 @@
         tab.setAttribute('aria-current', String(id === active)); tabbar.append(tab);
       }
       if (active === RING) { drawRing(); return; }
-      tools.hidden = false; zoom.disabled = false;
+      tools.hidden = false; viewport.hidden = false; inspector.hidden = false; zoom.disabled = false;
       const graph = model.graphs.get(active), saved = view(), focused = document.activeElement?.dataset?.harnessFocus;
       breadcrumbs.replaceChildren();
       const ancestors = [], visited = new Set();
@@ -986,7 +1252,7 @@
     function update(next, force = false) {
       if (!force && !auto && next.sessionId === session?.sessionId) return;
       capture();
-      if (session?.sessionId !== next.sessionId) { sequence++; tabs = []; views = new Map(); active = null; }
+      if (session?.sessionId !== next.sessionId) { sequence++; tabs = []; views = new Map(); active = null; memoryReads.clear(); memoryPieceChoice = undefined; }
       session = next; model = build(next);
       active = active === RING || model.graphs.has(active) ? active : RING;
       tabs = tabs.filter(id => id === RING || model.graphs.has(id)); if (!tabs.includes(active)) tabs.push(active);
@@ -1024,7 +1290,7 @@
       },
       get automatic() { return auto; }, get model() { return model; }, get session() { return session; },
       showLifecycle() {
-        ringSelected = model.lifecycle.current; open(RING);
+        dashboardDiagram = 'harness'; lifecycleInspection = false; ringSelected = dashboardLifecycle().current; drawDashboard(); open(RING);
         root.querySelector('.pkm-harness-stage[aria-current="step"]')?.focus({ preventScroll:true });
       },
       attach(parent) { parent.append(root); },
@@ -1032,7 +1298,7 @@
       dispose() { disposed = true; sequence++; clearInterval(timer); document.removeEventListener('visibilitychange', visible); root.remove(); }
     };
   }
-  const api = { build, layout, terminal, mount, describeToolCall };
+  const api = { build, layout, terminal, mount, describeToolCall, memoryPyramid };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.PkmAgentHarness = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

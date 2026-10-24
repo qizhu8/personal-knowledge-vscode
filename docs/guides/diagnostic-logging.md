@@ -14,6 +14,37 @@ MCP records `mcp.call.started`, `mcp.call.returned`, `mcp.call.failed`, `mcp.cal
 
 The extension retains existing level-filtered operational messages as `extension.log`; these messages are truncated to 1,024 characters and should still be reviewed before sharing. It also records `host.started`, `host.stopped` on normal disposal, and a `host.heartbeat` every 60 seconds. Heartbeat delay of 5 seconds or more produces a warning. Heartbeats are independent of the configured operational log level.
 
+## Sync Diagnostic Log retention
+
+The separate **Sync Diagnostic Log** uses
+`<VS Code globalStorage>/github-sync-diagnostic.jsonl`, shared by PKM windows.
+It is compacted to the **latest 1,000 records once per 24 hours**. Cleanup is lazy:
+on activation, the first write batch after the interval, or opening the log.
+There is no daily polling task or extra daemon. A private persisted
+`.retention.json` sidecar prevents reloads and other windows from repeating the
+daily scan. The file can contain more than 1,000 records between cleanups.
+
+If it exceeds **4 MiB** before the next daily cleanup, emergency compaction runs
+early. Compaction reads backward in 64 KiB blocks, at most 4 MiB, and retains
+up to 1,000 complete recent physical lines within that tail. It does not parse
+or scan the full history. The obsolete `.previous` size-rotation file is removed
+after successful compaction, rather than accumulating another archive.
+
+Writes are buffered for up to 250 ms and appended in one batch. Ordinary batches
+check only file size, not historical content; retention state is cached in memory.
+Updated writers share the existing cross-process lock for append and atomic
+replacement, preventing compaction from overwriting another updated writer's
+batch. Opening the log and normal extension deactivation flush pending writes.
+Abrupt Host termination can lose the last buffered batch; these are best-effort
+diagnostics, not a durable Sync intent or operation journal. Write/cleanup errors
+produce an operational warning and do not change Sync outcomes, retries or Auto.
+
+This policy applies only to Sync diagnostics, not Chat history, Sync receipts,
+recovery state, Git history or the per-writer extension/MCP logs described above.
+Installed changes apply when the updated Host loads; old Hosts do not acquire
+the new writer lock. Do not run the new compactor against a concurrently writing
+legacy Host and assume cross-version locking.
+
 ## Query and Export
 
 The unified MCP exposes the read-only `diagnostics_latest(limit=100)` tool for its **current writer**. Valid limits are 1-1,000. Its response includes the directory, writer ID, recent records, configured `max_rows` capacity and cumulative `dropped_records` count, including when the log directory is unavailable. A tail query may include its own start event; its return event is only available to the next query. Avoid repeated polling or dumping the full retention window into an Agent conversation.
@@ -43,6 +74,63 @@ Waiting events are progress observations, not automatic failures; long chat stan
 These changes take effect after building/installing the updated extension, regenerating the unified MCP server through the normal setup flow, and starting the new host/process. Changing repository sources does not retrofit existing running processes. The diagnostic tools do not restart hosts, regenerate the live runtime, cancel calls or fix the underlying Copilot queue incident.
 
 ## Resource Attribution and Test Cleanup
+
+**Settings > Background Tasks > Background Processes** provides a read-only
+inventory of recognized PKM MCP, Sync service and retrieval entrypoints for the
+current OS user on the extension host's machine (the remote machine in a Remote
+window). Open the tab or use **Refresh** to sample; concurrent requests share a
+scan and results are cached for five seconds. There is no permanent polling or
+process-stop control. Collection is bounded to ten seconds and failures are shown
+explicitly instead of being reported as an empty list.
+
+The default overview shows only total processes and summed RSS. Host, sampling
+time, installed/window version baselines, scope and interpretation notes are
+behind **Snapshot details**, collapsed initially. PID rows show only PID,
+evidence label, age, RSS and a runtime-reported/path-only/unknown version;
+parent ownership, start time, generation, activity and entry evidence are behind
+per-PID **Details**. Runtime evidence errors remain visible on an expanded
+category without opening the per-PID details.
+Rows show PID/parent PID and observed parent executable name, approximate start
+time, elapsed time, RSS and expandable entry paths. Three initially collapsed
+lists group **PKM MCP**, **Retrieval worker** and **PKM service**, including
+zero-count categories. Each header shows its PID total, latest runtime-reported
+version count, old version/generation count, suspected leftovers and
+other/unverified remainder. Expansion is
+preserved across task/process refreshes.
+
+Older version evidence and superseded generations receive yellow **Old** labels.
+Test leftovers and missing entries receive warning labels and are counted
+separately as **suspected leftovers**, not as a user cleanup task. Old and
+suspected-leftover counts are not permission to terminate an active or
+uncertain call. Latest counts require fresh runtime version evidence;
+matching paths, stale reports and unknowns are not counted as confirmed latest.
+Per-row evidence still distinguishes test instances, path-only versions,
+current reports and unverified runtimes. No classification uses process age alone.
+
+For managed MCP processes, the scanner correlates the existing instance registry
+by exact PID and exposes only selected version, generation, build, phase,
+in-flight and uncertain-call fields. The registry heartbeat must be fresh at the
+sample time to establish reported runtime version/generation state. A stale
+report is explicitly labeled and cannot establish currentness. Ambiguous PID
+records surface an error rather than picking one. These are runtime reports,
+not a handshake with the actual client. The MCP server version is separate from
+its generating extension version; the MCP runtime build digest is not the
+extension build digest. Parent process identity does not identify a Chat or
+prove that multiple clients are redundant.
+
+Entry-path versions remain separately labeled. An older path is not silently
+promoted to a verified older runtime, and a matching path never establishes a
+current loaded runtime. Missing files and known test paths are review evidence,
+not permission to terminate. Each group gives a safe next step without adding
+stop/replay controls. A running process is not evidence of active work.
+Processes remain separate from active-task counts and do not block Host reload
+simply by existing.
+The scanner inspects process command lines transiently to recognize entrypoints;
+it sends only the selected entry path and metrics to the panel, never full
+arguments, tokens or request contents. Other users, external MCP products and
+other machines are outside this inventory. Linux has live acceptance coverage;
+Windows collection uses current-owner CIM observations, and macOS uses `ps`;
+both still require native-host acceptance.
 
 Measure these separately: the shared Extension Host, the detached PKM Sync
 service, retrieval workers, per-host Memory workers, and desktop Webviews.

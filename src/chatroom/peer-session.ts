@@ -1,9 +1,10 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "crypto";
 import * as fs from "fs/promises";
 import * as path from "path";
-import { PEER_PROTOCOL, PeerDelivery, PeerPacket } from "./peer-protocol";
+import { PEER_PROTOCOL, PeerDelivery, PeerPacket, parsePeerPacket } from "./peer-protocol";
 import { parsePortalObservation, PortalObservation } from "./portal-observation";
 import { PortalReview } from "./portal-runtime";
+import { portalPersonaSnapshot, type PersonaSnapshot } from "../chat/persona-profiles";
 
 export interface PeerBinding {
   pairId: string;
@@ -63,8 +64,10 @@ export interface PeerSessionOptions {
   approvePair(peerName: string): Promise<boolean>;
   /** Explicit local consent before roles flip; `role` is this side's role after the switch. */
   approveSwap(peerName: string, role: PeerBinding["role"]): Promise<boolean>;
-  approveTask(peerName: string, prompt: string): Promise<boolean>;
-  execute(prompt: string, signal: AbortSignal, requestId: string): Promise<unknown>;
+  approveTask(peerName: string, prompt: string, profileSnapshot?: PersonaSnapshot): Promise<boolean>;
+  execute(prompt: string, signal: AbortSignal, requestId: string, profileSnapshot?: PersonaSnapshot): Promise<unknown>;
+  /** Set only when execute forwards the supplied snapshot to the actual attempt runner. */
+  profileSnapshots?: boolean;
   files?(payload: Record<string, unknown>): Promise<void>;
   invalidated?(): void;
   changed(): void;
@@ -192,15 +195,19 @@ export class PeerSession {
     catch (error) { this.pendingPair = undefined; throw error; }
   }
 
-  submit(prompt: string, requestId: string = randomUUID()): string {
+  submit(prompt: string, requestId: string = randomUUID(), profileSnapshot?: PersonaSnapshot): string {
     const binding = this.requireRole("controller");
+    const profiles = portalPersonaSnapshot(profileSnapshot);
+    if (profiles && !binding.peerCapabilities?.includes("profiles-v1")) throw new Error("The controlled Host cannot apply Profile snapshots. No task was sent; upgrade or explicitly send without Profiles.");
     if (this.swapPending || this.swapping) throw new Error("A control-direction switch is pending; wait for the peer's answer.");
     if (!prompt.trim() || prompt.length > 16_000) throw new Error("A remote prompt from 1 to 16,000 characters is required.");
     if (!/^[a-f0-9-]{36}$/.test(requestId)) throw new Error("Invalid remote request identity.");
-    const fingerprint = createHash("sha256").update(prompt).digest("hex");
+    const fingerprint = createHash("sha256").update(profiles ? JSON.stringify([prompt, profiles]) : prompt).digest("hex");
     if (this.outgoing.has(requestId) && this.outgoing.get(requestId) !== fingerprint) throw new Error("Remote request ID was already used for different content.");
     if (!this.outgoing.has(requestId) && this.outgoing.size >= 100) throw new Error("This peer session reached its 100-request boundary; inspect receipts and pair again.");
-    this.send(binding.peerId, "task", binding.pairId, requestId, { prompt });
+    const payload = { prompt, ...(profiles ? { profileSnapshot: profiles } : {}) };
+    parsePeerPacket({ protocol: PEER_PROTOCOL, operation: "task", pairId: binding.pairId, requestId, payload });
+    this.send(binding.peerId, "task", binding.pairId, requestId, payload);
     this.outgoing.set(requestId, fingerprint);
     if (!this.receipts.has(requestId)) this.receipts.set(requestId, {
       requestId, state: "unknown", error: "Sent to transport; the target has not acknowledged execution or approval.",
@@ -360,6 +367,14 @@ export class PeerSession {
   private async run(binding: PeerBinding, packet: PeerPacket): Promise<void> {
     const prompt = packet.payload.prompt;
     if (typeof prompt !== "string" || !prompt.trim() || prompt.length > 16_000) throw new Error("Invalid remote task prompt.");
+    let profiles: PersonaSnapshot | undefined;
+    try {
+      profiles = portalPersonaSnapshot(packet.payload.profileSnapshot);
+      if (profiles && !this.options.profileSnapshots) throw new Error("This Host is not wired to apply Profile snapshots; no task was executed.");
+    } catch (error) {
+      this.reply(binding, packet.requestId, { requestId: packet.requestId, state: "failed", error: error instanceof Error ? error.message : "Invalid Profile snapshot." });
+      return;
+    }
     if (this.processing.has(packet.requestId)) return;
     if (this.processing.size) throw new Error("This controlled peer already has an active task; no task was queued.");
     this.processing.add(packet.requestId);
@@ -370,7 +385,7 @@ export class PeerSession {
       const legacyIdentity = createHash("sha256").update(JSON.stringify([this.options.roomId, binding.peerId, binding.pairId, packet.requestId])).digest("hex");
       const legacyFile = path.join(this.options.journalDirectory, `${legacyIdentity}.json`);
       const file = await fs.access(legacyFile).then(() => legacyFile, () => this.journalFile(binding.pairId, packet.requestId));
-      const fingerprint = createHash("sha256").update(prompt).digest("hex");
+      const fingerprint = createHash("sha256").update(profiles ? JSON.stringify([prompt, profiles]) : prompt).digest("hex");
       await fs.mkdir(this.options.journalDirectory, { recursive: true, mode: 0o700 });
       let record: TaskRecord = { fingerprint, receipt: { requestId: packet.requestId, state: "awaiting-approval" } };
       let handle;
@@ -399,7 +414,7 @@ export class PeerSession {
         this.reply(binding, packet.requestId, receipt);
       };
       this.reply(binding, packet.requestId, record.receipt);
-      if (!await this.options.approveTask(binding.peerName, prompt)) {
+      if (!await this.options.approveTask(binding.peerName, prompt, profiles)) {
         await persist({ requestId: packet.requestId, state: "denied" }); return;
       }
       if (controller.signal.aborted || this.binding !== binding || this.closed || !this.options.connected()) {
@@ -407,7 +422,7 @@ export class PeerSession {
       }
       await persist({ requestId: packet.requestId, state: "running" });
       try {
-        const result = await this.options.execute(prompt, controller.signal, packet.requestId);
+        const result = await this.options.execute(prompt, controller.signal, packet.requestId, profiles);
         const encoded = JSON.stringify(result);
         const boundedResult = encoded && Buffer.byteLength(encoded, "utf8") > 36 * 1024
           ? { truncated: true, preview: Array.from(encoded).slice(0, 5000).join(""), message: "Result exceeded the peer frame budget; inspect the original remote Chat." } : result;
@@ -463,7 +478,7 @@ export class PeerSession {
     return this.binding;
   }
   private localIdentity(): Record<string, unknown> {
-    return { capabilities: ["observations-v1", ...(this.options.files ? ["files-v1"] : []), ...(this.options.persist ? ["resume-v1"] : []), ...(this.options.autoReview ? ["review-mode-v1", ...(this.options.autoReview() ? ["auto-review-v1"] : [])] : [])], ...(this.options.chatId ? { chatId: this.options.chatId } : {}), ...(this.options.machine ? { machine: this.options.machine } : {}),
+    return { capabilities: ["observations-v1", ...(this.options.profileSnapshots ? ["profiles-v1"] : []), ...(this.options.files ? ["files-v1"] : []), ...(this.options.persist ? ["resume-v1"] : []), ...(this.options.autoReview ? ["review-mode-v1", ...(this.options.autoReview() ? ["auto-review-v1"] : [])] : [])], ...(this.options.chatId ? { chatId: this.options.chatId } : {}), ...(this.options.machine ? { machine: this.options.machine } : {}),
       ...(this.options.chatName ? { chatName: this.options.chatName.slice(0, 200) } : {}), ...(this.options.endpoint ? { endpoint: this.options.endpoint } : {}) };
   }
   private peerIdentity(payload: Record<string, unknown>): Pick<PeerBinding, "peerChatId" | "peerMachine" | "peerChatName" | "peerEndpoint" | "peerCapabilities"> {

@@ -20,8 +20,8 @@ let githubSyncRepairRequestSequence = 0;
 const githubSyncRepairCommands = new Set(['githubSyncRepairOpen','githubSyncRepairPreview','githubSyncRepairApply',
   'githubSyncRecipeRecompilePreview','githubSyncRecipeRecompileApply','githubSyncRepairRevalidate',
   'githubSyncRepairRevalidateOnly','githubSyncRepairPause','githubSyncRepairResume','githubSyncRepairTrash']);
-const githubSyncTypes = ['skills','notes','papers','prompts','scripts','packages','servers','recipes','agentSnapshots','actions','action-module-sets'];
-const githubSyncLabels = { skills:'Skills', notes:'Notes', papers:'Research', prompts:'Prompts', scripts:'Scripts', packages:'Packages', servers:'Servers', recipes:'Recipes', agentSnapshots:'Agent Snapshots', actions:'Actions', 'action-module-sets':'Action ModuleSets' };
+const githubSyncTypes = ['skills','notes','papers','prompts','scripts','packages','servers','recipes','agentSnapshots','actions','action-module-sets','profiles'];
+const githubSyncLabels = { skills:'Skills', notes:'Notes', papers:'Research', prompts:'Prompts', scripts:'Scripts', packages:'Packages', servers:'Servers', recipes:'Recipes', agentSnapshots:'Agent Snapshots', actions:'Actions', 'action-module-sets':'Action ModuleSets', profiles:'User / Agent Profiles' };
 
 function renderGitHubSyncLoading() {
   renderGitHubSyncPane();
@@ -39,7 +39,7 @@ function githubSyncDefaultSelection() {
   const publicScope = {};
   const privateScope = {};
   for (const type of githubSyncTypes) {
-    publicScope[type] = { items:[], folders:['packages','servers','agentSnapshots','actions','action-module-sets'].includes(type) ? [] : [''] };
+    publicScope[type] = { items:[], folders:['packages','servers','agentSnapshots','actions','action-module-sets','profiles'].includes(type) ? [] : [''] };
     privateScope[type] = { items:[], folders:[] };
   }
   return { public:publicScope, private:privateScope };
@@ -136,7 +136,8 @@ function updateGitHubSyncShields() {
     if (githubSyncData.fingerprintsDeferred && shield.dataset.status) continue;
     const status = githubSyncData.shields?.[type] || 'outline';
     shield.dataset.status = status;
-    shield.title = githubSyncStatusTitle(status);
+    shield.title = githubSyncStatusTitle(status) + (status === 'yellow' && githubSyncData.shieldReasons?.[type]?.length
+      ? '\n' + githubSyncData.shieldReasons[type].join('\n') : '');
   }
 }
 
@@ -235,7 +236,7 @@ function githubSyncRenderTree(privacy, type, node, pathParts, picked, folders, o
 }
 
 function githubSyncPrivacyTree(target, privacy) {
-  return githubSyncTypes.map(type => {
+  return githubSyncTypes.filter(type => type !== 'profiles' || privacy === 'private').map(type => {
     const items = (githubSyncData.catalog?.[type] || []).filter(item => !!item.isPrivate === (privacy === 'private'));
     const selection = githubSyncSelection(target, privacy, type);
     const picked = new Set(selection.items || []);
@@ -257,8 +258,11 @@ function githubSyncEditor() {
   const automation = draft?.automation ?? target?.automation ?? { enabled:false, intervalMinutes:5, syncOnChange:true, initialSyncCompleted:false };
   const automaticReady = !!automation.initialSyncCompleted;
   const accountConnected = !!target && authentication.method === 'vscode' && githubSyncData.connected?.[target.id];
+  const credentialError = target && githubSyncData.credentialErrors?.[target.id];
   const authenticationStatus = githubSyncAuthenticationResult
     ? `<div class="github-sync-auth-status success"><span class="codicon codicon-verified-filled"></span><span><strong>${esc(githubSyncAuthenticationResult.login)}</strong><small>${esc(githubSyncAuthenticationResult.fingerprint)}</small></span></div>`
+    : credentialError
+      ? `<div class="github-sync-auth-status"><span class="codicon codicon-warning"></span><span>${esc(githubSyncFormatError(credentialError))}</span></div>`
     : accountConnected
       ? `<div class="github-sync-auth-status success"><span class="codicon codicon-verified-filled"></span><span><strong>${esc(authentication.expectedLogin)}</strong><small>Stored securely for automatic backup</small></span></div>`
       : '<div class="github-sync-auth-status"><span class="codicon codicon-key"></span><span>Connect and test this account before automatic backup</span></div>';
@@ -490,8 +494,19 @@ function githubSyncPausedItemsPanel(target) {
 }
 
 function githubSyncEffectiveError(target, runtime) {
-  return (runtime.status === 'error' ? runtime.lastError || target.lastFailure?.error : target.lastFailure?.error || runtime.lastError)
-    || 'No error details were recorded. Open Sync Diagnostic Log for this attempt.';
+  const failure = runtime.lastError && (runtime.status === 'error' || !target.lastFailure?.error)
+    ? { error:runtime.lastError, errorCode:runtime.lastErrorCode, phase:runtime.lastErrorPhase }
+    : target.lastFailure;
+  return githubSyncFormatError(failure);
+}
+
+function githubSyncFormatError(failure) {
+  const canceled = /^(Canceled|Cancelled)$/i.test(failure?.error || '');
+  const code = failure?.errorCode || (canceled ? 'SYNC_CANCELED' : 'SYNC_FAILED');
+  const message = canceled
+    ? 'The previous Sync was canceled. Retry Sync; if it repeats, reload this window.'
+    : failure?.error || 'No error details were recorded. Open Sync Diagnostic Log for this attempt.';
+  return `[${code}${failure?.phase ? ` · ${failure.phase}` : ''}] ${message}`;
 }
 
 function githubSyncRelativeAge(value, now = Date.now()) {
@@ -544,12 +559,17 @@ function githubSyncCards() {
     const conflict = rechecking || repair ? null : storedConflict;
     const initialPreview = conflict?.purpose === 'initial-preview';
     const status = githubSyncEffectiveStatus(target, runtime, conflict, forcePending, repair);
-    const phase = forcePending ? 'waiting-for-lock' : initialPreview ? 'initial-preview' : conflict ? 'resolve-conflicts' : status === 'error' && ['scheduled', 'paused'].includes(runtime.phase) ? '' : runtime.phase || (runtime.status === 'scheduled' && status !== 'error' ? 'scheduled' : '');
+    const failedPhase = runtime.status === 'error' && runtime.lastError
+      ? runtime.lastErrorPhase || runtime.phase : target.lastFailure?.phase || runtime.lastErrorPhase || runtime.phase;
+    const phase = forcePending ? 'waiting-for-lock' : initialPreview ? 'initial-preview' : conflict ? 'resolve-conflicts'
+      : status === 'error' ? ['scheduled', 'paused'].includes(failedPhase) ? '' : failedPhase || ''
+      : runtime.phase || (runtime.status === 'scheduled' ? 'scheduled' : '');
     const retryWithPause = status === 'error' && !!target.automation?.enabled && automaticReady;
     const phaseDiagram = githubSyncPhaseDiagram(phase, status)
       + (runtime.service ? `<small class="github-sync-service">PKM service ${esc(runtime.service.version)} · PID ${esc(runtime.service.pid)}</small>` : '');
-    const error = status === 'error' ? githubSyncEffectiveError(target, runtime) : '';
-    const next = remotePending ? 'Reviewing / applying Remote replacement · GitHub will not be pushed' : forcePending ? 'Waiting for Git lock' : repair ? 'Waiting for local content repair · Remote has not been fetched' : initialPreview ? 'Remote fetched read-only · review the file tree before applying' : conflict ? 'Choose a candidate for each file, then Apply resolutions & Sync' : status === 'error' ? error || 'Sync failed without an error message' : runtime.detail || (!automaticReady ? 'Initial manual sync required before automation can be enabled' : runtime.nextSyncAt ? `Next fetch after ${new Date(runtime.nextSyncAt).toLocaleString()}` : target.automation?.enabled ? 'Scheduled to fetch remote changes' : 'Automatic pull/push is off');
+    const error = status === 'error' ? githubSyncEffectiveError(target, runtime)
+      : githubSyncData.credentialErrors?.[target.id] ? githubSyncFormatError(githubSyncData.credentialErrors[target.id]) : '';
+    const next = remotePending ? 'Reviewing / applying Remote replacement · GitHub will not be pushed' : forcePending ? 'Waiting for Git lock' : repair ? 'Waiting for local content repair · Remote has not been fetched' : initialPreview ? 'Remote fetched read-only · review the file tree before applying' : conflict ? 'Choose a candidate for each file, then Apply resolutions & Sync' : status === 'error' ? 'Review the error before retrying' : runtime.detail || (!automaticReady ? 'Initial manual sync required before automation can be enabled' : runtime.nextSyncAt ? `Next fetch after ${new Date(runtime.nextSyncAt).toLocaleString()}` : target.automation?.enabled ? 'Scheduled to fetch remote changes' : 'Automatic pull/push is off');
     const conflictActions = (repair ? githubSyncContentRepairPanel(target.id, repair) : conflict ? githubSyncConflictPanel(target.id, conflict) : '')
       + githubSyncPausedItemsPanel(target) + githubSyncActionFeedbackPanel(target.id);
     const resolutionDiagram = !conflict ? githubSyncResolutionDiagram(target.lastResolutionReport) : '';

@@ -7,6 +7,7 @@ import { isContentItemPrivate, isTopLevelPrivate, PrivacyContentType, setPrivacy
 import { getStorePath, knowledgeFilePath, noteList, paperList, setStorePath as setFileStorePath, skillList } from "../knowledge/filestore";
 import { GitHubSyncCatalog, GitHubSyncCatalogItem, githubSyncIsSystemItem, githubSyncIgnoredPath, githubSyncSafeRelativePath } from "./github-sync";
 import { readSyncScriptIdentity } from "./github-sync-script-identity";
+import { readPortablePersonas, portablePersonaPath } from "../chat/persona-profiles";
 import { referencedMarkdownAssets } from "../knowledge/markdown-assets";
 import { packageList, promptList, scriptGet, scriptIdentityFile, scriptList, setStorePath as setStoragePath } from "../knowledge/storage";
 
@@ -152,6 +153,11 @@ function buildCatalog({ root, servers, recipes }: CatalogInput): GitHubSyncCatal
     agentSnapshots,
     actions,
     "action-module-sets":actionModules,
+    profiles:readPortablePersonas(root).map(record => ({
+      id:`${record.kind}/${record.id}`, label:record.deleted ? `${record.kind} Profile (deleted)` : record.name,
+      cat:record.kind, meta:`revision ${record.revision} · explicit consent required · not encrypted`, isPrivate:true,
+      source:path.join(root, portablePersonaPath(record)), destination:portablePersonaPath(record),
+    })),
   };
 }
 

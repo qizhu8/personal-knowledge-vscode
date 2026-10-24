@@ -36,10 +36,14 @@
   let screen = "library";
   let renderedChatId;
   let jumpToLatest = false;
+  let followPaused = false;
   let library;
   const drafts = saved.drafts || {};
+  const queuedDrafts = saved.queuedDrafts || {};
+  const queuedEditorNodes = new Map();
   const workflowSelection = new Map();
   const workflowExpanded = new Map();
+  const activityFilters = new Map();
   const messageExpanded = new Set(saved.expandedMessageDetails || []);
   let state;
   let historyStart = 0;
@@ -58,9 +62,7 @@
   let renderedToolGroups;
   const expandedToolGroups = new Set();
   const post = (type, extra = {}) => vscode.postMessage({ type, ...extra });
-  const visualization = globalThis.PkmChatVisualization({ post, steer: () => {
-    inputMode = "steer"; saveDraft(); render(); element("prompt").focus();
-  } });
+  const visualization = globalThis.PkmChatVisualization({ post });
   window.addEventListener("pagehide", () => visualization.dispose());
   function markResultRead() {
     if (!state || screen === "library" || document.visibilityState !== "visible" || !state.chat.lastResultId || state.chat.lastResultId === state.chat.readResultId) return;
@@ -94,7 +96,7 @@
   }
   const saveDraft = () => {
     if (state) drafts[state.chat.id] = element("prompt").value;
-    vscode.setState({ drafts, inputMode, advancedBudget, screen, workerPanelChats: [...workerPanelChats].slice(-500), chatListOrder: library?.order || saved.chatListOrder || [], expandedWorkerChats: library ? [...library.expandedWorkers].slice(-500) : saved.expandedWorkerChats || [], expandedMessageDetails: Array.from(messageExpanded).slice(-500), collapsedChatGroups: library ? Array.from(library.collapsed) : saved.collapsedChatGroups || [] });
+    vscode.setState({ drafts, queuedDrafts, inputMode, advancedBudget, screen, workerPanelChats: [...workerPanelChats].slice(-500), chatListOrder: library?.order || saved.chatListOrder || [], expandedWorkerChats: library ? [...library.expandedWorkers].slice(-500) : saved.expandedWorkerChats || [], expandedMessageDetails: Array.from(messageExpanded).slice(-500), collapsedChatGroups: library ? Array.from(library.collapsed) : saved.collapsedChatGroups || [] });
     tokenEstimate();
   };
   function tokenEstimate() {
@@ -141,6 +143,7 @@
     if (!run) return null;
     const key = run.attemptId || messageId || String(run.startedAt);
     const active = state.busy && (run.attemptId ? state.chat.progress?.attemptId === run.attemptId : run === state.chat.progress);
+    run = { ...run, steps: run.steps.filter(step => step.operation !== "token-count" && !/^Counting (input|output) tokens with VS Code model$/.test(step.label)) };
     const statusOf = (step, index) => step.status || (index < run.steps.length - 1 ? "complete" : active ? "running" : run.status === "running" ? "failed" : run.status);
     const section = document.createElement("details"); section.className = "workflow activity"; section.dataset.attempt = key; section.open = workflowExpanded.get(key) ?? active;
     const summary = document.createElement("summary"); summary.className = "workflow-summary";
@@ -158,6 +161,13 @@
     if (!active) timer.dataset.finished = run.finishedAt ?? currentStep?.at ?? run.startedAt;
     timer.setAttribute("aria-hidden", "true"); timer.title = "Elapsed current step time";
     summary.append(icon, label, timer); section.append(summary);
+    const filterLabel = document.createElement("label"); filterLabel.className = "activity-filter";
+    filterLabel.append(document.createTextNode("Type "));
+    const filter = document.createElement("select"); filter.setAttribute("aria-label", "Activity type filter");
+    for (const [value, text] of [["all", "All"], ["llm", "LLM"], ["cmd", "CMD"], ["info", "INFO"]]) {
+      const option = document.createElement("option"); option.value = value; option.textContent = text; filter.append(option);
+    }
+    filter.value = activityFilters.get(key) || "all"; filterLabel.append(filter); section.append(filterLabel);
     const list = document.createElement("ol"); list.className = "workflow-events";
     const tools = new Map((message.toolCalls || []).map(tool => [tool.id, tool]));
     const rows = new Map();
@@ -166,15 +176,20 @@
       const previous = rows.get(identity);
       rows.set(identity, { ...step, firstAt: previous?.firstAt ?? step.at, status: statusOf(step, index), index });
     });
-    const appendRow = (id, label, status, at, finishedAt, body, usage) => {
-      const row = document.createElement("li"); row.dataset.status = status;
+    const appendRow = (id, label, status, at, finishedAt, body, usage, category = "info", operation = "display") => {
+      const row = document.createElement("li"); row.dataset.status = status; row.dataset.category = category; row.dataset.operation = operation;
       const line = body ? document.createElement("summary") : document.createElement("div");
       line.className = "workflow-event-line";
       const glyph = document.createElement("span"); glyph.className = "workflow-dot"; glyph.setAttribute("aria-hidden", "true");
+      const badge = document.createElement("span"); badge.className = "activity-category"; badge.textContent = category.toUpperCase();
+      badge.title = category === "llm" ? operation === "token-count" ? "Model API token counting; not an inference or a reported token charge." : "Model inference; token usage is shown only when reported."
+        : category === "cmd" ? "Tool / command execution. Output may consume input tokens in a later model request; tools may also call models internally."
+        : "Local preparation, retrieval or display; not a model inference. Displayed data may also be included in later model input.";
       const text = document.createElement("span"); text.className = "activity-label"; text.textContent = label;
       const tokens = document.createElement("span"); tokens.className = "activity-usage";
       const reasoning = usage && Number.isSafeInteger(usage.reasoningTokens) && usage.reasoningTokens >= 0 && usage.reasoningTokens <= usage.outputTokens ? usage.reasoningTokens : undefined;
-      tokens.textContent = usage ? `${usage.inputTokens.toLocaleString()} in / ${usage.outputTokens.toLocaleString()} out${reasoning === undefined ? "" : ` · ${t("{tokens} reasoning", { tokens:reasoning.toLocaleString() })}`}` : "usage n/a";
+      tokens.textContent = usage ? `${usage.inputTokens.toLocaleString()} in / ${usage.outputTokens.toLocaleString()} out${reasoning === undefined ? "" : ` · ${t("{tokens} reasoning", { tokens:reasoning.toLocaleString() })}`}`
+        : category !== "llm" ? "" : operation === "token-count" ? "Token count · not inference" : "Usage not reported";
       tokens.title = usage ? t("Provider-reported usage for this model round; reasoning tokens are included in output, not added again. Not a token charge for each tool.") : "No independent provider token usage is reported for this operation.";
       const timer = document.createElement("span"); timer.className = "elapsed";
       timer.title = t("Elapsed dispatch/result time, including waits; not CPU time or proof of remote-job completion.");
@@ -183,7 +198,7 @@
         if (Number.isFinite(finishedAt)) timer.dataset.finished = finishedAt;
         else if (!active) timer.dataset.finished = run.finishedAt ?? at;
       } else timer.textContent = "-";
-      line.append(glyph, text, tokens, timer);
+      line.append(glyph, badge, text, tokens, timer);
       if (body) {
         const detail = messageDisclosure(messageId || key, id, "", "activity-event");
         detail.firstElementChild.replaceWith(line); detail.append(body); row.append(detail);
@@ -207,12 +222,15 @@
       }
       const usage = receipt?.ledger?.providerUsage;
       const reported = usage && [usage.inputTokens, usage.outputTokens].every(value => Number.isSafeInteger(value) && value >= 0) ? usage : undefined;
+      const category = step.category || (step.kind === "tool" || step.toolCallId || /^(Running|Completed|Failed) tool:/.test(step.label) ? "cmd"
+        : step.kind === "model" || /^Memory: (understanding the question|summarizing topic)$/.test(step.label) ? "llm" : "info");
+      const operation = step.operation || (category === "llm" ? "inference" : category === "cmd" ? "command" : "display");
       appendRow(id, `${tool ? globalThis.PkmAgentHarness.describeToolCall(tool, t) : step.label} · ${step.status}`, step.status, tool?.startedAt ?? step.firstAt,
-        tool?.finishedAt ?? (["complete", "failed", "cancelled"].includes(step.status) ? run.steps[step.index + 1]?.at ?? run.finishedAt : undefined), body, reported);
+        tool?.finishedAt ?? step.finishedAt ?? (["complete", "failed", "cancelled"].includes(step.status) ? run.steps[step.index + 1]?.at ?? run.finishedAt : undefined), body, reported, category, operation);
     }
     for (const tool of tools.values()) {
       const body = document.createElement("pre"); body.textContent = `${tool.name}\n${tool.arguments}\n\n${tool.result || ""}`;
-      appendRow(`tool:${tool.id}`, `${globalThis.PkmAgentHarness.describeToolCall(tool, t)} · ${tool.status}`, tool.status, tool.startedAt, tool.finishedAt, body);
+      appendRow(`tool:${tool.id}`, `${globalThis.PkmAgentHarness.describeToolCall(tool, t)} · ${tool.status}`, tool.status, tool.startedAt, tool.finishedAt, body, undefined, "cmd", "command");
     }
     if (run.tools) {
       const body = document.createElement("pre"); body.textContent = run.tools.join("\n") || "No tools advertised";
@@ -234,6 +252,11 @@
       note.textContent = "Public reasoning summary not reported. Hidden reasoning is not available."; list.append(note);
     }
     section.append(list);
+    const applyFilter = () => {
+      for (const row of list.children) row.hidden = filter.value !== "all" && (row.dataset.category || "info") !== filter.value;
+    };
+    filter.onchange = () => { activityFilters.set(key, filter.value); applyFilter(); };
+    applyFilter();
     if (run.droppedSteps) { const omitted = document.createElement("div"); omitted.className = "workflow-tools"; omitted.textContent = `${run.droppedSteps} earlier activity events omitted; tool results retained below.`; section.append(omitted); }
     if (debug) section.append(debug);
     section.ontoggle = () => { if (section.isConnected) workflowExpanded.set(key, section.open); };
@@ -382,11 +405,20 @@
     renderAppliedEdits();
     const previousScrollTop = target.scrollTop;
     const previousScrollHeight = target.scrollHeight;
-    const follow = jumpToLatest || renderedChatId !== state.chat.id || target.scrollHeight - target.scrollTop - target.clientHeight < 90;
+    if (jumpToLatest || renderedChatId !== state.chat.id) followPaused = false;
+    const follow = !followPaused && (jumpToLatest || renderedChatId !== state.chat.id || target.scrollHeight - target.scrollTop - target.clientHeight < 90);
     renderedChatId = state.chat.id;
     jumpToLatest = false;
     if (messageNodesChatId !== state.chat.id) { messageNodes.clear(); messageNodesChatId = state.chat.id; }
     const children = [];
+    if (historyStart > 0) {
+      const older = document.createElement("button");
+      older.type = "button"; older.className = "history-load";
+      older.textContent = historyPending ? t("Loading older messages...") : `${t("Load older messages")} (${historyStart})`;
+      older.disabled = !!historyPending;
+      older.onclick = loadOlderMessages;
+      children.push(older);
+    }
     const retained = new Set();
     const latestUser = [...state.chat.messages].reverse().find(message => message.role === "user");
     const pendingUserId = state.busy && state.chat.messages.at(-1)?.status === "streaming" ? latestUser?.id : undefined;
@@ -406,7 +438,7 @@
       if (message.portalSource) article.classList.add("portal-message");
       const model = document.createElement("span"); model.className = "model-name"; model.textContent = message.model || (message.contextLabels || []).join(", "); model.title = model.textContent;
       header.append(role, model, iconButton("copy", "Copy message", () => post("copy", { id: message.id })));
-      if (message.retrievalActivity || message.retrieval) {
+      if (message.retrievalActivity || message.retrieval || message.budgetReceipts?.length) {
         header.append(iconButton("references", "Memory", () => {
           memoryActivityId = message.id; memoryStepId = "latest"; togglePopover("memory", true);
         }));
@@ -419,6 +451,23 @@
       if (message.role === "user") content.textContent = message.content;
       else renderRichContent(content, message.content);
       article.append(header, content);
+      if (message.role === "assistant" && message.profileContext) {
+        const snapshot = message.profileContext;
+        const card = messageDisclosure(message.id, "profiles",
+          `Attempt Profiles · User ${snapshot.user ? `r${snapshot.user.revision}` : "not configured"} · Agent ${snapshot.agent ? `${snapshot.agent.name} r${snapshot.agent.revision}` : "not assigned"}`,
+          "profile-snapshot");
+        const body = document.createElement("pre");
+        body.textContent = JSON.stringify({
+          ...snapshot,
+          evidence: (message.budgetReceipts || []).map(round => ({
+            round: round.round, status: round.status, accounting: round.countingMethod,
+            messageInPlan: !!round.contextPlan?.manifest.some(item => item.hash === snapshot.messageHash),
+            transportPrepared: !!round.transport,
+          })),
+          retention: "Historical snapshot retained after Profile edits/deletion; current revision may differ.",
+        }, null, 2);
+        card.append(body); article.append(card);
+      }
       if (message.fromChatId) {
         const source = document.createElement("div"); source.className = "worker-provenance";
         const manager = iconButton("history", "Source manager", () => { saveDraft(); post("select", { id: message.fromChatId }); });
@@ -699,16 +748,24 @@
       }
       element("retrieval-status").before(row);
     }
-    const activities = state.chat.messages.filter(message => message.role === "assistant" && message.retrieval);
+    const activities = state.chat.messages.filter(message => message.role === "assistant"
+      && (message.retrieval || message.retrievalActivity || message.budgetReceipts?.length));
     const activity = activities.find(message => message.id === memoryActivityId) || activities.at(-1);
     const selector = element("retrieval-activity");
     selector.replaceChildren(...activities.map((message, index) => new Option(`${t("Activity")} ${index + 1} · ${(state.chat.messages[state.chat.messages.indexOf(message) - 1]?.content || "").slice(0, 60)}`, message.id)));
     selector.value = activity?.id || ""; selector.disabled = !activities.length;
     const timeline = activity?.retrievalActivity;
+    const budgets = activity?.budgetReceipts || [];
+    const rounds = new Map((timeline?.rounds || []).map(round => [round.index, round]));
+    for (const budget of budgets) if (!rounds.has(budget.round)) rounds.set(budget.round, { index:budget.round });
     const steps = [
       { id: "latest", label: t("Memory"), receipt: activity?.retrieval },
       ...(timeline?.attempts || []).map((attempt, index) => ({ id: `attempt-${index}`, label: `${t("Memory")} ${index + 1} · ${attempt.kind} · ${attempt.durationMs} ms`, receipt: attempt.receipt })),
-      ...(timeline?.rounds || []).map((round, index) => ({ id: `round-${index}`, label: `${t(round.receipt.phase === "sent" ? "Sent" : "Prepared")} ${round.index + 1} · ${round.inputTokens}/${round.inputBudget}`, receipt: round.receipt })),
+      ...[...rounds.values()].sort((a, b) => a.index - b.index).map(round => {
+        const budget = budgets.find(item => item.round === round.index);
+        return { id:`round-${round.index}`, label:`${t(budget?.status === "sent" || round.receipt?.phase === "sent" ? "Sent" : "Prepared")} ${round.index + 1} · ${budget?.consumed?.estimatedInputTokens ?? round.inputTokens ?? "?"}/${budget?.effective?.inputBudget ?? round.inputBudget ?? "?"}`,
+          receipt:round.receipt, budget };
+      }),
     ];
     const step = steps.find(item => item.id === memoryStepId) || steps[0];
     element("retrieval-step").replaceChildren(...steps.map(item => new Option(item.label, item.id)));
@@ -719,7 +776,8 @@
       const preview = segmentMetadata.get(candidate.id)?.preview;
       return preview ? { ...candidate, label: preview } : candidate;
     }) };
-    const fingerprint = JSON.stringify([state.chat.id, activity?.id, step.id, receipt, state.memoryTree, policy, element("retrieval-kind").value, element("retrieval-top").value, element("retrieval-flow").clientWidth]);
+    const budget = step.budget || (step.id === "latest" ? budgets.at(-1) : undefined);
+    const fingerprint = JSON.stringify([state.chat.id, activity?.id, activity?.progress?.attemptId, step.id, receipt, budget, state.memoryTree, policy, element("retrieval-kind").value, element("retrieval-top").value, element("retrieval-flow").clientWidth]);
     if (fingerprint === memoryFingerprint) return;
     memoryFingerprint = fingerprint;
     const type = element("retrieval-kind"); const previousType = type.value;
@@ -727,8 +785,39 @@
     for (const kind of [...new Set((receipt?.candidates || []).map(candidate => candidate.kind))].sort()) type.add(new Option(kind, kind));
     type.value = [...type.options].some(option => option.value === previousType) ? previousType : "all";
     element("retrieval-status").textContent = receipt ? (receipt.warning || t("{selected} selected overall · {count} candidates · per-method ranking", { selected: receipt.selectedCount, count: receipt.candidates.length }))
-      + " · " + t(step.id.startsWith("attempt-") ? "Recall shortlist, not sent context" : step.id.startsWith("round-") ? "Sent context; UTF-8 budget estimate" : "Latest budget selection")
+      + " · " + t(step.id.startsWith("attempt-") ? "Recall shortlist, not sent context" : step.id.startsWith("round-")
+        ? receipt.phase === "sent" ? "Accepted transport; not proof of model completion" : "Prepared context; not confirmed sent" : "Latest budget selection")
       + (timeline?.droppedRounds ? " · " + t("{count} earlier sends omitted", { count: timeline.droppedRounds }) : "") : t("No retrieval receipt");
+    const evidence = element("retrieval-evidence"); evidence.replaceChildren();
+    const line = (label, value) => {
+      const row = document.createElement("p"), title = document.createElement("strong");
+      title.textContent = t(label) + ": "; row.append(title, document.createTextNode(t(String(value ?? "Not recorded")))); evidence.append(row);
+    };
+    line("Chat / attempt", `${state.chat.id} / ${activity?.progress?.attemptId || t("Not recorded")}`);
+    line("Query", receipt?.query);
+    line("Recorded scope", receipt ? `${receipt.chatId}${receipt.sessionId ? " / " + receipt.sessionId : ""}` : undefined);
+    line("Retrieval methods", receipt ? [...new Set(receipt.candidates.map(candidate => candidate.method))].join(", ") || t("Not recorded") : undefined);
+    if (budget) {
+      line("Model / round", `${budget.modelId} / ${budget.round + 1}`);
+      line("Dispatch evidence", budget.status === "sent" ? "Accepted transport; not proof of model completion"
+        : budget.transport ? "Transport prepared; not confirmed sent" : "Plan prepared; not confirmed sent");
+      line("Input estimate / budget", `${budget.consumed?.estimatedInputTokens ?? "?"} / ${budget.effective?.inputBudget ?? "?"} (${budget.countingMethod})`);
+      line("Reserved output", budget.effective?.outputTokens);
+      line("Actual transport", budget.transport ? `${budget.transport.provider} / ${budget.transport.inputTokens} (${budget.transport.countingMethod})` : undefined);
+      const plan = budget.contextPlan, transport = budget.transport;
+      line("Plan stop reason", plan?.stopReason);
+      line("Selected reference IDs", budget.selectedReferenceIds?.join(", ") || t("None"));
+      line("Omitted reference IDs", plan?.omittedIds?.join(", ") || (plan ? t("None") : undefined));
+      line("Unresolved reference IDs", plan?.unresolved?.join(", ") || (plan ? t("None") : undefined));
+      const hashes = plan?.manifest?.map(item => item.hash);
+      line("HTTP message hash comparison", transport?.provider === "http" && hashes
+        ? JSON.stringify(hashes) === JSON.stringify(transport.messageHashes) ? "Match" : "Mismatch"
+        : transport?.provider === "vscode" ? "Native message conversion; raw plan hashes are not comparable" : undefined);
+      const recorded = document.createElement("details"), summary = document.createElement("summary"), data = document.createElement("pre");
+      summary.textContent = t("Recorded plan and transport");
+      data.textContent = JSON.stringify({ contextPlan:plan, transport, ledger:budget.ledger }, null, 2);
+      recorded.append(summary, data); evidence.append(recorded);
+    }
     globalThis.PkmRetrievalFlow(element("retrieval-flow"), displayReceipt, Number(element("retrieval-top").value), type.value, candidate => {
       element("memory-preview").textContent = JSON.stringify(candidate, null, 2); element("memory-preview").hidden = false;
       const entry = [...element("retrieval-candidates").querySelectorAll(".memory-segment")].find(entry => entry.dataset.memoryId === candidate.id);
@@ -745,7 +834,11 @@
         const heading = document.createElement("summary"); heading.textContent = t(kind);
         group.append(heading); candidates.append(group); groups.set(kind, group);
       }
-      const metadata = `${t(candidate.selected ? "Selected" : "Not selected")} · ${candidate.method}\n${candidate.reason}\n${candidate.sourceUri}`;
+      const metadata = `${t(candidate.selected ? "Selected" : "Not selected")} · ${candidate.evidenceState || t("Not recorded")} · ${candidate.method}\n${candidate.reason}\n${candidate.sourceUri}`
+        + `\n${t("Source revision")}: ${candidate.sourceRevision || t("Not recorded")}`
+        + (candidate.range ? `\n[${candidate.range.start}, ${candidate.range.end}) ${candidate.range.unit} · ${candidate.offsetEncoding || t("Not recorded")}` : "")
+        + (candidate.contentHash ? `\nSHA256: ${candidate.contentHash}` : "")
+        + (candidate.serving ? `\n${JSON.stringify(candidate.serving)}` : "");
       if (candidate.kind === "memory") groups.get(kind).append(memoryEntry(segment || { id: candidate.id }, metadata));
       else {
         const entry = document.createElement("details"); entry.className = "memory-segment";
@@ -919,7 +1012,6 @@
     renderMemory();
     element("permission-mode").value = state.chat.permissionMode || "protective";
     element("permission-mode").disabled = !!state.remoteBusy;
-    element("visualization-steer").disabled = !!state.remoteBusy;
     const grants = state.chat.permissionGrants?.length || 0;
     element("permission-grants").textContent = t("{count} remembered approvals", { count: grants });
     element("reset-permissions").disabled = !grants || !!state.remoteBusy;
@@ -991,16 +1083,58 @@
     element("send").firstElementChild.className = `codicon codicon-${state.chat.paused ? "debug-start" : "send"}`;
     element("stop").disabled = !!state.remoteBusy;
     const queued = state.chat.queuedInputs || [];
+    for (const key of Object.keys(queuedDrafts)) if (key.startsWith(`${state.chat.id}:`) && !queued.some(input => key === `${state.chat.id}:${input.id}`)) {
+      delete queuedDrafts[key]; queuedEditorNodes.delete(key); saveDraft();
+    }
+    const focusedEditor = document.activeElement?.dataset.queuedEditor;
+    const editorSelection = focusedEditor ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : undefined;
     element("queued-inputs").hidden = !queued.length; element("queued-inputs").replaceChildren();
     if (queued.length) {
       const heading = document.createElement("div"); heading.className = "queued-input-row";
       const count = document.createElement("strong"); count.textContent = t("{count} queued", { count: queued.length }); heading.append(count);
-      const run = iconButton("play", "Run queued inputs", () => post("runQueued")); run.disabled = state.busy || state.chat.paused; heading.append(run);
+      const run = iconButton("play", "Run queued inputs", () => post("runQueued")); run.disabled = state.busy || state.chat.paused || queued.some(input => input.editToken); heading.append(run);
       element("queued-inputs").append(heading);
       for (const input of queued) {
         const row = document.createElement("div"); row.className = "queued-input-row";
+        const key = `${state.chat.id}:${input.id}`;
+        let draft = queuedDrafts[key];
+        if (draft?.pending && !input.editToken && (draft.pending === "cancel" || input.text === draft.text)) {
+          delete queuedDrafts[key]; queuedEditorNodes.delete(key); draft = undefined; saveDraft();
+        }
+        if (draft) {
+          let editor = queuedEditorNodes.get(key);
+          if (!editor) {
+            editor = document.createElement("textarea"); editor.dataset.queuedEditor = key;
+            editor.setAttribute("aria-label", t("Edit queued message")); editor.maxLength = 16000;
+            editor.value = draft.text; editor.style.cssText = "width:100%;min-height:72px;box-sizing:border-box";
+            editor.oninput = () => { queuedDrafts[key].text = editor.value; saveDraft(); };
+            queuedEditorNodes.set(key, editor);
+          }
+          row.style.flexWrap = "wrap"; row.append(editor);
+          const ready = input.editToken === draft.token;
+          const save = iconButton("check", "Save queued message", () => {
+            queuedDrafts[key].pending = "save"; saveDraft();
+            post("saveQueuedEdit", { chatId:state.chat.id, id:input.id, editToken:draft.token, text:editor.value });
+          });
+          save.disabled = !ready; row.append(save);
+          const cancel = iconButton("close", "Cancel queued edit", () => {
+            queuedDrafts[key].pending = "cancel"; saveDraft();
+            if (ready) post("cancelQueuedEdit", { chatId:state.chat.id, id:input.id, editToken:draft.token });
+            render();
+          });
+          cancel.disabled = !ready; row.append(cancel);
+          element("queued-inputs").append(row);
+          if (focusedEditor === key) { editor.focus(); editor.setSelectionRange(...editorSelection); }
+          continue;
+        }
         const label = document.createElement("span"); label.textContent = `${t(input.mode === "steer" ? "Steer" : "New task")}: ${input.text}`; label.title = input.text; row.append(label);
-        const remove = iconButton("close", "Remove queued input", () => post("removeQueuedInput", { id: input.id })); remove.disabled = !!state.remoteBusy; row.append(remove);
+        const edit = iconButton("edit", "Edit queued message", () => {
+          queuedDrafts[key] = { token:crypto.randomUUID(), text:input.text };
+          saveDraft(); post("beginQueuedEdit", { chatId:state.chat.id, id:input.id, editToken:queuedDrafts[key].token });
+          render(); queuedEditorNodes.get(key)?.focus();
+        });
+        edit.disabled = !!input.editToken || !!input.portalReview; row.append(edit);
+        const remove = iconButton("close", "Remove queued input", () => post("removeQueuedInput", { id: input.id })); remove.disabled = !!state.remoteBusy || !!input.editToken; row.append(remove);
         element("queued-inputs").append(row);
       }
     }
@@ -1042,6 +1176,12 @@
   }
   window.addEventListener("message", event => {
     const message = event.data;
+    if (message.type === "queuedEditRejected") {
+      const key = `${message.chatId}:${message.id}`;
+      if (message.operation === "beginQueuedEdit") { delete queuedDrafts[key]; queuedEditorNodes.delete(key); }
+      else if (queuedDrafts[key]) delete queuedDrafts[key].pending;
+      saveDraft(); render(); return;
+    }
     if (message.type === "historyPage") {
       if (message.chatId !== state?.chat.id || message.beforeId !== historyPending) return;
       historyPending = undefined;
@@ -1146,7 +1286,6 @@
       }
       state = message;
       visualization.setChat(state.chat.id);
-      visualization.notify();
       if (previous !== state.chat.id) {
         memorySegments.clear(); expandedMemorySegments.clear(); requestedMemorySegments.clear(); memoryGroupOpen.clear(); memoryFingerprint = undefined;
         element("prompt").value = drafts[state.chat.id] || ""; element("memory-preview").textContent = ""; element("memory-preview").hidden = true;
@@ -1159,7 +1298,6 @@
       saveDraft(); render(); markResultRead(); return;
     }
     if (message.type === "delta" && message.chatId === state?.chat.id) {
-      visualization.notify();
       const reply = state.chat.messages.find(item => item.id === message.id);
       if (reply) reply.content += message.text;
       if (!frame) frame = requestAnimationFrame(() => { frame = undefined; renderMessages(); });
@@ -1167,6 +1305,13 @@
   });
   element("messages").addEventListener("scroll", markResultRead);
   element("messages").addEventListener("scroll", () => {
+    const messages = element("messages");
+    followPaused = messages.scrollHeight - messages.scrollTop - messages.clientHeight > 1;
+    if (screen === "chat" && messages.scrollTop < 120) loadOlderMessages();
+  }, { passive: true });
+  element("messages").addEventListener("wheel", event => {
+    if (event.deltaY >= 0) return;
+    followPaused = true;
     if (screen === "chat" && element("messages").scrollTop < 120) loadOlderMessages();
   }, { passive: true });
   element("rename").onclick = () => post("rename");
@@ -1174,7 +1319,6 @@
   element("promote-project").onclick = () => { if (state?.chat?.id) post("promoteProject"); };
   element("chat-portal").onclick = () => post("peerCollaboration", { chatId: state?.chat.id });
   const showScreen = next => {
-    if (next !== "chat") visualization.close();
     if (next === "chat" && screen !== "chat") jumpToLatest = true;
     screen = next; document.body.classList.toggle("chat-library-visible", screen === "library");
     post("chatVisibility", { chatId: state?.chat?.id, value: screen === "chat" && document.visibilityState === "visible" });
@@ -1306,6 +1450,7 @@
   element("permission-mode").onchange = () => post("permissionMode", { value: element("permission-mode").value });
   element("reset-permissions").onclick = () => post("resetPermissions");
   element("diagnostics").onclick = () => post("diagnostics");
+  element("persona-profiles").onclick = () => post("agentConfig", { value: "profiles" });
   for (const button of document.querySelectorAll("[data-agent-config]")) button.onclick = () => { closePopovers(); post("agentConfig", { value: button.dataset.agentConfig }); };
   element("memory-close").onclick = closePopovers;
   element("memory-policy").onclick = () => post("memoryPolicy");
@@ -1322,6 +1467,31 @@
   element("tool-connections").onclick = () => post("agentConfig", { value: "mcps" });
   element("context").onclick = () => post("context");
   element("image").onclick = () => post("image");
+  element("prompt").addEventListener("paste", async event => {
+    const files = Array.from(event.clipboardData?.items || []).filter(item => item.kind === "file" && item.type.startsWith("image/"))
+      .map(item => item.getAsFile()).filter(Boolean);
+    if (!files.length) return;
+    event.preventDefault();
+    const chatId = state?.chat.id;
+    try {
+      if (!chatId || element("image").disabled) throw new Error("Choose a vision-capable VS Code model to paste images.");
+      if ((state.chat.images?.length || 0) + files.length > 2) throw new Error("Attach at most two images.");
+      const images = await Promise.all(files.map(async (file, index) => {
+        if (!["image/png", "image/jpeg"].includes(file.type)) throw new Error("Paste a PNG/JPEG image.");
+        if (!file.size || file.size > 512 * 1024) throw new Error("Pasted images must be at most 512 KB each.");
+        const dataBase64 = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result).split(",")[1]);
+          reader.onerror = () => reject(new Error("The clipboard image could not be read. Paste again."));
+          reader.onabort = () => reject(new Error("Reading the clipboard image was cancelled. Paste again."));
+          reader.readAsDataURL(file);
+        });
+        return { label:`Pasted image ${index + 1}.${file.type === "image/png" ? "png" : "jpg"}`, mimeType:file.type, dataBase64 };
+      }));
+      if (state?.chat.id !== chatId) throw new Error("The selected Chat changed while the clipboard was loading. Paste again in the intended Chat.");
+      post("pasteImages", { chatId, images });
+    } catch (cause) { error(cause instanceof Error ? cause.message : String(cause)); }
+  });
   element("stop").onclick = () => post("cancel");
   element("chats").onchange = event => { saveDraft(); error(""); post("select", { id: event.target.value }); };
   element("model").onclick = () => { if (element("model").getAttribute("aria-busy") === "true") return; element("model").setAttribute("aria-busy", "true"); post("chooseModel"); };

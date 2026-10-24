@@ -32,6 +32,48 @@ def expand_palette(page):
 
 
 class WorkbenchTests(unittest.TestCase):
+    def test_monitor_status_next_check_and_stop_are_observer_only(self):
+        html = (ROOT / "resources" / "action-workbench.html").read_text()
+        bootstrap = """
+window.__posts=[];window.__run='action_run_'+'b'.repeat(32);
+window.acquireVsCodeApi=()=>({
+ getState:()=>({graph:{action_id:'fixture',nodes:[],edges:[]},currentRun:__run}),
+ setState:()=>{},postMessage:message=>{
+  __posts.push(message);let result={ok:true};
+  if(message.method==='catalog')result={actions:[],groups:[],module_sets:[],queue:{jobs:[]}};
+  if(message.method==='runs')result={runs:[]};
+  if(message.method==='choices')result={requests:[]};
+  if(message.method==='checkpoints')result={checkpoints:[]};
+  if(message.method==='run')result={run_id:__run,state:'waiting',userState:'Waiting',
+    monitor:{stop_reason:'observing',remote_id:'123',remote_result:null,
+      next_check_at:2000000000,observation_deadline:2000000300,
+      last_observation:{status:'inProgress',url:'https://example.visualstudio.com/_build/results?buildId=123'}}};
+  queueMicrotask(()=>window.dispatchEvent(new MessageEvent('message',{data:{requestId:message.requestId,result}})));
+ }});
+"""
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True, executable_path=os.environ.get("PKM_CHROMIUM_EXECUTABLE"))
+            try:
+                for width in [1280, 320]:
+                    page = browser.new_page(viewport={"width": width, "height": 900})
+                    errors = []
+                    page.on("pageerror", lambda error: errors.append(str(error)))
+                    page.route("http://127.0.0.1/", lambda route: route.fulfill(content_type="text/html", body=html))
+                    page.add_init_script(bootstrap)
+                    page.goto("http://127.0.0.1/")
+                    expect(page.locator('[data-monitor="status"]')).to_contain_text("inProgress")
+                    expect(page.locator('[data-monitor="status"]')).to_contain_text("Next Check")
+                    self.assertIn("observation_deadline", page.locator('[data-monitor="status"]').get_attribute("title"))
+                    expect(page.get_by_role("link", name="Open Remote Run")).to_have_attribute(
+                        "href", "https://example.visualstudio.com/_build/results?buildId=123")
+                    page.get_by_role("button", name="Stop Monitoring", exact=True).click()
+                    page.wait_for_function("__posts.some(item=>item.method==='cancel_run')")
+                    self.assertFalse(page.evaluate("__posts.some(item=>['call','platform_call'].includes(item.method))"))
+                    self.assertEqual(errors, [])
+                    page.close()
+            finally:
+                browser.close()
+
     def test_private_cosmos_catalog_grouping_collapsed_defaults_and_guarded_launch(self):
         with tempfile.TemporaryDirectory(prefix="pkm-private-palette-") as directory:
             runtime = ActionRuntime(directory)

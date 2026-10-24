@@ -5,7 +5,9 @@ const vscode = require("vscode");
 async function checkVisualizationWindow(extension, chat, store, expectedCall = "installed-call") {
   const { ApiChatView } = require(path.join(extension.extensionPath, "dist/chat/api-chat-view"));
   const { VisualizationWindow } = require(path.join(extension.extensionPath, "dist/chat/visualization-window"));
-  const provider = new ApiChatView({});
+  const provider = new ApiChatView({
+    globalStorageUri:vscode.Uri.file(path.join(process.env.PKM_CTX_ROOT, "ctx-private-host")),
+  });
   provider.store = store;
   const context = { extensionUri:extension.extensionUri };
   const window = new VisualizationWindow(context, async () => provider);

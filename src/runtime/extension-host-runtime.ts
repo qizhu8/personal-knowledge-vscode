@@ -26,9 +26,16 @@ export function readExtensionBuild(directory: string): ExtensionBuild | undefine
 export const loadedExtensionBuild = readExtensionBuild(path.resolve(require("path").resolve(__dirname, ".."), ".."));
 
 export function readInstalledExtensionBuild(extensionPath: string, extensionId: string): ExtensionBuild | undefined {
+  return readInstalledExtensionRuntime(extensionPath, extensionId)?.build;
+}
+
+export function readInstalledExtensionRuntime(extensionPath: string, extensionId: string): { directory: string; build: ExtensionBuild } | undefined {
   const root = path.dirname(extensionPath);
   const filename = path.join(root, "extensions.json");
-  if (!fs.existsSync(filename)) return readExtensionBuild(extensionPath);
+  if (!fs.existsSync(filename)) {
+    const build = readExtensionBuild(extensionPath);
+    return build ? { directory:extensionPath, build } : undefined;
+  }
   try {
     if (fs.statSync(filename).size > 4 * 1024 * 1024) return undefined;
     const entries = JSON.parse(fs.readFileSync(filename, "utf8"));
@@ -40,7 +47,7 @@ export function readInstalledExtensionBuild(extensionPath: string, extensionId: 
     if (process.platform === "win32") location = location.replace(/^\/([A-Za-z]:\/)/, "$1");
     if (!path.isAbsolute(location) || path.resolve(path.dirname(location)) !== path.resolve(root)) return undefined;
     const build = readExtensionBuild(location);
-    return build?.version === matches[0].version ? build : undefined;
+    return build && build.version === matches[0].version ? { directory:location, build } : undefined;
   } catch { return undefined; }
 }
 

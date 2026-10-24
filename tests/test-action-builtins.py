@@ -176,6 +176,10 @@ class Builtins(unittest.TestCase):
                 result = runtime.get(run["run_id"])
                 self.assertEqual(result["state"], "succeeded", result)
                 self.assertEqual(result["run_id"], run["run_id"])
+                scheduler = runtime._scheduler
+                if scheduler:
+                    scheduler.join(timeout=5)
+                    self.assertFalse(scheduler.is_alive(), "Fixture scheduler must stop before its temporary store is removed")
         asyncio.run(exercise())
 
 

@@ -945,6 +945,10 @@ window.addEventListener('message', e => {
   else if (command === 'githubSyncAutomationResult') { githubSyncOnAutomationResult(data); }
   else if (command === 'githubSyncRuntimeSnapshot') { for (const [targetId, runtime] of Object.entries(data || {})) githubSyncOnRuntimeState({ targetId, state:runtime }); }
   else if (command === 'backgroundTasks') { backgroundTasksOnSnapshot(data); finishLoadingProgress(); }
+  else if (command === 'backgroundProcesses') { backgroundProcessesOnSnapshot(data); }
+  else if (command === 'retrievalSolutions') { skillRouterSolutionsOnSnapshot(data); }
+  else if (command === 'retrievalPerformance') { skillRouterPerformanceOnSnapshot(data); }
+  else if (command === 'retrievalModelSetup') { skillRouterModelSetupOnProgress(data); }
   else if (command === 'portalConnections') { portalConnectionsOnSnapshot(data); finishLoadingProgress(); }
   else if (command === 'githubSyncRestored') { finishAction('githubSyncRestore'); vscode.postMessage({ command:'toast', text:`Restored ${data?.restored?.length || 0} file(s) from GitHub` }); }
   else if (command === 'githubSyncRestoreCancelled') { finishAction('githubSyncRestore'); }
@@ -1489,6 +1493,7 @@ function applySettingsSubtab(owner) {
     };
   });
   requestAnimationFrame(updateTabNav);
+  if (owner === 'router' && typeof skillRouterSchedulePerformanceRefresh === 'function') skillRouterSchedulePerformanceRefresh();
 }
 
 function initColumnResizer(handleId, targetId, storageKey, minWidth, maxWidth, direction, useFlex) {

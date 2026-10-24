@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ChatVisualizationTests(unittest.TestCase):
-    def test_inline_graph_drilldown_steering_errors_and_chat_isolation(self):
+    def test_visualization_opens_window_directly_without_inline_panel_or_draft_changes(self):
         assets = ROOT / "dist" / "webview"
         values = {
             "nonce": "fixture", "cspSource": "'self'", "styles": "api-chat.css",
@@ -76,53 +76,25 @@ class ChatVisualizationTests(unittest.TestCase):
                         self.assertEqual(button.evaluate("node=>node.previousElementSibling.id"), "memory")
                         page.locator("#prompt").fill("Keep my intervention draft")
                         button.click()
-                        panel = page.locator("#visualization-panel")
-                        expect(panel).to_be_visible()
+                        expect(page.locator("#visualization-panel")).to_have_count(0)
                         expect(page.locator("#messages")).to_be_visible()
-                        expect(panel.get_by_role("group", name="Harness lifecycle").locator('[aria-current="step"]')).to_have_attribute("data-stage", "run")
-                        panel.get_by_role("button", name="Current execution", exact=True).click()
-                        expect(panel.locator(".pkm-harness-inspector")).to_contain_text("Inspect evidence")
-                        expect(button).to_have_attribute("aria-expanded", "true")
-                        panel.get_by_role("button", name="Open in Visualization window", exact=True).click()
                         self.assertEqual(page.evaluate("window.__posts.filter(p=>p.type==='openVisualizationWindow').map(p=>p.chatId)"), [state["chat"]["id"]])
-                        expect(panel).to_be_visible()
-                        panel.get_by_role("navigation", name="Graph ancestors").get_by_role("button", name=snapshot["task"], exact=True).click()
-                        panel.get_by_role("button", name="Open subgraph: Implement and validate", exact=True).click()
-                        panel.get_by_role("button", name="Open subgraph: Development", exact=True).click()
-                        panel.get_by_role("button", name="Recipe: Nested debug", exact=True).click()
-                        expect(panel.locator("dialog")).to_contain_text("Pinned nested debug v2")
-                        panel.get_by_role("button", name="Close preview", exact=True).click()
-                        panel.get_by_role("button", name="Back to parent", exact=True).click()
-                        panel.get_by_role("button", name="Open subgraph: Fix the failing test", exact=True).click()
-                        panel.get_by_role("button", name="Open subgraph: Attempt 2", exact=True).click()
-                        panel.get_by_role("button", name="Open subgraph: 1 recorded calls", exact=True).click()
-                        panel.get_by_role("button", name="mcp_action_call", exact=True).click()
-                        expect(panel.locator(".pkm-harness-inspector")).to_contain_text('{"dryRun":true}')
-                        panel.get_by_role("button", name="Open subgraph: mcp_action_call", exact=True).click()
-                        panel.get_by_role("button", name="Open subgraph: fixture.script", exact=True).click()
-                        expect(panel.locator(".pkm-harness-viewport")).to_contain_text("Durable Action receipts")
-                        page.get_by_role("button", name="Steer current task", exact=True).click()
-                        expect(page.locator("#prompt")).to_be_focused()
                         expect(page.locator("#prompt")).to_have_value("Keep my intervention draft")
-                        expect(page.locator("#steer-mode")).to_have_attribute("aria-checked", "true")
+                        self.assertFalse(page.evaluate("window.__posts.some(p=>p.type==='visualizationRequest')"))
                         self.assertFalse(page.evaluate("window.__posts.some(p=>p.type==='send'||p.type==='startTask')"))
                         self.assertLessEqual(page.evaluate("document.documentElement.scrollWidth"), width)
-                        page.get_by_role("button", name="Close visualization", exact=True).click()
-                        expect(button).to_be_focused()
-                        page.evaluate("window.__error='Fixture access denied'")
-                        button.click()
-                        expect(panel.get_by_role("alert")).to_have_text("Fixture access denied")
-                        button.click()
-                        page.evaluate("window.__reply=false;window.__error=undefined")
-                        button.click()
-                        request = page.evaluate("window.__posts.filter(p=>p.type==='visualizationRequest').at(-1)")
                         page.evaluate("""() => {
                             const state=structuredClone(window.__state);state.chat.id='chat-b';
                             window.dispatchEvent(new MessageEvent('message',{data:state}));
                         }""")
-                        expect(panel).to_be_hidden()
-                        page.evaluate("request=>window.dispatchEvent(new MessageEvent('message',{data:{type:'visualizationResult',requestId:request.requestId,chatId:request.chatId,data:window.__snapshot}}))", request)
-                        expect(panel.locator(".pkm-harness")).to_have_count(0)
+                        button.click()
+                        self.assertEqual(page.evaluate("window.__posts.filter(p=>p.type==='openVisualizationWindow').at(-1).chatId"), "chat-b")
+                        expect(page.locator(".pkm-harness")).to_have_count(0)
+                        page.evaluate("""() => {
+                            const state=structuredClone(window.__state);state.chat=undefined;
+                            window.dispatchEvent(new MessageEvent('message',{data:state}));
+                        }""")
+                        expect(page.locator("#visualization")).to_be_disabled()
                         self.assertEqual(failures, [])
                         page.close()
             finally:

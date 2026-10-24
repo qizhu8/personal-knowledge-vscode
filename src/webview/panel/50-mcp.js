@@ -66,6 +66,14 @@ function updateGlobalMcpWarning(data) {
   const regenerate = banner?.querySelector('.mcp-regenerate-action');
   if (!banner || !text) return;
   if (data?.installed && data?.current) {
+    const attention = data.lifecycle?.instances?.some(instance => instance.heartbeatFresh === true
+      && (['draining', 'action-required'].includes(instance.observedState) || instance.uncertainCalls > 0 || instance.controlError));
+    if (attention) {
+      banner.classList.remove('hidden');
+      text.textContent = 'An MCP instance is draining or needs review. See Managed MCP lifecycle in Config; do not replay uncertain writes.';
+      if (regenerate) regenerate.hidden = true;
+      return;
+    }
     banner.classList.add('hidden');
     text.textContent = '';
     if (regenerate) regenerate.hidden = false;
@@ -151,6 +159,30 @@ function mcpDashboardState(data) {
 
 function mcpStatusLight(kind, label, key = '', params = {}) {
   return `<span class="mcp-status mcp-status-${kind}"><span class="mcp-status-dot"></span><span ${key ? mcpI18nAttrs(key, params) : ''}>${esc(label)}</span></span>`;
+}
+function renderMcpLifecycle(lifecycle) {
+  if (!lifecycle) return '';
+  const label = (key, text) => `<span ${mcpI18nAttrs('config.lifecycle' + key)}>${text}</span>`;
+  const count = value => Number.isInteger(value) && value >= 0 ? String(value) : 'unknown';
+  const instances = Array.isArray(lifecycle.instances) ? lifecycle.instances : [];
+  const attention = instances.some(instance => instance.heartbeatFresh === true
+    && (['draining', 'action-required'].includes(instance.observedState) || instance.uncertainCalls > 0 || instance.controlError));
+  return `<details id="mcp-lifecycle"${attention ? ' open' : ''} style="border:1px solid ${attention ? '#f4b40066' : 'var(--border)'};border-radius:8px;padding:12px 14px;margin-bottom:16px;overflow-wrap:anywhere">
+    <summary>${label('Title', 'Managed MCP lifecycle')} · ${instances.length}</summary>
+    <p>${label('Boundary', 'Runtime prepared does not mean the actual client connection has been verified. Instance observations are not a client handshake.')}</p>
+    <div>${esc(lifecycle.reason || lifecycle.connectionState || 'unverified')}</div>
+    ${lifecycle.action ? `<div>${esc(lifecycle.action)}</div>` : ''}
+    <p>${label('Generation', 'Configured generation')}: <code>${esc(lifecycle.configuredGeneration || 'unprepared')}</code></p>
+    ${instances.length ? `<div style="overflow-x:auto"><table class="mcp-path-table"><thead><tr>
+      <th>${label('Instance', 'Instance / PID')}</th><th>${label('InstanceGeneration', 'Instance generation')}</th>
+      <th>${label('Observed', 'Observed state')}</th><th>${label('InFlight', 'In-flight calls')}</th><th>${label('Uncertain', 'Uncertain calls')}</th>
+    </tr></thead><tbody>${instances.map(instance => `<tr>
+      <td>${esc(instance.instanceId || 'unknown')} / ${esc(count(instance.pid))}</td>
+      <td><code>${esc(instance.generation || 'unknown')}</code></td>
+      <td>${esc(instance.heartbeatFresh === true ? instance.observedState || 'unknown' : 'unknown')}</td>
+      <td>${esc(count(instance.inFlight))}</td><td>${esc(count(instance.uncertainCalls))}</td>
+    </tr>`).join('')}</tbody></table></div>` : `<p>${label('Empty', 'No instrumented instance observed; legacy process state is unknown. Reconnect through the actual client.')}</p>`}
+  </details>`;
 }
 function mcpPathSizeText(bytes) {
   if (!Number.isFinite(bytes) || bytes < 0) return 'Unavailable';
@@ -349,6 +381,7 @@ function renderMcpPane(data) {
         </ul>
       </div>
 
+      ${renderMcpLifecycle(data?.lifecycle)}
       ${installed ? `
         <div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:16px">
           <div style="font-size:11px;color:var(--muted);margin-bottom:4px" data-i18n="config.serverLocation">Server location</div>

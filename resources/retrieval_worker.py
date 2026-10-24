@@ -15,6 +15,14 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from retrieval_runtime import activate_engine
+
+runtime_identity = activate_engine()
+runtime_build_path = Path(__file__).resolve().parent / "runtime-build"
+runtime_identity["worker_build"] = runtime_build_path.read_text() if runtime_build_path.is_file() else ""
+runtime_version_path = Path(__file__).resolve().parent / "runtime-version"
+runtime_identity["worker_version"] = runtime_version_path.read_text() if runtime_version_path.is_file() else ""
+
 from adaptive_skill_retrieval import (
     ContentType,
     RetrievalEngine,
@@ -143,9 +151,10 @@ def make_document(value):
     )
 
 
-from retrieval_solutions import SolutionManager, SolutionMetrics
+from retrieval_solutions import SolutionManager, SolutionMetrics, RetrievalLearning
 solutions = SolutionManager(state_dir, atomic_json)
 solution_metrics = SolutionMetrics(state_dir)
+retrieval_learning = RetrievalLearning(state_dir)
 
 
 def build_snapshot_unlocked(snapshot):
@@ -270,6 +279,7 @@ def status():
     return {
         "ok": True,
         "engine_version": ENGINE_VERSION,
+        "runtime": runtime_identity,
         "configuration_hash": CONFIGURATION_HASH,
         "pid": os.getpid(),
         "corpus_revision": ready_revision,
@@ -359,7 +369,13 @@ def search(payload):
     epoch, requested_package, _, _ = solutions.capture()
     result = search_unmeasured(payload)
     if solutions.capture()[0] != epoch:
-        result = {"ok": False, "code": "solution-changed", "error": "Solution changed during this request; retry against the active path."}
+        result = {**{key: result.get(key) for key in ("model_invoked", "model_attempt_package_id", "corpus_revision", "route")},
+                  "ok": False, "code": "solution-changed", "error": "Solution changed during this request; retry against the active path."}
+    try:
+        retrieval_learning.observe(result, round((time.perf_counter() - started) * 1000, 3))
+    except sqlite3.Error as error:
+        print(f"Retrieval learning persistence failed: {error}", file=sys.stderr, flush=True)
+        result["learning_error"] = f"Adaptive result count unavailable; unmodified results returned: {error}"
     solution = result.get("solution", {})
     reason = solution.get("reason") or ("error" if not result.get("ok") else "default")
     try:
@@ -649,12 +665,15 @@ def search_unmeasured(payload):
                 break
         if incomplete:
             diagnostics.append({"code": "truncated", "message": "Graph traversal stopped at the configured budget."})
-    result_limit = max(1, min(int(payload.get("limit") or 5), 100))
+    result_limit = min(max(1, min(int(payload.get("limit") or 5), 100)),
+                       max(1, min(int(payload.get("output_limit") or payload.get("limit") or 5), 100)))
     limit_reached = len(selected_hits) >= result_limit or (route != "semantic" and len(result.hits) >= result_limit)
     truncated = len(hits) > result_limit
     if limit_reached:
         diagnostics.append({"code": "candidate-limit-reached", "message": "Candidate limit reached; more matching sources may exist."})
     diagnostics_level = str(payload.get("diagnostics") or "summary")
+    model_invoked = bool(configured and skill_path is not None and route in {"semantic", "dual"}
+                         and any(admitted(version) for version in documents))
     return {
         "ok": True,
         "schema": "pkm.retrieval.result/v1",
@@ -664,6 +683,8 @@ def search_unmeasured(payload):
         "route": route,
         "search_mode": route if route in {"lexical", "semantic", "dual"} else "lexical",
         "semantic_status": semantic_status,
+        "model_invoked": model_invoked,
+        "model_attempt_package_id": skill_path.release_id if model_invoked else None,
         "semantic_reason": fallback_error or ("Embedding retrieval is not configured" if not configured else "Embedding path not requested" if route not in {"semantic", "dual"} else ""),
         "solution": {
             "package_id": requested_package if serving_used and solutions.managed else None,
@@ -721,12 +742,18 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(403, {"ok": False, "error": "Forbidden"})
         elif self.path == "/status":
             self.reply(200, status())
+        elif self.path == "/retrieval-learning":
+            try:
+                self.reply(200, {"ok": True, "learning": retrieval_learning.summary()})
+            except sqlite3.Error as error:
+                self.reply(503, {"ok": False, "error": f"Retrieval learning unavailable: {error}"})
         elif self.path == "/solutions":
             try:
                 with engine_lock:
                     documents = list(ready_documents.values())
-                self.reply(200, {"ok": True, **solutions.catalog(documents), "metrics": solution_metrics.summary()})
-            except (ImportError, OSError, ValueError) as error:
+                self.reply(200, {"ok": True, **solutions.catalog(documents), "metrics": solution_metrics.summary(),
+                                 "learning": retrieval_learning.summary()})
+            except (ImportError, OSError, ValueError, sqlite3.Error) as error:
                 self.reply(503, {"ok": False, "error": str(error)})
         else:
             self.reply(404, {"ok": False, "error": "Not found"})
@@ -757,12 +784,18 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/get":
                 result = get_source(payload)
                 self.reply(200 if result.get("ok") else 404, result)
+            elif self.path == "/retrieval-feedback":
+                self.reply(200, retrieval_learning.feedback(payload.get("retrieval_id"),
+                                                            payload.get("relevant_source_ids"), payload.get("complete")))
+            elif self.path == "/retrieval-learning":
+                retrieval_learning.configure(payload.get("enabled"))
+                self.reply(200, {"ok": True, "learning": retrieval_learning.summary()})
             elif self.path == "/solutions":
                 action = payload.get("action")
                 if action in {"enable", "rebuild"}:
                     if payload.get("package_id") is None:
                         raise ValueError("Enabling a solution requires a package ID")
-                    solutions.select(payload.get("package_id"), rebuild=action == "rebuild")
+                    solutions.select(payload.get("package_id"), rebuild=action == "rebuild", expected_revision=payload.get("expected_revision"))
                     def rebuild_solution():
                         with build_lock:
                             with engine_lock:

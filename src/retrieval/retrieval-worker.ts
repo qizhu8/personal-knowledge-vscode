@@ -1,7 +1,9 @@
 import * as fs from "fs";
 import * as path from "path";
-import { spawn } from "child_process";
+import { execFile, spawn } from "child_process";
+import { promisify } from "util";
 import { createHash } from "crypto";
+import { availableParallelism } from "os";
 import { indexedRetrievalDocument, type RetrievalSnapshot } from "./retrieval-snapshot";
 import { mcpStdioCommand } from "../mcp/mcp-stdio-command";
 import {
@@ -16,6 +18,20 @@ import {
 } from "./retrieval-contracts";
 import { RetrievalIndexEventStore } from "./retrieval-index-events";
 import { withCrossProcessLock } from "../runtime/cross-process-lock";
+import { stageRetrievalRuntime } from "./retrieval-runtime";
+import { downloadRetrievalModel, type DefaultRetrievalModel } from "./retrieval-model-download";
+
+export interface RetrievalModelSetup {
+  operationId: string;
+  source: "huggingface" | "directory" | "archive";
+  phase: "runtime" | "acquire" | "verify" | "configure" | "index" | "ready" | "failed" | "cancelled";
+  current?: number;
+  total?: number;
+  packageId?: string;
+  error?: string;
+  failedPhase?: string;
+  ownerPid?: number;
+}
 
 interface RetrievalEndpoint {
   pid: number;
@@ -99,6 +115,7 @@ export interface RetrievalWorkerStatus {
   limitations: string[];
   error: string;
   solution?: RetrievalSolutionStatus;
+  runtime?: { python: string; engine_version: string; engine_file: string; cpu_threads?: number; worker_build?: string; worker_version?: string };
   skill_serving?: Record<string, unknown>;
   work_state?: string;
   work_detail?: string;
@@ -118,7 +135,7 @@ export interface RetrievalSolutionStatus {
   fallback: string;
   progress?: { phase: string; current: number; total: number | null };
   observed?: { elapsed_seconds?: number; rss_bytes?: number | null; sampled_peak_rss_bytes?: number | null; cpu_core_equivalents?: number; scope?: string };
-  index?: { reused?: boolean; bytes?: number | null; persistent?: boolean };
+  index?: { reused?: boolean; bytes?: number | null; persistent?: boolean; embedding_cache_hits?: number; embedding_cache_misses?: number; embedding_cache_bytes?: number };
   process?: { rss_bytes: number | null; host_available_memory_bytes: number | null; logical_cpus: number | null; scope: string };
 }
 
@@ -142,6 +159,17 @@ export interface RetrievalSolutionCatalog extends RetrievalSolutionStatus {
     latency_window: string;
     retention: string;
     query_text_collected: boolean;
+  };
+  learning?: {
+    enabled: boolean;
+    minimum_judged_calls: number;
+    calls: Array<{ invocation: number; context: string; runtime_ms: number; returned_count: number; recall: number | null; success: boolean }>;
+    models: Array<{ context: string; package_id: string; corpus_revision: string; route: string;
+      judged_calls: number; safe_streak: number; threshold: number;
+      baseline: { slope: number; bias: number }; current: { slope: number; bias: number } }>;
+    retention: string;
+    calibration: string;
+    learning: string;
   };
 }
 
@@ -171,13 +199,166 @@ export class RetrievalWorkerManager {
   private ensurePromise: Promise<RetrievalEndpoint> | undefined;
   private ensureExpectedDocumentCount = 0;
   private lifecycle: RetrievalWorkerLifecycle = { state: "idle" };
+  private ownedRuntime: ReturnType<typeof stageRetrievalRuntime> | undefined;
+
+  private runtimeFiles(): ReturnType<typeof stageRetrievalRuntime> {
+    return this.ownedRuntime ||= stageRetrievalRuntime(this.stateDir, this.workerScript);
+  }
+
+  setupStatus(): RetrievalModelSetup | undefined {
+    try {
+      const value: RetrievalModelSetup = JSON.parse(fs.readFileSync(path.join(this.stateDir, "model-setup.json"), "utf8"));
+      if (!value || typeof value.operationId !== "string") throw new Error("Invalid model setup receipt.");
+      if (value.ownerPid && !this.processAlive(value.ownerPid) && !["index", "ready", "failed", "cancelled"].includes(value.phase)) {
+        return { ...value, failedPhase:value.phase, phase:"failed", error:"The setup Host stopped. No model was automatically enabled; start setup again explicitly." };
+      }
+      return value;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+  }
+
+  async prepareModel(source: "huggingface" | "directory" | "archive", sourcePath: string | undefined,
+    operationId: string, signal: AbortSignal, report: (state: RetrievalModelSetup) => void): Promise<void> {
+    await withCrossProcessLock(path.join(this.stateDir, "model-setup.lock"), "Retrieval model setup", 1000, async () => {
+      let setup: RetrievalModelSetup = { operationId, source, phase:"runtime", ownerPid:process.pid };
+      const publish = (update: Partial<RetrievalModelSetup>) => {
+        setup = { ...setup, ...update };
+        const target = path.join(this.stateDir, "model-setup.json"), temporary = `${target}.${process.pid}.pending`;
+        fs.writeFileSync(temporary, JSON.stringify(setup), { mode:0o600 }); fs.renameSync(temporary, target);
+        report(setup);
+      };
+      let temporary: string | undefined;
+      try {
+        publish({});
+        const resources = path.dirname(this.runtimeFiles().script);
+        const endpoint = await this.ensure();
+        const selection = await this.request<RetrievalSolutionStatus & { selection_revision:number }>(endpoint, "/solutions");
+        if (source !== "archive") await this.runPython(this.modelRuntime().python, [path.join(resources, "retrieval_runtime.py")], 60_000);
+        signal.throwIfAborted();
+        publish({ phase:"acquire" });
+        if (source === "huggingface") {
+          const model: DefaultRetrievalModel = JSON.parse(fs.readFileSync(path.join(resources, "retrieval-default-model.json"), "utf8"));
+          const total = Object.values(model.manifest.files).reduce((sum, file) => sum + file.bytes, 0);
+          const disk = await fs.promises.statfs(this.stateDir);
+          if (disk.bavail * disk.bsize < total * 2 + 64 * 1024 * 1024) throw new Error("Model setup requires at least 1 GB of free disk space plus index storage.");
+          temporary = await fs.promises.mkdtemp(path.join(this.stateDir, ".model-download-"));
+          await downloadRetrievalModel(model, temporary, signal, (current, total) => publish({ current, total }));
+          sourcePath = temporary;
+        }
+        signal.throwIfAborted();
+        if (!sourcePath) throw new Error("Choose a local model directory or solution ZIP.");
+        publish({ phase:"verify" });
+        const result = source === "archive" ? await this.importSolution(sourcePath) : await this.runPython(this.modelRuntime().python, [
+          path.join(resources, "retrieval_solution.py"), "--model-directory", sourcePath, "--state", this.stateDir,
+        ], 120_000);
+        if (typeof result.package_id !== "string" || !/^[a-f0-9]{64}$/.test(result.package_id)) throw new Error("Model importer returned an invalid package identity.");
+        publish({ phase:"configure", packageId:result.package_id });
+        signal.throwIfAborted();
+        if (source !== "archive") {
+          await this.request(endpoint, "/solutions", "POST", { action:"enable", package_id:result.package_id, expected_revision:selection.selection_revision });
+        }
+        publish({ phase:source === "archive" ? "ready" : "index" });
+      } catch (error) {
+        publish({ failedPhase:setup.phase, phase:signal.aborted ? "cancelled" : "failed", error:(error as Error).message });
+        throw error;
+      } finally {
+        if (temporary) await fs.promises.rm(temporary, { recursive:true, force:true });
+      }
+    });
+  }
 
   async solutions(): Promise<RetrievalSolutionCatalog> {
     return this.request(await this.ensure(), "/solutions");
   }
 
+  async setAdaptiveResultCount(enabled: boolean): Promise<void> {
+    await this.request(await this.ensure(), "/retrieval-learning", "POST", { enabled });
+  }
+
+  async observeLearning(): Promise<RetrievalSolutionCatalog["learning"]> {
+    const endpoint = this.readEndpoint();
+    if (!endpoint || !this.processAlive(endpoint.pid)) return undefined;
+    const result = await this.request<{ learning: RetrievalSolutionCatalog["learning"] }>(
+      endpoint, "/retrieval-learning", "GET", undefined, { timeoutMs: 2_000 });
+    if (!result.learning) throw new Error("Retrieval worker did not provide learning history.");
+    return result.learning;
+  }
+
   async setSolution(action: "enable" | "rebuild" | "disable" | "delete", packageId?: string): Promise<RetrievalSolutionStatus> {
     return this.request(await this.ensure(), "/solutions", "POST", { action, package_id: packageId });
+  }
+
+  modelRuntime(): { python: string; configured: boolean; cpuThreads: number } {
+    let value: unknown;
+    try { value = JSON.parse(fs.readFileSync(path.join(this.stateDir, "model-runtime.json"), "utf8")); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { python: this.python, configured: false, cpuThreads: 1 };
+      throw new Error(`Cannot read retrieval model runtime: ${(error as Error).message}`);
+    }
+    if (!value || typeof value !== "object" || !("schema" in value) || value.schema !== 1
+      || !("python" in value) || typeof value.python !== "string" || !path.isAbsolute(value.python)) {
+      throw new Error("Invalid retrieval model runtime selection.");
+    }
+    const cpuThreads = "cpuThreads" in value ? value.cpuThreads : 1;
+    if (typeof cpuThreads !== "number" || !Number.isSafeInteger(cpuThreads) || cpuThreads < 1) {
+      throw new Error("Invalid retrieval inference thread budget.");
+    }
+    return { python: value.python, configured: true, cpuThreads };
+  }
+
+  async configureModelRuntime(python: string, cpuThreads = this.modelRuntime().cpuThreads): Promise<void> {
+    if (!path.isAbsolute(python)) throw new Error("Choose an absolute model-runtime Python executable.");
+    if (!Number.isSafeInteger(cpuThreads) || cpuThreads < 1 || cpuThreads > availableParallelism()) {
+      throw new Error("Choose a positive inference thread budget within the available CPU count.");
+    }
+    const result = await this.runPython(python, [path.join(path.dirname(this.runtimeFiles().script), "retrieval_runtime.py")], 60_000);
+    if (result.engine_version !== this.engineVersion || typeof result.python !== "string"
+      || !path.isAbsolute(result.python) || typeof result.engine_file !== "string" || !path.isAbsolute(result.engine_file)) {
+      throw new Error("Model runtime probe returned an invalid or incompatible engine identity.");
+    }
+    await this.withTransitionLock(async () => {
+      const target = path.join(this.stateDir, "model-runtime.json");
+      const temporary = `${target}.${process.pid}.tmp`;
+      fs.writeFileSync(temporary, JSON.stringify({ schema: 1, python, cpuThreads }), { mode: 0o600 });
+      fs.renameSync(temporary, target);
+    });
+    await this.ensure();
+  }
+
+  async importSolution(archive: string): Promise<{ ok: true; package_id: string; name: string }> {
+    const result = await this.runPython(this.modelRuntime().python, [
+      path.join(path.dirname(this.runtimeFiles().script), "retrieval_solution.py"),
+      "--archive", archive, "--state", this.stateDir,
+    ], 120_000);
+    if (typeof result.package_id !== "string" || !/^[a-f0-9]{64}$/.test(result.package_id)
+      || typeof result.name !== "string" || !result.name.trim()) {
+      throw new Error("Model importer returned an invalid package identity.");
+    }
+    return { ok: true, package_id: result.package_id, name: result.name };
+  }
+
+  private async runPython(python: string, args: string[], timeout: number): Promise<Record<string, unknown>> {
+    const launch = mcpStdioCommand(python, args);
+    let stdout: string;
+    try {
+      ({ stdout } = await promisify(execFile)(launch.command, launch.args, {
+        timeout, maxBuffer: 1024 * 1024, windowsHide: true,
+        env: { ...process.env, ...launch.env, HF_HUB_OFFLINE: "1", TRANSFORMERS_OFFLINE: "1" },
+      }));
+    } catch (error) {
+      if (!error || typeof error !== "object" || !("stderr" in error) || typeof error.stderr !== "string") throw error;
+      let failure: unknown;
+      try { failure = JSON.parse(error.stderr); } catch { throw error; }
+      if (!failure || typeof failure !== "object" || !("error" in failure) || typeof failure.error !== "string") throw error;
+      throw new Error(`${failure.error}${path.basename(args[0]) === "retrieval_runtime.py" ? ". Choose a model-capable Python under Runtime & storage settings; dependencies are not installed automatically." : ""}`);
+    }
+    const result: unknown = JSON.parse(stdout);
+    if (!result || typeof result !== "object" || Array.isArray(result) || !("ok" in result) || result.ok !== true) {
+      throw new Error("Retrieval helper did not confirm success.");
+    }
+    return result as Record<string, unknown>;
   }
 
   constructor(
@@ -337,12 +518,20 @@ export class RetrievalWorkerManager {
   }
 
   private async ensureLocked(): Promise<RetrievalEndpoint> {
+    const runtime = this.modelRuntime();
+    const owned = this.runtimeFiles();
     const current = this.readEndpoint();
     if (!current && await this.recoverWorkerWithoutEndpoint()) return this.ensureLocked();
     if (current) {
       try {
         const status = await this.request<RetrievalWorkerStatus>(current, "/status");
-        if (status.engine_version === this.engineVersion && status.configuration_hash === this.configurationHash) {
+        if (status.runtime?.worker_version && compareEngineVersion(status.runtime.worker_version, owned.version) === 1) {
+          throw new Error(`A newer PKM retrieval worker ${status.runtime.worker_version} is active. Reload this VS Code window.`);
+        }
+        if (status.engine_version === this.engineVersion && status.configuration_hash === this.configurationHash
+          && status.runtime?.worker_build === owned.build
+          && (!runtime.configured || (status.runtime?.python === runtime.python
+            && (status.runtime.cpu_threads ?? 1) === runtime.cpuThreads))) {
           this.updateLifecycleFromStatus(status);
           return current;
         }
@@ -356,12 +545,17 @@ export class RetrievalWorkerManager {
         if (error instanceof Error && error.message.includes("newer PKM retrieval worker")) throw error;
         await this.retireUnresponsiveWorker(current.pid);
       }
+      const deadline = Date.now() + 15_000;
+      const ownsState = () => this.readWorkerLockPid() === current.pid || this.readEndpoint()?.pid === current.pid;
+      while (this.processAlive(current.pid) && ownsState() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
+      if (this.processAlive(current.pid) && ownsState()) throw new Error("Retrieval worker has not completed its graceful shutdown; runtime replacement is blocked.");
     }
     try { fs.rmSync(this.endpointPath(), { force: true }); } catch { /* ignore */ }
-    const launch = mcpStdioCommand(this.python, [this.workerScript, this.stateDir, this.configurationHash]);
+    const launch = mcpStdioCommand(runtime.python, [owned.script, this.stateDir, this.configurationHash]);
     const child = spawn(launch.command, launch.args, {
       detached: true,
-      env: { ...process.env, ...launch.env },
+      env: { ...process.env, ...launch.env, HF_HUB_OFFLINE: "1", TRANSFORMERS_OFFLINE: "1",
+        OMP_NUM_THREADS: String(runtime.cpuThreads), MKL_NUM_THREADS: String(runtime.cpuThreads) },
       stdio: "ignore",
       windowsHide: true,
     });

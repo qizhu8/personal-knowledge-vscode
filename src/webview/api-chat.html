@@ -23,6 +23,7 @@
     <button id="back" title="Back to Chat List" aria-label="Back to Chat List"><span class="codicon codicon-arrow-left"></span></button>
     <span id="chat-status"></span>
     <select id="chats" aria-label="Chat history"><option>New chat</option></select>
+    <button id="persona-profiles" type="button" title="Inspect or edit User / Agent Profiles (current and historical)" aria-label="User / Agent Profiles">Profiles</button>
     <button id="copy-chat-id" title="Copy PKM URL" aria-label="Copy PKM URL" disabled><span class="codicon codicon-copy"></span></button>
     <button id="promote-project" title="Promote Chat to Project (optional)" aria-label="Promote Chat to Project"><span class="codicon codicon-project"></span></button>
     <button id="rename" title="Rename chat" aria-label="Rename chat"><span class="codicon codicon-edit"></span></button>
@@ -50,15 +51,6 @@
     </section>
   </section>
   <main id="messages" aria-label="Messages" aria-busy="false" tabindex="0"></main>
-  <section id="visualization-panel" class="chat-visualization" aria-label="Harness visualization" hidden>
-    <header class="toolbar">
-      <strong>Visualization</strong>
-      <button id="visualization-window" type="button" title="Open in Visualization window" aria-label="Open in Visualization window"><span class="codicon codicon-link-external"></span></button>
-      <button id="visualization-steer" type="button" title="Steer current task" aria-label="Steer current task"><span class="codicon codicon-debug-step-over"></span></button>
-      <button id="visualization-close" type="button" title="Close visualization" aria-label="Close visualization"><span class="codicon codicon-close"></span></button>
-    </header>
-    <div id="visualization-content"></div>
-  </section>
   <section id="applied-edits" aria-label="Applied edits" hidden></section>
   <form id="composer">
     <p id="composer-budget-warning" class="message-status" role="status" hidden></p>
@@ -76,7 +68,7 @@
       <button id="tools" type="button" title="Tools" aria-label="Tools" aria-expanded="false" aria-controls="tools-panel"><span class="codicon codicon-tools"></span></button>
       <button id="agent-config" type="button" title="Agent configuration" aria-label="Agent configuration" aria-expanded="false" aria-controls="agent-config-panel"><span class="codicon codicon-settings-gear"></span></button>
       <button id="memory" type="button" title="Retrieval and Chat memory" aria-label="Retrieval and Chat memory" aria-expanded="false" aria-controls="memory-panel"><span class="codicon codicon-database"></span></button>
-      <button id="visualization" type="button" title="Visualization" aria-label="Visualization" aria-expanded="false" aria-controls="visualization-panel"><span class="codicon codicon-type-hierarchy"></span></button>
+      <button id="visualization" type="button" title="Open PKM Visualization" aria-label="Visualization"><span class="codicon codicon-type-hierarchy"></span></button>
       <div class="model-controls">
         <button id="model" type="button" title="Choose model" aria-label="Choose model"><span class="codicon codicon-hubot"></span><span id="model-label">Choose model</span><span class="codicon codicon-chevron-down"></span></button>
         <button id="options" type="button" title="Model settings" aria-label="Model settings" aria-expanded="false" aria-controls="advanced-budget"><span class="codicon codicon-settings"></span></button>
@@ -86,18 +78,24 @@
     </div>
     <section id="advanced-budget" class="advanced-budget chat-settings" aria-label="Model settings" hidden>
       <strong>Model settings</strong>
+      <button type="button" data-agent-config="profiles">User / Agent Profiles · inspect and edit</button>
       <div id="contexts" class="contexts"></div>
       <button id="diagnostics" type="button" title="Export Chat diagnostics" aria-label="Export Chat diagnostics"><span class="codicon codicon-output"></span></button>
       <div class="budget-controls">
-        <label for="window-slider">Context</label>
+        <label for="window-slider">Context budget</label>
         <input id="window-slider" type="range" min="0" max="4" step="1" list="window-presets" aria-label="Context budget presets">
         <datalist id="window-presets"></datalist>
         <output id="window-label" for="window-slider" aria-label="Context token budget"></output>
         <input id="window" type="number" min="256" step="1" required aria-label="Context token budget" hidden>
       </div>
-      <label for="output">Output per inference <input id="output" type="number" min="1" step="1" required aria-label="Maximum output tokens per inference"></label>
-      <label for="tool-rounds">Tool rounds <input id="tool-rounds" type="number" min="1" max="1000" step="1" required aria-label="Tool rounds before asking to continue"></label>
-      <footer><label><input id="history" type="checkbox" checked>History</label><span id="tokens"></span><span id="provider">PKM native</span></footer>
+      <p class="setting-help">Token budget for instructions, messages, retrieved context and model output.</p>
+      <label for="output">Output per inference <input id="output" type="number" min="1" step="1" required aria-label="Maximum output tokens per inference" aria-describedby="output-help"></label>
+      <p id="output-help" class="setting-help">Maximum generated tokens in one model call, not the whole task.</p>
+      <label for="tool-rounds">Tool rounds <input id="tool-rounds" type="number" min="1" max="1000" step="1" required aria-label="Tool rounds before asking to continue" aria-describedby="tool-rounds-help"></label>
+      <p id="tool-rounds-help" class="setting-help">Model/tool rounds before asking whether to continue.</p>
+      <label class="history-setting"><input id="history" type="checkbox" checked aria-describedby="history-help">Use earlier Chat context</label>
+      <p id="history-help" class="setting-help">Include earlier messages and Chat / authorized-source memory recall. Turning this off does not delete saved Chats. User / Agent Profiles are separate.</p>
+      <footer><span id="tokens"></span><span id="provider">PKM native</span></footer>
       <div id="cost" class="cost"></div>
     </section>
     <section id="permissions-panel" class="chat-settings" aria-label="Chat permissions" hidden>
@@ -111,6 +109,7 @@
       <div id="tool-tree" role="group" aria-label="Tool sources"></div>
     </section>
     <section id="agent-config-panel" class="chat-settings agent-config-menu" aria-label="Agent configuration" hidden>
+      <button type="button" data-agent-config="profiles"><span class="codicon codicon-account" aria-hidden="true"></span>User / Agent Profiles</button>
       <strong>Agent configuration</strong>
       <button type="button" data-agent-config="pkmSkills"><span class="codicon codicon-book" aria-hidden="true"></span>PKM Skills</button>
       <button type="button" data-agent-config="externalSkills"><span class="codicon codicon-file-text" aria-hidden="true"></span>External Skills</button>
@@ -121,6 +120,7 @@
       <div class="settings-row"><strong>Retrieval</strong><select id="retrieval-top" aria-label="Candidate count"><option value="10">Top 10</option><option value="20">Top 20</option></select><select id="retrieval-kind" aria-label="Candidate type"><option value="all">All types</option></select><button id="memory-close" type="button" title="Close retrieval" aria-label="Close retrieval"><span class="codicon codicon-close"></span></button></div>
       <div class="settings-row"><span id="memory-policy-status"></span><button id="memory-policy" type="button">Memory settings</button></div>
       <div id="retrieval-status" role="status"></div>
+      <section id="retrieval-evidence" aria-label="Context and transport evidence"></section>
       <div id="retrieval-candidates" aria-label="Retrieved references"></div>
       <details><summary>Retrieval flow</summary><div id="retrieval-flow" class="retrieval-flow"></div></details>
       <details><summary>Task branches</summary><div id="memory-tree" aria-label="Chat memory tree"></div></details>

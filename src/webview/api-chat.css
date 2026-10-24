@@ -5,10 +5,14 @@ html[dir="rtl"] pre, html[dir="rtl"] code, html[dir="rtl"] .retrieval-flow {
 }
 #memory-panel { max-height: 32vh; overflow-y: auto; }
 #memory-panel .settings-row { flex-wrap: wrap; gap: 8px; }
+#memory-panel .settings-row > * { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 #memory-tree details { padding-left: 10px; }
 #memory-tree summary { overflow-wrap: anywhere; cursor: pointer; padding: 4px 0; }
 #memory-tree button { display: block; text-align: left; width: 100%; height: auto; min-height: 28px; overflow-wrap: anywhere; }
 #memory-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18vh; overflow-y: auto; }
+#retrieval-evidence { overflow-wrap: anywhere; }
+#retrieval-evidence p { margin: 5px 0; }
+#retrieval-evidence pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24vh; overflow-y: auto; }
 .memory-segment { padding: 4px 0; min-width: 0; }
 .memory-segment > summary { cursor: pointer; overflow-wrap: anywhere; white-space: pre-wrap; }
 .memory-segment pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24vh; overflow-y: auto; }
@@ -20,12 +24,6 @@ html[dir="rtl"] pre, html[dir="rtl"] code, html[dir="rtl"] .retrieval-flow {
 .retrieval-flow g[role="button"]:focus { outline: 1px solid var(--vscode-focusBorder, #3794ff); }
 #retrieval-status { font-size: 11px; overflow-wrap: anywhere; padding: 6px 0; }
 #memory-panel select { flex: 1; min-width: 70px; }
-.chat-visualization { flex: 0 1 48vh; min-height: 0; overflow: auto; border-top: 1px solid var(--vscode-panel-border, #ffffff18); }
-.chat-visualization > .toolbar > strong { flex: 1; }
-.chat-visualization .pkm-harness { min-width: 0; padding: 8px; }
-.chat-visualization .pkm-harness button { display: inline-block; width: auto; height: auto; min-height: 28px; }
-.chat-visualization .pkm-harness-viewport { height: 30vh; min-height: 180px; }
-.chat-visualization .pkm-harness-inspector pre { max-height: 24vh; overflow: auto; }
 :root { color-scheme: light dark; }
 * { box-sizing: border-box; }
 body { margin: 0; height: 100vh; display: flex; flex-direction: column; font-family: var(--vscode-font-family, sans-serif); font-size: var(--vscode-font-size, 13px); color: var(--vscode-foreground, #ddd); background: var(--vscode-sideBar-background, #202020); letter-spacing: 0; }
@@ -39,6 +37,7 @@ button:disabled { opacity: .45; cursor: default; }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; padding: 6px 8px; gap: 4px; border-bottom: 1px solid var(--vscode-panel-border, #ffffff18); }
 select { min-width: 0; max-width: 100%; padding: 4px; border: 1px solid transparent; background: var(--vscode-dropdown-background, #292929); border-radius: 4px; }
 #chats { flex: 1; width: 0; }
+#persona-profiles { width: auto; padding: 0 6px; }
 .chat-status-indicator { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; flex: 0 0 16px; }
 .chat-status-indicator::before { content: ""; width: 8px; height: 8px; border: 1px solid #9da3a8; border-radius: 50%; background: transparent; }
 .chat-status-indicator[data-state="running"]::before { display: none; }
@@ -128,6 +127,7 @@ select { min-width: 0; max-width: 100%; padding: 4px; border: 1px solid transpar
 .chat-list-menu { position: fixed; z-index: 20; min-width: 160px; max-width: calc(100vw - 8px); padding: 4px; background: var(--vscode-menu-background, #292929); border: 1px solid var(--vscode-menu-border, #555); border-radius: 4px; box-shadow: 0 3px 12px #0005; }
 .chat-list-menu button { display: block; width: 100%; height: auto; min-height: 28px; padding: 4px 8px; text-align: left; overflow-wrap: anywhere; }
 #messages { flex: 1; overflow-y: auto; min-height: 0; padding: 8px 12px; scroll-behavior: auto; }
+.history-load { width: auto; max-width: 100%; height: auto; min-height: 28px; padding: 4px 8px; }
 .message { width: fit-content; max-width: calc(100% - 20px); min-width: 0; margin: 0 auto 12px 0; padding: 8px 0; }
 .message.user { margin-left: auto; margin-right: 0; padding: 8px 10px; background: var(--vscode-editorWidget-background, #292929); border: 1px solid var(--vscode-panel-border, #ffffff30); border-radius: 6px; text-align: left; }
 .user .message-header { flex-direction: row-reverse; }
@@ -217,14 +217,22 @@ textarea { resize: vertical; min-height: 72px; max-height: 230px; width: 100%; p
 #send { margin-left: auto; background: var(--vscode-button-background, #0078d4); color: var(--vscode-button-foreground, white); }
 .contexts { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 8px; }
 .contexts { max-height: 88px; overflow-y: auto; }
-.budget-controls { display: grid; grid-template-columns: auto minmax(0, 1fr) 82px; align-items: center; gap: 6px; padding: 2px 8px; font-size: 11px; }
-.budget-controls input, .advanced-budget input { min-width: 0; width: 100%; height: 26px; border: 1px solid var(--vscode-input-border, #ffffff30); background: var(--vscode-input-background, #2a2a2a); border-radius: 4px; padding: 3px; font-variant-numeric: tabular-nums; }
+.budget-controls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: 6px; padding: 2px 8px; font-size: 12px; }
+.budget-controls > label { grid-column: 1 / -1; }
+.budget-controls output { min-width:0; overflow-wrap:anywhere; text-align:end; }
+.budget-controls input, .advanced-budget input[type="number"] { min-width: 0; width: 100%; height: 28px; border: 1px solid var(--vscode-input-border, #ffffff30); background: var(--vscode-input-background, #2a2a2a); border-radius: 4px; padding: 3px; font-variant-numeric: tabular-nums; }
 #window-slider { padding: 0; border: 0; background: transparent; accent-color: var(--vscode-button-background, #0078d4); }
-.advanced-budget { padding: 2px 8px; font-size: 11px; color: var(--vscode-descriptionForeground, #aaa); }
+.advanced-budget { padding: 8px; font-size: 12px; color: var(--vscode-foreground, #ddd); line-height:1.5; }
+.advanced-budget > strong { display:block; margin-bottom:8px; }
+.advanced-budget > button[data-agent-config] { width:100%; height:auto; min-height:28px; padding:6px 8px; margin-bottom:8px; white-space:normal; overflow-wrap:anywhere; text-align:start; justify-items:start; background:var(--vscode-button-secondaryBackground,#3a3d41); }
+.advanced-budget .setting-help { margin:2px 0 10px; color:var(--vscode-descriptionForeground,#aaa); overflow-wrap:anywhere; }
 .advanced-budget summary { width: fit-content; cursor: pointer; min-height: 22px; line-height: 22px; }
 .advanced-budget .budget-controls { padding: 2px 0; }
 .advanced-budget footer, .advanced-budget .cost { padding-left: 0; padding-right: 0; }
-.advanced-budget label { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px; padding: 2px 0; }
+.advanced-budget label { display: grid; grid-template-columns: minmax(0, 1fr) minmax(64px, 1fr); align-items: center; gap: 8px; padding: 2px 0; overflow-wrap:anywhere; }
+.advanced-budget .history-setting { display:flex; align-items:flex-start; }
+.advanced-budget input[type="checkbox"] { width:16px; height:16px; flex:0 0 16px; margin:3px 0 0; padding:0; }
+.advanced-budget footer > span { min-width:0; max-width:100%; overflow-wrap:anywhere; }
 .cost { font-size: 11px; color: var(--vscode-descriptionForeground, #aaa); padding: 0 8px 6px; overflow-wrap: anywhere; }
 .activity { margin: 8px 0; font-size: 12px; color: var(--vscode-descriptionForeground, #aaa); }
 .activity summary { display: flex; align-items: center; gap: 6px; cursor: pointer; min-height: 26px; }
@@ -239,7 +247,7 @@ textarea { resize: vertical; min-height: 72px; max-height: 230px; width: 100%; p
 .permissions-strip .tool-count { padding: 0; min-width: 0; overflow-wrap: anywhere; }
 .permissions-strip label { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .chat-settings { position: fixed; z-index: 40; inset-inline: 8px; bottom: 150px; width: min(620px, calc(100vw - 16px)); padding: 8px; max-height: 50vh; overflow-y: auto; background: var(--vscode-editorWidget-background, #292929); border: 1px solid var(--vscode-widget-border, #555); border-radius: 4px; box-shadow: 0 4px 16px #0005; }
-.agent-config-menu button { display: flex; align-items: center; justify-content: flex-start; gap: 6px; width: 100%; text-align: left; padding: 4px; }
+.agent-config-menu button { display: flex; align-items: center; justify-content: flex-start; gap: 6px; width: 100%; height:auto; min-height:28px; text-align: left; padding: 4px; overflow-wrap:anywhere; }
 .settings-row > span, .settings-row > select { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .approval { margin: 8px 0; padding: 8px; border-left: 2px solid var(--vscode-editorWarning-foreground, #cca700); background: var(--vscode-editorWidget-background, #292929); }
 .approval strong, .approval summary { overflow-wrap: anywhere; }
@@ -283,6 +291,9 @@ textarea { resize: vertical; min-height: 72px; max-height: 230px; width: 100%; p
 .workflow-event-line { display:flex; align-items:center; gap:6px; min-width:0; }
 .workflow-event-line .activity-label { flex:1; min-width:0; overflow-wrap:anywhere; }
 .workflow-event-line .activity-usage { font-size:11px; color:var(--vscode-descriptionForeground,#aaa); }
+.activity-category { flex:none; padding:1px 4px; border:1px solid var(--vscode-panel-border,#444); border-radius:3px; font-size:10px; color:var(--vscode-descriptionForeground,#aaa); }
+.activity-filter { display:flex; align-items:center; gap:6px; padding:4px 0; font-size:11px; color:var(--vscode-descriptionForeground,#aaa); }
+.activity-filter select { background:var(--vscode-input-background,#222); color:var(--vscode-input-foreground,#ddd); border:1px solid var(--vscode-input-border,#444); border-radius:3px; font:inherit; }
 .activity-event { min-width:0; }
 .activity-event-detail pre, .activity-event > pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:240px; overflow:auto; font-size:11px; }
 .activity-planned, .activity-availability { color:var(--vscode-descriptionForeground,#aaa); font-size:11px; }

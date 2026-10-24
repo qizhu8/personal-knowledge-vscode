@@ -199,6 +199,17 @@ export interface RetrievalResultHitV1 {
 }
 
 export interface RetrievalResultV1 {
+  retrieval_id?: string;
+  model_invoked?: boolean;
+  learning_error?: string;
+  adaptive?: {
+    enabled: boolean;
+    applied: boolean;
+    reason: "insufficient-feedback" | "disabled" | "protected-or-unavailable" | "no-reliable-gap" | "calibrated-score-gap";
+    original_count: number;
+    returned_count: number;
+    invocation: number;
+  };
   search_mode?: "lexical" | "semantic" | "dual";
   semantic_status?: RetrievalSemanticStatus;
   semantic_reason?: string;

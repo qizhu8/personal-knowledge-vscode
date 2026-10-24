@@ -23,6 +23,32 @@ const result = () => ({
   stale: false, incomplete: false, timingsMs: { wait: 0, search: 1, total: 1 },
 });
 
+test("performance observation never starts a worker and bounds requests to an existing endpoint", async () => {
+  const manager = new RetrievalWorkerManager("/unused", "/unused", "/unused", "1");
+  let requests = 0;
+  manager.ensure = async () => { throw new Error("observation must never start a worker"); };
+  manager.readEndpoint = () => undefined;
+  manager.request = async () => { requests++; throw new Error("no request expected"); };
+  assert.equal(await manager.observeLearning(), undefined);
+  manager.readEndpoint = () => ({ pid:123, port:1234, token:"fixture" });
+  manager.processAlive = () => false;
+  assert.equal(await manager.observeLearning(), undefined);
+  assert.equal(requests, 0);
+  manager.processAlive = () => true;
+  const learning = { enabled:true, calls:[], models:[] };
+  manager.request = async (endpoint, route, method, body, options) => {
+    assert.equal(endpoint.pid, 123);
+    assert.equal(route, "/retrieval-learning");
+    assert.equal(method, "GET");
+    assert.equal(body, undefined);
+    assert.equal(options.timeoutMs, 2000);
+    return { learning };
+  };
+  assert.deepEqual(await manager.observeLearning(), learning);
+  manager.request = async () => ({ ok:true });
+  await assert.rejects(manager.observeLearning(), /did not provide learning history/);
+});
+
 test("retrieval compiler rejects coercion, duplicate identities/ranks and nonfinite timing", () => {
   for (const patch of [
     { requestId: 42 }, { text: {} }, { scope: { capabilityId: "scope", includeReadOnly: "false" } },

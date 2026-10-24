@@ -27,7 +27,7 @@ assert.strictEqual(retrievalWorkerStartupTimeoutMs({
 const source = fs.readFileSync(path.join(__dirname, "..", "src", "retrieval/retrieval-worker.ts"), "utf8");
 assert.match(
   source,
-  /const launch = mcpStdioCommand\(this\.python,[\s\S]{0,200}spawn\(launch\.command, launch\.args,[\s\S]{0,200}windowsHide:\s*true/,
+  /const launch = mcpStdioCommand\(runtime\.python,[\s\S]{0,400}spawn\(launch\.command, launch\.args,[\s\S]{0,400}windowsHide:\s*true/,
   "the detached retrieval Python worker must use the Windows no-console stdio proxy instead of python.exe directly",
 );
 

@@ -104,6 +104,15 @@ async function renderRunStatus(result){
  const userState=result.userState||result.state,checkpoint=result.checkpoint;
  runSummary.dataset.state=userState;
  runSummary.innerHTML='<h3>'+esc(userState)+' · '+esc(result.run_id)+'</h3><p>Next: <strong>'+esc(result.nextOwner||'none')+'</strong> · '+esc(result.reasonCode||'')+'</p><p>'+esc(result.resumeCondition||result.execution?.resumeCondition||'')+'</p><button id="run-open-project">Open in Project</button>';
+ if(result.monitor){
+  const monitor=result.monitor,summary=document.createElement('p');
+  summary.dataset.monitor='status';
+  summary.textContent='Observation: '+monitor.stop_reason+' · Remote: '+(monitor.last_observation?.status||'not yet observed')+(monitor.remote_result?' / '+monitor.remote_result:'')+(monitor.next_check_at?' · Next Check: '+new Date(monitor.next_check_at*1000).toLocaleTimeString():'');
+  summary.title=JSON.stringify(monitor,null,2);runSummary.append(summary);
+  const remote=monitor.last_observation?.url;
+  if(typeof remote==='string'&&/^https:\/\//i.test(remote)){const link=document.createElement('a');link.href=remote;link.textContent='Open Remote Run';link.target='_blank';link.rel='noopener noreferrer';runSummary.append(link)}
+ }
+ if(byId('cancel-run'))byId('cancel-run').setAttribute('aria-label',result.monitor&&result.run_id===currentRun?'Stop Monitoring':'Cancel Run');
  byId('run-open-project').onclick=()=>perform('open_project',{run_id:result.run_id});
  let requests=[];
  if(['running','waiting'].includes(result.state))requests=(await request('checkpoints',{run_id:result.run_id})).checkpoints||[];
@@ -475,7 +484,7 @@ async function refresh(){
     elapsed_seconds:Number.isFinite(started)&&Number.isFinite(finished)?Math.max(0,Math.round((finished-started)/1000)):undefined,
     started_at:result.started_at,completed_at:result.completed_at,definition_revision:result.content_hash,
     permissions:result.execution?.contract?.requiredCapabilities,checkpoint:result.lastCheckpoint,
-    receipts:result.execution?.receipts,output:result.output,error:result.error,gc_state:result.gc_state
+    receipts:result.execution?.receipts,monitor:result.monitor,notification_sequence:result.event_sequence,output:result.output,error:result.error,gc_state:result.gc_state
    },null,2);
    if(['running','waiting'].includes(result.state))await renderChoices(selected);
    await renderRunStatus(result);

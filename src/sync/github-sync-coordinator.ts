@@ -204,6 +204,7 @@ export class GitHubSyncCoordinator {
   private cachedRuntime: Record<string, GitHubSyncRuntimeState> = {};
   private readonly publishedRuntime = new Map<string, string>();
   private readonly executingIntentSequences = new Map<string, number>();
+  private readonly dispatchedIntentSequences = new Map<string, number>();
 
   constructor(private readonly options: GitHubSyncCoordinatorOptions) {
     this.statePath = path.join(options.stateDirectory, "coordinator.json");
@@ -219,6 +220,7 @@ export class GitHubSyncCoordinator {
     this.targets.clear();
     for (const target of targets) this.targets.set(target.id, { ...target });
     const activeIds = new Set(targets.map(target => target.id));
+    for (const id of this.dispatchedIntentSequences.keys()) if (!activeIds.has(id)) this.dispatchedIntentSequences.delete(id);
     this.configurationRevision = this.mutateSync(state => {
       state.configurationRevision += 1;
       state.targets = Object.fromEntries(targets.map(target => [target.id, { ...target }]));
@@ -286,6 +288,7 @@ export class GitHubSyncCoordinator {
     this.changeTimers.clear();
     this.scheduler?.dispose();
     this.scheduler = undefined;
+    this.dispatchedIntentSequences.clear();
     try {
       this.mutateSync(state => {
         if (state.leader?.nonce === this.instanceNonce && state.leader.fencingToken === this.leaderToken) delete state.leader;
@@ -368,7 +371,9 @@ export class GitHubSyncCoordinator {
       this.ensureScheduler();
       for (const [targetId, intent] of Object.entries(state.intents)) {
         if (!this.targets.has(targetId)) continue;
+        if (this.dispatchedIntentSequences.get(targetId) === intent.sequence) continue;
         if (!this.scheduler!.request(targetId, intent.reason)) continue;
+        this.dispatchedIntentSequences.set(targetId, intent.sequence);
       }
     } finally {
       this.ticking = false;
@@ -401,16 +406,15 @@ export class GitHubSyncCoordinator {
           this.options.onAutoPaused?.(targetId);
         },
         beforeExecute: async (targetId, reason) => {
-          this.mutateSync(state => {
+          return this.mutateSync(state => {
             const intent = state.intents[targetId];
             const leader = state.leader;
             const existing = state.claims[targetId];
-            if (existing?.reason === reason && existing.leaderNonce === this.instanceNonce && existing.fencingToken === this.leaderToken) return;
-            if (!intent && (reason === "startup" || reason === "interval")) return;
-            if (!intent || intent.reason !== reason || intent.sequence !== this.executingIntentSequences.get(targetId)
-              || leader?.nonce !== this.instanceNonce || leader.fencingToken !== this.leaderToken) {
-              throw new Error("GitHub Sync durable intent was not available to claim before execution.");
-            }
+            if (leader?.nonce !== this.instanceNonce || leader.fencingToken !== this.leaderToken || leader.leaseUntil <= this.now()) throw new Error("GitHub Sync coordinator leadership changed before execution.");
+            if (existing?.reason === reason && existing.sequence === this.executingIntentSequences.get(targetId)
+              && existing.leaderNonce === this.instanceNonce && existing.fencingToken === this.leaderToken) return true;
+            if (!intent && (reason === "startup" || reason === "interval")) return true;
+            if (!intent || intent.reason !== reason || intent.sequence !== this.executingIntentSequences.get(targetId)) return false;
             state.claims[targetId] = {
               ...intent,
               leaderNonce: this.instanceNonce,
@@ -418,9 +422,11 @@ export class GitHubSyncCoordinator {
               claimedAt: new Date(this.now()).toISOString(),
             };
             delete state.intents[targetId];
+            return true;
           });
         },
         onSettled: (targetId, reason, outcome) => {
+          if (this.dispatchedIntentSequences.get(targetId) === this.executingIntentSequences.get(targetId)) this.dispatchedIntentSequences.delete(targetId);
           if (outcome === "succeeded") {
             const target = this.targets.get(targetId);
             if (target) target.needsAttention = false;
@@ -436,6 +442,10 @@ export class GitHubSyncCoordinator {
             this.resolvePendingIntent(targetId, reason);
           }
           if (outcome === "skipped") this.resolvePendingIntent(targetId, reason);
+          if (outcome === "deferred") {
+            this.resolveOwnedClaim(targetId, reason);
+            this.resolvePendingIntent(targetId, reason);
+          }
           if (outcome === "failed") {
             const runtime = this.scheduler?.snapshot()[targetId];
             const target = this.targets.get(targetId);
@@ -443,6 +453,7 @@ export class GitHubSyncCoordinator {
               target.lastFailure = {
                 at: runtime.lastAttemptAt, error: runtime.lastError, reason,
                 attempts: target.lastFailure?.attempts || 1,
+                errorCode: runtime.lastErrorCode, phase: runtime.lastErrorPhase,
               };
               this.mutateSync(state => { if (state.targets[targetId]) state.targets[targetId].lastFailure = target.lastFailure; });
             }

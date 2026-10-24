@@ -1,7 +1,7 @@
 import { createHash } from "crypto";
-import { assertPeerEndpoint } from "./peer-protocol";
+import { assertPeerEndpoint, PORTAL_TRANSPORT_PATH } from "./peer-protocol";
 
-/** Everything a receiver needs to join the initiator's private Room and redeem its one-time pairing code. */
+/** Peer transport credentials and a one-time pairing code. Room fields remain for v1 link compatibility. */
 export interface PortalLink {
   url: string;
   room: string;
@@ -9,7 +9,7 @@ export interface PortalLink {
   secret: string;
   code: string;
   controller: string;
-  /** Initiator's Room alias, so the receiver can avoid an alias collision. */
+  /** Initiator's display name. */
   name?: string;
   role?: "controller" | "controlled";
 }
@@ -47,7 +47,7 @@ function validate(link: PortalLink): PortalLink {
   const controller = String(link.controller || "").trim();
   const name = String(link.name || "").trim().slice(0, 80);
   assertPeerEndpoint(url);
-  if (new URL(url).pathname.replace(/\/+$/, "")) throw new Error("PKM Portal link URL must be the Hub address without a Room path.");
+  if (!["", PORTAL_TRANSPORT_PATH].includes(new URL(url).pathname.replace(/\/+$/, ""))) throw new Error(`PKM Portal link URL must use ${PORTAL_TRANSPORT_PATH}, or a legacy Hub address without a Room path.`);
   if (!room || !roomId || !secret || !controller) throw new Error("PKM Portal link is missing Room credentials.");
   if (!/^pkmpeer:v1:[a-f0-9-]{36}:[a-f0-9]{48}$/.test(code)) throw new Error("PKM Portal link is missing a valid pairing code.");
   if (link.role !== undefined && link.role !== "controller" && link.role !== "controlled") throw new Error("Invalid Portal control direction.");

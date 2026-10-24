@@ -20,6 +20,8 @@ export type { KnowledgeSyncDeletionRecord } from "./knowledge-deletion-journal";
 import {
   assertMarkdownAssetsUnshared, assertMarkdownResourceTreeUnshared, checkedMarkdownPath, isMarkdownAssetDirectory, markdownAssetDirectory,
   rebaseMarkdownAssets, referencedMarkdownAssets, saveMarkdownAsset, MarkdownAssetArea, withMarkdownAssetMutation, ownedMarkdownAssetPaths,
+  migrateMarkdownAssetsForLifecycleUnlocked,
+  previewMarkdownAssetMigration,
 } from "./markdown-assets";
 
 let _store = "";
@@ -166,11 +168,13 @@ function writeKnowledgeMarkdownUnlocked(area: "notes" | "skills" | "papers", rel
   if (moved && existsSync(full)) throw new Error(`Move target already exists: ${area}/${relativePath}`);
   const oldAssets = oldFull?.replace(/\.md$/i, ".assets");
   const newAssets = full.replace(/\.md$/i, ".assets");
-  const movingAssets = !!oldAssets && existsSync(oldAssets);
+  let movingAssets = !!oldAssets && existsSync(oldAssets);
   if (moved) {
     assertMarkdownAssetsUnshared(root, previousPath);
+    if (existsSync(newAssets)) throw new Error(`Resource destination already exists: ${newAssets}`);
+    content = migrateMarkdownAssetsForLifecycleUnlocked(getStorePath(), area, previousPath, content);
+    movingAssets = !!oldAssets && existsSync(oldAssets);
     content = rebaseMarkdownAssets(root, previousPath, relativePath, content);
-    if (movingAssets && existsSync(newAssets)) throw new Error(`Resource destination already exists: ${newAssets}`);
   }
   const removedPaths = oldFull && existsSync(oldFull) ? knowledgeDeletionPaths(area, oldFull, previousPath!) : [];
   const write = (): void => {
@@ -215,6 +219,11 @@ function moveKnowledgePathUnlocked(
   const source = join(getStorePath(), area, sourcePath);
   const destination = join(getStorePath(), area, destinationPath);
   const markdown = /\.md$/i.test(sourcePath) && ["skills", "notes", "papers"].includes(area) && statSync(source).isFile();
+  if (markdown) {
+    assertMarkdownAssetsUnshared(join(getStorePath(), area), sourcePath, container?.from);
+    if (existsSync(destination) || existsSync(destination.replace(/\.md$/i, ".assets"))) throw new Error("Document or resource move target already exists.");
+    migrateMarkdownAssetsForLifecycleUnlocked(getStorePath(), area as MarkdownAssetArea, sourcePath);
+  }
   const sourceAssets = markdown ? source.replace(/\.md$/i, ".assets") : undefined;
   const destinationAssets = markdown ? destination.replace(/\.md$/i, ".assets") : undefined;
   const original = markdown ? readFileSync(source, "utf8") : undefined;
@@ -225,7 +234,7 @@ function moveKnowledgePathUnlocked(
     assertMarkdownResourceTreeUnshared(join(getStorePath(), area), sourcePath, "", container?.from || sourcePath);
     for (const file of files) {
       const nextPath = destinationPath + file.rel.slice(sourcePath.length);
-      const content = readFileSync(file.full, "utf8");
+      const content = migrateMarkdownAssetsForLifecycleUnlocked(getStorePath(), area as MarkdownAssetArea, file.rel);
       documents.push({ source: file.full, destination: join(getStorePath(), area, nextPath), original: content,
         content: rebaseMarkdownAssets(join(getStorePath(), area), file.rel, nextPath, content, container || { from: sourcePath, to: destinationPath }) });
     }
@@ -292,12 +301,18 @@ function knowledgeMoveToTrashUnlocked(area: KnowledgeTrashArea, relativePath: st
   if (!source || !existsSync(source.full)) return undefined;
   const stat = statSync(source.full);
   if (kind === "folder" ? !stat.isDirectory() : !stat.isFile()) return undefined;
+  if (kind === "folder" && ["notes", "papers"].includes(area)) {
+    const files: MdFile[] = [];
+    walkMd(source.full, source.rel, files);
+    for (const file of files) migrateMarkdownAssetsForLifecycleUnlocked(getStorePath(), area as MarkdownAssetArea, file.rel);
+  }
   if (kind === "folder" && ["notes", "papers"].includes(area)) assertMarkdownResourceTreeUnshared(areaRoot(area), source.rel, "", source.rel);
   const id = `${Date.now()}-${randomBytes(5).toString("hex")}`;
   const entryDir = join(knowledgeTrashRoot(area), id);
   const entry: KnowledgeTrashEntry = { id, kind, name, originalPath: source.rel, deletedAt: now() };
   if (kind === "item" && /\.md$/i.test(source.rel)) {
     assertMarkdownAssetsUnshared(areaRoot(area), source.rel);
+    migrateMarkdownAssetsForLifecycleUnlocked(getStorePath(), area as MarkdownAssetArea, source.rel);
     if (existsSync(source.full.replace(/\.md$/i, ".assets"))) entry.assetsPath = markdownAssetDirectory(source.rel);
   }
   const move = (): KnowledgeTrashEntry | undefined => {
@@ -753,7 +768,8 @@ function knowledgeMarkdownCopyUnlocked(area: MarkdownAssetArea, sourcePath: stri
   const sourceAssets = checkedMarkdownPath(root, markdownAssetDirectory(sourcePath));
   const destinationAssets = checkedMarkdownPath(root, markdownAssetDirectory(destinationPath));
   if (existsSync(destination) || existsSync(destinationAssets)) throw new Error("The document copy target or its resources already exist.");
-  const original = readFileSync(source, "utf8");
+  const migration = previewMarkdownAssetMigration(getStorePath(), area, sourcePath);
+  const original = migration.candidate;
   referencedMarkdownAssets(getStorePath(), area, sourcePath, original);
   const { fm, body } = parseFrontmatter(rebaseMarkdownAssets(root, sourcePath, destinationPath, original));
   const type = area === "skills" ? "skill" : area === "notes" ? "note" : "research";
@@ -764,6 +780,18 @@ function knowledgeMarkdownCopyUnlocked(area: MarkdownAssetArea, sourcePath: stri
   try {
     mkdirSync(resolve(destination, ".."), { recursive: true });
     if (existsSync(sourceAssets)) { copiedAssets = true; cpSync(sourceAssets, destinationAssets, { recursive: true, force: false, errorOnExist: true }); }
+    for (const copy of migration.copies) {
+      const target = checkedMarkdownPath(root, `${markdownAssetDirectory(destinationPath)}/${basename(copy.target)}`);
+      const content = readFileSync(checkedMarkdownPath(root, copy.source));
+      if (createHash("sha256").update(content).digest("hex") !== copy.digest) throw new Error("Legacy resource changed during the document copy; retry after the writer settles.");
+      if (existsSync(target)) {
+        if (!readFileSync(target).equals(content)) throw new Error(`Resource copy target differs: ${target}`);
+      } else {
+        mkdirSync(resolve(target, ".."), { recursive: true });
+        copiedAssets = true;
+        writeFileSync(target, content, { flag: "wx" });
+      }
+    }
     writeKnowledgeMarkdownUnlocked(area, destinationPath, undefined, serializeFrontmatter(fm, body));
   } catch (error) {
     if (copiedAssets) rmSync(destinationAssets, { recursive: true, force: true });
@@ -885,9 +913,15 @@ function moveSkillPathToTrashUnlocked(full: string, originalPath: string, kind: 
   const id = `${Date.now()}-${randomBytes(5).toString("hex")}`;
   const entryDir = join(skillTrashRoot(), id);
   const entry: SkillTrashEntry = { id, kind, name, originalPath, deletedAt: now() };
-  if (kind === "folder") assertMarkdownResourceTreeUnshared(skillsRoot(), originalPath, "", originalPath);
+  if (kind === "folder") {
+    const files: MdFile[] = [];
+    walkMd(full, originalPath, files);
+    for (const file of files) migrateMarkdownAssetsForLifecycleUnlocked(getStorePath(), "skills", file.rel);
+    assertMarkdownResourceTreeUnshared(skillsRoot(), originalPath, "", originalPath);
+  }
   if (kind === "skill") {
     assertMarkdownAssetsUnshared(skillsRoot(), originalPath);
+    migrateMarkdownAssetsForLifecycleUnlocked(getStorePath(), "skills", originalPath);
     if (existsSync(full.replace(/\.md$/i, ".assets"))) entry.assetsPath = markdownAssetDirectory(originalPath);
   }
   return recordKnowledgeTrashDeletion("skills", entry, full, () => {

@@ -18,6 +18,112 @@ Complete or roll back an active publication migration first. Force use Remote
 may deliberately abandon an existing conflict comparison or Local repair issue,
 but clears those records only after successful component and baseline application.
 
+## Offline and disconnected hosts
+
+The independent Sync service can outlive every VS Code window. If no protocol-compatible
+host is connected, automatic checks wait at the configured interval without
+consuming failure attempts or switching off Auto Sync. A host lost before the
+execution callback starts is handled the same way. Reconnecting a compatible host
+allows the next scheduled check to proceed without toggling Auto again.
+
+Recognized DNS/connection failures during Git clone/fetch also remain visible
+as deferred checks, preserving the Auto setting and retrying at the configured
+interval. Authentication, configuration, conflict and content-repair failures
+keep their existing bounded retry/review behavior. A lost push response or a
+host lost during execution is not proof that no mutation occurred: those
+operations are not classified as safe deferred reads or automatically replayed.
+Existing disabled targets are not silently re-enabled; they may have been
+deliberately paused by the user.
+
+## Durable intent admission
+
+The coordinator dispatches each persisted intent sequence once while it waits on
+host preflight. Polling must not enqueue another copy of that same request.
+Under the coordinator lock, the scheduler verifies the current leader and claims
+the exact sequence that was checked. An unclaimed request superseded by a newer
+or higher-priority intent, or removed by an Auto pause, is skipped before any Sync
+execution; it is not recorded as a failed GitHub operation and does not consume
+the automatic failure limit. The newer intent remains pending.
+
+A new same-reason sequence submitted during an active claimed run is still a
+distinct follow-up. Completion of the older sequence cannot erase it. Leadership
+and fencing checks remain mandatory; no uncertain in-flight work is replayed by
+this admission deduplication. Existing historical failures and user Auto settings
+are not cleared or retried automatically.
+
+## Credential storage and visible failures
+
+VS Code credential reads have a 10-second deadline, including account checks
+used to render the Sync dashboard. A timed-out read never resumes Sync when its
+RPC eventually returns. It does not delete credentials or automatically launch
+sign-in. A failing account check is returned separately, so one unresponsive
+target cannot suppress other targets or their synchronization errors.
+
+Failed attempts retain `errorCode` and `phase` alongside the message and existing
+retry count, through target normalization, scheduler state and service IPC.
+Collapsed target cards show the code, failed phase and actionable message once.
+The authentication phase is restored after reload, not replaced by a generic
+failure diagram. The diagnostic event also contains `errorCode`.
+
+- `CREDENTIAL_READ_TIMEOUT`: credential storage did not respond within 10 seconds.
+- `CREDENTIAL_READ_CANCELED`: VS Code canceled credential access; this alone does
+  not distinguish host shutdown from another cancellation.
+- `CREDENTIAL_READ_FAILED`: credential storage raised another error.
+- `CREDENTIAL_MISSING`, `CREDENTIAL_INVALID`, `CREDENTIAL_ACCOUNT_MISMATCH`:
+  reconnect the expected account using **Test Account**.
+
+For storage timeout/cancellation/failure, reload the affected window and explicitly
+retry Sync. These failures occur before GitHub Fetch/Push and are not evidence of
+an expired token or GitHub permission denial. Existing retry limits and Auto
+intent are unchanged. Historical bare `Canceled` records display `SYNC_CANCELED`
+with a retry hint; they are not retrospectively assigned an authentication cause.
+These bounds cannot retrofit a call already hung inside an old Host.
+
+## Protocol compatibility and installed-version advisories
+
+The Sync daemon checks the installed extension registry every five seconds.
+A newer installed version gives a deduplicated update/reload advisory; it does
+not automatically drain a healthy compatible service or disconnect its hosts.
+Admission uses `pkm-github-sync/1` and advertised operation/callback capabilities,
+not exact extension version equality. Unsupported advertised operations fail
+before submission while supported operations remain usable.
+
+New clients can also register with an original protocol-v1 service: discovery
+detects its legacy version-bound wire contract, opens an explicitly adapted
+connection using that wire version, and sends the actual host version separately
+in registration. This adapter neither changes the service's identity/version nor
+replays a business operation. Identity, nonce, private IPC, protocol checks,
+execution ownership and fencing tokens are unchanged. A different protocol or
+malformed capability declaration is still an explicit error.
+
+An explicit administrative drain waits for current execution, durable result
+persistence and host postprocessing. The monotonic version pin still prevents
+starting older daemon code over newer state; it no longer prevents an older
+compatible client from connecting to a live newer daemon. When no daemon is alive,
+an older compatible Host can start the verified current installed service entry
+from the existing extension registry, rather than requiring a same-version
+window. The child still uses its own actual installed version and must pass
+protocol/capability discovery before registration. This does not forcibly
+reload any window, replay uncertain writes, clear recovery receipts, or change Auto Sync intent.
+Installing a VSIX alone is not evidence that every existing window runs it.
+
+Drain admission is fenced before stopping. Its barrier counts live Host RPCs
+and active executions (including raw Sync and Host postprocessing), not the
+persisted runtime display: an old `syncing/authenticating` observation alone
+cannot pin an idle daemon. A scheduler disposed while awaiting preflight or
+durable admission cannot start a late execution. No pending/uncertain write is
+replayed or inferred complete from display state.
+
+An idle daemon with no compatible client also drains itself if its entry,
+ownership metadata, or Unix socket has disappeared. An ordinary offline daemon
+with intact installation and IPC ownership continues waiting for reconnect.
+Missing or ambiguous installed-build evidence never authorizes a version upgrade.
+Already-running old Hosts and daemons cannot acquire new client/monitor behavior
+merely because files on disk changed. They need to load the new implementation
+once through normal lifecycle controls; installation alone is not proof of that.
+Idle disconnections are advisory and reconnect without replay; disconnection with
+pending operations or active callbacks remains an explicit uncertain-work error.
+
 ## Remote replacement workflow
 
 1. Fetch a read-only snapshot in an independent Git cache. Validate the current
@@ -111,3 +217,17 @@ including confirmations, cancellation, stale previews, empty Remote, raw backup
 bytes, Recipe handoff, Script moves/sidecars, privacy/ignore/System boundaries,
 component/baseline failures, index retry and ordinary Sync after recovery.
 Native Windows confirmation rendering and human dogfood remain separate checks.
+# Sync Status and Historical Publication Scope
+
+Sync status compares current selected bytes with the last successful publication,
+not merely whether a file exists remotely. Yellow may indicate a retained
+historical publication outside the current privacy scope; it is not proof of
+failed backup. Changing a folder to private does not erase previously public
+files or Git history.
+
+Built-in Recipes are not user-synchronized content. Status computation excludes
+historical baseline records by the current built-in Recipe identity, including
+old paths/categories, so those records do not create false pending markers.
+This is a status-only filter: it does not delete remote copies or rewrite history.
+Historical public user content, including private MyIdeas, remains visible as a
+publication discrepancy until separately reconciled.

@@ -82,6 +82,7 @@ const instructionSandbox = {
   exports: {}, getStorePath: () => '/account/knowledge',
   managedMcpServerDirectory: () => '/account/knowledge/mcp-server',
   mcpRuntimePythonPath: () => '/account/runtime/bin/python',
+  chatMcpStatus: () => ({ serverPath:'/account/knowledge/mcp-server/chat-server.py' }),
   mcpStdioCommand, path, UNIFIED_MCP_VERSION: 'fixture',
 };
 require('vm').runInNewContext(ts.transpileModule(instructionFunction.getText(mcpSourceFile), {
@@ -100,7 +101,9 @@ assert.doesNotMatch(manualInstruction, /merge the same entry|Please register.*Ag
 assert.match(manualInstruction, /explicitly selected registration owner/);
 assert.doesNotMatch(manualInstruction, /This client does not expose/,
   'a selected manual owner must not be misreported as missing provider support');
-assert.strictEqual((mcpSource.match(/mcpStdioCommand\(/g) || []).length, 5, 'every MCP registration and instruction surface must use the Windows-safe launcher');
+assert.strictEqual((mcpSource.match(/mcpStdioCommand\(/g) || []).length, 6, 'every MCP registration and instruction surface, including generation reuse, must use the Windows-safe launcher');
+assert.match(mcpSource, /configSnippet: JSON\.stringify\(\{ servers: \{ pkm: \{ type: "stdio", \.\.\.launch \} \} \}/,
+  'reusing a managed generation must retain the launcher environment rather than dropping its signed-host configuration');
 assert.match(mcpSource, /env:\s*launch\.env/,
   'native MCP definition data must carry the signed-host environment');
 assert.strictEqual((mcpSource.match(/\.\.\.\(launch\.env \? \{ env: launch\.env \} : \{\}\)/g) || []).length, 4,
@@ -131,11 +134,11 @@ const serversSource = fs.readFileSync(path.join(root, "src/servers/servers.ts"),
 assert.match(serversSource, /status === "external" && slug === inspectExternalSlug \? serverListenerProcesses\(m\.port\) : \[\]/,
   'passive Server status must defer Windows listener inspection until the user explicitly requests it');
 const retrievalSource = fs.readFileSync(path.join(root, "src/retrieval/retrieval-worker.ts"), 'utf8');
-assert.match(retrievalSource, /const launch = mcpStdioCommand\(this\.python, \[this\.workerScript, this\.stateDir, this\.configurationHash\]\)/,
-  'the long-lived Windows retrieval worker must use the signed-host JavaScript no-console proxy');
+assert.match(retrievalSource, /const launch = mcpStdioCommand\(runtime\.python, \[owned\.script, this\.stateDir, this\.configurationHash\]\)/,
+  'the long-lived Windows retrieval worker must launch its staged runtime through the signed-host JavaScript no-console proxy');
 assert.match(retrievalSource, /spawn\(launch\.command, launch\.args,/,
   'retrieval must execute the platform-safe launch command rather than python.exe directly');
-assert.match(retrievalSource, /env:\s*\{\s*\.\.\.process\.env,\s*\.\.\.launch\.env\s*\}/,
+assert.match(retrievalSource, /env:\s*\{\s*\.\.\.process\.env,\s*\.\.\.launch\.env,/,
   'retrieval must pass ELECTRON_RUN_AS_NODE to the signed VS Code executable');
 assert.doesNotMatch(retrievalSource, /spawn\(this\.python,/,
   'the Windows retrieval worker must never directly start the console-subsystem Python executable');

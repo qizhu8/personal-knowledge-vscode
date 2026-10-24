@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 const assert = require("assert");
-const { GitHubSyncScheduler } = require("../dist/sync/github-sync-scheduler.js");
+const { GitHubSyncScheduler, GitHubSyncDeferredError } = require("../dist/sync/github-sync-scheduler.js");
 const { GitHubSyncContentRepairError } = require("../dist/sync/github-sync-content-repair.js");
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
@@ -207,6 +207,49 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
   assert.strictEqual(failing.request("retry", "manual"), true, "ordinary manual Sync remains available after auto-pause");
   await flush();
   failing.dispose();
+
+  const deferredTimers = new Map();
+  const deferredTarget = { id: "offline", enabled: true, intervalMinutes: 5, syncOnChange: true };
+  let offline = true, deferredRuns = 0;
+  const deferred = new GitHubSyncScheduler({
+    now: () => now,
+    setTimeout: (callback, delay) => {
+      const timer = { id: nextTimer++, unref() {} };
+      deferredTimers.set(timer.id, { callback, delay });
+      return timer;
+    },
+    clearTimeout: timer => deferredTimers.delete(timer.id),
+    onAutoPaused: () => assert.fail("unavailable preflight must never disable Auto"),
+    execute: async () => {
+      deferredRuns++;
+      if (offline) throw new GitHubSyncDeferredError("Network unavailable before fetch");
+    },
+  });
+  deferred.configure([deferredTarget]);
+  await flush();
+  for (let attempt = 0; attempt < 4; attempt++) {
+    assert.equal(deferredTarget.enabled, true);
+    assert.equal(deferredTarget.lastFailure, undefined);
+    assert.equal(deferred.snapshot().offline.status, "scheduled");
+    assert.match(deferred.snapshot().offline.detail, /Network unavailable/);
+    assert.equal(deferredTimers.size, 1, "offline retries remain interval-bound, not a busy loop");
+    const [id, timer] = [...deferredTimers.entries()][0];
+    assert.equal(timer.delay, 5 * 60_000);
+    deferredTimers.delete(id);
+    now += timer.delay;
+    timer.callback();
+    await flush();
+  }
+  assert.equal(deferredRuns, 5);
+  offline = false;
+  const [deferredId, deferredTimer] = [...deferredTimers.entries()][0];
+  deferredTimers.delete(deferredId);
+  now += deferredTimer.delay;
+  deferredTimer.callback();
+  await flush();
+  assert.equal(deferred.snapshot().offline.lastError, undefined);
+  assert.equal(deferredTarget.enabled, true);
+  deferred.dispose();
 
   const toggleTimers = new Map();
   let failActiveSync;

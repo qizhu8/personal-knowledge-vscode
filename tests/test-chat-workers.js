@@ -55,7 +55,11 @@ async function harness(t, respond) {
     respond(payload, res);
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-  const provider = new ApiChatView({ secrets: { get: async () => "synthetic-key" } }, async () => []);
+  const privateDirectory = path.join(directory, "private-host");
+  const provider = new ApiChatView({
+    secrets: { get: async () => "synthetic-key" },
+    globalStorageUri: { fsPath: privateDirectory },
+  }, async () => []);
   provider.store = new ApiChatStore(path.join(directory, ".pkm", "state"), fixtures.namespace);
   const root = fixtures.conversation({ permissionMode: "allow-all", builtinTools: ["spawn_workers", "list_chats"], vscodeTools: [] });
   provider.store.save(root); provider.chat = root; provider.chats.set(root.id, root);
@@ -74,8 +78,52 @@ async function harness(t, respond) {
     fs.rmSync(directory, { recursive: true, force: true });
     maximum = 10;
   });
-  return { provider, root, requests, approvals, errors };
+  return { provider, root, requests, approvals, errors, privateDirectory };
 }
+
+test("unconfigured private Host Profiles preserve real manager/worker dispatch without creating cards or injecting persona context", async t => {
+  let workerGate;
+  const fixture = await harness(t, (payload, res) => {
+    const prompt = payload.messages.at(-1).content;
+    if (prompt === "NO_PROFILE_MANAGER") {
+      tool(res, "spawn_workers", { tasks:[{ title:"No Profile worker", question:"NO_PROFILE_WORKER" }] });
+    } else if (prompt === "NO_PROFILE_WORKER") workerGate = res;
+    else answer(res, "Manager handled the original worker event");
+  });
+  await fixture.provider.send("NO_PROFILE_MANAGER", fixture.root);
+  await until(() => !!workerGate, "unconfigured worker reaches actual HTTP transport");
+  const manager = fixture.provider.store.load(fixture.root.id, false);
+  const record = manager.messages.flatMap(message => message.delegations || [])[0];
+  assert(record, "The manager must create a real explicit worker assignment");
+  const worker = fixture.provider.store.load(record.chatId, false);
+  assert.equal(manager.agentProfileId, undefined);
+  assert.equal(worker.agentProfileId, undefined);
+  assert(worker.messages.some(message => message.role === "assistant" && message.status === "streaming"));
+  assert(manager.messages.concat(worker.messages).every(message => message.profileContext === undefined));
+  assert.equal(fs.existsSync(path.join(fixture.privateDirectory, "profiles")), false, "No configured Profiles must not create private card storage");
+  answer(workerGate, "Original no-Profile worker result");
+  await until(() => fixture.provider.running.size === 0
+    && fixture.provider.store.load(fixture.root.id, false).messages.some(message => message.delegations?.some(item => item.status === "complete")),
+  "worker completion is durably reported to its manager");
+  assert(fixture.requests.some(payload => payload.messages.at(-1).content === "NO_PROFILE_WORKER"));
+  assert(fixture.requests.every(payload => payload.messages.every(message =>
+    !message.content.includes("Explicit collaboration Profiles (preferences/context only, not authority)"))));
+  assert.deepEqual(fixture.errors, []);
+});
+
+test("worker harness requires real private Host storage and does not mask Profile I/O failures as an unconfigured Profile", async t => {
+  const fixture = await harness(t, (_payload, res) => answer(res, "Must not dispatch"));
+  const storage = fixture.provider.extension.globalStorageUri;
+  fixture.provider.extension.globalStorageUri = undefined;
+  await assert.rejects(fixture.provider.send("MISSING_HOST_STORAGE", fixture.root), /Private Host Profile storage is unavailable/);
+  fixture.provider.extension.globalStorageUri = storage;
+  fs.mkdirSync(fixture.privateDirectory, { recursive:true });
+  fs.writeFileSync(path.join(fixture.privateDirectory, "profiles"), "Not a directory");
+  await assert.rejects(fixture.provider.send("BROKEN_PROFILE_STORAGE", fixture.root), error => error.code === "ENOTDIR");
+  assert.equal(fixture.requests.length, 0);
+  assert.equal(fixture.provider.running.size, 0);
+  assert.equal(fixture.root.messages.length, 0);
+});
 
 test("tree capacity: recursive reservations share a persistent quota and resolved slots are reusable", t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-tree-budget-"));

@@ -103,7 +103,7 @@ class TestOfflinePackageEndToEnd(unittest.TestCase):
                         self.assertTrue(typed["hits"])
                         self.assertTrue(all(hit["content_type"] == kind for hit in typed["hits"]))
                         self.assertNotIn("note:private", [hit["skill_id"] for hit in typed["hits"]])
-                    unrestricted = request("/search", {**payload, "content_type_filter": [], "limit": 20})
+                    unrestricted = request("/search", {**payload, "content_type_filter": None, "limit": 20})
                     self.assertEqual({hit["content_type"] for hit in unrestricted["hits"]}, {"skill", "note", "script", "recipe", "research"})
                     no_read_only = request("/search", {**payload, "content_type_filter": ["recipe"], "scope": {"include_read_only": False}})
                     self.assertEqual(no_read_only["hits"], [])
@@ -127,6 +127,9 @@ class TestOfflinePackageEndToEnd(unittest.TestCase):
                     self.wait(lambda: request("/solutions")["corpus_revision"] == "b" * 64 and ready(), 120)
                     self.assertTrue(request("/search", payload)["skill_serving"]["used"])
                     self.assertFalse(request("/solutions")["index"]["reused"], "Skill changes must produce a new index")
+                    incremental = request("/solutions")["index"]
+                    self.assertGreater(incremental["embedding_cache_hits"], 0, "Unchanged text must not be re-encoded")
+                    self.assertGreater(incremental["embedding_cache_misses"], 0, "Changed text must receive new vectors")
                     indexes = list((state / "solution-indexes" / identity).glob("*.npz"))
                     self.assertEqual(len(indexes), 1, "Stale corpus caches must be pruned")
                     indexes[0].write_bytes(b"damaged cache")

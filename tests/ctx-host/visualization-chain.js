@@ -42,7 +42,10 @@ async function checkVisualizationChain(extension, store, root, restart = false) 
   const savedPath = path.join(root, "vis-chain.json");
   const saved = restart ? JSON.parse(fs.readFileSync(savedPath, "utf8")) : undefined;
   const chat = restart ? store.load(saved.chatId, false) : store.create();
-  const provider = new ApiChatView({ extensionPath:extension.extensionPath, secrets:{ get:async () => undefined } }, async () => []);
+  const provider = new ApiChatView({
+    extensionPath:extension.extensionPath, secrets:{ get:async () => undefined },
+    globalStorageUri:vscode.Uri.file(path.join(root, "ctx-private-host")),
+  }, async () => []);
   provider.store = store; provider.chat = chat; provider.chats.set(chat.id, chat);
   provider.publish = () => provider.notifyRecordChanges();
   const window = new VisualizationWindow({ extensionUri:extension.extensionUri }, async () => provider);

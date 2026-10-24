@@ -422,7 +422,7 @@ with sync_playwright() as playwright:
     page.locator("#start-tour-button").click()
     assert page.locator("#experience-layer").is_visible()
     assert page.locator("#coachmark-title").inner_text() == "Welcome to Personal Knowledge Manager"
-    assert page.locator("#coachmark-progress").inner_text() == "Step 1 of 9"
+    assert page.locator("#coachmark-progress").inner_text() == "Step 1 of 7"
     assert page.locator("#topbar strong").evaluate("element => element.classList.contains('coachmark-target')")
     page.locator("#coachmark-close").click()
     assert page.locator("#experience-layer").is_hidden()
@@ -432,7 +432,7 @@ with sync_playwright() as playwright:
     ), "manual replay must not change durable completion state"
 
     page.evaluate("""startOnboardingTour({
-      moduleIds: ['core-navigation', 'agent-workflows', 'runtime-and-sharing'],
+      moduleIds: ['pkm-chat', 'retrieval-system', 'router', 'github-sync', 'portal'],
       audience: 'update',
       automatic: true
     })""")
@@ -445,9 +445,7 @@ with sync_playwright() as playwright:
         if message.get("command") == "completeTourModules"
     ]
     assert completion_messages[-1]["moduleIds"] == [
-        "core-navigation",
-        "agent-workflows",
-        "runtime-and-sharing",
+        "pkm-chat", "retrieval-system", "router", "github-sync", "portal",
     ], "explicit skip must persist every presented module"
     assert completion_messages[-1]["audience"] == "update"
 
@@ -456,7 +454,7 @@ with sync_playwright() as playwright:
     page.locator("#coachmark-next").click()
     page.locator("#coachmark-next").click()
     page.locator("#coachmark-next").click()
-    page.locator("#coachmark-title").filter(has_text="Create your first reusable item").wait_for()
+    page.locator("#coachmark-title").filter(has_text="Router").wait_for()
     target = page.locator(".coachmark-target")
     assert target.count() == 1 and target.is_visible()
     assert target.evaluate("element => { const rect = element.getBoundingClientRect(); return rect.width > 0 && rect.left >= 0 && rect.right <= window.innerWidth; }")

@@ -4,9 +4,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 const { randomUUID } = require("node:crypto");
-const { ApiChatStore, apiChatSessionDiagnostics, chatHistoryPage } = require("../dist/chat/api-chat-store");
+const { ApiChatStore, apiChatSessionDiagnostics, apiChatContextSummary, apiChatDiagnostics, chatHistoryPage } = require("../dist/chat/api-chat-store");
 const { ChatHistoryStorage } = require("../dist/chat/chat-history-storage");
 const { createAgentSnapshot, readAgentSnapshotContents } = require("../dist/agent-sessions/agent-snapshots");
+const { prepareWorkGoal, rootWorkCriterion } = require("../dist/chat/chat-work-goal");
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-history-test-"));
@@ -19,6 +20,124 @@ function fixture(t) {
 function message(content, extra = {}) {
   return { id: randomUUID(), role: "assistant", content, status: "complete", ...extra };
 }
+
+test("host recovery disarms persisted root work and preserves uncertain effects without replay", t => {
+  const { store, chat, directory } = fixture(t);
+  const input = message("Please fix this broken fixture.", { role:"user" });
+  chat.includeHistory = true;
+  chat.messages = [input];
+  prepareWorkGoal(chat, input.id, input.content, "a".repeat(64));
+  const root = structuredClone(chat.workGoal);
+  chat.messages.push(message("", { inputId:input.id, status:"streaming",
+    toolCalls:[{ id:"unknown-effect", name:"run_process", arguments:"{}", status:"running" }] }));
+  store.save(chat);
+  const reader = new ApiChatStore(directory, store.namespace);
+  assert.equal(reader.load(chat.id, false).workGoal.status, "active", "observation must not claim a running host died");
+  const recovered = reader.load(chat.id, true);
+  assert.equal(recovered.workGoal.status, "interrupted");
+  assert.equal(recovered.workGoal.id, root.id);
+  assert.equal(recovered.workGoal.objective, root.objective);
+  assert.equal(recovered.messages.at(-1).toolCalls[0].status, "failed");
+  assert.match(recovered.messages.at(-1).toolCalls[0].result, /may already have occurred/);
+  prepareWorkGoal(recovered, randomUUID(), "Here is another log.", "a".repeat(64));
+  assert.equal(recovered.workGoal.status, "interrupted");
+  prepareWorkGoal(recovered, randomUUID(), "Continue", "a".repeat(64));
+  assert.equal(recovered.workGoal.status, "active");
+  assert.equal(recovered.messages.at(-1).toolCalls.length, 1);
+  store.save(recovered);
+  assert.equal(reader.load(chat.id, false).workGoal.id, root.id);
+});
+
+test("stored goal claims reject missing root acceptance and unverified resolution", t => {
+  const { store, chat, directory } = fixture(t);
+  const input = message("Please fix this fixture.", { role:"user" });
+  chat.messages = [input];
+  prepareWorkGoal(chat, input.id, input.content, "a".repeat(64));
+  const goal = structuredClone(chat.workGoal);
+  for (const acceptance of [[], [{ criterion:"Only a log was read", verified:true, evidenceCallIds:["probe"] }],
+    [{ criterion:rootWorkCriterion, verified:false, evidenceCallIds:[] }],
+    [{ criterion:rootWorkCriterion, verified:true, evidenceCallIds:[] }]]) {
+    const broken = store.create();
+    broken.messages = [input];
+    broken.workGoal = { ...goal, status:"resolved", acceptance };
+    store.save(broken);
+    assert.throws(() => new ApiChatStore(directory, store.namespace).load(broken.id, false), /Unsupported chat history/);
+  }
+});
+
+test("typed Activity boundaries survive storage and compact diagnostics while legacy steps remain readable", t => {
+  const { store, chat, directory } = fixture(t);
+  const progress = { attemptId:"activity-types", model:"fixture", status:"complete", startedAt:100, finishedAt:900, steps:[
+    { label:"Memory: understanding the question", at:100, finishedAt:200, status:"complete", category:"llm", operation:"inference" },
+    { label:"Counting input tokens", at:300, finishedAt:400, status:"complete", category:"llm", operation:"token-count" },
+    { label:"Tool", at:500, finishedAt:600, status:"complete", category:"cmd", operation:"command" },
+    { label:"Retrieval", at:600, finishedAt:700, status:"complete", category:"info", operation:"retrieval" },
+    { label:"Legacy local display", at:800, status:"complete" },
+  ] };
+  chat.messages = [message("Fixture", { progress })];
+  store.save(chat);
+  const restored = new ApiChatStore(directory, store.namespace).load(chat.id, false);
+  assert.deepEqual(restored.messages[0].progress.steps, progress.steps);
+  const compact = apiChatDiagnostics(restored).attempts[0].progress.steps;
+  assert.deepEqual(compact.map(step => [step.category, step.operation, step.finishedAt]),
+    progress.steps.map(step => [step.category, step.operation, step.finishedAt]));
+  for (const invalid of [{ category:"charged" }, { operation:"unknown" }, { finishedAt:99 }]) {
+    const broken = store.create();
+    broken.messages = [message("Fixture", { progress:{ ...progress, steps:[{ ...progress.steps[0], ...invalid }] } })];
+    store.save(broken);
+    assert.throws(() => new ApiChatStore(directory, store.namespace).load(broken.id, false));
+  }
+});
+
+test("default context diagnostics stay compact and hash-free without altering full local receipts", () => {
+  const hash = "abcdef0123456789".repeat(4);
+  const receipt = { schema:"pkm.chat.context-plan/v1", inputBudget:456800, estimatedBefore:385406, estimatedAfter:7900,
+    refinements:8, stopReason:"selected-subset", omittedIds:Array(100).fill(hash), unresolved:Array(100).fill(hash),
+    toolSchemaHash:hash, manifest:Array.from({ length:128 }, () => ({ role:"system", hash, referenceIds:[hash], callIds:[] })),
+    automaticKnowledge:{ inputBudget:8000, estimatedBefore:380000, estimatedAfter:7900, countingMethod:"utf8-byte-upper-bound" } };
+  const reply = message("Private response", { budgetReceipts:Array.from({ length:30 }, (_, round) => ({
+    round, status:"sent", countingMethod:"utf8-byte-estimate", consumed:{ estimatedInputTokens:7900 },
+    contextPlan:receipt, selectedReferenceIds:Array(100).fill(hash),
+    transport:{ inputTokens:2200, countingMethod:"vscode-countTokens-plus-overhead", messageHashes:Array(128).fill(hash) },
+  })), retrieval:{ selectedCount:100, warning:"Private source path",
+    candidates:Array.from({ length:100 }, () => ({ selected:true, kind:"script", label:hash, sourceRevision:hash, contentHash:hash })) },
+    progress:{ status:"complete", steps:Array.from({ length:600 }, (_, at) => ({ at, label:"Preparing context", status:"complete" })) } });
+  const summary = apiChatContextSummary(reply);
+  assert.equal(summary.roundCount, 30);
+  assert.equal(summary.rounds.length, 5);
+  assert.equal(summary.omittedRounds, 25);
+  assert.equal(summary.retrieval.selectedKinds.script, 100);
+  assert.equal(summary.rounds[0].omittedReferenceCount, 100);
+  assert(!JSON.stringify(summary).includes(hash));
+  assert(!JSON.stringify(summary).includes("Private source path"));
+  assert(Buffer.byteLength(JSON.stringify(summary)) < 3000);
+  const diagnostics = apiChatDiagnostics({ id:"fixture", messages:Array(30).fill(reply) });
+  assert.equal(diagnostics.attempts.length, 5);
+  assert.equal(diagnostics.omittedAttempts, 25);
+  assert.equal(diagnostics.attempts[0].progress.steps.length, 12);
+  assert.equal(diagnostics.attempts[0].progress.omittedSteps, 588);
+  assert(!JSON.stringify(diagnostics).includes(hash));
+  assert(Buffer.byteLength(JSON.stringify(diagnostics)) < 25000);
+  assert.equal(reply.budgetReceipts[0].contextPlan.manifest.length, 128);
+  assert.equal(reply.budgetReceipts[0].contextPlan.manifest[0].hash, hash);
+  assert.equal(reply.budgetReceipts.length, 30, "compaction must never rewrite stored evidence");
+});
+
+test("read-only diagnostic CLI accepts a Chat URL and returns counts without dumping stored evidence", t => {
+  const { root, store, chat, file } = fixture(t);
+  chat.messages = [message("Private user content", { role:"user" }), message("Private assistant content")];
+  store.save(chat);
+  const before = fs.readFileSync(file);
+  const command = require("node:child_process").spawnSync(process.execPath, [
+    path.join(__dirname, "../scripts/export-chat-diagnostics.js"), root, `pkm://chats/${store.namespace}/${chat.id}`,
+  ], { encoding:"utf8" });
+  assert.equal(command.status, 0, command.stderr);
+  const diagnostics = JSON.parse(command.stdout);
+  assert.equal(diagnostics.chatId, chat.id);
+  assert.equal(diagnostics.attempts[0].context.roundCount, 0);
+  assert(!command.stdout.includes("Private user content") && !command.stdout.includes("Private assistant content"));
+  assert(fs.readFileSync(file).equals(before), "diagnostic reads must not recover or rewrite a Chat");
+});
 
 test("unchanged selected Chat refresh reuses validated history and detects another window's save", t => {
   const { directory, store, chat } = fixture(t);

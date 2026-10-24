@@ -12,6 +12,7 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 from recipe_runtime import _atomic_write
 from action_recovery import ActionSuspended
+from action_monitoring import ActionFailure, monitor_schema, observation as monitor_observation
 
 
 VALUE_TYPES = ["string", "integer", "number", "boolean", "object", "array", "null"]
@@ -144,6 +145,12 @@ def component_definitions():
             "timeout_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 604800},
             "max_iterations": limit}, ["body", "condition", "value", "interval_seconds", "timeout_seconds", "max_iterations"],
             {"status": {"enum": ["completed", "timed_out"]}, "attempts": {"type": "integer"}, "value": {}}, ["pure"]),
+        ("monitor", "Observe remote task", {"body": steps, "condition": {}, "value": {},
+            "remote_id": {"type": "string", "default": ""},
+            "interval_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 300},
+            "timeout_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 604800},
+            "max_iterations": limit}, ["body", "condition", "value", "interval_seconds", "timeout_seconds", "max_iterations"],
+            monitor_schema()["properties"], ["pure"]),
         ("if-else", "If / Else", {"condition": {}, "then_steps": steps, "else_steps": steps, "then_value": {}, "else_value": {}}, ["condition", "then_value", "else_value"], {"value": {}}, ["pure"]),
         ("switch", "Switch", {"selector": {}, "cases": {"type": "array", "items": {"type": "object"}, "default": [], "maxItems": 100}, "default_steps": steps, "default_value": {}}, ["selector", "cases", "default_value"], {"value": {}}, ["pure"]),
         ("math-expression", "Math Expression", {"expression": {"type": "string", "minLength": 1, "maxLength": 1024, "default": MATH_EXAMPLE},
@@ -170,7 +177,7 @@ def component_definitions():
     return {"core." + name: {"action_id": "core." + name, "display_name": label, "description": label,
             "category": "core/" + ("logic" if name in {"if-else", "switch", "for", "while"} else
                 "interaction" if name in {"user-action", "checkpoint"} else
-                "timing" if name in {"sleep", "wait", "poll"} else
+                "timing" if name in {"sleep", "wait", "poll", "monitor"} else
                 "filesystem" if name == "file-path" else "values"),
             "component": True, "version": 1, "effects": effects,
             **({"math_functions": MATH_SOURCES, "examples": [{"inputs": {"expression": MATH_EXAMPLE, "input_0": 2, "input_1": 3, "input_2": 4, "input_3": math.e}, "output": {"value": 10.0}}]} if name == "math-expression" else {}),
@@ -238,7 +245,7 @@ def validate_steps(steps, dependencies, depth=0, budget=None):
             seconds = inputs["seconds"]
             if type(seconds) not in {int, float} or not 0 <= seconds <= 300:
                 raise ValueError("Sleep seconds must be a finite number between 0 and 300.")
-        if step["component"] in {"core.for", "core.while", "core.poll"}:
+        if step["component"] in {"core.for", "core.while", "core.poll", "core.monitor"}:
             limit = inputs["max_iterations"]
             if type(limit) is not int or not 1 <= limit <= 1000:
                 raise ValueError("Loops require an explicit integer max_iterations between 1 and 1000.")
@@ -329,8 +336,8 @@ def execute_steps(runtime, record, context, implementation):
             if set(value) == {"$var"}:
                 return variables[value["$var"]]
             if set(value) == {"$step"}:
-                name, field = value["$step"].split(".", 1)
-                return outputs[name][field]
+                name, separator, field = value["$step"].partition(".")
+                return outputs[name][field] if separator else outputs[name]
             if "$op" in value:
                 if set(value) != {"$op", "args"} or not isinstance(value["args"], list) or len(value["args"]) != 2:
                     raise ValueError("An expression requires an operator and exactly two arguments.")
@@ -412,7 +419,9 @@ def execute_steps(runtime, record, context, implementation):
                         trigger={"kind": "dependency", "run_id": result["run_id"],
                                  "expected_version": result["execution"]["version"]})
                 if result["state"] != "succeeded":
-                    raise RuntimeError("Required child did not succeed: " + result["run_id"])
+                    raise ActionFailure(result.get("failure") or {
+                        "code": "query_failed", "message": "Required child did not succeed: " + result["run_id"],
+                        "blocked": False}, result["run_id"])
                 if poll_deadlines and time.time() >= min(poll_deadlines):
                     raise PollDeadline()
                 outputs[identifier] = result["output"]
@@ -476,7 +485,8 @@ def execute_steps(runtime, record, context, implementation):
                 finally:
                     variables.clear()
                     variables.update(previous)
-            elif name == "core.poll":
+            elif name in {"core.poll", "core.monitor"}:
+                monitoring = name == "core.monitor"
                 settings = {field: resolve(values[field]) for field in
                             ["interval_seconds", "timeout_seconds", "max_iterations"]}
                 Draft202012Validator(spec["input_schema"]).validate({
@@ -486,22 +496,27 @@ def execute_steps(runtime, record, context, implementation):
                     body_effects.update(runtime.definition(child)["effects"])
                 if not body_effects.issubset({"pure", "read", "local-read", "remote-read"}):
                     raise PermissionError("Polling may repeat only read-only Actions; mutations and human input are forbidden.")
-                clock_key, clock_definition = key + "/clock", {"component": "core.poll", "role": "clock"}
+                clock_key, clock_definition = key + "/clock", {"component": name, "role": "clock"}
                 clock = runtime.recovery.step_result(record, clock_key, clock_definition)
                 if not clock:
                     runtime.recovery.step_commit(record, clock_key, clock_definition, {"at": time.time()})
                     clock = runtime.recovery.step_result(record, clock_key, clock_definition)
                 deadline = clock["output"]["at"] + settings["timeout_seconds"]
+                if monitoring and "monitor" not in record:
+                    initial = monitor_observation(record, deadline, 0)
+                    initial["remote_id"] = resolve(values["remote_id"])
+                    runtime.publish_monitor(record, initial)
                 output = {"status": "timed_out", "attempts": 0, "value": None}
+                query_failure = None
                 for index in range(settings["max_iterations"]):
                     iteration_key = key + "/iteration-" + str(index)
-                    iteration_definition = {"component": "core.poll", "role": "iteration", "index": index}
+                    iteration_definition = {"component": name, "role": "iteration", "index": index}
                     receipt = runtime.recovery.step_result(record, iteration_key, iteration_definition)
                     if receipt:
                         observation = receipt["output"]
                     else:
                         started_key = iteration_key + "/started"
-                        started_definition = {"component": "core.poll", "role": "attempt"}
+                        started_definition = {"component": name, "role": "attempt"}
                         started = runtime.recovery.step_result(record, started_key, started_definition)
                         if not started and time.time() >= deadline:
                             break
@@ -513,6 +528,11 @@ def execute_steps(runtime, record, context, implementation):
                             run(values["body"], iteration_key + "/")
                         except PollDeadline:
                             break
+                        except ActionFailure as error:
+                            if not monitoring:
+                                raise
+                            query_failure = {**error.failure, "query_run_id": error.run_id}
+                            break
                         finally:
                             poll_deadlines.pop()
                         if time.time() >= deadline:
@@ -523,19 +543,31 @@ def execute_steps(runtime, record, context, implementation):
                         observation = {"condition": condition, "value": resolve(values["value"])}
                         runtime.recovery.step_commit(record, iteration_key, iteration_definition, observation)
                     output.update({"attempts": index + 1, "value": observation["value"]})
+                    if monitoring and index + 1 > record["monitor"]["attempts"]:
+                        if not isinstance(observation["value"], dict):
+                            raise ValueError("Monitor query must return an object observation.")
+                        runtime.publish_monitor(record, monitor_observation(
+                            record, deadline, index + 1, observation["value"],
+                            "remote_completed" if observation["condition"] else "observing",
+                            next_check=None if observation["condition"] else min(deadline, time.time() + settings["interval_seconds"])))
                     if observation["condition"]:
                         output["status"] = "completed"
                         break
                     if index + 1 == settings["max_iterations"] or time.time() >= deadline:
                         break
                     timer_key = iteration_key + "/interval"
-                    timer_definition = {"component": "core.poll", "role": "interval"}
+                    timer_definition = {"component": name, "role": "interval"}
                     if not runtime.recovery.step_result(record, timer_key, timer_definition):
                         if not runtime.recovery.resolved(record, timer_key):
                             runtime.recovery.suspend(record, timer_key, "decision",
                                 {"poll_step": key, "attempts": index + 1}, owner="scheduler",
                                 trigger={"kind": "timer", "at": min(deadline, time.time() + settings["interval_seconds"])})
                         runtime.recovery.step_commit(record, timer_key, timer_definition, {})
+                if monitoring:
+                    reason = "query_failed" if query_failure else (
+                        "remote_completed" if output["status"] == "completed" else "observation_timed_out")
+                    output = monitor_observation(record, deadline, output["attempts"], reason=reason, failure=query_failure)
+                    runtime.publish_monitor(record, output)
             else:
                 values = resolve(values)
                 Draft202012Validator(spec["input_schema"]).validate(values)

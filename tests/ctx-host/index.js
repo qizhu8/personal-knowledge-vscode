@@ -8,7 +8,9 @@ const digest = value => createHash("sha256").update(JSON.stringify(value)).diges
 
 async function checkWebview(extension, snapshot, chat, store) {
   const { ApiChatView } = require(path.join(extension.extensionPath, "dist/chat/api-chat-view"));
-  const provider = new ApiChatView({});
+  const provider = new ApiChatView({
+    globalStorageUri:vscode.Uri.file(path.join(process.env.PKM_CTX_ROOT, "ctx-private-host")),
+  });
   provider.store = store;
   const panel = vscode.window.createWebviewPanel("ctx-acceptance", "CTX acceptance", vscode.ViewColumn.One,
     { enableScripts:true, localResourceRoots:[vscode.Uri.file(path.join(extension.extensionPath, "dist", "webview"))] });
@@ -77,7 +79,7 @@ async function checkWebview(extension, snapshot, chat, store) {
   } finally { provider.dispose(); panel.dispose(); }
 }
 
-async function checkBrowser(extension, snapshot) {
+async function checkBrowser(extension, snapshot, chat) {
   const { createNativeHarnessServer } = require(path.join(extension.extensionPath, "dist/runtime/native-harness-server"));
   const { chromium } = require(process.env.PKM_PLAYWRIGHT_PATH || "playwright");
   const server = await createNativeHarnessServer({ extensionPath:extension.extensionPath, sessionId:snapshot.sessionId,
@@ -97,6 +99,51 @@ async function checkBrowser(extension, snapshot) {
     const receipt = JSON.parse(await page.locator(".pkm-harness-inspector pre").innerText());
     assert.equal(receipt.contextPlan.refinements, 1);
     assert.equal(receipt.transport.provider, "http");
+    const webview = path.join(extension.extensionPath, "dist", "webview");
+    const html = fs.readFileSync(path.join(webview, "api-chat.html"), "utf8")
+      .replace(/<meta http-equiv[^>]*>/, "").replace(/<link[^>]*>/g, "").replace(/<script[^>]*><\/script>/g, "");
+    const inspector = await browser.newPage({ viewport:{ width:360, height:900 } });
+    const errors = [];
+    inspector.on("pageerror", error => errors.push(error.message));
+    const url = new URL("/installed-chat-evidence", server.url).href;
+    await inspector.route(url, route => route.fulfill({ contentType:"text/html", body:html }));
+    await inspector.goto(url);
+    await inspector.evaluate(chat => {
+      window.__posts = [];
+      window.acquireVsCodeApi = () => ({
+        getState:() => ({ screen:"chat" }), setState() {}, postMessage:value => window.__posts.push(value),
+      });
+      const profile = { id:"ctx-installed", label:"CTX fixture", status:"active", contextWindow:8192, maxOutputTokens:1024 };
+      window.__state = { type:"state", busy:false, chat,
+        settings:{ model:profile.id, models:[], provider:"openai-compatible", endpoint:"http://127.0.0.1",
+          contextWindow:8192, maxOutputTokens:1024, maxToolRounds:3, inputBaseTokens:100,
+          profiles:[profile], selectedProfile:profile },
+        chats:[{ id:chat.id, title:chat.title, groupId:"ungroup", status:"idle" }],
+        library:{ groups:[], chats:[{ id:chat.id, title:chat.title, groupId:"ungroup", status:"idle" }] } };
+    }, chat);
+    await inspector.addStyleTag({ path:path.join(webview, "api-chat.css") });
+    for (const name of ["marked.umd.js", "purify.min.js", "api-chat-library.js", "agent-harness.js",
+      "chat-visualization.js", "chat-retrieval-flow.js", "api-chat.js"]) {
+      await inspector.addScriptTag({ path:path.join(webview, name) });
+    }
+    await inspector.evaluate(() => {
+      window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+      window.dispatchEvent(new MessageEvent("message", { data:{ type:"showChat" } }));
+      window.dispatchEvent(new MessageEvent("message", { data:{ type:"showMemory" } }));
+    });
+    const reply = chat.messages.at(-1);
+    await inspector.locator("#retrieval-activity").selectOption(reply.id);
+    for (const budget of reply.budgetReceipts) {
+      await inspector.locator("#retrieval-step").selectOption(`round-${budget.round}`);
+      const evidence = await inspector.locator("#retrieval-evidence").innerText();
+      assert.match(evidence, /Accepted transport/);
+      assert.match(evidence, /Match/);
+      assert(evidence.includes(String(budget.consumed.estimatedInputTokens)));
+    }
+    assert.equal(await inspector.evaluate(() => window.__posts.some(item => item.type === "send")), false);
+    const layout = await inspector.locator("#memory-panel").evaluate(node => ({ width:node.clientWidth, scroll:node.scrollWidth }));
+    assert(layout.scroll <= layout.width + 1, `Installed evidence must wrap at 360px: ${JSON.stringify(layout)}`);
+    assert.deepEqual(errors, []);
   } finally { await browser?.close(); server.dispose(); }
 }
 
@@ -163,7 +210,10 @@ async function run() {
       contentHash:"a".repeat(64), kind:"note", label:"Conditions", sourceUri:"pkm://fixture/installed", score:1,
       method:"fixture", selected:false, reason:"fixture",
       content:"# Experiment\n\n" + "Background.\n\n".repeat(1000) + "latency must not exceed 125 ms; never deploy.\n" };
-    const provider = new ApiChatView({ secrets:{ get:async () => "local-fixture" } }, async () => [candidate]);
+    const provider = new ApiChatView({
+      secrets:{ get:async () => "local-fixture" },
+      globalStorageUri:vscode.Uri.file(path.join(root, "ctx-private-host")),
+    }, async () => [candidate]);
     try {
       chat = store.create(); chat.permissionMode = "read-only"; chat.includeHistory = false;
       chat.builtinTools = ["session_info"]; chat.vscodeTools = [];
@@ -191,7 +241,7 @@ async function run() {
   const snapshot = { sessionId:loaded.sessionId, origin:"pkm-native", status:"complete", task:"Installed CTX acceptance",
     harness:apiChatHarnessSnapshot(loaded), todos:[], runs:[], actionRuns:[] };
   await checkWebview(extension, snapshot, loaded, store);
-  await checkBrowser(extension, snapshot);
+  await checkBrowser(extension, snapshot, loaded);
   await checkNativeEnvelope(extension);
   const standaloneVisualization = await require("./visualization").checkVisualizationWindow(extension, loaded, store);
   const liveVisualization = phase === "initial"
@@ -199,8 +249,25 @@ async function run() {
     : await require("./visualization-live").checkLiveVisualizationRecord(extension, store, root);
   const visualizationChain = await require("./visualization-chain").checkVisualizationChain(extension, store, root, phase === "restart");
   const durableProcess = await require("./durable-process").checkDurableProcess(extension, root, phase === "restart");
+  const persona = await require("./persona").run(extension, root, phase);
+  assert.equal(persona.schema, "pkm.profile.installed-acceptance/v1");
+  assert.equal(persona.phase, phase);
+  assert.equal(persona.historicalSnapshots, 2);
+  assert.equal(persona.historicalEvidenceRetained, true);
+  assert.equal(persona.deletedProfilesNotReused, true);
+  assert.equal(persona.requests, phase === "initial" ? 2 : 0);
+  if (phase === "initial") {
+    assert.equal(persona.actualPreparedAndSent, true);
+    assert.equal(persona.immutableAfterEditAndDelete, true);
+  } else {
+    assert.equal(persona.restartRetained, true);
+    assert.notEqual(persona.pid, persona.initialPid);
+    const prior = JSON.parse(fs.readFileSync(path.join(root, "initial.json"), "utf8")).persona;
+    assert.equal(persona.firstEvidenceHash, prior.firstEvidenceHash);
+    assert.equal(persona.secondEvidenceHash, prior.secondEvidenceHash);
+  }
   fs.writeFileSync(path.join(root, `${phase}.json`), JSON.stringify({ pid:process.pid, installed:true, webview:true, browser:true,
-    nativeEnvelope:true, inlineVisualization:true, standaloneVisualization, liveVisualization, visualizationChain, durableProcess,
+    nativeEnvelope:true, inlineVisualization:true, retrievalInspector:true, standaloneVisualization, liveVisualization, visualizationChain, durableProcess, persona,
     refinements:reply.budgetReceipts[0].contextPlan.refinements, evidenceHash:digest([reply.toolCalls, reply.budgetReceipts]) }));
 }
 

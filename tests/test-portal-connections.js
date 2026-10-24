@@ -64,6 +64,13 @@ assert.equal(restored.forget("pair-1"), true);
 assert.equal(restored.forget("missing"), false);
 assert.equal(restored.snapshot(new Map(), new Set()).connections.length, 2);
 
+const pairedJournal = new PortalConnectionJournal(undefined, () => {}, () => clock);
+pairedJournal.observe(owner(chatA, "Controlled Chat"), binding("shared-pair", "controlled"));
+pairedJournal.observe(owner(chatB, "Controller Chat"), binding("shared-pair", "controller"));
+assert.equal(pairedJournal.snapshot(new Map(), new Set()).connections.length, 2, "journal retains both local chat owners");
+assert.equal(pairedJournal.forget("shared-pair"), true);
+assert.equal(pairedJournal.snapshot(new Map(), new Set()).connections.length, 0, "one Remove forgets both sides of an ended pairing");
+
 // History is bounded.
 const bounded = new PortalConnectionJournal(undefined, () => {}, () => ++clock);
 for (let index = 0; index < 230; index++) bounded.observe(owner(chatA, "loop"), binding(`p-${index}`, "controller"));
@@ -71,12 +78,12 @@ assert.equal(bounded.snapshot(new Map(), new Set()).connections.length, 200);
 
 // Webview renders live and historical rows with who ↔ whom, and only ended rows can be removed.
 const uiSource = fs.readFileSync(path.join(root, "src", "webview", "panel", "16-portal-connections.js"), "utf8");
-const detail = { style: {}, innerHTML: "" };
+const detail = { style: {}, innerHTML: "", querySelectorAll:() => [] };
 const asks = [];
 const ui = {
   document: { getElementById: id => id === "detail" ? detail : null },
   state: { tab: "portalConnections" },
-  esc: value => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;"),
+  esc: value => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
   ask: (...args) => asks.push(args),
   Date, Number, JSON, Array,
 };
@@ -89,19 +96,27 @@ ui.onSnapshot(journal.snapshot(new Map([[chatB, { pairId: "pair-2", connected: t
 const html = detail.innerHTML;
 assert.match(html, /1 active/);
 const [liveHtml, historyHtml] = html.split("History");
-assert.match(liveHtml, /linux-box[\s\S]*Sync review[\s\S]*controlled by[\s\S]*mac-mini[\s\S]*review/);
+assert.match(liveHtml, /Controlled[\s\S]*linux-box[\s\S]*Sync review[\s\S]*Controller[\s\S]*mac-mini[\s\S]*review/);
 assert.doesNotMatch(liveHtml, /Remove/);
 assert.match(historyHtml, /DESKTOP-56TITCC[\s\S]*windows debug/);
 assert.match(historyHtml, /re-attach available/);
 assert.match(historyHtml, /portalConnectionForget/);
-assert.match(historyHtml, /controls/);
+assert.match(historyHtml, /Controller/);
+ui.onSnapshot({ connections: [
+  { ...snapshot.connections[0], pairId:'same-pair', chatId:chatA, role:'controlled', chatLabel:'Controlled Chat', state:'ended' },
+  { ...snapshot.connections[0], pairId:'same-pair', chatId:chatB, role:'controller', chatLabel:'Controller Chat', state:'active' },
+] });
+assert.equal((detail.innerHTML.match(/data-pair-id="same-pair"/g) || []).length, 1, "both local sides of one pairing share a single row");
+assert.match(detail.innerHTML, /Controlled Chat[\s\S]*Controller Chat/);
+assert.match(detail.innerHTML, /1 active/);
+assert.doesNotMatch(detail.innerHTML, />Remove</, "a live member prevents removal of the whole pairing");
 ui.onSnapshot({ connections: [], pendingInvitations: [{ chatId: chatA, chatLabel: "Pending Chat", role: "controller", expiresAt: Date.now() + 60_000, endpoint: "ws://localhost:7345" }] });
-assert.match(detail.innerHTML, /Copy magic link/);
+assert.match(detail.innerHTML, /Copy magic code/);
 assert.match(detail.innerHTML, /portalConnectionCopyMagicLink/);
 assert.match(detail.innerHTML, /Pending Chat/);
 assert.doesNotMatch(detail.innerHTML, /pkmportal:/, "the link itself never enters webview state or markup");
 ui.onSnapshot({ connections: [], pendingInvitations: [{ chatId: chatA, chatLabel: "Expired", expiresAt: Date.now() - 1 }] });
-assert.doesNotMatch(detail.innerHTML, /Copy magic link/);
+assert.doesNotMatch(detail.innerHTML, /Copy magic code/);
 ui.onSnapshot(null);
 assert.match(detail.innerHTML, /No Portal is connected right now/);
 assert.match(detail.innerHTML, /No past Portal connections/);
@@ -166,6 +181,30 @@ assert.match(read("resources/api_chat_control.py"), /open completes after pairin
 
 console.log("portal connections test: journal, live state, history, UI and wiring OK");
 
+require("node:test").test("Host Remove protects a live pair and removes both ended local sides without deleting chats", () => {
+  const ts = require("typescript");
+  const ast = ts.createSourceFile("extension.ts", extension, ts.ScriptTarget.Latest, true);
+  const manager = ast.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === "ChatRoomManager");
+  const method = manager.members.find(node => node.name?.getText(ast) === "forgetPortalConnection").getText(ast);
+  const context = vm.createContext({});
+  vm.runInContext(ts.transpileModule(`class Host { ${method} }; globalThis.Host = Host;`,
+    { compilerOptions:{ target:ts.ScriptTarget.ES2022 } }).outputText, context);
+  const host = new context.Host();
+  const records = new PortalConnectionJournal(undefined, () => {}, () => clock);
+  records.observe(owner(chatA, "Controlled"), binding("remove-pair", "controlled"));
+  records.observe(owner(chatB, "Controller"), binding("remove-pair", "controller"));
+  let live = new Map([[chatB, { pairId:"remove-pair", connected:true }]]), updates = 0;
+  host.portalJournal = records;
+  host.portalConnectionHistory = () => records.snapshot(live, new Set());
+  host.postPortalConnections = () => { updates++; };
+  assert.throws(() => host.forgetPortalConnection("remove-pair"), /Disconnect this Portal/);
+  assert.equal(records.snapshot(live, new Set()).connections.length, 2);
+  live = new Map();
+  host.forgetPortalConnection("remove-pair");
+  assert.equal(records.snapshot(live, new Set()).connections.length, 0);
+  assert.equal(updates, 1, "successful removal publishes a fresh overview");
+});
+
 require("node:test").test("unpaired invitations are discoverable without exposing secrets and copy revalidates current state", async () => {
   const ts = require("typescript");
   const ast = ts.createSourceFile("extension.ts", extension, ts.ScriptTarget.Latest, true);
@@ -174,7 +213,7 @@ require("node:test").test("unpaired invitations are discoverable without exposin
   const copied = [];
   let trusted = true, currentRoot = "root";
   const context = vm.createContext({
-    Map, Set, Date, getStorePath: () => currentRoot, portalChanged: () => {},
+    Map, Set, Date, os:{ hostname:() => 'fixture-machine' }, getStorePath: () => currentRoot, portalChanged: () => {},
     vscode: { workspace: { get isTrusted() { return trusted; } }, env: { clipboard: { writeText: async link => copied.push(link) } },
       window: { setStatusBarMessage: () => {} } },
   });
@@ -189,6 +228,7 @@ require("node:test").test("unpaired invitations are discoverable without exposin
   const pending = host.portalConnectionHistory();
   assert.equal(pending.connections.length, 0);
   assert.equal(pending.pendingInvitations[0].chatId, chatA);
+  assert.equal(pending.pendingInvitations[0].localMachine, "fixture-machine");
   assert(!JSON.stringify(pending).includes("PRIVATE"));
   await host.portalPendingLink(chatA, "copy");
   assert.deepEqual(copied, ["pkmportal:v1:PRIVATE"]);

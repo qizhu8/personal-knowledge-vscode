@@ -4,40 +4,129 @@ import { StdioClientTransport, StdioServerParameters } from "@modelcontextprotoc
 import { ApiChatTool } from "./api-chat-client";
 import { abortable } from "./api-chat-tools";
 import { ToolSafetyHints } from "./permissions";
+import { boundedLifecycleRead, handshakeManagedMcpConnection, managedMcpApiCompatible, ManagedMcpManifest,
+  MCP_LIFECYCLE_SCHEMA, readManagedMcpGeneration, readManagedMcpManifest, waitForManagedMcpDrain } from "../mcp/mcp-lifecycle";
 
 export interface ApiChatMcpServer { id: string; label: string; url: string; enabled: boolean; tools: string[] }
 
 export interface ManagedChatMcp {
+  generation: string;
   catalog: { name: string; description: string; inputSchema: object; managed: true; hints?: ToolSafetyHints }[];
   invoke(name: string, input: Record<string, unknown>, signal: AbortSignal): Promise<string>;
   close(): Promise<void>;
 }
 
+async function withMcpDiscoveryDeadline<T>(
+  signal: AbortSignal, timeoutMs: number, discover: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("MCP discovery deadline must be positive.");
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  signal.addEventListener("abort", cancel, { once: true });
+  if (signal.aborted) cancel();
+  let expired = false;
+  const timer = setTimeout(() => { expired = true; controller.abort(); }, timeoutMs);
+  try {
+    return await abortable(discover(controller.signal), controller.signal);
+  } catch (error) {
+    if (expired) throw new Error(`MCP discovery deadline exceeded (${timeoutMs} ms); no content tool was invoked.`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", cancel);
+  }
+}
+
 /** This is the configured PKM service, not a name-based substitute for an arbitrary native tool. */
-export async function connectManagedChatMcp(launch: StdioServerParameters, signal: AbortSignal): Promise<ManagedChatMcp> {
+export async function connectManagedChatMcp(
+  launch: StdioServerParameters, signal: AbortSignal, managedDirectory: string,
+  options: { drainTimeoutMs?: number; discoveryTimeoutMs?: number } = {},
+): Promise<ManagedChatMcp> {
   if (signal.aborted) throw new Error("Request cancelled.");
+  const configured = readManagedMcpManifest(managedDirectory);
+  if (!configured) throw new Error("Managed PKM lifecycle ownership is unavailable. Explicit reconnect/action required; legacy drain state is unknown.");
+  let expected: ManagedMcpManifest = configured;
   const client = new Client({ name: "pkm-chat-managed", version: "1.0.0" });
   const transport = new StdioClientTransport({ ...launch, stderr: "inherit" });
-  const close = () => { void client.close().catch(error => console.error("PKM Chat MCP close failed:", error)); };
-  signal.addEventListener("abort", close, { once: true });
+  const drainTimeoutMs = Math.max(1, options.drainTimeoutMs ?? 30_000);
+  let admissionClosed = false;
+  let verified = false;
+  let closed = false;
+  let closePromise: Promise<void> | undefined;
+  const invokeControl = async (name: string, arguments_: Record<string, never>): Promise<any> => {
+    const result = await client.callTool({ name, arguments: arguments_ }, undefined, { timeout: 10_000 });
+    if (result.isError) throw new Error("Managed PKM lifecycle observation failed; drain state is unknown.");
+    if (result.structuredContent) return result.structuredContent;
+    const text = Array.isArray(result.content) ? result.content.map(part =>
+      part.type === "text" && typeof part.text === "string" ? part.text : "").join("\n") : "";
+    return JSON.parse(text);
+  };
+  const closeSafely = (): Promise<void> => {
+    admissionClosed = true;
+    if (closed) return Promise.resolve();
+    if (closePromise) return closePromise;
+    closePromise = (async () => {
+      if (verified) {
+        const deadline = Date.now() + drainTimeoutMs;
+        const observe = async (name: string, arguments_: Record<string, never>) => {
+          if (Date.now() >= deadline) throw new Error("Managed PKM drain observation expired.");
+          const value = await boundedLifecycleRead(invokeControl(name, arguments_), deadline - Date.now());
+          if (value?.schema !== MCP_LIFECYCLE_SCHEMA || value.generation !== expected.generation
+            || value.runtimeBuild !== expected.runtimeBuild) {
+            throw new Error("Managed PKM drain ownership is unknown; explicit action required.");
+          }
+          return value;
+        };
+        await observe("mcp_lifecycle_quiesce", {});
+        const boundary = await waitForManagedMcpDrain(observe, Math.max(0, deadline - Date.now()));
+        if (boundary.state !== "drained") throw new Error(boundary.reason);
+      }
+      // Before verification this child has received discovery/control reads only.
+      signal.removeEventListener("abort", closeOnAbort);
+      await client.close();
+      closed = true;
+    })().catch(error => {
+      closePromise = undefined;
+      throw new Error(`PKM MCP close is action-required; no uncertain call was replayed or forcibly terminated. ${error instanceof Error ? error.message : String(error)}`);
+    });
+    return closePromise;
+  };
+  const closeOnAbort = () => {
+    void closeSafely().catch(error => console.error("PKM Chat MCP drain requires action:", error));
+  };
+  signal.addEventListener("abort", closeOnAbort, { once: true });
   try {
-    await abortable(client.connect(transport, { timeout: 30_000 }), signal);
     const definitions: Awaited<ReturnType<typeof client.listTools>>["tools"] = [];
-    const cursors = new Set<string>();
-    let cursor: string | undefined;
-    do {
-      const page = await abortable(client.listTools(cursor ? { cursor } : undefined, { signal, timeout: 30_000 }), signal);
-      definitions.push(...page.tools);
-      if (definitions.length > 512 || page.nextCursor && cursors.has(page.nextCursor)) throw new Error("Managed PKM discovery exceeded its bound or repeated a cursor.");
-      cursor = page.nextCursor;
-      if (cursor) cursors.add(cursor);
-    } while (cursor);
-    const catalog: ManagedChatMcp["catalog"] = definitions.map(tool => {
+    const readiness = await withMcpDiscoveryDeadline(signal, options.discoveryTimeoutMs ?? 30_000, async discoverySignal => {
+      await abortable(client.connect(transport, { signal: discoverySignal, timeout: 30_000 }), discoverySignal);
+      const cursors = new Set<string>();
+      let cursor: string | undefined;
+      do {
+        const page = await abortable(client.listTools(cursor ? { cursor } : undefined, { signal: discoverySignal, timeout: 30_000 }), discoverySignal);
+        definitions.push(...page.tools);
+        if (definitions.length > 512 || page.nextCursor && cursors.has(page.nextCursor)) throw new Error("Managed PKM discovery exceeded its bound or repeated a cursor.");
+        cursor = page.nextCursor;
+        if (cursor) cursors.add(cursor);
+      } while (cursor);
+      return abortable(handshakeManagedMcpConnection(
+        managedDirectory, invokeControl, definitions.map(tool => tool.name)), discoverySignal);
+    });
+    if (readiness.state !== "ready" || !readiness.generation) throw new Error(readiness.reason);
+    const actual = readManagedMcpGeneration(managedDirectory, readiness.generation);
+    if (!actual || !managedMcpApiCompatible(actual, configured)) throw new Error("Connected PKM API is not compatible with this Chat.");
+    expected = actual;
+    verified = true;
+    if (signal.aborted || admissionClosed) throw new Error("PKM connection was cancelled during verification.");
+    const catalog: ManagedChatMcp["catalog"] = definitions.filter(tool => tool.name !== "mcp_lifecycle_quiesce").map(tool => {
       if (!/^[a-zA-Z0-9_]+$/.test(tool.name) || JSON.stringify(tool.inputSchema).length > 16_000) throw new Error("Invalid managed PKM tool definition.");
       return { name: `mcp_pkm_${tool.name}`, description: tool.description || "", inputSchema: tool.inputSchema, managed: true, hints: tool.annotations };
     });
-    return { catalog,
+    return { catalog, generation: readiness.generation,
       invoke: async (name, input, requestSignal) => {
+        const current = readManagedMcpManifest(managedDirectory);
+        if (admissionClosed || !current || !managedMcpApiCompatible(expected, current)) {
+          throw new Error("PKM API is incompatible or is closing; explicit reconnect required. No call was sent; do not replay uncertain writes.");
+        }
         if (!catalog.some(tool => tool.name === name)) throw new Error("Tool is not in the configured PKM catalog.");
         if (signal.aborted || requestSignal.aborted) throw new Error("Request cancelled.");
         try {
@@ -49,11 +138,10 @@ export async function connectManagedChatMcp(launch: StdioServerParameters, signa
           throw new Error(`PKM tool ${name} failed; execution may already have occurred. Do not retry automatically. ${error instanceof Error ? error.message : String(error)}`);
         }
       },
-      close: async () => { signal.removeEventListener("abort", close); await client.close(); },
+      close: closeSafely,
     };
   } catch (error) {
-    signal.removeEventListener("abort", close);
-    close();
+    await closeSafely().catch(failure => console.error("PKM Chat MCP discovery cleanup requires action:", failure));
     throw error;
   }
 }
@@ -230,7 +318,8 @@ export function mcpUrl(value: string): URL {
 
 export async function connectApiChatMcp(server: ApiChatMcpServer, index: number, token: string | undefined, signal: AbortSignal,
   approve: (name: string, arguments_: Record<string, unknown>, signal: AbortSignal, hints?: ToolSafetyHints) => Promise<void>,
-  prepare?: (name: string, input: Record<string, unknown>, signal: AbortSignal) => Promise<Record<string, unknown>>) {
+  prepare?: (name: string, input: Record<string, unknown>, signal: AbortSignal) => Promise<Record<string, unknown>>,
+  options: { discoveryTimeoutMs?: number } = {}) {
   if (signal.aborted) throw new Error("Request cancelled.");
   const client = new Client({ name: "pkm-native-api-chat", version: "1.0.0" });
   const transport = new StreamableHTTPClientTransport(mcpUrl(server.url), {
@@ -240,17 +329,19 @@ export async function connectApiChatMcp(server: ApiChatMcpServer, index: number,
   const close = () => { void client.close().catch(() => undefined); };
   signal.addEventListener("abort", close, { once: true });
   try {
-    await abortable(client.connect(transport), signal);
     const catalogTools: Awaited<ReturnType<typeof client.listTools>>["tools"] = [];
-    const cursors = new Set<string>();
-    let cursor: string | undefined;
-    do {
-      const page = await abortable(client.listTools(cursor ? { cursor } : undefined, { signal, timeout: 30_000 }), signal);
-      catalogTools.push(...page.tools);
-      if (catalogTools.length > 512 || page.nextCursor && cursors.has(page.nextCursor)) throw new Error("MCP discovery exceeded its bound or repeated a cursor.");
-      cursor = page.nextCursor;
-      if (cursor) cursors.add(cursor);
-    } while (cursor);
+    await withMcpDiscoveryDeadline(signal, options.discoveryTimeoutMs ?? 30_000, async discoverySignal => {
+      await abortable(client.connect(transport, { signal: discoverySignal, timeout: 30_000 }), discoverySignal);
+      const cursors = new Set<string>();
+      let cursor: string | undefined;
+      do {
+        const page = await abortable(client.listTools(cursor ? { cursor } : undefined, { signal: discoverySignal, timeout: 30_000 }), discoverySignal);
+        catalogTools.push(...page.tools);
+        if (catalogTools.length > 512 || page.nextCursor && cursors.has(page.nextCursor)) throw new Error("MCP discovery exceeded its bound or repeated a cursor.");
+        cursor = page.nextCursor;
+        if (cursor) cursors.add(cursor);
+      } while (cursor);
+    });
     const attempted = new Set<string>();
     const tools = catalogTools.map((tool, position) => {
       if (JSON.stringify(tool.inputSchema).length > 16_000) throw new Error("MCP tool schema is too large.");
@@ -277,8 +368,9 @@ export async function connectApiChatMcp(server: ApiChatMcpServer, index: number,
       return definition;
     });
     return { tools, truncated: false, close: async () => { signal.removeEventListener("abort", close); await client.close(); } };
-  } catch {
+  } catch (error) {
     signal.removeEventListener("abort", close); await client.close().catch(() => undefined);
+    if (error instanceof Error && error.message.startsWith("MCP discovery deadline exceeded")) throw error;
     throw new Error(`MCP connection ${server.label} failed. Check the endpoint and credentials.`);
   }
 }

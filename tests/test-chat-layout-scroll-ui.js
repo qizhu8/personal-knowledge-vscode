@@ -161,8 +161,26 @@ assert.doesNotMatch(panelJs, /Managed Agent reconnect reliability|Recipient rout
 assert(panelJs.includes("meetingSummarySelections: {}"));
 assert(panelJs.includes("chat.meetingSummarySelections[chat.activeKey || ''] = meetingId"));
 assert(panelCss.includes(".chat-meeting-list"));
-assert.doesNotMatch(panelJs, /chatCopyInvite',\{roomId:/,
-  "Room cards must not duplicate the Magic Link action");
+const paintRooms = panelJs.match(/function chatPaintRoomCards\(\) \{[\s\S]*?\n\}/);
+assert(paintRooms);
+const roomCards = [];
+const roomContext = {
+  chat:{ rooms:[{roomId:"hosted-id", key:"hosted-key", selfHost:true}], activeKey:"hosted-key",
+    hubAdminRooms:[{roomId:"hosted-id", room:"Hosted", hasKey:true, members:1}], storedRooms:[], recents:[] },
+  document:{ getElementById:() => ({ innerHTML:"", textContent:"" }) },
+  esc:String,
+  chatRoomCardCollection:(group, active) => { roomCards.push({ group, active }); return ""; },
+};
+vm.runInNewContext(`${paintRooms[0]}; chatPaintRoomCards();`, roomContext);
+assert.equal(roomCards.find(row => row.group === "hosted").active.length, 1);
+assert.equal(roomCards.find(row => row.group === "hosted").active[0].actions.filter(action => action.label === "Copy magic link").length, 1,
+  "the single hosted Room card retains one keyed Magic Link action");
+assert.equal(roomCards.find(row => row.group === "joined").active.length, 0, "hosted Rooms must not be duplicated as joined Rooms");
+roomContext.chat.hubAdminRooms[0].hasKey = false;
+roomCards.length = 0;
+vm.runInNewContext("chatPaintRoomCards();", roomContext);
+assert.equal(roomCards.find(row => row.group === "hosted").active[0].actions.filter(action => action.label === "Copy magic link").length, 0,
+  "Rooms without the Host key must not offer invitation copying");
 assert.match(panelJs, /chatRotateSecret',\{roomId:/);
 const extensionSource = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
 assert.match(extensionSource, /hasKey: this\.hostedKeys\.has\(r\.roomId\)/,

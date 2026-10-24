@@ -45,6 +45,8 @@ try {
     store.knowledgeMarkdownCopy(area, "Team/Design.md", "Team/Copy.md");
     const copy = fs.readFileSync(path.join(areaRoot, "Team", "Copy.md"), "utf8");
     assert(copy.includes("Copy.assets/plot%20one.png"));
+    assert(!copy.includes("_assets/legacy.png"), "A copied document owns its legacy attachments without rewriting the source");
+    assert(fs.readFileSync(path.join(areaRoot, "Team", "Design.md"), "utf8").includes("_assets/legacy.png"));
     assert.equal(fs.readFileSync(path.join(areaRoot, "Team", "Copy.assets", "diagram.mmd"), "utf8"), "graph LR\nA-->B");
     assert.notEqual(store.parseStoreFrontmatter(copy).fm.knowledgeId,
       store.parseStoreFrontmatter(fs.readFileSync(path.join(areaRoot, "Team", "Design.md"), "utf8")).fm.knowledgeId);
@@ -54,7 +56,10 @@ try {
     const movedPath = path.join(areaRoot, "Moved", "Renamed.md");
     const moved = fs.readFileSync(movedPath, "utf8");
     assert(moved.includes("Renamed.assets/plot%20one.png"));
-    assert(moved.includes("../Team/_assets/legacy.png"), "Legacy references are rebased, not silently migrated or deleted");
+    assert(!moved.includes("../Team/_assets/legacy.png"), "Legacy resources migrate into the document's owned directory on move");
+    assert.equal(assets.referencedMarkdownAssets(root, area, "Moved/Renamed.md", moved).filter(asset =>
+      fs.readFileSync(asset.fullPath, "utf8") === "old-shared").length, 1);
+    assert(!fs.existsSync(path.join(areaRoot, "Team", "_assets", "legacy.png")), "Both the copied and moved documents now own their attachment bytes");
     assert(moved.includes("`![code](Design.assets/plot%20one.png)`"));
     assert(fs.existsSync(path.join(areaRoot, "Moved", "Renamed.assets", "plot one.png")));
     assert(!fs.existsSync(path.join(areaRoot, "Team", "Design.assets")));
@@ -104,13 +109,17 @@ try {
       "Recreating one resource does not cancel another resource's deletion intent");
     assets.editMarkdownAsset(root, area, "Moved/Renamed.md", "Moved/Renamed.assets/diagram.mmd");
 
+    fs.writeFileSync(path.join(areaRoot, "Team", "_assets", "manual.png"), "manual migration");
+    fs.appendFileSync(movedPath, "\n![manual](../Team/_assets/manual.png)");
     const preview = assets.previewMarkdownAssetMigration(root, area, "Moved/Renamed.md");
     assert.equal(preview.copies.length, 1);
     fs.appendFileSync(movedPath, "\nNew edit");
     assert.throws(() => assets.applyMarkdownAssetMigration(root, preview), /changed after/);
     const fresh = assets.previewMarkdownAssetMigration(root, area, "Moved/Renamed.md");
     assets.applyMarkdownAssetMigration(root, fresh);
-    assert(fs.existsSync(path.join(areaRoot, "Team", "_assets", "legacy.png")), "Migration never deletes the original shared resource");
+    assert(!fs.existsSync(path.join(areaRoot, "Team", "_assets", "legacy.png")), "Later migration does not resurrect an earlier orphan");
+    assert(!fs.existsSync(path.join(areaRoot, "Team", "_assets", "manual.png")), "Migration removes an original once its last reference is owned");
+    assert(store.knowledgeSyncDeletionRecords().some(record => record.path === `${area}/Team/_assets/manual.png`));
     assert(!fs.readFileSync(movedPath, "utf8").includes("../Team/_assets/legacy.png"));
 
     const result = store.storeEntryMove(area, "Moved/Renamed.md", "Final");
@@ -144,12 +153,13 @@ try {
     const folder = store.storeEntryMove(area, "Team", "Archive");
     assert.equal(folder.ok, true, folder.error);
     assert(fs.existsSync(path.join(areaRoot, "Archive", "Team", "Copy.assets", "plot one.png")));
-    assert(fs.readFileSync(path.join(areaRoot, "Archive", "Team", "Copy.md"), "utf8").includes("_assets/legacy.png"));
+    assert(fs.readFileSync(path.join(areaRoot, "Archive", "Team", "Copy.md"), "utf8").includes("Copy.assets/"));
+    assert(!fs.existsSync(path.join(areaRoot, "Archive", "Team", "_assets", "legacy.png")));
     const promotion = store.folderDeletePromote(area, "Archive/Team");
     assert.equal(promotion.ok, true, promotion.error);
     assert(fs.existsSync(path.join(areaRoot, "Archive", "Copy.assets", "plot one.png")));
-    assert(fs.existsSync(path.join(areaRoot, "Archive", "_assets", "legacy.png")));
-    assert(fs.readFileSync(path.join(areaRoot, "Archive", "Copy.md"), "utf8").includes("_assets/legacy.png"));
+    assert(!fs.existsSync(path.join(areaRoot, "Archive", "_assets", "legacy.png")));
+    assert(fs.readFileSync(path.join(areaRoot, "Archive", "Copy.md"), "utf8").includes("Copy.assets/"));
   }
   const bundle = attachMarkdownAssetsToSyncBundle({ notes: [{ slug: "Archive/Copy", content: "![plot](Copy.assets/plot%20one.png)" }] });
   assert(bundle.assets.some(asset => asset.path === "Archive/Copy.assets/diagram.mmd"));

@@ -14,8 +14,10 @@ does not promote or alter the serving release.
 
 The opt-in path applies only to explicit `["skill"]` queries classified as
 semantic/fuzzy. Exact syntax, mixed-content retrieval, and all non-Skill
-contracts retain the existing engine. The public `semantic` route remains
-unsupported; this is a scoped implementation inside the existing boundary.
+contracts retain the existing engine. These are the legacy frozen-corpus
+admission rules, not the scope of the newer portable-package route.
+Public `semantic` and `dual` retrieval use the portable-package lifecycle
+described above and can cover the current typed corpus.
 Dense-section aggregates section matches into document hits; it is not a
 new public L2 section-return API.
 
@@ -56,11 +58,15 @@ Query-text telemetry remains disabled.
 
 ## Local deployment and rollback
 
-The recovered local deployment runs a separate user systemd worker using the
+The original local deployment ran a separate user systemd worker using the
 verified offline SI environment, not the lightweight MCP environment. The
 existing persistent worker protocol/configuration hash is retained and the
 worker version increases, allowing older compatible windows to reuse it.
-The private service is `pkm-validated-skill-retrieval.service`.
+The private service is `pkm-validated-skill-retrieval.service`. Its original
+ExecStart and source PYTHONPATH are not a valid portable-package upgrade:
+deploy the verified bundled runtime and current configuration identity instead.
+An existing frozen pointer is preserved when explicitly enabling a package,
+but it is not consulted as the selected package's corpus-quality evidence.
 
 To roll back, stop/disable that service and remove the state directory's
 serving-release pointer (keep the immutable release and backups). Restart the

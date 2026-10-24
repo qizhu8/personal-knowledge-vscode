@@ -270,11 +270,13 @@ test("native Chat binds only an original locally recorded Recipe creation in its
 
 test("snapshot exposes the recalled-memory receipt and retrieval timing for the Visualization window, not internal prepare state", () => {
   const { chat, reply } = fixture();
+  reply.profileContext = {schema:"pkm.chat.profiles/v1",messageHash:"recorded-profile",user:{name:"Saved card",revision:2}};
   reply.memory = { schema:"pkm.chat.memory/v1", turn:"turn-1", model:"memory-model", durationMs:42,
     blocks:[{ kind:"focus-topic", piece:"topic:aml", characters:12 }], prepare:{ internal:true } };
   const receipt = { schema:"pkm.chat.retrieval/v1", query:"aml", selectedCount:1, model:"m", phase:"sent", candidates:[{ id:"n", label:"Note", selected:true }] };
   reply.retrievalActivity = { attempts:[{ kind:"lexical", at:5, durationMs:3, receipt }], rounds:[{ index:2, at:9, inputTokens:10, inputBudget:20, receipt }] };
   const [attempt] = apiChatHarnessSnapshot({ ...chat, id:"fixture" }).attempts;
+  assert.deepEqual(attempt.profileContext,reply.profileContext,"historical Profile snapshot is exposed without rereading today's editable card");
   assert.deepEqual(attempt.memory, { turn:"turn-1", model:"memory-model", durationMs:42, error:undefined,
     blocks:[{ kind:"focus-topic", piece:"topic:aml", characters:12 }] });
   assert.deepEqual(attempt.retrieval.map(step => [step.kind, step.at, step.receipt.model, step.receipt.phase]),

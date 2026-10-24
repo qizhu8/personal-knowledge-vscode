@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import {
   applyMarkdownAssetMigration, checkedMarkdownPath, editMarkdownAsset, MarkdownAssetArea,
-  markdownAssetDirectory, previewMarkdownAssetMigration, listedMarkdownAssets, saveMarkdownAsset,
+  markdownAssetDirectory, previewMarkdownAssetMigration, listedMarkdownAssets, saveMarkdownAsset, missingLegacyMarkdownAssets,
 } from "../knowledge/markdown-assets";
 import { getStorePath, knowledgeMarkdownCopy, parseStoreFrontmatter, writeKnowledgeMarkdown } from "../knowledge/filestore";
 import { buildSyncBundle, emptySyncSelection } from "../sync/sync-server";
@@ -18,6 +18,8 @@ export async function manageMarkdownAssets(area: MarkdownAssetArea, documentPath
     { label: "$(files) Copy document with resources", operation: "copy" },
     { label: "$(export) Export document with resources", operation: "export" },
     { label: "$(preview) Preview legacy resource migration", operation: "migrate" },
+    ...(missingLegacyMarkdownAssets(root, area, documentPath, content).length
+      ? [{ label: "$(warning) Repair missing legacy resource", operation: "repair" }] : []),
     ...assets.map(asset => ({ label: asset.path, operation: "asset", asset })),
   ], { title: `${documentPath} resources`, placeHolder: "Previewing resources never migrates or deletes original files." });
   if (!selection) return false;
@@ -51,13 +53,24 @@ export async function manageMarkdownAssets(area: MarkdownAssetArea, documentPath
     }
     return true;
   }
-  if (selection.operation === "migrate") {
-    const preview = previewMarkdownAssetMigration(root, area, documentPath);
+  if (selection.operation === "migrate" || selection.operation === "repair") {
+    let sourceOverrides: Record<string, string> | undefined;
+    if (selection.operation === "repair") {
+      const missing = await vscode.window.showQuickPick(missingLegacyMarkdownAssets(root, area, documentPath, content),
+        { title: "Choose the missing resource reference" });
+      if (!missing) return false;
+      const files = await vscode.window.showOpenDialog({ title: "Select the original resource within this content root",
+        canSelectMany: false, canSelectFolders: false, canSelectFiles: true });
+      if (!files?.length) return false;
+      if (files[0].scheme !== "file") throw new Error("The original resource must be local to this Extension Host.");
+      sourceOverrides = { [missing]: path.relative(path.resolve(root, area), files[0].fsPath).replace(/\\/g, "/") };
+    }
+    const preview = previewMarkdownAssetMigration(root, area, documentPath, sourceOverrides);
     const document = await vscode.workspace.openTextDocument({ language: "json", content: JSON.stringify(preview, null, 2) });
     await vscode.window.showTextDocument(document, { preview: true });
     if (!preview.copies.length) { vscode.window.showInformationMessage("No legacy resources need migration."); return false; }
     const approve = await vscode.window.showWarningMessage(
-      `Copy ${preview.copies.length} legacy resource(s) into ${markdownAssetDirectory(documentPath)} and update only this document? All original files will be retained.`,
+      `Migrate ${preview.copies.length} legacy resource(s) into ${markdownAssetDirectory(documentPath)} and update this document? ${preview.removals.length} unshared original(s) will be removed; shared originals remain until their final reference migrates.`,
       { modal: true }, "Apply reviewed migration");
     if (approve !== "Apply reviewed migration") return false;
     assertWritable(full);

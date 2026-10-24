@@ -2,12 +2,176 @@
 
 import json
 import math
+import hashlib
+import os
+import secrets
 from pathlib import Path
 import shutil
 import sqlite3
 import threading
 import time
 from retrieval_solution_resources import process_sample, resource_plan
+
+
+class RetrievalLearning:
+    """Query-free, context-isolated calibration from explicit complete judgments."""
+
+    MIN_JUDGED_CALLS = 8
+    BASE_SLOPE = 4.0
+    BASE_BIAS = -2.0
+    MIN_GAP = 0.15
+    RETENTION = 512
+
+    def __init__(self, state: Path):
+        self.database = state / "retrieval-learning.sqlite3"
+        self.lock = threading.RLock()
+        with self.connect() as connection:
+            connection.executescript("""
+                CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS models (
+                    context TEXT PRIMARY KEY, package TEXT, corpus TEXT, route TEXT,
+                    slope REAL, bias REAL, threshold REAL, samples INTEGER, safe_streak INTEGER);
+                CREATE TABLE IF NOT EXISTS calls (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, receipt TEXT UNIQUE, context TEXT,
+                    milliseconds REAL, returned INTEGER, candidates TEXT, cut INTEGER,
+                    eligible INTEGER, recall REAL, label_digest TEXT, success INTEGER);
+            """)
+            connection.execute("INSERT OR IGNORE INTO settings VALUES ('salt',?)", (secrets.token_hex(32),))
+            connection.execute("INSERT OR IGNORE INTO settings VALUES ('enabled','true')")
+            self.salt = connection.execute("SELECT value FROM settings WHERE key='salt'").fetchone()[0]
+        os.chmod(self.database, 0o600)
+
+    def connect(self):
+        return sqlite3.connect(self.database, timeout=10)
+
+    def identity(self, value):
+        return hashlib.sha256((self.salt + str(value)).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def probability(x, slope, bias):
+        return 1 / (1 + math.exp(-max(-40, min(40, slope * x + bias))))
+
+    @staticmethod
+    def gap(candidates):
+        if len(candidates) < 2:
+            return 0, 0.0
+        gaps = [candidates[i]["x"] - candidates[i + 1]["x"] for i in range(len(candidates) - 1)]
+        index = max(range(len(gaps)), key=gaps.__getitem__)
+        return index + 1, gaps[index]
+
+    def configure(self, enabled):
+        if type(enabled) is not bool:
+            raise ValueError("Adaptive result count requires a boolean enabled value")
+        with self.lock, self.connect() as connection:
+            connection.execute("UPDATE settings SET value=? WHERE key='enabled'", (json.dumps(enabled),))
+
+    def observe(self, result, milliseconds):
+        if not result.get("model_invoked"):
+            return
+        hits = result.get("hits") or []
+        scores = [float(hit["score"]) for hit in hits]
+        valid = all(math.isfinite(score) for score in scores) and all(
+            scores[i] >= scores[i + 1] for i in range(len(scores) - 1))
+        scale = max((abs(score) for score in scores), default=0) or 1
+        candidates = [{"id": self.identity(hit["source_id"]), "x": max(0, min(1, score / scale))}
+                      for hit, score in zip(hits, scores)]
+        package = result.get("model_attempt_package_id") or (result.get("skill_serving") or {}).get("release_id") or "unavailable"
+        corpus = str(result.get("corpus_revision") or "")
+        route = result.get("route")
+        context = self.identity(json.dumps([package, corpus, route, "rrf" if route == "dual" else "engine-defined"]))
+        eligible = (bool(result.get("ok")) and result.get("semantic_status") == "ready" and valid
+                    and route in {"semantic", "dual"} and not result.get("exact_terms")
+                    and not any((hit.get("metadata") or {}).get(key) in {"highest", "required"}
+                                for hit in hits for key in ("priority", "source_priority")))
+        receipt = secrets.token_hex(24)
+        with self.lock, self.connect() as connection:
+            connection.execute("INSERT OR IGNORE INTO models VALUES (?,?,?,?,?,?,?,?,?)",
+                               (context, package, corpus, route, self.BASE_SLOPE, self.BASE_BIAS, self.MIN_GAP, 0, 0))
+            slope, bias, threshold, samples, streak = connection.execute(
+                "SELECT slope,bias,threshold,samples,safe_streak FROM models WHERE context=?", (context,)).fetchone()
+            enabled = connection.execute("SELECT value FROM settings WHERE key='enabled'").fetchone()[0] == "true"
+            k, gap = self.gap(candidates)
+            cut = len(hits)
+            reason = "insufficient-feedback"
+            if not enabled:
+                reason = "disabled"
+            elif not eligible:
+                reason = "protected-or-unavailable"
+            elif samples >= self.MIN_JUDGED_CALLS and streak >= self.MIN_JUDGED_CALLS:
+                reason = "no-reliable-gap"
+                if (k and gap >= threshold and
+                        self.probability(candidates[k - 1]["x"], slope, bias) >= .65 and
+                        self.probability(candidates[k]["x"], slope, bias) <= .35):
+                    cut, reason = k, "calibrated-score-gap"
+            cursor = connection.execute("INSERT INTO calls(receipt,context,milliseconds,returned,candidates,cut,eligible,success) VALUES (?,?,?,?,?,?,?,?)",
+                                        (receipt, context, milliseconds, cut, json.dumps(candidates), cut, int(eligible),
+                                         int(bool(result.get("ok")) and result.get("semantic_status") == "ready")))
+            invocation = cursor.lastrowid
+            connection.execute("DELETE FROM calls WHERE id NOT IN (SELECT id FROM calls ORDER BY id DESC LIMIT ?)", (self.RETENTION,))
+            connection.execute("DELETE FROM models WHERE context NOT IN (SELECT DISTINCT context FROM calls)")
+        result["retrieval_id"] = receipt
+        result["adaptive"] = {"enabled": enabled, "applied": cut < len(hits), "reason": reason,
+                              "original_count": len(hits), "returned_count": cut, "invocation": invocation}
+        result["hits"] = hits[:cut]
+
+    def feedback(self, receipt, relevant_source_ids, complete):
+        if (not isinstance(receipt, str) or len(receipt) != 48 or
+                any(char not in "0123456789abcdef" for char in receipt)):
+            raise ValueError("Invalid retrieval_id")
+        if (complete is not True or not isinstance(relevant_source_ids, list) or
+                not 0 <= len(relevant_source_ids) <= 10000 or
+                any(not isinstance(value, str) or not value or len(value) > 4096 for value in relevant_source_ids)):
+            raise ValueError("Provide relevant_source_ids and complete=true for explicit complete relevance judgments")
+        relevant = {self.identity(value) for value in relevant_source_ids}
+        digest = self.identity(json.dumps(sorted(relevant)))
+        with self.lock, self.connect() as connection:
+            row = connection.execute("SELECT context,candidates,cut,eligible,recall,label_digest FROM calls WHERE receipt=?", (receipt,)).fetchone()
+            if not row:
+                raise ValueError("Unknown or expired retrieval_id; only the latest 512 model calls are retained")
+            context, serialized, cut, eligible, previous_recall, previous_digest = row
+            if previous_digest:
+                if previous_digest != digest:
+                    raise ValueError("Feedback already recorded with different judgments")
+                return {"ok": True, "recall": previous_recall, "duplicate": True}
+            if not eligible:
+                raise ValueError("This call is not eligible for relevance calibration")
+            candidates = json.loads(serialized)
+            retained = {item["id"] for item in candidates[:cut]}
+            recall = len(retained & relevant) / len(relevant) if relevant else None
+            slope, bias, threshold, samples, streak = connection.execute(
+                "SELECT slope,bias,threshold,samples,safe_streak FROM models WHERE context=?", (context,)).fetchone()
+            gradients = [(int(item["id"] in relevant) - self.probability(item["x"], slope, bias), item["x"])
+                         for item in candidates]
+            if gradients:
+                slope = max(.1, min(16, slope + .25 * sum(error * x for error, x in gradients) / len(gradients)))
+                bias = max(-12, min(12, bias + .25 * sum(error for error, _ in gradients) / len(gradients)))
+            k, gap = self.gap(candidates)
+            safe = bool(relevant and k and gap >= self.MIN_GAP and relevant.issubset({item["id"] for item in candidates[:k]}))
+            target = max(self.MIN_GAP, gap * .75) if safe else min(.95, max(self.MIN_GAP, gap + .1))
+            threshold = max(self.MIN_GAP, min(.95, .9 * threshold + .1 * target))
+            connection.execute("UPDATE models SET slope=?,bias=?,threshold=?,samples=?,safe_streak=? WHERE context=?",
+                               (slope, bias, threshold, samples + 1, streak + 1 if safe else 0, context))
+            connection.execute("UPDATE calls SET recall=?,label_digest=? WHERE receipt=?", (recall, digest, receipt))
+        return {"ok": True, "recall": recall, "trained": True, "judged_calls": samples + 1}
+
+    def summary(self):
+        with self.lock, self.connect() as connection:
+            enabled = connection.execute("SELECT value FROM settings WHERE key='enabled'").fetchone()[0] == "true"
+            calls = connection.execute(
+                "SELECT id,context,milliseconds,returned,recall,success FROM calls ORDER BY id DESC LIMIT 256").fetchall()
+            models = []
+            for context, package, corpus, route, slope, bias, threshold, samples, streak in connection.execute(
+                    "SELECT * FROM models WHERE context IN (SELECT context FROM calls ORDER BY id DESC LIMIT 256) ORDER BY rowid DESC LIMIT 16"):
+                models.append({"context": context, "package_id": package, "corpus_revision": corpus, "route": route,
+                               "judged_calls": samples, "safe_streak": streak, "threshold": threshold,
+                               "baseline": {"slope": self.BASE_SLOPE, "bias": self.BASE_BIAS},
+                               "current": {"slope": slope, "bias": bias}})
+        return {"enabled": enabled, "minimum_judged_calls": self.MIN_JUDGED_CALLS, "models": models,
+                "calls": [{"invocation": i, "context": context, "runtime_ms": ms, "returned_count": count, "recall": recall, "success": bool(success)}
+                          for i, context, ms, count, recall, success in reversed(calls)],
+                "retention": "latest 512 model calls locally; latest 256 shown; no query text",
+                "calibration": "sigmoid(slope * normalized_rank_score + bias); relative to each call's highest absolute score",
+                "learning": "explicit complete relevance judgments only; embedding weights remain frozen"}
 
 
 class SolutionManager:
@@ -17,6 +181,7 @@ class SolutionManager:
         self.atomic_json = atomic_json
         self.lock = threading.RLock()
         self.epoch = 0
+        self.selection_revision = 0
         self.path = None
         self.cached_path = None
         self.corpus = ""
@@ -52,6 +217,7 @@ class SolutionManager:
         with self.lock:
             return {
                 "managed": self.managed, "requested_package_id": self.requested,
+                "selection_revision": self.selection_revision,
                 "active_package_id": self.path.release_id if self.path else None,
                 "state": "building" if self.building else "ready" if self.path else "blocked" if self.error else "queued" if self.requested else "disabled",
                 "error": self.error, "corpus_revision": self.corpus,
@@ -79,13 +245,16 @@ class SolutionManager:
                 packages.append({"package_id": root.name, "name": root.name, "error": str(error)})
         return {"packages": packages, **self.status()}
 
-    def select(self, identity, *, rebuild=False):
+    def select(self, identity, *, rebuild=False, expected_revision=None):
         from adaptive_skill_retrieval.solution_package import load_installed
         with self.lock:
+            if expected_revision is not None and expected_revision != self.selection_revision:
+                raise ValueError("Model selection changed during setup. Verified files remain imported; enable explicitly.")
             if identity is not None:
                 load_installed(self.directory, identity, verify=False)
             self.atomic_json(self.selection, {"schema": 1, "package_id": identity})
             self.managed = True
+            self.selection_revision += 1
             self.requested = identity
             self.epoch += 1
             self.path = None
@@ -195,7 +364,10 @@ class SolutionManager:
                 self.build_ms = round((time.perf_counter() - start) * 1000, 2)
                 self.progress = {"phase": "ready", "current": len(versions), "total": len(versions)}
                 self.index = {"reused": getattr(candidate, "index_reused", False),
-                              "bytes": getattr(candidate, "index_bytes", None), "persistent": True}
+                              "bytes": getattr(candidate, "index_bytes", None), "persistent": True,
+                              "embedding_cache_hits": getattr(candidate, "embedding_cache_hits", 0),
+                              "embedding_cache_misses": getattr(candidate, "embedding_cache_misses", 0),
+                              "embedding_cache_bytes": getattr(candidate, "embedding_cache_bytes", 0)}
 
 
 class SolutionMetrics:

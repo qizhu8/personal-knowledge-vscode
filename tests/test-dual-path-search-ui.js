@@ -3,10 +3,12 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const bundle = fs.readFileSync(require('node:path').join(__dirname, '../dist/webview/panel.js'), 'utf8');
 const script = bundle.slice(bundle.indexOf('// BR-13 search begin'), bundle.indexOf('// BR-13 search end'));
+const knowledge = fs.readFileSync(require('node:path').join(__dirname, '../src/webview/panel/20-knowledge.js'), 'utf8');
+const treeSource = knowledge.slice(knowledge.indexOf('function buildCatTree('), knowledge.indexOf('function openCatFolderAddMenu('));
 assert(script.includes('requestKnowledgeSearch'), 'built panel must contain the search controller');
 const nodes = new Map();
 function element() {
-  return { style: {}, hidden: false, value: 'lexical', textContent: '', innerHTML: '',
+  return { style: {}, hidden: false, value: 'filter', textContent: '', innerHTML: '',
     setAttribute() {}, after() {}, before() {}, addEventListener() {}, querySelectorAll() { return []; } };
 }
 const messages = [];
@@ -18,8 +20,18 @@ const context = vm.createContext({
   ask(command, payload) { messages.push({ command, ...payload }); },
   esc: value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'),
   contentSearchChanged() {}, requestDetail() {},
+  catExpanded: {}, privacyInherited: () => false, privacyDivider: () => '',
+  folkDisplayName: value => value, privacyLock: () => '', brokerFolderMarker: () => '',
+  uiIcon: () => '', githubSyncTypes: [], githubSyncFolderMarker: () => '',
+  btoa: value => Buffer.from(value, 'binary').toString('base64'), unescape, encodeURIComponent,
 });
+vm.runInContext(treeSource, context);
 vm.runInContext(script, context);
+assert.equal(vm.runInContext('requestKnowledgeSearch({regex:false,caseSensitive:false})', context), false,
+  'default Ctrl+F must use the existing filtered file tree, not ranked retrieval');
+assert.equal(messages.length, 0);
+assert.equal(nodes.get('item-list').hidden, false);
+vm.runInContext('knowledgeSearchMode.value = "lexical"', context);
 assert.equal(vm.runInContext('requestKnowledgeSearch({regex:false,caseSensitive:false})', context), true);
 assert.equal(messages[0].mode, 'lexical');
 assert.equal(nodes.get('item-list').hidden, true);

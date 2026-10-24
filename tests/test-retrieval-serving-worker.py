@@ -31,6 +31,12 @@ class FrozenSkillPath:
                 for rank, name in enumerate(["private", "beta", "alpha"], 1)]
 '''
 
+def copy_engine_runtime(root):
+    resources = Path(__file__).resolve().parents[1] / "resources"
+    shutil.copy2(resources / "retrieval_runtime.py", root)
+    (root / "vendor").mkdir()
+    shutil.copy2(resources / "vendor" / "adaptive_skill_retrieval-0.3.0.dev2026100504-py3-none-any.whl", root / "vendor")
+
 
 class TestServingWorkerBoundary(unittest.TestCase):
     @classmethod
@@ -57,6 +63,7 @@ class TestServingWorkerBoundary(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             shutil.copy2(Path(__file__).resolve().parents[1] / "resources" / "retrieval_worker.py", root)
+            copy_engine_runtime(root)
             shutil.copy2(Path(__file__).resolve().parents[1] / "resources" / "retrieval_solutions.py", root)
             shutil.copy2(Path(__file__).resolve().parents[1] / "resources" / "retrieval_solution_resources.py", root)
             (root / "retrieval_serving.py").write_text(FAKE_PATH)
@@ -143,6 +150,7 @@ class TestServingWorkerBoundary(unittest.TestCase):
             resources = Path(__file__).resolve().parents[1] / "resources"
             for name in ("retrieval_worker.py", "retrieval_solutions.py", "retrieval_solution_resources.py"):
                 shutil.copy2(resources / name, root)
+            copy_engine_runtime(root)
             (root / "retrieval_serving.py").write_text(
                 "from pathlib import Path\n"
                 "Path(__file__).with_name('encoder-imported').touch()\n"

@@ -1,7 +1,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { createHash } = require("node:crypto");
-const { fitChatContext, ChatContextPlanner, ContextCandidateLimitError } = require("../dist/chat/chat-context");
+const { fitChatContext, ChatContextPlanner, ContextCandidateLimitError, AUTOMATIC_KNOWLEDGE_INPUT_BUDGET } = require("../dist/chat/chat-context");
 const { estimateInputTokens } = require("../dist/chat/api-chat-models");
 const { ChatToolLoopGuard } = require("../dist/chat/api-chat-client");
 const required = () => ({ role:"user", content:"Preserve all constraints. Do not deploy." });
@@ -17,6 +17,64 @@ function fit(entries, budget, options = {}) {
   const selected = fitChatContext(messages, automatic, budget, [], { ...options, report:value => { receipt = value; } });
   return { messages, selected, receipt };
 }
+
+test("automatic PKM reference budget admits exactly 8k and rejects one byte over independently of the model window", () => {
+  assert.equal(AUTOMATIC_KNOWLEDGE_INPUT_BUDGET, 8000);
+  for (const [size, admitted] of [[7936, true], [7937, false]]) {
+    const entry = reference("x".repeat(size), "automatic-source", 1);
+    entry.reference.budget = "knowledge";
+    const pinned = { role:"system", content:"Pinned manual context ".repeat(3000) };
+    const memory = reference("Organized memory ".repeat(200), "memory", 200);
+    const messages = [pinned, memory.message, entry.message, required()];
+    const automatic = new Map([[entry.message, entry.reference], [memory.message, memory.reference]]);
+    let receipt;
+    fitChatContext(messages, automatic, 500000, [], { report:value => { receipt = value; } });
+    assert.equal(messages.includes(entry.message), admitted);
+    assert(messages.includes(pinned) && messages.includes(memory.message), "manual context and separate Memory context must not be charged to the knowledge budget");
+    assert.equal(receipt.automaticKnowledge.inputBudget, 8000);
+    assert(receipt.automaticKnowledge.estimatedAfter <= 8000);
+    assert.equal(receipt.automaticKnowledge.estimatedAfter, admitted ? 8000 : 32);
+    assert.equal(receipt.stopReason, admitted ? "fits" : "selected-subset");
+    assert.deepEqual(receipt.omittedIds, admitted ? [] : ["automatic-source"]);
+  }
+});
+
+test("automatic PKM long sources refine query-matched evidence even in a large model window and stay bounded across rounds", () => {
+  const original = "Unrelated source body ".repeat(20000);
+  const entry = reference(original, "source", 1, query =>
+    [reference(`Exact matched ${query} passage. `.repeat(20), `range:${query}`, 1)]);
+  Object.assign(entry.reference, { budget:"knowledge", preferRefinement:true });
+  const messages = [entry.message, required()];
+  const planner = new ChatContextPlanner(messages, new Map([[entry.message, entry.reference]]), []);
+  for (const query of ["first", "second", "third"]) {
+    const next = [...messages];
+    const plan = planner.plan(next, 1000000, query);
+    assert.deepEqual([...plan.selected], [`range:${query}`], "steering must refine against the current query without reusing stale passages");
+    assert.equal(plan.receipt.refinements, 1);
+    assert(plan.receipt.automaticKnowledge.estimatedAfter <= 8000);
+    assert(next.some(message => message.content.includes(`Exact matched ${query}`)));
+    assert(!next.some(message => message.content.includes("Unrelated source body")));
+    assert.equal(entry.message.content, original, "full evidence is retained unchanged locally");
+  }
+});
+
+test("automatic knowledge aggregate budget cannot be bypassed by many sources or dependent evidence groups", () => {
+  const entries = Array.from({ length:20 }, (_, index) => {
+    const entry = reference("Bounded source ".repeat(100), `source-${index}`, 50 - index);
+    entry.reference.budget = "knowledge";
+    return entry;
+  });
+  const result = fit(entries, 1000000);
+  assert(result.selected.size > 0 && result.selected.size < entries.length);
+  assert(estimateInputTokens(result.messages.filter(message => message !== result.messages.at(-1))) <= 8000);
+  assert(result.receipt.automaticKnowledge.estimatedAfter <= 8000);
+  const dependent = entries.slice(0, 2);
+  for (const entry of dependent) {
+    entry.message.content = "x".repeat(4000);
+    entry.reference.groupId = "atomic-dependent-pair";
+  }
+  assert.equal(fit(dependent, 1000000).selected.size, 0, "a dependent group must not be partially included to fit the budget");
+});
 
 test("CTX-M01: below/exact budget never invokes refinement or rewrites references", () => {
   const entry = reference("Original conditions: NOT approved; 125 ms.", "source", 1, () => { throw new Error("Must not refine fitting context"); });

@@ -22,75 +22,57 @@ export interface FeatureTourModule {
 
 export const FEATURE_TOUR_MODULES: readonly FeatureTourModule[] = Object.freeze([
   {
-    id: "core-navigation",
+    id: "pkm-chat",
     introducedIn: "3.2",
-    highlightIcon: "library",
-    highlightTitleKey: "experience.whatsNewKnowledgeTitle",
-    highlightBodyKey: "experience.whatsNewKnowledgeBody",
+    highlightIcon: "comment-discussion",
+    highlightTitleKey: "experience.featureChatTitle",
+    highlightBodyKey: "experience.featureChatBody",
     steps: [
       { target: "#topbar strong", titleKey: "experience.tourWelcomeTitle", bodyKey: "experience.tourWelcomeBody" },
-      { target: "#workspace-rail", titleKey: "experience.tourWorkspacesTitle", bodyKey: "experience.tourWorkspacesBody" },
+      { target: "#open-pkm-chat-button", titleKey: "experience.featureChatTitle", bodyKey: "experience.featureChatBody" },
+    ],
+  },
+  {
+    id: "retrieval-system",
+    introducedIn: "3.2",
+    highlightIcon: "search",
+    highlightTitleKey: "experience.featureRetrievalTitle",
+    highlightBodyKey: "experience.featureRetrievalBody",
+    steps: [
       {
-        target: '.workspace-button[data-workspace="knowledge"]',
-        titleKey: "experience.tourKnowledgeTitle",
-        bodyKey: "experience.tourKnowledgeBody",
-        actionKey: "experience.openKnowledge",
-        activate: true,
-      },
-      {
-        target: "#btn-add-knowledge",
-        fallback: "#more-btn",
-        titleKey: "experience.tourCreateTitle",
-        bodyKey: "experience.tourCreateBody",
-        workspace: "knowledge",
+        target: "#searchbox", fallback: '.workspace-button[data-workspace="knowledge"]',
+        titleKey: "experience.featureRetrievalTitle", bodyKey: "experience.featureRetrievalBody",
+        workspace: "knowledge", tab: "skills",
       },
     ],
   },
   {
-    id: "agent-workflows",
+    id: "router",
     introducedIn: "3.2",
-    highlightIcon: "play-circle",
-    highlightTitleKey: "experience.whatsNewWorkflowTitle",
-    highlightBodyKey: "experience.whatsNewWorkflowBody",
+    highlightIcon: "git-compare",
+    highlightTitleKey: "experience.featureRouterTitle",
+    highlightBodyKey: "experience.featureRouterBody",
     steps: [
       {
-        target: '.workspace-button[data-workspace="automation"]',
-        titleKey: "experience.tourAutomationTitle",
-        bodyKey: "experience.tourAutomationBody",
-        actionKey: "experience.openAutomation",
-        activate: true,
-      },
-      {
-        target: '.workspace-button[data-workspace="projects"]',
-        titleKey: "experience.tourProjectsTitle",
-        bodyKey: "experience.tourProjectsBody",
-        actionKey: "experience.openProjects",
-        activate: true,
+        target: '.tab[data-tab="skillRouter"]', workspace: "settings", tab: "skillRouter",
+        titleKey: "experience.featureRouterTitle", bodyKey: "experience.featureRouterBody",
       },
     ],
   },
   {
-    id: "runtime-and-sharing",
-    introducedIn: "3.2",
-    highlightIcon: "shield",
-    highlightTitleKey: "experience.whatsNewSafetyTitle",
-    highlightBodyKey: "experience.whatsNewSafetyBody",
+    id: "github-sync", introducedIn: "3.2", highlightIcon: "sync",
+    highlightTitleKey: "experience.featureSyncTitle", highlightBodyKey: "experience.featureSyncBody",
     steps: [
-      {
-        target: '.workspace-button[data-workspace="settings"]',
-        titleKey: "experience.tourSettingsTitle",
-        bodyKey: "experience.tourSettingsBody",
-        actionKey: "experience.openSettings",
-        activate: true,
-      },
-      {
-        target: '.tab[data-tab="mcp"]',
-        titleKey: "experience.tourMcpTitle",
-        bodyKey: "experience.tourMcpBody",
-        actionKey: "experience.openSetup",
-        activate: true,
-        workspace: "settings",
-      },
+      { target: '.tab[data-tab="githubSync"]', workspace: "settings", tab: "githubSync",
+        titleKey: "experience.featureSyncTitle", bodyKey: "experience.featureSyncBody" },
+    ],
+  },
+  {
+    id: "portal", introducedIn: "3.2", highlightIcon: "remote",
+    highlightTitleKey: "experience.featurePortalTitle", highlightBodyKey: "experience.featurePortalBody",
+    steps: [
+      { target: '.tab[data-tab="portalConnections"]', workspace: "projects", tab: "portalConnections",
+        titleKey: "experience.featurePortalTitle", bodyKey: "experience.featurePortalBody" },
       { target: "#start-tour-button", titleKey: "experience.tourDoneTitle", bodyKey: "experience.tourDoneBody", actionKey: "experience.finish" },
     ],
   },
@@ -138,6 +120,7 @@ export function decideInitialExperience(state: InitialExperienceState): InitialE
     if (newUser) return true;
     if (seen.has(module.id)) return false;
     if (!previousRelease) return module.introducedIn === release;
+    if (Number(release.split(".")[0]) > Number(previousRelease.split(".")[0])) return true;
     const afterPrevious = releaseOrder(module.introducedIn, previousRelease);
     const atCurrent = releaseOrder(module.introducedIn, release);
     return afterPrevious === 1 && atCurrent !== undefined && atCurrent <= 0;

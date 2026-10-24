@@ -12,7 +12,7 @@ assert.deepStrictEqual(
 
 assert.deepStrictEqual(
   selectTasks("full", {}).map(task => task.name),
-  ["plan", "contract", "standalone", "panel", "startup", "pkm-chat"],
+  ["plan", "contract", "standalone", "panel", "startup", "pkm-chat", "retrieval-router", "sharing-sync", "experience"],
 );
 
 assert.deepStrictEqual(
@@ -22,12 +22,20 @@ assert.deepStrictEqual(
 
 assert.deepStrictEqual(
   selectTasks("full", { PKM_BROWSER_SHARD_COUNT: "2", PKM_BROWSER_SHARD_INDEX: "2" }).map(task => task.name),
-  ["contract", "panel", "pkm-chat"],
+  ["contract", "panel", "pkm-chat", "sharing-sync"],
 );
 
 const daily = selectTasks("targeted", { PKM_BROWSER_SUITES:"pkm-chat" })[0];
 assert.equal(require("../package.json").scripts["test:pkm-chat:daily:run"], `node ${daily.args.join(" ")}`,
   "The release browser plan and the daily-use command must run the same tests");
+for (const filename of [
+  "test-persona-profiles.js", "test-persona-profile-ui.js", "test-persona-profile-browser.js",
+  "test-chat-context-contracts.js", "test-peer-collaboration.js", "test-portal-profile-wiring.js",
+  "test-chat-workers.js", "test-persona-installed-helper.js",
+]) {
+  assert(daily.args.includes(`tests/${filename}`), `The release gate must retain ${filename}`);
+}
+assert.equal(new Set(daily.args).size, daily.args.length, "Run each daily regression file only once");
 assert.throws(
   () => selectTasks("targeted", {}),
   /PKM_BROWSER_SUITES is required/,

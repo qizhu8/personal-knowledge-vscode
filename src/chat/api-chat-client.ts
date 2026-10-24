@@ -43,6 +43,7 @@ export interface ChatTransportReceipt {
   toolSchemaHash: string;
   countingMethod: "utf8-byte-estimate" | "vscode-countTokens-plus-overhead";
   inputTokens: number;
+  automaticKnowledge?: { inputBudget: number; inputTokens: number; countingMethod: "utf8-byte-upper-bound" | "vscode-countTokens-plus-overhead" };
 }
 
 export function chatTransportReceipt(provider: ChatTransportReceipt["provider"], messages: unknown[], tools: unknown[],
@@ -51,6 +52,12 @@ export function chatTransportReceipt(provider: ChatTransportReceipt["provider"],
   return { schema:"pkm.chat.transport/v1", provider, messageHashes:messages.map(hash), toolSchemaHash:hash(tools),
     countingMethod:countedInput === undefined ? "utf8-byte-estimate" : "vscode-countTokens-plus-overhead",
     inputTokens:countedInput ?? 32 + Buffer.byteLength(JSON.stringify([messages, tools]), "utf8") };
+}
+
+export interface ChatModelActivity {
+  operation: "inference" | "token-count" | "model-access";
+  label: string;
+  status: "running" | "complete" | "failed";
 }
 
 export interface ApiChatRequest {
@@ -77,6 +84,7 @@ export interface ApiChatRequest {
   onInferenceTiming?: (timing: ChatInferenceTiming) => void;
   onOutputBudgetWarning?: (warning: string) => void;
   onStage?: (stage: "connecting" | "waiting") => void;
+  onModelActivity?: (activity: ChatModelActivity) => void;
   fetch?: typeof fetch;
   tools?: ApiChatTool[];
   maxToolRounds?: number;
@@ -86,9 +94,11 @@ export interface ApiChatRequest {
   onToolLoopNotice?: (notice: ChatToolLoopNotice, signal: AbortSignal) => Promise<ChatToolLoopDecision>;
   onTool?: (event: ApiChatToolEvent) => void;
   beforeRound?: (messages: ApiChatMessage[], outputTokens: number) => void;
+  automaticKnowledge?: { inputBudget: number; includes: (message: ApiChatMessage) => boolean };
   onTransportPrepared?: (receipt: ChatTransportReceipt) => void;
   onTransportSent?: (receipt: ChatTransportReceipt) => void;
   afterTools?: () => boolean;
+  beforeFinish?: () => string | undefined;
   /** Local caller label (never sent to the provider); "memory" marks Memory Engine model steps. */
   purpose?: "memory";
 }
@@ -251,6 +261,13 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
       ...(request.tools?.length && !loop.summarizing ? { tools: request.tools.map(tool => ({ type: "function" as const, function: { name: tool.name, description: tool.description, parameters: tool.parameters } })) } : {}),
     };
     const transport = chatTransportReceipt("http", payload.messages, payload.tools || []);
+    if (request.automaticKnowledge) {
+      const inputTokens = messages.filter(request.automaticKnowledge.includes)
+        .reduce((sum, message) => sum + Buffer.byteLength(message.content, "utf8") + 32, 32);
+      if (!Number.isSafeInteger(request.automaticKnowledge.inputBudget) || request.automaticKnowledge.inputBudget < 32
+        || inputTokens > request.automaticKnowledge.inputBudget) throw new Error("Automatic PKM reference input budget exceeded; no model request was sent.");
+      transport.automaticKnowledge = { inputBudget:request.automaticKnowledge.inputBudget, inputTokens, countingMethod:"utf8-byte-upper-bound" };
+    }
     request.onTransportPrepared?.(transport);
     inferenceClock.start();
     const stream = await client.chat.completions.create(payload, { signal: controller.signal });
@@ -298,6 +315,11 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
     if (finishReason === "stop") {
       if (calls.size) throw new Error("Invalid tool completion. No pending tool was executed.");
       if (!responseText) throw new Error("The model returned an empty response.");
+      const continuation = !loop.summarizing && request.beforeFinish?.();
+      if (continuation) {
+        messages.push({ role: "assistant", content: responseText }, { role: "system", content: continuation });
+        continue;
+      }
       return;
     }
     if (finishReason !== "tool_calls" || !toolCalls.length) throw new Error(`Response stopped with ${finishReason}. Partial output was preserved.`);

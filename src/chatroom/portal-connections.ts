@@ -23,6 +23,7 @@ export interface PortalConnectionView extends PortalConnectionRecord { state: Po
 export interface PortalConnectionLive { pairId?: string; connected: boolean }
 export interface PortalPendingInvitation {
   chatId: string; chatLabel: string; external: boolean; role: "controller" | "controlled"; expiresAt: number; endpoint: string;
+  localMachine?: string;
 }
 export interface PortalConnectionSnapshot { updatedAt: number; active: number; connections: PortalConnectionView[]; pendingInvitations?: PortalPendingInvitation[] }
 

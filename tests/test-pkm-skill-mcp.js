@@ -30,6 +30,7 @@ try {
     getStorePath: () => path.join(root, "generation-store"),
     managedMcpServerDirectory: () => generatedDirectory,
     mcpStatus: () => ({ newerThanExpected: false }),
+    configuredMcpFeatureDomains: () => ["knowledge", "automation", "skillRouter"],
     writeMcpFeatureDomainConfig() {}, writeActionWorkspaceConfig() {},
     resolveMcpPython: () => "python",
     mcpStdioCommand: (command, args) => ({ command, args }),
@@ -37,9 +38,9 @@ try {
     RECIPE_MCP_VERSION: "test", AGENT_SESSION_MCP_VERSION: "test",
   };
   require("vm").runInNewContext(generationScript, generation);
-  const generated = generation.exports.generateMcpServer({
+  const generated = generation.generateMcpServerFiles({
     extensionPath: path.join(__dirname, ".."), globalStorageUri: { fsPath: path.join(root, "global-storage") },
-  });
+  }, generatedDirectory);
   assert.strictEqual(generated.serverPath, path.join(generatedDirectory, "server.py"));
   const generatedPython = fs.readFileSync(generated.serverPath, "utf8");
   for (const tool of ["skill_capabilities", "skill_context", "skill_feedback", "propose_skill_update"]) {
@@ -115,7 +116,7 @@ Build deterministic training datasets and validate every exported split.`);
   for (const resource of ["knowledge_recovery.py", "knowledge_mutations.py", "knowledge_mutations.js", "knowledge_snapshots.py", "asset_classification.py", "asset_classification.js"]) {
     fs.copyFileSync(path.join(__dirname, "..", "resources", resource), path.join(moduleDir, resource));
   }
-  for (const resource of ["action_runtime.py", "action_modules.py", "action_run_store.py", "action_recovery.py", "action_components.py"]) {
+  for (const resource of ["action_runtime.py", "action_modules.py", "action_authoring.py", "action_monitoring.py", "action_azuredevops.py", "action_run_store.py", "action_recovery.py", "action_components.py"]) {
     fs.copyFileSync(path.join(__dirname, "..", "resources", resource), path.join(moduleDir, resource));
   }
   fs.writeFileSync(path.join(moduleDir, "chat_server.py"), "from fastmcp import FastMCP\nmcp = FastMCP('chat-stub')\n");
@@ -312,7 +313,9 @@ def dual_fixture(path, payload=None):
         content_hash='a'*64, source_revision='r1', content_type='note', source_uri='pkm://notes/network', title='Network', description='',
         sources=['lexical','semantic'], source_label='both', path_evidence=evidence, score_semantics='rrf')]
     return dict(ok=True, route=route, search_mode=route, semantic_status='off' if route=='semantic' else 'fallback',
-                semantic_reason='embedding not configured' if route=='semantic' else 'fixture provider failed', hits=hits)
+                semantic_reason='embedding not configured' if route=='semantic' else 'fixture provider failed', hits=hits,
+                solution={'package_id': None, 'reason': 'execution-error'},
+                skill_serving={'used': False, 'release_id': None, 'fallback_reason': 'fixture provider failed'})
 previous_request = server._retrieval_request
 server._retrieval_request = dual_fixture
 try:
@@ -320,16 +323,55 @@ try:
     assert result['search_mode'] == 'dual' and result['semantic_status'] == 'fallback', result
     assert result['hits'][0]['source_label'] == 'both' and result['hits'][0]['path_evidence'][1]['score'] == .001, result
     assert result['hits'][0]['score_semantics'] == 'rrf', result
+    assert result['solution']['reason'] == 'execution-error' and result['skill_serving']['used'] is False, result
     empty = json.loads(server.search_notes('network', route='semantic'))
     assert empty['hits'] == [] and empty['semantic_status'] == 'off' and empty['search_mode'] == 'semantic', empty
     assert json.loads(server.search_notes('network', route='invalid'))['ok'] is False
+    for tool in ['search_skills', 'search_scripts', 'search_research', 'search_papers']:
+        empty = json.loads(getattr(server, tool)('network', route='semantic'))
+        assert empty['hits'] == [] and empty['semantic_status'] == 'off', (tool, empty)
+        dual = json.loads(getattr(server, tool)('network', route='dual'))
+        assert dual['search_mode'] == 'dual' and dual['semantic_status'] == 'fallback', (tool, dual)
+        assert json.loads(getattr(server, tool)('network', route='invalid'))['ok'] is False
     server._retrieval_request = lambda *_args, **_kwargs: dict(ok=False, error='worker offline')
     unavailable = json.loads(server.search_knowledge('network', route='dual'))
     assert unavailable['semantic_status'] == 'unavailable' and 'offline' in unavailable['semantic_reason'], unavailable
+    for tool in ['search_skills', 'search_notes', 'search_scripts', 'search_research', 'search_papers']:
+        unavailable = json.loads(getattr(server, tool)('network', route='semantic'))
+        assert unavailable['ok'] is False and unavailable['semantic_status'] == 'unavailable', (tool, unavailable)
 finally:
     server._retrieval_request = previous_request
+async def model_route_discovery():
+    async with Client(server.mcp) as client:
+        tools = {tool.name: tool for tool in await client.list_tools()}
+        for name in ['search_skills', 'search_notes', 'search_scripts', 'search_research', 'search_papers']:
+            assert tools[name].inputSchema['properties']['route']['default'] == 'lexical', name
+asyncio.run(model_route_discovery())
 print('BR-13 MCP: compact source labels/evidence, explicit modes, empty off status and transport unavailable passed')
 `);
+  if (process.env.PKM_RETRIEVAL_LIVE_STATE) {
+    assert(path.isAbsolute(process.env.PKM_RETRIEVAL_LIVE_STATE));
+    fs.appendFileSync(path.join(moduleDir, "exercise.py"), `
+server.RETRIEVAL_STATE = server.Path(${JSON.stringify(process.env.PKM_RETRIEVAL_LIVE_STATE)})
+server._retrieval_request = http_retrieval_request
+server.urllib.request.urlopen = original_urlopen
+live_snapshot = json.loads((server.RETRIEVAL_STATE / 'snapshot.json').read_text())
+async def live_model_acceptance():
+    async with Client(server.mcp) as client:
+        for name, kind in [('search_skills','skill'), ('search_notes','note'), ('search_scripts','script'),
+                           ('search_research','research'), ('search_papers','research')]:
+            document = next(value for value in live_snapshot['documents']
+                            if value['content_type'] == kind and value.get('visibility') != 'private' and value.get('title'))
+            response = await client.call_tool(name, {'query': document['title'], 'route':'semantic', 'limit':5})
+            assert not response.is_error, (name, response)
+            value = json.loads(response.content[0].text)
+            assert value['ok'] and value['semantic_status'] == 'ready' and value['hits'], (name, value)
+            assert value['skill_serving']['used'] is True and value['solution']['package_id'], (name, value)
+            assert all(hit['content_type'] == kind and 'semantic' in hit['sources'] for hit in value['hits']), (name, value)
+            print('Live MCP semantic acceptance:', name, value['solution']['package_id'], len(value['hits']))
+asyncio.run(live_model_acceptance())
+`);
+  }
   execFileSync("python", [path.join(moduleDir, "exercise.py")], { cwd: moduleDir, stdio: "inherit" });
   fs.writeFileSync(path.join(moduleDir, "feature-domains.json"), JSON.stringify({ schema: 1, enabled: ["skillRouter"] }));
   fs.writeFileSync(path.join(moduleDir, "feature-domains.py"), "import asyncio, json, server\nfrom fastmcp import Client\nasync def main():\n  async with Client(server.mcp) as client:\n    names = {tool.name for tool in await client.list_tools()}\n    assert {'check_version','skill_context','search_knowledge','search_skills','get_skill','retrieval_status'} <= names, names\n    assert not ({'list_notes','add_skill','recipe_capabilities','agent_session_capabilities'} & names), names\n    response = await client.call_tool('check_version', {})\n    assert not response.is_error\nasyncio.run(main())\nversion = server.check_version()\nassert version['enabled_feature_domains'] == ['skillRouter'] and version['capabilities'] == ['pkm-skills'], version\nassert 'recipe_discovery_tool' not in version and version['skill_discovery_tool'] == 'skill_capabilities', version\nevents = list((server.STORE / '.pkm' / 'state' / 'mcp-usage' / 'events').glob('*.json'))\nassert events, events\nusages = [json.loads(event.read_text(encoding='utf-8')) for event in events]\nusage = next(item for item in reversed(sorted(usages, key=lambda item: item['occurredAt'])) if item['toolName'] == 'check_version')\nassert usage['inputBytes'] >= 0 and usage['outputBytes'] > 0, usage\nassert usage['estimatedTokenEquivalent'] > 0 and usage['reportedTokens'] == {'input': 0, 'output': 0}, usage\nprint('MCP feature domains: discovery filtering and call-boundary evidence OK')\n");

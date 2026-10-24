@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { createHash } from "crypto";
 import { ChatInferenceClock } from "./chat-inference-timing";
 import { ApiChatMessage, ApiChatRequest, ApiChatToolEvent, ChatImage, decodeChatImage, ChatToolLoopGuard, toolBudgetSummary, chatInferenceOutputByteLimit, chatTransportReceipt } from "./api-chat-client";
 import { ChatModelProfile, ChatTokenUsage, checkReportedOutput, reportedReasoningTokens } from "./api-chat-models";
@@ -10,6 +11,10 @@ export interface VscodeChatModel extends vscode.LanguageModelChat {
 }
 
 class VscodeChatError extends Error {}
+
+export function isVscodeModelAccessError(error: unknown): error is Error & { code: string } {
+  return error instanceof Error && "code" in error && typeof error.code === "string" && ["NoPermissions", "NotFound"].includes(error.code);
+}
 
 export function assertVscodeModelCallable(vendor: string): void {
   if (vendor === "copilotcli") throw new VscodeChatError("Copilot CLI models are catalog-only in the current provider, not callable through the VS Code Language Model API. Choose a request-capable VS Code model or configure an API provider; PKM does not invoke Copilot Agent Host.");
@@ -41,7 +46,7 @@ export async function discoverVscodeModels(host = vscode, signal?: AbortSignal):
   }
 }
 
-type VscodeChatRequest = Pick<ApiChatRequest, "messages" | "purpose" | "signal" | "timeoutMs" | "maxOutputTokens" | "thinkingBudget" | "maxToolRounds" | "loopReviewAfterMs" | "loopReviewClock" | "loopExemptTools" | "onToolLoopNotice" | "contextWindow" | "onImage" | "tools" | "onTool" | "beforeRound" | "onTransportPrepared" | "onTransportSent" | "afterTools" | "onStage" | "onUsage" | "onUsageMetadata" | "onInferenceTiming" | "onOutputBudgetWarning">;
+type VscodeChatRequest = Pick<ApiChatRequest, "messages" | "purpose" | "signal" | "timeoutMs" | "maxOutputTokens" | "thinkingBudget" | "maxToolRounds" | "loopReviewAfterMs" | "loopReviewClock" | "loopExemptTools" | "onToolLoopNotice" | "contextWindow" | "onImage" | "tools" | "onTool" | "beforeRound" | "beforeFinish" | "automaticKnowledge" | "onTransportPrepared" | "onTransportSent" | "afterTools" | "onStage" | "onModelActivity" | "onUsage" | "onUsageMetadata" | "onInferenceTiming" | "onOutputBudgetWarning">;
 type NativePart = { value?: string; callId?: string; name?: string; input?: unknown; data?: Uint8Array; mimeType?: string };
 
 export async function streamVscodeChat(model: VscodeChatModel, request: VscodeChatRequest,
@@ -78,6 +83,29 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
     const messages = [...request.messages];
     const callIds = new Set<string>();
     const hasOutputTokenizer = typeof model.countTokens === "function";
+    const countTokens = async (value: vscode.LanguageModelChatMessage | string): Promise<number> => {
+      request.onModelActivity?.({ operation:"token-count", label:"Counting output tokens with VS Code model", status:"running" });
+      try {
+        const count = await abortable(model.countTokens(value, cancellation.token), controller.signal);
+        if (!Number.isSafeInteger(count) || count < 0) throw new VscodeChatError("Output token count is unavailable. Partial output was preserved; no pending tool was executed.");
+        request.onModelActivity?.({ operation:"token-count", label:"Counting output tokens with VS Code model", status:"complete" });
+        return count;
+      } catch (error) {
+        request.onModelActivity?.({ operation:"token-count", label:"Counting output tokens with VS Code model", status:"failed" });
+        throw error;
+      }
+    };
+    const inputTokenCounts = new Map<string, number>();
+    const countInput = async (value: vscode.LanguageModelChatMessage | string): Promise<number> => {
+      const key = createHash("sha256").update(JSON.stringify(value)).digest("hex");
+      const cached = inputTokenCounts.get(key);
+      if (cached !== undefined) return cached;
+      const count = await abortable(model.countTokens(value, cancellation.token), controller.signal);
+      if (!Number.isSafeInteger(count) || count < 0) throw new VscodeChatError("Input token count is unavailable.");
+      if (inputTokenCounts.size >= 256) inputTokenCounts.delete(inputTokenCounts.keys().next().value!);
+      inputTokenCounts.set(key, count);
+      return count;
+    };
     if (!hasOutputTokenizer) request.onOutputBudgetWarning?.("Output token counting is unavailable. The per-inference token limit can only be checked from valid provider usage; the separate 100,000-byte inference output limit remains active. Bytes are not tokens.");
     let imagesReturned = 0;
     let metadataParts = 0;
@@ -95,8 +123,7 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
         if (bytes > chatInferenceOutputByteLimit) throw new VscodeChatError("Inference output exceeded the 100,000-byte local size limit. Partial output was preserved; no pending tool was executed.");
         if (!hasOutputTokenizer) return;
         if (!force && bytes < nextTokenCheck) return;
-        const tokens = await abortable(model.countTokens(text, cancellation.token), controller.signal);
-        if (!Number.isSafeInteger(tokens) || tokens < 0) throw new VscodeChatError("Output token count is unavailable. Partial output was preserved; no pending tool was executed.");
+        const tokens = await countTokens(text);
         if (tokens > remaining) throw new VscodeChatError("Local output budget exhausted. Partial output was preserved; provider usage may be higher.");
         nextTokenCheck = bytes + Math.max(1, remaining - tokens);
       };
@@ -120,20 +147,36 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
         ...(request.tools?.length && !loop.summarizing ? { tools: request.tools.map(tool => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters })) } : {}),
       };
       let tokens: number | undefined;
+      let knowledgeTokens = 32;
       if (hasOutputTokenizer) {
-        tokens = 32;
-        for (const entry of prompt) {
-          const count = await abortable(model.countTokens(entry, cancellation.token), controller.signal);
-          if (!Number.isSafeInteger(count) || count < 0) throw new VscodeChatError("Input token count is unavailable.");
-          tokens += count + 32;
-        }
-        if (options.tools?.length) {
-          const count = await abortable(model.countTokens(JSON.stringify(options.tools), cancellation.token), controller.signal);
-          if (!Number.isSafeInteger(count) || count < 0) throw new VscodeChatError("Tool schema token count is unavailable.");
-          tokens += count + 32;
+        request.onModelActivity?.({ operation:"token-count", label:"Counting input tokens with VS Code model", status:"running" });
+        try {
+          tokens = 32;
+          for (const [index, entry] of prompt.entries()) {
+            const count = await countInput(entry);
+            tokens += count + 32;
+            if (request.automaticKnowledge?.includes(messages[index])) knowledgeTokens += count + 32;
+          }
+          if (options.tools?.length) {
+            const count = await countInput(JSON.stringify(options.tools));
+            tokens += count + 32;
+          }
+          request.onModelActivity?.({ operation:"token-count", label:"Counting input tokens with VS Code model", status:"complete" });
+        } catch (error) {
+          request.onModelActivity?.({ operation:"token-count", label:"Counting input tokens with VS Code model", status:"failed" });
+          throw error;
         }
       }
       const transport = chatTransportReceipt("vscode", prompt, options.tools || [], tokens);
+      if (request.automaticKnowledge) {
+        const knowledgeBudget = request.automaticKnowledge;
+        if (!hasOutputTokenizer) knowledgeTokens = messages.reduce((sum, message, index) =>
+          knowledgeBudget.includes(message) ? sum + Buffer.byteLength(JSON.stringify(prompt[index]), "utf8") + 32 : sum, 32);
+        if (!Number.isSafeInteger(knowledgeBudget.inputBudget) || knowledgeBudget.inputBudget < 32
+          || knowledgeTokens > knowledgeBudget.inputBudget) throw new VscodeChatError("Automatic PKM reference input budget exceeded; no model request was sent.");
+        transport.automaticKnowledge = { inputBudget:knowledgeBudget.inputBudget, inputTokens:knowledgeTokens,
+          countingMethod:hasOutputTokenizer ? "vscode-countTokens-plus-overhead" : "utf8-byte-upper-bound" };
+      }
       const inputBudget = request.contextWindow === undefined ? model.maxInputTokens : Math.min(request.contextWindow, model.maxInputTokens) - remaining;
       if (!Number.isSafeInteger(inputBudget) || transport.inputTokens > inputBudget) throw new VscodeChatError(`${hasImages ? "Image context" : "Native context"} budget exceeded. Remove optional context or increase Context.`);
       try { request.onTransportPrepared?.(transport); }
@@ -207,6 +250,11 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
       }
       if (!calls.length) {
         if (!responseText && !responseImages.length) throw new VscodeChatError("The model returned an empty response.");
+        const continuation = !loop.summarizing && request.beforeFinish?.();
+        if (continuation) {
+          messages.push({ role: "assistant", content: responseText }, { role: "system", content: continuation });
+          continue;
+        }
         return;
       }
       if (!request.tools?.length) throw new VscodeChatError("Tool execution is not enabled. No pending tool was executed.");
@@ -246,6 +294,11 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
   } catch (error) {
     if (timedOut) throw new VscodeChatError("The VS Code model call timed out due to inactivity. Partial output was preserved; no automatic retry was performed.");
     if (signal.aborted) throw new Error("Request cancelled.");
+    if (isVscodeModelAccessError(error)) {
+      const failure = new Error("VS Code model access was denied or the selected model is unavailable. No automatic retry was performed.");
+      Object.assign(failure, { code: error.code });
+      throw failure;
+    }
     if (error instanceof VscodeChatError) throw error;
     throw new Error("VS Code model request failed. Check extension permission, model availability and account quota. Partial output was preserved.");
   } finally {

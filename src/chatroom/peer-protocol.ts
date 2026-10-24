@@ -1,4 +1,5 @@
 export const PEER_PROTOCOL = "pkm.peer/v1";
+export const PORTAL_TRANSPORT_PATH = "/pkm/portal";
 export const MAX_PEER_BYTES = 48 * 1024;
 
 export type PeerOperation = "pair" | "paired" | "revoke" | "task" | "receipt" | "cancel" | "swap" | "swapped" | "observe" | "files" | "resume" | "resumed";

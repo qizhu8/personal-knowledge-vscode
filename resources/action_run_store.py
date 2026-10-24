@@ -134,8 +134,9 @@ class ActionRunStore:
         execution = record.get("execution", {})
         state = record.get("state")
         uncertain = state == "outcome_unknown"
+        blocked = record.get("failure", {}).get("blocked") is True
         waiting = state == "waiting" or state == "running" and execution.get("phase") == "waiting"
-        return {**record, "productObject": "Run", "userState": "Reconciling" if uncertain else "Waiting" if waiting else
+        return {**record, "productObject": "Run", "userState": "Blocked" if blocked else "Reconciling" if uncertain else "Waiting" if waiting else
                 {"running": "Running", "succeeded": "Completed", "failed": "Failed", "cancelled": "Cancelled"}.get(state, "Blocked"),
                 "nextOwner": "user" if uncertain else record.get("checkpoint", {}).get("owner", "user") if waiting else "execution-host" if state == "running" else "none",
                 "reasonCode": execution.get("reasonCode", "legacy-run"),

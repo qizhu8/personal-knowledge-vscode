@@ -54,7 +54,20 @@ async function open(t, viewport, mutate = () => {}) {
     if (message.type === "ready") await reply({ type:"library", library:library() });
     if (message.type === "request") {
       const chat = library().chats.find(item => item.id === message.chatId);
-      const data = message.method === "memoryReceipt" ? { schema:"pkm.memory.turn-receipt/v1", turn:"t2", phase:"done",
+      const data = message.method === "memoryOverview" ? {
+        observedAt:Date.now(), scope:"fixture/chat", usage:{pieces:3,bytes:900}, pieceLimitPerKind:200, edgeLimitPerPiece:100, possiblyTruncated:true,
+        note:"Bounded live scope; inspection does not update meaningful-access times.",
+        pieces:[
+          {id:"topic:aml",label:"AML topic <script>",kind:"topic",level:1,bytes:300,revision:2,summary:"Old summary",summary_current:false},
+          {id:"m|m1",label:"Original message",kind:"message",level:0,bytes:600,revision:1,summary:null,summary_current:false}],
+        edges:[{parent:"topic:aml",child:"m|m1",relation:"abstracts"}],
+      } : message.method === "memoryPiece" ? {
+        status:"ready",piece:{id:message.params.piece,revision:2},summary:{body:"Stored summary <img src=x>"},summary_current:false,
+        statements:[{sequence:message.params.after ? 21 : 1,status:"proposal",body:"Evidence-linked statement",sourceLimit:20,
+          sources:[{locator:`message:${plainId}`,revision:"r1"}]}],
+        next:message.params.after ? null : 20,
+      } : message.method === "memorySource" ? {content:"Original evidence revision",truncated:false}
+        : message.method === "memoryReceipt" ? { schema:"pkm.memory.turn-receipt/v1", turn:"t2", phase:"done", extract:{status:"failed",error:"Extraction model unavailable"},
         accounting:{ calls:2, reportedCalls:1, unreportedCalls:1, reportedUsage:{ inputTokens:100, outputTokens:30 } } }
         : message.method === "result" ? JSON.stringify({ results:[{ id:"a" }, { id:"b" }, { id:"c" }], pad:"y".repeat(2500) })
         : (() => { const value = snapshot(chat.title); mutate(value); return value; })();
@@ -77,6 +90,113 @@ async function open(t, viewport, mutate = () => {}) {
   await page.addScriptTag({ path:path.join(webview, "visualization-window.js") });
   return { page, errors, posted, held, reply, holdResults(value) { hold = value; } };
 }
+
+for (const width of [1280,390]) test(`Visualization and standalone Agent Session share four thumbnails and four detail tabs (${width}px)`, {timeout:60000}, async t=>{
+  const {page,errors,posted}=await open(t,{width,height:900});
+  await page.locator(`[data-chat-id="${managerId}"] > .pkm-vis-treerow`).click();
+  const core=page.locator(".pkm-vis-main-harness");
+  await core.getByRole("tab",{name:"Harness flow",exact:true}).waitFor();
+  const thumbs=core.locator(".pkm-harness-diagram-grid");
+  assert.equal(await thumbs.locator(":scope > button").count(),4);
+  const geometry=await thumbs.evaluate(node=>{
+    const boxes=[...node.children].map(child=>child.getBoundingClientRect());
+    return {columns:getComputedStyle(node).gridTemplateColumns.split(" ").length,
+      rows:new Set(boxes.map(box=>Math.round(box.top))).size};
+  });
+  assert.deepEqual(geometry,{columns:2,rows:2});
+  const labels=await core.getByRole("tablist",{name:"Diagram details"}).getByRole("tab").allTextContents();
+  assert.deepEqual(labels,["Harness flow","Recipe / Action graphs","Memory / Profiles","Retrieval flow"]);
+  assert.equal(await core.locator(".pkm-harness-ring-summary,.pkm-harness-ring").count(),0);
+  const windowSummary=await thumbs.innerText();
+  await page.evaluate(initial=>{
+    const host=document.createElement("section"); host.id="standalone-agent-session"; document.body.append(host);
+    window.parity=PkmAgentHarness.mount(host,{initial,request:async()=>initial});
+  },snapshot("Manager chat"));
+  const standalone=page.locator("#standalone-agent-session");
+  assert.equal(await standalone.locator(".pkm-harness-diagram-grid").innerText(),windowSummary);
+  assert.deepEqual(await standalone.getByRole("tablist",{name:"Diagram details"}).getByRole("tab").allTextContents(),labels);
+  await page.evaluate(()=>window.parity.dispose());
+  await thumbs.getByRole("button",{name:"Show Retrieval flow details",exact:true}).click();
+  assert.equal(await core.getByRole("tab",{name:"Retrieval flow",exact:true}).getAttribute("aria-selected"),"true");
+  assert.match(await core.getByRole("tabpanel").innerText(),/note[\s\S]*2 \/ 2 recorded pieces shown/);
+  assert.doesNotMatch(await core.getByRole("tabpanel").innerText(),/Retry note|Old memo/);
+  await core.getByRole("tab",{name:"Memory / Profiles",exact:true}).click();
+  assert.match(await core.getByRole("tabpanel").innerText(),/User Profile[\s\S]*Agent Profile[\s\S]*focus-topic/);
+  await core.getByRole("tab",{name:"Harness flow",exact:true}).click();
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+  if(process.env.PKM_VIS_WINDOW_SCREENSHOT) await page.screenshot({path:`${process.env.PKM_VIS_WINDOW_SCREENSHOT}-four-diagrams-${width}.png`,fullPage:true});
+  assert(posted.every(item=>item.type!=="request"||item.method==="snapshot"),"category tabs do not execute or query models");
+  assert.deepEqual(errors,[]);
+});
+
+for (const width of [1280, 390]) test(`Memory observation chain: real levels, provenance, sent manifests and organization (${width}px)`, { timeout:60000 }, async t => {
+  const { page, errors, posted } = await open(t, { width, height:900 }, data => {
+    data.memoryStoreReader = true;
+    data.harness.attempts[1].budgetReceipts = [
+      {round:0,status:"prepared",contextPlan:{manifest:[{referenceIds:["memory:m|m1"]}]}},
+      {round:1,status:"sent",contextPlan:{manifest:[{referenceIds:["memory:topic:aml"]}]}},
+    ];
+  });
+  await page.locator(`[data-chat-id="${managerId}"] > .pkm-vis-treerow`).click();
+  await page.getByRole("navigation", { name:"Dashboard views" }).getByRole("button", { name:/^Memory/ }).click();
+  const detail = page.locator(".pkm-vis-main-detail");
+  const pyramid = detail.getByRole("group",{name:"Stored Memory pyramid",exact:true});
+  await pyramid.waitFor();
+  assert.equal(await pyramid.locator(".pkm-harness-memory-edge").count(),1);
+  assert.equal(await pyramid.locator('[data-memory-state=sent]').count(),1);
+  assert.equal(await pyramid.locator('[data-memory-state=prepared]').count(),1);
+  await detail.getByText("Stored piece inventory and provenance",{exact:true}).click();
+  await page.getByRole("list", {name:"Stored Memory abstraction levels"}).waitFor();
+  assert.match(await detail.innerText(), /Level 1 · 1 displayed piece[\s\S]*Level 0 · 1 displayed piece/);
+  assert.match(await detail.innerText(), /3 live piece\(s\), 900 logical bytes/);
+  assert.match(await detail.innerText(), /Bounded view/);
+  assert.match(await detail.innerText(), /summary stale/);
+  assert.match(await detail.innerText(), /Not in recorded sent manifests/);
+  assert.match(await detail.innerText(), /#1/);
+  await page.getByText("Extraction model unavailable", {exact:true}).waitFor();
+  const topic = detail.locator(".pkm-vis-memory-level details").first();
+  await topic.locator("summary").click();
+  await topic.getByText("Evidence-linked statement", {exact:true}).waitFor();
+  assert.match(await topic.innerText(), /proposal/);
+  assert.equal(await topic.locator("img,script").count(), 0, "stored labels, summaries and statements are text, never HTML");
+  await topic.getByRole("button", {name:"Read original source",exact:true}).click();
+  await topic.getByText("Original evidence revision", {exact:true}).waitFor();
+  await topic.getByRole("button", {name:"Next statement page"}).click();
+  await topic.getByText("Statement 21 · proposal", {exact:true}).waitFor();
+  assert(posted.some(item => item.method === "memoryPiece" && item.params.after === 20));
+  const before = posted.filter(item => item.method === "memoryOverview").length;
+  await detail.getByRole("button", {name:"Refresh stored Memory"}).click();
+  await page.getByRole("list", {name:"Stored Memory abstraction levels"}).waitFor();
+  assert.equal(posted.filter(item => item.method === "memoryOverview").length, before + 1);
+  assert(posted.every(item => item.type !== "request" || ["snapshot","memoryOverview","memoryPiece","memorySource","memoryReceipt"].includes(item.method)));
+  assert.deepEqual(errors, []);
+  const size = await detail.evaluate(node => ({ width:node.clientWidth, scroll:node.scrollWidth }));
+  assert(size.scroll <= size.width + 2, "Memory inspection must fit narrow windows");
+});
+
+for (const [status,hash,expected] of [
+  ["sent","profile-hash","Sent in 1 recorded round"],
+  ["prepared","profile-hash","Snapshot recorded; transmission not established"],
+  ["sent","other-profile-hash","Snapshot recorded; transmission not established"],
+]) test(`Memory Profile transmission requires a sent round and exact snapshot hash (${status}, ${hash})`, {timeout:60000}, async t => {
+  const {page,errors} = await open(t,{width:390,height:900},data=>{
+    const attempt=data.harness.attempts[1];
+    attempt.profileContext={messageHash:"profile-hash",user:{name:"User card",revision:4,preferences:"Prefer concise tables",focus:"Development"}};
+    attempt.budgetReceipts=[{round:0,status,contextPlan:{manifest:[{hash,referenceIds:[]}]}}];
+  });
+  await page.locator(`[data-chat-id="${managerId}"] > .pkm-vis-treerow`).click();
+  await page.waitForFunction(()=>document.querySelector('[aria-label="Dashboard views"] button')?.hasAttribute("aria-pressed"));
+  await page.getByRole("navigation",{name:"Dashboard views"}).getByRole("button",{name:/^Memory/}).click();
+  const detail=page.locator(".pkm-vis-main-detail");
+  assert.match(await detail.innerText(),/User card · r4/);
+  assert((await detail.innerText()).includes(expected));
+  assert.match(await detail.innerText(),/Agent Profile[\s\S]*Not recorded/);
+  await detail.getByText("Inspect recorded Profile fields",{exact:true}).click();
+  assert.match(await detail.innerText(),/Prefer concise tables/);
+  assert.match(await detail.innerText(),/separate from learned Chat topics/);
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+  assert.deepEqual(errors,[]);
+});
 
 for (const width of [1280, 700, 390]) test(`visualization bindings: nested receipts and preserved graph view (${width}px)`, { timeout:60000 }, async t => {
   const missing = "action_run_missing";
@@ -146,7 +266,7 @@ for (const width of [1280, 700, 390]) test(`visualization bindings: nested recei
   await graph.getByRole("button", { name:"Debug", exact:true }).waitFor();
   assert.equal(await zoom.inputValue(), "100");
   assert.equal(await graph.locator(".pkm-harness-node.selected").count(), 0);
-  assert(posted.filter(item => item.type === "request").every(item => item.method === "snapshot"), "drilldown only reads snapshots; it never executes a Recipe or Action");
+  assert(posted.filter(item => item.type === "request").every(item => ["snapshot", "memoryReceipt"].includes(item.method)), "drilldown only reads records; it never executes a Recipe or Action");
   assert.deepEqual(errors, []);
 });
 
@@ -188,10 +308,11 @@ test("visualization window: Chat tree mirrors groups and workers, dashboard enla
   await page.getByRole("heading", { name:"Manager chat", level:1 }).waitFor();
   const tiles = page.getByRole("navigation", { name:"Dashboard views" }).getByRole("button");
   const tile = name => page.getByRole("navigation", { name:"Dashboard views" }).getByRole("button", { name:new RegExp(`^${name}`) });
+  await page.waitForFunction(() => document.querySelector('[aria-label="Dashboard views"] button')?.getAttribute("aria-pressed") === "true");
   assert.equal(await tiles.count(), 6);
   assert.equal(await tiles.first().getAttribute("aria-pressed"), "true");
   await page.getByRole("group", { name:"Harness lifecycle" }).waitFor();
-  assert.equal(await page.locator(".pkm-vis-mini-ring [aria-current='step']").count(), 1);
+  assert.equal(await page.locator(".pkm-vis-mini-ring").count(), 0, "navigation does not duplicate the four shared previews");
   assert.equal(await page.getByRole("button", { name:/C R M/ }).count(), 0, "decorative mini ring is not announced");
 
   await tile("Timeline").click();
@@ -201,6 +322,7 @@ test("visualization window: Chat tree mirrors groups and workers, dashboard enla
   assert.match(await page.locator(".pkm-vis-main-detail").innerText(), /Waits and blockers[\s\S]*Waiting for approval[\s\S]*search_knowledge/);
 
   await tile("Memory").click();
+  await page.getByText("Preparation metadata", {exact:true}).click();
   assert.match(await page.locator(".pkm-vis-main-detail").innerText(), /memory-model[\s\S]*focus-topic: 1, earlier-message: 1[\s\S]*1320/);
 
   await tile("Retrieval \\/ Search").click();
@@ -221,7 +343,7 @@ test("visualization window: Chat tree mirrors groups and workers, dashboard enla
     await tile("Timeline").click();
     await page.screenshot({ path:`${process.env.PKM_VIS_WINDOW_SCREENSHOT}-timeline.png`, fullPage:true });
   }
-  assert(posted.filter(item => item.type === "request").every(item => item.method === "snapshot" && item.chatId === managerId));
+  assert(posted.filter(item => item.type === "request").every(item => ["snapshot", "memoryReceipt"].includes(item.method) && item.chatId === managerId));
   assert.deepEqual(errors, []);
 });
 

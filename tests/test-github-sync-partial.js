@@ -220,6 +220,40 @@ test("repeated Archive moves reconcile legacy PNG ownership with all aliases and
   }
 });
 
+test("legacy asset migration follows Markdown moves and Trash through actual Git publication without perpetual yellow", async t => {
+  const f = fixture(t), a = f.replica("owned-legacy-lifecycle");
+  const store = require("../dist/knowledge/filestore");
+  const { githubSyncCatalogInWorker } = require("../dist/sync/github-sync-catalog-worker");
+  store.setStorePath(a.store);
+  const image = path.join(a.store, "notes/Shared/_assets/plot.png");
+  fs.mkdirSync(path.dirname(image), { recursive: true });
+  fs.writeFileSync(image, Buffer.from([137, 80, 78, 71, 9, 8, 7]));
+  store.noteUpsert({ slug: "Shared/Design", title: "Design", category: "Shared", content: "![plot](_assets/plot.png)" });
+  const catalog = () => githubSyncCatalogInWorker({ root: a.store, servers: [], recipes: [] });
+  assert(!(await a.run(await catalog())).error);
+  assert.equal(store.noteMove("Shared/Design", "Archive"), true);
+  assert(!fs.existsSync(image), "Unshared legacy resource is no longer left at the old location");
+  const moved = await catalog();
+  const note = moved.notes.find(item => item.id === "Archive/Design");
+  assert(note);
+  assert.equal(note.dependencies.length, 1);
+  assert(note.dependencies[0].destination.startsWith("notes/Archive/Design.assets/"));
+  assert(!(await a.run(moved)).error);
+  const manifest = () => git(f.root, ["--git-dir", f.remote, "show", "main:.pkm-github-sync.json"]);
+  const published = JSON.parse(manifest());
+  assert(!published.files.some(file => file.path === "notes/Shared/_assets/plot.png" || file.path === "notes/Shared/Design.md"));
+  assert(published.files.some(file => file.path === note.dependencies[0].destination));
+  const state = sync.githubSyncTargetFingerprintState(a.target, moved);
+  const baseline = sync.githubSyncManifestFileFingerprints(a.target, manifest());
+  assert.equal(sync.githubSyncShield([a.target], "notes", { [a.target.id]: state.fingerprints }, { [a.target.id]: baseline }), "green");
+  const trashed = store.knowledgePathMoveToTrash("notes", "Archive/Design.md");
+  assert(trashed);
+  assert(!(await a.run(await catalog())).error);
+  assert(!JSON.parse(manifest()).files.some(file => file.type === "notes"), "Trash publishes document and attachment removal together");
+  assert.equal(store.knowledgeTrashDelete("notes", trashed.id).ok, true);
+  assert(!(await a.run(await catalog())).error, "A second Sync does not resurrect removed attachments");
+});
+
 test("paused items override selected folders, preserve both copies and their Base, and resume normal conflict review", async t => {
   const f = fixture(t), a = f.replica("pause-a"), b = f.replica("pause-b");
   for (const client of [a, b]) {

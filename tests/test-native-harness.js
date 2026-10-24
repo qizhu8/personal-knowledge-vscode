@@ -282,7 +282,10 @@ test("browser transport is authenticated, Session-scoped, read-only and rechecks
   let allowed = true;
   const server = await createNativeHarnessServer({ extensionPath:path.join(__dirname, ".."), sessionId,
     access() { if (!allowed) throw new Error("Knowledge Root changed"); },
-    async request(method) { return method === "snapshot" ? fixture() : "Full result"; } });
+    async request(method,params) {
+      if (method === "memoryOverview" || method === "memoryPiece") return {method,sessionId:params.sessionId};
+      return method === "snapshot" ? fixture() : "Full result";
+    } });
   t.after(() => server.dispose());
   const url = new URL(server.url), token = new URLSearchParams(url.hash.slice(1)).get("token");
   const api = (method, params = {}, headers = {}) => fetch(`${url.origin}/api`, { method:"POST",
@@ -300,6 +303,10 @@ test("browser transport is authenticated, Session-scoped, read-only and rechecks
   assert.equal((await (await api("snapshot")).json()).data.sessionId, sessionId);
   assert.equal((await (await api("snapshot", { sessionId:"another" })).json()).ok, false);
   assert.equal((await (await api("execute")).json()).ok, false);
+  assert.equal((await (await api("memoryOverview")).json()).data.sessionId,sessionId);
+  assert.equal((await (await api("memoryPiece",{piece:"topic:one",after:0})).json()).data.method,"memoryPiece");
+  assert.equal((await (await api("memoryOverview",{sessionId:"another"})).json()).ok,false);
+  assert.equal((await (await api("deleteMemory")).json()).ok,false);
   const first = (await (await api("watch", { revision:0 })).json()).data.revision;
   const watching = api("watch", { revision:first });
   server.changed();
@@ -311,6 +318,29 @@ test("browser transport is authenticated, Session-scoped, read-only and rechecks
   server.changed();
   assert.match((await (await waitingForRevocation).json()).error, /Root changed/);
   assert.match((await (await api("snapshot")).json()).error, /Root changed/);
+  assert.match((await (await api("memoryOverview")).json()).error, /Root changed/);
+});
+
+test("native Memory inspection forwards only the owning Chat and rejects an unavailable or mismatched binding",async()=>{
+  const ts=require("typescript"),vm=require("node:vm");
+  const source=fs.readFileSync(path.join(__dirname,"../src/extension.ts"),"utf8");
+  const ast=ts.createSourceFile("extension.ts",source,ts.ScriptTarget.Latest,true);
+  const fn=ast.statements.find(item=>ts.isFunctionDeclaration(item)&&item.name?.text==="nativeHarnessRequest");
+  let record={nativeChat:{id:"owning-chat",sessionId}},available=true;
+  const calls=[],scope=vm.createContext({
+    path,nativeHarnessAccess(id){assert.equal(id,sessionId);},getStorePath:()=>"/fixture",
+    agentSessionJsonCache:{read:()=>record},
+    vscode:{commands:{executeCommand:async(...args)=>{calls.push(args);return available?{pieces:[]}:undefined;}}},
+  });
+  vm.runInContext(ts.transpileModule(fn.getText(ast),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText,scope);
+  await scope.nativeHarnessRequest("memoryPiece",{sessionId,chatId:"foreign-chat",piece:"topic:one",after:0});
+  assert.equal(calls[0][0],"personalKnowledge.readChatHarness");assert.equal(calls[0][1],"owning-chat");
+  assert.equal(calls[0][3].chatId,undefined);
+  record={nativeChat:{id:"foreign-chat",sessionId:"foreign-session"}};
+  await assert.rejects(scope.nativeHarnessRequest("memoryOverview",{sessionId}),/owning Chat/);
+  assert.equal(calls.length,1);
+  record={nativeChat:{id:"owning-chat",sessionId}};available=false;
+  await assert.rejects(scope.nativeHarnessRequest("memoryOverview",{sessionId}),/reader is unavailable/);
 });
 
 test("live overview follows the deepest recorded active node and only explicit bindings", () => {

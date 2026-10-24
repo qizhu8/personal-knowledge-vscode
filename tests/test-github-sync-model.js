@@ -159,6 +159,29 @@ const protectedBaseline = githubSyncManifestFileFingerprints(protectedTarget, ma
   {path:'notes/System/PKM/read-only.md',type:'notes',itemId:'System/PKM/read-only',member:'',category:'System/PKM',privacy:'public',digest:'a'.repeat(64)}
 ]));
 assert.deepStrictEqual(protectedBaseline.notes, {}, 'old System baselines do not produce pending-sync markers');
+const builtInRecipeIds = new Set(["built-in-recipe"]);
+const historicalRecipeManifest = manifestJson([
+  {path:"recipes/Old/BuiltIn.json", type:"recipes", itemId:"built-in-recipe", member:"", category:"Old", privacy:"public", digest:"b".repeat(64)},
+  {path:"recipes/Work/User.json", type:"recipes", itemId:"user-recipe", member:"", category:"Work", privacy:"public", digest:"c".repeat(64)},
+  {path:"papers/MyIdeas/Idea.md", type:"papers", itemId:"MyIdeas/Idea", member:"", category:"MyIdeas", privacy:"public", digest:"d".repeat(64)},
+]);
+const filteredRecipeBaseline = githubSyncManifestFileFingerprints(protectedTarget, historicalRecipeManifest, new Set(), builtInRecipeIds);
+assert.deepStrictEqual(filteredRecipeBaseline.recipes, { "recipes/Work/User.json":"c".repeat(64) },
+  "built-in Recipe identities are excluded even when historical paths/categories differ");
+assert.deepStrictEqual(filteredRecipeBaseline.papers, { "papers/MyIdeas/Idea.md":"d".repeat(64) },
+  "retained historical public MyIdeas must not be hidden by built-in Recipe filtering");
+const filteredRecipeFolders = githubSyncManifestFolderFingerprints(protectedTarget, historicalRecipeManifest, new Set(), builtInRecipeIds);
+assert.equal(filteredRecipeFolders.recipes.Old, undefined);
+assert(filteredRecipeFolders.recipes.Work);
+assert(filteredRecipeFolders.papers.MyIdeas);
+assert(githubSyncManifestFileFingerprints(protectedTarget, historicalRecipeManifest).recipes["recipes/Old/BuiltIn.json"],
+  "callers without current built-in identities retain the original baseline behavior");
+const recipeMarkers = githubSyncEntryShields([protectedTarget], {}, {
+  protected:{recipes:{"recipes/Work/User.json":"c".repeat(64)}},
+}, {protected:filteredRecipeBaseline});
+assert.equal(recipeMarkers.recipes["recipes/Old/BuiltIn.json"], undefined, "built-ins use the existing not-included marker");
+assert.equal(recipeMarkers.recipes["recipes/Work/User.json"], "green");
+assert.equal(recipeMarkers.papers["papers/MyIdeas/Idea.md"], "yellow", "retained publication discrepancy remains visible");
 const legacySkillTarget = normalizeGitHubSyncTarget({name:'Legacy Skills',repository:'repo'}, () => 'legacy-skills');
 const secondSkillTarget = normalizeGitHubSyncTarget({name:'Second Skills',repository:'repo'}, () => 'second-skills');
 const legacySkillCatalog = Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type => [type, []]));
@@ -196,7 +219,7 @@ assert.strictEqual(githubSyncShield([legacySkillTarget], 'skills', {
 assert.strictEqual(JSON.stringify(legacySkillTargets), legacyTargetSnapshot, 'status comparison never rewrites stored synchronization records');
 assert(GITHUB_SYNC_CONTENT_TYPES.includes("agentSnapshots"));
 for (const type of GITHUB_SYNC_CONTENT_TYPES) {
-  assert.deepStrictEqual(defaults.public[type], { items: [], folders: ["packages", "servers", "agentSnapshots", "actions", "action-module-sets"].includes(type) ? [] : [""] });
+  assert.deepStrictEqual(defaults.public[type], { items: [], folders: ["packages", "servers", "agentSnapshots", "actions", "action-module-sets", "profiles"].includes(type) ? [] : [""] });
   assert.deepStrictEqual(defaults.private[type], { items: [], folders: [] });
 }
 const extensionSource = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");

@@ -15,7 +15,7 @@ try {
   assert(fs.existsSync(path.join(extensionRoot, "resources", "pkm-skills-router.md")), "VSIX must include the canonical PKM Skill Router seed");
   assert(fs.existsSync(path.join(extensionRoot, "dist", "skills/pkm-skill-projection.js")), "VSIX must include the compiled Skill projection manager");
   assert(fs.existsSync(path.join(extensionRoot, "resources", "retrieval_worker.py")), "VSIX must include the persistent retrieval worker");
-  for (const module of ["retrieval_solution.py", "retrieval_solutions.py", "retrieval_serving.py", "retrieval_solution_index.py", "retrieval_solution_resources.py"]) {
+  for (const module of ["retrieval_runtime.py", "retrieval_solution.py", "retrieval_solutions.py", "retrieval_serving.py", "retrieval_solution_index.py", "retrieval_solution_resources.py"]) {
     assert(fs.existsSync(path.join(extensionRoot, "resources", module)), `VSIX must include ${module}`);
   }
   assert(!fs.existsSync(path.join(extensionRoot, "retrieval-solutions")), "Private offline packages must never ship");

@@ -34,15 +34,22 @@ button { font: inherit; color: inherit; }
   border: 1px solid var(--vscode-button-border, transparent); background: var(--vscode-button-secondaryBackground, #3a3d41);
   color: var(--vscode-button-secondaryForeground, #fff); padding: 3px 10px; border-radius: 2px; cursor: pointer;
 }
-.pkm-vis-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 260px); gap: 12px; align-items: start; }
+.pkm-vis-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-items: start; }
 .pkm-vis-main { min-width: 0; border: 1px solid var(--vscode-panel-border, #444); border-radius: 4px; padding: 8px 10px; }
 .pkm-vis-main > h2 { font-size: 1.05em; margin: 0 0 8px; }
 .pkm-vis-main-detail { min-width: 0; }
+.pkm-vis-memory-pyramid { display: grid; gap: 8px; margin: 12px 0; }
+.pkm-vis-memory-level { border: 1px solid var(--vscode-panel-border, #555); border-left: 4px solid var(--vscode-charts-blue, #3794ff); padding: 8px; min-width: 0; }
+.pkm-vis-memory-level h4 { margin: 0 0 6px; }
+.pkm-vis-memory-level details { margin: 6px 0; overflow-wrap: anywhere; }
+.pkm-vis-memory-level summary { cursor: pointer; }
+.pkm-vis-main-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; }
 .pkm-vis-bindings:not([hidden]) { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .pkm-vis-bindings small { flex-basis: 100%; color: var(--vscode-descriptionForeground, #999); }
 .pkm-vis-bindings button { overflow-wrap: anywhere; text-align: left; max-width: 100%; }
 .pkm-vis-bindings button:disabled { opacity: .65; cursor: default; }
-.pkm-vis-tiles { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.pkm-vis-tiles { display: flex; flex-wrap: wrap; gap: 8px; }
+.pkm-vis-tiles .pkm-vis-tile { width:auto; flex:1 1 auto; }
 .pkm-vis-tile {
   display: block; text-align: left; width: 100%; min-width: 0; box-sizing: border-box; overflow-wrap: anywhere; padding: 8px 10px; cursor: pointer; border-radius: 4px;
   border: 1px solid var(--vscode-panel-border, #444); background: var(--vscode-editorWidget-background, #252526);

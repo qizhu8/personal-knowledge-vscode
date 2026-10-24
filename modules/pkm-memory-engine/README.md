@@ -105,6 +105,16 @@ duplicating statements; a reader spanning an external commit retains one coheren
 SQLite snapshot. These are local storage guarantees, not evidence of Windows UI
 refresh, cross-store recovery or physical power-loss durability.
 
+The Visualization window's Memory panel now uses `ChatMemoryService.inspect`
+to display actual stored abstraction levels, scoped relationships, revisions,
+summary validity and paged statement provenance, alongside attempt-context
+manifests and the durable post-reply receipt. It reuses `pieces`, `neighbors`,
+`usage`, `read` and `sources`, not the access-updating `memory_read` policy call.
+Inspection invokes no model and does not touch LRU. Counts are bounded and
+explicitly partial; the multi-read graph is a live observation, not one atomic
+historical snapshot. Original Chat source previews require matching revisions.
+See the [observation contract](../../docs/api-chat.md#stored-memory-observation-chain).
+
 ## Integration boundaries and remaining work
 
 This is a trusted local memory module, **not yet production-accepted**.

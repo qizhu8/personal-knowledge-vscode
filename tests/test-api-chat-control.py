@@ -150,6 +150,15 @@ async def main():
                 assert cancelled["result"]["reply"]["credits"] is None
                 legacy_query = await call(client, "api_chat_get", {"host_id": host_id, "chat_id": chat_id, "command_id": "legacy-id-query"})
                 assert (await receipt(client, legacy_query, "succeeded"))["result"]["running"] is False
+                for extra in [{}, {"command_id": ""}]:
+                    read_request = await call(client, "api_chat_get", {"host_id": host_id, "chat_id": chat_url, **extra})
+                    assert (await receipt(client, read_request, "succeeded"))["result"]["sendCalls"] == 1
+                for name in ["api_chat_list", "api_chat_models"]:
+                    await receipt(client, await call(client, name, {"host_id": host_id}), "succeeded")
+                await rejected(client, "api_chat_get", {"host_id": "", "chat_id": chat_url}, "host_id returned by api_chat_capabilities")
+                await rejected(client, "api_chat_get", {"host_id": "bad", "chat_id": chat_url}, "host_id returned by api_chat_capabilities")
+                await rejected(client, "api_chat_send", {**send_args, "command_id": ""}, "command_id must contain")
+                await rejected(client, "api_chat_create", {**create_args, "command_id": ""}, "command_id must contain")
                 for invalid_url in [chat_url + "?host=other", chat_url + "/extra", f"pkm://chats/wrong/{chat_id}", f"pkm://notes/0123456789abcdef/{chat_id}"]:
                     await rejected(client, "api_chat_get", {"host_id": host_id, "chat_id": invalid_url, "command_id": "invalid-url"}, "PKM Chat URL")
                 interrupted_args = {**send_args, "command_id": "interrupted-send"}

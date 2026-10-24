@@ -26,6 +26,8 @@ from recipe_runtime import _atomic_write, _background_process_options, _execute_
 from action_components import VALUE_TYPES, component_definitions, execute_steps, validate_steps, referenced_actions, pending_choices, answer_choice
 from action_run_store import ActionRunStore, action_contract
 from action_recovery import ActionRecovery, ActionSuspended, validate_reconciler
+from action_authoring import definition_diagnostics
+from action_monitoring import ActionFailure, append_event, observation, monitor_schema
 
 
 LAUNCHERS = {}
@@ -152,9 +154,32 @@ class ModuleRuntime:
             {"template_id": "chatroom-alias", "action_id": "core.chatroom-alias"},
             {"template_id": "poll", "description": "Pin a read-only query Action, observe one output field until an exact value or timeout.",
              "parameters": ["query_action_id", "query_revision", "query_inputs", "field", "expected",
-                            "interval_seconds", "timeout_seconds", "max_iterations"]}]}
+                            "interval_seconds", "timeout_seconds", "max_iterations"]},
+            {"template_id": "monitor", "description": "Observe all terminal results with durable snapshots, explicit stop reasons and replayable events.",
+             "parameters": ["template_id", "query_action_id", "query_revision", "query_inputs",
+                            "interval_seconds", "timeout_seconds", "max_iterations"]},
+            {"template_id": "azuredevops-pipeline-status", "description": "Explicit read-only host Azure CLI adapter; no credentials or live qualification by default.",
+             "parameters": ["template_id"]}]}
 
     def template_create(self, action_id, parameters):
+        if isinstance(parameters, dict) and parameters.get("template_id") == "azuredevops-pipeline-status":
+            from action_azuredevops import status_definition
+            if set(parameters) != {"template_id"}:
+                raise ValueError("The Azure DevOps status template takes no credentials or live smoke inputs.")
+            return self.register(status_definition(action_id))
+        monitoring = isinstance(parameters, dict) and parameters.get("template_id") == "monitor"
+        if monitoring:
+            parameters = {key: value for key, value in parameters.items() if key != "template_id"}
+            if set(parameters) != {"query_action_id", "query_revision", "query_inputs", "interval_seconds", "timeout_seconds", "max_iterations"}:
+                raise ValueError("Monitor requires exact query pins/inputs and bounded observation settings.")
+            query = self.definition(parameters["query_action_id"])
+            properties = query["output_schema"].get("properties", {})
+            if not {"remote_id", "terminal", "result"}.issubset(properties) or not {
+                    "remote_id", "terminal", "result"}.issubset(query["output_schema"].get("required", [])):
+                raise ValueError("Monitor queries must require remote_id, terminal and result output fields.")
+            if properties["terminal"].get("type") != "boolean" or properties["remote_id"].get("type") != "string":
+                raise ValueError("Monitor queries require boolean terminal and string remote_id.")
+            parameters = {**parameters, "field": "terminal", "expected": True}
         fields = {"query_action_id", "query_revision", "query_inputs", "field", "expected",
                   "interval_seconds", "timeout_seconds", "max_iterations"}
         if not isinstance(parameters, dict) or set(parameters) != fields:
@@ -175,12 +200,19 @@ class ModuleRuntime:
                 "inputs": {"$literal": parameters["query_inputs"]}}],
             "condition": {"$op": "eq", "args": [{"$step": "query." + field}, {"$literal": parameters["expected"]}]},
             "value": {"$step": "query." + field}}}]
+        if monitoring:
+            steps[0]["component"] = "core.monitor"
+            steps[0]["inputs"]["remote_id"] = str(parameters["query_inputs"].get("run_id", ""))
+            steps[0]["inputs"]["value"] = {"$step": "query"}
+        output_schema = monitor_schema() if monitoring else component_definitions()["core.poll"]["output_schema"]
         return self.register({"schema": "pkm.action.definition/v1", "action_id": action_id, "version": 1,
-            "description": "Read-only polling template; timed_out is not a successful condition.",
-            "input_schema": object_schema({}), "output_schema": component_definitions()["core.poll"]["output_schema"],
+            "description": "Durable read-only observation; failed/cancelled remote results and observation timeout never authorize continuation." if monitoring else
+                "Read-only polling template; timed_out is not a successful condition.",
+            "input_schema": object_schema({}), "output_schema": output_schema,
             "dependencies": {query["action_id"]: query["content_hash"]}, "effects": sorted(set(query["effects"]) | {"pure"}),
             "implementations": [{"id": "native", "kind": "pipeline", "platforms": ["Linux", "Windows", "Darwin"],
-                "steps": steps, "output": {name: {"$step": "poll." + name} for name in ["status", "attempts", "value"]}}],
+                **({"observation_monitor": True} if monitoring else {}),
+                "steps": steps, "output": {name: {"$step": "poll." + name} for name in output_schema["properties"]}}],
             "examples": [{"inputs": {}}]})
 
     def installed_module_manifest(self, module_set_id, version, verify_files=False):
@@ -779,6 +811,19 @@ class ModuleRuntime:
             raise PermissionError("needs_workspace: configure personalKnowledge.actions.workspaceRoots for this OS.")
         return Path(value).resolve()
 
+    def publish_monitor(self, record, value):
+        with self.lock():
+            current = self.recovery._authoritative(record)
+            record["execution"] = current["execution"]
+            record["event_sequence"] = current.get("event_sequence", 0)
+            record["notifications"] = current.get("notifications", [])
+            record["monitor"] = value
+            if current.get("monitor") == value:
+                return
+            append_event(record, value["stop_reason"], {key: value[key] for key in (
+                "remote_id", "remote_result", "attempts", "last_observed_at", "next_check_at", "observation_deadline", "failure")})
+            _atomic_write(self.path(record["run_id"]), record)
+
     def library_get(self, action_id):
         catalog = self.catalog()
         action = next((item for item in catalog["actions"] if item["action_id"] == action_id), None)
@@ -905,7 +950,10 @@ class ModuleRuntime:
             if self.availability(child)["state"] != "ready":
                 raise ValueError("Nested Action must have completed validation for its pinned version: " + child)
 
-    def register(self, definition, expected_content_hash=None):
+    def validate_definition(self, definition):
+        diagnostics = definition_diagnostics(definition)
+        if diagnostics:
+            raise ValueError(json.dumps({"error": "invalid_action_definition", "diagnostics": diagnostics}))
         allowed = {"schema", "action_id", "version", "description", "input_schema", "output_schema",
                    "effects", "implementations", "dependencies", "casts", "examples", "display_name", "graph", "provenance", "reconciler"}
         if not isinstance(definition, dict) or set(definition) - allowed:
@@ -940,6 +988,27 @@ class ModuleRuntime:
                 effects = validate_steps(implementation.get("steps"), definition.get("dependencies", {}))
                 if not effects.issubset(set(definition["effects"])):
                     raise ValueError("Basic component effects must be declared by the parent Action.")
+
+    def definition_check(self, definition):
+        diagnostics = definition_diagnostics(definition)
+        if not diagnostics:
+            try:
+                self.validate_definition(definition)
+                self.dependency_closure(definition["action_id"], definition.get("dependencies", {}))
+                path = self.registry / (definition["action_id"] + ".json")
+                if path.exists() and definition["version"] <= json.loads(path.read_text(encoding="utf-8"))["version"]:
+                    diagnostics.append({"path": "/version", "code": "revision",
+                                        "message": "Updating an Action requires a larger version."})
+            except (ValueError, KeyError, FileNotFoundError) as error:
+                diagnostics.append({"path": "/", "code": "semantic", "message": str(error)})
+        return {"schema": "pkm.action.definition-check/v1", "ok": not diagnostics,
+                "diagnostics": diagnostics, "persisted": False, "executed": False,
+                "readiness_checked": False,
+                "next_action": "action_register" if not diagnostics else "fix_definition"}
+
+    def register(self, definition, expected_content_hash=None):
+        self.validate_definition(definition)
+        name = definition["action_id"]
         with self.lock():
             self.registry.mkdir(parents=True, exist_ok=True)
             path = self.registry / (name + ".json")
@@ -1671,6 +1740,10 @@ class ModuleRuntime:
                             self.recovery._review(current, "cancelled-with-unresolved-child")
                             continue
                         current.update({"state": "cancelled", "ok": False, "completed_at": now().isoformat()})
+                        if "monitor" in current:
+                            current["monitor"] = observation(current, current["monitor"]["observation_deadline"],
+                                                             current["monitor"]["attempts"], reason="cancelled")
+                            append_event(current, "cancelled", {"remote_id": current["monitor"]["remote_id"]})
                         current["execution"]["fence"] += 1
                         self.runs.transition(current, "completed", "waiting-cancelled", "none")
         return {**record, "cancel_requested": record.get("state") in {"running", "waiting"}, "remote_rollback": False}
@@ -2089,7 +2162,17 @@ class ModuleRuntime:
                 raise TimeoutError("Program outcome unknown after cancellation/timeout.")
             if not result["ok"] or result["stdout_truncated"]:
                 raise RuntimeError("Program failed or output exceeded its bound.")
-            return json.loads(result["stdout"])
+            output = json.loads(result["stdout"])
+            if implementation.get("result_protocol") == "pkm.action.result/v1":
+                if not isinstance(output, dict) or type(output.get("ok")) is not bool:
+                    raise ValueError("Program result protocol requires an explicit ok boolean.")
+                if output["ok"] is False:
+                    failure = output.get("failure")
+                    if not isinstance(failure, dict) or not isinstance(failure.get("code"), str) or not isinstance(failure.get("message"), str):
+                        raise ValueError("Program failure must include code and message.")
+                    raise ActionFailure(failure)
+                return output["output"]
+            return output
         if implementation["kind"] == "mcp":
             async def invoke():
                 from fastmcp import Client
@@ -2139,12 +2222,26 @@ class ModuleRuntime:
             check(record["definition"]["output_schema"], output)
             if self.cancelled(record):
                 raise TimeoutError("Invocation cancelled or deadline exceeded.")
-            record.update({"state": "succeeded", "output": output, "ok": True})
+            success = True
+            if self.implementation(record["definition"]).get("observation_monitor"):
+                success = output["stop_reason"] == "remote_completed" and output["remote_result"] == "succeeded"
+            record.update({"state": "succeeded" if success else "failed", "output": output, "ok": success})
+            if not success:
+                record["error"] = "Observation ended: " + output["stop_reason"] + "; remote result: " + str(output["remote_result"])
+                code = "remote_" + str(output["remote_result"]) if output["stop_reason"] == "remote_completed" else output["stop_reason"]
+                record["failure"] = output.get("failure") or {"code": code, "message": record["error"], "blocked": False}
         except ActionSuspended:
             return
         except Exception as error:
             effects = action_contract(record["definition"])["effects"]
             record.update({"state": "outcome_unknown" if isinstance(error, TimeoutError) or effects != ["read"] else "failed", "ok": False, "error": str(error)})
+            if isinstance(error, ActionFailure):
+                record["failure"] = error.failure
+            if "monitor" in record and (self.path(run_id).parent / "cancel.json").exists():
+                record["state"] = "cancelled"
+                record["monitor"] = observation(record, record["monitor"]["observation_deadline"],
+                                                 record["monitor"]["attempts"], reason="cancelled")
+                append_event(record, "cancelled", {"remote_id": record["monitor"]["remote_id"]})
         record["completed_at"] = now().isoformat()
         with self.lock():
             self.runs.finish(record)

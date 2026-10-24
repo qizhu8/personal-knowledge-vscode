@@ -109,7 +109,7 @@ const uiContext = {
   console,
 };
 vm.createContext(uiContext);
-vm.runInContext(`${uiSource};this.onSnapshot=backgroundTasksOnSnapshot;this.show=showBackgroundTasksTab;this.timeLabel=backgroundTaskScheduleLabel`, uiContext);
+vm.runInContext(`${uiSource};this.onSnapshot=backgroundTasksOnSnapshot;this.onProcesses=backgroundProcessesOnSnapshot;this.show=showBackgroundTasksTab;this.timeLabel=backgroundTaskScheduleLabel`, uiContext);
 uiContext.onSnapshot({
   revision: 1,
   tasks: [
@@ -124,11 +124,37 @@ uiContext.onSnapshot({ revision: 2, tasks: [] });
 assert.match(detail.innerHTML, /No background tasks/);
 assert.strictEqual(uiContext.timeLabel("2026-09-25T06:05:00.000Z", Date.parse("2026-09-25T06:00:00.000Z")), "in 5m");
 uiContext.show();
-assert.deepStrictEqual(asks, [], "a cached snapshot must render without another host request");
+assert.strictEqual(asks.length, 1, "opening the tab refreshes processes without re-requesting cached tasks");
+assert.strictEqual(asks[0][0], "backgroundProcesses");
+assert.strictEqual(Object.keys(asks[0][1]).length, 0);
+uiContext.onProcesses({
+  host: "local-test", platform: "linux", sampledAt: "2026-10-22T05:00:00Z",
+  processes: [{ pid: 123, parentPid: 1, kind: "retrieval", entryExists: false,
+    fixture: true, pathVersion: "3.2.42", elapsedSeconds: 90061, rssBytes: 104857600,
+    assessment: { state: "test-leftover", basis: "entry-path" },
+    entryPath: "/tmp/pkm-startup-x/<script>.py" }],
+});
+assert.match(detail.innerHTML, /Background Processes/);
+assert.match(detail.innerHTML, /Test leftover · entry deleted/);
+assert.match(detail.innerHTML, /PID 123/);
+assert.match(detail.innerHTML, /Parent 1/);
+assert.match(detail.innerHTML, /25h 1m · 100.0 MiB/);
+assert.match(detail.innerHTML, /Entry-path version: 3.2.42/);
+assert.match(detail.innerHTML, /Test fixture path/);
+assert.match(detail.innerHTML, /&lt;script>/);
+assert.doesNotMatch(detail.innerHTML, /<script>/);
+assert.match(detail.innerHTML, /No background tasks/, "a live process must not imply active work");
+uiContext.onSnapshot({ revision: 3, tasks: [] });
+assert.match(detail.innerHTML, /PID 123/, "task updates must not erase the process inventory");
+uiContext.onProcesses({ processes: [], error: "Cannot inspect processes" });
+assert.match(detail.innerHTML, /role="alert">Cannot inspect processes/);
+assert.doesNotMatch(detail.innerHTML, /No recognized PKM background processes found/, "failure must not look like an empty inventory");
 
 assert.match(html, /data-tab="backgroundTasks">Background Tasks/);
 assert.match(core, /settings:\[[^\]]*'backgroundTasks'/);
 assert.match(core, /command === 'backgroundTasks'[\s\S]{0,100}backgroundTasksOnSnapshot/);
+assert.match(core, /command === 'backgroundProcesses'[\s\S]{0,100}backgroundProcessesOnSnapshot/);
+assert.match(extensionSource, /case "backgroundProcesses"[\s\S]{0,350}readInstalledExtensionBuild\(context.extensionPath, context.extension.id\)[\s\S]{0,200}backgroundProcessInventory.snapshot\(installed\)/);
 assert.match(knowledge, /state\.tab === 'backgroundTasks'[\s\S]{0,180}showBackgroundTasksTab/);
 assert.match(extensionSource, /respond\(\{ command: "backgroundTasks", data: backgroundTaskRegistry\.snapshot\(\) \}\)/);
 for (const producer of ["inventoryTask", "retrievalQueuedTask", "brokerRefreshQueuedTask", "contentCheckTask", "updateGitHubSyncBackgroundTask"]) {

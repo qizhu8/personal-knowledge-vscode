@@ -6,6 +6,8 @@ import { memoryMatchScore, memoryTerms, toolEvidenceReminder } from "./chat-memo
 export interface AutomaticChatContext {
   ids: string[];
   priority: number;
+  budget?: "knowledge";
+  preferRefinement?: boolean;
   groupId?: string;
   refine?: (query?:string) => Array<{ message:ApiChatMessage; reference:AutomaticChatContext }>;
   isCurrent?: () => boolean;
@@ -22,7 +24,10 @@ export interface ContextPlanReceipt {
   unresolved: string[];
   manifest: Array<{ role:ApiChatMessage["role"]; hash:string; referenceIds:string[]; callIds:string[] }>;
   toolSchemaHash: string;
+  automaticKnowledge?: { inputBudget: number; estimatedBefore: number; estimatedAfter: number; countingMethod: "utf8-byte-upper-bound" };
 }
+
+export const AUTOMATIC_KNOWLEDGE_INPUT_BUDGET = 8_000;
 
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
@@ -45,8 +50,11 @@ export function fitChatContext(
     throw new Error("Context budget exceeded by required input, pinned context or active tool results. Reduce required context or increase the model budget.");
   }
   const estimatedBefore = estimateInputTokens([...messages, ...toolSchema]);
+  const knowledgeMessages = (values: ApiChatMessage[]) => values.filter(message => automatic.get(message)?.budget === "knowledge");
+  const knowledgeBefore = knowledgeMessages(messages);
   const selected = new Set(mandatory);
   let tokens = mandatoryTokens, refinements = 0, candidates = 0;
+  let knowledgeTokens = 32;
   let stopReason: ContextPlanReceipt["stopReason"] = estimatedBefore <= inputBudget ? "fits" : "selected-subset";
   const unresolved: string[] = [];
   const groups = new Map<string | ApiChatMessage, ApiChatMessage[]>();
@@ -62,8 +70,13 @@ export function fitChatContext(
       stopReason = "stale-source"; unresolved.push(...group.flatMap(message => automatic.get(message)!.ids)); continue;
     }
     const cost = estimateInputTokens(group) - 32;
-    if (tokens + cost <= inputBudget) { for (const message of group) selected.add(message); tokens += cost; continue; }
     const reference = automatic.get(group[0])!;
+    const knowledgeCost = estimateInputTokens(knowledgeMessages(group)) - 32;
+    if (tokens + cost <= inputBudget && knowledgeTokens + knowledgeCost <= AUTOMATIC_KNOWLEDGE_INPUT_BUDGET
+      && !(reference.preferRefinement && reference.refine)) {
+      for (const message of group) selected.add(message);
+      tokens += cost; knowledgeTokens += knowledgeCost; continue;
+    }
     if (!reference.refine) continue;
     const operation = digest(group.map(message => [message, automatic.get(message)!.ids]));
     if (operations.has(operation)) { stopReason = "no-progress"; unresolved.push(...reference.ids); continue; }
@@ -92,7 +105,7 @@ export function fitChatContext(
     if (!fresh.length) { if (stopReason === "selected-subset") stopReason = "no-progress"; unresolved.push(...reference.ids); continue; }
     for (const item of fresh) {
       if (item.message.role !== "system" || item.message.tool_calls || item.message.tool_call_id || item.message.images?.length) throw new Error("Refinement can only return reference text, not instructions or tool calls.");
-      automatic.set(item.message, { ...item.reference, refine:undefined });
+      automatic.set(item.message, { ...item.reference, ...(reference.budget ? { budget:reference.budget } : {}), refine:undefined });
     }
     const replacement = fresh.map(item => item.message);
     const position = messages.indexOf(group[0]);
@@ -100,19 +113,26 @@ export function fitChatContext(
     for (const item of fresh.sort((a, b) => b.reference.priority - a.reference.priority)) {
       if (item.reference.isCurrent?.() === false) { stopReason = "stale-source"; unresolved.push(...item.reference.ids); continue; }
       const refinedCost = estimateInputTokens([item.message]) - 32;
-      if (tokens + refinedCost <= inputBudget) { selected.add(item.message); tokens += refinedCost; }
+      const refinedKnowledgeCost = automatic.get(item.message)?.budget === "knowledge" ? refinedCost : 0;
+      if (tokens + refinedCost <= inputBudget && knowledgeTokens + refinedKnowledgeCost <= AUTOMATIC_KNOWLEDGE_INPUT_BUDGET) {
+        selected.add(item.message); tokens += refinedCost; knowledgeTokens += refinedKnowledgeCost;
+      }
       else unresolved.push(...item.reference.ids);
     }
   }
   const omittedIds = [...new Set(messages.filter(message => !selected.has(message)).flatMap(message => automatic.get(message)?.ids || []))];
   messages.splice(0, messages.length, ...messages.filter(message => selected.has(message)));
   const ids = new Set(messages.flatMap(message => automatic.get(message)?.ids || []));
+  if (stopReason === "fits" && omittedIds.some(id => !ids.has(id))) stopReason = "selected-subset";
   options.report?.({
     schema:"pkm.chat.context-plan/v1", estimatedBefore, estimatedAfter:estimateInputTokens([...messages, ...toolSchema]),
     inputBudget, refinements, stopReason, omittedIds:omittedIds.filter(id => !ids.has(id)), unresolved:[...new Set(unresolved)],
     manifest:messages.map(message => ({ role:message.role, hash:digest(message), referenceIds:automatic.get(message)?.ids || [],
       callIds:message.tool_calls?.map(call => call.id) || (message.tool_call_id ? [message.tool_call_id] : []) })),
     toolSchemaHash:digest(toolSchema),
+    ...(knowledgeBefore.length ? { automaticKnowledge:{ inputBudget:AUTOMATIC_KNOWLEDGE_INPUT_BUDGET,
+      estimatedBefore:estimateInputTokens(knowledgeBefore), estimatedAfter:estimateInputTokens(knowledgeMessages(messages)),
+      countingMethod:"utf8-byte-upper-bound" as const } } : {}),
   });
   return ids;
 }

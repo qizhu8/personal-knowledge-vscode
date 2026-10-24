@@ -4,9 +4,274 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { chromium } = require(process.env.PKM_PLAYWRIGHT_PATH || "playwright");
 
-const webview = path.join(__dirname, "..", "dist", "webview");
+const webview = path.join(process.env.PKM_ACTIVITY_EXTENSION_ROOT || path.join(__dirname, ".."), "dist", "webview");
+test("feature introduction shows real Chat UI with synthetic messages and no model request", async t => {
+  const { page, errors } = await open(t);
+  await page.evaluate(() => {
+    window.__state.chat.title = "PKM Chat: Daily Work";
+    window.__state.chats[0].title = window.__state.chat.title;
+    window.__state.library.chats[0].title = window.__state.chat.title;
+    window.__state.chat.messages = [
+      { id:"feature-user", role:"user", status:"complete", content:"Help me plan today's work and find the reusable Skills for it." },
+      { id:"feature-assistant", role:"assistant", status:"complete",
+        content:"Keep the work in one place:\n\n- Search your local Knowledge and reuse relevant Skills.\n- Track Tasks and inspect the Harness.\n- Ask for approval before tools change files or run commands.\n- Connect another machine through this Chat's Portal when needed.\n\n*Illustrative UI example; no model request was sent.*" },
+    ];
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  assert.match(await page.locator("body").innerText(), /Illustrative UI example/);
+  assert.equal(await page.evaluate(() => __posts.filter(item => item.type === "send").length), 0);
+  if (process.env.PKM_FEATURE_CHAT_SCREENSHOT) await page.screenshot({ path:process.env.PKM_FEATURE_CHAT_SCREENSHOT, fullPage:false });
+  assert.deepEqual(errors, []);
+});
+test("clipboard PNG/JPEG uses image drafts without changing text paste or sending a model request", async t => {
+  const { page, errors } = await open(t);
+  await page.evaluate(() => {
+    window.__state.settings.provider = "vscode";
+    window.__state.settings.selectedProfile.imageInput = true;
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+    window.__pasteImage = (type = "image/png", size = 24) => {
+      const clipboardData = new DataTransfer();
+      clipboardData.items.add(new File([new Uint8Array(size)], "clipboard.png", { type }));
+      const event = new ClipboardEvent("paste", { clipboardData, bubbles:true, cancelable:true });
+      document.getElementById("prompt").dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+  });
+  assert.equal(await page.evaluate(() => window.__pasteImage()), true);
+  await page.waitForFunction(() => window.__posts.some(item => item.type === "pasteImages"));
+  const pasted = await page.evaluate(() => window.__posts.find(item => item.type === "pasteImages"));
+  assert.equal(pasted.chatId, chatId);
+  assert.equal(pasted.images[0].mimeType, "image/png");
+  assert.equal(pasted.images[0].dataBase64, Buffer.alloc(24).toString("base64"));
+  await page.evaluate(image => {
+    window.__state.chat.images = [image];
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  }, { ...pasted.images[0], dataBase64:"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aQp8AAAAASUVORK5CYII=" });
+  assert.equal(await page.locator("#images img").count(), 1);
+  await page.getByRole("button", { name:"Remove image: Pasted image 1.png", exact:true }).click();
+  assert(await page.evaluate(() => window.__posts.some(item => item.type === "removeImage" && item.value === 0)));
+  const plain = await page.evaluate(() => {
+    const clipboardData = new DataTransfer(); clipboardData.setData("text/plain", "ordinary text");
+    const event = new ClipboardEvent("paste", { clipboardData, bubbles:true, cancelable:true });
+    document.getElementById("prompt").dispatchEvent(event); return event.defaultPrevented;
+  });
+  assert.equal(plain, false, "ordinary text retains native paste handling");
+  await page.evaluate(() => window.__pasteImage("image/jpeg"));
+  await page.waitForFunction(() => window.__posts.filter(item => item.type === "pasteImages").length === 2);
+  assert.equal(await page.evaluate(() => window.__posts.filter(item => item.type === "pasteImages")[1].images[0].mimeType), "image/jpeg");
+  await page.evaluate(() => {
+    window.__NativeReader = FileReader;
+    window.FileReader = class extends window.__NativeReader {
+      readAsDataURL(file) { setTimeout(() => super.readAsDataURL(file), 30); }
+    };
+    window.__pasteImage();
+    window.__state.chat.id = "different-chat";
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  await page.waitForFunction(() => document.getElementById("error").textContent.includes("selected Chat changed"));
+  assert.equal(await page.evaluate(() => window.__posts.filter(item => item.type === "pasteImages").length), 2);
+  await page.evaluate(id => {
+    window.FileReader = window.__NativeReader;
+    window.__state.chat.id = id;
+    window.__state.chat.images = [window.__state.chat.images[0], window.__state.chat.images[0]];
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+    window.__pasteImage();
+  }, chatId);
+  assert.match(await page.locator("#error").innerText(), /two images/);
+  await page.evaluate(() => {
+    window.__state.chat.images = [];
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  for (const [type, size, expected] of [["image/gif", 24, "PNG/JPEG"], ["image/png", 600000, "512 KB"]]) {
+    await page.evaluate(({ type, size }) => window.__pasteImage(type, size), { type, size });
+    assert((await page.locator("#error").innerText()).includes(expected));
+  }
+  await page.evaluate(() => {
+    window.__state.settings.provider = "openai-compatible";
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+    window.__pasteImage();
+  });
+  assert.match(await page.locator("#error").innerText(), /vision-capable/);
+  assert.equal(await page.evaluate(() => window.__posts.filter(item => item.type === "pasteImages").length), 2);
+  assert.equal(await page.evaluate(() => window.__posts.filter(item => item.type === "send").length), 0);
+  assert.deepEqual(errors, []);
+});
+for (const width of [360, 1280]) test(`Activity categories preserve chronology, filtering and explicit completion at ${width}px`, async t => {
+  const { page, errors } = await open(t, width);
+  await page.evaluate(() => {
+    const now = Date.now() - 10_000;
+    window.__state.chat.messages = [{ id:"typed-activity", role:"assistant", status:"complete", content:"Fixture",
+      progress:{ attemptId:"typed-attempt", startedAt:now, finishedAt:now + 9000, status:"complete", steps:[
+        { label:"Preparing Memory context", category:"info", operation:"preparation", at:now, finishedAt:now + 100, status:"complete" },
+        { label:"Memory: understanding the question", category:"llm", operation:"inference", at:now + 100, finishedAt:now + 400, status:"complete" },
+        { label:"Counting input tokens with VS Code model", category:"llm", operation:"token-count", at:now + 2000, finishedAt:now + 2100, status:"complete" },
+        { label:"Running tool: fixture", kind:"tool", at:now + 3000, status:"complete" },
+        { label:"Historical local preparation", at:now + 4000, status:"complete" },
+        { label:"Counting output tokens with VS Code model", category:"info", operation:"token-count", at:now + 8000, finishedAt:now + 8100, status:"complete" },
+      ] } }];
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  const activity = page.locator('[data-message-id="typed-activity"] .workflow');
+  await activity.locator(":scope > summary").click();
+  const rows = activity.locator("li[data-category]");
+  assert.deepEqual(await rows.evaluateAll(nodes => nodes.map(node => node.dataset.category)), ["info", "llm", "cmd", "info"]);
+  const originalOrder = await rows.locator(".activity-label").allTextContents();
+  const memoryTimer = rows.nth(1).locator(".elapsed");
+  assert.equal(await memoryTimer.evaluate(node => Number(node.dataset.finished) - Number(node.dataset.started)), 300,
+    "Memory completion does not include subsequent preparation/retrieval");
+  assert.equal(await rows.nth(2).locator(".activity-usage").innerText(), "");
+  assert.equal(await activity.getByText("Counting input tokens with VS Code model", { exact:true }).count(), 0);
+  assert.equal(await activity.getByText("Counting output tokens with VS Code model", { exact:true }).count(), 0);
+  const filter = activity.getByLabel("Activity type filter");
+  for (const category of ["llm", "cmd", "info"]) {
+    await filter.selectOption(category);
+    assert.deepEqual(await rows.evaluateAll(nodes => nodes.filter(node => !node.hidden).map(node => node.dataset.category)),
+      category === "llm" ? ["llm"] : category === "cmd" ? ["cmd"] : ["info", "info"]);
+  }
+  await page.evaluate(() => window.dispatchEvent(new MessageEvent("message", { data:window.__state })));
+  assert.equal(await filter.inputValue(), "info", "filter survives a live re-render");
+  await filter.selectOption("all");
+  assert.deepEqual(await rows.locator(".activity-label").allTextContents(), originalOrder);
+  assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+  assert.deepEqual(errors, []);
+});
+
+test("queued message editing preserves draft and focus across completion and requires host hold acknowledgement", async t => {
+  const { page, errors } = await open(t, 360);
+  await page.evaluate(() => {
+    window.__state.chat.queuedInputs = [{ id:"queue-first", text:"First draft", mode:"task" }, { id:"queue-second", text:"Second draft", mode:"task" }];
+    window.__state.busy = true;
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  await page.getByRole("button", { name:"Edit queued message", exact:true }).first().click();
+  const editor = page.getByRole("textbox", { name:"Edit queued message", exact:true });
+  await editor.fill("Edited while running");
+  assert.equal(await page.getByRole("button", { name:"Save queued message", exact:true }).isDisabled(), true);
+  const begin = await page.evaluate(() => window.__posts.find(item => item.type === "beginQueuedEdit"));
+  assert.equal(begin.id, "queue-first");
+  await page.evaluate(begin => {
+    window.__state.chat.queuedInputs[0].editToken = begin.editToken;
+    window.__state.busy = false;
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  }, begin);
+  assert.equal(await editor.inputValue(), "Edited while running");
+  assert.equal(await editor.evaluate(node => node === document.activeElement), true);
+  assert.equal(await page.getByRole("button", { name:"Run queued inputs", exact:true }).isDisabled(), true);
+  const restored = await open(t, 360, await page.evaluate(() => ({ saved:window.__saved, state:window.__state })));
+  assert.equal(await restored.page.getByRole("textbox", { name:"Edit queued message", exact:true }).inputValue(), "Edited while running");
+  assert.equal(await restored.page.getByRole("button", { name:"Save queued message", exact:true }).isEnabled(), true);
+  assert.equal(await restored.page.getByRole("button", { name:"Run queued inputs", exact:true }).isDisabled(), true);
+  await page.getByRole("button", { name:"Save queued message", exact:true }).click();
+  const save = await page.evaluate(() => window.__posts.find(item => item.type === "saveQueuedEdit"));
+  assert.equal(save.text, "Edited while running");
+  assert.equal(save.editToken, begin.editToken);
+  assert.equal(save.chatId, begin.chatId);
+  await page.evaluate(() => window.dispatchEvent(new MessageEvent("message", {
+    data:{ type:"queuedEditRejected", chatId:window.__state.chat.id, id:"queue-first", operation:"saveQueuedEdit" },
+  })));
+  assert.equal(await editor.inputValue(), "Edited while running", "failed save preserves the editable draft");
+  assert.equal(await page.getByRole("button", { name:"Save queued message", exact:true }).isEnabled(), true);
+  await page.getByRole("button", { name:"Cancel queued edit", exact:true }).click();
+  assert.equal(await page.evaluate(() => window.__posts.find(item => item.type === "cancelQueuedEdit").editToken), begin.editToken);
+  assert.equal(await page.evaluate(() => window.__posts.filter(item => item.type === "send" || item.type === "runQueued").length), 0);
+  assert.deepEqual(errors, []);
+});
+
+test("historical retrieval inspector separates recall, prepared and accepted rounds across four Chat turns", async t => {
+  const { page, errors } = await open(t, 360);
+  await page.evaluate(() => {
+    const receipt = (index, phase) => ({ schema:"pkm.chat.retrieval/v1", chatId:window.__state.chat.id,
+      model:"fixture", query:`query-${index}`, phase, selectedCount:1, candidates:[{
+        id:`source-${index}`, label:`Evidence ${index}`, kind:"note", method:"semantic", score:0.7,
+        sourceUri:`pkm://notes/fixture-${index}`, sourceRevision:`revision-${index}`,
+        contentHash:"a".repeat(64), range:{ start:5, end:15, unit:"characters" }, offsetEncoding:"utf16",
+        selected:true, evidenceState:phase === "sent" ? "sent" : "selected", reason:"Exact fixture reference",
+      }, {
+        id:`stale-${index}`, label:"Excluded stale reference", kind:"note", method:"semantic", score:0.2,
+        sourceUri:`pkm://notes/stale-${index}`, selected:false, evidenceState:"stale", reason:"Source revision changed",
+      }] });
+    window.__state.chat.messages = [0, 1, 2, 3].flatMap(index => {
+      const sent = index === 0 || index === 3;
+      const retrieval = receipt(index, sent ? "sent" : "prepared");
+      const budget = { round:0, modelId:`model-${index}`, status:sent ? "sent" : "prepared",
+        countingMethod:"utf8-byte-estimate", consumed:{ estimatedInputTokens:150 }, effective:{ inputBudget:1000, outputTokens:200 },
+        selectedReferenceIds:[`source-${index}`],
+        contextPlan:{ stopReason:"fits", manifest:[{ hash:"plan-hash", referenceIds:[`source-${index}`] }], omittedIds:[], unresolved:[] },
+        ...(index !== 2 ? { transport:{ provider:index === 3 ? "vscode" : "http", inputTokens:155,
+          countingMethod:index === 3 ? "vscode-countTokens-plus-overhead" : "utf8-byte-estimate", messageHashes:["plan-hash"] } } : {}) };
+      return [{ id:`input-${index}`, role:"user", content:`Turn ${index + 1}` },
+        { id:`reply-${index}`, role:"assistant", content:"Fixture response", progress:{ attemptId:`attempt-${index}`,
+          startedAt:Date.now(), finishedAt:Date.now(), status:"complete", steps:[] },
+          budgetReceipts:[budget], ...(index !== 2 ? { retrieval, retrievalActivity:{ attempts:[{ kind:"knowledge", durationMs:3,
+            receipt:receipt(index, "recalled") }], rounds:[{ index:0, inputTokens:150, inputBudget:1000, receipt:retrieval }], droppedRounds:0 } } : {}) }];
+    });
+    const first = window.__state.chat.messages.find(message => message.id === "reply-0");
+    first.budgetReceipts.push({ ...structuredClone(first.budgetReceipts[0]),
+      round:1, modelId:"second-round-model", status:"prepared", transport:undefined });
+    first.retrievalActivity.rounds.push({ index:1, inputTokens:150, inputBudget:1000,
+      receipt:receipt(0, "prepared") });
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  await page.locator('[data-message-id="reply-0"] button[aria-label="Memory"]').click();
+  const evidence = page.locator("#retrieval-evidence");
+  await page.locator("#retrieval-step").selectOption("round-0");
+  assert.match(await evidence.innerText(), /query-0/);
+  assert.match(await evidence.innerText(), /Accepted transport; not proof of model completion/);
+  assert.match(await evidence.innerText(), /HTTP message hash comparison: Match/);
+  assert.match(await evidence.innerText(), /150 \/ 1000/);
+  await page.evaluate(() => {
+    window.__state.chat.messages.find(message => message.id === "reply-0").budgetReceipts[0].transport.messageHashes = ["different-hash"];
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  assert.match(await evidence.innerText(), /HTTP message hash comparison: Mismatch/);
+  await page.locator("#retrieval-step").selectOption("round-1");
+  assert.match(await evidence.innerText(), /second-round-model \/ 2/);
+  assert.match(await evidence.innerText(), /Plan prepared; not confirmed sent/);
+  await page.locator("#retrieval-step").selectOption("attempt-0");
+  assert.match(await page.locator("#retrieval-status").innerText(), /Recall shortlist, not sent context/);
+  assert(!/Dispatch evidence:/.test(await evidence.innerText()));
+  await page.locator("#retrieval-activity").selectOption("reply-1");
+  await page.locator("#retrieval-step").selectOption("round-0");
+  assert.match(await evidence.innerText(), /Transport prepared; not confirmed sent/);
+  assert.match(await page.locator("#retrieval-status").innerText(), /Prepared context; not confirmed sent/);
+  assert(!/Sent context/.test(await page.locator("#retrieval-status").innerText()));
+  await page.locator("#retrieval-activity").selectOption("reply-2");
+  await page.locator("#retrieval-step").selectOption("round-0");
+  assert.match(await evidence.innerText(), /Plan prepared; not confirmed sent/);
+  assert.match(await evidence.innerText(), /Actual transport: Not recorded/);
+  assert(!/query-1/.test(await evidence.innerText()));
+  await page.locator("#retrieval-activity").selectOption("reply-3");
+  await page.locator("#retrieval-step").selectOption("round-0");
+  assert.match(await evidence.innerText(), /Native message conversion; raw plan hashes are not comparable/);
+  await page.locator("#retrieval-candidates .memory-segment").first().click();
+  assert.match(await page.locator("#retrieval-candidates").innerText(), /revision-3/);
+  assert.match(await page.locator("#retrieval-candidates").innerText(), /\[5, 15\)/);
+  await page.locator("#retrieval-candidates .memory-segment").nth(1).click();
+  assert.match(await page.locator("#retrieval-candidates").innerText(), /Not selected · stale/);
+  assert.match(await page.locator("#retrieval-candidates").innerText(), /Source revision changed/);
+  const overflow = await page.locator("#memory-panel").evaluate(node => ({
+    width:node.clientWidth, scroll:node.scrollWidth,
+    children:[...node.querySelectorAll("*")].filter(child => child.scrollWidth > node.clientWidth)
+      .map(child => ({ tag:child.tagName, id:child.id, class:child.className, width:child.scrollWidth })).slice(0, 12),
+  }));
+  assert(overflow.scroll <= overflow.width + 1, `Hashes and provenance must wrap: ${JSON.stringify(overflow)}`);
+  assert.equal(await page.evaluate(() => window.__posts.some(item => item.type === "send")), false);
+  assert.deepEqual(errors, []);
+});
 const chatId = "11111111-1111-4111-8111-111111111111";
-async function open(t, width = 1280) {
+test("Profiles action fits its button without spilling into adjacent toolbar controls", async t => {
+  const { page } = await open(t);
+  for (const width of [320, 360, 1280]) {
+    await page.setViewportSize({ width, height:900 });
+    const size = await page.getByRole("button", { name:"User / Agent Profiles", exact:true }).evaluate(element => ({
+      client:element.clientWidth, content:element.scrollWidth,
+    }));
+    assert(size.content <= size.client, `Profiles label overflows at ${width}px: ${JSON.stringify(size)}`);
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+  }
+});
+
+async function open(t, width = 1280, restored) {
   const browser = await chromium.launch({ headless:true, ...(process.env.PKM_CHROMIUM_EXECUTABLE ? { executablePath:process.env.PKM_CHROMIUM_EXECUTABLE } : {}) });
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport:{ width, height:900 } });
@@ -17,22 +282,27 @@ async function open(t, width = 1280) {
     .replace(/<meta http-equiv[^>]*>/, "").replace(/<link[^>]*>/g, "").replace(/<script[^>]*><\/script>/g, "");
   await page.route("http://localhost/pkm-chat-fixture", route => route.fulfill({ contentType:"text/html", body:html }));
   await page.goto("http://localhost/pkm-chat-fixture");
-  await page.evaluate(id => {
+  await page.evaluate(({ id, restored }) => {
     window.__posts = [];
-    window.acquireVsCodeApi = () => ({ getState:() => ({ screen:"chat" }), setState:value => { window.__saved = value; }, postMessage:value => window.__posts.push(value) });
+    window.acquireVsCodeApi = () => ({ getState:() => restored?.saved || ({ screen:"chat" }), setState:value => { window.__saved = value; }, postMessage:value => window.__posts.push(value) });
     const profile = { id:"fixture", label:"Fixture", status:"active", contextWindow:16384, maxOutputTokens:4096 };
-    window.__state = { type:"state", busy:false, chat:{ id, title:"Activity fixture", includeHistory:true, context:[], permissionMode:"ask", messages:[] },
+    window.__state = restored?.state || { type:"state", busy:false, chat:{ id, title:"Activity fixture", includeHistory:true, context:[], permissionMode:"ask", messages:[] },
       settings:{ model:"fixture", models:[], provider:"openai-compatible", endpoint:"https://example.test/v1", contextWindow:16384, maxOutputTokens:2048,
         maxToolRounds:30, inputBaseTokens:100, profiles:[profile], selectedProfile:profile },
       chats:[{ id, title:"Activity fixture", groupId:"ungroup", status:"idle" }],
       library:{ groups:[], chats:[{ id, title:"Activity fixture", groupId:"ungroup", status:"idle" }] } };
-  }, chatId);
+  }, { id:chatId, restored });
   await page.addStyleTag({ path:path.join(webview, "api-chat.css") });
+  await page.route("**/codicon.ttf*", route => route.fulfill({
+    body:fs.readFileSync(path.join(webview, "codicon.ttf")), contentType:"font/ttf",
+  }));
+  await page.addStyleTag({ path:path.join(webview, "codicon.css") });
   await page.addScriptTag({ path:path.join(webview, "marked.umd.js") });
   await page.addScriptTag({ path:path.join(webview, "purify.min.js") });
   await page.addScriptTag({ path:path.join(webview, "api-chat-library.js") });
   await page.addScriptTag({ path:path.join(webview, "agent-harness.js") });
   await page.addScriptTag({ path:path.join(webview, "chat-visualization.js") });
+  await page.addScriptTag({ path:path.join(webview, "chat-retrieval-flow.js") });
   await page.addScriptTag({ path:path.join(webview, "api-chat.js") });
   assert(await page.evaluate(() => window.__posts.some(item => item.type === "ready")), "Chat renderer initialized");
   await page.evaluate(() => {
@@ -40,12 +310,52 @@ async function open(t, width = 1280) {
     window.dispatchEvent(new MessageEvent("message", { data:{ type:"showChat" } }));
   });
   await page.waitForTimeout(30);
+  await page.evaluate(() => document.fonts.ready);
   assert.deepEqual(errors, []);
   await page.locator("#prompt").waitFor({ state:"visible" });
   return { page, errors };
 }
 
-test("Chat history pages automatically without a load button and preserves the visible message", async t => {
+for (const width of [1280,390,280]) test(`Model settings keep text and controls separate and explain History without changing its behavior (${width}px)`, async t=>{
+  const {page,errors}=await open(t,width);
+  await page.getByRole("button",{name:"Model settings",exact:true}).click();
+  const settings=page.getByRole("region",{name:"Model settings",exact:true});
+  await settings.waitFor();
+  const collisions=await settings.evaluate(node=>{
+    const button=node.querySelector('[data-agent-config="profiles"]'), heading=node.querySelector("strong");
+    const range=document.createRange();range.selectNodeContents(button);
+    const text=range.getBoundingClientRect(),box=button.getBoundingClientRect(),title=heading.getBoundingClientRect();
+    const fields=[...node.querySelectorAll('label[for="output"],label[for="tool-rounds"],.history-setting')];
+    const fieldTextFits=fields.every(label=>{
+      const control=label.querySelector("input"),bounds=control.getBoundingClientRect();
+      return [...label.childNodes].filter(child=>child.nodeType===Node.TEXT_NODE&&child.textContent.trim()).every(child=>{
+        const range=document.createRange();range.selectNodeContents(child);
+        return [...range.getClientRects()].every(rect=>rect.right<=bounds.left+1||rect.left>=bounds.right-1||rect.bottom<=bounds.top+1||rect.top>=bounds.bottom-1);
+      });
+    });
+    return {buttonContainsText:text.right<=box.right+1&&text.bottom<=box.bottom+1,
+      profileBeforeHeading:box.bottom<=title.top||title.bottom<=box.top||box.right<=title.left,
+      contained:node.scrollWidth<=node.clientWidth+1,
+      fieldTextFits,
+      checkboxWidth:node.querySelector("#history").getBoundingClientRect().width};
+  });
+  assert.equal(collisions.buttonContainsText,true,"Profile text must fit its button rather than overlap other settings");
+  assert.equal(collisions.profileBeforeHeading,true,"Profile button and settings heading must not overlap");
+  assert.equal(collisions.contained,true,"settings must not overflow horizontally");
+  assert.equal(collisions.fieldTextFits,true,"field label text must not overlap its input or checkbox");
+  assert(collisions.checkboxWidth<=20,"History checkbox is not a full-width number input");
+  assert.match(await settings.innerText(),/earlier Chat context[\s\S]*does not delete[\s\S]*Profiles/i);
+  const history=settings.locator("#history");
+  assert.equal(await history.isChecked(),true);
+  await history.uncheck();
+  assert.deepEqual(await page.evaluate(()=>window.__posts.filter(item=>item.type==="history").at(-1).value),false);
+  assert.equal(await page.evaluate(()=>window.__posts.some(item=>["send","startTask"].includes(item.type))),false);
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+  assert.deepEqual(errors,[]);
+  if(process.env.PKM_SETTINGS_SCREENSHOT)await page.screenshot({path:`${process.env.PKM_SETTINGS_SCREENSHOT}-${width}.png`,fullPage:true});
+});
+
+test("Chat history pages automatically with an explicit earlier-message count and preserves the visible message", async t => {
   const { page, errors } = await open(t);
   await page.evaluate(() => {
     window.__state.history = { start: 40 };
@@ -54,7 +364,7 @@ test("Chat history pages automatically without a load button and preserves the v
     }));
     window.dispatchEvent(new MessageEvent("message", { data: window.__state }));
   });
-  assert.equal(await page.getByRole("button", { name: /Load older messages/ }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Load older messages (40)" }).count(), 1);
   const messages = page.locator("#messages");
   await messages.focus();
   await page.keyboard.press("Control+Home");
@@ -90,6 +400,88 @@ test("Chat history pages automatically without a load button and preserves the v
     document.getElementById("messages").dispatchEvent(new Event("scroll"));
   }, chatId);
   assert.equal(await page.evaluate(() => window.__posts.filter(item => item.type === "historyPage").length), 2);
+  assert.deepEqual(errors, []);
+});
+
+test("short Chat pages expose earlier user messages without requiring a scroll event", async t => {
+  const { page, errors } = await open(t);
+  await page.evaluate(() => {
+    window.__state.history = { start: 100, total: 102 };
+    window.__state.chat.messages = [
+      { id:"latest-user", role:"user", content:"Latest question" },
+      { id:"latest-reply", role:"assistant", content:"Short visible answer", status:"complete" },
+    ];
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  const button = page.getByRole("button", { name:"Load older messages (100)" });
+  await button.click();
+  assert.equal(await page.getByRole("button", { name:"Loading older messages..." }).isDisabled(), true);
+  assert.deepEqual(await page.evaluate(() => window.__posts.filter(item => item.type === "historyPage")),
+    [{ type:"historyPage", chatId, id:"latest-user" }]);
+  await page.evaluate(id => window.dispatchEvent(new MessageEvent("message", { data:{
+    type:"historyPage", chatId:id, beforeId:"latest-user", start:98,
+    messages:[{ id:"prior-user", role:"user", content:"My previous sent message" },
+      { id:"prior-reply", role:"assistant", content:"Prior reply" }],
+  } })), chatId);
+  assert.equal(await page.getByText("My previous sent message", { exact:true }).isVisible(), true);
+  assert.equal(await page.getByRole("button", { name:"Load older messages (98)" }).count(), 1);
+  assert.deepEqual(errors, []);
+});
+
+test("upward mouse wheel is not pulled back to the bottom by streaming updates", async t => {
+  const { page, errors } = await open(t);
+  await page.evaluate(() => {
+    window.__state.busy = true;
+    window.__state.chat.messages = [
+      { id:"scroll-user", role:"user", content:"Review earlier messages" },
+      { id:"scroll-reply", role:"assistant", content:"Streaming output\n\n".repeat(120), status:"streaming" },
+    ];
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  const messages = page.locator("#messages");
+  const bottom = await messages.evaluate(node => node.scrollTop);
+  assert(bottom > 200, "fixture must have a scrollable message area");
+  await messages.hover();
+  await page.mouse.wheel(0, -40);
+  await page.waitForFunction(top => document.getElementById("messages").scrollTop < top - 10, bottom);
+  const before = await messages.evaluate(node => node.scrollTop);
+  await page.evaluate(id => window.dispatchEvent(new MessageEvent("message", { data:{
+    type:"delta", chatId:id, id:"scroll-reply", text:"Additional output",
+  } })), chatId);
+  await page.waitForTimeout(80);
+  const after = await messages.evaluate(node => node.scrollTop);
+  assert(Math.abs(after - before) < 2, `Streaming must not undo an upward wheel: ${before} -> ${after}`);
+  await page.evaluate(() => window.dispatchEvent(new MessageEvent("message", { data:structuredClone(window.__state) })));
+  assert(Math.abs(await messages.evaluate(node => node.scrollTop) - before) < 2, "Host refresh must preserve the upward scroll too");
+  await page.mouse.wheel(0, 10000);
+  await page.waitForFunction(() => {
+    const node = document.getElementById("messages");
+    return node.scrollHeight - node.scrollTop - node.clientHeight < 1;
+  });
+  await page.evaluate(id => window.dispatchEvent(new MessageEvent("message", { data:{
+    type:"delta", chatId:id, id:"scroll-reply", text:"\n\nMore output after returning to the bottom",
+  } })), chatId);
+  await page.waitForTimeout(80);
+  assert(await messages.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight < 1),
+    "Returning to the bottom must resume following new output");
+  assert.deepEqual(errors, []);
+});
+
+test("upward wheel retrieves earlier messages even when the current page cannot scroll", async t => {
+  const { page, errors } = await open(t);
+  await page.evaluate(() => {
+    window.__state.history = { start:100, total:102 };
+    window.__state.chat.messages = [{ id:"wheel-user", role:"user", content:"Latest question" },
+      { id:"wheel-reply", role:"assistant", content:"Short reply", status:"complete" }];
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  const messages = page.locator("#messages");
+  assert.equal(await messages.evaluate(node => node.scrollHeight <= node.clientHeight), true);
+  await messages.hover();
+  await page.mouse.wheel(0, -100);
+  await page.waitForFunction(() => window.__posts.some(item => item.type === "historyPage"));
+  assert.deepEqual(await page.evaluate(() => window.__posts.filter(item => item.type === "historyPage")),
+    [{ type:"historyPage", chatId, id:"wheel-user" }]);
   assert.deepEqual(errors, []);
 });
 
@@ -413,7 +805,7 @@ test("live activity starts readable and expanded, preserves collapse and separat
   assert(await tool.locator("summary").isVisible(), "operation is readable without expanding its arguments");
   assert.equal(await tool.getAttribute("open"), null);
   assert.match(await activity.locator(":scope > summary").innerText(), /Read src\/main.ts, lines 94-130/);
-  assert.equal(await tool.locator(".activity-usage").innerText(), "usage n/a");
+  assert.equal(await tool.locator(".activity-usage").innerText(), "");
   const model = activity.locator(".activity-event").filter({ hasText:"Generating response" });
   assert.equal(await model.locator(".activity-usage").innerText(), "100 in / 20 out · 7 reasoning");
   assert.match(await model.locator(".activity-usage").getAttribute("title"), /included in output/);
@@ -481,7 +873,7 @@ for (const width of [1280, 390, 320]) test(`activity rows contain their own deta
   assert(order.indexOf("activity-usage") < order.indexOf("elapsed"));
   await model.locator("summary").click();
   assert.match(await model.innerText(), /Check input boundaries/);
-  assert.match(await tool.locator(".activity-usage").innerText(), /n\/a/);
+  assert.equal(await tool.locator(".activity-usage").innerText(), "");
   assert.equal(await activity.locator('[data-status="planned"]').innerText(), "TODO · Run integration checks · candidate");
   await page.evaluate(() => {
     window.__state.chat.sessionId = "owned-task";

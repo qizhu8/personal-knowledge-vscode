@@ -12,6 +12,9 @@ import { compareVersionOrder } from "../runtime/version-order";
 import { ensureRecipeCompiler } from "./recipe-compiler";
 import { mcpStdioCommand } from "./mcp-stdio-command";
 import { hasNewerMcpRuntime } from "./mcp-version-policy";
+import { withCrossProcessLock } from "../runtime/cross-process-lock";
+import { bundledMcpBuildIdentity, managedMcpLauncher, managedMcpLifecycleStatus, publishManagedMcpGeneration, readManagedMcpManifest, stageManagedMcpGeneration, withManagedMcpGenerationLock } from "./mcp-lifecycle";
+export { handshakeManagedMcpConnection, readManagedMcpManifest, verifyManagedMcpHandshake, waitForManagedMcpDrain } from "./mcp-lifecycle";
 
 export async function trashKnowledgeFileViaMcp(
   extensionRoot: string, storeRoot: string, area: string, relative: string, expectedSha256: string,
@@ -49,12 +52,12 @@ asyncio.run(main())
 }
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
-export const UNIFIED_MCP_VERSION = "2.17.0";
+export const UNIFIED_MCP_VERSION = "2.18.0";
 const PROMPT_MANAGER_WHEEL = "uone_prompt_manager-0.1.0-py3-none-any.whl";
 const PROMPT_MANAGER_WHEEL_SHA256 = "eb9fd76058134f9ab9711d8e7604c75f761db5762d93e67f65740dc07fdc1518";
 const RETRIEVAL_ENGINE_WHEEL = "adaptive_skill_retrieval-0.3.0.dev2026100504-py3-none-any.whl";
 const RETRIEVAL_ENGINE_WHEEL_SHA256 = "332e434272a3cc88410eb50c7e4bfc3e3f69c5bf1e13f7f9a799087c37124f89";
-const KNOWLEDGE_MCP_VERSION = "1.5.5";
+const KNOWLEDGE_MCP_VERSION = "1.6.0";
 const CHAT_MCP_VERSION = "2.3.6";
 const RECIPE_MCP_VERSION = "1.8.2";
 const AGENT_SESSION_MCP_VERSION = "2.0.0";
@@ -74,6 +77,7 @@ interface McpServerStatus {
   agentSessionVersion: string;
   installedAgentSessionVersion: string;
   newerThanExpected: boolean;
+  lifecycle?: ReturnType<typeof managedMcpLifecycleStatus>;
 }
 
 function readMcpVersion(serverPath: string): string {
@@ -104,8 +108,7 @@ export function configuredMcpFeatureDomains(): McpFeatureDomain[] {
   return MCP_FEATURE_DOMAINS.filter(domain => enabled.has(domain));
 }
 
-export function writeMcpFeatureDomainConfig(domains = configuredMcpFeatureDomains()): string {
-  const directory = managedMcpServerDirectory();
+export function writeMcpFeatureDomainConfig(domains = configuredMcpFeatureDomains(), directory = managedMcpServerDirectory()): string {
   const destination = path.join(directory, "feature-domains.json");
   fs.mkdirSync(directory, { recursive: true });
   const temporary = `${destination}.${process.pid}.tmp`;
@@ -143,7 +146,7 @@ export function managedMcpRuntimePath(): string {
     : path.join(managedEnvironmentsRoot(), "pkm-mcp");
 }
 
-export function mcpProcessStatus(): McpProcessStatus {
+export function mcpProcessStatus(includeRuntimeUsers = false): McpProcessStatus {
   const serverPath = path.join(managedMcpServerDirectory(), "server.py");
   if (process.platform === "win32") {
     return {
@@ -158,7 +161,13 @@ export function mcpProcessStatus(): McpProcessStatus {
     const output = execFileSync("ps", ["-eo", "pid=,args="], { encoding: "utf8", timeout: 3000, windowsHide: true });
     const normalizedPath = serverPath.replace(/\\/g, "/").toLowerCase();
     const lines = output.split(/\r?\n/);
-    const match = lines.find(line => String(line).replace(/\\/g, "/").toLowerCase().includes(normalizedPath));
+    const generationPrefix = path.join(managedMcpServerDirectory(), "generations").replace(/\\/g, "/").toLowerCase() + "/";
+    const runtimePython = mcpRuntimePythonPath().replace(/\\/g, "/").toLowerCase();
+    const match = lines.find(line => {
+      const command = String(line).replace(/\\/g, "/").toLowerCase();
+      return command.includes(normalizedPath) || (command.includes(generationPrefix) && command.includes("/server.py"))
+        || (includeRuntimeUsers && command.includes(runtimePython));
+    });
     const pid = match ? /^\s*(\d+)/.exec(String(match))?.[1] || "" : "";
     return { running: !!match, pid, checkedAt: Date.now(), available: true, detail: match ? "Generated server process detected." : "No generated server process detected." };
   } catch (error: any) {
@@ -461,6 +470,39 @@ export function mcpRuntimeStatusAsync(): Promise<McpRuntimeStatus> {
 }
 
 export async function ensureMcpRuntime(context: vscode.ExtensionContext): Promise<McpRuntimeStatus> {
+  const directory = managedMcpServerDirectory();
+  return withCrossProcessLock(`${mcpRuntimePath()}.pkm-maintenance-lock`, "MCP runtime maintenance", 2_000, async () => {
+    fs.mkdirSync(directory, { recursive: true });
+    const marker = path.join(directory, "runtime-maintenance.json");
+    const runtimeMarker = `${mcpRuntimePath()}.pkm-maintenance.json`;
+    const record = JSON.stringify({ schema: "pkm.mcp.maintenance/v1", pid: process.pid }) + "\n";
+    fs.writeFileSync(runtimeMarker, record, { mode: 0o600 });
+    try {
+      fs.writeFileSync(marker, record, { mode: 0o600 });
+      {
+        const processes = mcpProcessStatus(true);
+        const instances = managedMcpLifecycleStatus(directory).instances;
+        const observedInstances = instances.some(instance => {
+          if (!Number.isSafeInteger(instance.pid) || instance.pid <= 0) return true;
+          try { process.kill(instance.pid, 0); return true; }
+          catch (error: any) { return error?.code !== "ESRCH"; }
+        });
+        const mayHaveExistingRuntime = fs.existsSync(mcpRuntimePath()) || fs.existsSync(path.join(directory, "server.py"));
+        if ((!processes.available && mayHaveExistingRuntime) || processes.running || observedInstances) {
+          throw new Error("PKM MCP runtime repair is action-required: close/reconnect all managed PKM clients and let in-flight writes finish before changing shared Python dependencies. "
+            + "Legacy/uninstrumented processes have unknown drain state. No process was killed and no call was replayed. "
+            + (!processes.available ? "Process inspection is unavailable; choose a new empty managed runtime path instead of modifying a possibly active environment." : processes.detail));
+        }
+      }
+      return await ensureMcpRuntimeFiles(context);
+    } finally {
+      fs.rmSync(marker, { force: true });
+      fs.rmSync(runtimeMarker, { force: true });
+    }
+  });
+}
+
+async function ensureMcpRuntimeFiles(context: vscode.ExtensionContext): Promise<McpRuntimeStatus> {
   invalidateMcpPythonProbes();
   await warmMcpPythonProbes();
   const base = detectMcpPython();
@@ -552,7 +594,7 @@ export function combinedMcpInstallInstruction(nativeProvider = true): string {
   const serverPath = path.join(mcpDir, "server.py");
   const launch = mcpStdioCommand(runtimePython, [serverPath]);
   const requirementsPath = path.join(mcpDir, "requirements.txt");
-  const chatServerPath = path.join(mcpDir, "chat_server.py");
+  const chatServerPath = chatMcpStatus().serverPath;
   const quote = (value: string) => `"${value.replace(/"/g, '\\"')}"`;
   if (nativeProvider) return [
     "Verify the unified pkm server supplied by the Personal Knowledge Manager extension's native MCP provider.",
@@ -609,12 +651,24 @@ export function combinedMcpInstallInstruction(nativeProvider = true): string {
 
 export function mcpStatus(): McpServerStatus {
   const serverPath = path.join(managedMcpServerDirectory(), "server.py");
-  const installedVersion = readMcpVersion(serverPath);
-  const installedKnowledgeVersion = readMcpComponentVersion(serverPath, "KNOWLEDGE_SCHEMA_VERSION");
-  const installedChatVersion = readMcpComponentVersion(serverPath, "CHAT_SCHEMA_VERSION");
-  const installedRecipeVersion = readMcpComponentVersion(serverPath, "RECIPE_SCHEMA_VERSION");
-  const installedAgentSessionVersion = readMcpComponentVersion(serverPath, "AGENT_SESSION_SCHEMA_VERSION");
-  const newerThanExpected = hasNewerMcpRuntime(
+  const manifest = readManagedMcpManifest(managedMcpServerDirectory());
+  const installedVersion = manifest?.version || readMcpVersion(serverPath);
+  const installedKnowledgeVersion = manifest?.components.knowledge || readMcpComponentVersion(serverPath, "KNOWLEDGE_SCHEMA_VERSION");
+  const installedChatVersion = manifest?.components.chat || readMcpComponentVersion(serverPath, "CHAT_SCHEMA_VERSION");
+  const installedRecipeVersion = manifest?.components.recipes || readMcpComponentVersion(serverPath, "RECIPE_SCHEMA_VERSION");
+  const installedAgentSessionVersion = manifest?.components.agent_sessions || readMcpComponentVersion(serverPath, "AGENT_SESSION_SCHEMA_VERSION");
+  let bundledBuild = "";
+  let newerExtensionGeneration = false;
+  if (manifest) {
+    try {
+      const extensionRoot = path.resolve(__dirname, "..", "..");
+      bundledBuild = bundledMcpBuildIdentity(extensionRoot);
+      const extensionVersion = JSON.parse(fs.readFileSync(path.join(extensionRoot, "package.json"), "utf8")).version;
+      newerExtensionGeneration = (compareVersionOrder(manifest.extensionVersion, extensionVersion) || 0) > 0;
+    }
+    catch { /* Missing bundled artifacts are not a current managed runtime. */ }
+  }
+  const newerThanExpected = newerExtensionGeneration || hasNewerMcpRuntime(
     {
       unified: installedVersion,
       knowledge: installedKnowledgeVersion,
@@ -633,7 +687,7 @@ export function mcpStatus(): McpServerStatus {
   return {
     installed: !!installedVersion, serverPath,
     expectedVersion: UNIFIED_MCP_VERSION, installedVersion,
-    current: installedVersion === UNIFIED_MCP_VERSION && installedKnowledgeVersion === KNOWLEDGE_MCP_VERSION
+    current: !!manifest && manifest.runtimeBuild === bundledBuild && installedVersion === UNIFIED_MCP_VERSION && installedKnowledgeVersion === KNOWLEDGE_MCP_VERSION
       && installedChatVersion === CHAT_MCP_VERSION && installedRecipeVersion === RECIPE_MCP_VERSION
       && installedAgentSessionVersion === AGENT_SESSION_MCP_VERSION,
     knowledgeVersion: KNOWLEDGE_MCP_VERSION,
@@ -645,12 +699,45 @@ export function mcpStatus(): McpServerStatus {
     installedRecipeVersion,
     installedAgentSessionVersion,
     newerThanExpected,
+    lifecycle: managedMcpLifecycleStatus(managedMcpServerDirectory()),
   };
 }
 
 export function generateMcpServer(context: vscode.ExtensionContext): { serverPath: string; configSnippet: string } {
+  const directory = managedMcpServerDirectory();
+  return withManagedMcpGenerationLock(directory, () => {
+    const previous = readManagedMcpManifest(directory);
+    if (fs.existsSync(path.join(directory, "active-generation.json")) && !previous) {
+      throw new Error("Managed MCP generation ownership is unreadable. Preserve existing generations and repair the control file explicitly before upgrading.");
+    }
+    const extensionVersion = JSON.parse(fs.readFileSync(path.join(context.extensionPath, "package.json"), "utf8")).version;
+    if (previous && (compareVersionOrder(previous.extensionVersion, extensionVersion) || 0) > 0) {
+      throw new Error(`Refusing to downgrade managed MCP generation from extension ${previous.extensionVersion} using ${extensionVersion}. Upgrade this extension window before regenerating.`);
+    }
+    const manifest = stageManagedMcpGeneration(directory, context.extensionPath, {
+      version: UNIFIED_MCP_VERSION,
+      components: { knowledge: KNOWLEDGE_MCP_VERSION, chat: CHAT_MCP_VERSION, recipes: RECIPE_MCP_VERSION, agent_sessions: AGENT_SESSION_MCP_VERSION },
+      runtimeMaintenance: `${mcpRuntimePath()}.pkm-maintenance.json`,
+    }, target => {
+      const snapshotContext: vscode.ExtensionContext = Object.create(context);
+      Object.defineProperty(snapshotContext, "extensionPath", { value: path.join(target, "runtime") });
+      generateMcpServerFiles(snapshotContext, target);
+    });
+    const serverPath = path.join(directory, "server.py");
+    const temporary = `${serverPath}.${manifest.generation}.tmp`;
+    try {
+      fs.writeFileSync(temporary, managedMcpLauncher(manifest), { flag: "wx", mode: 0o600 });
+      fs.renameSync(temporary, serverPath);
+      fs.copyFileSync(path.join(directory, "generations", manifest.generation, "requirements.txt"), path.join(directory, "requirements.txt"));
+      publishManagedMcpGeneration(directory, manifest);
+    } finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
+    const launch = mcpStdioCommand(resolveMcpPython(), [serverPath]);
+    return { serverPath, configSnippet: JSON.stringify({ servers: { pkm: { type: "stdio", ...launch } } }, null, 2) };
+  });
+}
+
+function generateMcpServerFiles(context: vscode.ExtensionContext, mcpDir: string): { serverPath: string; configSnippet: string } {
   const storePath = getStorePath();
-  const mcpDir    = managedMcpServerDirectory();
   const serverPy  = path.join(mcpDir, "server.py");
   const recipeRuntimePy = path.join(mcpDir, "recipe_runtime.py");
   const recipeHealthPy = path.join(mcpDir, "recipe_health.py");
@@ -677,14 +764,17 @@ export function generateMcpServer(context: vscode.ExtensionContext): { serverPat
   }
 
   fs.mkdirSync(mcpDir, { recursive: true });
-  writeMcpFeatureDomainConfig();
+  writeMcpFeatureDomainConfig(configuredMcpFeatureDomains(), mcpDir);
   writeActionWorkspaceConfig();
-  generateChatMcpServer(context);
+  generateChatMcpServer(context, mcpDir);
   fs.copyFileSync(path.join(context.extensionPath, "resources", "recipe_runtime.py"), recipeRuntimePy);
   fs.copyFileSync(path.join(context.extensionPath, "resources", "recipe_compiler_bridge.js"), path.join(mcpDir, "recipe_compiler_bridge.js"));
   ensureRecipeCompiler(context.extensionPath, mcpDir, process.execPath);
   fs.copyFileSync(path.join(context.extensionPath, "resources", "action_runtime.py"), path.join(mcpDir, "action_runtime.py"));
   fs.copyFileSync(path.join(context.extensionPath, "resources", "action_modules.py"), path.join(mcpDir, "action_modules.py"));
+  fs.copyFileSync(path.join(context.extensionPath, "resources", "action_authoring.py"), path.join(mcpDir, "action_authoring.py"));
+  fs.copyFileSync(path.join(context.extensionPath, "resources", "action_monitoring.py"), path.join(mcpDir, "action_monitoring.py"));
+  fs.copyFileSync(path.join(context.extensionPath, "resources", "action_azuredevops.py"), path.join(mcpDir, "action_azuredevops.py"));
   fs.copyFileSync(path.join(context.extensionPath, "resources", "action_run_store.py"), path.join(mcpDir, "action_run_store.py"));
   fs.copyFileSync(path.join(context.extensionPath, "resources", "action_recovery.py"), path.join(mcpDir, "action_recovery.py"));
   fs.copyFileSync(path.join(context.extensionPath, "resources", "action_components.py"), path.join(mcpDir, "action_components.py"));
@@ -790,8 +880,9 @@ from knowledge_mutations import trash_file, write_markdown, register_knowledge_m
 from knowledge_snapshots import register_knowledge_snapshot_tools
 from asset_classification import register_asset_classification_tools
 _KNOWLEDGE_NODE = ${JSON.stringify(process.execPath)}
-_KNOWLEDGE_EXTENSION = ${JSON.stringify(context.extensionPath.replace(/\\/g, "/"))}
-from mcp_call_guard import McpCallGuardMiddleware, McpDiagnosticsMiddleware
+_KNOWLEDGE_EXTENSION = str(Path(__file__).resolve().parent / "runtime") if (Path(__file__).resolve().parent / "runtime").is_dir() else ${JSON.stringify(context.extensionPath.replace(/\\/g, "/"))}
+from mcp_call_guard import McpCallGuardMiddleware, McpDiagnosticsMiddleware, ManagedMcpLifecycle, run_managed_stdio
+_MCP_LIFECYCLE = ManagedMcpLifecycle.from_directory(Path(__file__).resolve().parent)
 from diagnostic_log import DiagnosticLog
 _MCP_DIAGNOSTICS = DiagnosticLog(STORE / ".pkm" / "state" / "diagnostics" / "mcp")
 _MCP_DIAGNOSTICS.record("runtime.started", component="unified-mcp", parentPid=os.getppid())
@@ -866,13 +957,31 @@ def check_version() -> dict:
        "components": {"knowledge": KNOWLEDGE_SCHEMA_VERSION, "chat": CHAT_SCHEMA_VERSION, "recipes": RECIPE_SCHEMA_VERSION,
                 "agent_sessions": AGENT_SESSION_SCHEMA_VERSION},
        "enabled_feature_domains": sorted(_FEATURE_DOMAINS),
-       "capabilities": capabilities}
+       "capabilities": capabilities + (["managed-lifecycle-v1"] if _MCP_LIFECYCLE else [])}
+  if _MCP_LIFECYCLE:
+    result["runtime"] = _MCP_LIFECYCLE.status()
   if "automation" in _FEATURE_DOMAINS:
     result.update({"chat_discovery_tool": "chat_capabilities", "recipe_discovery_tool": "recipe_capabilities",
              "agent_session_discovery_tool": "agent_session_capabilities"})
   if "skillRouter" in _FEATURE_DOMAINS:
     result["skill_discovery_tool"] = "skill_capabilities"
   return result
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+def mcp_lifecycle_status() -> dict:
+  """Report actual runtime ownership, admission and in-flight drain state. Never replays a write."""
+  return _MCP_LIFECYCLE.status() if _MCP_LIFECYCLE else {
+      "schema": "pkm.mcp.lifecycle/v1", "phase": "unmanaged", "acceptingNewCalls": False,
+      "action": "reconnect-required", "message": "No managed generation ownership; reconnect explicitly."}
+
+
+@mcp.tool(annotations={"readOnlyHint": False})
+def mcp_lifecycle_quiesce() -> dict:
+  """Fence only this managed process before its owning client drains/closes it. Never cancels or replays tools."""
+  return _MCP_LIFECYCLE.quiesce() if _MCP_LIFECYCLE else {
+      "schema": "pkm.mcp.lifecycle/v1", "phase": "unmanaged", "acceptingNewCalls": False,
+      "action": "reconnect-required", "message": "Legacy drain state is unknown; explicit client action required."}
 
 
 def _now() -> str:
@@ -912,6 +1021,19 @@ def _retrieval_request(route, payload=None):
 def retrieval_status() -> str:
   """Return the Subscriber-owned persistent retrieval worker and ready corpus revision."""
   return json.dumps(_retrieval_request("/status"), ensure_ascii=False)
+
+
+@_feature_tool("knowledge", "skillRouter")
+def retrieval_feedback(retrieval_id: str, relevant_source_ids: List[str], complete: bool = False) -> str:
+  """Submit explicit complete relevance judgments for a model retrieval receipt.
+
+  Include all known relevant canonical source IDs, including missed results.
+  complete=true asserts complete judgments; task success, usage and silence are
+  not relevance labels. This trains local scalar calibration, never model weights.
+  """
+  return json.dumps(_retrieval_request("/retrieval-feedback", {
+    "retrieval_id": retrieval_id, "relevant_source_ids": relevant_source_ids, "complete": complete,
+  }), ensure_ascii=False)
 
 
 @_feature_tool("knowledge", "skillRouter", read_only=True)
@@ -955,6 +1077,7 @@ def search_knowledge(query: str, limit: int = 5, content_type_filter: Optional[L
   deadline_at_ms = int(time.time() * 1000) + max(1, min(int(deadline_ms or 5000), 300000))
   result = _retrieval_request("/search", {
     "query": query, "limit": min(100, max(requested_limit, requested_limit * 5)),
+    **({"output_limit": requested_limit} if route in {"semantic", "dual"} else {}),
     "content_type_filter": content_type_filter, "request_id": request_id,
     "route": route,
     "generation": {"mode": generation_mode, **({"generation": int(generation)} if generation_mode != "latest-ready" else {})},
@@ -1022,7 +1145,8 @@ def search_knowledge(query: str, limit: int = 5, content_type_filter: Optional[L
     hits.append(compact_hit)
   compact = {key: result.get(key) for key in [
     "schema", "ok", "request_id", "corpus_revision", "ready_generation", "route", "query_intent", "exact_terms",
-    "search_mode", "semantic_status", "semantic_reason",
+    "search_mode", "semantic_status", "semantic_reason", "solution", "skill_serving",
+    "retrieval_id", "adaptive", "learning_error", "model_invoked",
     "lexical_anchors", "requested_content_types", "content_type_routing", "stale", "incomplete", "diagnostics",
     "truncated", "limit_reached", "result_count", "groups", "counts"]}
   compact["hits"] = hits
@@ -1069,6 +1193,10 @@ def get_script(id: str) -> str:
 def _search_typed_knowledge(query, content_type, limit, detail, tool_name, route="lexical"):
   if detail not in {"legacy", "standard"}:
     return json.dumps({"ok": False, "error": "detail must be legacy or standard"})
+  if route not in {"lexical", "semantic", "dual", "graph", "hybrid"}:
+    return json.dumps({"ok": False, "error": "Invalid route"})
+  if route in {"semantic", "dual"} and detail == "legacy":
+    detail = "standard"  # Zero hits and model/transport failure must retain their status.
   started_at = time.perf_counter()
   result = json.loads(search_knowledge(query, limit=limit, content_type_filter=[content_type], debug=detail == "legacy", route=route))
   _collect_search_invocation(tool_name, started_at,
@@ -1107,9 +1235,9 @@ def _search_typed_knowledge(query, content_type, limit, detail, tool_name, route
 
 
 @_feature_tool("knowledge", read_only=True)
-def search_scripts(query: str, limit: int = 20, detail: str = "legacy") -> str:
-  """Search only Scripts. detail=standard returns the shared ranked retrieval envelope; legacy returns an array."""
-  result = _search_typed_knowledge(query, "script", limit, detail, "pkm.search_scripts")
+def search_scripts(query: str, limit: int = 20, detail: str = "legacy", route: str = "lexical") -> str:
+  """Search only Scripts. Semantic/dual routes always expose model status; lexical defaults preserve legacy arrays."""
+  result = _search_typed_knowledge(query, "script", limit, detail, "pkm.search_scripts", route=route)
   return result if result is not None else json.dumps({"ok": False, "error": "Subscriber retrieval worker unavailable"})
 
 
@@ -1399,6 +1527,8 @@ class ToolUsageMiddleware(Middleware):
     return result
 
 
+if _MCP_LIFECYCLE:
+  mcp.add_middleware(_MCP_LIFECYCLE)
 mcp.add_middleware(McpDiagnosticsMiddleware(_MCP_DIAGNOSTICS))
 mcp.add_middleware(ToolUsageMiddleware())
 mcp.add_middleware(McpCallGuardMiddleware(mcp))
@@ -2031,9 +2161,9 @@ def list_skills(category: Optional[str] = None) -> str:
 
 
 @_feature_tool("knowledge", "skillRouter", read_only=True)
-def search_skills(query: str, limit: int = 20, detail: str = "legacy") -> str:
-    """Search only Skills. detail=standard uses the shared retrieval envelope; legacy preserves arrays and offline fallback."""
-    standard = _search_typed_knowledge(query, "skill", limit, detail, "pkm.search_skills")
+def search_skills(query: str, limit: int = 20, detail: str = "legacy", route: str = "lexical") -> str:
+    """Search only Skills. Semantic/dual routes always expose model status; lexical defaults preserve arrays and offline fallback."""
+    standard = _search_typed_knowledge(query, "skill", limit, detail, "pkm.search_skills", route=route)
     if standard is not None:
         return standard
     limit = max(1, min(int(limit or 20), 100))
@@ -2117,10 +2247,6 @@ def search_notes(query: str, limit: int = 20, detail: str = "legacy", route: str
     The default legacy lexical shape preserves arrays and offline fallback; detail=standard
     returns the shared envelope. Semantic/dual always return the envelope.
     """
-    if route not in {"lexical", "semantic", "dual", "graph", "hybrid"}:
-        return json.dumps({"ok": False, "error": "Invalid route"})
-    if route in {"semantic", "dual"} and detail == "legacy":
-        detail = "standard"  # Empty semantic results must still expose off/unavailable status.
     standard = _search_typed_knowledge(query, "note", limit, detail, "pkm.search_notes", route=route)
     if standard is not None:
         return standard
@@ -2265,20 +2391,22 @@ def list_papers(topic: Optional[str] = None) -> str:
 
 
 @_feature_tool("knowledge", read_only=True)
-def search_research(query: str, limit: int = 20, detail: str = "legacy") -> str:
-  """Search only Research. detail=standard uses the shared retrieval envelope; legacy preserves arrays and offline fallback."""
-  standard = _search_typed_knowledge(query, "research", limit, detail, "pkm.search_research")
+def search_research(query: str, limit: int = 20, detail: str = "legacy", route: str = "lexical") -> str:
+  """Search only Research. Semantic/dual routes always expose model status; lexical defaults preserve arrays and offline fallback."""
+  standard = _search_typed_knowledge(query, "research", limit, detail, "pkm.search_research", route=route)
   if standard is not None:
     return standard
   return _search_papers_legacy(query, limit)
 
 
 @_feature_tool("knowledge", read_only=True)
-def search_papers(query: str, limit: int = 50, detail: str = "legacy") -> str:
+def search_papers(query: str, limit: int = 50, detail: str = "legacy", route: str = "lexical") -> str:
   """Compatibility alias for search_research; preserves the historical default limit of 50."""
   started_at = time.perf_counter()
-  result = search_research(query, limit=limit, detail=detail)
-  _collect_search_invocation("pkm.search_papers", started_at, [], True, ["research-compatibility-alias"])
+  result = search_research(query, limit=limit, detail=detail, route=route)
+  observed = json.loads(result)
+  _collect_search_invocation("pkm.search_papers", started_at, [], not isinstance(observed, dict) or observed.get("ok") is True,
+                            ["research-compatibility-alias"])
   return result
 
 
@@ -2528,7 +2656,8 @@ if "automation" in _FEATURE_DOMAINS:
   mcp.mount(chat_mcp)
 
 if __name__ == "__main__":
-    mcp.run()
+    import asyncio
+    asyncio.run(run_managed_stdio(mcp, _MCP_LIFECYCLE))
 `);
 
   fs.writeFileSync(reqTxt, "fastmcp>=2.0.0,<4.0.0\nuone-prompt-manager==0.1.0\nwebsockets>=12.0\nPyYAML>=6\ncryptography>=42.0.0\n");
@@ -2559,7 +2688,11 @@ if __name__ == "__main__":
 // The server config is room-agnostic; each invitation supplies a one-paste Magic
 // Link plus the alias the agent should use for that meeting.
 export function chatMcpStatus(): McpServerStatus {
-  const serverPath = path.join(managedMcpServerDirectory(), "chat_server.py");
+  const directory = managedMcpServerDirectory();
+  const manifest = readManagedMcpManifest(directory);
+  const serverPath = manifest
+    ? path.join(directory, "generations", manifest.generation, "chat_server.py")
+    : path.join(directory, "chat_server.py");
   const installedVersion = readMcpVersion(serverPath);
   return {
     installed: !!installedVersion, serverPath,
@@ -2577,9 +2710,9 @@ export function chatMcpStatus(): McpServerStatus {
   };
 }
 
-export function generateChatMcpServer(context: vscode.ExtensionContext): { serverPath: string; configSnippet: string } {
+export function generateChatMcpServer(context: vscode.ExtensionContext, outputDirectory?: string): { serverPath: string; configSnippet: string } {
   const storePath = getStorePath();
-  const mcpDir    = managedMcpServerDirectory();
+  const mcpDir    = outputDirectory || managedMcpServerDirectory();
   const serverPy  = path.join(mcpDir, "chat_server.py");
   const extensionRoot = context?.extensionPath || path.join(require("path").resolve(__dirname, ".."), "..");
   fs.mkdirSync(mcpDir, { recursive: true });

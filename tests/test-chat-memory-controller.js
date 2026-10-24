@@ -23,9 +23,13 @@ module.exports = async function testMemoryController(ApiChatView, context, nativ
     }
     assert.fail(`Memory commit did not settle: ${turn}`);
   };
-  nativeClient.discoverVscodeModels = async () => models;
+  let discoveries = 0;
+  let memoryDiscoveries;
+  let verifyDiscoveryReuse = true;
+  nativeClient.discoverVscodeModels = async () => { discoveries++; return models; };
   nativeClient.streamVscodeChat = async (_model, request, onText) => {
     if (request.purpose !== "memory") {
+      if (verifyDiscoveryReuse) assert.equal(discoveries, memoryDiscoveries, "the main request reuses the model catalog checked during Memory preparation");
       payloads.push(request.messages);
       onText(payloads.length === 1 ? answer : "Fixture response.");
       return;
@@ -35,6 +39,7 @@ module.exports = async function testMemoryController(ApiChatView, context, nativ
     assert.strictEqual(request.thinkingBudget, 2048, "Memory steps use the default thinking budget");
     const system = request.messages[0].content;
     const purpose = system.includes("CURRENT user input") ? "intent" : system.includes("Extract at most") ? "extract" : "summary";
+    if (purpose === "intent") memoryDiscoveries = discoveries;
     calls.push(purpose);
     if (purpose === "summary") {
       onText("Use immutable revisions, retain the exact user constraints and never deploy automatically. [s1]");
@@ -76,7 +81,11 @@ module.exports = async function testMemoryController(ApiChatView, context, nativ
       await waitForCommit(reply.memory.turn);
       return reply;
     };
+    provider.vscodeModels = [];
+    discoveries = 0;
     const first = await send("Review memory design");
+    verifyDiscoveryReuse = false;
+    assert(memoryDiscoveries > 0, "the fixture must perform real catalog discovery before the main request");
     assert.equal(first.memory.prepare.summaries.length, 0, "no eager summaries");
     for (let index = 0; index < 5; index++) await send(`Unrelated hiking topic ${index}`);
     assert.equal(calls.filter(purpose => purpose === "summary").length, 0, "unused topics must not be summarized");

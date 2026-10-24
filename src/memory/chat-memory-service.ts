@@ -158,6 +158,49 @@ export class ChatMemoryService {
     return await (await this.engine()).request({ method: "overview", params: { scope } }) as Record<string, unknown>;
   }
 
+  /** Inspection does not touch LRU, publish summaries, ingest messages or invoke a model. */
+  async inspect(scope: string, piece?: string, after = 0): Promise<Record<string, unknown>> {
+    if (!Number.isSafeInteger(after) || after < 0) throw new Error("Invalid Memory statement cursor.");
+    const engine = await this.engine();
+    if (piece !== undefined) {
+      if (typeof piece !== "string" || !piece.startsWith(`${scope}|`) || piece.length > 1024) {
+        throw new Error("Choose a Memory piece in this Chat.");
+      }
+      const page = await engine.request({ method: "read", params: { piece_id: piece, after, limit: 20 } }) as {
+        piece: { scope: string }; statements: Array<{ id: string }>; next: number;
+      };
+      if (page.piece.scope !== scope) throw new Error("The Memory piece belongs to another Chat.");
+      const statements = await Promise.all(page.statements.map(async statement => ({
+        ...statement,
+        sources: (await engine.request({ method: "sources", params: { statement_id: statement.id, limit: 20 } }) as Array<{ chat: string }>)
+          .filter(source => source.chat === scope),
+        sourceLimit: 20,
+      })));
+      const more = await engine.request({ method: "read", params: { piece_id: piece, after: page.next, limit: 1 } }) as { statements: unknown[] };
+      return { ...page, statements, next: more.statements.length ? page.next : null, observedAt: Date.now(),
+        note: "Current stored revision, not a reconstruction of historical model context. Source lists are bounded to 20 per statement." };
+    }
+    const kinds = ["project", "topic", "message", "piece"] as const;
+    const groups = await Promise.all(kinds.map(async kind => ({
+      kind, pieces: await engine.request({ method: "pieces", params: { scope, kind, limit: 200 } }) as Array<{
+        id: string; label: string; kind: string; level: number; revision: number; bytes: number; summary_current: number | null;
+      }>,
+    })));
+    const pieces = groups.flatMap(group => group.pieces);
+    const topics = pieces.filter(item => item.kind === "topic" || item.kind === "project");
+    const ids = new Set(pieces.map(item => item.id));
+    const relationships = await Promise.all(topics.map(async item =>
+      await engine.request({ method: "neighbors", params: { piece_id: item.id, limit: 100 } }) as Array<{
+        parent: string; child: string; relation: string;
+      }>));
+    const edges = [...new Map(relationships.flat().filter(edge => ids.has(edge.parent) && ids.has(edge.child))
+      .map(edge => [JSON.stringify(edge), edge])).values()];
+    return { scope, observedAt: Date.now(), usage: await engine.request({ method: "usage", params: { scope } }),
+      pieces, edges, pieceLimitPerKind: 200, edgeLimitPerPiece: 100,
+      possiblyTruncated: groups.some(group => group.pieces.length === 200) || relationships.some(edges => edges.length === 100),
+      note: "Live non-evicted pieces in this Chat only. Bounded snapshot; counts by level describe displayed pieces, not all disk contents. Inspection does not update meaningful-access times." };
+  }
+
   async receipt(turn: string): Promise<Record<string, unknown>> {
     const receipt = await (await this.engine()).request({ method: "turn_receipt", params: { turn } }) as Record<string, unknown>;
     return { ...receipt, accounting: memoryTurnAccounting(receipt) };

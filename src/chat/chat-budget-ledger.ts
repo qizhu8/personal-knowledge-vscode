@@ -100,6 +100,13 @@ export function createChatBudgetLedger(receipt: HarnessBudgetReceipt, profile: C
       { id: "input", label: "Planned input", owner: "model-call", scope: "round", unit: "tokens", enforcement: "hard-limit",
         limit: configured(receipt.effective.inputBudget, "effective.contextWindow-minus-output"),
         consumed: observation(receipt.consumed.estimatedInputTokens, "context-planner.utf8-byte-estimate", "estimated") },
+      ...(receipt.contextPlan?.automaticKnowledge ? [{
+        id:"automatic-knowledge", label:"Automatic PKM references", owner:"context-planner" as const,
+        scope:"round" as const, unit:"tokens" as const, enforcement:"hard-limit" as const,
+        limit:configured(receipt.contextPlan.automaticKnowledge.inputBudget, "automatic-pkm-reference-budget"),
+        consumed:observation(receipt.contextPlan.automaticKnowledge.estimatedAfter, "context-planner.utf8-byte-upper-bound", "estimated"),
+        note:"Separate from manual attachments, task instructions, dialogue, Memory and tool schemas/results. Native transport checks real counts when available.",
+      }] : []),
       { id: "transport-input", label: "Transport input accounting", owner: "model-call", scope: "round", unit: "tokens", enforcement: "accounting-only",
         unavailable: "The transport has not prepared its payload; local counting is not provider usage." },
       { id: "provider-input", label: "Provider input", owner: "model-call", scope: "round", unit: "tokens", enforcement: "accounting-only",
@@ -161,6 +168,11 @@ export function recordChatBudgetTransport(receipt: HarnessBudgetReceipt): void {
   if (!receipt.ledger || !receipt.transport) return;
   consume(receipt.ledger, "transport-input", receipt.transport.inputTokens, `transport.${receipt.transport.countingMethod}`,
     receipt.transport.countingMethod === "utf8-byte-estimate" ? "estimated" : "local-measured");
+  if (receipt.contextPlan?.automaticKnowledge && receipt.transport.automaticKnowledge) {
+    const knowledge = receipt.transport.automaticKnowledge;
+    consume(receipt.ledger, "automatic-knowledge", knowledge.inputTokens, `transport.${knowledge.countingMethod}`,
+      knowledge.countingMethod === "vscode-countTokens-plus-overhead" ? "local-measured" : "estimated");
+  }
 }
 
 export function recordChatInferenceTiming(ledger: ChatBudgetLedger, timing: ChatInferenceTiming): void {

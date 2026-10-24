@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' %%CSP_SOURCE%%; style-src 'unsafe-inline' %%CSP_SOURCE%%; font-src %%CSP_SOURCE%%; img-src data: https: %%CSP_SOURCE%%; frame-src 'self';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' %%CSP_SOURCE%%; style-src 'unsafe-inline' %%CSP_SOURCE%%; font-src data: %%CSP_SOURCE%%; img-src data: https: %%CSP_SOURCE%%; frame-src 'self';">
 <title>Personal Knowledge Manager</title>
 <meta name="pkm-skills-base" content="%%SKILLS_BASE%%">
 <meta name="pkm-notes-base" content="%%NOTES_BASE%%">
@@ -25,6 +25,7 @@
 <body>
 <div id="topbar" hidden>
   <strong>Personal Knowledge</strong>
+  <button id="open-pkm-chat-button" type="button" class="topbar-help-button" onclick="ask('openApiChat')" title="PKM Chat" aria-label="PKM Chat"><span class="codicon codicon-comment-discussion" aria-hidden="true"></span></button>
   <button id="duplicate-pkm-tab" type="button" class="topbar-help-button" onclick="duplicatePkmTab()" title="Duplicate PKM tab" aria-label="Duplicate PKM tab"><span class="codicon codicon-split-horizontal" aria-hidden="true"></span></button>
   <span id="workspace-title">Knowledge</span>
   <span id="pkm-version" title="Personal Knowledge Manager extension version" style="font-size:10px;color:var(--muted);opacity:.7;padding-left:4px">v%%PKM_VERSION%%</span>

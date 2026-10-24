@@ -5,10 +5,98 @@ import json
 import os
 from pathlib import Path
 import tempfile
-from contextlib import nullcontext
+import sqlite3
+from contextlib import closing, contextmanager, nullcontext
 from importlib.metadata import PackageNotFoundError, version
 
 FORMAT = "pkm-local-architecture-index-v1"
+
+class EmbeddingCache:
+    """Cache raw encoder outputs, never corpus-fitted PCA or ranked results."""
+
+    def __init__(self, target, dimensions):
+        self.target = target
+        self.dimensions = dimensions
+        self.hits = 0
+        self.misses = 0
+        self.used = set()
+        if target.is_symlink() or target.parent.is_symlink():
+            raise ValueError("Embedding cache must not be a symlink")
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            os.close(descriptor)
+        with self.connect() as connection:
+            connection.execute("""CREATE TABLE IF NOT EXISTS embeddings
+                (key TEXT PRIMARY KEY, rows INTEGER NOT NULL, data BLOB NOT NULL, digest TEXT NOT NULL)""")
+
+    @contextmanager
+    def connect(self):
+        try:
+            with closing(sqlite3.connect(self.target, timeout=10)) as connection, connection:
+                connection.execute("PRAGMA secure_delete=ON")
+                yield connection
+        except sqlite3.Error as error:
+            raise ValueError(f"Embedding cache unavailable; use Rebuild: {error}") from error
+
+    def encode(self, texts, kind, encode):
+        import numpy as np
+        keys = [hashlib.sha256((kind + "\0" + text).encode()).hexdigest() for text in texts]
+        self.used.update(keys)
+        found = {}
+        try:
+            with self.connect() as connection:
+                for key in set(keys):
+                    row = connection.execute("SELECT rows, data, digest FROM embeddings WHERE key=?", (key,)).fetchone()
+                    if row is None:
+                        continue
+                    rows, data, digest = row
+                    if (type(rows) is not int or rows < 0 or (kind == "documents" and rows != 1)
+                            or len(data) != rows * self.dimensions * 8
+                            or hashlib.sha256(data).hexdigest() != digest):
+                        raise ValueError("Embedding cache integrity mismatch; use Rebuild")
+                    array = np.frombuffer(data, dtype="<f8").reshape(rows, self.dimensions)
+                    if not np.isfinite(array).all():
+                        raise ValueError("Non-finite embedding cache; use Rebuild")
+                    found[key] = tuple(array[0].tolist()) if kind == "documents" else [tuple(value) for value in array.tolist()]
+                missing = dict((key, text) for key, text in zip(keys, texts) if key not in found)
+                self.hits += sum(key in found for key in keys)
+                if missing:
+                    values = list(encode(list(missing.values())))
+                    if len(values) != len(missing):
+                        raise ValueError("Encoder returned an invalid embedding count")
+                    for key, value in zip(missing, values):
+                        array = np.asarray(value, dtype="<f8")
+                        if kind == "documents":
+                            if array.shape != (self.dimensions,):
+                                raise ValueError("Encoder returned an invalid document vector")
+                            array = array.reshape(1, self.dimensions)
+                        elif array.size == 0:
+                            array = np.empty((0, self.dimensions), dtype="<f8")
+                        if array.ndim != 2 or array.shape[1] != self.dimensions or not np.isfinite(array).all():
+                            raise ValueError("Encoder returned invalid token vectors")
+                        data = array.tobytes()
+                        connection.execute("INSERT INTO embeddings VALUES (?,?,?,?)",
+                                           (key, len(array), data, hashlib.sha256(data).hexdigest()))
+                        found[key] = value
+                    self.misses += len(missing)
+        except sqlite3.Error as error:
+            raise ValueError(f"Embedding cache corrupt/unavailable; use Rebuild: {error}") from error
+        return [found[key] for key in keys]
+
+    def prune(self):
+        with self.connect() as connection:
+            connection.execute("CREATE TEMP TABLE live_keys (key TEXT PRIMARY KEY)")
+            connection.executemany("INSERT INTO live_keys VALUES (?)", ((key,) for key in self.used))
+            connection.execute("DELETE FROM embeddings WHERE key NOT IN (SELECT key FROM live_keys)")
+        for old in self.target.parent.glob("*.embeddings.sqlite3"):
+            if old != self.target:
+                old.unlink()
+                old.with_name(old.name + "-journal").unlink(missing_ok=True)
+
 
 def rebuild_lexical(retriever):
     from adaptive_skill_retrieval.perspectives import RetrievalPerspective

@@ -69,8 +69,20 @@ async function main() {
     assert.equal(JSON.parse(previews.at(-1).content).copies.length, 1);
     selections = [item => item.operation === "migrate"]; approval = "Apply reviewed migration";
     assert.equal(await manageMarkdownAssets(area, "Team/Design.md"), true);
-    assert(fs.existsSync(path.join(legacy, "old.png")), "Approved migration preserves every original");
+    assert(!fs.existsSync(path.join(legacy, "old.png")), "Approved migration removes an unshared original after owning its bytes");
     assert(!fs.readFileSync(full, "utf8").includes("_assets/old.png"));
+
+    const recovery = path.join(root, area, "Team", "Recovery.md");
+    fs.writeFileSync(recovery, "![missing](_assets/missing.png)\n");
+    const originalResource = path.join(legacy, "source.png");
+    fs.writeFileSync(originalResource, "recovered bytes");
+    files = [{ scheme: "file", fsPath: originalResource }];
+    selections = [item => item.operation === "repair", "Team/_assets/missing.png"];
+    approval = "Apply reviewed migration";
+    assert.equal(await manageMarkdownAssets(area, "Team/Recovery.md"), true);
+    assert(fs.readFileSync(recovery, "utf8").includes("Recovery.assets/"));
+    assert(!fs.existsSync(originalResource));
+    assert.equal(assets.referencedMarkdownAssets(root, area, "Team/Recovery.md", fs.readFileSync(recovery, "utf8"))[0].content.toString(), "recovered bytes");
 
     selections = [item => item.operation === "copy"]; input = "Copy";
     assert.equal(await manageMarkdownAssets(area, "Team/Design.md"), true);

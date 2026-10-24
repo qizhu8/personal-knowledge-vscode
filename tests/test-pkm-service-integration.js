@@ -10,6 +10,7 @@ const { GitHubSyncConflictError, GitHubSyncExtensionCompatibilityError, githubSy
 const { PkmServiceRecoveryPersistenceError } = require("../dist/runtime/pkm-service.js");
 const { sameKnowledgeRoot } = require("../dist/sync/github-sync-coordinator.js");
 const { GitHubSyncContentRepairError } = require("../dist/sync/github-sync-content-repair.js");
+const { GitHubSyncDeferredError } = require("../dist/sync/github-sync-scheduler.js");
 
 const extension = fs.readFileSync(path.join(__dirname, "../src/extension.ts"), "utf8");
 const start = extension.indexOf("async function finalizeGitHubSyncServiceResult(");
@@ -48,7 +49,7 @@ const context = vm.createContext({
   githubSyncScheduler: undefined, githubSyncCoordinatorStatePath: undefined,
   githubSyncTasks: new Map(), githubSyncForceUpdateAudit: new Map(),
   path, os, randomUUID, createHash, sameKnowledgeRoot, githubSyncResultIsNoChange, GitHubSyncConflictError, GitHubSyncExtensionCompatibilityError, PkmServiceRecoveryPersistenceError,
-  GitHubSyncContentRepairError,
+  GitHubSyncContentRepairError, GitHubSyncDeferredError,
   readGitHubSyncContentRepair: (_directory, targetId) => repairRecords.get(targetId),
   clearGitHubSyncContentRepair: (_directory, targetId) => { calls.push(["clear-repair"]); repairRecords.delete(targetId); },
   storeGitHubSyncContentRepair: (_directory, error) => {
@@ -61,7 +62,8 @@ const context = vm.createContext({
   }) },
   log: { info() {}, warn() {}, error() {} },
   vscode: { window: { showErrorMessage() {}, showWarningMessage: (...args) => { calls.push(["warning", ...args]); return Promise.resolve(); } } },
-  panel: undefined, _treeProvider: undefined,
+  panel: undefined, panels: { instances: new Map() }, _treeProvider: undefined,
+  postToPanel: message => calls.push(["post-panel", message]),
   githubSyncDiagnostics: { record: (...args) => calls.push(["diagnostic", ...args]) },
   githubSyncCoordinatorStateDirectory: () => `${root}/coordinator`,
   githubSyncStateDirectory: () => "/synthetic/global/github-sync",
@@ -84,6 +86,14 @@ const context = vm.createContext({
   applyGitHubSyncRecipePulls: () => calls.push(["recipe-pulls"]),
   applyGitHubSyncRecipeDeletes: () => calls.push(["recipe-deletes"]),
   setTopLevelPrivacy() {},
+  validateGitHubSyncTransaction: (_root, id, transactionId, expected) => {
+    assert.equal(id, target.id);
+    assert.equal(transactionId, result.transactionId);
+    assert.equal(expected.repository, target.repository);
+    assert.equal(expected.branch, target.branch);
+    assert.equal(expected.commit, result.commit);
+    calls.push(["validate-receipt"]);
+  },
   completeGitHubSyncTransaction: () => calls.push(["complete-receipt"]),
   clearGitHubSyncConflict: () => calls.push(["clear-conflict"]),
   storeGitHubSyncConflict: () => calls.push(["store-conflict"]),
@@ -123,6 +133,15 @@ context.extensionContext = {
   assert(calls.some(call => call[0] === "clear-conflict"));
   assert(calls.some(call => call[0] === "refresh-inventory"));
   assert(calls.some(call => call[0] === "refresh-retrieval"));
+  const previousFailure = target.lastFailure;
+  target.automation.enabled = true;
+  client.syncError = new GitHubSyncDeferredError("git fetch failed: Could not resolve host");
+  await assert.rejects(() => client.options.execute("primary", "interval", 1), GitHubSyncDeferredError);
+  assert.equal(target.automation.enabled, true, "network wait preserves persisted Auto intent");
+  assert.equal(target.lastFailure, previousFailure, "network wait does not consume persistent failure attempts");
+  assert(calls.some(call => call[0] === "diagnostic" && call[1] === "github_sync.deferred"));
+  delete client.syncError;
+  target.automation.enabled = false;
   calls.length = 0;
   result.changed = false;
   await client.options.execute("primary", "manual", 1);
@@ -180,6 +199,14 @@ context.extensionContext = {
   assert(calls.some(call => call[0] === "acknowledge" && call[1] === "disconnected-success"));
   assert.equal(calls.filter(call => call[0] === "service-sync").length, syncCallsBeforeRecovery,
     "recovery applies the existing result without repeating Git execution");
+  client.receipts = [{ operationId: "deferred-fetch", targetId: "primary", outcome: "error",
+    reason: "interval", repository: target.repository, branch: target.branch }];
+  client.recoveryError = new GitHubSyncDeferredError("Could not resolve host before fetch");
+  const failureBeforeDeferredRecovery = target.lastFailure;
+  await context.recoverGitHubSyncServiceResults(context.extensionContext, client);
+  assert.equal(client.receipts.length, 0, "known deferred failures can be acknowledged without another operation");
+  assert.equal(target.lastFailure, failureBeforeDeferredRecovery);
+  delete client.recoveryError;
   client.receipts = [{ operationId: "disconnected-conflict", targetId: "primary", outcome: "error",
     reason: "manual", repository: target.repository, branch: target.branch }];
   client.recoveryError = new GitHubSyncConflictError("a".repeat(40), [{

@@ -62,7 +62,8 @@ export function renderApiChat(view: vscode.WebviewView, context: vscode.Extensio
 
 export function registerApiChatShell(context: vscode.ExtensionContext, load: () => Promise<ApiChatView>): {
   readonly isBusy: boolean;
-  executeRemoteTask(prompt: string, signal: AbortSignal, requestId: string, chatId: string, observer?: import("../chatroom/portal-runtime").PortalObserver, source?: import("../chatroom/portal-runtime").PortalSource): Promise<unknown>;
+  executeRemoteTask(prompt: string, signal: AbortSignal, requestId: string, chatId: string, observer?: import("../chatroom/portal-runtime").PortalObserver, source?: import("../chatroom/portal-runtime").PortalSource, profileSnapshot?: import("./persona-profiles").PersonaSnapshot): Promise<unknown>;
+  reviewPortalProfiles(chatId: string): Promise<import("./persona-profiles").PersonaSnapshot | undefined>;
   portalContext(chatId?: string, label?: string): Promise<{ id: string; label: string }>;
   choosePortalContext(): Promise<{ id: string; label: string } | undefined>;
   receivePortalReview(chatId: string, review: import("../chatroom/portal-runtime").PortalReview): Promise<void>;
@@ -121,7 +122,8 @@ export function registerApiChatShell(context: vscode.ExtensionContext, load: () 
   registerApiChatHost(context, async (operation, args) => (await getBackend()).agentControl(operation, args), busy);
   return { get isBusy() { return busy(); },
     receivePortalReview: async (chatId, review) => (await getBackend()).receivePortalReview(chatId, review),
-    executeRemoteTask: async (prompt, signal, requestId, chatId, observer, source) => (await getBackend()).executeRemoteTask(prompt, signal, requestId, chatId, observer, source),
+    executeRemoteTask: async (prompt, signal, requestId, chatId, observer, source, profileSnapshot) => (await getBackend()).executeRemoteTask(prompt, signal, requestId, chatId, observer, source, profileSnapshot),
+    reviewPortalProfiles: async chatId => (await getBackend()).reviewPortalProfiles(chatId),
     portalContext: async (chatId, label) => (await getBackend()).portalContext(chatId, label),
     choosePortalContext: async () => (await getBackend()).choosePortalContext() };
 }

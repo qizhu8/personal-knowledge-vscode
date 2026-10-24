@@ -176,13 +176,28 @@ export function assertMarkdownAssetsUnshared(areaRoot: string, documentPath: str
 }
 
 export function assertMarkdownResourceTreeUnshared(areaRoot: string, resourcePath: string, documentPath = "", container?: string): void {
+  const reference = markdownResourceReferrer(areaRoot, resourcePath, documentPath, container);
+  if (reference) throw new Error(`Resource is shared by ${reference}. Update its references before moving or deleting ${resourcePath}.`);
+}
+
+function markdownResourceReferrer(areaRoot: string, resourcePath: string, documentPath = "", container?: string): string | undefined {
   const owned = checkedMarkdownPath(areaRoot, resourcePath);
-  if (!fs.existsSync(owned)) return;
-  const walk = (directory: string): void => {
+  if (!fs.existsSync(owned)) return undefined;
+  const segments = resourcePath.split("/");
+  const ownedIndex = segments.findIndex(segment => segment.toLowerCase().endsWith(".assets"));
+  if (ownedIndex >= 0) {
+    const owner = [...segments.slice(0, ownedIndex), segments[ownedIndex].slice(0, -7) + ".md"].join("/");
+    if (owner !== documentPath && !(container && (owner === container || owner.startsWith(container + "/")))
+      && fs.existsSync(checkedMarkdownPath(areaRoot, owner))) return owner;
+  }
+  const walk = (directory: string): string | undefined => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
       if (entry.name.startsWith(".") || entry.isSymbolicLink() || isMarkdownAssetDirectory(entry.name)) continue;
       const full = path.join(directory, entry.name);
-      if (entry.isDirectory()) walk(full);
+      if (entry.isDirectory()) {
+        const found = walk(full);
+        if (found) return found;
+      }
       else if (/\.md$/i.test(entry.name) && full !== path.resolve(areaRoot, documentPath)
         && !(container && full.startsWith(path.resolve(areaRoot, container) + path.sep))) {
         const content = fs.readFileSync(full, "utf8");
@@ -196,13 +211,13 @@ export function assertMarkdownResourceTreeUnshared(areaRoot: string, resourcePat
               if (error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR")) continue;
               throw error;
             }
-            throw new Error(`Resource is shared by ${path.relative(areaRoot, full)}. Update its references before moving or deleting ${resourcePath}.`);
+            return path.relative(areaRoot, full);
           }
         }
       }
     }
   };
-  walk(areaRoot);
+  return walk(areaRoot);
 }
 
 export function rebaseMarkdownAssets(areaRoot: string, from: string, to: string, markdown: string, container?: { from: string; to: string }): string {
@@ -249,9 +264,24 @@ export interface MarkdownAssetMigration {
   documentDigest: string;
   candidate: string;
   copies: Array<{ source: string; target: string; digest: string }>;
+  removals: string[];
+  sourceOverrides?: Record<string, string>;
 }
 
-export function previewMarkdownAssetMigration(root: string, area: MarkdownAssetArea, documentPath: string): MarkdownAssetMigration {
+export function missingLegacyMarkdownAssets(root: string, area: MarkdownAssetArea, documentPath: string, markdown: string): string[] {
+  const areaRoot = path.resolve(root, area);
+  const directory = path.dirname(checkedMarkdownPath(areaRoot, documentPath));
+  return [...new Set(markdownReferences(markdown).flatMap(item => {
+    const reference = localAssetReference(item.value);
+    if (!reference) return [];
+    const relative = path.relative(areaRoot, path.resolve(directory, reference)).replace(/\\/g, "/");
+    if (!relative.split("/").includes("_assets")) return [];
+    const full = checkedMarkdownPath(areaRoot, relative);
+    return fs.existsSync(full) ? [] : [relative];
+  }))];
+}
+
+export function previewMarkdownAssetMigration(root: string, area: MarkdownAssetArea, documentPath: string, sourceOverrides?: Record<string, string>): MarkdownAssetMigration {
   const areaRoot = path.resolve(root, area);
   const document = checkedMarkdownPath(areaRoot, documentPath);
   const markdown = fs.readFileSync(document, "utf8");
@@ -260,11 +290,18 @@ export function previewMarkdownAssetMigration(root: string, area: MarkdownAssetA
     const source = path.resolve(path.dirname(document), reference);
     const relative = path.relative(areaRoot, source).replace(/\\/g, "/");
     if (!relative.split("/").includes("_assets")) return reference;
-    const checked = checkedMarkdownPath(areaRoot, relative);
+    const expected = checkedMarkdownPath(areaRoot, relative);
+    const replacement = sourceOverrides?.[relative];
+    if (replacement && !replacement.split("/").some(isMarkdownAssetDirectory)) {
+      throw new Error("A missing resource can only be recovered from an existing Markdown resource directory.");
+    }
+    if (replacement && fs.existsSync(expected)) throw new Error(`The missing resource now exists: ${relative}. Preview again without a source override.`);
+    const checked = replacement ? checkedMarkdownPath(areaRoot, replacement) : expected;
     const content = fs.readFileSync(checked);
     const digest = createHash("sha256").update(content).digest("hex");
     const target = `${markdownAssetDirectory(documentPath)}/${digest.slice(0, 16)}${path.extname(checked).toLowerCase()}`;
-    copies.set(relative, { source: relative, target, digest });
+    const sourcePath = path.relative(areaRoot, checked).replace(/\\/g, "/");
+    copies.set(sourcePath, { source: sourcePath, target, digest });
     const destination = checkedMarkdownPath(areaRoot, target);
     if (fs.existsSync(destination) && !fs.readFileSync(destination).equals(content)) throw new Error(`Resource collision: ${target}`);
     return path.relative(path.dirname(document), destination).replace(/\\/g, "/");
@@ -273,7 +310,22 @@ export function previewMarkdownAssetMigration(root: string, area: MarkdownAssetA
     schema: "pkm.markdown-assets.migration/v1", area, documentPath,
     documentDigest: createHash("sha256").update(markdown).digest("hex"), candidate,
     copies: [...copies.values()],
+    removals: [...copies.keys()].filter(source => !markdownResourceReferrer(areaRoot, source, documentPath)),
+    ...(sourceOverrides ? { sourceOverrides: { ...sourceOverrides } } : {}),
   };
+}
+
+export function migrateMarkdownAssetsForLifecycleUnlocked(root: string, area: MarkdownAssetArea, documentPath: string, content?: string): string {
+  const preview = previewMarkdownAssetMigration(root, area, documentPath);
+  if (preview.copies.length) applyMarkdownAssetMigrationUnlocked(root, preview);
+  if (content === undefined) return preview.candidate;
+  const areaRoot = path.resolve(root, area);
+  const directory = path.dirname(checkedMarkdownPath(areaRoot, documentPath));
+  const destinations = new Map(preview.copies.map(copy => [path.resolve(areaRoot, copy.source), copy.target]));
+  return rewriteMarkdownAssetReferences(content, reference => {
+    const target = destinations.get(path.resolve(directory, reference));
+    return target ? path.relative(directory, checkedMarkdownPath(areaRoot, target)).replace(/\\/g, "/") : reference;
+  });
 }
 
 export function applyMarkdownAssetMigration(root: string, preview: MarkdownAssetMigration): void {
@@ -281,20 +333,35 @@ export function applyMarkdownAssetMigration(root: string, preview: MarkdownAsset
 }
 
 function applyMarkdownAssetMigrationUnlocked(root: string, preview: MarkdownAssetMigration): void {
-  const current = previewMarkdownAssetMigration(root, preview.area, preview.documentPath);
+  const current = previewMarkdownAssetMigration(root, preview.area, preview.documentPath, preview.sourceOverrides);
   if (JSON.stringify(current) !== JSON.stringify(preview)) throw new Error("Document or resources changed after migration preview. Preview again; nothing was migrated.");
   for (const copy of current.copies) {
     const source = checkedMarkdownPath(path.resolve(root, current.area), copy.source);
     saveMarkdownAssetUnlocked(root, current.area, current.documentPath, path.posix.basename(copy.target), fs.readFileSync(source));
   }
-  if (JSON.stringify(previewMarkdownAssetMigration(root, preview.area, preview.documentPath)) !== JSON.stringify(preview)) {
+  if (JSON.stringify(previewMarkdownAssetMigration(root, preview.area, preview.documentPath, preview.sourceOverrides)) !== JSON.stringify(preview)) {
     throw new Error("Document or sources changed during migration. Original references are retained; preview again.");
   }
   const document = checkedMarkdownPath(path.resolve(root, current.area), current.documentPath);
-  const temporary = document + ".assets-migration.tmp";
-  fs.writeFileSync(temporary, current.candidate, { flag: "wx" });
-  try { fs.renameSync(temporary, document); }
-  finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
+  const originals = current.removals.map(source => ({
+    path: checkedMarkdownPath(path.resolve(root, current.area), source),
+    content: fs.readFileSync(checkedMarkdownPath(path.resolve(root, current.area), source)),
+  }));
+  const originalDocument = fs.readFileSync(document);
+  recordKnowledgeResourceMutation(root, current.removals.map(source => `${current.area}/${source}`), [], () => {
+    const temporary = document + ".assets-migration.tmp";
+    fs.writeFileSync(temporary, current.candidate, { flag: "wx" });
+    try {
+      fs.renameSync(temporary, document);
+      for (const source of originals) fs.unlinkSync(source.path);
+    } catch (error) {
+      try {
+        for (const source of originals) if (!fs.existsSync(source.path)) fs.writeFileSync(source.path, source.content, { flag: "wx" });
+        fs.writeFileSync(document, originalDocument);
+      } catch (rollback) { throw new Error(`Resource migration failed: ${String(error)}. Rollback failed: ${String(rollback)}. Inspect ${document}.`); }
+      throw error;
+    } finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
+  });
 }
 
 export function editMarkdownAsset(

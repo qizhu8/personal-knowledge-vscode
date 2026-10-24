@@ -22,7 +22,12 @@ const context = vm.createContext({
   setTimeout: () => 1,
   clearTimeout: () => {},
 });
+vm.runInContext(coreSource.match(/function fileSelectorCategoryTree\(items\) \{[\s\S]*?\n\}/)[0],context);
 vm.runInContext(source, context);
+assert.deepEqual(JSON.parse(vm.runInContext("JSON.stringify(githubSyncDefaultSelection().public.profiles)",context)),{items:[],folders:[]});
+assert.deepEqual(JSON.parse(vm.runInContext("JSON.stringify(githubSyncDefaultSelection().private.profiles)",context)),{items:[],folders:[]});
+assert.doesNotMatch(vm.runInContext("githubSyncPrivacyTree({}, 'public')",context),/User \/ Agent Profiles/);
+assert.match(vm.runInContext("githubSyncPrivacyTree({}, 'private')",context),/User \/ Agent Profiles/);
 const fixedNow = Date.parse("2026-10-20T12:00:00Z");
 context.fixedNow = fixedNow;
 for (const [minutes, expected] of [[0, "0 h 0 min ago"], [59, "0 h 59 min ago"], [60, "1 h 0 min ago"], [1501, "25 h 1 min ago"]]) {
@@ -78,8 +83,25 @@ assert.match(outsideDangerZones, /githubSyncForce\(/, "normal synchronization st
 context.failedTarget = { lastFailure: { at: '2026-07-19T10:00:00Z', error: 'snapshot failed' }, lastSync: { at: '2026-07-18T10:00:00Z' }, automation: { enabled: true, initialSyncCompleted: true } };
 assert.strictEqual(vm.runInContext("githubSyncEffectiveStatus(failedTarget, {status:'scheduled'}, null, false)", context), 'error', 'a scheduled timer must not hide a newer persisted synchronization failure');
 assert.strictEqual(vm.runInContext("githubSyncEffectiveStatus(failedTarget, {status:'syncing'}, null, false)", context), 'syncing');
-assert.strictEqual(vm.runInContext("githubSyncEffectiveError(failedTarget, {status:'scheduled',lastError:'stale earlier error'})", context), 'snapshot failed', 'a newer persisted failure must not display a stale scheduler error');
-assert.strictEqual(vm.runInContext("githubSyncEffectiveError(failedTarget, {status:'error',lastError:'current attempt failed'})", context), 'current attempt failed');
+assert.strictEqual(vm.runInContext("githubSyncEffectiveError(failedTarget, {status:'scheduled',lastError:'stale earlier error'})", context), '[SYNC_FAILED] snapshot failed', 'a newer persisted failure must not display a stale scheduler error');
+assert.strictEqual(vm.runInContext("githubSyncEffectiveError(failedTarget, {status:'error',lastError:'current attempt failed'})", context), '[SYNC_FAILED] current attempt failed');
+assert.match(vm.runInContext("githubSyncEffectiveError({lastFailure:{error:'Canceled'}}, {})", context), /\[SYNC_CANCELED\].*Retry Sync/);
+assert.match(vm.runInContext("githubSyncEffectiveError({}, {status:'error',lastError:'Reload then retry',lastErrorCode:'CREDENTIAL_READ_TIMEOUT',lastErrorPhase:'authenticating'})", context),
+  /\[CREDENTIAL_READ_TIMEOUT · authenticating\] Reload then retry/);
+const credentialErrorCards = vm.runInContext(`(() => {
+  const previous = githubSyncData;
+  githubSyncData = {targets:[{id:'share',name:'CreativeGen Share',automation:{enabled:false,initialSyncCompleted:true},
+    lastFailure:{at:'2026-10-22T21:01:46Z',error:'VS Code canceled credential access. Reload then retry.',errorCode:'CREDENTIAL_READ_CANCELED',phase:'authenticating'}}],runtime:{}};
+  const cards = githubSyncCards();
+  githubSyncData = previous;
+  return cards;
+})()`, context);
+assert.match(credentialErrorCards, /class="github-sync-error"[^>]*>\[CREDENTIAL_READ_CANCELED · authenticating\]/,
+  "a collapsed target card shows code, failed phase and actionable error without opening settings");
+assert.match(credentialErrorCards, /github-sync-phase-current error" aria-hidden="true">Authentication failed</,
+  "the failed authentication phase survives a target-only snapshot after reloading");
+assert.equal((credentialErrorCards.match(/VS Code canceled credential access/g) || []).length, 1,
+  "the error message is not duplicated in the metadata column");
 context.failedTarget.lastSync.at = '2026-07-20T10:00:00Z';
 assert.strictEqual(vm.runInContext("githubSyncEffectiveStatus(failedTarget, {status:'scheduled'}, null, false)", context), 'scheduled', 'a later successful sync clears the effective failure status');
 assert.strictEqual(vm.runInContext("githubSyncEffectiveStatus(failedTarget, {status:'error',lastError:'old error',lastAttemptAt:'2026-07-19T10:00:00Z'}, null, false)", context), 'scheduled',
@@ -359,7 +381,7 @@ const failingCard = vm.runInContext(`(() => {
 assert.match(failingCard, /github-sync-flow-step error" data-phase="fetch"/);
 assert.match(failingCard, /github-sync-phase-current error" aria-hidden="true">Fetch \/ Pull failed</,
   "the current failure stays visible when its node is scrolled out of view");
-assert.match(failingCard, /github-sync-error[^>]*>current failure</, "error targets show their current failure");
+assert.match(failingCard, /github-sync-error[^>]*>\[SYNC_FAILED\] current failure</, "error targets show their current failure");
 assert.match(failingCard, /github-sync-flow-step done" data-phase="authenticating"/,
   "a Fetch / Pull failure keeps the completed Authentication stage successful");
 const retryButton = failingCard.match(/<button[^>]*githubSyncForce\('primary',this\)[\s\S]*?<\/button>/)?.[0] || '';
@@ -386,21 +408,21 @@ const manualFailureCard = vm.runInContext(`(() => {
 })()`, context);
 assert.match(manualFailureCard, /github-sync-phase-current error" aria-hidden="true">Sync failed</,
   "manual failures without a reported phase use a red, non-duplicated failure label");
-assert.match(manualFailureCard, /github-sync-error[^>]*>authentication expired</,
+assert.match(manualFailureCard, /github-sync-error[^>]*>\[SYNC_FAILED\] authentication expired</,
   "manual failures display the actual error even with Auto Sync off");
 const missingErrorCard = vm.runInContext(`(() => {
   githubSyncData.runtime.primary = {status:'error'};
   delete githubSyncData.targets[0].lastFailure;
   return githubSyncCards();
 })()`, context);
-assert.match(missingErrorCard, /github-sync-error[^>]*>No error details were recorded\. Open Sync Diagnostic Log for this attempt\.</,
+assert.match(missingErrorCard, /github-sync-error[^>]*>\[SYNC_FAILED\] No error details were recorded\. Open Sync Diagnostic Log for this attempt\.</,
   'a failed target without recorded details still displays an explicit diagnostic message');
 const persistedFailureCard = vm.runInContext(`(() => {
   githubSyncData.runtime.primary = {status:'error'};
   githubSyncData.targets[0].lastFailure = {error:'Local content changed during synchronization: notes/Images/diagram.png'};
   return githubSyncCards();
 })()`, context);
-assert.match(persistedFailureCard, /<small>Local content changed during synchronization: notes\/Images\/diagram\.png<\/small>/,
+assert.match(persistedFailureCard, /github-sync-error[^>]*>\[SYNC_FAILED\] Local content changed during synchronization: notes\/Images\/diagram\.png<\/small>/,
   "a persisted failure gives the actual cause directly on the target card");
 assert.match(persistedFailureCard, /githubSyncForce\('primary',this\)" >Sync with Remote<\/button>/,
   "a persisted manual failure exposes an enabled retry action instead of an unusable instruction");

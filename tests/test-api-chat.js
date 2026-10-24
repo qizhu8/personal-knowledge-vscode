@@ -260,6 +260,20 @@ else (async () => {
     contextViewer.enqueueInput(staleViewerChat, secondForeignInput);
     contextStore.assertRunnable(queuedChat, queuedChat.progress.attemptId, executionContext);
     assert.deepStrictEqual(queuedChat.queuedInputs.map(input => input.id), [foreignQueuedInput.id, secondForeignInput.id]);
+    const editorToken = require("crypto").randomUUID();
+    contextViewer.editQueuedInput(staleViewerChat, foreignQueuedInput.id, "begin", editorToken);
+    queuedChat.messages[0].content += " still streaming";
+    contextStore.save(queuedChat);
+    assert.equal(queuedChat.queuedInputs[0].editToken, editorToken, "streaming save preserves a foreign editor hold");
+    assert.throws(() => contextViewer.editQueuedInput(staleViewerChat, foreignQueuedInput.id, "save", require("crypto").randomUUID(), "Overwritten"), /another window/);
+    const heldQueue = [...queuedChat.queuedInputs];
+    queuedChat.queuedInputs = queuedChat.queuedInputs.slice(1);
+    assert.throws(() => contextStore.save(queuedChat), /edited before consumption/);
+    queuedChat.queuedInputs = heldQueue;
+    contextViewer.editQueuedInput(staleViewerChat, foreignQueuedInput.id, "save", editorToken, "Edited foreign task");
+    contextStore.assertRunnable(queuedChat, queuedChat.progress.attemptId, executionContext);
+    assert.equal(queuedChat.queuedInputs[0].text, "Edited foreign task");
+    assert.equal(queuedChat.queuedInputs[0].editToken, undefined);
     const queueWriter = require("child_process").spawnSync(process.execPath, ["-e", `
       const { ApiChatStore } = require(${JSON.stringify(path.join(__dirname, "../dist/chat/api-chat-store"))});
       const { captureExecutionContext } = require(${JSON.stringify(path.join(__dirname, "../dist/chat/execution-context"))});
@@ -893,6 +907,29 @@ async function testController() {
     };
     delete require.cache[require.resolve("../dist/chat/api-chat-view")];
     const { ApiChatView } = require("../dist/chat/api-chat-view");
+    const streamFlush = Object.create(ApiChatView.prototype);
+    const streamChats = [{ id: "one" }, { id: "two" }];
+    const streamSaves = [];
+    let streamRefreshes = 0;
+    Object.assign(streamFlush, {
+      chats: new Map(streamChats.map(chat => [chat.id, chat])),
+      running: new Map(streamChats.map(chat => [chat.id, new AbortController()])),
+      view: { visible: true },
+      persist: chat => streamSaves.push(chat.id),
+      publish: () => { streamRefreshes++; },
+      notify: error => { throw error; },
+    });
+    for (let chunk = 0; chunk < 100; chunk++) streamFlush.scheduleStreamPersistence(true);
+    assert.equal(streamSaves.length, 0);
+    assert.equal(streamRefreshes, 0);
+    await new Promise(resolve => setTimeout(resolve, 550));
+    assert.deepEqual(streamSaves, ["one", "two"]);
+    assert.equal(streamRefreshes, 1, "100 summary fragments share one visible refresh");
+    streamFlush.view.visible = false;
+    for (let chunk = 0; chunk < 100; chunk++) streamFlush.scheduleStreamPersistence(true);
+    await new Promise(resolve => setTimeout(resolve, 550));
+    assert.deepEqual(streamSaves, ["one", "two", "one", "two"]);
+    assert.equal(streamRefreshes, 1, "hidden summary flushes persist without rebuilding the library");
     builtin = require("../dist/chat/api-chat-tools"); originalBuiltin = builtin.createBuiltinTools;
     Module._load = originalLoad;
     client.streamApiChat = (request, onText) => request.purpose === "memory"
@@ -1410,10 +1447,35 @@ async function testController() {
     assert(posts.at(-1).chats.filter(item => [first, second].includes(item.id)).every(item => item.status === "running"));
     requests[0].onText("first partial"); requests[1].onText("second partial");
     assert(posts.filter(item => item.type === "delta").every(item => item.chatId === second));
+    const originalPersist = provider.persist, originalPublish = provider.publish;
+    let streamingSaves = 0, streamingPublishes = 0;
+    provider.persist = function(chat) { streamingSaves++; return originalPersist.call(this, chat); };
+    provider.publish = function() { streamingPublishes++; return originalPublish.call(this); };
+    try {
+      for (let chunk = 0; chunk < 100; chunk++) requests[1].request.onReasoningSummary("s");
+      assert.equal(streamingSaves, 0, "public summary fragments must not synchronously save the entire history");
+      assert.equal(streamingPublishes, 0, "public summary fragments must not publish a full library snapshot per chunk");
+      await new Promise(resolve => setTimeout(resolve, 550));
+      assert.equal(streamingSaves, 2, "one shared stream flush saves each of the two running Chats once");
+      assert(streamingPublishes <= 3, "a summary burst is coalesced, including independent library watcher refreshes");
+      assert.equal(provider.store.load(second).messages.at(-1).reasoningSummaries.at(-1).text, "s".repeat(100));
+      provider.view.visible = false;
+      streamingSaves = 0; streamingPublishes = 0;
+      for (let chunk = 0; chunk < 100; chunk++) requests[1].request.onReasoningSummary("h");
+      await new Promise(resolve => setTimeout(resolve, 550));
+      assert.equal(streamingSaves, 2);
+      assert(streamingPublishes <= 2, "hidden summary fragments do not cause per-fragment library refreshes");
+    } finally {
+      provider.persist = originalPersist; provider.publish = originalPublish; provider.view.visible = true;
+    }
+    requests[1].request.onReasoningSummary(" final-before-stop");
     assert.match(fs.readFileSync(path.join(__dirname, "../src/webview/api-chat.js"), "utf8"), /element\("stop"\)\.onclick = \(\) => post\("cancel"\)/);
     await provider.handle({ type: "cancel" }); await secondRun;
     assert.strictEqual(provider.chat.messages[1].status, "cancelled");
     assert.strictEqual(provider.chat.messages[1].content, "second partial");
+    assert.equal(provider.store.load(second).messages[1].reasoningSummaries.at(-1).text,
+      "s".repeat(100) + "h".repeat(100) + " final-before-stop",
+      "Stop durably flushes the final public summary without waiting for the stream timer");
     assert.notStrictEqual(provider.store.load(second).paused, true, "Stopping a response must not pause the Chat");
     provider.store.assertRunnable(provider.chat);
     assert.strictEqual(requests.length, 2, "Stopping must not automatically retry the request");
@@ -1748,10 +1810,9 @@ async function testController() {
     const queuedAReady = new Promise(resolve => { started = resolve; });
     liveReceiptRequest.resolve(); await receiptRun; await queuedAReady;
     const queuedA = requests.at(-1);
-    assert.strictEqual(queuedA.request.messages.at(-1).content, "Queued task A");
-    const queuedBReady = new Promise(resolve => { started = resolve; }); queuedA.resolve(); await queuedBReady;
-    const queuedB = requests.at(-1); assert.strictEqual(queuedB.request.messages.at(-1).content, "Queued task B");
-    queuedB.resolve(); await new Promise(setImmediate);
+    assert.deepStrictEqual(queuedA.request.messages.slice(-2).map(message => message.content), ["Queued task A", "Queued task B"]);
+    queuedA.resolve(); await new Promise(setImmediate);
+    assert.strictEqual(requests.length, queuedRequestCount + 1, "all queued tasks are delivered in one ordered request");
     assert.strictEqual(provider.chat.queuedInputs.length, 0); assert.strictEqual(provider.running.size, 0);
     const senderViewer = new ApiChatView(context);
     senderViewer.store = provider.store;
@@ -1916,18 +1977,17 @@ async function testController() {
     await provider.handle({ type: "chooseModel" }); assert.strictEqual(credentialReads, 0);
     const nativeRequests = []; let nativeStarted;
     nativeClient.streamVscodeChat = (model, request, onText) => request.purpose === "memory" ? Promise.resolve()
-      : new Promise((resolve, reject) => { nativeRequests.push({ model, request, onText, resolve }); request.signal.addEventListener("abort", () => reject(new Error("Request cancelled.")), { once: true }); nativeStarted(); });
-    let resolveModels; let discoveryStarted;
-    const checking = new Promise(resolve => { discoveryStarted = resolve; });
-    nativeClient.discoverVscodeModels = () => new Promise(resolve => { resolveModels = resolve; discoveryStarted(); });
+      : new Promise((resolve, reject) => { nativeRequests.push({ model, request, onText, resolve, reject }); request.signal.addEventListener("abort", () => reject(new Error("Request cancelled.")), { once: true }); nativeStarted(); });
+    let modelDiscoveries = 0;
+    nativeClient.discoverVscodeModels = async () => { modelDiscoveries++; return models; };
     const originalContext = provider.chat.context[0].content;
     provider.chat.images = [testImage];
     const startedNative = new Promise(resolve => { nativeStarted = resolve; });
-    const nativeRun = provider.handle({ type: "send", text: "native question" }); await checking;
+    const nativeRun = provider.handle({ type: "send", text: "native question" }); await startedNative;
+    assert.strictEqual(modelDiscoveries, 0, "a connected native model is reused without per-turn access discovery");
     provider.chat.context[0].content = "changed during access check";
     const nextDraftImage = { ...testImage, label: "next-request.png" }; provider.chat.images = [nextDraftImage];
     await provider.handle({ type: "model", value: nativeClient.vscodeModelProfile(models[1]).id });
-    resolveModels(models); await startedNative;
     assert.strictEqual(nativeRequests[0].model.id, "current-native"); assert(nativeRequests[0].request.messages.some(item => item.content.includes(originalContext))); assert(!nativeRequests[0].request.messages.some(item => item.content.includes("changed during access check")));
     assert.strictEqual(nativeRequests[0].request.messages.at(-1).images[0].label, testImage.label);
     assert.strictEqual(provider.chat.messages.at(-2).images[0].label, testImage.label);
@@ -1949,12 +2009,35 @@ async function testController() {
     assert.strictEqual(provider.decisions.size, 0, "stopping a request clears its inline decision");
     await assert.rejects(provider.handle({ type: "decision", id: cancelledLoopId, value: "continue" }), /no longer pending/);
     automaticDecisionApproval = true;
+    let rechecks = 0;
+    nativeClient.discoverVscodeModels = async () => { rechecks++; return models; };
+    const deniedStarted = new Promise(resolve => { nativeStarted = resolve; });
+    const denied = provider.handle({ type:"send", text:"access denial fixture" }); await deniedStarted;
+    const beforeDenial = nativeRequests.length;
+    nativeRequests.at(-1).reject(Object.assign(new Error("Model permission denied"), { code:"NoPermissions" }));
+    await denied;
+    assert.equal(rechecks, 1, "an explicit access failure triggers exactly one revalidation");
+    assert.equal(nativeRequests.length, beforeDenial, "revalidation never replays a failed model request");
+    assert.equal(provider.chat.messages.at(-1).status, "failed");
+    assert.equal(provider.chat.progress.steps.find(step => step.operation === "model-access").status, "complete",
+      "successful access revalidation remains complete even though the original request failed");
+    const afterDenialStarted = new Promise(resolve => { nativeStarted = resolve; });
+    const afterDenial = provider.handle({ type:"send", text:"explicit next request" }); await afterDenialStarted;
+    nativeRequests.at(-1).onText("Reused revalidated model"); nativeRequests.at(-1).resolve(); await afterDenial;
+    assert.equal(rechecks, 1, "the next explicit send reuses the revalidated catalog");
+    const ordinaryErrorStarted = new Promise(resolve => { nativeStarted = resolve; });
+    const ordinaryError = provider.handle({ type:"send", text:"ordinary failure fixture" }); await ordinaryErrorStarted;
+    nativeRequests.at(-1).reject(Object.assign(new Error("Rate limited fixture"), { code:"RateLimited" }));
+    await ordinaryError;
+    assert.equal(rechecks, 1, "ordinary model failures do not trigger access revalidation");
     nativeClient.discoverVscodeModels = async () => [models[0]];
+    provider.invalidateModels();
+    const requestsBeforeMissing = nativeRequests.length;
     const beforeMissing = provider.chat.messages.length; await provider.handle({ type: "send", text: "missing model" });
     assert.strictEqual(provider.chat.messages.length, beforeMissing + 2);
     assert.strictEqual(provider.chat.messages.at(-2).content, "missing model");
     assert.strictEqual(provider.chat.messages.at(-1).status, "failed");
-    assert.strictEqual(nativeRequests.length, 2);
+    assert.strictEqual(nativeRequests.length, requestsBeforeMissing);
     assert.match(provider.chat.messages.at(-1).error, /no longer available/);
     assert.match(provider.store.load(provider.chat.id, false).messages.at(-1).error, /no longer available/);
     const previousChat = provider.chat.id;
@@ -1983,6 +2066,7 @@ async function testController() {
     provider.chat.builtinTools = ["session_info", "pkm_search", "pkm_read", "list_chats", "replace_text", "run_process", "ask_session", "ask_chat"];
     provider.chat.mcpServers = [{ id: "disabled-by-permission", label: "No connection", url: "https://example.test/mcp", enabled: true, tools: ["echo"] }];
     nativeClient.discoverVscodeModels = async () => models;
+    provider.invalidateModels();
     const readonlyStarted = new Promise(resolve => { nativeStarted = resolve; });
     const readonlyRun = provider.handle({ type: "send", text: "Check readonly tool permissions" }); await readonlyStarted;
     assert.deepStrictEqual(nativeRequests.at(-1).request.tools.map(tool => tool.name).sort(), ["list_chats", "pkm_read", "pkm_search", "session_info"]);
@@ -2020,6 +2104,21 @@ async function testController() {
     selectedFiles = [{ scheme: "file", fsPath: imageFile }, { scheme: "file", fsPath: imageFile }];
     await assert.rejects(provider.handle({ type: "image" }), /two images/); assert.strictEqual(provider.chat.images.length, 1);
     await provider.handle({ type: "removeImage", value: 0 }); assert.strictEqual(provider.store.load(first).images.length, 0);
+    const pasted = { ...testImage, label:"Pasted image 1.png" };
+    await assert.rejects(provider.handle({ type:"pasteImages", chatId:"different-chat", images:[pasted] }), /selected Chat changed/);
+    await assert.rejects(provider.handle({ type:"pasteImages", chatId:first, images:[{ ...pasted, dataBase64:"broken" }] }), /Base64|Invalid image/);
+    assert.strictEqual(provider.chat.images.length, 0);
+    await provider.handle({ type:"pasteImages", chatId:first, images:[pasted] });
+    assert.deepStrictEqual(provider.store.load(first).images, [pasted], "pasted image persists in the same draft as picked images");
+    await assert.rejects(provider.handle({ type:"pasteImages", chatId:first, images:[pasted, pasted] }), /two images/);
+    assert.strictEqual(provider.chat.images.length, 1, "invalid paste must not partially mutate the draft");
+    const pastedReady = new Promise(resolve => { nativeStarted = resolve; });
+    const pastedRun = provider.handle({ type:"send", text:"Inspect this pasted screenshot" });
+    await pastedReady;
+    assert.deepStrictEqual(nativeRequests.at(-1).request.messages.at(-1).images, [pasted], "the actual model request receives the pasted image bytes");
+    nativeRequests.at(-1).onText("Pasted image received"); nativeRequests.at(-1).resolve();
+    await pastedRun;
+    assert.strictEqual(provider.chat.images.length, 0, "sending consumes the pasted draft without losing the message attachment");
     const imageReply = provider.chat.messages.find(message => message.role === "assistant" && message.images?.length);
     await provider.handle({ type: "saveImage", id: imageReply.id, value: 0 }); assert.strictEqual(imageWrites, 0, "Dismissed save dialog must not write");
     saveDestination = { scheme: "file", fsPath: path.join(directory, "saved.png") };
@@ -2030,7 +2129,7 @@ async function testController() {
     assert(recordedAttempt.progress.attemptId);
     assert.strictEqual(recordedAttempt.progress.status, recordedAttempt.status);
     assert(recordedAttempt.progress.steps.every(step => step.status !== "running" && step.status !== "waiting"));
-    assert.deepStrictEqual(provider.store.load(provider.chat.id).messages.find(message => message.id === recordedAttempt.id).progress, recordedAttempt.progress);
+    assert.deepStrictEqual(provider.store.load(provider.chat.id).messages.find(message => message.id === recordedAttempt.id).progress, JSON.parse(JSON.stringify(recordedAttempt.progress)));
     provider.chat.vscodeModelId = "vscode:copilotcli:gpt-6.1-sol";
     const catalogPosts = posts.length;
     await assert.rejects(provider.handle({ type: "send", text: "catalog-only saved model" }), /catalog-only/);
@@ -2074,6 +2173,34 @@ async function testController() {
     await provider.handle({ type: "pause" });
     await assert.rejects(provider.agentControl("send", { chatId: createdControl.chatId, prompt: "Do not auto-resume" }), /paused/);
     const rememberedModel = context.workspaceState.get("apiChat.defaultModel");
+    {
+    let pendingDiscoveries = [];
+    nativeClient.discoverVscodeModels = (_host, signal) => new Promise(resolve => pendingDiscoveries.push({ resolve, signal }));
+    provider.invalidateModels();
+    const cancelledDiscovery = new AbortController();
+    const cancelledWait = provider.availableVscodeModels(cancelledDiscovery.signal);
+    const sharedWait = provider.availableVscodeModels();
+    cancelledDiscovery.abort();
+    await assert.rejects(cancelledWait, /cancelled/i);
+    assert.equal(pendingDiscoveries.length, 1, "concurrent callers share one discovery");
+    assert.equal(pendingDiscoveries[0].signal.aborted, false, "one cancelled caller does not cancel shared discovery");
+    pendingDiscoveries[0].resolve(models);
+    assert.deepEqual(await sharedWait, models);
+    await provider.availableVscodeModels();
+    assert.equal(pendingDiscoveries.length, 1, "cached callers do not rediscover");
+    provider.invalidateModels();
+    const staleWait = provider.availableVscodeModels();
+    provider.invalidateModels();
+    const currentWait = provider.availableVscodeModels();
+    pendingDiscoveries[1].resolve([models[0]]);
+    await assert.rejects(staleWait, /changed/);
+    const currentSharedWait = provider.availableVscodeModels();
+    assert.equal(pendingDiscoveries.length, 3, "settling a stale discovery cannot clear a newer pending discovery");
+    pendingDiscoveries[2].resolve(models);
+    await Promise.all([currentWait, currentSharedWait]);
+    assert.deepEqual(provider.vscodeModels, models, "stale models never replace the current catalog");
+    nativeClient.discoverVscodeModels = async () => models;
+    }
     await context.workspaceState.update("apiChat.defaultModel", undefined);
     const restartedView = new ApiChatView(context);
     try {
@@ -2142,6 +2269,40 @@ async function testVscodeModels() {
   const events = []; const request = { messages: [{ role: "system", content: "Instructions" }, { role: "user", content: "question" }], signal: new AbortController().signal, maxOutputTokens: 1024, tools: [{ name: "read_file", description: "Read", parameters: { type: "object" }, execute: async () => { execution++; return "file contents"; } }], onTool: event => events.push(event) };
   await streamVscodeChat(model, request, text => { output += text; }, host);
   assert.strictEqual(output, "done"); assert.strictEqual(execution, 1); assert.strictEqual(events[1].status, "complete"); assert.strictEqual(prompts[0].options.tools[0].inputSchema.type, "object");
+  const inputCounts = new Map();
+  let countedRounds = 0;
+  const countedInputModel = { ...model,
+    countTokens: async value => {
+      const key = JSON.stringify(value);
+      inputCounts.set(key, (inputCounts.get(key) || 0) + 1);
+      return 10;
+    },
+    sendRequest: async () => ({ stream:(async function* () {
+      if (++countedRounds === 1) yield new CallPart("count-cache-call", "read_file", { path:"file.txt" });
+      else yield new TextPart("done");
+    })() }),
+  };
+  const modelActivities = [];
+  await streamVscodeChat(countedInputModel, { ...request, onModelActivity:event => modelActivities.push(event) }, () => {}, host);
+  assert(modelActivities.length > 0);
+  assert(modelActivities.every(event => event.operation === "token-count"));
+  assert.equal(modelActivities.length % 2, 0);
+  for (let i = 0; i < modelActivities.length; i += 2) {
+    assert.equal(modelActivities[i].status, "running");
+    assert.deepEqual(modelActivities[i + 1], { ...modelActivities[i], status:"complete" });
+  }
+  const invalidCountActivities = [];
+  await assert.rejects(streamVscodeChat({ ...countedInputModel, countTokens:async value => typeof value === "string" && value === "done" ? NaN : 10,
+    sendRequest:async () => ({ stream:(async function* () { yield new TextPart("done"); })() }) },
+    { ...request, tools:[], onModelActivity:event => invalidCountActivities.push(event) }, () => {}, host), /Output token count is unavailable/);
+  assert.equal(invalidCountActivities.at(-1).status, "failed", "invalid tokenizer output cannot be recorded as completed");
+  assert.match(invalidCountActivities.at(-1).label, /output tokens/);
+  const immutableInputs = [...inputCounts].filter(([key]) => key.includes("Instructions") || key.includes("question") || key.includes("inputSchema"));
+  assert.strictEqual(immutableInputs.length, 3);
+  assert(immutableInputs.every(([, count]) => count === 1), "unchanged message and tool schema token counts are reused only within this invocation");
+  await streamVscodeChat(countedInputModel, { ...request, tools:[] }, () => {}, host);
+  assert([...inputCounts].filter(([key]) => key.includes("Instructions") || key.includes("question")).every(([, count]) => count === 2),
+    "token count cache must not cross invocations or models");
   for (const loopReviewAfterMs of [undefined, 0]) {
     let idleRounds = 0;
     let idleText = "";
@@ -2699,6 +2860,16 @@ async function testMcp() {
       if (message.id === undefined) { response.writeHead(202); response.end(); return; }
       if (message.method === "initialize") result = { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "fixture", version: "1" } };
       if (message.method === "tools/list") {
+        if (discoveryMode === "endless") {
+          const result = { tools: [], nextCursor: String(Number(message.params?.cursor || 0) + 1) };
+          setTimeout(() => {
+            if (!response.destroyed) {
+              response.writeHead(200, { "Content-Type": "application/json" });
+              response.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+            }
+          }, 20);
+          return;
+        }
         const tool = { name: message.params?.cursor ? "inspect" : "echo", description: "Fixture tool", inputSchema: { type: "object", properties: { value: { type: "string" } } }, annotations: { readOnlyHint: true } };
         result = discoveryMode === "overflow" ? { tools: Array.from({ length: 513 }, (_, index) => ({ ...tool, name: `tool_${index}` })) }
           : { tools: [tool], ...(!message.params?.cursor || discoveryMode === "repeat" ? { nextCursor: "second-page" } : {}) };
@@ -2725,6 +2896,14 @@ async function testMcp() {
     await assert.rejects(connectApiChatMcp({ id: "repeated", label: "Repeated cursor", url: `http://127.0.0.1:${server.address().port}/mcp`, enabled: true, tools: [] }, 1, token, controller.signal, async () => {}), /connection.*failed/i);
     discoveryMode = "overflow";
     await assert.rejects(connectApiChatMcp({ id: "overflow", label: "Overflow", url: `http://127.0.0.1:${server.address().port}/mcp`, enabled: true, tools: [] }, 1, token, controller.signal, async () => {}), /connection.*failed/i);
+    discoveryMode = "endless";
+    const discoveryStartedAt = Date.now();
+    await assert.rejects(connectApiChatMcp({
+      id: "endless", label: "Endless pages", url: `http://127.0.0.1:${server.address().port}/mcp`, enabled: true, tools: [],
+    }, 1, token, controller.signal, async () => {}, undefined, { discoveryTimeoutMs: 150 }),
+    /discovery deadline exceeded.*no content tool/);
+    assert(Date.now() - discoveryStartedAt < 1000);
+    assert.equal(executed, 0, "discovery timeout cannot invoke a tool or replay a write");
     discoveryMode = "normal";
     const result = await connection.tools[0].execute({ value: "hello" }, controller.signal);
     assert.match(result, /hello/); assert(!result.includes(token)); assert.strictEqual(executed, 1);

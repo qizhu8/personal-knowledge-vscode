@@ -29,7 +29,7 @@ export async function createNativeHarnessServer(options: {
   extensionPath: string;
   sessionId: string;
   access(): void;
-  request(method: "snapshot" | "result", params: Record<string, unknown>): Promise<unknown>;
+  request(method: "snapshot" | "result" | "memoryOverview" | "memoryPiece", params: Record<string, unknown>): Promise<unknown>;
 }): Promise<ActionWorkbenchServer & { changed(): void }> {
   const feed = new HarnessChangeFeed();
   const server = await createActionWorkbenchServer({
@@ -50,7 +50,7 @@ export async function createNativeHarnessServer(options: {
         options.access();
         return { ok: true, data: { revision } };
       }
-      if (method !== "snapshot" && method !== "result") throw new Error("Unsupported read-only Harness operation.");
+      if (method !== "snapshot" && method !== "result" && method !== "memoryOverview" && method !== "memoryPiece") throw new Error("Unsupported read-only Harness operation.");
       return { ok: true, data: await options.request(method, { ...params, sessionId:options.sessionId }) };
     },
   });

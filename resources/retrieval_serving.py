@@ -84,10 +84,11 @@ class ImportedSkillPath:
 
     def __init__(self, packages: Path, identity: str, documents, *, progress=None, publication_lock=None):
         from zipfile import BadZipFile
+        from contextlib import nullcontext
         from adaptive_skill_retrieval.solution_package import load_installed
         from adaptive_skill_retrieval.architecture_retriever import ArchitectureRetriever, SentenceTransformerArchitectureEncoder
         from adaptive_skill_retrieval.retrieval_architectures import architecture_by_id
-        from retrieval_solution_index import cache_key, persist_index, restore_index
+        from retrieval_solution_index import EmbeddingCache, cache_key, persist_index, restore_index
 
         report = progress or (lambda *_args: None)
         report("verifying", 0, None)
@@ -107,6 +108,10 @@ class ImportedSkillPath:
             config["model"], device="cpu", query_prompt=config.get("query_prompt", ""),
             document_prompt=config.get("document_prompt", ""),
         )
+        index_directory = packages.parent / "solution-indexes" / identity
+        with publication_lock if publication_lock is not None else nullcontext():
+            report("preparing-embedding-cache", 0, None)
+            embedding_cache = EmbeddingCache(index_directory / (cache_key(identity, []) + ".embeddings.sqlite3"), encoder.dimensions)
         class ReportingEncoder:
             dimensions = encoder.dimensions
 
@@ -123,7 +128,8 @@ class ImportedSkillPath:
                 result = []
                 for offset in range(0, len(texts), 16):
                     report(phase, offset, len(texts))
-                    result.extend(encode(texts[offset:offset + 16]))
+                    result.extend(embedding_cache.encode(texts[offset:offset + 16],
+                                                        "tokens" if phase == "encoding-tokens" else "documents", encode))
                 report(phase, len(texts), len(texts))
                 return result
 
@@ -145,7 +151,13 @@ class ImportedSkillPath:
             self.retriever.index(self.documents)
             report("persisting-index", 0, None)
             persist_index(self.retriever, target, lambda: report("persisting-index", 0, None), publication_lock)
+            with publication_lock if publication_lock is not None else nullcontext():
+                report("pruning-embedding-cache", 0, None)
+                embedding_cache.prune()
         self.index_bytes = target.stat().st_size
+        self.embedding_cache_bytes = embedding_cache.target.stat().st_size
+        self.embedding_cache_hits = embedding_cache.hits
+        self.embedding_cache_misses = embedding_cache.misses
         # Serving queries must not retain the build's cancellation/progress callback.
         self.retriever._encoder = encoder
         report("ready", len(self.documents), len(self.documents))
