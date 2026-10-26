@@ -65,7 +65,9 @@ export function registerApiChatShell(context: vscode.ExtensionContext, load: () 
   executeRemoteTask(prompt: string, signal: AbortSignal, requestId: string, chatId: string, observer?: import("../chatroom/portal-runtime").PortalObserver, source?: import("../chatroom/portal-runtime").PortalSource, profileSnapshot?: import("./persona-profiles").PersonaSnapshot): Promise<unknown>;
   reviewPortalProfiles(chatId: string): Promise<import("./persona-profiles").PersonaSnapshot | undefined>;
   portalContext(chatId?: string, label?: string): Promise<{ id: string; label: string }>;
+  renamePortalContext(chatId: string, label: string): Promise<{ id: string; label: string }>;
   choosePortalContext(): Promise<{ id: string; label: string } | undefined>;
+  requestPortalInteraction(chatId: string, interaction: import("./portal-interaction").PortalInteraction, current: () => boolean): Promise<import("./portal-interaction").PortalInteractionAnswer | undefined>;
   receivePortalReview(chatId: string, review: import("../chatroom/portal-runtime").PortalReview): Promise<void>;
 } {
   let backend: ApiChatView | undefined;
@@ -124,6 +126,8 @@ export function registerApiChatShell(context: vscode.ExtensionContext, load: () 
     receivePortalReview: async (chatId, review) => (await getBackend()).receivePortalReview(chatId, review),
     executeRemoteTask: async (prompt, signal, requestId, chatId, observer, source, profileSnapshot) => (await getBackend()).executeRemoteTask(prompt, signal, requestId, chatId, observer, source, profileSnapshot),
     reviewPortalProfiles: async chatId => (await getBackend()).reviewPortalProfiles(chatId),
+    requestPortalInteraction: async (chatId, interaction, current) => (await getBackend()).requestPortalInteraction(chatId, interaction, current),
     portalContext: async (chatId, label) => (await getBackend()).portalContext(chatId, label),
+    renamePortalContext: async (chatId, label) => (await getBackend()).renamePortalContext(chatId, label),
     choosePortalContext: async () => (await getBackend()).choosePortalContext() };
 }

@@ -26,6 +26,7 @@ const parts = [
   "51-skill-router.js",
   "52-background-tasks.js",
   "53-panel-instances.js",
+  "54-persona-profiles.js",
   "60-init.js",
 ];
 

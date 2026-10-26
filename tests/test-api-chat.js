@@ -71,14 +71,14 @@ else (async () => {
   assert(contextFunction);
   const contextLengthLabel = vm.runInNewContext(`(${contextFunction[0]})`);
   for (const [tokens, label] of [[256, "256"], [4096, "4K"], [115250, "115K"], [128000, "128K"], [1000000, "1M"], [7500000, "7.5M"]]) assert.strictEqual(contextLengthLabel(tokens), label);
-  const tokenFunction = source.match(/function messageTokenLabel\(message, pending\) \{[\s\S]*?\n  \}/);
+  const tokenFunction = source.match(/function messageTokenLabel\(message\) \{[\s\S]*?\n  \}/);
   assert(tokenFunction);
   const messageTokenLabel = vm.runInNewContext(`(${tokenFunction[0]})`);
-  assert.strictEqual(messageTokenLabel({ usage: { inputTokens: 100, outputTokens: 20 } }, true), "Awaiting token usage");
-  assert.strictEqual(messageTokenLabel({ estimatedTokens: 123, content: "hello" }, false), "Token usage not reported");
+  assert.strictEqual(messageTokenLabel({ usage: { inputTokens: 100, outputTokens: 20 } }, true), "100 in / 20 out tokens");
+  assert.strictEqual(messageTokenLabel({ estimatedTokens: 123, content: "hello" }, false), "");
   assert.strictEqual(messageTokenLabel({ usage: { inputTokens: 100, outputTokens: 20 } }, false), "100 in / 20 out tokens");
   assert.strictEqual(messageTokenLabel({ usage: { inputTokens: 0, outputTokens: 0 } }, false), "0 in / 0 out tokens");
-  for (const usage of [{ inputTokens: -1, outputTokens: 2 }, { inputTokens: 2.5, outputTokens: 1 }, { inputTokens: 1 }, { inputTokens: NaN, outputTokens: 2 }]) assert.strictEqual(messageTokenLabel({ usage }, false), "Token usage not reported");
+  for (const usage of [{ inputTokens: -1, outputTokens: 2 }, { inputTokens: 2.5, outputTokens: 1 }, { inputTokens: 1 }, { inputTokens: NaN, outputTokens: 2 }]) assert.strictEqual(messageTokenLabel({ usage }, false), "");
   const presetFunction = source.match(/function contextPresets\(maximum\) \{[\s\S]*?\n  \}/);
   assert(presetFunction);
   const contextPresets = vm.runInNewContext(`(${presetFunction[0]})`);
@@ -519,11 +519,12 @@ else (async () => {
       const payload = JSON.parse(options.body);
       assert.strictEqual(payload.max_completion_tokens, 256);
       assert.deepStrictEqual(payload.stream_options, { include_usage: true });
-      return events([delta("usage"), 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n', 'data: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120}}\n\ndata: [DONE]\n\n']);
+      return events([delta("usage"), 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n', 'data: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"copilot_usage":{"total_nano_aiu":2000000001}}}\n\ndata: [DONE]\n\n']);
     } }, () => {});
   assert.deepStrictEqual(stages, ["connecting", "waiting"]);
   assert.strictEqual(usage.inputTokens, 100);
   assert.strictEqual(usage.outputTokens, 20);
+  assert.strictEqual(usage.copilotNanoAiu, 2_000_000_001);
 
   assert.deepStrictEqual(["900", "1500", "2048", "unlimited", "4096", undefined, 900].map(parseThinkingBudget), [900, 1500, 2048, "unlimited", 2048, 2048, 2048]);
   assert.doesNotThrow(() => checkReportedOutput({ inputTokens: 1, outputTokens: 900 }, 900));
@@ -1411,11 +1412,13 @@ async function testController() {
     assert.throws(() => requests[0].request.onUsage({ inputTokens: 1, outputTokens: 1 }), /matching sent budget/);
     prepareUsageRound();
     assert.strictEqual(requests[0].request.thinkingBudget, undefined, "Main Chat preserves Provider-default thinking");
-    requests[0].request.onUsage({ inputTokens: 100, outputTokens: 10 });
-    requests[0].request.onUsage({ inputTokens: 100, outputTokens: 10 });
+    requests[0].request.onUsage({ inputTokens: 100, outputTokens: 10, copilotNanoAiu:1_000_000_001 });
+    requests[0].request.onUsage({ inputTokens: 100, outputTokens: 10, copilotNanoAiu:1_000_000_001 });
     assert.strictEqual(provider.chat.messages[1].usage.inputTokens, 100, "Repeated cumulative frames from one inference are not double charged");
+    assert.strictEqual(require("../dist/chat/api-chat-store").apiChatCreditUsage(provider.chat.messages[1]).credits, "1.000000001");
     prepareUsageRound();
     requests[0].request.onUsage({ inputTokens: 20, outputTokens: 5 });
+    assert.strictEqual(require("../dist/chat/api-chat-store").apiChatCreditUsage(provider.chat.messages[1]).status, "partial");
     assert.strictEqual(provider.chat.messages[1].usage.inputTokens, 120); assert.strictEqual(provider.chat.messages[1].usage.outputTokens, 15);
     assert.strictEqual(provider.chat.messages[1].estimatedCost, estimateCost(modelProfiles(configuration.apiChatModelProfiles, [])[0], 120, 15));
     await provider.handle({ type: "send", text: "queued while running", mode: "task" });
@@ -2231,6 +2234,7 @@ async function testController() {
       await context.workspaceState.update("apiChat.defaultModel", rememberedModel);
     }
     await require("./test-chat-memory-controller")(ApiChatView, context, nativeClient, models);
+    await require("./fixtures/chat-review-controller")(ApiChatView, context, nativeClient, models);
     await require("./test-chat-lifecycle-browser-controller")(ApiChatView, context, client, value => { sessionApproval = value; }, configuration);
     assert(chatNotifications.some(notice => notice.kind === "error" && notice.title.includes("Fixture extraction failure")),
       "A failed extraction receipt must notify without marking the saved reply failed");
@@ -2437,6 +2441,20 @@ async function testVscodeModels() {
   await assert.rejects(streamVscodeChat(metadataModel(metadata), { ...request, tools: [] }, () => {}, imageHost), /empty response/);
   await assert.rejects(streamVscodeChat(metadataModel([new DataPart(new Uint8Array(65537), "usage")]), { ...request, tools: [] }, () => {}, imageHost), /metadata exceeded/);
   await assert.rejects(streamVscodeChat(metadataModel(Array(129).fill(metadata[0])), { ...request, tools: [] }, () => {}, imageHost), /metadata exceeded/);
+  const billed = [];
+  await streamVscodeChat(metadataModel([new TextPart("billed"), usagePart({ prompt_tokens:10, completion_tokens:1, copilot_usage:{ total_nano_aiu:1_000_000_001 } })]),
+    { ...request, tools:[], onUsage:value => billed.push(value) }, () => {}, imageHost);
+  assert.strictEqual(billed.at(-1).copilotNanoAiu, 1_000_000_001);
+  for (const value of [-1, 0.5, "1", null, Number.MAX_SAFE_INTEGER + 1]) {
+    await assert.rejects(streamVscodeChat(metadataModel([new TextPart("kept"), usagePart({ prompt_tokens:10, completion_tokens:1, copilot_usage:{ total_nano_aiu:value } })]),
+      { ...request, tools:[] }, () => {}, imageHost), /credit usage is invalid/);
+  }
+  const failureUsage = [];
+  await assert.rejects(streamVscodeChat(metadataModel([
+    usagePart({ prompt_tokens:10, completion_tokens:1, copilot_usage:{ total_nano_aiu:7 } }),
+    new DataPart(new Uint8Array([1]), "application/pdf"),
+  ]), { ...request, tools:[], onUsage:value => failureUsage.push(value) }, () => {}, imageHost), /Unsupported model data/);
+  assert.strictEqual(failureUsage[0].copilotNanoAiu, 7, "Received billing survives a later stream failure");
   await assert.rejects(streamVscodeChat(metadataModel([new DataPart(new Uint8Array([1]), "application/pdf")]), { ...request, tools: [] }, () => {}, imageHost), /Unsupported model data/);
   let imageCalls = 0; const imageOutputs = [];
   const imageModel = { ...model, capabilities: { imageInput: true }, countTokens: async () => 100, sendRequest: async prompt => {
@@ -2732,6 +2750,39 @@ async function testNativeTools() {
     const tools = createBuiltinTools(["read_file", "find_files", "search_text", "replace_text", "save_file", "run_process"], host, (name, waiting) => approvals.push({ name, waiting }), change => changes.push(change));
     const run = (name, args, signal = new AbortController().signal) => tools.find(tool => tool.name === name).execute(args, signal);
     assert.strictEqual(JSON.parse(await run("read_file", { path: "nested\\sample.txt", startLine: 2, endLine: 2 })).content, "needle");
+    const largeText = Array.from({ length: 4000 }, (_, index) => `line-${index + 1} ${"x".repeat(70)}`).join("\n");
+    fs.writeFileSync(path.join(directory, "nested", "large.ts"), largeText);
+    const large = JSON.parse(await run("read_file", { path: "nested/large.ts", startLine: 3270, endLine: 3280 }));
+    assert.strictEqual(large.totalLines, 4000);
+    assert.strictEqual(large.content, largeText.split("\n").slice(3269, 3280).join("\n"));
+    assert.strictEqual(large.endLine, 3280);
+    assert.strictEqual(large.nextStartLine, 3281);
+    assert.strictEqual(large.contentTruncated, false);
+    const next = JSON.parse(await run("read_file", { path: "nested/large.ts", startLine: large.nextStartLine, endLine: 3281 }));
+    assert(next.content.startsWith("line-3281 "));
+    const findFiles = host.workspace.findFiles;
+    try {
+      host.workspace.findFiles = async () => [uri(path.join(directory, "nested", "large.ts"))];
+      const located = JSON.parse(await run("search_text", { query: "line-3270 ", glob: "nested/large.ts" }));
+      assert.strictEqual(located.matches[0].line, 3270, "Targeted search must locate evidence inside files larger than the edit limit");
+    } finally { host.workspace.findFiles = findFiles; }
+    fs.writeFileSync(path.join(directory, "nested", "escaped.txt"), '"'.repeat(15000) + "\nlast");
+    const clippedRaw = await run("read_file", { path: "nested/escaped.txt", startLine: 1, endLine: 2 });
+    const clipped = JSON.parse(clippedRaw);
+    assert(clippedRaw.length <= 16000, "JSON escaping must not exceed the tool result envelope");
+    assert(clipped.content.length <= 12000);
+    assert.strictEqual(clipped.contentTruncated, true);
+    assert.strictEqual(clipped.endLine, 1, "The range end describes the displayed content, not the requested unseen lines");
+    assert.strictEqual(clipped.nextStartLine, undefined, "A partial line never authorizes skipping undisplayed text");
+    await assert.rejects(run("read_file", { path: "nested/large.ts", startLine: 4001 }), /4000 lines/);
+    await assert.rejects(run("replace_text", { path: "nested/large.ts", oldText: "line-1 ", newText: "changed " }), /160 KB/);
+    fs.writeFileSync(path.join(directory, "nested", "binary.txt"), "text\0binary");
+    await assert.rejects(run("read_file", { path: "nested/binary.txt" }), /binary/);
+    const oversized = path.join(directory, "nested", "oversized.txt");
+    fs.closeSync(fs.openSync(oversized, "w"));
+    fs.truncateSync(oversized, 16 * 1024 * 1024 + 1);
+    await assert.rejects(run("read_file", { path: "nested/oversized.txt" }), /16 MiB/);
+    assert.strictEqual(documents.has(oversized), false, "Oversized files must not be opened");
     assert.deepStrictEqual(JSON.parse(await run("find_files", {})).files, ["nested/sample.txt"]);
     assert.strictEqual(JSON.parse(await run("search_text", { query: "needle" })).matches[0].line, 2);
     await assert.rejects(run("read_file", { path: path.join(outside, "secret.txt") }), /declined/);
@@ -2748,6 +2799,13 @@ async function testNativeTools() {
       return boundary === "workspace" || grantOutside;
     });
     const boundaryRun = (name, args) => boundaryTools.find(tool => tool.name === name).execute(args, new AbortController().signal);
+    for (const args of [{}, { path: "" }, { path: "." }]) {
+      const rootListing = JSON.parse(await boundaryRun("list_directory", args));
+      assert.strictEqual(rootListing.path, fs.realpathSync(directory));
+      assert(rootListing.entries.some(entry => entry.name === "nested" && entry.type === "directory"));
+    }
+    assert.deepStrictEqual(boundaryCalls, [], "Default directory listings never ask for outside-workspace access");
+    await assert.rejects(boundaryRun("list_directory", { path: null }), /bounded filesystem path/);
     await boundaryRun("read_file", { path: "nested/sample.txt" });
     assert.strictEqual(boundaryCalls.length, 0, "Local reads need no outside grant");
     await assert.rejects(boundaryRun("read_file", { path: path.join(outside, "secret.txt") }), /declined/);

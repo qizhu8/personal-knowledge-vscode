@@ -69,6 +69,8 @@ class MathExpressionTests(unittest.TestCase):
                 "inputs": {"left": {"$input": "left"}, "right": {"$input": "right"}}}]
             legacy["implementations"][0]["output"] = {"sum": {"$step": "sum.sum"}}
             path.write_text(json.dumps(legacy))
+            (runtime.root / "admissions" / "test.fixture.add.json").write_text(
+                json.dumps({"content_hash": runtime.definition("test.fixture.add")["content_hash"]}))
             catalog = runtime.catalog()["actions"]
             retired = next(item for item in catalog if item["action_id"] == "test.fixture.add")
             self.assertEqual(retired["availability"]["state"], "blocked")

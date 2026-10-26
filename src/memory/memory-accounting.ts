@@ -1,4 +1,5 @@
 import type { ChatTokenUsage, ThinkingBudget } from "../chat/api-chat-models";
+import { copilotCreditSummary, type CopilotCreditSummary } from "../chat/api-chat-models";
 import type { ChatInferenceTiming } from "../chat/chat-inference-timing";
 
 export interface MemoryModelAccounting {
@@ -23,6 +24,7 @@ export interface MemoryTurnAccounting {
   failedCalls: number;
   cancelledCalls: number;
   reportedUsage?: ChatTokenUsage;
+  credits: CopilotCreditSummary;
   observedDurationMs?: number;
   note: string;
 }
@@ -32,6 +34,7 @@ export function memoryTurnAccounting(receipt: Record<string, unknown>): MemoryTu
   const summary: MemoryTurnAccounting = {
     schema: "pkm.memory.turn-accounting/v1", calls: receipt.calls.length,
     reportedCalls: 0, unreportedCalls: 0, timedCalls: 0, untimedCalls: 0, pendingCalls: 0, failedCalls: 0, cancelledCalls: 0,
+    credits: copilotCreditSummary(receipt.calls.map(item => item?.usage)),
     note: "Independent Memory inference accounting, never added to main Chat usage. Reported usage excludes unreported calls; observed duration is local model-call time, not CPU or a provider invoice.",
   };
   const usages: ChatTokenUsage[] = [];
@@ -44,7 +47,8 @@ export function memoryTurnAccounting(receipt: Record<string, unknown>): MemoryTu
       const usage: ChatTokenUsage = item.usage;
       if (!usage || ![usage.inputTokens, usage.outputTokens].every(value => Number.isSafeInteger(value) && value >= 0)
         || usage.reasoningTokens !== undefined && (!Number.isSafeInteger(usage.reasoningTokens) || usage.reasoningTokens < 0 || usage.reasoningTokens > usage.outputTokens)
-        || usage.cachedInputTokens !== undefined && (!Number.isSafeInteger(usage.cachedInputTokens) || usage.cachedInputTokens < 0 || usage.cachedInputTokens > usage.inputTokens)) {
+        || usage.cachedInputTokens !== undefined && (!Number.isSafeInteger(usage.cachedInputTokens) || usage.cachedInputTokens < 0 || usage.cachedInputTokens > usage.inputTokens)
+        || usage.copilotNanoAiu !== undefined && (!Number.isSafeInteger(usage.copilotNanoAiu) || usage.copilotNanoAiu < 0)) {
         throw new Error("Invalid Memory provider usage receipt.");
       }
       usages.push(usage);

@@ -58,6 +58,82 @@ function text(messages) {
   return messages.map(item => item.content).join("\n");
 }
 
+test("user-approved checkpoints bound 4/16/64/256 Task inputs without deleting originals or losing newer prohibitions", () => {
+  const { createTaskContextCheckpoint, activeTaskContextCheckpoint, readTaskContextInput } = require("../dist/chat/task-context-checkpoint");
+  const { workGoalInputs, workGoalContext } = require("../dist/chat/chat-work-goal");
+  const taskId = "agent_session_" + "a".repeat(32);
+  const measurements = [];
+  for (const count of [4, 16, 64, 256]) {
+    const chat = fixtures.conversation({ sessionId:taskId, messages:Array.from({length:count}, (_, index) =>
+      fixtures.message("user", `Original requirement ${index}: ` + "Do not deploy. Preserve exact constraints. ".repeat(75), {taskId})) });
+    const originals = JSON.stringify(chat.messages);
+    const before = estimateInputTokens(requestMessages(chat, "Continue"));
+    chat.workGoal = { id:chat.id, inputId:chat.messages[0].id, attemptInputId:chat.messages[count-1].id,
+      objective:chat.messages[0].content, executionDigest:"a".repeat(64), status:"active",
+      acceptance:[{criterion:rootWorkCriterion,verified:false,evidenceCallIds:[]}] };
+    const summary = "Implement the verified repair. Do not deploy, restart services, or change credentials. Preserve exact evidence and all acceptance criteria.";
+    chat.taskContextCheckpoints = [createTaskContextCheckpoint(chat, summary)];
+    assert.equal(JSON.stringify(chat.messages), originals);
+    const newer = fixtures.message("user", "NEW REQUIREMENT: do not change any Python files.", {taskId});
+    chat.messages.push(newer);
+    const messages = requestMessages(chat, "Continue");
+    fitChatContext(messages, new Map(), 8192, []);
+    const after = estimateInputTokens(messages);
+    assert(after < 5000, `checkpoint input must fit under 5000 conservative units, got ${after}`);
+    assert(after < before / 2);
+    assert(text(messages).includes(summary) && text(messages).includes(newer.content));
+    assert(!text(messages).includes("Original requirement 0:"));
+    assert.equal(messages.filter(message => message.content.startsWith("Original current-task instruction")).length, 1);
+    assert.deepEqual(workGoalInputs(chat), [chat.messages[count-1].id, newer.id]);
+    assert(workGoalContext(chat).includes(summary));
+    assert(!workGoalContext(chat).includes("Original requirement 0:"));
+    const source = JSON.parse(readTaskContextInput(chat, chat.messages[0].id));
+    assert.equal(source.content, chat.messages[0].content);
+    assert.equal(JSON.parse(readTaskContextInput(chat, source.inputId, 0, 20, source.contentHash)).content, chat.messages[0].content.slice(0,20));
+    assert.throws(() => readTaskContextInput(chat, source.inputId, 0, 20, "b".repeat(64)), /inputHash/);
+    assert.throws(() => readTaskContextInput(chat, newer.id, 0, 5000, source.contentHash), /range/);
+    assert.throws(() => ApiChatView.prototype.requestMessages.call({store:{namespace:fixtures.namespace},toolGroups:()=>[]},
+      chat, "Retry", new Map(), chat, chat.messages[0].id), /retry predates/);
+    measurements.push({count,before,after});
+    chat.messages[0].content += " changed";
+    assert.throws(() => activeTaskContextCheckpoint(chat), /changed or are missing/);
+    chat.taskContextCheckpoints[0].revokedAt = new Date().toISOString();
+    assert.equal(activeTaskContextCheckpoint(chat), undefined);
+    assert(text(requestMessages(chat, "Continue")).includes("Original requirement 0:"));
+    chat.includeHistory = false;
+    assert.throws(() => readTaskContextInput(chat, source.inputId), /History is off/);
+  }
+  assert(Math.max(...measurements.map(item=>item.after)) - Math.min(...measurements.map(item=>item.after)) < 100,
+    "approved prefix length must not cause prompt growth");
+  console.log("Task checkpoint measured conservative input units:", JSON.stringify(measurements));
+});
+
+test("Task checkpoint review persists approvals and exact readback; History off and other Tasks cannot reuse them", () => {
+  const { createTaskContextCheckpoint, activeTaskContextCheckpoint, readTaskContextInput } = require("../dist/chat/task-context-checkpoint");
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-checkpoint-store-"));
+  try {
+    const store = new ApiChatStore(directory, fixtures.namespace);
+    const chat = store.create(); chat.sessionId = "agent_session_" + "c".repeat(32);
+    chat.messages.push(fixtures.message("user", "Read-only. Never deploy.\n" + "x".repeat(5000), {taskId:chat.sessionId}));
+    chat.messages.push(...Array.from({length:255},(_,index)=>fixtures.message("user",`Additional input ${index}: `+"keep evidence ".repeat(150),{taskId:chat.sessionId})));
+    chat.taskContextCheckpoints = [createTaskContextCheckpoint(chat, "Read-only. Never deploy.")]; store.save(chat);
+    const loaded = new ApiChatStore(directory, fixtures.namespace).load(chat.id, false);
+    assert.deepEqual(loaded.taskContextCheckpoints, chat.taskContextCheckpoints);
+    assert.deepEqual(loaded.messages.map(message=>[message.id,message.content]),chat.messages.map(message=>[message.id,message.content]));
+    assert.equal(activeTaskContextCheckpoint(loaded).sourceInputIds.length,256);
+    loaded.taskContextCheckpoints.push({...createTaskContextCheckpoint(loaded,"Still read-only."),revokedAt:new Date().toISOString()});
+    assert.equal(activeTaskContextCheckpoint(loaded),undefined,"revoking the latest approval must not revive an older one");
+    const preview = JSON.parse(readTaskContextInput(loaded, chat.messages[0].id));
+    assert.equal(preview.truncated, true);
+    assert.equal(JSON.parse(readTaskContextInput(loaded, preview.inputId, 3990, 4020, preview.contentHash)).content,
+      chat.messages[0].content.slice(3990,4020));
+    loaded.includeHistory = false; assert.equal(activeTaskContextCheckpoint(loaded), undefined);
+    loaded.includeHistory = true; loaded.sessionId = "agent_session_" + "d".repeat(32);
+    assert.equal(activeTaskContextCheckpoint(loaded), undefined);
+    assert.throws(() => readTaskContextInput(loaded, preview.inputId), /not in the current Task/);
+  } finally { fs.rmSync(directory,{recursive:true,force:true}); }
+});
+
 test("Task knowledge stewardship distinguishes abstraction, retrieval-first reuse and permission without changing casual or tool-free Chats", () => {
   const { CHAT_ASSET_CURATION_GUIDANCE } = require("../dist/chat/knowledge-reader");
   const chat = fixtures.conversation({ sessionId:"session-curation" });
@@ -169,7 +245,7 @@ test("managed Visualization uses the authoritative reader and cannot override th
   const target = { store:{ assertAvailable() {} } };
   assert.deepEqual(await ApiChatView.prototype.visualizationRequest.call(target, chat, "snapshot", {
     sessionId:"foreign",
-  }), { authoritative:true, memoryReceiptReader:true, memoryStoreReader:true });
+  }), { authoritative:true, memoryReceiptReader:true, memoryStoreReader:true, profileReader:true });
 });
 
 test("Visualization window reads any non-Trash Chat by id: live records while running, stored records otherwise", async () => {

@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Action Library</title>
+<style>
+:root{color-scheme:light dark;--bg:var(--vscode-editor-background,#171717);--panel:var(--vscode-sideBar-background,#242424);--text:var(--vscode-editor-foreground,#eee);--line:var(--vscode-panel-border,#555);--accent:var(--vscode-focusBorder,#75a7ff)}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 "Segoe UI",sans-serif}header{padding:20px;border-bottom:1px solid var(--line)}h1{margin:0;font-size:24px}h2{font-size:20px;overflow-wrap:anywhere}button,input,select,textarea{font:inherit;color:inherit;background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:8px;max-width:100%}button{cursor:pointer}button:hover,button:focus-visible{border-color:var(--accent)}button:disabled{opacity:.5;cursor:not-allowed}#search{width:min(600px,100%)}main{display:grid;grid-template-columns:minmax(220px,1fr) minmax(0,2fr)}#list{padding:16px;border-right:1px solid var(--line)}article{padding:12px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}article button{display:block;text-align:left;width:100%}small{display:block;opacity:.8}#detail{padding:24px;min-width:0}label{display:grid;gap:5px;margin:12px 0}label input[type=checkbox]{justify-self:start}#error{color:var(--vscode-errorForeground,#f88);white-space:pre-wrap;padding:0 20px}pre{white-space:pre-wrap;overflow-wrap:anywhere}dl{display:grid;grid-template-columns:100px minmax(0,1fr);gap:8px}dd{margin:0;overflow-wrap:anywhere}.tools{display:flex;gap:8px;flex-wrap:wrap}@media(max-width:650px){main{grid-template-columns:1fr}#list{border-right:0;border-bottom:1px solid var(--line)}#detail{padding:16px}}
+</style></head><body>
+<header><h1>Action Library</h1><p>Browse all admitted Actions and their current readiness. Proposals, editing, code review and validation belong in the Workbench.</p><label>Search Actions<input id="search" type="search" placeholder="Name, identity, folder or purpose"></label><button id="refresh">Refresh library</button></header>
+<p id="error" role="alert"></p><main><section id="list" aria-label="Admitted Actions"></section><section id="detail" aria-live="polite"><h2>Select an Action</h2><p>Inspect its purpose, inputs, outputs and readiness, or explicitly open it in the Workbench.</p></section></main>
+<script>
+const host=acquireVsCodeApi(),byId=id=>document.getElementById(id),pending=new Map();
+const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+let sequence=0,actions=[],selection=null,detailSequence=0,launch=host.getState()?.launch||null,submitting=false,polling=false;
+function save(){host.setState({launch})}
+function runFeedback(){
+ if(!launch||selection!==launch.action_id)return;
+ const result=launch.result;
+ byId('run-status').textContent=result?'Run '+result.run_id+': '+(result.userState||result.state):'Submission may have reached the executor. Inspect Runs in Workbench before submitting again.';
+ byId('run-result').textContent=result?JSON.stringify(result.outputs??result.output??result.error??{},null,2):'';
+ if(launch.run_id){const button=document.createElement('button');button.type='button';button.textContent='Open Run in Workbench';button.onclick=()=>request('open_workbench',{action_id:launch.action_id,run_id:launch.run_id}).catch(error);byId('run-status').append(button)}
+}
+function request(method,params={}){
+ return new Promise((resolve,reject)=>{
+  const requestId=String(++sequence),timer=setTimeout(()=>{pending.delete(requestId);reject(Error('Request timed out. Inspect the original Run before retrying.'))},35000);
+  pending.set(requestId,{resolve,reject,timer});host.postMessage({requestId,method,params});
+ });
+}
+window.addEventListener('message',event=>{
+ const entry=pending.get(event.data?.requestId);if(!entry)return;
+ clearTimeout(entry.timer);pending.delete(event.data.requestId);
+ const result=event.data.result;result?.ok===false?entry.reject(Error(result.error)):entry.resolve(result);
+});
+function error(value){byId('error').textContent=value.message||String(value)}
+function rows(){
+ const query=byId('search').value.toLowerCase();
+ const visible=actions.filter(action=>[action.display_name,action.action_id,action.description,action.category].some(value=>String(value||'').toLowerCase().includes(query)));
+ byId('list').innerHTML=visible.map(action=>'<article><button data-action="'+esc(action.action_id)+'">'+esc(action.display_name||action.action_id)+'</button><small>'+esc(action.category||'Actions')+' · v'+esc(action.version||'system')+' · '+esc(action.availability.state)+'</small><p>'+esc(action.description||'')+'</p></article>').join('')||'<p>No admitted Actions match. Create and validate proposals in the Workbench.</p>';
+ byId('list').querySelectorAll('[data-action]').forEach(button=>button.onclick=()=>inspect(button.dataset.action));
+}
+async function refresh(){
+ try{const result=await request('catalog');actions=result.actions.filter(action=>!action.component&&!action.palette_hidden);rows();byId('error').textContent='';if(selection)await inspect(selection)}catch(value){error(value)}
+}
+async function inspect(id){
+ const current=++detailSequence;
+ try{
+  const result=await request('library_get',{action_id:id});if(current!==detailSequence)return;
+  const action=result.action;selection=id;
+  byId('detail').innerHTML='<h2>'+esc(action.display_name||id)+'</h2><p>'+esc(action.description||'No description supplied.')+'</p><dl><dt>Identity</dt><dd>'+esc(id)+'</dd><dt>Folder</dt><dd>'+esc(action.category||'Actions')+'</dd><dt>Readiness</dt><dd>'+esc(action.availability.state)+'</dd><dt>Reason</dt><dd>'+esc(action.availability.reason||'None')+'</dd><dt>Effects</dt><dd>'+esc((action.effects||[]).join(', '))+'</dd></dl><button id="open-workbench">Open in Workbench</button><h3>Inputs</h3><form id="run-form"><section id="fields"></section><label><input id="approve" type="checkbox" required>I approve this exact invocation and its declared effects.</label><button id="run" type="submit">Run Action</button></form><h3>Outputs</h3><dl>'+Object.entries(action.output_schema?.properties||{}).map(([name,schema])=>'<dt>'+esc(name)+'</dt><dd>'+esc(schema.description||schema.type||'value')+'</dd>').join('')+'</dl><p id="run-status" role="status"></p><pre id="run-result"></pre>';
+  byId('open-workbench').onclick=async()=>{try{await request('open_workbench',{action_id:id})}catch(value){error(value)}};
+  for(const [name,schema]of Object.entries(action.input_schema?.properties||{})){
+   const label=document.createElement('label');label.textContent=(schema.title||name)+((action.input_schema.required||[]).includes(name)?' *':'');
+   const input=document.createElement(schema.enum?'select':['object','array'].includes(schema.type)?'textarea':'input');
+   if(schema.enum)for(const option of schema.enum)input.add(new Option(String(option),JSON.stringify(option)));
+   else if(schema.type==='boolean')input.type='checkbox';
+   else if(['number','integer'].includes(schema.type)){input.type='number';input.step=schema.type==='integer'?'1':'any'}
+   input.dataset.field=name;input.required=(action.input_schema.required||[]).includes(name)&&schema.type!=='boolean';
+   if(schema.default!==undefined){if(schema.type==='boolean')input.checked=schema.default;else input.value=schema.enum?JSON.stringify(schema.default):typeof schema.default==='object'?JSON.stringify(schema.default):String(schema.default)}
+   label.append(input);byId('fields').append(label);
+  }
+  byId('fields').oninput=()=>{byId('approve').checked=false};
+  const canRun=()=>action.availability.state==='ready'&&action.visibility!=='private'&&!submitting&&(!launch||launch.terminal);
+  byId('run').disabled=!canRun();runFeedback();
+  byId('run-form').onsubmit=async event=>{
+   event.preventDefault();if(!canRun())return;
+   submitting=true;byId('run').disabled=true;
+   try{
+    const inputs={};
+    for(const input of byId('fields').querySelectorAll('[data-field]')){
+     const schema=action.input_schema.properties[input.dataset.field];
+     if(!input.required&&input.type!=='checkbox'&&input.value==='')continue;
+     inputs[input.dataset.field]=schema.enum||['object','array'].includes(schema.type)?JSON.parse(input.value):schema.type==='boolean'?input.checked:['number','integer'].includes(schema.type)?Number(input.value):input.value;
+    }
+    if(!byId('approve').checked)throw Error('Approve the exact invocation first.');
+    launch={action_id:id,inputs,content_hash:action.content_hash,key:crypto.randomUUID()};save();
+    const result=await request('call',launch);
+    launch={...launch,run_id:result.run_id,result,terminal:['succeeded','failed','cancelled'].includes(result.state)};save();runFeedback();byId('approve').checked=false;
+   }catch(value){error(value);runFeedback()}
+   finally{submitting=false;byId('run').disabled=!canRun()}
+  };
+ }catch(value){error(value)}
+}
+byId('search').oninput=rows;byId('refresh').onclick=refresh;refresh();
+setInterval(async()=>{
+ if(polling||!launch?.run_id||launch.terminal)return;polling=true;
+ try{const result=await request('run',{run_id:launch.run_id});launch={...launch,result,terminal:['succeeded','failed','cancelled'].includes(result.state)};save();if(selection===launch.action_id)runFeedback();if(selection&&launch.terminal)await inspect(selection)}catch(value){error(value)}finally{polling=false}
+},2000);
+</script></body></html>

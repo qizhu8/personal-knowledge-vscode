@@ -24,6 +24,8 @@ import { recordBaselineEvent, BaselineEventKind } from "../runtime/pkm-baseline"
 import { recordedActionReferences } from "../runtime/native-harness-actions";
 import { agentSnapshotRecovery, AgentSnapshotContents, AgentSnapshotSummary } from "../agent-sessions/agent-snapshots";
 import { assertHarnessRecipeBinding, currentHarnessTaskState, HarnessBinding } from "./chat-harness-records";
+import { copilotCreditSummary } from "./api-chat-models";
+import { validTaskContextCheckpoint, type TaskContextCheckpoint } from "./task-context-checkpoint";
 
 export interface ChatContext { id: string; label: string; content: string; }
 export interface QueuedChatInput { id: string; text: string; mode: "steer" | "task"; editToken?: string; attemptId?: string; executionContext?: ChatExecutionContext; portalReview?: PortalReview; }
@@ -128,6 +130,7 @@ export interface ChatMessage {
   unattributedFileChanges?: boolean;
   elapsedMs?: number;
   usage?: import("./api-chat-models").ChatTokenUsage;
+  auxiliaryModelUsage?: Array<{ usage?: import("./api-chat-models").ChatTokenUsage }>;
   usageMetadata?: { frames: number; validFrames: number; invalidFrames: number };
   estimatedCost?: number;
   currency?: string;
@@ -159,6 +162,7 @@ export interface ApiConversation {
   queuedInputs?: QueuedChatInput[];
   debugRequest?: { inputId: string; status: "investigating" | "completed" | "blocked" | "needs_input"; goal: string; reason?: string; evidenceCallIds?: string[] };
   workGoal?: ChatWorkGoal;
+  taskContextCheckpoints?: TaskContextCheckpoint[];
   memoryTasks?: Array<{ id: string; title: string; createdAt: string }>;
   context: ChatContext[];
   images?: import("./api-chat-client").ChatImage[];
@@ -236,6 +240,17 @@ export function apiChatContextSummary(message: ChatMessage) {
   };
 }
 
+export function apiChatCreditUsage(message: ChatMessage | ChatMessage[]) {
+  return copilotCreditSummary((Array.isArray(message) ? message : [message]).flatMap(item => {
+    const receipts = item.budgetReceipts;
+    const calls = receipts?.length
+      ? receipts.filter(receipt => receipt.status === "sent" || receipt.ledger?.inferenceTiming || receipt.ledger?.providerUsage)
+        .map(receipt => receipt.ledger?.providerUsage)
+      : [item.usage];
+    return [...calls, ...item.auxiliaryModelUsage?.map(call => call.usage) || []];
+  }));
+}
+
 export function apiChatDiagnostics(chat: ApiConversation) {
   const tokenUsage = (usage: ChatMessage["usage"]) => usage && [usage.inputTokens, usage.outputTokens].every(value => Number.isSafeInteger(value) && value >= 0) ? {
     inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,
@@ -268,6 +283,7 @@ export function apiChatDiagnostics(chat: ApiConversation) {
       outputBudgetWarning: message.outputBudgetWarning,
       outputCharacters: message.content.length, imageCount: message.images?.length || 0,
       reportedTokenUsage: tokenUsage(message.usage), usageMetadata: usageMetadata(message.usageMetadata),
+      reportedCredits: apiChatCreditUsage(message),
       context: apiChatContextSummary(message),
       tools: (message.toolCalls || []).slice(0, 128).map(tool => ({ name: tool.name, status: tool.status })),
       progress: progress(message.progress),
@@ -406,6 +422,7 @@ export function apiChatHarnessSnapshot(chat: ApiConversation, fullResults = fals
         error: (message.error || "").slice(0, 2_000),
         outputBudgetWarning: (message.outputBudgetWarning || "").slice(0, 1_000),
         reportedUsage: message.usage,
+        reportedCredits: apiChatCreditUsage(message),
       },
     }];
   });
@@ -902,6 +919,8 @@ export class ApiChatStore {
     const changesValid = (items: NonNullable<ChatMessage["changes"]>) => Array.isArray(items) && items.length <= 4096 && items.every(item => item && typeof item.path === "string" && item.path.length <= 4096 && Number.isSafeInteger(item.workspace) && item.workspace >= 0 && typeof item.appliedAt === "string" && Number.isFinite(Date.parse(item.appliedAt)) && /^[a-f0-9]{64}$/.test(item.beforeHash) && /^[a-f0-9]{64}$/.test(item.afterHash) && item.saved === false && ["exact", "unknown"].includes(item.attribution) && (item.attribution !== "exact" || Number.isSafeInteger(item.added) && item.added! >= 0 && Number.isSafeInteger(item.removed) && item.removed! >= 0));
     if (!chat || chat.version !== 1 || chat.id !== id || chat.sessionId !== undefined && !/^agent_session_[a-f0-9]{32}$/.test(chat.sessionId) || typeof chat.title !== "string" || typeof chat.updatedAt !== "string" || !Number.isFinite(Date.parse(chat.updatedAt)) || typeof chat.createdAt !== "string" || !Number.isFinite(Date.parse(chat.createdAt)) || typeof chat.includeHistory !== "boolean" || !Array.isArray(chat.messages) || !contextsValid(chat.context)
       || chat.memoryPolicy !== undefined && !validMemoryPolicy(chat.memoryPolicy)
+      || chat.taskContextCheckpoints !== undefined && (!Array.isArray(chat.taskContextCheckpoints) || chat.taskContextCheckpoints.length > 128
+        || chat.taskContextCheckpoints.some(item => !validTaskContextCheckpoint(item, chat.id)))
       || chat.agentProfileId !== undefined && (typeof chat.agentProfileId !== "string" || !/^[a-f0-9-]{36}$/.test(chat.agentProfileId))
       || chat.messages.some(message => !message || typeof message.id !== "string" || typeof message.content !== "string" || !["user", "assistant"].includes(message.role) || !["complete", "streaming", "cancelled", "failed", "interrupted"].includes(message.status)
         || message.recordedAt !== undefined && (typeof message.recordedAt !== "string" || !Number.isFinite(Date.parse(message.recordedAt)))

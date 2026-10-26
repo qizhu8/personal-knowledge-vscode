@@ -1,5 +1,5 @@
 import type { ChatModelProfile, ChatTokenUsage } from "./api-chat-models";
-import { estimateCost } from "./api-chat-models";
+import { estimateCost, copilotCreditSummary, type CopilotCreditSummary } from "./api-chat-models";
 import type { HarnessBudgetReceipt } from "./chat-harness-records";
 import type { ChatInferenceTiming } from "./chat-inference-timing";
 import type { ChatProcessRecord } from "./chat-process-runtime";
@@ -65,7 +65,7 @@ export interface ChatBudgetEntry {
   label: string;
   owner: "model-call" | "attempt" | "context-planner" | "worker-tree" | "process";
   scope: "round" | "attempt-cumulative" | "task" | "invocation";
-  unit: "tokens" | "milliseconds" | "rounds" | "calls" | "workers" | "currency" | "bytes";
+  unit: "tokens" | "milliseconds" | "rounds" | "calls" | "workers" | "currency" | "bytes" | "credits";
   enforcement: "hard-limit" | "review-trigger" | "accounting-only" | "provider-default";
   limit?: BudgetObservation;
   consumed?: BudgetObservation;
@@ -77,6 +77,7 @@ export interface ChatBudgetLedger {
   schema: "pkm.chat.budget-ledger/v1";
   thinkingPolicy: "provider-default";
   providerUsage?: ChatTokenUsage;
+  credits?: CopilotCreditSummary;
   inferenceTiming?: ChatInferenceTiming;
   usageFrames: number;
   currency: string;
@@ -93,7 +94,7 @@ const observation = (value: number, source: string, method: BudgetObservation["m
 export function createChatBudgetLedger(receipt: HarnessBudgetReceipt, profile: ChatModelProfile): ChatBudgetLedger {
   const configured = (value: number, source: string) => observation(value, source, "configured");
   return {
-    schema: "pkm.chat.budget-ledger/v1", thinkingPolicy: "provider-default", usageFrames: 0,
+    schema: "pkm.chat.budget-ledger/v1", thinkingPolicy: "provider-default", usageFrames: 0, credits:copilotCreditSummary([undefined]),
     currency: profile.currency,
     pricing: { inputPricePerMillion: profile.inputPricePerMillion, outputPricePerMillion: profile.outputPricePerMillion },
     entries: [
@@ -146,6 +147,9 @@ export function createChatBudgetLedger(receipt: HarnessBudgetReceipt, profile: C
           : { unavailable: "No context plan receipt was recorded." }) },
       { id: "cost", label: "Configured-price cost estimate", owner: "model-call", scope: "round", unit: "currency", enforcement: "accounting-only",
         unavailable: "Cost requires reported provider usage and both configured prices; it is not a provider invoice." },
+      { id: "credits", label: "Provider-reported Copilot credits", owner: "model-call", scope: "round", unit: "credits", enforcement: "accounting-only",
+        unavailable: "Provider credit usage has not been reported; unknown is not zero.",
+        note: "One credit is 1,000,000,000 nano-AIU. Raw integer usage is retained separately; no model multiplier or token-price estimate is applied." },
       { id: "worker-quota", label: "Task-wide worker quota", owner: "worker-tree", scope: "task", unit: "workers", enforcement: "accounting-only",
         unavailable: "Task-wide worker/resource allocation is not yet instrumented by this ledger. This is not unlimited capacity." },
     ],
@@ -218,10 +222,12 @@ export function recordChatProcessBudget(ledger: ChatBudgetLedger, record: ChatPr
 export function recordChatBudgetUsage(ledger: ChatBudgetLedger, usage: ChatTokenUsage): void {
   if (![usage.inputTokens, usage.outputTokens].every(value => Number.isSafeInteger(value) && value >= 0)
     || usage.cachedInputTokens !== undefined && (!Number.isSafeInteger(usage.cachedInputTokens) || usage.cachedInputTokens < 0 || usage.cachedInputTokens > usage.inputTokens)
-    || usage.reasoningTokens !== undefined && (!Number.isSafeInteger(usage.reasoningTokens) || usage.reasoningTokens < 0 || usage.reasoningTokens > usage.outputTokens)) {
+    || usage.reasoningTokens !== undefined && (!Number.isSafeInteger(usage.reasoningTokens) || usage.reasoningTokens < 0 || usage.reasoningTokens > usage.outputTokens)
+    || usage.copilotNanoAiu !== undefined && (!Number.isSafeInteger(usage.copilotNanoAiu) || usage.copilotNanoAiu < 0)) {
     throw new Error("Provider token usage is invalid; the budget ledger cannot record it.");
   }
   ledger.providerUsage = { ...usage };
+  ledger.credits = copilotCreditSummary([usage]);
   ledger.usageFrames++;
   consume(ledger, "provider-input", usage.inputTokens, "provider.usage.inputTokens", "provider-reported");
   consume(ledger, "output", usage.outputTokens, "provider.usage.outputTokens", "provider-reported");
@@ -239,10 +245,19 @@ export function recordChatBudgetUsage(ledger: ChatBudgetLedger, usage: ChatToken
   }
   const cost = estimateCost(ledger.pricing, usage.inputTokens, usage.outputTokens);
   if (cost !== undefined) consume(ledger, "cost", cost, `configured-prices.${ledger.currency}-per-million-times-provider-usage`, "estimated");
+  if (!ledger.entries.some(item => item.id === "credits")) ledger.entries.push({
+    id: "credits", label: "Provider-reported Copilot credits", owner: "model-call", scope: "round", unit: "credits", enforcement: "accounting-only",
+  });
+  const credits = entry(ledger, "credits");
+  if (usage.copilotNanoAiu !== undefined) consume(ledger, "credits", usage.copilotNanoAiu / 1_000_000_000, "provider.copilot_usage.total_nano_aiu/1e9", "provider-reported");
+  else {
+    delete credits.consumed;
+    credits.unavailable = "The latest provider usage frame does not report Copilot credits.";
+  }
 }
 
-export function chatBudgetUsage(receipts: HarnessBudgetReceipt[]): ChatTokenUsage | undefined {
-  const reported = receipts.flatMap(receipt => receipt.ledger?.providerUsage ? [receipt.ledger.providerUsage] : []);
+export function chatBudgetUsage(receipts: HarnessBudgetReceipt[], supplemental: ChatTokenUsage[] = []): ChatTokenUsage | undefined {
+  const reported = [...receipts.flatMap(receipt => receipt.ledger?.providerUsage ? [receipt.ledger.providerUsage] : []), ...supplemental];
   if (!reported.length) return undefined;
   const sum = (field: keyof ChatTokenUsage) => {
     const total = reported.reduce((value, usage) => value + (usage[field] || 0), 0);

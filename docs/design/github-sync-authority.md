@@ -20,6 +20,23 @@ but clears those records only after successful component and baseline applicatio
 
 ## Offline and disconnected hosts
 
+### Restarting an unverified publication migration
+
+If GitHub changes after Cutover, do not bypass the source-commit fence or mark
+manual verification complete. **Restart migration preview** archives the previous
+marker, staged manifest and exact backup under the migration's `history/` directory,
+preserves the original rollback target, disables Auto Sync and clears initial-sync
+completion. The new preview must pass Stage, Verify and Cutover again before any
+authoritative sync. Restarting never writes knowledge content or pushes GitHub.
+Changed repository/branch and already verified publications reject restart.
+
+An installed extension version is not proof that the long-lived Sync daemon has
+upgraded. Protocol-compatible clients intentionally retain a live daemon; inspect
+the service version in diagnostics. Upgrade requires an explicit safe-idle drain,
+not killing the process or unlinking a live endpoint. A shared daemon may also
+serve other targets with Auto Sync enabled; do not restart it or reconfigure those
+targets as an incidental part of migration recovery.
+
 The independent Sync service can outlive every VS Code window. If no protocol-compatible
 host is connected, automatic checks wait at the configured interval without
 consuming failure attempts or switching off Auto Sync. A host lost before the

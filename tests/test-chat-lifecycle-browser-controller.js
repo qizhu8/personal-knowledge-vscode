@@ -96,7 +96,7 @@ module.exports = async function testChatLifecycle(ApiChatView, context, client, 
       }, groups));
     });
     await page.addStyleTag({ path:path.join(webview, "api-chat.css") });
-    for (const script of ["marked.umd.js", "purify.min.js", "api-chat-library.js", "chat-visualization.js", "api-chat.js"]) {
+    for (const script of ["marked.umd.js", "purify.min.js", "api-chat-library.js", "agent-harness.js", "chat-visualization.js", "api-chat.js"]) {
       await page.addScriptTag({ path:path.join(webview, script) });
     }
     await idle();
@@ -113,7 +113,8 @@ module.exports = async function testChatLifecycle(ApiChatView, context, client, 
     await wait(() => viewerHas(id), "another Chat view auto-refreshing after New, without a manual refresh");
     assert(snapshots().some(group => group.hostSessionId === id && !group.deletedAt), "No Task Chat appears in Agent Sessions");
     const groupId = snapshots().find(group => group.hostSessionId === id).groupId;
-    assert.match(await treePage.locator(`.tree-cat-hdr[title="${groupId}"]`).innerText(), /No Task/);
+    assert.match(await treePage.locator(`.tree-cat-hdr[title="${groupId}"] .tree-cat-count`).innerText(), /0 Tasks/);
+    assert.match(await treePage.locator(`.tree-cat-hdr[title="${groupId}"] .agent-session-chat-title`).getAttribute("title"), /No Task · Chat history is separate/);
     assert(provider.visualizationLibrary().chats.some(chat => chat.id === id));
     assert(hostPosts.filter(message => message.type === "state").at(-1).library.chats.some(chat => chat.id === id));
     assert.equal(provider.managedMcp, undefined, "This scenario must exercise a first send without a managed connection");

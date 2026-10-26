@@ -363,10 +363,22 @@
       detail.append(facts);
       const flow = el('div', undefined, 'pkm-vis-flow');
       detail.append(flow);
+      const evidence = el('section'); evidence.setAttribute('aria-label','Retrieval candidate evidence');
       if (globalThis.PkmRetrievalFlow && candidates.length) {
-        try { globalThis.PkmRetrievalFlow(flow, { ...receipt, model: receipt.model || attempt.model || 'model' }, 20); }
+        try { globalThis.PkmRetrievalFlow(flow, { ...receipt, model: receipt.model || attempt.model || 'model' }, 20, 'all', item => {
+          evidence.replaceChildren(el('h4',item.label || item.id || 'Unnamed candidate'));
+          evidence.append(table(['Field','Recorded value'],[
+            ['Kind',item.kind || 'not recorded'],['Source',item.sourceUri || 'not recorded'],
+            ['Method',item.method || 'not recorded'],['Score',item.score ?? 'not recorded'],
+            ['State',stateOf(item)],['Reason',item.reason || 'not recorded'],
+          ]));
+          if (navigable(item.sourceUri)) evidence.append(button('Open source',() => host.postMessage({
+            type:'openSource',chatId:selected,sourceUri:item.sourceUri,
+          })));
+        }); }
         catch (error) { flow.replaceChildren(el('p', `Flow view unavailable: ${error.message}`, 'pkm-vis-muted')); }
       }
+      detail.append(evidence);
       const counts = candidates.reduce((map, item) => map.set(stateOf(item), (map.get(stateOf(item)) || 0) + 1), new Map());
       const filter = el('label', 'Show ', 'pkm-vis-picker'), pick = el('select'); pick.dataset.visFocus = 'retrieval-filter'; pick.setAttribute('aria-label', 'Filter candidates');
       for (const value of ['all', ...counts.keys()]) {
@@ -549,7 +561,7 @@
     }
     detail.append(table(['Persistent context', 'Attempt snapshot', 'Transmission'], profileRows));
     if (profiles) {
-      const card = el('details'); card.append(el('summary', 'Inspect recorded Profile fields'));
+      const card = el('details'); card.open = true; card.append(el('summary', 'Inspect recorded Profile fields'));
       const rows = [];
       for (const kind of ['user', 'agent']) for (const field of ['role','focus','preferences','boundaries']) {
         if (profiles[kind]?.[field]) rows.push([kind, field, profiles[kind][field]]);
@@ -595,7 +607,8 @@
       if (receipt.extract?.error) detail.append(el('p', receipt.extract.error, 'pkm-vis-error'));
       const accounting = receipt.accounting;
       if (accounting) detail.append(table(['Independent Memory accounting', 'Recorded value'], [
-        ['Reported input / output tokens', accounting.reportedUsage ? `${accounting.reportedUsage.inputTokens} / ${accounting.reportedUsage.outputTokens}` : 'unknown'],
+        ...(accounting.reportedUsage ? [['Reported input / output tokens', `${accounting.reportedUsage.inputTokens} / ${accounting.reportedUsage.outputTokens}`]] : []),
+        ...(globalThis.PkmAgentHarness.creditLabel(accounting.credits) ? [['Provider-reported Memory credits', globalThis.PkmAgentHarness.creditLabel(accounting.credits)]] : []),
         ['Usage coverage: reported / unreported calls', `${accounting.reportedCalls ?? 'unknown'} / ${accounting.unreportedCalls ?? 'unknown'}`],
         ['Observed local model-call time', duration(accounting.observedDurationMs)],
       ]), el('p', 'Memory inference is separate from main Chat usage. Missing usage is not zero; local duration is not CPU time or a bill.', 'pkm-vis-muted'));

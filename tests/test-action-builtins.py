@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "resources"))
-from action_modules import ModuleRuntime
+from action_modules import COPY_FIXTURE_ARTIFACT, ModuleRuntime
 from action_runtime import ActionRuntime, register_action_tools
 from fastmcp import Client, FastMCP
 from jsonschema import ValidationError
@@ -158,6 +158,20 @@ class Builtins(unittest.TestCase):
         children = [child for child in children if child.get("parent_run_id") == run["run_id"]]
         self.assertEqual(len(children), 1)
         self.assertEqual(children[0]["state"], "cancelled")
+
+    def test_builtin_review_includes_runtime_source_and_copy_qualifies_with_staged_fixture(self):
+        report = {"approved": True, "summary": "Reviewed host handlers.", "issues": [], "model": "fixture"}
+        for action_id, handler in (("core.artifact.copy", "ModuleRuntime._execute"),
+                                   ("core.delay", "action_components.execute_steps")):
+            definition = self.runtime.definition(action_id)
+            review = self.runtime.qualification_review(action_id, definition["content_hash"])
+            self.assertTrue(any(name.endswith(handler) and source.strip() for name, source in review["sources"].items()))
+        definition = self.runtime.definition("core.artifact.copy")
+        review = self.runtime.qualification_review("core.artifact.copy", definition["content_hash"])
+        tested = self.runtime.qualification_execute("core.artifact.copy", definition["content_hash"],
+                                                    review["snapshot_hash"], report, allow_effects=True)
+        self.assertTrue(self.runtime.qualification_admit(tested["attempt_id"])["ok"])
+        self.assertFalse(self.runtime.artifact_path(COPY_FIXTURE_ARTIFACT).exists())
 
     def test_mcp_auto_timer_and_bounded_wait_return_original_run(self):
         async def exercise():

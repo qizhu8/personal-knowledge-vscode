@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import type { ApiChatTool } from "./api-chat-client";
 import type { ApiConversation, ChatMessage, ChatPlanningReceipt } from "./api-chat-store";
+import { activeTaskContextCheckpoint, currentTaskReport } from "./task-context-checkpoint";
 
 export interface HarnessBinding { recipeRunId?: string; recipeStageId?: string; stepId?: string; parentStepId?: string; stepAttemptId?: string; }
 export interface HarnessBudgetReceipt {
@@ -231,21 +232,22 @@ export function createHarnessReportTool(chat: ApiConversation, reply: ChatMessag
 }
 
 export function currentHarnessTask(chat: ApiConversation): HarnessReport | undefined {
-  if (!chat.sessionId) return undefined;
-  return [...chat.messages].reverse().flatMap(message =>
-    message.taskId === chat.sessionId ? [...message.harnessReports || []].reverse() : [])
-    .find(report => report.kind === "task" && report.taskId === chat.sessionId && report.schema === "pkm.chat.harness-report/v1" && report.source === "agent-report");
+  return currentTaskReport(chat);
 }
 
 export function currentHarnessTaskState(chat: ApiConversation) {
   if (!chat.sessionId) return undefined;
-  const report = currentHarnessTask(chat);
-  const inputs = chat.messages.filter(message => message.taskId === chat.sessionId && message.role === "user" && !message.workerEventIds?.length && !message.portalReview);
+  const checkpoint = activeTaskContextCheckpoint(chat);
+  const latest = currentHarnessTask(chat);
+  const report = latest && (!checkpoint || latest.id !== checkpoint.previousTaskReportId) ? latest : undefined;
+  const inputs = chat.messages.filter(message => message.taskId === chat.sessionId && message.role === "user" && !message.workerEventIds?.length && !message.portalReview
+    && !checkpoint?.sourceInputIds.includes(message.id));
   const covered = inputs.reduce((last, input, index) => report?.sourceInputIds?.includes(input.id) ? index : last, -1);
   return {
     schema:"pkm.chat.task-working-state/v1" as const, taskId:chat.sessionId,
     authority:"original-user-inputs-and-managed-task-recipe" as const,
     report, pendingInputIds:inputs.slice(covered + 1).map(input => input.id),
+    ...(latest && !report ? { supersedesReportId:latest.id } : {}),
     note:"A report is an agent interpretation, not authorization or completion. Pending inputs are newer than its cited sources; reconcile the original instructions before relying on the report.",
   };
 }

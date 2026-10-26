@@ -299,7 +299,7 @@ test("browser transport is authenticated, Session-scoped, read-only and rechecks
   const server = await createNativeHarnessServer({ extensionPath:path.join(__dirname, ".."), sessionId,
     access() { if (!allowed) throw new Error("Knowledge Root changed"); },
     async request(method,params) {
-      if (method === "memoryOverview" || method === "memoryPiece") return {method,sessionId:params.sessionId};
+      if (method === "memoryOverview" || method === "memoryPiece" || method === "profiles") return {method,sessionId:params.sessionId};
       return method === "snapshot" ? fixture() : "Full result";
     } });
   t.after(() => server.dispose());
@@ -321,6 +321,8 @@ test("browser transport is authenticated, Session-scoped, read-only and rechecks
   assert.equal((await (await api("execute")).json()).ok, false);
   assert.equal((await (await api("memoryOverview")).json()).data.sessionId,sessionId);
   assert.equal((await (await api("memoryPiece",{piece:"topic:one",after:0})).json()).data.method,"memoryPiece");
+  assert.equal((await (await api("profiles")).json()).data.method,"profiles");
+  assert.equal((await (await api("profiles",{sessionId:"another"})).json()).ok,false);
   assert.equal((await (await api("memoryOverview",{sessionId:"another"})).json()).ok,false);
   assert.equal((await (await api("deleteMemory")).json()).ok,false);
   const first = (await (await api("watch", { revision:0 })).json()).data.revision;

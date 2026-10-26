@@ -173,12 +173,12 @@ const windowsInventory = `
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$items = @(Get-CimInstance Win32_Process | Where-Object {
-  $_.Name -match '^(python[\\d.]*|node|code)\\.exe$' -and
+$items = @(Get-CimInstance Win32_Process -Filter "Name LIKE 'python%.exe' OR Name = 'node.exe' OR Name = 'code.exe' OR Name = 'code-insiders.exe'" | Where-Object {
+  $_.Name -match '^(python[\\d.]*|node|code(?:-insiders)?)\\.exe$' -and
   $_.CommandLine -match '(mcp-server[\\\\/]server\\.py|retrieval_worker\\.py|pkm-service-entry\\.js)'
 } | ForEach-Object {
   $owner = Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid
-  if ($owner.ReturnValue -ne 0) { throw 'Cannot determine process owner' }
+  if ($owner.ReturnValue -ne 0) { throw "Cannot determine owner of PKM process $($_.ProcessId) (GetOwnerSid returned $($owner.ReturnValue))" }
   if ($owner.Sid -eq $sid) {
     [pscustomobject]@{ pid = $_.ProcessId; parentPid = $_.ParentProcessId
       elapsedSeconds = [Math]::Max(0, ((Get-Date) - $_.CreationDate).TotalSeconds)
@@ -204,7 +204,18 @@ export class BackgroundProcessInventory {
     let rows: ProcessObservation[];
     const options = { timeout: 10_000, maxBuffer: 8 * 1024 * 1024, windowsHide: true };
     if (process.platform === "win32") {
-      const { stdout } = await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", windowsInventory], options);
+      let stdout: string;
+      try {
+        ({ stdout } = await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", windowsInventory], options));
+      } catch (error) {
+        const failure = error as NodeJS.ErrnoException & { killed?: boolean; signal?: string; stderr?: string };
+        const reason = failure.code === "ENOENT" ? "powershell.exe was not found"
+          : failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ? "PowerShell output exceeded the inventory buffer limit"
+          : failure.killed && failure.signal ? `PowerShell did not complete within ${options.timeout / 1000}s (signal ${failure.signal})`
+          : `PowerShell failed (code ${failure.code ?? "unknown"}${failure.signal ? `, signal ${failure.signal}` : ""})`;
+        const diagnostic = typeof failure.stderr === "string" ? failure.stderr.trim().slice(0, 2000) : "";
+        throw new Error(`Windows process inventory: ${reason}.${diagnostic ? ` ${diagnostic}` : " No stderr diagnostic was reported."}`);
+      }
       const value: unknown = JSON.parse(stdout);
       if (!Array.isArray(value)) throw new Error("Invalid Windows process inventory.");
       rows = value.map((row: unknown) => {

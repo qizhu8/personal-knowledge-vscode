@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import { createHash } from "crypto";
-import { ApiConversation } from "./api-chat-store";
+import { ApiConversation, apiChatCreditUsage } from "./api-chat-store";
 import { discoverVscodeModels, vscodeModelProfile } from "./api-chat-vscode";
 import { vscodeToolCatalog } from "./api-chat-mcp";
 import { createChatE2eFixture } from "./chat-e2e-fixture";
@@ -35,9 +35,12 @@ export async function runFixtureChatAcceptance(create: () => ApiConversation,
   chat.builtinTools = []; chat.vscodeTools = []; chat.mcpServers = [];
   chat.toolSelection = undefined; chat.memoryPolicy = undefined;
   const report = { schema:"pkm.chat.fixture-e2e/v1", chatId:chat.id, model:profile.id,
-    status:"running", credits:null, creditsStatus:"not-reported-by-public-api",
+    status:"running", credits:null as string | null, creditsStatus:"not-reported", creditUsage:apiChatCreditUsage([]),
     privateKnowledge:false, steps:[] as Array<Record<string, unknown>> };
   const write = () => {
+    report.creditUsage = apiChatCreditUsage(chat.messages.filter(message => message.role === "assistant"));
+    report.credits = report.creditUsage.credits ?? null;
+    report.creditsStatus = report.creditUsage.status;
     const temporary = reportPath + ".tmp";
     fs.writeFileSync(temporary, JSON.stringify(report, null, 2), { mode:0o600 }); fs.renameSync(temporary, reportPath);
   };
@@ -48,6 +51,7 @@ export async function runFixtureChatAcceptance(create: () => ApiConversation,
       if (!reply || reply.role !== "assistant" || reply.status !== "complete") throw new Error(reply?.error || "Model probe did not complete.");
       check(reply);
       report.steps.push({ name, verdict:"succeeded", usage:reply.usage || null,
+        credits:apiChatCreditUsage(reply).credits ?? null, creditsStatus:apiChatCreditUsage(reply).status, creditUsage:apiChatCreditUsage(reply),
         retrieval:reply.retrieval, budgets:reply.budgetReceipts, tools:reply.toolCalls?.map(tool => ({ name:tool.name, status:tool.status })) || [] });
     } catch (error) {
       report.steps.push({ name, verdict:"failed", error:error instanceof Error ? error.message : String(error) });
@@ -120,7 +124,9 @@ export async function runApiChatAcceptance(create: () => ApiConversation,
     save(chat); await send(chat, prompt);
     const reply = chat.messages[chat.messages.length - 1];
     report.steps.push({ name, status: reply?.status, usage: reply?.usage || null, usageMetadata: reply?.usageMetadata || { frames: 0, validFrames: 0, invalidFrames: 0 },
-      credits: null, creditsStatus: "not-reported-by-public-api",
+      credits: reply ? apiChatCreditUsage(reply).credits ?? null : null,
+      creditsStatus: reply ? apiChatCreditUsage(reply).status : "not-reported",
+      creditUsage: reply ? apiChatCreditUsage(reply) : undefined,
       tools: reply?.toolCalls?.map(tool => ({ name: tool.name, status: tool.status })) || [],
       ...(reply?.error ? { error: reply.error.slice(0, 1000) } : {}) });
     write();

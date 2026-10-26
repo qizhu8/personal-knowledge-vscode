@@ -286,6 +286,19 @@ export class RetrievalWorkerManager {
     return result.learning;
   }
 
+  async submitFeedback(retrievalId: string, relevantSourceIds: string[]): Promise<unknown> {
+    if (typeof retrievalId !== "string" || !retrievalId || retrievalId.length > 200
+      || !Array.isArray(relevantSourceIds) || relevantSourceIds.length > 10000
+      || relevantSourceIds.some(id => typeof id !== "string" || !id || id.length > 4096)) {
+      throw new Error("Invalid explicit retrieval relevance judgments.");
+    }
+    const result = await this.request<{ ok?: boolean; error?: string }>(await this.ensure(), "/retrieval-feedback", "POST", {
+      retrieval_id: retrievalId, relevant_source_ids: relevantSourceIds, complete: true,
+    });
+    if (!result || result.ok !== true) throw new Error(typeof result?.error === "string" ? result.error : "Retrieval feedback was not acknowledged.");
+    return result;
+  }
+
   async setSolution(action: "enable" | "rebuild" | "disable" | "delete", packageId?: string): Promise<RetrievalSolutionStatus> {
     return this.request(await this.ensure(), "/solutions", "POST", { action, package_id: packageId });
   }

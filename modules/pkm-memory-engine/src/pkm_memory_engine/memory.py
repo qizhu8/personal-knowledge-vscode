@@ -27,13 +27,15 @@ MAX_EARLIER_MESSAGES = 3
 def _model_observation(usage: dict | None, accounting: dict | None) -> dict:
     result = {}
     if usage is not None:
-        if not isinstance(usage, dict) or set(usage) - {"inputTokens", "outputTokens", "reasoningTokens", "cachedInputTokens"}:
+        if not isinstance(usage, dict) or set(usage) - {"inputTokens", "outputTokens", "reasoningTokens", "cachedInputTokens", "copilotNanoAiu"}:
             raise MemoryError("Invalid Memory provider usage.")
         if any(type(usage.get(key)) is not int or not 0 <= usage[key] <= 2**53 - 1 for key in ("inputTokens", "outputTokens")):
             raise MemoryError("Invalid Memory provider usage.")
         for key, maximum in (("reasoningTokens", "outputTokens"), ("cachedInputTokens", "inputTokens")):
             if key in usage and (type(usage[key]) is not int or not 0 <= usage[key] <= usage[maximum]):
                 raise MemoryError("Invalid Memory provider usage.")
+        if "copilotNanoAiu" in usage and (type(usage["copilotNanoAiu"]) is not int or not 0 <= usage["copilotNanoAiu"] <= 2**53 - 1):
+            raise MemoryError("Invalid Memory provider credit usage.")
         result["usage"] = usage
     if accounting is not None:
         if not isinstance(accounting, dict) or accounting.get("schema") != "pkm.memory.model-accounting/v1":

@@ -69,7 +69,7 @@ function showEmbeddedActions() {
     actionsFrame.id = 'embedded-action-workbench';
     actionsFrame.title = 'Action Workbench';
     // The renderer is isolated; only messages from this exact frame can reach its host bridge.
-    actionsFrame.setAttribute('sandbox', 'allow-scripts');
+    actionsFrame.setAttribute('sandbox', 'allow-scripts allow-forms');
     actionsFrame.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:0;z-index:5;background:var(--vscode-editor-background)';
     const layout = document.getElementById('layout');
     layout.style.position = 'relative';
@@ -78,7 +78,7 @@ function showEmbeddedActions() {
   actionsFrame.hidden = false;
   if ((!actionsFrame.srcdoc || actionsFrame.dataset.unavailable) && !actionsDocumentPending) {
     actionsDocumentPending = true;
-    ask('actionWorkbenchDocument', { state:vscode.getState()?.actions || { libraryOpen:true } });
+    ask('actionWorkbenchDocument', { state:vscode.getState()?.actions || {} });
   }
   finishLoadingProgress();
 }
@@ -119,7 +119,7 @@ window.addEventListener('message', event => {
       ask('githubSyncState', {}, null, true);
     } else {
       const command = { subscriptions:'subscriptionState', servers:'serverList', environments:'envList', mcp:'checkMcp',
-        skillRouter:'skillRouterStatus', backgroundTasks:'backgroundTasks', portalConnections:'portalConnections', chatroom:'chatState' }[state.tab];
+        userProfile:'userProfile', skillRouter:'skillRouterStatus', backgroundTasks:'backgroundTasks', portalConnections:'portalConnections', chatroom:'chatState' }[state.tab];
       if (command) ask(command, {}, null, true);
     }
   } else if (message.command === 'sharedDataChanged') {

@@ -427,7 +427,12 @@ hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
 .project-action-error>.tbtn{width:28px;height:28px;padding:0;display:grid;place-items:center}
 .agent-session-status-indicator{display:inline-flex;align-items:center;gap:6px;--session-status-color:#9da3a8}
 .agent-session-pkm-icon{display:inline-block;flex:0 0 16px;width:16px;height:16px;background:url('../../resources/icon.png') center/contain no-repeat}
-.agent-session-chat-select{display:inline-flex;align-items:center;gap:6px;min-width:0;border:0;background:transparent;color:inherit;padding:0;text-align:left;cursor:pointer;font:inherit}
+.agent-session-list .agent-session-chat-select{display:flex;flex-direction:row;align-items:center;gap:6px;width:100%;min-width:0;min-height:24px;height:24px;border:0;background:transparent;color:inherit;padding:0;text-align:left;cursor:pointer;font:inherit;overflow:hidden}
+.agent-session-list .agent-session-chat-select>.agent-session-chat-title{display:block;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agent-session-chat-select>.agent-session-chat-portal{flex:0 1 auto;max-width:45%;font-size:9px}
+.agent-session-tree .tree-cat-label{display:flex;align-items:center;gap:4px;min-width:0}
+.agent-session-list .agent-session-tree .tree-cat-label>.cattree-item-menu{position:static;transform:none;flex:none;width:20px;min-height:20px;height:20px;padding:0;border:0}
+.agent-session-tree .tree-cat-hdr:hover .cattree-item-menu,.agent-session-tree .tree-cat-hdr:focus-within .cattree-item-menu{opacity:1}
 .agent-session-chat-select[aria-pressed="true"]{color:var(--vscode-list-activeSelectionForeground);background:var(--vscode-list-activeSelectionBackground)}
 .agent-session-status-indicator[data-session-state=stopped]{--session-status-color:#6a91b8}
 .agent-session-status-indicator[data-session-state=running]{--session-status-color:#52bb80}

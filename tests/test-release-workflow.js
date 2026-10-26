@@ -4,6 +4,31 @@ const fs = require("fs");
 const path = require("path");
 
 const workflow = fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", "publish-marketplace.yml"), "utf8");
+const scripts = require("../package.json").scripts;
+
+assert(workflow.includes("run: npm run test:release"), "Marketplace must execute the release lifecycle, including its prerequisite gate");
+for (const name of ["pretest:release", "package"]) {
+  const steps = scripts[name].split(" && ");
+  const accounting = steps.indexOf("npm run test:chat-accounting:run");
+  assert(accounting > steps.indexOf("npm run build") && accounting >= 0,
+    `${name} must run accounting against a complete build`);
+  const boundary = steps.findIndex(step => /verify-version-bump|package-extension/.test(step));
+  assert(accounting < boundary, `${name} must fail closed on accounting before version/publication or packaging`);
+  const retrieval = steps.indexOf("npm run test:chat-retrieval:run");
+  assert(retrieval > accounting && retrieval < boundary, `${name} must require retrieval and checkpoint regressions after accounting and before packaging`);
+}
+for (const file of ["test-chat-retrieval-integration.js", "test-chat-context-contracts.js", "test-chat-work-goal.js",
+  "test-chat-harness-records.js", "test-api-chat.js", "test-chat-activity-browser.js"]) {
+  assert(scripts["test:chat-retrieval:run"].includes(`tests/${file}`), `mandatory retrieval gate must retain ${file}`);
+}
+assert(scripts["test:chat-context"].includes("tests/test-chat-retrieval-integration.js"));
+assert.equal(scripts["test:chat-accounting:run"],
+  "node --test tests/test-chat-budget-ledger.js && node scripts/run-memory-engine-tests.js",
+  "the shared mandatory gate must execute Credit ledger and nested Memory accounting without rebuilding bundles");
+const memoryRunner = fs.readFileSync(path.join(__dirname, "..", "scripts", "run-memory-engine-tests.js"), "utf8");
+for (const required of ['"discover"', '"test-memory-engine-client.js"', '"test-chat-memory-service.js"', '"test-memory-accounting.js"']) {
+  assert(memoryRunner.includes(required), `mandatory Memory accounting runner must retain ${required}`);
+}
 
 for (const action of ["actions/checkout@v7", "actions/setup-node@v7", "actions/setup-python@v7", "azure/login@v3"]) {
   assert(workflow.includes(`uses: ${action}`), `release workflow must use ${action}`);

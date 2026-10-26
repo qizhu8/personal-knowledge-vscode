@@ -525,6 +525,7 @@ class ActionRuntime:
 
 def register_action_tools(mcp, store, runtime=None):
     runtime = runtime or ActionRuntime(store)
+    runtime.modules.proposal_mode = True
     runtime.start_scheduler()
 
     def action_retrieve(task: str, limit: int = 1):
@@ -536,7 +537,7 @@ def register_action_tools(mcp, store, runtime=None):
         return runtime.modules.templates()
 
     def action_template_create(action_id: str, parameters: dict):
-        """Create a private local polling definition with an exact read-only query revision. This grants no readiness or execution rights."""
+        """Submit a template-based Action proposal for operator admission. Never registers or grants execution; wait for human approval before qualification."""
         return runtime.modules.template_create(action_id, parameters)
 
     def action_cosmos_configure(bindings: list[dict]):
@@ -623,8 +624,12 @@ def register_action_tools(mcp, store, runtime=None):
         return runtime.modules.definition_check(definition)
 
     def action_register(definition: dict):
-        """Persist a versioned contract. Read action_capabilities.authoring first; implementation kinds are program, pipeline, mcp. No grant or readiness."""
+        """Submit a versioned Action proposal, not a formal library registration. Return pending_operator_approval; ask the operator to approve it in Action Library and wait. The previous approved version is unchanged. No validation, invocation or automatic retry before approval."""
         return runtime.modules.register(definition)
+
+    def action_proposals():
+        """Read pending operator-review proposals. No registration, approval or execution; the previous approved Action remains in use."""
+        return runtime.modules.proposal_list()
 
     def action_get(action_id: str):
         """Read a stable Action definition and its current target-environment readiness."""
@@ -633,7 +638,7 @@ def register_action_tools(mcp, store, runtime=None):
                 if action_id in DEFINITIONS else runtime.modules.availability(action_id)}
 
     def action_validate(action_id: str, content_hash: str, inputs: dict | None = None):
-        """Run declared smoke examples only after operator authorization; evidence is local and environment-specific."""
+        """Non-builtin public Actions require the Workbench Validate flow: Agent code review, consented smoke tests, then automatic admission. Never self-grant."""
         return runtime.validate(action_id, content_hash, inputs)
 
     def action_artifact_import(local_path: str):
@@ -653,7 +658,7 @@ def register_action_tools(mcp, store, runtime=None):
         return runtime.recover()
 
     def action_validation_enqueue(action_id: str, content_hash: str, priority: str = "demand", allow_effects: bool = False):
-        """Queue controlled target-host qualification. Effect consent never grants operator permissions."""
+        """Non-builtin Actions return ACTION_CODE_REVIEW_REQUIRED. Ask the operator to click the Workbench flask: Agent review precedes smoke tests and admission."""
         return runtime.modules.queue_enqueue(action_id, content_hash, priority, allow_effects)
 
     def action_validation_status():
@@ -697,10 +702,10 @@ def register_action_tools(mcp, store, runtime=None):
         return runtime.modules.graph_definition(graph)
 
     def action_graph_save(graph: dict):
-        """Register a language-neutral graphical composition as a callable pinned Action."""
+        """Submit a graphical composition proposal. It is not callable until operator admission and qualification."""
         return runtime.modules.graph_save(graph)
 
-    tools = [action_retrieve, action_call, action_run_get, action_run_cancel, action_capabilities, action_definition_check, action_register,
+    tools = [action_retrieve, action_call, action_run_get, action_run_cancel, action_capabilities, action_definition_check, action_register, action_proposals,
              action_templates, action_template_create, action_cosmos_configure, action_run_wait,
              action_get, action_validate, action_artifact_import, action_artifact_export, action_run_gc, action_run_recover,
              action_validation_enqueue, action_validation_status, action_validation_cancel, action_validation_resume,
@@ -709,7 +714,7 @@ def register_action_tools(mcp, store, runtime=None):
              action_checkpoint_respond, action_run_wake, action_run_safety_scan, action_run_reconcile, action_run_events]
     for function in tools:
         function.__annotations__["return"] = dict
-        mcp.tool(annotations={"readOnlyHint": function in [action_retrieve, action_run_get, action_get, action_capabilities, action_definition_check,
+        mcp.tool(annotations={"readOnlyHint": function in [action_retrieve, action_run_get, action_get, action_capabilities, action_definition_check, action_proposals,
                                  action_module_sets, action_graph_check, action_run_checkpoints, action_templates, action_run_events]})(function)
 
 

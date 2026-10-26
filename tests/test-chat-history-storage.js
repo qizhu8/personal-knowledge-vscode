@@ -340,7 +340,9 @@ test("controller publishes only a recent page and rejects cross-Chat or stale hi
   const older = posts.at(-1);
   assert.equal(older.type, "historyPage");
   assert.equal(older.beforeId, before);
-  assert.deepEqual(older.messages, chat.messages.slice(older.start, state.history.start));
+  assert.deepEqual(older.messages, chat.messages.slice(older.start, state.history.start).map(message => message.role === "assistant"
+    ? { ...message, creditUsage:{ source:"provider.copilot_usage.total_nano_aiu", status:"not-reported", reportedCalls:0, totalCalls:1 } }
+    : message));
   await assert.rejects(provider.handle({ type: "historyPage", chatId: randomUUID(), id: before }), /selected Chat changed/);
   await assert.rejects(provider.handle({ type: "historyPage", chatId: chat.id, id: randomUUID() }), /cursor is stale/);
   assert.equal(store.load(chat.id, false).revision, chat.revision, "Browsing history must not persist or dispatch an inference");

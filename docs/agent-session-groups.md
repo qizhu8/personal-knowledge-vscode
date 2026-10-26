@@ -13,6 +13,10 @@ controlled reliably and gave no clear benefit over the agent's own planning.
 - Automation > Agent Sessions shows **Chat Groups > Tasks** for PKM Chat only.
   Each PKM Chat is one Group; Library categories label it without changing its
   identity.
+- The Agent Sessions category-tree sidebar defaults to collapsed. An explicitly
+  saved expanded preference is preserved. Inside the tree, categories and Chat
+  branches also start collapsed until the user expands them; choices survive
+  normal view refreshes. Empty Chat leaves still have no false expand control.
 - When the panel first loads a Knowledge Root, every existing external
   (non-PKM) Session record of any status moves to Agent Sessions Trash. All
   external MCP transport mappings (`agent-sessions/active/*.json`) are removed.
@@ -21,7 +25,10 @@ controlled reliably and gave no clear benefit over the agent's own planning.
   be restored from Trash. Retired external Group bindings are no longer shown.
 - Empty Groups offer **Delete Chat Group**. Populated Groups need their Tasks
   moved to Trash first. Deleting a Group never deletes the PKM Chat conversation.
-- Chats without Tasks remain visible with their Chat icon and **No Task** label,
+- Chat entries use one compact line: icon, ellipsized title, inline Portal status
+  and Task count. Full titles and the empty-Chat explanation remain available
+  on hover, instead of inheriting the multi-line Task-card button layout.
+- Chats without Tasks remain visible with their Chat icon and **0 Tasks** count,
   but have no expand arrow or empty expandable body. Library categories and
   Chats with Tasks or worker Chats remain expandable; Task rows remain leaves.
 - Chat metadata, Library placement and Group changes invalidate the Agent

@@ -262,7 +262,7 @@ function fileSelectorCategoryTree(items) {
 function fileSelectorTreeItems(node) { return [...node.items, ...Object.values(node.folders).flatMap(fileSelectorTreeItems)]; }
 const uiIcon = (name, label = '') => `<span class="codicon codicon-${name}" aria-hidden="true"></span>${label ? `<span>${esc(label)}</span>` : ''}`;
 const ICON = {todo:uiIcon('circle-outline'),done:uiIcon('pass-filled'),'data-path':uiIcon('folder'),observation:uiIcon('eye'),general:uiIcon('note')};
-const surfacePanelTitles = { skills:'Skills', notes:'Notes', papers:'Research', agentSessions:'Agent Sessions', recipes:'Recipe Library', actions:'Action Workbench', prompts:'Prompts', scripts:'Scripts', packages:'Packages', environments:'Environments', servers:'Servers', projects:'Projects', chatroom:'Threads', portalConnections:'Portal Connections', subscriptions:'Network & Sharing', githubSync:'GitHub Sync', backgroundTasks:'Background Tasks', mcp:'General & MCP', skillRouter:'Router' };
+const surfacePanelTitles = { skills:'Skills', notes:'Notes', papers:'Research', agentSessions:'Agent Sessions', recipes:'Recipe Library', actions:'Action Workbench', prompts:'Prompts', scripts:'Scripts', packages:'Packages', environments:'Environments', servers:'Servers', projects:'Projects', chatroom:'Threads', portalConnections:'Portal Connections', subscriptions:'Network & Sharing', githubSync:'GitHub Sync', backgroundTasks:'Background Tasks', mcp:'General & MCP', userProfile:'User Profile', skillRouter:'Router' };
 let lastPanelTitle = '';
 function setPanelTitle(title) {
   const next = String(title || 'Personal Knowledge Manager').trim();
@@ -384,7 +384,7 @@ scheduleUiTranslation();
 const workspaceSurfaces = Object.freeze({
   knowledge:['skills','notes','papers'],
   tools:['prompts','scripts','packages','environments','servers'],
-  automation:['agentSessions','agentSnapshots','recipes','actions'],
+  automation:['userProfile','agentSessions','agentSnapshots','recipes','actions'],
   projects:['projects','chatroom','portalConnections'],
   settings:['mcp','skillRouter','subscriptions','githubSync','backgroundTasks']
 });
@@ -399,7 +399,7 @@ const loadProfileRequests = new Map();
 const loadProfileResponseCommands = Object.freeze({
   list:'list', projectState:'projectState', envList:'envList', serverList:'serverList',
   subscriptionState:'subscriptionState', githubSyncState:'githubSyncState',
-  backgroundTasks:'backgroundTasks', portalConnections:'portalConnections', chatState:'chatState', checkMcp:'mcpStatus',
+  userProfile:'userProfile', userProfileEdit:'userProfile', backgroundTasks:'backgroundTasks', portalConnections:'portalConnections', chatState:'chatState', checkMcp:'mcpStatus',
   skillRouterStatus:'skillRouterStatus', setLoadProfiling:'mcpStatus',
 });
 function loadProfileEvent(event, detail = {}) {
@@ -944,6 +944,7 @@ window.addEventListener('message', e => {
   else if (command === 'githubSyncRuntimeState') { githubSyncOnRuntimeState(data); }
   else if (command === 'githubSyncAutomationResult') { githubSyncOnAutomationResult(data); }
   else if (command === 'githubSyncRuntimeSnapshot') { for (const [targetId, runtime] of Object.entries(data || {})) githubSyncOnRuntimeState({ targetId, state:runtime }); }
+  else if (command === 'userProfile') { userProfileOnSnapshot(data); finishAction('userProfileEdit'); finishLoadingProgress(); }
   else if (command === 'backgroundTasks') { backgroundTasksOnSnapshot(data); finishLoadingProgress(); }
   else if (command === 'backgroundProcesses') { backgroundProcessesOnSnapshot(data); }
   else if (command === 'retrievalSolutions') { skillRouterSolutionsOnSnapshot(data); }
@@ -1346,7 +1347,7 @@ function isInitialViewResponse(command, message = {}) {
   const responseByTab = {
     skills:'list', notes:'list', papers:'list', prompts:'list', packages:'list', scripts:'list',
     environments:'envList', servers:'serverList', agentSessions:'projectState', recipes:'projectState', projects:'projectState',
-    chatroom:'chatState', mcp:'mcpStatus', skillRouter:'skillRouterStatus', subscriptions:'subscriptionState', githubSync:'githubSyncState', backgroundTasks:'backgroundTasks', portalConnections:'portalConnections',
+    userProfile:'userProfile', chatroom:'chatState', mcp:'mcpStatus', skillRouter:'skillRouterStatus', subscriptions:'subscriptionState', githubSync:'githubSyncState', backgroundTasks:'backgroundTasks', portalConnections:'portalConnections',
   };
   return responseByTab[state.tab] === command && (command !== 'list' || message.tab === state.tab);
 }

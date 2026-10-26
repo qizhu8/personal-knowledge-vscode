@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { createHash } from "crypto";
 import { ChatInferenceClock } from "./chat-inference-timing";
 import { ApiChatMessage, ApiChatRequest, ApiChatToolEvent, ChatImage, decodeChatImage, ChatToolLoopGuard, toolBudgetSummary, chatInferenceOutputByteLimit, chatTransportReceipt } from "./api-chat-client";
-import { ChatModelProfile, ChatTokenUsage, checkReportedOutput, reportedReasoningTokens } from "./api-chat-models";
+import { ChatModelProfile, ChatTokenUsage, checkReportedOutput, reportedReasoningTokens, reportedCopilotUsage } from "./api-chat-models";
 import { abortable } from "./api-chat-tools";
 
 export interface VscodeChatModel extends vscode.LanguageModelChat {
@@ -56,6 +56,7 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
   const inferenceClock = new ChatInferenceClock("vscode", request.onInferenceTiming);
+  let unreportedUsage: ChatTokenUsage | undefined;
   const loop = new ChatToolLoopGuard(request);
   const cancellation = new host.CancellationTokenSource();
   const native = host as typeof host & {
@@ -218,16 +219,21 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
             if (!(part.data instanceof Uint8Array) || part.data.byteLength > 64 * 1024 || ++metadataParts > 128) throw new VscodeChatError("Provider metadata exceeded the local limit; partial output was preserved.");
             if (part.mimeType === "usage") {
               let valid = false;
+              let reported;
               try {
-                const reported = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(part.data));
-                if (reported && !Array.isArray(reported) && [reported.prompt_tokens, reported.completion_tokens].every(value => Number.isSafeInteger(value) && value >= 0)) {
-                  const cached = reported.prompt_tokens_details?.cached_tokens;
-                  usage = { inputTokens: reported.prompt_tokens, outputTokens: reported.completion_tokens,
-                    ...(Number.isSafeInteger(cached) && cached >= 0 && cached <= reported.prompt_tokens ? { cachedInputTokens: cached } : {}),
-                    ...reportedReasoningTokens(reported) };
-                  valid = true;
-                }
+                reported = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(part.data));
               } catch {}
+              let billing: ReturnType<typeof reportedCopilotUsage>;
+              try { billing = reportedCopilotUsage(reported); }
+              catch (error) { request.onUsageMetadata?.(false); throw new VscodeChatError((error as Error).message); }
+              if (reported && !Array.isArray(reported) && [reported.prompt_tokens, reported.completion_tokens].every(value => Number.isSafeInteger(value) && value >= 0)) {
+                const cached = reported.prompt_tokens_details?.cached_tokens;
+                usage = { inputTokens: reported.prompt_tokens, outputTokens: reported.completion_tokens,
+                  ...(Number.isSafeInteger(cached) && cached >= 0 && cached <= reported.prompt_tokens ? { cachedInputTokens: cached } : {}),
+                  ...reportedReasoningTokens(reported), ...billing };
+                unreportedUsage = usage;
+                valid = true;
+              }
               request.onUsageMetadata?.(valid);
             }
             continue;
@@ -243,7 +249,7 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
       if (outputText) await checkOutputBudget(outputText, true);
       clearTimeout(timer);
       inferenceClock.finish("stream-ended");
-      if (usage) request.onUsage?.(usage);
+      if (usage) { unreportedUsage = undefined; request.onUsage?.(usage); }
       if (usage) {
         try { checkReportedOutput(usage, remaining, request.thinkingBudget); }
         catch (error) { throw new VscodeChatError((error as Error).message); }
@@ -306,5 +312,6 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
     signal.removeEventListener("abort", cancel);
     cancellation.cancel(); cancellation.dispose();
     inferenceClock.finish("interrupted");
+    if (unreportedUsage) request.onUsage?.(unreportedUsage);
   }
 }

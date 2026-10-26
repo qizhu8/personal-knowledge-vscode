@@ -16,7 +16,7 @@ import { agentSessionGroup } from "./agent-sessions/agent-session-lifecycle";
 import { deleteAgentSessionGroup } from "./agent-sessions/agent-session-lifecycle";
 import { DiagnosticLog } from "./runtime/diagnostic-log";
 import { RetainedJsonlLog } from "./runtime/retained-jsonl-log";
-import { sanitizeRetrievalCandidatesV1 } from "./retrieval/retrieval-contracts";
+import { createChatKnowledgeRetriever } from "./chat/chat-knowledge-retriever";
 import { ExtensionHostRegistry, loadedExtensionBuild, readInstalledExtensionBuild } from "./runtime/extension-host-runtime";
 import * as vscode from "vscode";
 import * as path from "path";
@@ -54,7 +54,8 @@ import {
   serverUpdate, serverGroupList, serverCreateGroup, serverMoveGroup, serverPortOwner, serverNetworkAddresses, forceStopExternalServer, serverDelete, startServer, stopServer, restartServer, setServerPort, serverLog, serverDir,
 } from "./servers/servers";
 import { ChatHub, ChatClient, ChatMessage, Member, FileMeta, AgentRuntimeState, ChatMode, ReplyPolicy, MAX_FILE_BYTES } from "./chatroom/chatroom";
-import { PeerResumeRecord, PeerSession, validPeerResumeRecord } from "./chatroom/peer-session";
+import { PeerSession } from "./chatroom/peer-session";
+import { cleanupLegacyPortals } from "./chatroom/portal-cleanup";
 import { boundPortalToolOutputs } from "./chatroom/portal-observation";
 import { assertPeerEndpoint, PORTAL_TRANSPORT_PATH } from "./chatroom/peer-protocol";
 import { createPortalLink, parsePortalLink } from "./chatroom/portal-link";
@@ -96,8 +97,7 @@ import { NavigationStatus, summarizeChatNavigation, summarizeServerNavigation } 
 import { navigationItemPath } from "./ui/navigation-path";
 import { parsePkmLocator, PkmLocatorError, resolvePkmLocator, ResolvedPkmLocator } from "./knowledge/knowledge-locator";
 import { subscriptionNavigationRoot, SubscriptionNavigationNode } from "./ui/navigation-subscriptions";
-import { createRetrievalSnapshot, materializeRetrievalSource, materializeRetrievalCandidates,
-  retrievalDocumentForSource, retrievalSourceValidation } from "./retrieval/retrieval-snapshot";
+import { createRetrievalSnapshot } from "./retrieval/retrieval-snapshot";
 import { RetrievalWorkerManager, type RetrievalWorkerStatus } from "./retrieval/retrieval-worker";
 import { cloudSynchronizedPath, extensionHostDescription, isAbsoluteForPlatform, isForeignAbsolutePath, resolveMachineStorePath } from "./knowledge/store-path";
 import { loadLocaleCatalogs, loadLocaleManifest, localizedText, normalizeUiLanguage, resolveUiLanguage, UiLanguageSetting, uiLanguageSetting } from "./ui/localization";
@@ -105,8 +105,10 @@ import { decideInitialExperience, FEATURE_TOUR_MODULES, minorRelease } from "./u
 import { AiBackend, aiSummarizeScript, listAiBackends, runAiPrompt, scriptCacheDir } from "./ai/ai";
 import { registerApiChatShell, setChatStartupTrace } from "./chat/api-chat-shell";
 import { PersonaProfileStore, type PersonaSnapshot } from "./chat/persona-profiles";
+import { configureUserProfile } from "./chat/persona-profile-ui";
+import { requestNativePortalInteraction } from "./chat/portal-native-interaction";
 import { authorizeGitHubSyncProfiles } from "./sync/github-sync-profiles";
-import { actionRequest, initializeActionChat, openActionWorkbench, openActionWorkbenchInBrowser, renderEmbeddedActionWorkbench, handleActionWorkbenchMessage } from "./ui/action-browser";
+import { actionRequest, initializeActionChat, openActionLibrary, openActionWorkbench, openActionWorkbenchInBrowser, renderEmbeddedActionWorkbench, handleActionWorkbenchMessage } from "./ui/action-browser";
 import { createNativeHarnessServer } from "./runtime/native-harness-server";
 import { readHarnessActions } from "./runtime/native-harness-actions";
 import { projectCockpits } from "./workflows/project-cockpit";
@@ -478,16 +480,16 @@ async function nativeHarnessRequest(method: string, params: Record<string, unkno
     if (!snapshot) throw new Error("The native Session could not be read.");
     const references = (snapshot.harness as ReturnType<typeof apiChatSessionHarnessSnapshot> | undefined)?.attempts
       .flatMap(attempt => attempt.toolCalls.flatMap(call => call.actionRunIds)) || [];
-    return { ...snapshot, memoryStoreReader:true, ...readHarnessActions(directory, references, filename => agentSessionJsonCache.read<unknown>(filename)) };
+    return { ...snapshot, memoryStoreReader:true, profileReader:true, ...readHarnessActions(directory, references, filename => agentSessionJsonCache.read<unknown>(filename)) };
   }
-  if (method === "memoryOverview" || method === "memoryPiece") {
+  if (method === "memoryOverview" || method === "memoryPiece" || method === "profiles") {
     const filename = path.join(getStorePath(), ".pkm", "state", "agent-sessions", `${sessionId}.json`);
     const record = agentSessionJsonCache.read<Record<string, unknown>>(filename), chat = record?.nativeChat;
     if (!chat || typeof chat !== "object" || !("id" in chat) || typeof chat.id !== "string"
-      || !("sessionId" in chat) || chat.sessionId !== sessionId) throw new Error("The owning Chat for scoped Memory inspection is unavailable.");
+      || !("sessionId" in chat) || chat.sessionId !== sessionId) throw new Error("The owning Chat for scoped inspection is unavailable.");
     const result = await vscode.commands.executeCommand("personalKnowledge.readChatHarness",chat.id,method,
-      method === "memoryOverview" ? {} : {piece:params.piece,after:params.after});
-    if (result === undefined) throw new Error("The scoped Chat Memory reader is unavailable.");
+      method === "memoryPiece" ? {piece:params.piece,after:params.after} : {});
+    if (result === undefined) throw new Error("The scoped Chat reader is unavailable.");
     return result;
   }
   if (method === "result") {
@@ -4666,10 +4668,7 @@ interface HostedRoomNavigationItem {
   unavailableReason?: string;
 }
 
-const PORTAL_WINDOWS_KEY = "pkm.portal.windows.v1";
-const PORTAL_CONNECTIONS_KEY = "pkm.portal.connections.v1";
 interface PortalConnectionInfo { url: string; room: string; roomId: string; user: string; secret: string; host: boolean; port?: number; transport?: "portal" }
-interface StoredPortalResume { version: 1; chatId: string; label: string; external: boolean; root: string; connection: PortalConnectionInfo; record: PeerResumeRecord }
 
 class ChatRoomManager {
   private hub:   ChatHub | undefined;
@@ -4692,11 +4691,12 @@ class ChatRoomManager {
   private static readonly MAX_MSGS = 1000;   // bounded visible transcript; full history remains durable in the Room DB
   private static readonly DEFAULT_MANAGED_AGENT_ROLE = "Contribute relevant expertise, ask focused questions, review peer proposals, and help the Room reach concrete decisions.";
 
-  private readonly chatPortals = new Map<string, { id: string; label: string; root: string; external: boolean; room?: RoomConn }>();
+  private readonly chatPortals = new Map<string, { id: string; label: string; root: string; external: boolean; room?: RoomConn; executionChatId?: string }>();
   private readonly portalOpening = new Set<string>();
   private readonly portalPermissions = new Map<string, PortalPermissions>();
   /** External (MCP) reuse window, bound to the pairing and control direction it was granted for. */
   private readonly externalPortalExpiry = new Map<string, { expiresAt: number; pairId: string; role: string }>();
+  private readonly externalPortalOffers = new Map<string, Promise<void>>();
   /** Unredeemed Portal links, memory only: never logged, persisted, synced or sent to MCP. */
   private readonly portalPendingLinks = new Map<string, { link: string; expiresAt: number; endpoint: string }>();
   private readonly portalExecutions = new Map<string, AbortController>();
@@ -4704,30 +4704,24 @@ class ChatRoomManager {
   private readonly portalTransfers = new Map<string, Map<string, PortalTransferStatus>>();
   private readonly portalEpochs = new Map<string, number>();
   private readonly portalConnections = new Map<string, PortalConnectionInfo>();
-  private readonly portalResumable = new Map<string, { peerName: string; role: string; peerChatName?: string; peerMachine?: string; updatedAt: number }>();
-  private portalResumeWrites: Promise<void> = Promise.resolve();
-  private portalResumeLoaded = false;
   private portalJournal: PortalConnectionJournal | undefined;
-  private portalWindowBeat: { dispose(): void } | undefined;
   private portalJournalSignature = "";
+  private readonly portalCleanups = new Map<string, Promise<void>>();
 
-  configurePortalJournal(memento: vscode.Memento): void {
+  configurePortalJournal(_memento: vscode.Memento): void {
     if (this.portalJournal) return;
-    const beats = () => { const value = memento.get<Record<string, number>>(PORTAL_WINDOWS_KEY); return value && typeof value === "object" ? value : {}; };
-    this.portalJournal = new PortalConnectionJournal(memento.get(PORTAL_CONNECTIONS_KEY), records => memento.update(PORTAL_CONNECTIONS_KEY, records).then(undefined, error => log.error(`Portal connection history: ${String(error)}`)),
-      Date.now, () => memento.get(PORTAL_CONNECTIONS_KEY), undefined, windowId => Date.now() - (beats()[windowId] || 0) < 3 * 60_000);
-    // Window heartbeat lets other windows show this window's live Portals as "elsewhere" instead of ended.
-    const windowId = this.portalJournal.windowId;
-    const beat = () => {
-      const now = Date.now(), next: Record<string, number> = {};
-      for (const [id, at] of Object.entries(beats())) if (typeof at === "number" && now - at < 10 * 60_000) next[id] = at;
-      next[windowId] = now;
-      void memento.update(PORTAL_WINDOWS_KEY, next).then(undefined, () => {});
-    };
-    beat();
-    const timer = setInterval(beat, 60_000);
-    timer.unref?.();
-    this.portalWindowBeat = { dispose: () => { clearInterval(timer); const next = { ...beats() }; delete next[windowId]; void memento.update(PORTAL_WINDOWS_KEY, next).then(undefined, () => {}); } };
+    this.portalJournal = new PortalConnectionJournal();
+  }
+
+  async cleanupPortalPersistence(context: vscode.ExtensionContext): Promise<void> {
+    const root = getStorePath();
+    let cleanup = this.portalCleanups.get(root);
+    if (!cleanup) {
+      cleanup = cleanupLegacyPortals(context.globalState, context.secrets, root);
+      this.portalCleanups.set(root, cleanup);
+    }
+    try { await cleanup; }
+    catch (error) { this.portalCleanups.delete(root); throw error; }
   }
 
   portalConnectionHistory(): PortalConnectionSnapshot {
@@ -4736,8 +4730,7 @@ class ChatRoomManager {
       const binding = entry.room?.peer?.binding;
       live.set(entry.id, { pairId: binding?.pairId, connected: !!binding && !!entry.room?.client.isConnected });
     }
-    const resumable = new Set([...this.portalResumable.keys()].filter(id => !this.chatPortals.get(id)?.room?.peer?.binding));
-    const snapshot = this.portalJournal?.snapshot(live, resumable) ?? { updatedAt: Date.now(), active: 0, connections: [] };
+    const snapshot = this.portalJournal?.snapshot(live) ?? { updatedAt: Date.now(), active: 0, connections: [] };
     const pendingInvitations: NonNullable<PortalConnectionSnapshot["pendingInvitations"]> = [];
     for (const [chatId, record] of this.portalPendingLinks) {
       const entry = this.chatPortals.get(chatId);
@@ -4750,7 +4743,7 @@ class ChatRoomManager {
   }
 
   forgetPortalConnection(pairId: string): void {
-    if (this.portalConnectionHistory().connections.some(item => item.pairId === pairId && item.state !== "ended")) throw new Error("Disconnect this Portal before removing it from the history.");
+    if (this.portalConnectionHistory().connections.some(item => item.pairId === pairId)) throw new Error("Disconnect this Portal before removing it.");
     this.portalJournal?.forget(pairId);
     this.postPortalConnections(true);
   }
@@ -4758,119 +4751,24 @@ class ChatRoomManager {
   private postPortalConnections(force = false): void {
     if (!this.portalJournal) return;
     const snapshot = this.portalConnectionHistory();
-    const signature = JSON.stringify([snapshot.connections.map(item => [item.pairId, item.chatId, item.state, item.role, item.chatLabel, item.endedAt, item.resumable]), snapshot.pendingInvitations]);
+    const signature = JSON.stringify([snapshot.connections.map(item => [item.pairId, item.chatId, item.state, item.role, item.chatLabel]), snapshot.pendingInvitations]);
     if (!force && signature === this.portalJournalSignature) return;
     this.portalJournalSignature = signature;
     postToPanel({ command: "portalConnections", data: snapshot });
   }
 
-  private static portalResumeKey(chatId: string): string { return `pkm.portal.resume.${chatId}`; }
-
-  /** Loads the secret-free summary of stored Portal pairings so Chats can offer re-attach. */
-  async loadPortalResumeIndex(): Promise<void> {
-    const storage = this.secretStorage;
-    if (!storage || this.portalResumeLoaded) return;
-    this.portalResumeLoaded = true;
-    let ids: string[] = [];
-    try { ids = JSON.parse(await storage.get("pkm.portal.resume.index") || "[]"); } catch { ids = []; }
-    for (const id of Array.isArray(ids) ? ids.filter(value => typeof value === "string").slice(0, 200) : []) {
-      const stored = await this.readPortalResume(id);
-      if (stored) this.portalResumable.set(id, { peerName: stored.record.peerName, role: stored.record.role, peerChatName: stored.record.peerChatName, peerMachine: stored.record.peerMachine, updatedAt: stored.record.updatedAt });
-    }
-    portalChanged();
-  }
-
-  private async readPortalResume(chatId: string): Promise<StoredPortalResume | undefined> {
-    const raw = await this.secretStorage?.get(ChatRoomManager.portalResumeKey(chatId));
-    if (!raw) return undefined;
-    try {
-      const value = JSON.parse(raw);
-      const connection = value?.connection;
-      if (value?.version !== 1 || value.chatId !== chatId || typeof value.root !== "string" || !validPeerResumeRecord(value.record)
-        || !connection || typeof connection.url !== "string" || typeof connection.room !== "string" || typeof connection.roomId !== "string"
-        || typeof connection.user !== "string" || typeof connection.secret !== "string" || typeof connection.host !== "boolean") return undefined;
-      return value as StoredPortalResume;
-    } catch { return undefined; }
-  }
-
-  private persistPortalResume(owner: { id: string; label: string }, record: PeerResumeRecord | undefined): void {
-    const storage = this.secretStorage;
-    if (!storage) return;
-    const entry = this.chatPortals.get(owner.id);
-    const connection = this.portalConnections.get(owner.id);
-    if (record && (!connection || !entry)) return;
-    if (record) this.portalResumable.set(owner.id, { peerName: record.peerName, role: record.role, peerChatName: record.peerChatName, peerMachine: record.peerMachine, updatedAt: record.updatedAt });
-    else this.portalResumable.delete(owner.id);
-    const snapshot = record ? JSON.stringify({ version: 1, chatId: owner.id, label: owner.label, external: !!entry?.external, root: entry!.root, connection: connection!, record } satisfies StoredPortalResume) : undefined;
-    this.portalResumeWrites = this.portalResumeWrites.then(async () => {
-      const key = ChatRoomManager.portalResumeKey(owner.id);
-      if (snapshot) await storage.store(key, snapshot); else await storage.delete(key);
-      let ids: string[] = [];
-      try { ids = JSON.parse(await storage.get("pkm.portal.resume.index") || "[]"); } catch { ids = []; }
-      const next = new Set(Array.isArray(ids) ? ids.filter(value => typeof value === "string") : []);
-      if (snapshot) next.add(owner.id); else next.delete(owner.id);
-      await storage.store("pkm.portal.resume.index", JSON.stringify([...next].slice(-200)));
-    }).catch(error => log.error(`Portal resume persistence: ${String(error)}`));
-    portalChanged();
-  }
-
-  /** Reconnect this Chat's previous transport and re-attach the same pairing. Leases are not restored; tasks are never replayed. */
-  async reattachPortal(context: vscode.ExtensionContext, owner: { id: string; label: string }): Promise<Record<string, unknown>> {
-    const peerRoot = this.portalPreflight();
-    await this.loadPortalResumeIndex();
-    const stored = await this.readPortalResume(owner.id);
-    if (!stored) throw new Error("This Chat has no stored Portal pairing to re-attach. Pair again with a new link.");
-    if (stored.root !== peerRoot) throw new Error("The stored Portal belongs to another Knowledge Root; it was not re-attached.");
-    let entry = this.chatPortals.get(owner.id);
-    if (!entry) { entry = { ...owner, root: peerRoot, external: stored.external }; this.chatPortals.set(owner.id, entry); }
-    if (entry.room?.peer?.binding) return this.portalStatus(owner.id);
-    const { connection } = stored;
-    this.portalConnections.set(owner.id, connection);
-    if (connection.host) {
-      const hub = await this.startHub(connection.port ?? vscode.workspace.getConfiguration("personalKnowledge").get<number>("chatHubPort") ?? 7345);
-      if (!hub.ok) throw new Error(`Couldn't restart the Portal Chat Hub: ${hub.error || "unknown error"}`);
-      let hostToken: string | undefined;
-      if (connection.transport === "portal") this.hub!.createPortalChannel(connection.roomId, connection.secret);
-      else {
-        try { hostToken = (await this.rehostRoom(connection.roomId)).hostToken; }
-        catch (error) { if (!/already active/i.test(String(error))) throw error; }
-      }
-      this.joinPortalTransport(owner.id, { url: `ws://127.0.0.1:${this.hubPort}${connection.transport === "portal" ? PORTAL_TRANSPORT_PATH : ""}`, room: connection.room, roomId: connection.roomId, user: connection.user, token: connection.secret,
-        cid: connection.transport === "portal" ? `${getChatCid(context)}${owner.id.replace(/-/g, "")}` : getChatCid(context), ...(hostToken ? { hostToken } : {}) });
-    } else {
-      assertPeerEndpoint(connection.url);
-      this.joinPortalTransport(owner.id, { url: connection.url, room: connection.room, roomId: connection.roomId, user: connection.user, token: connection.secret,
-        cid: connection.transport === "portal" ? `${getChatCid(context)}${owner.id.replace(/-/g, "")}` : getChatCid(context) });
-    }
-    const room = this.portalTransports.get(owner.id);
-    if (!room) throw new Error("Couldn't reopen the Portal transport.");
-    entry.room = room;
-    await this.waitForRoom(() => room.client.isConnected && !!room.client.participantId, 30_000, `Couldn't reach the Portal endpoint ${connection.url}. Keep the other side's VS Code open and reachable.`);
-    const peer = this.ensurePeer(room, peerRoot, entry, stored.record);
-    this.tryPortalResume(room);
-    return { ...this.portalStatus(owner.id), instruction: peer.binding ? "Re-attached." : "Waiting for the previous peer to come back on this transport; re-attach completes automatically when it does." };
-  }
-
-  private tryPortalResume(room: RoomConn): void {
-    const peer = room.peer;
-    if (!peer || peer.binding || !peer.resumeTarget || !room.client.isConnected) return;
-    const other = room.members.find(member => member.participantId && member.participantId !== room.client.participantId && member.present !== false && (member as { kind?: string }).kind !== "agent");
-    if (!other?.participantId) return;
-    try { peer.resume(other.participantId); }
-    catch (error) { log.warn(`Portal re-attach: ${String(error)}`); }
-  }
-
   portalStateForChat(id: string): Record<string, unknown> | undefined {
-    if (!this.chatPortals.has(id)) {
-      const resumable = this.portalResumable.get(id);
-      return resumable ? { connected: false, resumable } : undefined;
-    }
+    id = this.portalOwnerId(id);
+    if (!this.chatPortals.has(id)) return undefined;
     const permissions = this.portalPermissions.get(id)?.snapshot();
     const grant = permissions?.grants[permissions.grants.length - 1];
-    return { ...this.portalStatus(id), permissions: { ...permissions, active: !!grant, mode: grant?.mode, expiresAt: grant?.expiresAt } };
+    const status = this.portalStatus(id);
+    if (!status.binding && !status.pending) return undefined;
+    return { ...status, permissions: { ...permissions, active: !!grant, mode: grant?.mode, expiresAt: grant?.expiresAt } };
   }
 
   portalToolAllowed(id: string, tool: string, resource?: string): boolean {
+    id = this.portalOwnerId(id);
     const entry = this.chatPortals.get(id);
     const policy = this.portalPermissions.get(id);
     if (!entry || !entry.room?.peer?.binding || !entry.room.client.isConnected || entry.root !== getStorePath() || !vscode.workspace.isTrusted) {
@@ -4918,6 +4816,7 @@ class ChatRoomManager {
   }
 
   invalidatePortal(id: string): void {
+    id = this.portalOwnerId(id);
     this.portalEpochs.set(id, (this.portalEpochs.get(id) || 0) + 1);
     this.portalPermissions.get(id)?.invalidate("revoke");
     this.portalPermissions.delete(id);
@@ -4927,19 +4826,47 @@ class ChatRoomManager {
     const files = this.portalFiles.get(id);
     this.portalExecutions.delete(id);
     this.portalFiles.delete(id);
+    this.portalTransfers.delete(id);
     execution?.abort();
     files?.dispose();
     portalChanged();
   }
 
   invalidatePortalsForContextChange(nextRoot: string): void {
-    for (const entry of this.chatPortals.values()) if (entry.root !== nextRoot || !vscode.workspace.isTrusted) this.invalidatePortal(entry.id);
+    for (const entry of this.chatPortals.values()) if (entry.root !== nextRoot || !vscode.workspace.isTrusted) {
+      this.invalidatePortal(entry.id);
+      this.closePortalTransport(entry.id);
+    }
   }
 
   async authorizePortalForChat(id: string): Promise<void> {
+    id = this.portalOwnerId(id);
     const entry = this.chatPortals.get(id);
     if (!entry?.room || entry.root !== getStorePath()) throw new Error("This Chat has no live Portal.");
     await this.configurePortalPermissions(entry, entry.room);
+  }
+
+  private async portalPrompt(owner: { id: string; label: string }, interaction: import("./chat/portal-interaction").PortalInteraction) {
+    const root = getStorePath(), epoch = this.portalEpochs.get(owner.id) || 0;
+    const entry = this.chatPortals.get(owner.id);
+    if (entry && entry.root !== root) throw new Error("The Portal Knowledge Root changed.");
+    const room = entry?.room, binding = room?.peer?.binding;
+    const current = () => vscode.workspace.isTrusted && root === getStorePath()
+      && (this.portalEpochs.get(owner.id) || 0) === epoch
+      && this.chatPortals.get(owner.id) === entry && entry?.room === room && room?.peer?.binding === binding
+      && (!binding || room?.client.isConnected === true);
+    if (entry?.external) return requestNativePortalInteraction(interaction, current);
+    if (!portalInteraction) throw new Error("Portal Chat controls are unavailable.");
+    return portalInteraction(owner.id, interaction, current);
+  }
+
+  private portalOwnerId(id: string): string {
+    return [...this.chatPortals.values()].find(entry => entry.external && entry.executionChatId === id)?.id || id;
+  }
+
+  private async portalConfirm(owner: { id: string; label: string }, title: string, detail: string, label: string): Promise<boolean> {
+    return (await this.portalPrompt(owner, { title, detail,
+      choices: [{ value: "confirm", label }, { value: "cancel", label: "Cancel" }] }))?.action === "confirm";
   }
 
   private async configurePortalPermissions(owner: { id: string; label: string }, room: RoomConn): Promise<boolean> {
@@ -4947,108 +4874,80 @@ class ChatRoomManager {
     const epoch = this.portalEpochs.get(owner.id) || 0;
     if (!binding) throw new Error("Pair before granting reusable permissions.");
     const root = getStorePath();
-    const mode = await vscode.window.showQuickPick([
-      { label: "Remember selected permissions", mode: "scoped" as const },
-      { label: "Allow All for this Portal", mode: "all" as const },
-      { label: "Revoke reusable authorization", mode: "revoke" as const },
-    ], { title: `Permissions · ${owner.label} · ${binding.peerName}`, ignoreFocusOut: true });
-    if (!mode) return false;
-    if (mode.mode === "revoke") { this.invalidatePortal(owner.id); this.push(); return false; }
-    const selection = mode.mode === "all" ? [...PORTAL_PERMISSION_DIMENSIONS] : (await vscode.window.showQuickPick(
-      PORTAL_PERMISSION_DIMENSIONS.map(permission => ({ label: permission, permission })),
-      { title: "Permission matrix: select allowed dimensions (unselected = ask)", canPickMany: true, ignoreFocusOut: true },
-    ))?.map(item => item.permission);
-    if (!selection?.length) return false;
+    const response = await this.portalPrompt(owner, {
+      title: `Portal permissions · ${binding.peerName}`,
+      detail: `Only this Portal context and pairing. Unselected dimensions still require approval. Files ALWAYS require a separate controlled-side batch permit. Chat history is not automatically exported.\nWARNING: code-execute and Allow All can access the operating system and network; PKM cannot sandbox arbitrary code. Use only with a trusted controller. Activity never renews the expiry.`,
+      choices: [{ value: "submit", label: "Grant selected permissions" }, { value: "revoke", label: "Revoke authorization" }, { value: "cancel", label: "Cancel" }],
+      form: { type: "object", required: ["mode", "minutes", "scope"], properties: {
+        mode: { type: "string", title: "Authorization", enum: ["Selected permissions", "Allow All"], default: "Selected permissions" },
+        permissions: { type: "array", title: "Allowed dimensions", items: { type: "string", enum: [...PORTAL_PERMISSION_DIMENSIONS] }, uniqueItems: true },
+        scope: { type: "string", title: "File scope", enum: ["Workspace boundaries", "Choose specific folders"], default: "Workspace boundaries" },
+        minutes: { type: "number", title: "Duration in minutes (0 = until disconnected)", minimum: 0, maximum: 525600, default: 15 },
+        longLived: { type: "boolean", title: "I accept extended exposure for more than 15 minutes or until disconnected", default: false },
+      } },
+      verify: async fields => {
+        if (fields.mode !== "Allow All" && (!Array.isArray(fields.permissions) || !fields.permissions.length)) throw new Error("Select at least one permission.");
+        if ((Number(fields.minutes) === 0 || Number(fields.minutes) > 15) && fields.longLived !== true) throw new Error("Explicitly acknowledge extended authorization.");
+        if (!Number.isSafeInteger(Number(fields.minutes) * 60_000)) throw new Error("Enter a representable duration.");
+      },
+    });
+    if (!response || response.action === "cancel") return false;
+    if (response.action === "revoke") { this.invalidatePortal(owner.id); this.push(); return false; }
+    const mode = response.fields.mode === "Allow All" ? "all" : "scoped";
+    const requested = response.fields.permissions;
+    const selection = mode === "all" ? [...PORTAL_PERMISSION_DIMENSIONS]
+      : PORTAL_PERMISSION_DIMENSIONS.filter(permission => Array.isArray(requested) && requested.includes(permission));
     const fileDimensions = selection.filter(permission => permission === "files-read" || permission === "files-write");
     let folders: string[] = [];
     if (fileDimensions.length) {
-      const boundary = await vscode.window.showQuickPick([
-        { label: "Workspace boundaries", description: "tools' existing workspace rules", folders: false },
-        { label: "Only chosen folders…", description: `limit ${fileDimensions.join(" + ")} to folders you pick`, folders: true },
-      ], { title: "File access scope", ignoreFocusOut: true });
-      if (!boundary) return false;
-      if (boundary.folders) {
+      if (response.fields.scope === "Choose specific folders") {
         const picked = await vscode.window.showOpenDialog({ canSelectFiles: false, canSelectFolders: true, canSelectMany: true, openLabel: "Allow these folders", title: "Folders the remote controller may use" });
         if (!picked?.length) return false;
-        folders = [...new Set(picked.filter(uri => uri.scheme === "file").map(uri => ChatRoomManager.portalScopePath(uri.fsPath)))].slice(0, 16);
+        folders = [...new Set(picked.filter(uri => uri.scheme === "file").map(uri => ChatRoomManager.portalScopePath(uri.fsPath)))];
+        if (folders.length > 16) throw new Error("Choose at most 16 Portal scope folders.");
         if (!folders.length || folders.some(folder => path.parse(folder).root === folder)) throw new Error("Choose specific folders, not a drive or filesystem root.");
       }
     }
-    const duration = await this.portalDuration();
-    if (duration === undefined) return false;
-    const confirm = await vscode.window.showWarningMessage(`Authorize ${binding.peerName} for Chat "${owner.label}"?`, {
-      modal: true,
-      detail: `Scope: this Portal only, ${folders.length ? `${fileDimensions.join(" + ")} limited to:\n  ${folders.join("\n  ")}\n` : "tools' existing workspace boundaries. "}Permissions: ${selection.join(", ")}.\nDuration: ${duration === null ? "until disconnected" : `${duration / 60000} minutes`}.\nFile transfers ALWAYS require separate controlled-side batch approval. Task answers/progress may be shared only by the selected dimensions. Chat history is not automatically exported.\n${selection.includes("code-execute") || mode.mode === "all" ? "WARNING: arbitrary programs and Allow All can access the operating system and network. PKM cannot sandbox arbitrary code or guarantee it cannot copy data outside the Portal file-transfer protocol. Use only with a trusted controller." : "Unselected capabilities still need explicit approval."}`,
-    }, "Grant");
-    if (confirm !== "Grant") return false;
+    const duration = Number(response.fields.minutes) === 0 ? null : Number(response.fields.minutes) * 60_000;
     if ((this.portalEpochs.get(owner.id) || 0) !== epoch || room.peer?.binding !== binding || root !== getStorePath() || !vscode.workspace.isTrusted || !room.client.isConnected) throw new Error("Portal changed during authorization.");
     const policy = new PortalPermissions({ chatId: owner.id, connectionId: binding.pairId });
-    policy.grant({ mode: mode.mode, permissions: selection, durationMs: duration, ...(folders.length ? { scopes: Object.fromEntries(fileDimensions.map(permission => [permission, folders])) } : {}) });
+    policy.grant({ mode, permissions: selection, durationMs: duration, ...(folders.length ? { scopes: Object.fromEntries(fileDimensions.map(permission => [permission, folders])) } : {}) });
     this.portalPermissions.set(owner.id, policy);
     portalChanged();
     this.push();
     return true;
   }
 
-  private async portalDuration(): Promise<number | null | undefined> {
-    const selected = await vscode.window.showQuickPick([
-      { label: "15 minutes (recommended)", minutes: 15 },
-      { label: "60 minutes", minutes: 60 },
-      { label: "Custom duration", minutes: -1 },
-      { label: "Until disconnected", minutes: 0 },
-    ], { title: "Authorization lifetime (never renewed by activity)", ignoreFocusOut: true });
-    if (!selected) return undefined;
-    let minutes = selected.minutes;
-    if (minutes === -1) {
-      const input = await vscode.window.showInputBox({ title: "Duration in minutes", ignoreFocusOut: true,
-        validateInput: value => Number.isFinite(Number(value)) && Number(value) > 0 && Number.isSafeInteger(Number(value) * 60000) && Date.now() + Number(value) * 60000 <= 8.64e15 ? undefined : "Enter a positive representable duration." });
-      if (input === undefined) return undefined;
-      minutes = Number(input);
-    }
-    if (!minutes || minutes > 15) {
-      const allowed = await vscode.window.showWarningMessage("Long-lived Portal authorization increases exposure.", {
-        modal: true, detail: minutes ? `Permissions remain usable for ${minutes} minutes unless revoked or disconnected.` : "Until disconnected can last indefinitely while connected. Disconnect/restart/role change invalidates it; reconnect does not restore it.",
-      }, "Use this duration");
-      if (allowed !== "Use this duration") return undefined;
-    }
-    return minutes ? minutes * 60000 : null;
-  }
-
   async portalControl(context: vscode.ExtensionContext, args: Record<string, unknown>, external: boolean): Promise<unknown> {
     this.portalPreflight();
+    await this.cleanupPortalPersistence(context);
     const operation = args.operation;
-    if (!["open", "status", "send", "get", "cancel", "disconnect", "switch", "permissions", "files", "reattach"].includes(String(operation))) throw new Error("Unsupported Portal operation.");
+    if (operation === "reattach") throw new Error("Portal connections are temporary; open a new Portal and pair again.");
+    if (!["open", "status", "send", "get", "cancel", "disconnect", "switch", "permissions", "files"].includes(String(operation))) throw new Error("Unsupported Portal operation.");
     if (operation === "open" && external && !args.contextId) {
-      const label = await vscode.window.showInputBox({ title: "Name this external Chat's Portal", prompt: "MCP cannot identify the Copilot conversation. Give this connection a unique name. Remote execution uses one dedicated PKM Chat, not the Copilot UI.", ignoreFocusOut: true });
-      if (!label?.trim()) throw new Error("Portal creation cancelled.");
-      if (!portalChatContext) throw new Error("PKM Chat backend is unavailable.");
-      const owner = await portalChatContext(undefined, label);
+      const owner = { id: randomUUID(), label: "External agent" };
       this.chatPortals.set(owner.id, { ...owner, root: getStorePath(), external: true });
       await this.managePeer(context, owner);
       if (args.wait !== false) await this.waitForPortalPairing(this.chatPortals.get(owner.id)!);
       return { contextId: owner.id, label: owner.label, ...this.portalStatus(owner.id) };
     }
     const id = typeof args.contextId === "string" ? args.contextId : "";
-    if (operation === "reattach" && id && !this.chatPortals.has(id)) {
-      const stored = await this.readPortalResume(id);
-      if (stored && stored.external === external && stored.root === getStorePath()) this.chatPortals.set(id, { id, label: stored.label, root: stored.root, external: stored.external });
-    }
     const entry = this.chatPortals.get(id);
     if (!entry || entry.external !== external || entry.root !== getStorePath()) throw new Error("Unknown Portal context for this Chat/Host. Open a Portal first; never use another Chat's context.");
+    const offeredAuthorization = external ? this.externalPortalOffers.get(id) : undefined;
+    if (offeredAuthorization) await offeredAuthorization;
     if (external && !this.externalAuthorized(id)) {
       const binding = entry.room?.peer?.binding;
       const epoch = this.portalEpochs.get(id) || 0;
-      const canRemember = !!binding && entry.room?.client.isConnected;
-      const allow = await vscode.window.showWarningMessage(`External Chat "${entry.label}": allow Portal ${operation}?`, {
-        modal: true, detail: `MCP does not authenticate individual Copilot conversations. Confirm this request belongs to the intended conversation.\n${typeof args.prompt === "string" ? args.prompt.slice(0, 16000) : ""}`,
-      }, "Allow once", ...(canRemember ? ["Remember this connection"] : []));
-      if (allow === "Remember this connection") {
-        const duration = await this.portalDuration();
-        if (duration === undefined) throw new Error("External Portal authorization cancelled.");
+      const canRemember = !!binding && entry.room?.client.isConnected === true;
+      const answer = await this.externalPortalConsent(entry, `Allow Portal ${operation}?`,
+        typeof args.prompt === "string" ? args.prompt.slice(0, 16000) : "", canRemember);
+      if (answer?.action === "submit") {
+        const duration = Number(answer.fields.minutes) === 0 ? null : Number(answer.fields.minutes) * 60_000;
         if (!canRemember || !entry.room?.client.isConnected || entry.room.peer?.binding !== binding
           || (this.portalEpochs.get(id) || 0) !== epoch || entry.root !== getStorePath() || !vscode.workspace.isTrusted) throw new Error("Portal changed during external authorization; approval was not remembered.");
         this.externalPortalExpiry.set(id, { expiresAt: duration === null ? Infinity : Date.now() + duration, pairId: binding!.pairId, role: binding!.role });
-      } else if (allow !== "Allow once") throw new Error("External Portal request declined.");
+      } else if (answer?.action !== "once") throw new Error("External Portal request declined.");
     }
     if (entry.root !== getStorePath() || !vscode.workspace.isTrusted) throw new Error("Portal workspace or Knowledge Root changed during approval.");
     if (operation === "open") {
@@ -5056,7 +4955,6 @@ class ChatRoomManager {
       if (args.wait !== false) await this.waitForPortalPairing(entry);
       return this.portalStatus(id);
     }
-    if (operation === "reattach") return this.reattachPortal(context, entry);
     if (operation === "status") return this.portalStatus(id);
     const room = entry.room;
     if (!room?.peer || !room.client.isConnected) throw new Error("This Chat's Portal is disconnected.");
@@ -5096,6 +4994,8 @@ class ChatRoomManager {
     peer.revoke();
     this.closePortalTransport(id);
     entry.room = undefined;
+    portalChanged();
+    this.push();
     return { contextId: id, connected: false };
   }
 
@@ -5112,13 +5012,12 @@ class ChatRoomManager {
     const reviewMode = !binding ? undefined : binding.role === "controller" ? (entry!.external ? "manual" : "auto")
       : binding.peerCapabilities?.includes("auto-review-v1") ? "auto" : binding.peerCapabilities?.includes("review-mode-v1") ? "manual" : undefined;
     return { connected, reviewMode,
-      state: connected ? "connected" : pending ? "awaiting-peer" : binding ? "reconnecting" : this.portalResumable.has(id) ? "resumable" : "disconnected",
+      state: connected ? "connected" : pending ? "awaiting-peer" : "disconnected",
       ...(pending ? { pending } : {}),
       ...(external && this.externalAuthorized(id) ? { externalAuthorization: { expiresAt: Number.isFinite(external.expiresAt) ? external.expiresAt : null } } : {}),
       endpoint: room?.url, endpointScope: endpointScope(room?.url),
       ...(binding?.peerEndpoint ? { peerEndpoint: binding.peerEndpoint, peerEndpointScope: endpointScope(binding.peerEndpoint) } : {}),
       binding: room?.peer?.binding, switchPending: room?.peer?.swapPending,
-      resumable: room?.peer?.binding ? undefined : this.portalResumable.get(id),
       observations: room?.peer ? [...room.peer.observations.values()] : [],
       transfers: [...(this.portalTransfers.get(id)?.values() || [])],
       receipts: room?.peer ? [...room.peer.receipts.values()].map(({ requestId, state, error }) => ({ requestId, state, error })) : [] };
@@ -5148,24 +5047,41 @@ class ChatRoomManager {
     }
   }
 
-  /** One timed external authorization offered once per new pairing, so MCP status polling doesn't prompt every call. */
+  private externalPortalConsent(owner: { id: string; label: string }, title: string, detail: string, remember: boolean, offerOnly = false) {
+    return this.portalPrompt(owner, { title, detail: `${owner.label}\n${detail}\nMCP cannot authenticate individual Copilot conversations. Trust only the intended MCP clients. A remembered grant is bound to this pairing/direction, with a fixed deadline that activity never renews. Disconnect, switch, revoke or context change invalidates it. Controlled-side task approval remains separate.`,
+      choices: [...(offerOnly ? [] : [{ value: "once", label: "Allow once" }]), ...(remember ? [{ value: "submit", label: "Remember this connection" }] : []), { value: "cancel", label: "Cancel" }],
+      ...(remember ? { form: { type: "object" as const, required: ["minutes"], properties: {
+        minutes: { type: "number" as const, title: "Minutes (0 = until disconnected)", minimum: 0, maximum: 525600, default: 15 },
+        longLived: { type: "boolean" as const, title: "I accept extended exposure beyond 15 minutes or until disconnected", default: false },
+      } }, verify: async (fields: Record<string, unknown>) => {
+        if (!Number.isSafeInteger(Number(fields.minutes) * 60_000)) throw new Error("Enter a representable duration.");
+        if ((Number(fields.minutes) === 0 || Number(fields.minutes) > 15) && fields.longLived !== true) throw new Error("Explicitly acknowledge extended authorization.");
+      } } : {}),
+    });
+  }
+
   private async offerExternalAuthorization(id: string): Promise<void> {
+    const pending = this.externalPortalOffers.get(id);
+    if (pending) return pending;
+    const offer = this.requestExternalAuthorization(id);
+    this.externalPortalOffers.set(id, offer);
+    try { await offer; }
+    finally { if (this.externalPortalOffers.get(id) === offer) this.externalPortalOffers.delete(id); }
+  }
+
+  /** One timed authorization card per pairing; status polling waits for it instead of asking again. */
+  private async requestExternalAuthorization(id: string): Promise<void> {
     const entry = this.chatPortals.get(id);
     const binding = entry?.room?.peer?.binding;
     if (!entry?.external || !binding || this.externalAuthorized(id)) return;
     const epoch = this.portalEpochs.get(id) || 0;
-    const FIFTEEN = "Allow for 15 minutes", CHOOSE = "Choose duration…";
-    const pick = await vscode.window.showInformationMessage(`External Chat "${entry.label}" is paired with ${binding.peerMachine || binding.peerName}. Let it check status and send Portal requests without a prompt each time?`, {
-      modal: true,
-      detail: "Fixed deadline that activity never extends; ends on disconnect, control-direction switch, Knowledge Root or trust change, or Revoke. MCP can't authenticate individual Copilot conversations, so allow this only when the MCP clients of this VS Code window are trusted. The controlled side still approves every task.",
-    }, FIFTEEN, CHOOSE);
-    if (!pick) return;
-    const duration = pick === FIFTEEN ? 15 * 60_000 : await this.portalDuration();
-    if (duration === undefined) return;
+    const answer = await this.externalPortalConsent(entry, `Remember external access · ${binding.peerMachine || binding.peerName}`,
+      "Allow this external Chat to check status and send Portal requests without repeated prompts?", true, true);
+    if (answer?.action !== "submit") return;
+    const duration = Number(answer.fields.minutes) === 0 ? null : Number(answer.fields.minutes) * 60_000;
     const current = this.chatPortals.get(id)?.room?.peer?.binding;
     if (current !== binding || (this.portalEpochs.get(id) || 0) !== epoch || entry.root !== getStorePath() || !vscode.workspace.isTrusted || !entry.room?.client.isConnected) {
-      void vscode.window.showWarningMessage("The Portal changed during authorization; external access was not remembered.");
-      return;
+      throw new Error("The Portal changed during authorization; external access was not remembered.");
     }
     this.externalPortalExpiry.set(id, { expiresAt: duration === null ? Infinity : Date.now() + duration, pairId: binding.pairId, role: binding.role });
     portalChanged();
@@ -5196,43 +5112,47 @@ class ChatRoomManager {
   async managePeer(context: vscode.ExtensionContext, owner?: { id: string; label: string }): Promise<void> {
     if (!owner) throw new Error("Open Portal from the intended Chat's toolbar, or use the MCP portal_control tool.");
     this.portalPreflight();
+    await this.cleanupPortalPersistence(context);
     let entry = this.chatPortals.get(owner.id);
     if (entry && entry.root !== getStorePath()) throw new Error("The Portal Knowledge Root changed. Reload before reconnecting.");
     if (!entry) { entry = { ...owner, root: getStorePath(), external: false }; this.chatPortals.set(owner.id, entry); }
     const portal = entry.room;
     if (portal?.peer?.binding) { await this.portalActions(portal, portal.peer); return; }
     if (this.portalOpening.has(owner.id)) throw new Error("This Chat already has a Portal opening.");
-    const START = "Start a Portal", ACCEPT = "Accept a Portal link", REATTACH = "Re-attach previous Portal";
-    await this.loadPortalResumeIndex();
-    const resumable = this.portalResumable.get(owner.id);
-    const items: vscode.QuickPickItem[] = [
-      ...(resumable && !portal?.peer?.binding ? [{ label: `$(debug-restart) ${REATTACH}`, description: `${resumable.role} · ${resumable.peerMachine || resumable.peerName} · ${resumable.peerChatName || ""}`,
-        detail: "Reconnect the same pairing after a restart or network drop. Permissions start empty; open requests are reconciled, never replayed." }] : []),
-      { label: `$(link-external) ${START}`, description: "This Chat will control the other Chat", detail: "Copy a private one-time link; continue working in this Chat." },
-      { label: `$(link) ${ACCEPT}`, description: "Connect this Chat to the initiator", detail: "Paste a private link. Control direction and task execution require explicit approval." },
-    ];
     this.portalOpening.add(owner.id);
     try {
-      const choice = (await vscode.window.showQuickPick(items, { title: `PKM Portal · ${owner.label}`, ignoreFocusOut: true }))?.label.replace(/^\$\([^)]+\)\s*/, "");
-      if (!choice) return;
-      if (choice === REATTACH) {
-        if (portal && !portal.peer?.binding) { portal.peer?.dispose(); this.closePortalTransport(owner.id); entry.room = undefined; }
-        const result = await this.reattachPortal(context, owner);
-        vscode.window.setStatusBarMessage(`$(remote) PKM Portal: ${String(result.instruction || "re-attaching…")}`, 10_000);
-        return;
+      const response = await this.portalPrompt(owner, { title: "Connect Portal",
+        detail: "Controller copies a one-time connection code. Controlled pastes that code and approves control. No Portal name is needed; private codes stay local.",
+        choices: [{ value: "controller", label: "Controller" }, { value: "controlled", label: "Controlled" }, { value: "cancel", label: "Cancel" }],
+      });
+      if (response?.action !== "controller" && response?.action !== "controlled") return;
+      let link: string | undefined;
+      if (response.action === "controlled") {
+        const answer = await this.portalPrompt(owner, { title: "Connect as Controlled",
+          detail: "Paste the Controller's private connection code. You will approve control before connecting.",
+          choices: [{ value: "submit", label: "Continue" }, { value: "cancel", label: "Cancel" }],
+          form: { type: "object", required: ["link"], properties: {
+            link: { type: "string", title: "Private connection code", minLength: 1, maxLength: 4000 },
+          } }, secretFields: ["link"],
+          verify: async fields => {
+            if (parsePortalLink(String(fields.link)).role !== "controller") throw new Error("Use a code created by the Controller. Ask the other side to create a new Portal as Controller.");
+          },
+        });
+        if (answer?.action !== "submit") return;
+        link = String(answer.fields.link);
+        if (parsePortalLink(link).role !== "controller") throw new Error("Use a code created by the Controller; no connection was opened.");
       }
       if (portal) {
-        const replace = await vscode.window.showWarningMessage(`Replace the pending or disconnected Portal for "${owner.label}"?`,
-          { modal: true, detail: "The old invitation and connection will be revoked. Other Chats are not affected." }, "Replace");
-        if (replace !== "Replace") return;
+        if (!await this.portalConfirm(owner, "Replace this pending or disconnected Portal?",
+          "The old invitation and connection will be revoked. Other Chats are not affected.", "Replace")) return;
         portal.peer?.revoke();
         portal.peer?.dispose();
         this.closePortalTransport(owner.id);
         entry.room = undefined;
       }
-      const selected = choice;
-      if (selected === START) await this.startPortal(context, owner);
-      if (selected === ACCEPT) await this.acceptPortal(context, owner);
+      if (response.action === "controller") await this.startPortal(context, owner, "controller");
+      else if (link) await this.acceptPortal(context, owner, link);
+      else throw new Error("A Controller connection code is required; no connection was opened.");
     } finally {
       this.portalOpening.delete(owner.id);
     }
@@ -5249,7 +5169,7 @@ class ChatRoomManager {
     return peerRoot;
   }
 
-  private ensurePeer(room: RoomConn, peerRoot: string, owner: { id: string; label: string }, resumeFrom?: PeerResumeRecord): PeerSession {
+  private ensurePeer(room: RoomConn, peerRoot: string, owner: { id: string; label: string }): PeerSession {
     if ([...this.chatPortals.values()].some(entry => entry.room === room && entry.id !== owner.id)) throw new Error("This transport belongs to another Chat.");
     if (room.peer) return room.peer;
     let announced = "";
@@ -5261,32 +5181,27 @@ class ChatRoomManager {
       machine: os.hostname(),
       chatName: owner.label,
       endpoint: room.url,
-      journalDirectory: path.join(peerRoot, ".pkm", "state", "peer-tasks"),
       autoReview: () => !this.chatPortals.get(owner.id)?.external,
-      ...(this.secretStorage ? { persist: (record: PeerResumeRecord | undefined) => this.persistPortalResume(owner, record) } : {}),
-      ...(resumeFrom ? { resumeFrom } : {}),
-      resumed: binding => {
-        void vscode.window.showInformationMessage(`Chat "${owner.label}" Portal re-attached to ${binding.peerName} (${binding.role}). Reusable permissions were not restored; open requests were reconciled from receipts without replay.`);
-      },
       connected: () => room.client.isConnected && vscode.workspace.isTrusted && peerRoot === getStorePath(),
       send: (target, packet) => {
         if (!vscode.workspace.isTrusted || getStorePath() !== peerRoot) throw new Error("Portal workspace or Knowledge Root changed; pair again.");
         room.client.sendPeer(target, packet);
       },
-      approvePair: async name => await vscode.window.showWarningMessage(`Allow ${name} to control this machine?`,
-        { modal: true, detail: "This pairs two participants on the current Chat transport. Each remote instruction still requires separate local approval. Local Allow All does not apply." }, "Pair") === "Pair",
-      approveSwap: async (name, role) => await vscode.window.showWarningMessage(
+      approvePair: async name => this.portalConfirm(owner, `Allow ${name} to control this machine?`,
+        "This pairs two participants on the current Chat transport. Each remote instruction still requires separate local approval. Local Allow All does not apply.", "Pair"),
+      approveSwap: async (name, role) => this.portalConfirm(owner,
         role === "controlled" ? `${name} asks to switch direction: ${name} would control this machine.` : `${name} asks to switch direction: you would control ${name}.`,
-        { modal: true, detail: role === "controlled"
+        role === "controlled"
           ? `After switching, ${name} can send tasks to this machine and you can no longer send tasks to ${name}. Each task still needs your approval here.`
-          : `After switching, you can send tasks to ${name}, and ${name} can no longer send tasks here.` }, "Allow switch") === "Allow switch",
+          : `After switching, you can send tasks to ${name}, and ${name} can no longer send tasks here.`, "Allow switch"),
       approveTask: async (name, prompt) => {
         onceShare = false;
         if (this.portalPermissions.get(owner.id)?.snapshot().grants.length) return true;
-        const answer = await vscode.window.showWarningMessage(`Run a remote task from ${name} in Chat "${owner.label}"?`,
-          { modal: true, detail: `${prompt}\n\nOnly this bound Chat executes, with its model/history; charges may apply. Run once shares this task's public answer, stages and tool names/status (not hidden reasoning or unrelated history). Configure reusable authorization to avoid repeated approvals. Files ALWAYS need a separate batch permit.` }, "Run once", "Configure permissions");
-        if (answer === "Configure permissions") return this.configurePortalPermissions(owner, room);
-        onceShare = answer === "Run once";
+        const answer = await this.portalPrompt(owner, { title: `Run remote task from ${name}?`,
+          detail: `${prompt}\n\n${this.chatPortals.get(owner.id)?.external ? "You must select an existing PKM Chat before execution; its model/history apply. No Chat is created automatically." : "Only this bound Chat executes, with its model/history."} Charges may apply. Run once shares this task's public answer, stages and tool names/status (not hidden reasoning or unrelated history). Files ALWAYS need a separate batch permit.`,
+          choices: [{ value: "run", label: "Run once" }, { value: "permissions", label: "Configure permissions" }, { value: "cancel", label: "Decline" }] });
+        if (answer?.action === "permissions") return this.configurePortalPermissions(owner, room);
+        onceShare = answer?.action === "run";
         return onceShare;
       },
       execute: async (prompt, signal, requestId, profileSnapshot) => {
@@ -5294,6 +5209,20 @@ class ChatRoomManager {
         if (!remoteChatExecutor) throw new Error("The local PKM Chat backend is unavailable.");
         const binding = room.peer?.binding;
         if (!binding) throw new Error("Portal disconnected before execution.");
+        const entry = this.chatPortals.get(owner.id);
+        const epoch = this.portalEpochs.get(owner.id) || 0;
+        let executionChatId = owner.id;
+        if (entry?.external) {
+          if (!portalChooseContext) throw new Error("Existing Chat selection is unavailable; no task was executed.");
+          const selected = await portalChooseContext();
+          if (!selected) throw new Error("Existing Chat selection cancelled; no task was executed.");
+          if (signal.aborted || !vscode.workspace.isTrusted || getStorePath() !== peerRoot
+            || this.chatPortals.get(owner.id) !== entry || (this.portalEpochs.get(owner.id) || 0) !== epoch
+            || room.peer?.binding !== binding || !room.client.isConnected) throw new Error("Portal changed during Chat selection; no task was executed.");
+          if (this.chatPortals.has(selected.id) || this.portalOwnerId(selected.id) !== selected.id) throw new Error("The selected Chat already owns a Portal or is executing another Portal task.");
+          executionChatId = selected.id;
+          entry.executionChatId = selected.id;
+        }
         const policy = this.portalPermissions.get(owner.id);
         const leased = !!policy?.snapshot().grants.length;
         const localController = new AbortController();
@@ -5306,10 +5235,11 @@ class ChatRoomManager {
             || leased && !policy?.snapshot().grants.length) cancel();
         }, 500);
         try {
-        const result = await remoteChatExecutor(prompt, localController.signal, requestId, owner.id, observation => {
+        const result = await remoteChatExecutor(prompt, localController.signal, requestId, executionChatId, observation => {
           if (room.peer?.binding !== binding || !room.client.isConnected || !binding.peerCapabilities?.includes("observations-v1")) return;
           const allowed = onceShare || this.portalPermissions.get(owner.id)?.allows("progress-read");
-          room.peer.observe(allowed ? this.portalMirrorObservation(owner.id, observation) : { requestId: observation.requestId, chatId: observation.chatId, sequence: observation.sequence, at: observation.at, state: "restricted", visibility: "restricted" });
+          const scopedObservation = entry?.external ? { ...observation, chatId: owner.id } : observation;
+          room.peer.observe(allowed ? this.portalMirrorObservation(owner.id, scopedObservation) : { requestId: observation.requestId, chatId: owner.id, sequence: observation.sequence, at: observation.at, state: "restricted", visibility: "restricted" });
         }, {
           hostname: binding.peerMachine || binding.peerName, endpoint: binding.peerEndpoint || room.url,
           chatId: binding.peerChatId, chatName: binding.peerChatName || binding.peerName, participantId: binding.peerId,
@@ -5321,6 +5251,7 @@ class ChatRoomManager {
           signal.removeEventListener("abort", cancel);
           clearInterval(deadline);
           if (this.portalExecutions.get(owner.id) === localController) this.portalExecutions.delete(owner.id);
+          if (entry?.executionChatId === executionChatId) delete entry.executionChatId;
           onceShare = false;
         }
       },
@@ -5348,15 +5279,16 @@ class ChatRoomManager {
       changed: () => {
         const binding = room.peer?.binding;
         const state = binding ? `${binding.pairId}:${binding.role}` : "";
+        if (!state && announced) void Promise.resolve().then(() => {
+          if (this.portalTransports.get(owner.id) === room && room.peer === peer && !peer.binding) this.closePortalTransport(owner.id);
+        });
         const current = this.chatPortals.get(owner.id);
         if (current?.room === room || !current?.room) this.portalJournal?.observe({ chatId: owner.id, chatLabel: current?.label || owner.label, external: !!current?.external, localMachine: os.hostname(), endpoint: room.url }, binding);
         if (binding && !this.portalPermissions.has(owner.id)) this.portalPermissions.set(owner.id, new PortalPermissions({ chatId: owner.id, connectionId: binding.pairId }));
         if (binding || !room.peer?.pendingInvitation) this.portalPendingLinks.delete(owner.id);
         if (state && state !== announced && current?.external) void this.offerExternalAuthorization(owner.id).catch(error => log.error(`External Portal authorization: ${String(error)}`));
         if (state && state !== announced) {
-          void vscode.window.showInformationMessage(binding!.role === "controller"
-            ? `Chat "${owner.label}" Portal connected: controller of ${binding!.peerName}.`
-            : `Chat "${owner.label}" Portal connected: controlled by ${binding!.peerName}. Each task needs approval.`);
+          vscode.window.setStatusBarMessage(`$(remote) Portal connected: ${binding!.role} · ${binding!.peerName}`, 10_000);
         }
         if (state !== announced) void agentSessionProjectStateData().then(
           data => postToPanel({ command: "projectState", data }),
@@ -5395,12 +5327,11 @@ class ChatRoomManager {
       },
       approve: async batch => {
         active();
-        const allowed = await vscode.window.showWarningMessage(`Permit this file batch ${batch.direction === "incoming" ? "from" : "to"} ${binding.peerMachine || binding.peerName}?`, {
-          modal: true,
-          detail: `Chat: ${owner.label}\nPeer: ${binding.peerChatName || binding.peerName} · ${room.url}\nDirection: ${batch.direction}\nTotal: ${batch.totalBytes} bytes\nDestination: ${batch.destination || "remote user-selected directory"}\n${batch.files.map((file, index) => `${file.name} · ${file.size} bytes · SHA-256 ${file.sha256}${batch.sources?.[index] ? `\nSource: ${batch.sources[index]}` : ""}`).join("\n")}\n\nOnly this immutable batch. No overwrite, execution, installation or reload. Allow All never skips controlled-side file-transfer approval.`,
-        }, "Permit this batch");
+        const allowed = await this.portalConfirm(owner, `Permit file batch ${batch.direction === "incoming" ? "from" : "to"} ${binding.peerMachine || binding.peerName}?`,
+          `Chat: ${owner.label}\nPeer: ${binding.peerChatName || binding.peerName} · ${room.url}\nDirection: ${batch.direction}\nTotal: ${batch.totalBytes} bytes\nDestination: ${batch.destination || "remote user-selected directory"}\n${batch.files.map((file, index) => `${file.name} · ${file.size} bytes · SHA-256 ${file.sha256}${batch.sources?.[index] ? `\nSource: ${batch.sources[index]}` : ""}`).join("\n")}\n\nOnly this immutable batch. No overwrite, execution, installation or reload. Allow All never skips controlled-side file-transfer approval.`,
+          "Permit this batch");
         active();
-        return allowed === "Permit this batch";
+        return allowed;
       },
       onStatus: status => {
         let records = this.portalTransfers.get(owner.id);
@@ -5430,13 +5361,8 @@ class ChatRoomManager {
     return `${os.userInfo().username || "user"}@${os.hostname().split(".")[0] || "host"}`.slice(0, 60);
   }
 
-  private async startPortal(context: vscode.ExtensionContext, owner: { id: string; label: string }): Promise<void> {
+  private async startPortal(context: vscode.ExtensionContext, owner: { id: string; label: string }, role: "controller" | "controlled"): Promise<void> {
     const peerRoot = this.portalPreflight();
-    const roleChoice = await vscode.window.showQuickPick([
-      { label: "Controller (default)", role: "controller" as const, detail: "This Chat sends tasks to the other machine." },
-      { label: "Controlled", role: "controlled" as const, detail: "Share this link so another Chat can test this machine. Every task needs approval." },
-    ], { title: `Portal direction for "${owner.label}"`, ignoreFocusOut: true });
-    if (!roleChoice) return;
     const hub = await this.startHub(vscode.workspace.getConfiguration("personalKnowledge").get<number>("chatHubPort") ?? 7345);
     if (!hub.ok) throw new Error(`Couldn't start the Chat Hub: ${hub.error || "unknown error"}`);
     const channel = this.hub!.createPortalChannel();
@@ -5448,26 +5374,20 @@ class ChatRoomManager {
     this.chatPortals.get(owner.id)!.room = room;
     await this.waitForRoom(() => room.client.isConnected && !!room.client.participantId, 30_000, "The Portal transport did not connect.");
     const peer = this.ensurePeer(room, peerRoot, owner);
-    const code = roleChoice.role === "controller" ? peer.offer() : peer.invite();
+    const code = role === "controller" ? peer.offer() : peer.invite();
     // In a Remote window this forwards the Hub port to the computer running the VS Code UI.
     const external = await vscode.env.asExternalUri(vscode.Uri.parse(`http://localhost:${this.hubPort}`));
-    const forwardedUrl = `${external.scheme === "https" ? "wss" : "ws"}://${external.authority}${PORTAL_TRANSPORT_PATH}`;
-    const url = await vscode.window.showInputBox({ title: "Portal connection address", value: forwardedUrl, ignoreFocusOut: true,
-      prompt: "Use the forwarded localhost address for this computer, or a reachable WSS IP/hostname for another computer. No NAT traversal is provided.",
-      validateInput: value => { try { assertPeerEndpoint(value); if (new URL(value).pathname !== PORTAL_TRANSPORT_PATH) throw new Error(`Use the ${PORTAL_TRANSPORT_PATH} transport endpoint.`); return undefined; } catch (error) { return String(error); } },
-    });
-    if (!url) { peer.revoke(); this.closePortalTransport(owner.id); this.chatPortals.get(owner.id)!.room = undefined; return; }
-    const link = createPortalLink({ url, room: created.room, roomId: created.roomId, secret: created.secret, code, controller: room.client.participantId, name: room.user, role: roleChoice.role });
+    if (!vscode.workspace.isTrusted || getStorePath() !== peerRoot || this.chatPortals.get(owner.id)?.room !== room
+      || !room.client.isConnected || room.peer !== peer || !peer.pendingInvitation) throw new Error("Portal changed while preparing the connection code; create a new Portal.");
+    if (external.scheme !== "http" && external.scheme !== "https") throw new Error("Portal forwarding returned an unsupported address.");
+    const url = `${external.scheme === "https" ? "wss" : "ws"}://${external.authority}${PORTAL_TRANSPORT_PATH}`;
+    assertPeerEndpoint(url);
+    const link = createPortalLink({ url, room: created.room, roomId: created.roomId, secret: created.secret, code, controller: room.client.participantId, name: room.user, role });
     const pendingInvitation = peer.pendingInvitation;
     if (pendingInvitation) this.portalPendingLinks.set(owner.id, { link, expiresAt: pendingInvitation.expiresAt, endpoint: url });
     portalChanged();
     await vscode.env.clipboard.writeText(link);
-    const COPY = "Copy Portal link again";
-    const pick = await vscode.window.showInformationMessage("PKM Portal link copied. Send it privately to the other side.", {
-      modal: true,
-      detail: `The other Chat opens Portal → Accept a Portal link. The link works once and expires in 10 minutes. This Chat will be ${roleChoice.role}; switching direction requires approval on both sides.\n\nEndpoint: ${url}. Localhost links work only on the computer receiving the forwarded port. Other machines need reachable WSS.`,
-    }, COPY);
-    if (pick === COPY) await this.portalPendingLink(owner.id, "copy");
+    vscode.window.setStatusBarMessage(`$(remote) Private Portal link copied · ${role} · expires in 10 minutes. Re-copy or void it in this Chat.`, 10_000);
     } catch (error) {
       this.closePortalTransport(owner.id);
       this.portalPendingLinks.delete(owner.id);
@@ -5477,21 +5397,18 @@ class ChatRoomManager {
     }
   }
 
-  private async acceptPortal(context: vscode.ExtensionContext, owner: { id: string; label: string }): Promise<void> {
+  private async acceptPortal(context: vscode.ExtensionContext, owner: { id: string; label: string }, input: string): Promise<void> {
     const peerRoot = this.portalPreflight();
-    const input = await vscode.window.showInputBox({ title: "Accept PKM Portal", prompt: "Paste the pkmportal:v1:… link the other side sent you.", password: true, ignoreFocusOut: true });
-    if (!input) return;
     const link = parsePortalLink(input);
     if ([...this.chatPortals.values()].some(entry => entry.room?.roomId === link.roomId && entry.id !== owner.id)) throw new Error("This Portal is already attached to another Chat. Create a separate link for this Chat.");
     const controlsRemote = link.role === "controlled";
     const ALLOW = controlsRemote ? "Connect as controller" : "Allow control";
-    const consent = await vscode.window.showWarningMessage(controlsRemote
+    const consent = await this.portalConfirm(owner, controlsRemote
       ? `Connect Chat "${owner.label}" as controller of ${link.name || "the remote Chat"}?`
-      : `Let ${link.name || "the Portal initiator"} control Chat "${owner.label}"?`, {
-      modal: true,
-      detail: `Endpoint: ${link.url}\n${controlsRemote ? "This Chat will send tasks to the remote Chat, which must approve pairing and each task." : "The initiator can send tasks only to this bound Chat. Each task and tool needs local approval; model charges may apply."} Switching direction needs explicit approval on both sides.`,
-    }, ALLOW);
-    if (consent !== ALLOW) return;
+      : `Let ${link.name || "the Portal initiator"} control Chat "${owner.label}"?`,
+      `Endpoint: ${link.url}\n${controlsRemote ? "This Chat will send tasks to the remote Chat, which must approve pairing and each task." : "The initiator can send tasks only to this bound Chat. Each task and tool needs local approval; model charges may apply."} Switching direction needs explicit approval on both sides.`,
+      ALLOW);
+    if (!consent) return;
     if (getStorePath() !== peerRoot || !vscode.workspace.isTrusted) throw new Error("Portal workspace or Knowledge Root changed during approval.");
     if ([...this.chatPortals.values()].some(entry => entry.room?.roomId === link.roomId && entry.id !== owner.id)) throw new Error("This Portal was attached to another Chat during approval.");
     let user = ChatRoomManager.portalAlias();
@@ -5512,12 +5429,19 @@ class ChatRoomManager {
 
   private async portalActions(room: RoomConn, peer: PeerSession, switchOnly = false): Promise<void> {
     const binding = peer.binding!;
+    const owner = [...this.chatPortals.values()].find(item => item.room === room);
+    if (!owner) throw new Error("Portal owner is unavailable.");
+    const root = getStorePath(), epoch = this.portalEpochs.get(owner.id) || 0;
     const SWITCH = "Switch control direction…";
     const actions = ["Status", "Permissions", "Send files", ...(binding.role === "controller" ? ["Send task", "Cancel task"] : []), SWITCH, "Disconnect"];
-    const selected = switchOnly ? SWITCH : await vscode.window.showQuickPick(actions, {
-      title: binding.role === "controller" ? `PKM Portal · you control ${binding.peerName}` : `PKM Portal · ${binding.peerName} controls this machine`,
-      ignoreFocusOut: true,
+    const answer = switchOnly ? undefined : await this.portalPrompt(owner, {
+      title: `Portal · ${binding.peerName}`, detail: `Current direction: ${binding.role}. Each action applies only to this Chat and pairing.`,
+      choices: [{ value: "submit", label: "Continue" }, { value: "cancel", label: "Cancel" }],
+      form: { type: "object", required: ["action"], properties: {
+        action: { type: "string", title: "Action", enum: actions },
+      } },
     });
+    const selected = switchOnly ? SWITCH : answer?.action === "submit" ? answer.fields.action : undefined;
     if (selected === "Send files") {
       const owner = [...this.chatPortals.values()].find(item => item.room === room);
       if (!owner) throw new Error("Portal owner is unavailable.");
@@ -5530,36 +5454,48 @@ class ChatRoomManager {
       if (!owner) throw new Error("Portal owner is unavailable.");
       await this.configurePortalPermissions(owner, room);
     } else if (selected === "Send task") {
-      const prompt = await vscode.window.showInputBox({ title: `Remote task for ${binding.peerName}`, prompt: "The target must approve this exact instruction. Existing local permissions are not shared.", ignoreFocusOut: true });
-      if (prompt) {
+      const task = await this.portalPrompt(owner, { title: `Remote task for ${binding.peerName}`,
+        detail: "The target must approve this exact instruction. Existing local permissions are not shared. Model charges may apply.",
+        choices: [{ value: "submit", label: "Send task" }, { value: "cancel", label: "Cancel" }],
+        form: { type: "object", required: ["prompt"], properties: { prompt: { type: "string", title: "Instruction", minLength: 1, maxLength: 16_000 } } },
+      });
+      if (task?.action === "submit") {
+        const prompt = String(task.fields.prompt);
         const owner = [...this.chatPortals.values()].find(item => item.room === room);
-        if (!owner || !portalProfileReview) throw new Error("Portal Profile review is unavailable.");
-        const snapshot = await portalProfileReview(owner.id);
+        if (!owner || !owner.external && !portalProfileReview) throw new Error("Portal Profile review is unavailable.");
+        const snapshot = owner.external ? undefined : await portalProfileReview?.(owner.id);
+        if (peer.binding !== binding || !room.client.isConnected || root !== getStorePath()
+          || !vscode.workspace.isTrusted || (this.portalEpochs.get(owner.id) || 0) !== epoch) throw new Error("Portal changed during task review; no task was sent.");
         const requestId = peer.submit(prompt, undefined, snapshot);
-        await vscode.window.showInformationMessage(`Remote task sent (${requestId}). Delivery is not execution approval; inspect Status for the result.`);
+        vscode.window.setStatusBarMessage(`$(remote) Remote task sent (${requestId}). Delivery is not execution approval; inspect this Chat's Portal status.`, 10_000);
       }
     } else if (selected === "Cancel task") {
-      const requestId = await vscode.window.showQuickPick([...peer.receipts.values()].filter(receipt => ["running", "awaiting-approval"].includes(receipt.state)).map(receipt => receipt.requestId), { title: "Cancel original remote request" });
-      if (requestId) peer.cancel(requestId);
+      const requests = [...peer.receipts.values()].filter(receipt => ["running", "awaiting-approval"].includes(receipt.state)).map(receipt => receipt.requestId);
+      if (!requests.length) throw new Error("No running or awaiting-approval Portal task to cancel.");
+      if (requests.length > 100) throw new Error("More than 100 pending Portal tasks; cancel a specific original request through the control API.");
+      const cancel = await this.portalPrompt(owner, { title: "Cancel original remote request", detail: "Recorded effects are not undone and the request will not be replayed.",
+        choices: [{ value: "submit", label: "Cancel task" }, { value: "cancel", label: "Keep running" }],
+        form: { type: "object", required: ["request"], properties: { request: { type: "string", title: "Request", enum: requests } } },
+      });
+      if (cancel?.action === "submit") peer.cancel(String(cancel.fields.request));
     } else if (selected === SWITCH) {
       const next = binding.role === "controller" ? "controlled" : "controller";
       const REQUEST = "Request switch";
-      const confirmed = await vscode.window.showWarningMessage(next === "controlled" ? `Let ${binding.peerName} control this machine instead?` : `Ask to control ${binding.peerName} instead?`, {
-        modal: true,
-        detail: `Roles change only after ${binding.peerName} also explicitly allows it. Until then nothing changes.${next === "controlled" ? " Afterwards each task from them still needs your approval here." : ""}`,
-      }, REQUEST);
-      if (confirmed === REQUEST) {
+      const confirmed = await this.portalConfirm(owner, next === "controlled" ? `Let ${binding.peerName} control this machine instead?` : `Ask to control ${binding.peerName} instead?`,
+        `Roles change only after ${binding.peerName} also explicitly allows it. Until then nothing changes.${next === "controlled" ? " Afterwards each task from them still needs your approval here." : ""}`,
+        REQUEST);
+      if (confirmed) {
         peer.requestSwap();
         vscode.window.setStatusBarMessage(`$(remote) PKM Portal: waiting for ${binding.peerName} to allow the switch…`, 15_000);
       }
     } else if (selected === "Disconnect") {
       peer.revoke();
       const owner = [...this.chatPortals.values()].find(item => item.room === room);
-      if (owner) { this.closePortalTransport(owner.id); owner.room = undefined; }
+      if (owner) { this.closePortalTransport(owner.id); owner.room = undefined; portalChanged(); this.push(); }
     } else if (selected === "Status") {
-      const document = await vscode.workspace.openTextDocument({ language: "json",
-        content: JSON.stringify({ room: room.room, connected: room.client.isConnected, binding: peer.binding, switchPending: peer.swapPending, receipts: [...peer.receipts.values()] }, null, 2) });
-      await vscode.window.showTextDocument(document, { preview: true });
+      await this.portalPrompt(owner, { title: "Portal status",
+        detail: JSON.stringify(this.portalStatus(owner.id), null, 2),
+        choices: [{ value: "close", label: "Close" }] });
     }
   }
 
@@ -5615,7 +5551,6 @@ class ChatRoomManager {
     if (!isTopLevelPrivate("notes", "Chatroom Meetings")) setTopLevelPrivacy("notes", "Chatroom Meetings", true);
     this.hub?.configureLifecycle(rootDir, this.archiveLimitBytes, installationId, secretStorage);
     void this.refreshStoredRooms().catch(error => log.warn(`chat: couldn't refresh Stored Rooms: ${(error as Error).message}`));
-    void this.loadPortalResumeIndex().catch(error => log.warn(`Portal resume index: ${String(error)}`));
   }
 
   get activeRoom(): RoomConn | undefined { return this.rooms.get(this.activeKey); }
@@ -5953,11 +5888,16 @@ class ChatRoomManager {
     const client = new ChatClient({
       onStatus: (status, detail) => {
         connection.status = status; connection.statusDetail = detail || "";
-        if (status === "disconnected") { connection.peer?.dispose(); connection.peer = undefined; }
+        if (status !== "connected" && connection.peer) this.closePortalTransport(chatId);
         portalChanged();
       },
       onPeer: delivery => { if (connection.peer) void connection.peer.receive(delivery); },
-      onPresence: members => { connection.members = members; this.tryPortalResume(connection); portalChanged(); },
+      onPresence: members => {
+        connection.members = members;
+        const binding = connection.peer?.binding;
+        if (binding && !members.some(member => member.participantId === binding.peerId && member.present !== false)) this.closePortalTransport(chatId);
+        portalChanged();
+      },
       onMessage: message => { if (message.system) { connection.statusDetail = message.text; log.warn(`Portal transport: ${message.text}`); portalChanged(); } },
       onHistory: () => {},
       onFileComplete: () => { log.warn("Portal transport rejected a Room file transfer; use Portal files instead."); },
@@ -5975,9 +5915,17 @@ class ChatRoomManager {
 
   private closePortalTransport(chatId: string): void {
     const transport = this.portalTransports.get(chatId);
-    transport?.peer?.dispose(); transport?.client.disconnect();
     this.portalTransports.delete(chatId);
     const connection = this.portalConnections.get(chatId);
+    this.portalConnections.delete(chatId);
+    const entry = this.chatPortals.get(chatId);
+    if (entry) { entry.room = undefined; delete entry.executionChatId; }
+    if (transport) {
+      const peer = transport.peer; transport.peer = undefined;
+      peer?.dispose(); transport.client.disconnect();
+    }
+    this.invalidatePortal(chatId);
+    this.portalJournal?.observe({chatId,chatLabel:"",external:false,localMachine:os.hostname()}, undefined);
     if (connection?.host && connection.transport === "portal") this.hub?.closePortalChannel(connection.roomId);
   }
 
@@ -6039,7 +5987,6 @@ class ChatRoomManager {
           rc!.selfHost = !!me?.host;
           rc!.selfMuted = !!me?.muted;
           if (rc!.selfHost) void this.syncMeetingFromHistory(rc!);
-          this.tryPortalResume(rc!);
           this.push();
         },
         onMeetingSnapshot: snapshot => {
@@ -6527,15 +6474,16 @@ class ChatRoomManager {
   }
 
   async dispose(): Promise<void> {
-    this.portalWindowBeat?.dispose(); this.portalWindowBeat = undefined;
     if (this.crossWindowRefreshTimer) clearTimeout(this.crossWindowRefreshTimer);
     this.crossWindowRefreshTimer = undefined;
     for (const agent of this.managedAgents.values()) { try { agent.client.disconnect(); } catch { /* ignore */ } }
     this.managedAgents.clear();
     for (const rc of this.rooms.values()) { rc.peer?.dispose(); try { rc.client.disconnect(); } catch { /* ignore */ } }
     this.rooms.clear();
-    for (const transport of this.portalTransports.values()) { transport.peer?.dispose(); transport.client.disconnect(); }
-    this.portalTransports.clear();
+    for (const id of this.chatPortals.keys()) this.closePortalTransport(id);
+    for (const id of this.portalTransports.keys()) this.closePortalTransport(id);
+    this.chatPortals.clear();
+    this.externalPortalOffers.clear();
     try { await this.hub?.stop(); } catch { /* ignore */ }
   }
 }
@@ -6544,6 +6492,8 @@ let chatMgr: ChatRoomManager | undefined;
 let remoteChatExecutor: ((prompt: string, signal: AbortSignal, requestId: string, chatId: string, observer?: PortalObserver, source?: PortalSource, profileSnapshot?: PersonaSnapshot) => Promise<unknown>) | undefined;
 let portalProfileReview: ((chatId: string) => Promise<PersonaSnapshot | undefined>) | undefined;
 let portalChatContext: ((chatId?: string, label?: string) => Promise<{ id: string; label: string }>) | undefined;
+let portalChooseContext: (() => Promise<{ id: string; label: string } | undefined>) | undefined;
+let portalInteraction: ((chatId: string, interaction: import("./chat/portal-interaction").PortalInteraction, current: () => boolean) => Promise<import("./chat/portal-interaction").PortalInteractionAnswer | undefined>) | undefined;
 let portalReviewReceiver: ((chatId: string, review: PortalReview) => Promise<void>) | undefined;
 function getChatMgr(): ChatRoomManager {
   if (!chatMgr) chatMgr = new ChatRoomManager();
@@ -7539,6 +7489,16 @@ async function handleMessage(
         await context.globalState.update(ONBOARDING_COMPLETED_KEY, true);
         await context.globalState.update(ONBOARDING_PENDING_KEY, false);
       }
+      break;
+    }
+
+    case "userProfile":
+    case "userProfileEdit": {
+      if (!vscode.workspace.isTrusted) throw new Error("Trust this workspace before inspecting Profiles.");
+      const store = new PersonaProfileStore(context.globalStorageUri.fsPath, getStorePath());
+      if (msg.command === "userProfileEdit") await configureUserProfile(store);
+      respond({ command: "userProfile", data: { user: store.user(),
+        scope: store.syncEnabled ? "Knowledge Root repository cards" : "Private Host cards" } });
       break;
     }
 
@@ -9338,12 +9298,13 @@ async function handleMessage(
         const source = await githubPublicationMigrationSource(context, target, action === "stage");
         const migration = githubPublicationMigration(context, targetId);
         const result = action === "preview" ? migration.preview(source)
+          : action === "restart-preview" ? migration.restartPreview(source)
           : action === "stage" ? migration.stage(source)
             : action === "verify" ? migration.verify(source)
               : action === "cutover" ? migration.cutover(source)
                 : action === "rollback" ? migration.rollback(source)
                   : (() => { throw new Error("Unsupported GitHub publication migration action."); })();
-        if (["stage", "cutover", "rollback"].includes(action)) {
+        if (["stage", "cutover", "rollback", "restart-preview"].includes(action)) {
           await mutateGitHubSyncTargets(context, `migration ${action} ${targetId}`, targets => ({
             targets: targets.map(candidate => candidate.id === targetId ? target : candidate),
             result: undefined,
@@ -11664,7 +11625,7 @@ async function handleMessage(
     }
 
     case "openActionLibrary": {
-      openActionWorkbench(context, undefined, undefined, true);
+      openActionLibrary(context);
       break;
     }
 
@@ -12507,10 +12468,11 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
   }
 
   private _withSubscribedContent(type: SharedContentType, local: PkTreeItem[]): PkTreeItem[] {
-    if (!sharedMarket) return local;
-    const model = subscriptionNavigationRoot(type, sharedMarket.cachedGroups(type));
-    if (!model) return local;
-    return [...local, this._subscribedContentItem(model)];
+    const model = sharedMarket && subscriptionNavigationRoot(type, sharedMarket.cachedGroups(type));
+    const items = model ? [...local, this._subscribedContentItem(model)] : [...local];
+    const rank = (item: PkTreeItem) => item.nodeType === "skill-trash" || item.nodeType === "knowledge-trash"
+      ? 2 : item.nodeData?.isPrivate ? 1 : 0;
+    return items.sort((left, right) => rank(left) - rank(right));
   }
 
   private _subscribedContentItem(model: SubscriptionNavigationNode): PkTreeItem {
@@ -13426,34 +13388,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   try {
     apiChat = registerApiChatShell(context, async () => {
       const { registerApiChat } = await import("./chat/api-chat-view");
-      const sourceValidation = retrievalSourceValidation(currentRetrievalSnapshot);
-      return registerApiChat(context, Object.assign(async (query:string, signal:AbortSignal) => {
-    if (!retrievalWorker) throw new Error("The unified retrieval worker is not ready.");
-    const result = await retrievalWorker.query({ schema: "pkm.retrieval.query/v1", requestId: `chat-${randomUUID()}`, text: query,
-      level: "l1-source", scope: { capabilityId: "pkm-chat-context" }, topK: 20, route: "lexical", generation: { mode: "latest-ready" }, diagnostics: "summary", deadlineMs: 5000 }, signal);
-    const snapshot = currentRetrievalSnapshot();
-    const candidates = result.hits.map(hit => {
-      const document = retrievalDocumentForSource(snapshot, hit.sourceId, hit.sourceRevision, hit.contentHash);
-      const candidate = { id: hit.sourceId, level: "l1-source" as const, kind: hit.contentType, label: hit.title, sourceUri: hit.sourceUri, score: hit.score,
-        scoreSemantics: "engine-defined" as const, scoreComponents: { ...hit.scoreComponents }, method: `${hit.serving?.route || hit.route}:unified-retrieval`, serving:hit.serving, selected: false,
-        sourceId: hit.sourceId, sourceRevision: hit.sourceRevision, contentHash: hit.contentHash, rank: hit.rank,
-        ...materializeRetrievalSource(document) };
-      if (document) sourceValidation.admit(candidate, document);
-      return candidate;
-      });
-    const materialized = sanitizeRetrievalCandidatesV1(materializeRetrievalCandidates(candidates, snapshot, query), {
-      maxCandidates: 100,
-      sourceIsCurrent: candidate => !!retrievalDocumentForSource(snapshot, candidate.sourceId!,
-        (candidate.parentRevision || candidate.sourceRevision)!, candidate.parentContentHash || candidate.contentHash),
-    });
-    if (materialized.incomplete) throw new Error(`Knowledge materialization rejected stale or invalid evidence: ${materialized.diagnostics.map(item => item.message).join(" ").slice(0, 768)}`);
-    return materialized.candidates;
-    }, { refreshSourceValidation:sourceValidation.refreshSourceValidation, sourceIsCurrent:sourceValidation.sourceIsCurrent,
-      readSnapshot:currentRetrievalSnapshot }), false);
+      return registerApiChat(context, createChatKnowledgeRetriever(() => retrievalWorker, currentRetrievalSnapshot), false);
     });
     portalChatContext = (chatId, label) => {
       if (!apiChat) throw new Error("PKM Chat is unavailable.");
       return apiChat.portalContext(chatId, label);
+    };
+    portalInteraction = (chatId, interaction, current) => {
+      if (!apiChat) throw new Error("PKM Chat is unavailable.");
+      return apiChat.requestPortalInteraction(chatId, interaction, current);
+    };
+    portalChooseContext = () => {
+      if (!apiChat) throw new Error("PKM Chat is unavailable.");
+      return apiChat.choosePortalContext();
     };
     remoteChatExecutor = (prompt, signal, requestId, chatId, observer, source, profileSnapshot) => {
       if (!apiChat) throw new Error("PKM Chat is unavailable.");
@@ -13514,6 +13461,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     getChatMgr().configurePortalJournal(context.globalState);
   };
   applyChatArchiveCfg();
+  void getChatMgr().cleanupPortalPersistence(context).catch(error => {
+    log.error(`Portal legacy cleanup failed: ${String(error)}`);
+    void vscode.window.showErrorMessage(`PKM Portal legacy cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+  });
   recipeDraftFileSystem = new RecipeDraftFileSystem();
   context.subscriptions.push(
     vscode.commands.registerCommand("personalKnowledge.openActionRunProject", async (runId: string) => {
@@ -13552,7 +13503,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (session.ready) void instance.webview.postMessage({ command: "openEmbeddedActions", state: session.snapshot.actions });
       else session.pendingActions = next;
     }),
-    vscode.commands.registerCommand("personalKnowledge.openActions", () => openActionWorkbench(context, undefined, undefined, true)),
+    vscode.commands.registerCommand("personalKnowledge.openActions", () => openActionWorkbench(context)),
+    vscode.commands.registerCommand("personalKnowledge.openActionLibrary", () => openActionLibrary(context)),
     vscode.commands.registerCommand("personalKnowledge.portalControl", async (args: Record<string, unknown>, external = false) => getChatMgr().portalControl(context, args, external)),
     vscode.commands.registerCommand("personalKnowledge.portalPermissions", async (id: string) => getChatMgr().authorizePortalForChat(id)),
     vscode.commands.registerCommand("personalKnowledge.portalPendingLink", async (id: string, action: "copy" | "void") => getChatMgr().portalPendingLink(id, action)),

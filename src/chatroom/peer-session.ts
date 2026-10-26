@@ -1,6 +1,4 @@
-import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "crypto";
-import * as fs from "fs/promises";
-import * as path from "path";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "crypto";
 import { PEER_PROTOCOL, PeerDelivery, PeerPacket, parsePeerPacket } from "./peer-protocol";
 import { parsePortalObservation, PortalObservation } from "./portal-observation";
 import { PortalReview } from "./portal-runtime";
@@ -23,40 +21,12 @@ export interface PeerReceipt {
   result?: unknown;
   error?: string;
 }
-/** Durable, secret-bearing state that lets the same two Chats re-attach after a restart or transport drop. */
-export interface PeerResumeRecord {
-  version: 1;
-  pairId: string;
-  role: PeerBinding["role"];
-  resumeSecret: string;
-  peerName: string;
-  peerChatId: string;
-  peerMachine?: string;
-  peerChatName?: string;
-  peerEndpoint?: string;
-  peerCapabilities?: string[];
-  outgoing: Array<[string, string]>;
-  receipts: PeerReceipt[];
-  updatedAt: number;
-}
-const TERMINAL_RECEIPT_STATES = ["completed", "failed", "denied", "cancelled"];
-export function validPeerResumeRecord(value: unknown): value is PeerResumeRecord {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const item = value as Record<string, unknown>;
-  return item.version === 1 && typeof item.pairId === "string" && /^[a-f0-9-]{36}$/.test(item.pairId)
-    && (item.role === "controller" || item.role === "controlled")
-    && typeof item.resumeSecret === "string" && /^[a-f0-9]{64}$/.test(item.resumeSecret)
-    && typeof item.peerName === "string" && typeof item.peerChatId === "string" && /^[a-f0-9-]{36}$/.test(item.peerChatId)
-    && Array.isArray(item.outgoing) && item.outgoing.every(entry => Array.isArray(entry) && entry.length === 2 && entry.every(part => typeof part === "string"))
-    && Array.isArray(item.receipts) && item.receipts.every(receipt => !!receipt && typeof receipt === "object" && typeof (receipt as PeerReceipt).requestId === "string" && receiptState((receipt as PeerReceipt).state));
-}
 export interface PeerSessionOptions {
   roomId: string;
   chatId?: string;
   machine?: string;
   chatName?: string;
   endpoint?: string;
-  journalDirectory: string;
   /** True when this side, as controller, starts a review automatically when the controlled side reports progress. */
   autoReview?(): boolean;
   connected(): boolean;
@@ -72,19 +42,11 @@ export interface PeerSessionOptions {
   invalidated?(): void;
   changed(): void;
   reviewNeeded?(review: PortalReview): void;
-  /** Store (or with `undefined`, forget) the resume record. Never called with data for peers lacking `resume-v1`. */
-  persist?(record: PeerResumeRecord | undefined): void;
-  /** A previously persisted pairing to re-attach; tasks are never replayed and leases are never restored. */
-  resumeFrom?: PeerResumeRecord;
-  resumed?(binding: PeerBinding): void;
   error(error: Error): void;
 }
 interface TaskRecord {
   fingerprint: string;
   receipt: PeerReceipt;
-}
-function deriveResumeSecret(secret: string, pairId: string): string {
-  return createHmac("sha256", Buffer.from(secret, "hex")).update(`pkm-portal-resume-v1:${pairId}`).digest("hex");
 }
 function receiptState(value: unknown): value is PeerReceipt["state"] {
   return typeof value === "string" && ["awaiting-approval", "running", "completed", "failed", "denied", "cancelled", "unknown"].includes(value);
@@ -105,42 +67,9 @@ export class PeerSession {
   private readonly processing = new Set<string>();
   private readonly outgoing = new Map<string, string>();
   private readonly reviewStates = new Map<string, string>();
-  private resumeSecret?: string;
-  private resumable?: PeerResumeRecord;
-  private pendingResume?: { nonce: string; peerId: string; expiresAt: number };
+  private readonly tasks = new Map<string, TaskRecord>();
 
-  constructor(private readonly options: PeerSessionOptions) {
-    const record = options.resumeFrom;
-    if (record && validPeerResumeRecord(record)) {
-      this.resumable = record;
-      this.resumeSecret = record.resumeSecret;
-      if (record.role === "controller") {
-        for (const [requestId, fingerprint] of record.outgoing.slice(-100)) this.outgoing.set(requestId, fingerprint);
-        for (const receipt of record.receipts.slice(-100)) this.receipts.set(receipt.requestId, receipt);
-      }
-    }
-  }
-
-  /** Summary of a stored pairing that can be re-attached; contains no secret. */
-  get resumeTarget(): { pairId: string; role: PeerBinding["role"]; peerName: string; peerChatId: string; peerChatName?: string; peerMachine?: string } | undefined {
-    const record = this.resumable;
-    return record ? { pairId: record.pairId, role: record.role, peerName: record.peerName, peerChatId: record.peerChatId,
-      ...(record.peerChatName ? { peerChatName: record.peerChatName } : {}), ...(record.peerMachine ? { peerMachine: record.peerMachine } : {}) } : undefined;
-  }
-
-  /** Ask the previously paired peer (now at `peerId` on this transport) to re-attach the same pairing. */
-  resume(peerId: string): void {
-    const record = this.resumable;
-    if (this.closed || this.binding || this.pairing || this.pendingPair) throw new Error("This Portal is already connected or pairing.");
-    if (!record || !this.resumeSecret) throw new Error("No stored Portal pairing can be re-attached; pair again.");
-    if (!peerId) throw new Error("The previous Portal peer is not present on this transport.");
-    const nonce = randomBytes(16).toString("hex");
-    this.pendingResume = { nonce, peerId, expiresAt: Date.now() + 60_000 };
-    try {
-      this.send(peerId, "resume", record.pairId, randomUUID(), { nonce, proof: this.resumeProof("resume", record.pairId, nonce, this.options.chatId),
-        role: record.role, ...this.localIdentity(), ...(record.role === "controller" ? { pending: this.pendingRequestIds() } : {}) });
-    } catch (error) { this.pendingResume = undefined; throw error; }
-  }
+  constructor(private readonly options: PeerSessionOptions) {}
 
   /** Code holder becomes controlled; the peer that redeems it becomes controller (after local approval here). */
   invite(): string { return this.createInvitation("controlled"); }
@@ -207,12 +136,11 @@ export class PeerSession {
     if (!this.outgoing.has(requestId) && this.outgoing.size >= 100) throw new Error("This peer session reached its 100-request boundary; inspect receipts and pair again.");
     const payload = { prompt, ...(profiles ? { profileSnapshot: profiles } : {}) };
     parsePeerPacket({ protocol: PEER_PROTOCOL, operation: "task", pairId: binding.pairId, requestId, payload });
-    this.send(binding.peerId, "task", binding.pairId, requestId, payload);
     this.outgoing.set(requestId, fingerprint);
     if (!this.receipts.has(requestId)) this.receipts.set(requestId, {
       requestId, state: "unknown", error: "Sent to transport; the target has not acknowledged execution or approval.",
     });
-    this.save();
+    this.send(binding.peerId, "task", binding.pairId, requestId, payload);
     this.options.changed();
     return requestId;
   }
@@ -236,11 +164,11 @@ export class PeerSession {
 
   revoke(): void {
     const binding = this.binding;
-    this.clear(true);
+    this.clear();
     if (binding) this.send(binding.peerId, "revoke", binding.pairId, randomUUID(), {});
   }
 
-  /** Transport closed: keep the stored pairing so the same Chats can re-attach later. */
+  /** Closing loses this pairing; a fresh invitation and consent are required. */
   dispose(): void { this.closed = true; this.clear(); }
 
   async receive(delivery: PeerDelivery): Promise<void> {
@@ -268,12 +196,10 @@ export class PeerSession {
           if (invitation.role === "controlled" && !await this.options.approvePair(fromName)) return;
           if (this.closed || this.pairing !== attempt || invitation.expiresAt <= Date.now() || !this.options.connected()) return;
           const identity = this.peerIdentity(packet.payload);
-          this.receipts.clear(); this.observations.clear(); this.outgoing.clear(); this.resumable = undefined;
+          this.receipts.clear(); this.observations.clear(); this.outgoing.clear(); this.tasks.clear();
           this.binding = { pairId: packet.pairId, peerId: from, peerName: fromName, role: invitation.role, ...identity };
           try { this.send(from, "paired", packet.pairId, packet.requestId, { role: invitation.role, ...this.localIdentity() }); }
           catch (error) { this.binding = undefined; throw error; }
-          this.resumeSecret = deriveResumeSecret(invitation.secret, packet.pairId);
-          this.save();
           this.options.changed();
         } finally { if (this.pairing === attempt) this.pairing = undefined; }
         return;
@@ -287,18 +213,15 @@ export class PeerSession {
         this.pendingPair = undefined;
         if ((packet.payload.role ?? "controlled") !== expected) throw new Error("Peer confirmed the pairing with the wrong control direction.");
         const identity = this.peerIdentity(packet.payload);
-        this.receipts.clear(); this.observations.clear(); this.outgoing.clear(); this.resumable = undefined;
+        this.receipts.clear(); this.observations.clear(); this.outgoing.clear(); this.tasks.clear();
         this.binding = { pairId: packet.pairId, peerId: from, peerName: fromName, role: pending.role, ...identity };
-        this.resumeSecret = deriveResumeSecret(pending.secret, packet.pairId);
-        this.save();
         this.options.changed();
         return;
       }
-      if (packet.operation === "resume") { this.acceptResume(delivery); return; }
-      if (packet.operation === "resumed") { this.completeResume(delivery); return; }
+      if (packet.operation === "resume" || packet.operation === "resumed") throw new Error("Portal connections are temporary; pair again with a fresh invitation.");
       const binding = this.binding;
       if (!binding || binding.peerId !== from || binding.pairId !== packet.pairId) throw new Error("Peer packet does not belong to this approved connection.");
-      if (packet.operation === "revoke") { this.clear(true); return; }
+      if (packet.operation === "revoke") { this.clear(); return; }
       if (packet.operation === "files") {
         if (!this.options.files) throw new Error("This Host does not support Portal file transfers.");
         await this.options.files(packet.payload);
@@ -346,7 +269,6 @@ export class PeerSession {
           ...(packet.payload.result === undefined ? {} : { result: packet.payload.result }),
           ...(typeof packet.payload.error === "string" ? { error: packet.payload.error } : {}) });
         while (this.receipts.size > 100) this.receipts.delete(this.receipts.keys().next().value!);
-        this.save();
         this.options.changed();
         if (state === "running") this.reviewStates.set(packet.requestId, "running");
         else this.requestReview(binding, packet.requestId, state);
@@ -375,60 +297,44 @@ export class PeerSession {
       this.reply(binding, packet.requestId, { requestId: packet.requestId, state: "failed", error: error instanceof Error ? error.message : "Invalid Profile snapshot." });
       return;
     }
+    const fingerprint = createHash("sha256").update(profiles ? JSON.stringify([prompt, profiles]) : prompt).digest("hex");
+    const previous = this.tasks.get(packet.requestId);
+    if (previous && previous.fingerprint !== fingerprint) throw new Error("Remote request ID was already used for different content.");
     if (this.processing.has(packet.requestId)) return;
     if (this.processing.size) throw new Error("This controlled peer already has an active task; no task was queued.");
     this.processing.add(packet.requestId);
     const controller = new AbortController();
     this.active.set(packet.requestId, controller);
     try {
-      // v2 identity omits the transport participant id so a re-attached peer still finds the original claim.
-      const legacyIdentity = createHash("sha256").update(JSON.stringify([this.options.roomId, binding.peerId, binding.pairId, packet.requestId])).digest("hex");
-      const legacyFile = path.join(this.options.journalDirectory, `${legacyIdentity}.json`);
-      const file = await fs.access(legacyFile).then(() => legacyFile, () => this.journalFile(binding.pairId, packet.requestId));
-      const fingerprint = createHash("sha256").update(profiles ? JSON.stringify([prompt, profiles]) : prompt).digest("hex");
-      await fs.mkdir(this.options.journalDirectory, { recursive: true, mode: 0o700 });
       let record: TaskRecord = { fingerprint, receipt: { requestId: packet.requestId, state: "awaiting-approval" } };
-      let handle;
-      try { handle = await fs.open(file, "wx", 0o600); }
-      catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        const previous = JSON.parse(await fs.readFile(file, "utf8")) as TaskRecord;
-        if (!previous || !previous.receipt || previous.receipt.requestId !== packet.requestId || !receiptState(previous.receipt.state)) {
-          throw new Error("The original remote task journal is invalid; inspect it without replaying the task.");
-        }
-        if (previous.fingerprint !== fingerprint) throw new Error("Remote request ID was already used for different content.");
-        const receipt = { ...previous.receipt };
-        if (["running", "awaiting-approval"].includes(receipt.state)) {
-          receipt.state = "unknown";
-          receipt.error = "An earlier Host claimed this request. It was not replayed; inspect the original Chat.";
-        }
-        this.reply(binding, packet.requestId, receipt);
+      if (previous) {
+        this.reply(binding, packet.requestId, previous.receipt);
         return;
       }
-      try { await handle.writeFile(JSON.stringify(record)); await handle.sync(); }
-      finally { await handle.close(); }
-      const persist = async (receipt: PeerReceipt): Promise<void> => {
+      if (this.tasks.size >= 1000) throw new Error("This temporary Portal reached its 1,000-task limit; pair again before submitting more tasks.");
+      this.tasks.set(packet.requestId, record);
+      const publishReceipt = (receipt: PeerReceipt): void => {
         record = { fingerprint, receipt };
-        // If interrupted while writing, a corrupt claim remains a visible failure, never permission to replay.
-        await fs.writeFile(file, JSON.stringify(record), { mode: 0o600 });
+        if (this.binding !== binding || this.closed) return;
+        this.tasks.set(packet.requestId, record);
         this.reply(binding, packet.requestId, receipt);
       };
       this.reply(binding, packet.requestId, record.receipt);
       if (!await this.options.approveTask(binding.peerName, prompt, profiles)) {
-        await persist({ requestId: packet.requestId, state: "denied" }); return;
+        publishReceipt({ requestId: packet.requestId, state: "denied" }); return;
       }
       if (controller.signal.aborted || this.binding !== binding || this.closed || !this.options.connected()) {
-        await persist({ requestId: packet.requestId, state: "cancelled" }); return;
+        publishReceipt({ requestId: packet.requestId, state: "cancelled" }); return;
       }
-      await persist({ requestId: packet.requestId, state: "running" });
+      publishReceipt({ requestId: packet.requestId, state: "running" });
       try {
         const result = await this.options.execute(prompt, controller.signal, packet.requestId, profiles);
         const encoded = JSON.stringify(result);
         const boundedResult = encoded && Buffer.byteLength(encoded, "utf8") > 36 * 1024
           ? { truncated: true, preview: Array.from(encoded).slice(0, 5000).join(""), message: "Result exceeded the peer frame budget; inspect the original remote Chat." } : result;
-        await persist({ requestId: packet.requestId, state: controller.signal.aborted ? "unknown" : "completed", result: boundedResult });
+        publishReceipt({ requestId: packet.requestId, state: controller.signal.aborted ? "unknown" : "completed", result: boundedResult });
       } catch (error) {
-        await persist({ requestId: packet.requestId, state: controller.signal.aborted ? "unknown" : "failed",
+        publishReceipt({ requestId: packet.requestId, state: controller.signal.aborted ? "unknown" : "failed",
           error: error instanceof Error ? error.message.slice(0, 2000) : String(error).slice(0, 2000) });
       }
     } finally { this.processing.delete(packet.requestId); this.active.delete(packet.requestId); }
@@ -461,7 +367,6 @@ export class PeerSession {
     this.binding = { ...binding, role: binding.role === "controller" ? "controlled" : "controller" };
     this.outgoing.clear();
     this.reviewStates.clear();
-    this.save();
     this.options.changed();
   }
 
@@ -478,7 +383,7 @@ export class PeerSession {
     return this.binding;
   }
   private localIdentity(): Record<string, unknown> {
-    return { capabilities: ["observations-v1", ...(this.options.profileSnapshots ? ["profiles-v1"] : []), ...(this.options.files ? ["files-v1"] : []), ...(this.options.persist ? ["resume-v1"] : []), ...(this.options.autoReview ? ["review-mode-v1", ...(this.options.autoReview() ? ["auto-review-v1"] : [])] : [])], ...(this.options.chatId ? { chatId: this.options.chatId } : {}), ...(this.options.machine ? { machine: this.options.machine } : {}),
+    return { capabilities: ["observations-v1", ...(this.options.profileSnapshots ? ["profiles-v1"] : []), ...(this.options.files ? ["files-v1"] : []), ...(this.options.autoReview ? ["review-mode-v1", ...(this.options.autoReview() ? ["auto-review-v1"] : [])] : [])], ...(this.options.chatId ? { chatId: this.options.chatId } : {}), ...(this.options.machine ? { machine: this.options.machine } : {}),
       ...(this.options.chatName ? { chatName: this.options.chatName.slice(0, 200) } : {}), ...(this.options.endpoint ? { endpoint: this.options.endpoint } : {}) };
   }
   private peerIdentity(payload: Record<string, unknown>): Pick<PeerBinding, "peerChatId" | "peerMachine" | "peerChatName" | "peerEndpoint" | "peerCapabilities"> {
@@ -492,126 +397,14 @@ export class PeerSession {
   private send(target: string, operation: PeerPacket["operation"], pairId: string, requestId: string, payload: Record<string, unknown>): void {
     this.options.send(target, { protocol: PEER_PROTOCOL, operation, pairId, requestId, payload });
   }
-  private clear(forget = false): void {
+  private clear(): void {
     this.options.invalidated?.();
-    if (forget) {
-      this.resumable = undefined; this.resumeSecret = undefined;
-      try { this.options.persist?.(undefined); } catch (error) { this.options.error(error instanceof Error ? error : new Error(String(error))); }
-    } else if (this.binding && !this.closed) this.resumable = this.currentRecord();
-    this.binding = undefined; this.invitation = undefined; this.pendingPair = undefined; this.pairing = undefined; this.pendingSwap = undefined; this.pendingResume = undefined;
+    this.binding = undefined; this.invitation = undefined; this.pendingPair = undefined; this.pairing = undefined; this.pendingSwap = undefined;
     this.outgoing.clear();
+    this.tasks.clear(); this.receipts.clear(); this.observations.clear();
     this.reviewStates.clear();
     for (const controller of this.active.values()) controller.abort();
     this.options.changed();
-  }
-
-  private journalFile(pairId: string, requestId: string): string {
-    const identity = createHash("sha256").update(JSON.stringify(["pkm-portal-task-v2", pairId, requestId])).digest("hex");
-    return path.join(this.options.journalDirectory, `${identity}.json`);
-  }
-
-  private resumeProof(label: "resume" | "resumed", pairId: string, nonce: string, chatId: unknown): string {
-    return createHmac("sha256", Buffer.from(this.resumeSecret || "", "hex")).update(`${label}|${pairId}|${nonce}|${typeof chatId === "string" ? chatId : ""}`).digest("hex");
-  }
-
-  private verifyResume(label: "resume" | "resumed", record: PeerResumeRecord, payload: Record<string, unknown>, nonce: unknown): void {
-    const proof = payload.proof;
-    if (typeof nonce !== "string" || !/^[a-f0-9]{32}$/.test(nonce) || typeof proof !== "string" || !/^[a-f0-9]{64}$/.test(proof)) throw new Error("Invalid Portal re-attach proof.");
-    const expected = this.resumeProof(label, record.pairId, nonce, payload.chatId);
-    if (!timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(proof, "hex"))) throw new Error("Portal re-attach proof does not match the stored pairing.");
-    if (payload.chatId !== record.peerChatId) throw new Error("Portal re-attach came from a different Chat.");
-    if (payload.role !== (record.role === "controller" ? "controlled" : "controller")) throw new Error("Portal re-attach used the wrong control direction.");
-  }
-
-  private currentRecord(): PeerResumeRecord | undefined {
-    const binding = this.binding;
-    if (!binding || !this.resumeSecret || !binding.peerChatId || !binding.peerCapabilities?.includes("resume-v1") || !this.options.persist) return undefined;
-    const receipts = [...this.receipts.values()].slice(-50).map((receipt, index, all) => index >= all.length - 10 ? receipt : { requestId: receipt.requestId, state: receipt.state, ...(receipt.error ? { error: receipt.error } : {}) });
-    return { version: 1, pairId: binding.pairId, role: binding.role, resumeSecret: this.resumeSecret, peerName: binding.peerName, peerChatId: binding.peerChatId,
-      ...(binding.peerMachine ? { peerMachine: binding.peerMachine } : {}), ...(binding.peerChatName ? { peerChatName: binding.peerChatName } : {}),
-      ...(binding.peerEndpoint ? { peerEndpoint: binding.peerEndpoint } : {}), ...(binding.peerCapabilities ? { peerCapabilities: binding.peerCapabilities } : {}),
-      outgoing: binding.role === "controller" ? [...this.outgoing.entries()].slice(-100) : [], receipts: binding.role === "controller" ? receipts : [], updatedAt: Date.now() };
-  }
-
-  private save(): void {
-    const record = this.currentRecord();
-    if (!record) return;
-    try { this.options.persist?.(record); } catch (error) { this.options.error(error instanceof Error ? error : new Error(String(error))); }
-  }
-
-  private pendingRequestIds(): string[] {
-    return [...this.outgoing.keys()].filter(requestId => !TERMINAL_RECEIPT_STATES.includes(this.receipts.get(requestId)?.state || "")).slice(-100);
-  }
-
-  private acceptResume(delivery: PeerDelivery): void {
-    const { packet, from, fromName } = delivery;
-    const live = this.binding?.pairId === packet.pairId ? this.currentRecord() : undefined;
-    const record = live || this.resumable;
-    if (!record || record.pairId !== packet.pairId || this.pendingPair || this.pairing || (this.binding && !live)) throw new Error("No stored Portal pairing matches this re-attach request.");
-    this.verifyResume("resume", record, packet.payload, packet.payload.nonce);
-    const identity = this.peerIdentity(packet.payload);
-    const binding = this.attach(record, from, fromName, identity);
-    this.send(from, "resumed", record.pairId, packet.requestId, { nonce: packet.payload.nonce, proof: this.resumeProof("resumed", record.pairId, String(packet.payload.nonce), this.options.chatId),
-      role: record.role, ...this.localIdentity(), ...(record.role === "controller" ? { pending: this.pendingRequestIds() } : {}) });
-    this.finishResume(binding, packet.payload.pending);
-  }
-
-  private completeResume(delivery: PeerDelivery): void {
-    const { packet, from, fromName } = delivery;
-    const pending = this.pendingResume;
-    const record = this.resumable;
-    if (!pending || !record || pending.peerId !== from || pending.expiresAt <= Date.now() || record.pairId !== packet.pairId || packet.payload.nonce !== pending.nonce) throw new Error("No matching Portal re-attach is pending.");
-    this.pendingResume = undefined;
-    this.verifyResume("resumed", record, packet.payload, pending.nonce);
-    const binding = this.attach(record, from, fromName, this.peerIdentity(packet.payload));
-    this.finishResume(binding, packet.payload.pending);
-  }
-
-  private attach(record: PeerResumeRecord, from: string, fromName: string, identity: ReturnType<PeerSession["peerIdentity"]>): PeerBinding {
-    if (this.binding?.pairId === record.pairId) {
-      // Mutate in place so in-flight work bound to this object keeps running for the re-attached participant.
-      Object.assign(this.binding, { peerId: from, peerName: fromName }, identity);
-      return this.binding;
-    }
-    this.observations.clear();
-    this.reviewStates.clear();
-    this.binding = { pairId: record.pairId, peerId: from, peerName: fromName, role: record.role, ...identity };
-    return this.binding;
-  }
-
-  private finishResume(binding: PeerBinding, pending: unknown): void {
-    this.resumable = undefined;
-    this.save();
-    this.options.resumed?.(binding);
-    this.options.changed();
-    if (binding.role === "controlled" && Array.isArray(pending)) void this.recoverReceipts(binding, pending);
-  }
-
-  /** Re-send durable receipts for requests the controller still considers open. Never re-runs a task. */
-  private async recoverReceipts(binding: PeerBinding, ids: unknown[]): Promise<void> {
-    for (const requestId of ids.slice(0, 100)) {
-      if (typeof requestId !== "string" || !/^[a-f0-9-]{36}$/.test(requestId)) continue;
-      if (this.processing.has(requestId)) {
-        const current = this.receipts.get(requestId);
-        if (current) this.reply(binding, requestId, current);
-        continue;
-      }
-      let receipt: PeerReceipt;
-      try {
-        const record = JSON.parse(await fs.readFile(this.journalFile(binding.pairId, requestId), "utf8")) as TaskRecord;
-        if (!record?.receipt || record.receipt.requestId !== requestId || !receiptState(record.receipt.state)) throw new Error("invalid");
-        receipt = { ...record.receipt };
-        if (["running", "awaiting-approval"].includes(receipt.state)) {
-          receipt = { requestId, state: "unknown", error: "The controlled Host was interrupted (restart or disconnect) while this request was open. It was not replayed; inspect the original Chat." };
-        }
-      } catch (error) {
-        receipt = { requestId, state: "unknown", error: (error as NodeJS.ErrnoException)?.code === "ENOENT"
-          ? "The controlled Host has no journal for this request; it was not received or approved there. Nothing was replayed."
-          : "The controlled Host's journal for this request is unreadable. Nothing was replayed." };
-      }
-      if (this.binding !== binding || this.closed) return;
-      this.reply(binding, requestId, receipt);
-    }
   }
 
   private requestReview(binding: PeerBinding, requestId: string, state: PortalReview["state"]): void {

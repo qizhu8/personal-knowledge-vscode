@@ -45,8 +45,8 @@ export function questionSchema(value: unknown): QuestionSchema {
   return schema;
 }
 
-export function validateQuestionAnswer(schema: QuestionSchema, value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value) || JSON.stringify(value).length > 32_000) throw new Error("Submit a bounded answer object.");
+export function validateQuestionAnswer(schema: QuestionSchema, value: unknown, maxTextLength = 4000): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value) || JSON.stringify(value).length > Math.max(32_000, maxTextLength * 6 + 2048)) throw new Error("Submit a bounded answer object.");
   const answer = value as Record<string, unknown>;
   if (Object.keys(answer).some(key => !Object.prototype.hasOwnProperty.call(schema.properties, key))) throw new Error("The answer contains an unknown field.");
   for (const [name, field] of Object.entries(schema.properties)) {
@@ -60,7 +60,7 @@ export function validateQuestionAnswer(schema: QuestionSchema, value: unknown): 
       : field.type === "number" ? typeof input !== "number" || !Number.isFinite(input)
       : typeof input !== field.type;
     if (invalid || field.enum && !field.enum.includes(input as string | number | boolean)) throw new Error(`Invalid answer: ${field.title || name}.`);
-    if (typeof input === "string" && (input.length < (field.minLength ?? 0) || input.length > Math.min(field.maxLength ?? 4000, 4000) || /[\0-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(input))) throw new Error(`Text length or characters are invalid: ${field.title || name}.`);
+    if (typeof input === "string" && (input.length < (field.minLength ?? 0) || input.length > Math.min(field.maxLength ?? maxTextLength, maxTextLength) || /[\0-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(input))) throw new Error(`Text length or characters are invalid: ${field.title || name}.`);
     if (typeof input === "string" && field.pattern === aliasPattern && (!input.trim() || input.trim() !== input || /[\x00-\x1f\x7f]/.test(input))) throw new Error(`Invalid alias: ${field.title || name}.`);
     if (Array.isArray(input) && (input.length < (field.minItems ?? 0) || input.length > (field.maxItems ?? 100) || field.uniqueItems && new Set(input).size !== input.length)) throw new Error(`Invalid selection count: ${field.title || name}.`);
     if (typeof input === "number" && (field.minimum !== undefined && input < field.minimum || field.maximum !== undefined && input > field.maximum)) throw new Error(`Number is outside the allowed range: ${field.title || name}.`);

@@ -293,6 +293,12 @@ assert.match(source, /migrationCompleted \? ''/,
   "the one-time migration panel disappears after a successful post-cutover sync");
 assert.match(source, /inventory\/retrieval refresh[\s\S]*Auto Sync remains off/,
   "the cutover UI explains the required manual verification and automation gate");
+assert.match(source, /restart-preview[\s\S]*Restart migration preview/,
+  "an unverified cutover provides an explicit recovery preview instead of a dead-end sync loop");
+assert.match(extensionSource, /action === "restart-preview" \? migration\.restartPreview\(source\)/,
+  "recovery is dispatched through the fenced migration transaction");
+assert.match(extensionSource, /\["stage", "cutover", "rollback", "restart-preview"\]\.includes\(action\)/,
+  "restarting persists the target's disabled automation state");
 const deleteHandler = extensionSource.match(/case "githubSyncDelete":[\s\S]*?case "githubSyncAutomationToggle":/)?.[0] || "";
 assert.doesNotMatch(deleteHandler, /await withGitHubSyncTargetLock/,
   "deleting a target never waits for an in-flight Git operation or a Windows checkout handle");

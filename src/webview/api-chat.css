@@ -88,11 +88,16 @@ select { min-width: 0; max-width: 100%; padding: 4px; border: 1px solid transpar
 #chat-status { display: flex; align-items: center; flex: 0 0 16px; }
 #chat-status.portal-role-active { flex:0 1 auto; min-width:0; font-size:11px; display:inline-flex; align-items:center; gap:4px; }
 #chat-status .portal-headline { max-width:42ch; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-#portal-state { padding:8px; max-height:35vh; overflow:auto; overflow-wrap:anywhere; flex-shrink:0; border-bottom:1px solid var(--vscode-panel-border); background:var(--vscode-editor-inactiveSelectionBackground); }
+#portal-state { position:relative; padding:2px 8px; min-width:0; flex-shrink:0; border-bottom:1px solid var(--vscode-panel-border); background:var(--vscode-editor-inactiveSelectionBackground); }
+#portal-state .portal-compact { display:block; width:100%; height:26px; padding:0; border:0; background:transparent; color:inherit; text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.portal-details { display:none; position:absolute; top:100%; left:0; right:0; z-index:30; max-height:45vh; padding:10px; overflow:auto; overflow-wrap:anywhere; background:var(--vscode-editor-background); border:1px solid var(--vscode-panel-border); box-shadow:0 4px 12px #0006; }
+#portal-state:hover .portal-details,#portal-state:focus-within .portal-details { display:block; }
 #portal-state table { width:100%; font-size:11px; }
 #portal-state td { padding:3px 6px; vertical-align:top; }
 #portal-state button { width:auto; padding:0 8px; }
 #portal-state[hidden] { display:none; }
+#persona-dialog { box-sizing:border-box; width:min(640px,calc(100vw - 24px)); max-height:80vh; overflow:auto; color:var(--vscode-foreground); background:var(--vscode-editor-background); border:1px solid var(--vscode-panel-border); padding:16px; }
+#persona-dialog>header { display:flex; align-items:center; justify-content:space-between; gap:12px; }
 #portal-state pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:240px; overflow:auto; }
 .portal-message { border-left:3px solid var(--vscode-focusBorder); }
 .portal-scene { display:inline-flex; position:relative; width:24px; height:16px; flex:0 0 24px; }
@@ -331,8 +336,11 @@ footer label { display: inline-flex; align-items: center; gap: 4px; }
 #harness-summary { padding:8px 12px; border-bottom:1px solid var(--vscode-panel-border); font-size:12px; overflow-wrap:anywhere; }
 #harness-summary button { width:auto; max-width:100%; height:auto; min-height:28px; padding:4px 8px; margin:4px 0; }
 .chat-question-form { display: grid; gap: 10px; margin: 10px 0; }
-.chat-question-field { display: grid; gap: 4px; }
+.chat-question-field { display: grid; gap: 4px; min-width: 0; margin: 0; padding: 0; border: 0; }
 .chat-question-field input, .chat-question-field select, .chat-question-field textarea { width: 100%; box-sizing: border-box; padding: 6px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); }
 .chat-question-field input[type="checkbox"] { width: auto; justify-self: start; }
-.chat-question-field select[multiple] { min-height: 90px; }
+.chat-question-choices { display: grid; gap: 6px; }
+.chat-question-choice { display: flex; align-items: flex-start; gap: 8px; padding: 6px; border: 1px solid var(--vscode-input-border, transparent); border-radius: 4px; overflow-wrap: anywhere; }
+.chat-question-choice input { flex: none; width: auto; margin: 3px 0 0; accent-color: var(--vscode-focusBorder); }
+.chat-question-choice:focus-within { outline: 1px solid var(--vscode-focusBorder); }
 .chat-question-field small { color: var(--vscode-descriptionForeground); }

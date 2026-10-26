@@ -14,7 +14,12 @@ assert.match(core,
   /function openActionLibrary\(event\)[\s\S]*?vscode\.postMessage\(\{ command:'openActionLibrary' \}\)/,
   "the navigation entry sends a dedicated extension-host request");
 assert.match(extension,
-  /case "openActionLibrary":[\s\S]*?openActionWorkbench\(context, undefined, undefined, true\)[\s\S]*?break/,
-  "the extension host reuses the existing native Action Workbench");
+  /case "openActionLibrary":[\s\S]*?openActionLibrary\(context\)[\s\S]*?break/,
+  "the extension host opens the independent Action Library, not the Workbench");
+assert.match(extension,/registerCommand\("personalKnowledge.openActions", \(\) => openActionWorkbench\(context\)\)/);
+const library = fs.readFileSync(path.join(root,"resources","action-library.html"),"utf8");
+assert.ok(!library.includes('action-workbench.html'));
+assert.match(library,/Open in Workbench/);
+assert.ok(!library.includes('proposal_id'),"proposals are not shown in the admitted library");
 
-console.log("action library entry test: main Automation navigation reuses the durable Action Workbench");
+console.log("action library entry test: independent admitted catalog and explicit Workbench navigation");

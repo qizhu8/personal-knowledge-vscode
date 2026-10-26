@@ -4,7 +4,8 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { createChatBudgetLedger, recordChatBudgetTransport, recordChatBudgetUsage, chatBudgetUsage, recordChatBudgetRuntime, recordChatInferenceTiming, recordChatWorkerBudget, recordChatInvocationBudget, validChatInvocationBudget } = require("../dist/chat/chat-budget-ledger");
-const { ApiChatStore, apiChatHarnessSnapshot } = require("../dist/chat/api-chat-store");
+const { ApiChatStore, apiChatHarnessSnapshot, apiChatCreditUsage, apiChatDiagnostics } = require("../dist/chat/api-chat-store");
+const { reportedCopilotUsage, copilotCreditSummary } = require("../dist/chat/api-chat-models");
 const { build } = require("../src/webview/agent-harness");
 
 function receipt(prices = {}) {
@@ -23,6 +24,56 @@ const invocation = (overrides = {}) => ({
   schema: "pkm.chat.invocation-budget/v1", id: "tool:original-call", owner: "tool", label: "run_process",
   status: "running", startedAt: 1000, elapsedMs: 0, activeMs: 0, userWaitMs: 0,
   timingSource: "pkm.invocation-clock-excluding-tracked-user-wait", ...overrides,
+});
+
+test("Copilot credits use provider nano-AIU, retain exact precision, and distinguish missing data from zero", () => {
+  assert.deepEqual(reportedCopilotUsage({}), {});
+  assert.deepEqual(reportedCopilotUsage({ copilot_usage:{ total_nano_aiu:0 } }), { copilotNanoAiu:0 });
+  for (const value of [null, {}, { total_nano_aiu:-1 }, { total_nano_aiu:0.1 }, { total_nano_aiu:"1" },
+    { total_nano_aiu:NaN }, { total_nano_aiu:Infinity }, { total_nano_aiu:Number.MAX_SAFE_INTEGER + 1 }]) {
+    assert.throws(() => reportedCopilotUsage({ copilot_usage:value }), /credit usage is invalid/);
+  }
+  assert.equal(copilotCreditSummary([undefined]).credits, undefined);
+  assert.equal(copilotCreditSummary([{ copilotNanoAiu:0 }]).credits, "0");
+  const precise = copilotCreditSummary([{ copilotNanoAiu:1 }, { copilotNanoAiu:2_000_000_002 }]);
+  assert.equal(precise.credits, "2.000000003");
+  assert.equal(precise.totalNanoAiu, "2000000003");
+  assert.equal(precise.status, "reported");
+  const large = copilotCreditSummary([{ copilotNanoAiu:Number.MAX_SAFE_INTEGER }, { copilotNanoAiu:Number.MAX_SAFE_INTEGER }]);
+  assert.equal(large.totalNanoAiu, "18014398509481982");
+  assert.equal(large.credits, "18014398.509481982");
+  const partial = copilotCreditSummary([{ copilotNanoAiu:0 }, undefined]);
+  assert.equal(partial.status, "partial");
+  assert.deepEqual([partial.reportedCalls, partial.totalCalls, partial.credits], [1, 2, "0"]);
+});
+
+test("credit snapshots replace per-round frames, include missing sent calls and clarification, and survive reload", () => {
+  const a = receipt(), b = receipt(), prepared = receipt();
+  a.status = b.status = "sent"; b.round = 1; prepared.round = 2;
+  for (let frame = 0; frame < 2; frame++) recordChatBudgetUsage(a.ledger, { inputTokens:100, outputTokens:20, copilotNanoAiu:1_250_000_001 });
+  recordChatBudgetUsage(b.ledger, { inputTokens:10, outputTokens:2 });
+  assert.equal(row(a, "credits").consumed.method, "provider-reported");
+  const message = { id:"credits", role:"assistant", content:"Accounted", status:"complete", budgetReceipts:[a, b, prepared],
+    auxiliaryModelUsage:[{ usage:{ inputTokens:1, outputTokens:1, copilotNanoAiu:1 } }] };
+  assert.deepEqual(apiChatCreditUsage(message), {
+    source:"provider.copilot_usage.total_nano_aiu", status:"partial", reportedCalls:2, totalCalls:3,
+    totalNanoAiu:"1250000002", credits:"1.250000002",
+  });
+  recordChatBudgetUsage(b.ledger, { inputTokens:10, outputTokens:2, copilotNanoAiu:0 });
+  assert.equal(apiChatCreditUsage(message).status, "reported");
+  assert.equal(a.ledger.credits.credits, "1.250000001");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-credit-ledger-"));
+  try {
+    const store = new ApiChatStore(root, "aaaaaaaaaaaaaaaa"), chat = store.create();
+    chat.messages.push(message); store.save(chat);
+    const restored = store.load(chat.id);
+    assert.deepEqual(apiChatCreditUsage(restored.messages[0]), apiChatCreditUsage(message));
+    assert.deepEqual(apiChatDiagnostics(restored).attempts[0].reportedCredits, apiChatCreditUsage(message));
+    assert.deepEqual(apiChatHarnessSnapshot(restored).attempts[0].validation.reportedCredits, apiChatCreditUsage(message));
+  } finally { fs.rmSync(root, { recursive:true, force:true }); }
+  recordChatBudgetUsage(a.ledger, { inputTokens:100, outputTokens:20 });
+  assert.equal(row(a, "credits").consumed, undefined, "A later missing frame must not retain an older billing snapshot");
+  assert.equal(apiChatCreditUsage(message).status, "partial");
 });
 
 test("invocation budgets replace only the same original running observation and keep waits separate", () => {

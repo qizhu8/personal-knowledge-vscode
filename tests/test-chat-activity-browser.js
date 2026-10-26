@@ -6,6 +6,209 @@ const { chromium } = require(process.env.PKM_PLAYWRIGHT_PATH || "playwright");
 const { themes, applyTheme } = require("./ui-theme-fixtures");
 
 const webview = path.join(process.env.PKM_ACTIVITY_EXTENSION_ROOT || path.join(__dirname, ".."), "dist", "webview");
+test("Portal setup stays on one local Chat card, hides redundant direction and masks private links without saving them",async t=>{
+  const {page,errors}=await open(t,390);
+  await page.evaluate(()=>{
+    __state.decisions=[{id:"portal-local",localOnly:true,title:"Portal setup",detail:"Private local controls",
+      secretFields:["link"],fieldVisibility:{role:{field:"connection",values:["Create Portal"]},link:{field:"connection",values:["Accept Portal link"]}},
+      choices:[{value:"submit",label:"Connect"},{value:"cancel",label:"Cancel"}],
+      form:{type:"object",required:["connection","role"],properties:{
+        connection:{type:"string",enum:["Create Portal","Accept Portal link"],default:"Create Portal"},
+        role:{type:"string",enum:["Controller","Controlled"],default:"Controller"},
+        link:{type:"string",maxLength:4000},
+      }}}];
+    window.dispatchEvent(new MessageEvent("message",{data:__state}));
+  });
+  const form=page.locator(".chat-question-form");
+  assert.equal(await form.locator('fieldset:visible').count(),2);
+  await form.getByText("Accept Portal link",{exact:true}).click();
+  assert.equal(await form.locator('fieldset:visible').count(),1,"accepting must not ask for direction again");
+  const link=form.locator('input[name="link"]');
+  assert.equal(await link.getAttribute("type"),"password");
+  await link.fill("fixture-private-link");
+  await page.getByRole("button",{name:"Connect",exact:true}).click();
+  const posts=await page.evaluate(()=>__posts.filter(message=>message.type==="portalDecision"));
+  assert.equal(posts.length,1);
+  assert.equal(posts[0].answer.link,"fixture-private-link");
+  assert.equal(await page.evaluate(()=>JSON.stringify(__saved).includes("fixture-private-link")),false);
+  assert.equal(await page.evaluate(()=>__posts.some(message=>message.type==="send"||message.type==="decision")),false);
+  await page.evaluate(()=>window.dispatchEvent(new MessageEvent("message",{data:{type:"error",confirmationId:"portal-local",message:"Invalid Portal link."}})));
+  assert.equal(await page.getByRole("button",{name:"Connect",exact:true}).isDisabled(),false);
+  assert.match(await form.getByRole("alert").textContent(),/Invalid Portal link/);
+  assert.equal(await link.inputValue(),"fixture-private-link","rejected input stays available for local correction");
+  await page.evaluate(()=>{__state.decisions=[];window.dispatchEvent(new MessageEvent("message",{data:__state}));});
+  assert.equal(await page.locator('input[type="password"]').count(),0);
+  await page.evaluate(()=>{
+    __state.decisions=[{id:"portal-local",localOnly:true,title:"New local card",secretFields:["link"],choices:[{value:"cancel",label:"Cancel"}],
+      form:{type:"object",properties:{link:{type:"string",maxLength:4000}}}}];
+    window.dispatchEvent(new MessageEvent("message",{data:__state}));
+  });
+  assert.equal(await page.locator('input[name="link"]').inputValue(),"","completed cards discard private drafts");
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+  assert.deepEqual(errors,[]);
+});
+
+test("retrieval inspector shows actual routing and only explicit reviews, with checkpoint/revocation controls", async t => {
+  const {page,errors}=await open(t,390);
+  await page.evaluate(()=>{
+    __state.chat.sessionId="agent_session_"+"a".repeat(32);__state.chat.includeHistory=true;
+    const invocation={requestId:"query",requestedRoute:"dual",servedRoute:"lexical+semantic",semanticStatus:"ready",
+      modelInvoked:true,retrievalId:"explicit-receipt",readyGeneration:1,corpusRevision:"fixture",
+      adaptive:{reason:"insufficient-feedback",returned_count:2,original_count:2}};
+    __state.chat.messages=[{id:"review-reply",role:"assistant",status:"complete",content:"Recorded",
+      retrieval:{schema:"pkm.chat.retrieval/v1",chatId:__state.chat.id,query:"query",model:"fixture",selectedCount:0,candidates:[],invocation}}];
+    window.dispatchEvent(new MessageEvent("message",{data:__state}));
+  });
+  await page.locator("#memory").click();
+  const evidence=page.locator("#retrieval-evidence");
+  assert.match(await evidence.innerText(),/dual \/ lexical\+semantic/);
+  await evidence.getByRole("button",{name:"Review relevance",exact:true}).click();
+  assert(await page.evaluate(()=>__posts.some(message=>message.type==="reviewRetrieval"&&message.id==="review-reply")));
+  await evidence.getByRole("button",{name:"Review Task checkpoint",exact:true}).click();
+  assert(await page.evaluate(()=>__posts.some(message=>message.type==="taskCheckpoint")));
+  await page.evaluate(()=>{
+    __state.chat.taskContextCheckpoints=[{id:"checkpoint",taskId:__state.chat.sessionId,sourceInputIds:["old"],
+      summary:"Never deploy. Keep the original evidence."}];
+    Object.assign(__state.chat.messages[0].retrieval.invocation,{semanticStatus:"fallback",servedRoute:"lexical",reason:"Encoder unavailable"});
+    window.dispatchEvent(new MessageEvent("message",{data:__state}));
+  });
+  assert.match(await evidence.innerText(),/dual \/ lexical · semantic fallback/);
+  assert.match(await evidence.innerText(),/Encoder unavailable/);
+  assert.equal(await evidence.getByRole("button",{name:"Review relevance",exact:true}).count(),0);
+  await evidence.locator("summary").click();
+  assert.match(await evidence.locator("pre").innerText(),/Never deploy/);
+  await evidence.getByRole("button",{name:"Revoke checkpoint",exact:true}).click();
+  assert(await page.evaluate(()=>__posts.some(message=>message.type==="revokeTaskCheckpoint")));
+  await page.evaluate(()=>{
+    __state.busy=true;window.dispatchEvent(new MessageEvent("message",{data:__state}));
+  });
+  assert(await evidence.getByRole("button",{name:"Review Task checkpoint",exact:true}).isDisabled());
+  await page.evaluate(localization=>{
+    __state.busy=false;__state.localization=localization;window.dispatchEvent(new MessageEvent("message",{data:__state}));
+  },{locale:"zh-hans",english:JSON.parse(fs.readFileSync(path.join(__dirname,"../resources/locales/en.json"))).strings,
+    strings:JSON.parse(fs.readFileSync(path.join(__dirname,"../resources/locales/zh-hans.json"))).strings});
+  assert.equal(await evidence.getByRole("button",{name:"审阅 Task 上下文检查点",exact:true}).count(),1);
+  await page.evaluate(()=>{
+    __state.chat.includeHistory=false;window.dispatchEvent(new MessageEvent("message",{data:__state}));
+  });
+  assert.equal(await evidence.getByRole("button",{name:"审阅 Task 上下文检查点",exact:true}).count(),0);
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+  assert.deepEqual(errors,[]);
+});
+test("Chat shows tokens and exact provider credits independently, including zero, partial coverage and localized narrow layouts", async t => {
+  const { page, errors } = await open(t, 390);
+  await page.evaluate(() => {
+    const now = Date.now();
+    const credits = { source:"provider.copilot_usage.total_nano_aiu", status:"reported", reportedCalls:1, totalCalls:1,
+      totalNanoAiu:"1000000001", credits:"1.000000001" };
+    window.__state.chat.messages = [{ id:"credit-message", role:"assistant", status:"complete", content:"Recorded",
+      usage:{ inputTokens:123, outputTokens:45 }, creditUsage:credits,
+      progress:{ attemptId:"credit-attempt", startedAt:now, finishedAt:now, status:"complete",
+        steps:[{ label:"Generating response", kind:"model", round:0, at:now, status:"complete" }] },
+      budgetReceipts:[{ round:0, ledger:{ providerUsage:{ inputTokens:123, outputTokens:45 }, credits } }],
+    }];
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  const message = page.locator('[data-message-id="credit-message"]');
+  assert.match(await message.locator(":scope > .message-tokens:not(.message-credits)").innerText(), /123 in \/ 45 out tokens/);
+  assert.equal(await message.locator(".message-credits").innerText(), "1.000000001 credits");
+  assert.match(await message.locator(".message-credits").getAttribute("title"), /Memory and workers are accounted separately/);
+  await message.locator(".activity > summary").click();
+  assert.match(await message.locator(".activity-usage").innerText(), /123 in \/ 45 out.*1\.000000001 credits/);
+  await page.evaluate(() => {
+    Object.assign(window.__state.chat.messages[0].creditUsage, { status:"partial", reportedCalls:1, totalCalls:2, credits:"0", totalNanoAiu:"0" });
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  assert.equal(await message.locator(".message-credits").innerText(), "0 credits (partial: 1/2 calls)");
+  await page.evaluate(localization => {
+    window.__state.localization = localization;
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  }, { locale:"zh-hans", english:JSON.parse(fs.readFileSync(path.join(__dirname, "../resources/locales/en.json"))).strings,
+    strings:JSON.parse(fs.readFileSync(path.join(__dirname, "../resources/locales/zh-hans.json"))).strings });
+  assert.equal(await message.locator(".message-credits").innerText(), "0 Credit（不完整：1/2 次调用）");
+  await page.evaluate(() => {
+    delete window.__state.chat.messages[0].creditUsage;
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  assert.equal(await message.locator(".message-credits").count(), 0);
+  await page.evaluate(() => {
+    const message = window.__state.chat.messages[0];
+    delete message.usage;
+    delete message.budgetReceipts;
+    message.status = "streaming";
+    message.progress.status = "running";
+    window.__state.busy = true;
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  assert.equal(await message.locator(":scope > .message-tokens").count(), 0);
+  assert.equal(await message.locator(".activity-usage:visible").count(), 0);
+  assert.doesNotMatch(await message.innerText(), /Usage not reported|Credits not reported|Awaiting token usage/);
+  await page.evaluate(() => {
+    window.__state.chat.messages[0].creditUsage = { status:"reported", reportedCalls:1, totalCalls:1, credits:"0", totalNanoAiu:"0" };
+    window.__state.chat.messages[0].budgetReceipts = [{ round:0, ledger:{ credits:window.__state.chat.messages[0].creditUsage } }];
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  assert.equal(await message.locator(".message-credits").innerText(), "0 Credit");
+  assert.equal(await message.locator(".activity-usage").textContent(), "0 Credit");
+  await page.evaluate(() => {
+    const message = window.__state.chat.messages[0];
+    message.usage = { inputTokens:0, outputTokens:0 };
+    delete message.creditUsage;
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  assert.match(await message.locator(":scope > .message-tokens").innerText(), /0 in \/ 0 out/);
+  assert.equal(await message.locator(".message-credits").count(), 0);
+  assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+  assert.deepEqual(errors, []);
+});
+
+test("Chat questions show all choices vertically, preserve typed answers/defaults/drafts and require a single answer", async t => {
+  const { page, errors } = await open(t, 390);
+  await page.evaluate(() => {
+    window.__state.decisions = [{ id:"choices", title:"Choose validation", detail:"Fixture question",
+      choices:[{value:"submit",label:"Submit"},{value:"cancel",label:"Cancel"}],
+      form:{type:"object",required:["requiredChoice"],properties:{
+        requiredChoice:{type:"string",title:"Required choice",enum:["A very long option that should wrap across lines rather than overflow the narrow window","Second option"]},
+        single:{type:"integer",title:"One number",enum:[10,20],default:20},
+        multi:{type:"array",title:"Several checks",items:{type:"string",enum:["Unit","Browser","Integration"]},default:["Browser"]},
+        text:{type:"string",title:"Notes",default:"Keep this draft"},
+      }} }];
+    window.dispatchEvent(new MessageEvent("message",{data:window.__state}));
+  });
+  const form = page.locator(".chat-question-form");
+  assert.equal(await form.locator("select").count(),0);
+  assert.equal(await form.getByRole("radio").count(),4);
+  assert.equal(await form.getByRole("checkbox").count(),3);
+  for (const input of await form.getByRole("radio").all()) assert(await input.isVisible());
+  assert(await form.getByRole("radio",{name:"20",exact:true}).isChecked());
+  assert(await form.getByRole("checkbox",{name:"Browser",exact:true}).isChecked());
+  await form.getByRole("button",{name:"Clear answer",exact:true}).click();
+  await page.evaluate(() => {
+    window.__state.decisions[0].detail = "Cleared optional default";
+    window.dispatchEvent(new MessageEvent("message",{data:window.__state}));
+  });
+  assert.equal(await form.getByRole("radio",{name:"20",exact:true}).isChecked(),false,"An explicitly cleared optional answer does not restore its default");
+  await page.getByRole("button",{name:"Submit",exact:true}).click();
+  assert.equal(await page.evaluate(() => __posts.filter(post => post.type === "decision").length),0);
+  await form.getByRole("radio",{name:"Second option",exact:true}).check();
+  await form.getByRole("radio",{name:"10",exact:true}).check();
+  await form.getByRole("checkbox",{name:"Unit",exact:true}).check();
+  await form.getByRole("textbox",{name:"Notes",exact:true}).fill("Edited draft");
+  await page.evaluate(() => {
+    window.__state.decisions[0].detail = "Updated receipt";
+    window.dispatchEvent(new MessageEvent("message",{data:window.__state}));
+  });
+  assert(await form.getByRole("radio",{name:"10",exact:true}).isChecked());
+  assert(await form.getByRole("checkbox",{name:"Unit",exact:true}).isChecked());
+  assert.equal(await form.getByRole("textbox",{name:"Notes",exact:true}).inputValue(),"Edited draft");
+  const bounds = await form.locator(".chat-question-choice").evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().top));
+  assert(bounds.every((top,index) => index === 0 || top > bounds[index-1]),"Every option occupies its own row");
+  await page.getByRole("button",{name:"Submit",exact:true}).click();
+  const result = await page.evaluate(() => __posts.find(post => post.type === "decision"));
+  assert.deepEqual(result.answer,{requiredChoice:"Second option",single:10,multi:["Unit","Browser"],text:"Edited draft"});
+  assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+  assert.deepEqual(errors,[]);
+});
 test("release themes keep Chat controls, settings and tool details readable and reachable", async t => {
   const { page, errors } = await open(t);
   for (const theme of Object.keys(themes)) for (const width of [280, 390, 1280]) {
@@ -361,10 +564,11 @@ test("Profiles action fits its button without spilling into adjacent toolbar con
   }
 });
 
-async function open(t, width = 1280, restored) {
+async function open(t, width = 1280, restored, fakeClock = false) {
   const browser = await chromium.launch({ headless:true, ...(process.env.PKM_CHROMIUM_EXECUTABLE ? { executablePath:process.env.PKM_CHROMIUM_EXECUTABLE } : {}) });
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport:{ width, height:900 } });
+  if (fakeClock) await page.clock.install();
   page.setDefaultTimeout(5000);
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
@@ -624,6 +828,65 @@ test("Chat List hides chat-specific Portal details across updates and restores t
   }
 });
 
+test("Portal permission labels stay stable across clock ticks and unchanged state refreshes preserve DOM and expanded details", async t => {
+  const { page, errors } = await open(t, 390, undefined, true);
+  await page.evaluate(() => {
+    __state.portal = {connected:true,binding:{role:"controlled",peerName:"Controller fixture"},
+      permissions:{active:true,mode:"all",expiresAt:null,now:Date.now(),effective:{"code-execute":true}},
+      observations:[{requestId:"stable-task",at:Date.now(),receivedAt:Date.now(),state:"running",answer:"Working"}]};
+    window.dispatchEvent(new MessageEvent("message",{data:__state}));
+    window.__portalLease=document.querySelector("[data-portal-clock]");
+    window.__portalMatrix=document.querySelector("#portal-state details");
+    __portalMatrix.open=true;
+    document.querySelectorAll("#portal-state details")[1].open=false;
+    window.__leaseMutations=0;
+    new MutationObserver(records=>__leaseMutations+=records.length).observe(__portalLease,{childList:true,characterData:true,subtree:true});
+  });
+  const lease=page.locator("[data-portal-clock]");
+  assert.equal(await lease.textContent(),"Permissions: all · Until disconnected");
+  await page.clock.runFor(2100);
+  assert.equal(await lease.textContent(),"Permissions: all · Until disconnected","timer must not remove the permission mode");
+  assert.equal(await page.evaluate(()=>__leaseMutations),0,"unchanged leases must not trigger layout mutations every second");
+  await page.evaluate(()=>{
+    for(let i=0;i<12;i++){
+      __state.portal.permissions.now=Date.now()+i;
+      window.dispatchEvent(new MessageEvent("message",{data:__state}));
+    }
+  });
+  assert(await page.evaluate(()=>__portalLease===document.querySelector("[data-portal-clock]")&&__portalMatrix===document.querySelector("#portal-state details")));
+  assert(await page.locator("#portal-state details").first().evaluate(node=>node.open));
+  await page.evaluate(()=>{
+    __state.portal.observations[0].answer="Updated progress";
+    window.dispatchEvent(new MessageEvent("message",{data:__state}));
+  });
+  assert(await page.locator("#portal-state details").first().evaluate(node=>node.open),"real progress changes retain permission expansion");
+  assert.equal(await page.locator("#portal-state details").nth(1).evaluate(node=>node.open),false);
+  await page.evaluate(()=>{
+    __state.portal.permissions.expiresAt=Date.now()+3000;
+    window.dispatchEvent(new MessageEvent("message",{data:__state}));
+  });
+  await page.clock.runFor(1100);
+  assert.match(await lease.textContent(),/^Permissions: all · \d+s remaining · expires /);
+  await page.clock.runFor(3100);
+  assert.equal(await lease.textContent(),"No active reusable authorization");
+  assert.match(await page.locator("#portal-state table").textContent(),/code-executeAsk \/ not granted/);
+  assert.deepEqual(errors,[]);
+});
+
+test("unchanged pending Portal cards still update their visible invitation expiry clock",async t=>{
+  const {page,errors}=await open(t,390,undefined,true);
+  await page.evaluate(()=>{
+    __state.portal={connected:false,pending:{role:"controller",expiresAt:Date.now()+120000,linkAvailable:true}};
+    window.dispatchEvent(new MessageEvent("message",{data:__state}));
+    window.__pendingTitle=document.querySelector("[data-portal-headline]");
+  });
+  assert.match(await page.locator("[data-portal-headline]").textContent(),/expires in 2 min/);
+  await page.clock.runFor(61000);
+  assert.match(await page.locator("[data-portal-headline]").textContent(),/expires in 1 min/);
+  assert(await page.evaluate(()=>__pendingTitle===document.querySelector("[data-portal-headline]")));
+  assert.deepEqual(errors,[]);
+});
+
 test("Portal roles, permission matrix and truthful remote snapshots render without impersonating the user", async t => {
   const { page, errors } = await open(t, 390);
   assert.equal(await page.locator("#chat-portal .portal-closed .portal-ring").count(), 1);
@@ -640,9 +903,14 @@ test("Portal roles, permission matrix and truthful remote snapshots render witho
   assert.equal(await page.locator("#chat-portal .portal-side-wizard, #chat-portal .pixel-wizard-frame").count(), 0);
   assert.equal(await page.locator("#chat-portal .portal-ring").getAttribute("cx"), "12");
   const openButton = await page.locator("#chat-portal").innerHTML();
+  assert.equal(await page.locator("#portal-details").isVisible(),false);
+  assert.equal(await page.locator("#portal-state").innerText(),"Portal Connected - Permission scoped");
+  assert(await page.locator("#portal-state").evaluate(node=>node.getBoundingClientRect().height<=34),"connection summary must occupy one line");
   await page.locator("#chat-portal").click();
   assert.deepEqual(await page.evaluate(() => window.__posts.filter(item => item.type === "peerCollaboration")), [{ type: "peerCollaboration", chatId }],
     "clicking an open Portal opens its controls rather than immediately disconnecting");
+  await page.locator(".portal-compact").hover();
+  assert(await page.locator("#portal-details").isVisible());
   const scene = await page.locator("#portal-state .portal-scene-svg").first().evaluate(svg => {
     const wizard = svg.querySelector(".portal-side-wizard").getBBox(); const ring = svg.querySelector(".portal-ring");
     return { wizardLeft:wizard.x, ringRight:Number(ring.getAttribute("cx")) + Number(ring.getAttribute("rx")),
@@ -872,6 +1140,38 @@ test("readable search/edit activity stays safe, localized and inspectable withou
   assert.deepEqual(errors, []);
 });
 
+test("model activity distinguishes rounds and reserves waiting labels for the current round", async t => {
+  const { page, errors } = await open(t, 390);
+  await page.evaluate(() => {
+    const now = Date.now() - 3000;
+    const progress = { attemptId:"round-labels", startedAt:now, status:"running", steps:[
+      { label:"Waiting for first output", kind:"model", round:0, at:now, status:"complete" },
+      { label:"Generating response", kind:"model", round:0, at:now + 100, status:"complete" },
+      { label:"Waiting for first output", kind:"model", round:1, at:now + 1000, status:"running" },
+    ] };
+    window.__state.busy = true;
+    window.__state.chat.progress = progress;
+    window.__state.chat.messages = [{ id:"round-labels", role:"assistant", status:"streaming", content:"", progress }];
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  const activity = page.locator('[data-message-id="round-labels"] .workflow');
+  const rows = activity.locator('.workflow-events > li[data-category="llm"]');
+  assert.equal(await rows.count(), 2, "stages in one model round share one row");
+  assert.match(await rows.nth(0).innerText(), /Model round 1: Model response received/);
+  assert.match(await rows.nth(1).innerText(), /Model round 2: Waiting for model response/);
+  assert.match(await activity.locator(":scope > summary").innerText(), /Model round 2: Waiting for model response/);
+  assert.doesNotMatch(await activity.innerText(), /Waiting for first output/);
+  await page.evaluate(localization => {
+    window.__state.localization = localization;
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  }, { locale:"zh-hans", english:JSON.parse(fs.readFileSync(path.join(__dirname, "../resources/locales/en.json"))).strings,
+    strings:JSON.parse(fs.readFileSync(path.join(__dirname, "../resources/locales/zh-hans.json"))).strings });
+  assert.match(await rows.nth(0).innerText(), /第 1 轮模型交互: 已收到模型响应/);
+  assert.match(await rows.nth(1).innerText(), /第 2 轮模型交互: 等待模型响应/);
+  assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+  assert.deepEqual(errors, []);
+});
+
 test("live activity starts readable and expanded, preserves collapse and separates reported reasoning usage", async t => {
   const { page, errors } = await open(t, 390);
   await page.evaluate(() => {
@@ -896,7 +1196,7 @@ test("live activity starts readable and expanded, preserves collapse and separat
   assert.equal(await tool.getAttribute("open"), null);
   assert.match(await activity.locator(":scope > summary").innerText(), /Read src\/main.ts, lines 94-130/);
   assert.equal(await tool.locator(".activity-usage").innerText(), "");
-  const model = activity.locator(".activity-event").filter({ hasText:"Generating response" });
+  const model = activity.locator(".activity-event").filter({ hasText:"Model round 1: Model response received" });
   assert.equal(await model.locator(".activity-usage").innerText(), "100 in / 20 out · 7 reasoning");
   assert.match(await model.locator(".activity-usage").getAttribute("title"), /included in output/);
   await activity.locator(":scope > summary").click();
@@ -957,7 +1257,7 @@ for (const width of [1280, 390, 320]) test(`activity rows contain their own deta
   assert.match(await tool.innerText(), /"path":"fixture"/);
   assert.equal(await tool.locator("img").count(), 0);
   assert.equal(await page.evaluate(() => Boolean(window.__unsafe)), false);
-  const model = details.filter({ hasText:"Generating response" });
+  const model = details.filter({ hasText:"Model round 1: Model response received" });
   assert.equal(await model.locator(".activity-usage").innerText(), "100 in / 20 out");
   const order = await model.locator("summary").evaluate(node => [...node.children].map(child => child.className));
   assert(order.indexOf("activity-usage") < order.indexOf("elapsed"));
@@ -1017,14 +1317,15 @@ test("the Portal header states the peer and whether progress reaches the control
       window.__state.portal = { endpoint:"ws://hub", permissions:{ grants:[], effective:{} }, observations:[], transfers:[], receipts:[], ...value };
       window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
     }, portal);
-    return page.locator("#portal-state strong").innerText();
+    return portal.binding || portal.pending ? page.locator("#portal-state strong").textContent() : undefined;
   };
   const binding = role => ({ role, pairId:"p", peerName:"peer", peerMachine:"DESKTOP-56TITCC", peerChatName:"Diagnose" });
   assert.equal(await headline({ connected:true, reviewMode:"manual", binding:binding("controlled") }), "Controlled by DESKTOP-56TITCC · Diagnose · controller checks status manually");
   assert.equal(await headline({ connected:true, reviewMode:"auto", binding:binding("controlled") }), "Controlled by DESKTOP-56TITCC · Diagnose · progress auto-sent to controller");
   assert.equal(await headline({ connected:true, reviewMode:"auto", binding:binding("controller") }), "Controlling DESKTOP-56TITCC · Diagnose · auto-review on remote progress");
   assert.equal(await headline({ connected:false, binding:binding("controller") }), "Controlling DESKTOP-56TITCC · Diagnose · reconnecting…");
-  assert.equal(await headline({ connected:false }), "Portal open · waiting for a peer to pair");
+  await headline({ connected:false });
+  assert.equal(await page.locator("#portal-state").isVisible(),false);
   assert.deepEqual(errors, []);
 });
 
@@ -1038,6 +1339,7 @@ test("a pending Portal link shows its deadline, endpoint reachability and re-cop
     window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
   });
   assert.equal(await page.locator("#portal-state strong").innerText(), "Portal link sent · waiting for the other side to accept (expires in 10 min)");
+  await page.locator(".portal-compact").hover();
   const text = await page.locator("#portal-state").innerText();
   assert.match(text, /ws:\/\/127\.0\.0\.1:7345 \(forwarded localhost: reachable only on the computer running the VS Code UI\)/);
   assert.match(text, /This Chat will control the peer/);
@@ -1055,4 +1357,26 @@ test("a pending Portal link shows its deadline, endpoint reachability and re-cop
   assert.match(live, /External MCP access: until /);
   assert.equal(await page.locator("[data-portal-pending]").count(), 0);
   assert.deepEqual(errors, []);
+});
+
+test("disconnected Portal hides stale endpoint/receipts and connected details omit raw protocol identities",async t=>{
+  const {page,errors}=await open(t,390);
+  await page.evaluate(()=>{
+    __state.portal={connected:true,binding:{role:"controlled",peerName:"Windows fixture",peerChatId:"fixture-chat-uuid"},
+      permissions:{active:true,mode:"all",expiresAt:null},receipts:[{requestId:"fixture-request-uuid",state:"completed"}],
+      transfers:[{transferId:"fixture-transfer-uuid",state:"completed",sha256:"fixture-hash"}]};
+    window.dispatchEvent(new MessageEvent("message",{data:__state}));
+  });
+  assert.equal(await page.locator("#portal-state").innerText(),"Portal Connected - Permission all · Until disconnected");
+  await page.locator(".portal-compact").focus();
+  assert(await page.locator("#portal-details").isVisible(),"keyboard focus exposes the same details as hover");
+  assert.doesNotMatch(await page.locator("#portal-details").textContent(),/fixture-(chat|request|transfer)-uuid|fixture-hash/);
+  await page.evaluate(()=>{
+    __state.portal={connected:false,endpoint:"ws://old-endpoint",permissions:{active:false},receipts:[{requestId:"old",state:"completed"}]};
+    window.dispatchEvent(new MessageEvent("message",{data:__state}));
+  });
+  assert.equal(await page.locator("#portal-state").isVisible(),false);
+  assert.equal(await page.locator("#portal-state").textContent(),"");
+  assert.equal(await page.locator("#chat-portal").getAttribute("aria-pressed"),"false");
+  assert.deepEqual(errors,[]);
 });

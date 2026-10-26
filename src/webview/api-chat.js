@@ -119,18 +119,17 @@
       element("cost").title = "Input estimate plus reserved output for the first model call only, not a turn spending cap. Tool loops resend growing context and add input costs each round. Cache rates, pricing tiers and surcharges are excluded.";
     } else {
       const copilot = state.settings.provider === "vscode" && profile?.id?.startsWith("vscode:copilot:");
-      element("cost").textContent = copilot ? "Credits unavailable" : state.settings.provider === "vscode" ? "Billing unavailable" : "Price unavailable";
-      element("cost").title = copilot ? "GitHub AI Credits are provider-accounted billing, not token counts. This public API does not expose actual credits, plan type or remaining quota; unavailable does not mean zero. Reported token usage is shown on assistant replies." : state.settings.provider === "vscode" ? "Reported token usage is shown on assistant replies when supplied. This public API does not expose account billing or remaining quota." : "Configure verified model prices in API Chat model profiles.";
+      element("cost").textContent = copilot ? t("Credits reported after the call") : state.settings.provider === "vscode" ? "Billing unavailable" : "Price unavailable";
+      element("cost").title = copilot ? t("Actual Copilot credits come from provider billing metadata after each call, not from token estimates. Account plan and remaining quota are not reported here.") : state.settings.provider === "vscode" ? "Reported token usage is shown on assistant replies when supplied. This public API does not expose account billing or remaining quota." : "Configure verified model prices in API Chat model profiles.";
     }
   }
   const elapsed = milliseconds => `${Math.floor(milliseconds / 60000)}:${String(Math.floor(milliseconds / 1000) % 60).padStart(2, "0")}`;
   function updateClock() {
     for (const timer of document.querySelectorAll("[data-started]")) timer.textContent = elapsed(Math.max(0, Number(timer.dataset.finished || Date.now()) - Number(timer.dataset.started)));
   }
-  function messageTokenLabel(message, pending) {
-    if (pending) return "Awaiting token usage";
+  function messageTokenLabel(message) {
     const usage = message.usage;
-    if (!usage || ![usage.inputTokens, usage.outputTokens].every(value => Number.isSafeInteger(value) && value >= 0)) return "Token usage not reported";
+    if (!usage || ![usage.inputTokens, usage.outputTokens].every(value => Number.isSafeInteger(value) && value >= 0)) return "";
     return `${usage.inputTokens.toLocaleString()} in / ${usage.outputTokens.toLocaleString()} out tokens`;
   }
   function chatRole(chat = state.chat) {
@@ -181,8 +180,18 @@
     if (!active) { icon.className = "workflow-dot"; icon.setAttribute("aria-hidden", "true"); }
     const label = document.createElement("span"); label.className = "activity-label";
     const completed = (run.completedDroppedSteps || 0) + run.steps.filter((step, index) => statusOf(step, index) === "complete").length;
+    // Presentation only: retain recorded stages and round identities, including older Chats.
+    const modelStageLabel = (step, status) => {
+      if (!step || step.kind !== "model" || !Number.isSafeInteger(step.round) || step.round < 0) return step?.label;
+      const round = t("Model round {round}", { round:step.round + 1 });
+      const phase = status === "complete" ? t("Model response received")
+        : step.label === "Waiting for first output" ? t("Waiting for model response")
+        : ["Requesting VS Code model", "Connecting to model API"].includes(step.label) ? t("Requesting model")
+        : step.label === "Generating response" ? t("Receiving model response") : step.label;
+      return `${round}: ${phase}`;
+    };
     const latestStep = run.steps[run.steps.length - 1], latestTool = latestStep?.toolCallId && message.toolCalls?.find(tool => tool.id === latestStep.toolCallId);
-    label.textContent = `Activity [${completed} / ${(run.droppedSteps || 0) + run.steps.length}] ${active ? latestTool ? globalThis.PkmAgentHarness.describeToolCall(latestTool, t) : latestStep?.label || "Preparing request" : { complete: "Completed", cancelled: "Cancelled", failed: "Failed or interrupted" }[run.status] || run.status}`;
+    label.textContent = `Activity [${completed} / ${(run.droppedSteps || 0) + run.steps.length}] ${active ? latestTool ? globalThis.PkmAgentHarness.describeToolCall(latestTool, t) : modelStageLabel(latestStep, statusOf(latestStep || {}, run.steps.length - 1)) || "Preparing request" : { complete: "Completed", cancelled: "Cancelled", failed: "Failed or interrupted" }[run.status] || run.status}`;
     label.title = `${run.model || ""} · Completed / recorded events; future work is shown only from recorded plans`;
     const currentStep = run.steps[run.steps.length - 1];
     const timer = document.createElement("span"); timer.className = "elapsed"; timer.dataset.started = currentStep?.at ?? run.startedAt;
@@ -204,7 +213,7 @@
       const previous = rows.get(identity);
       rows.set(identity, { ...step, firstAt: previous?.firstAt ?? step.at, status: statusOf(step, index), index });
     });
-    const appendRow = (id, label, status, at, finishedAt, body, usage, category = "info", operation = "display", tool) => {
+    const appendRow = (id, label, status, at, finishedAt, body, usage, category = "info", operation = "display", tool, credits) => {
       const row = document.createElement("li"); row.dataset.status = status; row.dataset.category = category; row.dataset.operation = operation;
       const line = body ? document.createElement("summary") : document.createElement("div");
       line.className = "workflow-event-line";
@@ -217,8 +226,10 @@
       const tokens = document.createElement("span"); tokens.className = "activity-usage";
       const reasoning = usage && Number.isSafeInteger(usage.reasoningTokens) && usage.reasoningTokens >= 0 && usage.reasoningTokens <= usage.outputTokens ? usage.reasoningTokens : undefined;
       tokens.textContent = usage ? `${usage.inputTokens.toLocaleString()} in / ${usage.outputTokens.toLocaleString()} out${reasoning === undefined ? "" : ` · ${t("{tokens} reasoning", { tokens:reasoning.toLocaleString() })}`}`
-        : category !== "llm" ? "" : operation === "token-count" ? "Token count · not inference" : "Usage not reported";
+        : category === "llm" && operation === "token-count" ? "Token count · not inference" : "";
       tokens.title = usage ? t("Provider-reported usage for this model round; reasoning tokens are included in output, not added again. Not a token charge for each tool.") : "No independent provider token usage is reported for this operation.";
+      if (category === "llm" && operation !== "token-count") tokens.textContent = [tokens.textContent, globalThis.PkmAgentHarness.creditLabel(credits, t)].filter(Boolean).join(" · ");
+      tokens.hidden = !tokens.textContent;
       const timer = document.createElement("span"); timer.className = "elapsed";
       timer.title = t("Elapsed dispatch/result time, including waits; not CPU time or proof of remote-job completion.");
       if (Number.isFinite(at)) {
@@ -254,8 +265,8 @@
       const category = step.category || (step.kind === "tool" || step.toolCallId || /^(Running|Completed|Failed) tool:/.test(step.label) ? "cmd"
         : step.kind === "model" || /^Memory: (understanding the question|summarizing topic)$/.test(step.label) ? "llm" : "info");
       const operation = step.operation || (category === "llm" ? "inference" : category === "cmd" ? "command" : "display");
-      appendRow(id, `${tool ? globalThis.PkmAgentHarness.describeToolCall(tool, t) : step.label} · ${step.status}`, step.status, tool?.startedAt ?? step.firstAt,
-        tool?.finishedAt ?? step.finishedAt ?? (["complete", "failed", "cancelled"].includes(step.status) ? run.steps[step.index + 1]?.at ?? run.finishedAt : undefined), body, reported, category, operation, tool);
+      appendRow(id, `${tool ? globalThis.PkmAgentHarness.describeToolCall(tool, t) : modelStageLabel(step, step.status)} · ${step.status}`, step.status, tool?.startedAt ?? step.firstAt,
+        tool?.finishedAt ?? step.finishedAt ?? (["complete", "failed", "cancelled"].includes(step.status) ? run.steps[step.index + 1]?.at ?? run.finishedAt : undefined), body, reported, category, operation, tool, receipt?.ledger?.credits);
     }
     for (const tool of tools.values()) {
       const body = document.createElement("pre"); body.textContent = `${tool.name}\n${tool.arguments}\n\n${tool.result || ""}`;
@@ -568,9 +579,15 @@
         const warning = document.createElement("p"); warning.className = "message-status"; warning.textContent = message.outputBudgetWarning; article.append(warning);
       }
       const tokens = document.createElement("div"); tokens.className = "message-tokens";
-      tokens.textContent = messageTokenLabel(message, state.busy && (message.status === "streaming" || message.id === pendingUserId));
+      tokens.textContent = messageTokenLabel(message);
       tokens.title = message.role === "user" ? "Independent user-message token usage is unavailable unless the provider reports it; request input includes history/context/tools." : "Provider-reported tokens for reported rounds only; other rounds may omit usage. Input includes history/context/tools, not just the latest user message.";
-      article.append(tokens);
+      if (tokens.textContent) article.append(tokens);
+      if (message.role === "assistant") {
+        const credits = document.createElement("div"); credits.className = "message-tokens message-credits";
+        credits.textContent = globalThis.PkmAgentHarness.creditLabel(message.creditUsage, t);
+        credits.title = t("Provider-reported Copilot credits for Chat rounds and quota clarification. Memory and workers are accounted separately. Missing reports are not zero.");
+        if (credits.textContent) article.append(credits);
+      }
       messageNodes.set(message.id, { fingerprint, article });
       children.push(article);
     }
@@ -608,24 +625,47 @@
         const form = document.createElement("form"); form.className = "chat-question-form";
         const draft = formDrafts.get(approval.id) || Object.create(null);
         const fields = [];
+        const updateVisibility = () => {
+          if (!approval.localOnly || !approval.fieldVisibility) return;
+          for (const field of fields) {
+            const condition = approval.fieldVisibility[field.name];
+            const dependency = condition && fields.find(item => item.name === condition.field);
+            field.label.hidden = !!dependency && !condition.values.includes(dependency.read());
+          }
+        };
         for (const [name, field] of Object.entries(approval.form.properties)) {
-          const label = document.createElement("label"); label.className = "chat-question-field";
-          const title = document.createElement("span"); title.textContent = field.title || name;
+          const choices = field.enum || field.items?.enum;
+          const label = document.createElement(choices ? "fieldset" : "label"); label.className = "chat-question-field";
+          const title = document.createElement(choices ? "legend" : "span"); title.textContent = field.title || name;
           const required = approval.form.required?.includes(name);
           if (required) title.textContent += " *";
           let control;
-          const choices = field.enum || field.items?.enum;
+          let readChoices;
           if (choices) {
-            control = document.createElement("select"); control.multiple = field.type === "array";
-            if (!control.multiple) { const empty = document.createElement("option"); empty.value = ""; empty.textContent = t("Choose an answer"); control.append(empty); }
-            choices.forEach((choice, index) => { const option = document.createElement("option"); option.value = String(index); option.textContent = String(choice); control.append(option); });
-            const previous = draft[name] ?? field.default;
-            for (const option of control.options) if (option.value !== "") option.selected = control.multiple
-              ? Array.isArray(previous) && previous.includes(choices[Number(option.value)])
-              : previous === choices[Number(option.value)];
+            control = document.createElement("div"); control.className = "chat-question-choices";
+            const multiple = field.type === "array", inputs = [];
+            const previous = Object.prototype.hasOwnProperty.call(draft,name) ? draft[name] : field.default;
+            choices.forEach((choice, index) => {
+              const row = document.createElement("label"); row.className = "chat-question-choice";
+              const option = document.createElement("input"); option.type = multiple ? "checkbox" : "radio";
+              option.name = `${approval.id}:${name}`; option.value = String(index);
+              option.checked = multiple ? Array.isArray(previous) && previous.includes(choice) : previous === choice;
+              option.required = !multiple && !!required;
+              const text = document.createElement("span"); text.textContent = String(choice);
+              row.append(option, text); control.append(row); inputs.push(option);
+            });
+            readChoices = () => multiple ? inputs.filter(option => option.checked).map(option => choices[Number(option.value)])
+              : inputs.some(option => option.checked) ? choices[Number(inputs.find(option => option.checked).value)] : undefined;
+            if (!multiple && !required) {
+              const clear = document.createElement("button"); clear.type = "button"; clear.textContent = t("Clear answer");
+              clear.onclick = () => { inputs.forEach(option => { option.checked = false; }); draft[name] = undefined; formDrafts.set(approval.id,draft); };
+              control.append(clear);
+            }
           } else {
-            control = document.createElement(field.type === "array" ? "textarea" : "input");
-            if (field.type !== "array") control.type = field.type === "boolean" ? "checkbox" : ["integer", "number"].includes(field.type) ? "number" : "text";
+            control = document.createElement(approval.localOnly && approval.secretFields?.includes(name) ? "input"
+              : field.type === "array" || field.type === "string" && field.maxLength >= 2000 ? "textarea" : "input");
+            if (control.tagName === "INPUT") control.type = approval.localOnly && approval.secretFields?.includes(name) ? "password" : field.type === "boolean" ? "checkbox" : ["integer", "number"].includes(field.type) ? "number" : "text";
+            if (approval.localOnly && approval.secretFields?.includes(name)) control.autocomplete = "off";
             if (field.type === "boolean") control.checked = draft[name] ?? field.default ?? false;
             else { const previous = draft[name] ?? field.default ?? ""; control.value = Array.isArray(previous) ? previous.join("\n") : String(previous); }
             if (field.type === "integer") control.step = "1";
@@ -636,17 +676,17 @@
             control.maxLength = Math.min(field.maxLength ?? 4000, 4000);
           }
           control.name = name; control.required = !!required && field.type !== "boolean";
-          const read = () => choices ? control.multiple ? [...control.selectedOptions].map(option => choices[Number(option.value)])
-            : control.value === "" ? undefined : choices[Number(control.value)]
+          const read = () => choices ? readChoices()
             : field.type === "boolean" ? control.checked : control.value === "" ? undefined
             : ["integer", "number"].includes(field.type) ? Number(control.value)
             : field.type === "array" ? control.value.split("\n").filter(Boolean) : control.value;
-          control.oninput = control.onchange = () => { draft[name] = read(); formDrafts.set(approval.id, draft); };
+          control.oninput = control.onchange = () => { draft[name] = read(); formDrafts.set(approval.id, draft); updateVisibility(); };
           label.append(title, control);
           if (field.description) { const description = document.createElement("small"); description.textContent = field.description; label.append(description); }
-          form.append(label); fields.push({ name, control, read });
+          form.append(label); fields.push({ name, control, read, label });
         }
         const feedback = document.createElement("p"); feedback.className = "message-error"; feedback.setAttribute("role", "alert"); form.append(feedback);
+        updateVisibility();
         readForm = () => {
           if (!form.reportValidity()) return undefined;
           const answer = Object.create(null);
@@ -663,7 +703,7 @@
           const answer = value === "submit" && readForm ? readForm() : undefined;
           if (value === "submit" && readForm && answer === undefined) return;
           for (const action of actions.children) action.disabled = true;
-          post(approval.decision ? "decision" : "approval", { id: approval.id, value, ...(answer ? { answer } : {}) });
+          post(approval.localOnly ? "portalDecision" : approval.decision ? "decision" : "approval", { id: approval.id, value, ...(answer ? { answer } : {}) });
         });
         const text = document.createElement("span"); text.textContent = t(label); button.disabled = !!approval.questioning; button.append(text); actions.append(button);
       }
@@ -809,7 +849,7 @@
       return preview ? { ...candidate, label: preview } : candidate;
     }) };
     const budget = step.budget || (step.id === "latest" ? budgets.at(-1) : undefined);
-    const fingerprint = JSON.stringify([state.chat.id, activity?.id, activity?.progress?.attemptId, step.id, receipt, budget, state.memoryTree, policy, element("retrieval-kind").value, element("retrieval-top").value, element("retrieval-flow").clientWidth]);
+    const fingerprint = JSON.stringify([state.chat.id, state.chat.sessionId, state.chat.includeHistory, state.busy, state.localization?.locale, state.chat.taskContextCheckpoints, activity?.id, activity?.progress?.attemptId, step.id, receipt, budget, state.memoryTree, policy, element("retrieval-kind").value, element("retrieval-top").value, element("retrieval-flow").clientWidth]);
     if (fingerprint === memoryFingerprint) return;
     memoryFingerprint = fingerprint;
     const type = element("retrieval-kind"); const previousType = type.value;
@@ -821,6 +861,22 @@
         ? receipt.phase === "sent" ? "Accepted transport; not proof of model completion" : "Prepared context; not confirmed sent" : "Latest budget selection")
       + (timeline?.droppedRounds ? " · " + t("{count} earlier sends omitted", { count: timeline.droppedRounds }) : "") : t("No retrieval receipt");
     const evidence = element("retrieval-evidence"); evidence.replaceChildren();
+    if (state.chat.sessionId && state.chat.includeHistory) {
+      const checkpoint = [...state.chat.taskContextCheckpoints || []].reverse().find(item => item.taskId === state.chat.sessionId);
+      const review = document.createElement("button");
+      review.type = "button"; review.textContent = t("Review Task checkpoint"); review.disabled = state.busy;
+      review.onclick = () => post("taskCheckpoint", { chatId: state.chat.id });
+      evidence.append(review);
+      if (checkpoint && !checkpoint.revokedAt) {
+        const details = document.createElement("details"), summary = document.createElement("summary"), text = document.createElement("pre");
+        summary.textContent = t("Approved Task checkpoint") + ` · ${checkpoint.sourceInputIds.length}`;
+        text.textContent = checkpoint.summary;
+        const revoke = document.createElement("button");
+        revoke.type = "button"; revoke.textContent = t("Revoke checkpoint"); revoke.disabled = state.busy;
+        revoke.onclick = () => post("revokeTaskCheckpoint", { chatId: state.chat.id });
+        details.append(summary, text, revoke); evidence.append(details);
+      }
+    }
     const line = (label, value) => {
       const row = document.createElement("p"), title = document.createElement("strong");
       title.textContent = t(label) + ": "; row.append(title, document.createTextNode(t(String(value ?? "Not recorded")))); evidence.append(row);
@@ -829,6 +885,21 @@
     line("Query", receipt?.query);
     line("Recorded scope", receipt ? `${receipt.chatId}${receipt.sessionId ? " / " + receipt.sessionId : ""}` : undefined);
     line("Retrieval methods", receipt ? [...new Set(receipt.candidates.map(candidate => candidate.method))].join(", ") || t("Not recorded") : undefined);
+    if (receipt?.invocation) {
+      const invocation = receipt.invocation;
+      line("Requested / served retrieval", `${invocation.requestedRoute} / ${invocation.servedRoute} · semantic ${invocation.semanticStatus}`);
+      line("Model invoked", invocation.modelInvoked ? "Yes" : "No");
+      line("Retrieval invocation", `${invocation.requestId} · generation ${invocation.readyGeneration} · ${invocation.retrievalId || t("Not recorded")}`);
+      if (invocation.reason) line("Retrieval reason", invocation.reason);
+      if (invocation.adaptive) line("Adaptive result count", `${invocation.adaptive.reason} · ${invocation.adaptive.returned_count}/${invocation.adaptive.original_count}`);
+      if (invocation.retrievalId && invocation.modelInvoked && invocation.semanticStatus === "ready") {
+        const review = document.createElement("button");
+        review.type = "button"; review.textContent = t("Review relevance");
+        review.disabled = state.busy;
+        review.onclick = () => post("reviewRetrieval", { chatId: state.chat.id, id: activity.id });
+        evidence.append(review);
+      }
+    }
     if (budget) {
       line("Model / round", `${budget.modelId} / ${budget.round + 1}`);
       line("Dispatch evidence", budget.status === "sent" ? "Accepted transport; not proof of model completion"
@@ -908,32 +979,65 @@
   function portalHeadline(portal) {
     const binding = portal?.binding;
     if (!binding && portal?.pending) return `Portal link sent · waiting for the other side to accept (expires in ${portalPendingMinutes(portal.pending)} min)`;
-    if (!binding) return portal?.resumable ? `Portal closed · re-attach available (${portal.resumable.peerMachine || portal.resumable.peerName || "previous peer"})`
-      : "Portal open · waiting for a peer to pair";
+    if (!binding) return "Portal open · waiting for a peer to pair";
     const peer = [binding.peerMachine || binding.peerName, binding.peerChatName].filter(Boolean).join(" · ") || "peer";
     const review = binding.role === "controlled"
       ? { auto: "progress auto-sent to controller", manual: "controller checks status manually" }[portal.reviewMode]
       : { auto: "auto-review on remote progress", manual: "check remote status manually" }[portal.reviewMode];
     return [`${binding.role === "controller" ? "Controlling" : "Controlled by"} ${peer}`, portal.connected ? review : "reconnecting…"].filter(Boolean).join(" · ");
   }
+  function portalPermissionLabel(permissions) {
+    if (!permissions?.active) return "No active reusable authorization";
+    return `Permissions: ${permissions.mode} · ${permissions.expiresAt == null ? "Until disconnected"
+      : `${Math.max(0, Math.ceil((permissions.expiresAt - Date.now()) / 1000))}s remaining · expires ${new Date(permissions.expiresAt).toLocaleTimeString()}`}`;
+  }
+  function portalCompactLabel(portal) {
+    if (!portal.binding && portal.pending) return `Portal Pairing - expires in ${portalPendingMinutes(portal.pending)} min`;
+    const permission = portal.permissions?.active ? portal.permissions.mode : "Ask";
+    return `Portal ${portal.connected ? "Connected" : "Reconnecting"} - Permission ${permission}${portal.permissions?.active && portal.permissions.expiresAt == null ? " · Until disconnected" : ""}`;
+  }
+  let portalFingerprint;
   function renderPortal() {
-    const host = element("portal-state");
-    host.replaceChildren();
+    const container = element("portal-state");
+    let host = container;
     const portal = state?.portal;
     const connected = !!portal?.connected && !!portal.binding;
     const button = element("chat-portal");
-    button.replaceChildren(globalThis.PkmChatPortalIcon(connected, undefined, false));
+    if (button.dataset.connection !== (connected ? "connected" : "disconnected")) button.replaceChildren(globalThis.PkmChatPortalIcon(connected, undefined, false));
     button.dataset.connection = connected ? "connected" : "disconnected";
     button.setAttribute("aria-pressed", String(connected));
     button.title = connected ? `Chat Portal: connected (open) · ${portal.binding.role} · ${portal.binding.peerMachine || portal.binding.peerName || ""} · ${portal.binding.peerChatName || ""}`
-      : portal?.resumable ? `Chat Portal: closed · re-attach available (${portal.resumable.role} · ${portal.resumable.peerMachine || portal.resumable.peerName || ""})`
       : "Chat Portal: disconnected / awaiting pairing (closed)";
-    button.dataset.resumable = String(!connected && !!portal?.resumable);
     element("chat-status").classList.toggle("portal-role-active", !!portal?.binding);
-    host.hidden = !portal;
-    if (!portal) return;
-    const role = portal.binding?.role;
+    const role = portal?.binding?.role;
+    if (role) {
+      const label = document.createElement("span"); label.textContent = portalHeadline(portal); label.className = "portal-headline";
+      const scene = globalThis.PkmChatPortalIcon(connected, role);
+      scene.setAttribute("role", "img"); scene.setAttribute("aria-label", `${role === "controller" ? "Controller" : "Controlled"} · Portal ${connected ? "open" : "closed"}`);
+      element("chat-status").replaceChildren(scene, label);
+    }
+    host.hidden = !portal?.binding && !portal?.pending;
+    const fingerprint = JSON.stringify([state?.chat?.id, portal && { ...portal,
+      permissions: portal.permissions && { ...portal.permissions, now: undefined } }]);
+    if (fingerprint === portalFingerprint) return;
+    portalFingerprint = fingerprint;
+    const expanded = new Map([...host.querySelectorAll("details[data-portal-detail]")].map(node => [node.dataset.portalDetail, node.open]));
+    host.replaceChildren();
+    if (host.hidden) return;
+    const compact = document.createElement("button");
+    compact.className = "portal-compact";
+    compact.dataset.portalCompact = "true";
+    compact.textContent = portalCompactLabel(portal);
+    compact.setAttribute("aria-describedby", "portal-details");
+    compact.onclick = () => post("peerCollaboration", { chatId: state.chat.id });
+    host.append(compact);
+    host = document.createElement("section");
+    host.id = "portal-details";
+    host.className = "portal-details";
+    host.setAttribute("aria-label", "Portal connection details");
+    container.append(host);
     const title = document.createElement("strong");
+    title.dataset.portalHeadline = "true";
     title.textContent = portalHeadline(portal);
     const wizard = globalThis.PkmChatPortalIcon(true, role || "controller");
     wizard.classList.add("portal-wizard", role === "controlled" ? "portal-controlled" : "portal-controller");
@@ -943,8 +1047,7 @@
     host.append(title);
     const target = document.createElement("div");
     target.textContent = [portalEndpointText(portal.endpoint, portal.endpointScope),
-      portal.peerEndpoint && `peer endpoint ${portalEndpointText(portal.peerEndpoint, portal.peerEndpointScope)}`,
-      portal.binding?.peerChatId && `peer Chat ${portal.binding.peerChatId}`].filter(Boolean).join(" · ");
+      portal.peerEndpoint && `peer endpoint ${portalEndpointText(portal.peerEndpoint, portal.peerEndpointScope)}`].filter(Boolean).join(" · ");
     host.append(target);
     if (portal.pending && !portal.binding) {
       const pending = document.createElement("div");
@@ -970,16 +1073,16 @@
       host.append(external);
     }
     const permissions = document.createElement("button");
-    permissions.textContent = portal.resumable && !portal.binding ? "Re-attach / pair…" : "Permissions / transfers";
+    permissions.textContent = "Permissions / transfers";
     permissions.onclick = () => post("peerCollaboration", { chatId: state.chat.id });
     host.append(permissions);
     const lease = document.createElement("div");
     lease.dataset.portalClock = "true";
-    lease.textContent = portal.permissions?.active
-      ? `Permissions: ${portal.permissions.mode} · ${portal.permissions.expiresAt == null ? "Until disconnected" : `${Math.max(0, Math.ceil((portal.permissions.expiresAt - Date.now()) / 1000))}s remaining · expires ${new Date(portal.permissions.expiresAt).toLocaleTimeString()}`}`
-      : "No active reusable authorization";
+    lease.textContent = portalPermissionLabel(portal.permissions);
     host.append(lease);
     const matrix = document.createElement("details");
+    matrix.dataset.portalDetail = "permissions";
+    matrix.open = expanded.get("permissions") ?? false;
     const heading = document.createElement("summary"); heading.textContent = "Permission matrix (this Chat / Portal only)"; matrix.append(heading);
     const table = document.createElement("table");
     for (const [dimension, allowed] of Object.entries(portal.permissions?.effective || {})) {
@@ -995,12 +1098,6 @@
       const cell = document.createElement("td"); cell.textContent = value; fileRow.append(cell);
     }
     table.append(fileRow); matrix.append(table); host.append(matrix);
-    if (role && element("chat-status")) {
-      const label = document.createElement("span"); label.textContent = portalHeadline(portal); label.className = "portal-headline";
-      const scene = globalThis.PkmChatPortalIcon(connected, role);
-      scene.setAttribute("role", "img"); scene.setAttribute("aria-label", `${role === "controller" ? "Controller" : "Controlled"} · Portal ${connected ? "open" : "closed"}`);
-      element("chat-status").replaceChildren(scene, label);
-    }
     const evidence = document.createElement("div");
     evidence.textContent = portal.binding && !portal.binding.peerCapabilities?.includes("observations-v1")
       ? "Remote Host does not advertise live snapshots; receipts alone do not reveal its visible Chat state."
@@ -1010,12 +1107,13 @@
       const observed = (portal.observations || []).find(item => item.requestId === receipt.requestId);
       if (observed && (!["completed", "failed", "cancelled", "denied", "unknown"].includes(receipt.state) || observed.state === receipt.state)) continue;
       const row = document.createElement("div");
-      row.textContent = `Remote request ${receipt.requestId} · ${receipt.state}${receipt.error ? ` · ${receipt.error}` : ""}${observed ? " · Final receipt supersedes the previous task snapshot" : " · No task snapshot received yet"}`;
+      row.textContent = `Remote task · ${receipt.state}${receipt.error ? ` · ${receipt.error}` : ""}${observed ? " · Final receipt supersedes the previous task snapshot" : " · No task snapshot received yet"}`;
       host.append(row);
     }
     for (const observation of portal.observations || []) {
       const row = document.createElement("details");
-      row.open = true;
+      row.dataset.portalDetail = `observation:${observation.requestId}`;
+      row.open = expanded.get(row.dataset.portalDetail) ?? true;
       const summary = document.createElement("summary");
       const stale = !portal.connected || Date.now() - (observation.receivedAt || observation.at) > 15000;
       summary.dataset.observedAt = String(observation.receivedAt || observation.at);
@@ -1028,7 +1126,7 @@
       row.append(body); host.append(row);
     }
     for (const transfer of portal.transfers || []) {
-      const row = document.createElement("pre"); row.textContent = `File transfer · ${JSON.stringify(transfer)}`; host.append(row);
+      const row = document.createElement("p"); row.textContent = `File transfer · ${transfer.state || "Status not reported"}`; host.append(row);
     }
   }
 
@@ -1260,6 +1358,17 @@
       return;
     }
     if (message.type === "error") {
+      if (message.profileError) {
+        const dialog = element("persona-dialog");
+        if (dialog.open && message.chatId === state?.chat?.id && dialog.dataset.chatId === message.chatId) {
+          const content = element("persona-content");
+          content.textContent = message.message;
+          const retry = document.createElement("button"); retry.textContent = "Retry";
+          retry.onclick = () => { content.textContent = "Loading current Profiles..."; element("persona-edit").disabled = true; post("personaProfiles"); };
+          content.append(retry);
+        }
+        return;
+      }
       if (message.confirmationId) {
         const card = approvalNodes.get(message.confirmationId)?.section;
         if (card) {
@@ -1290,7 +1399,15 @@
       if (!message.chatId || message.chatId === state?.chat.id) error(message.message);
       saveDraft(); renderMessages(); return;
     }
+    if (message.type === "personaProfiles") {
+      const dialog = element("persona-dialog");
+      if (!dialog.open || message.chatId !== state?.chat?.id || dialog.dataset.chatId !== message.chatId) return;
+      element("persona-content").replaceChildren(globalThis.PkmAgentHarness.profileCards(message.data));
+      element("persona-edit").disabled = false;
+      return;
+    }
     if (message.type === "state") {
+      if (element("persona-dialog").open && element("persona-dialog").dataset.chatId !== message.chat?.id) element("persona-dialog").close();
       globalThis.PkmHostHealth?.ready();
       applyLocale(message.localization);
       const previous = state?.chat.id;
@@ -1482,7 +1599,18 @@
   element("permission-mode").onchange = () => post("permissionMode", { value: element("permission-mode").value });
   element("reset-permissions").onclick = () => post("resetPermissions");
   element("diagnostics").onclick = () => post("diagnostics");
-  element("persona-profiles").onclick = () => post("agentConfig", { value: "profiles" });
+  element("persona-profiles").onclick = () => {
+    element("persona-content").textContent = "Loading current Profiles...";
+    element("persona-dialog").dataset.chatId = state.chat.id;
+    element("persona-edit").disabled = true;
+    element("persona-dialog").showModal();
+    post("personaProfiles");
+  };
+  element("persona-close").onclick = () => element("persona-dialog").close();
+  element("persona-edit").onclick = () => {
+    element("persona-dialog").close();
+    post("agentConfig", { value: "profiles" });
+  };
   for (const button of document.querySelectorAll("[data-agent-config]")) button.onclick = () => { closePopovers(); post("agentConfig", { value: button.dataset.agentConfig }); };
   element("memory-close").onclick = closePopovers;
   element("memory-policy").onclick = () => post("memoryPolicy");
@@ -1545,8 +1673,20 @@
         return;
       }
       const lease = element("portal-state").querySelector("[data-portal-clock]");
-      if (lease && state.portal.permissions?.active) lease.textContent = state.portal.permissions.expiresAt == null ? "Until disconnected"
-        : `${Math.max(0, Math.ceil((state.portal.permissions.expiresAt - Date.now()) / 1000))}s remaining`;
+      if (lease) {
+        const label = portalPermissionLabel(state.portal.permissions);
+        if (lease.textContent !== label) lease.textContent = label;
+      }
+      const compact = element("portal-state").querySelector("[data-portal-compact]");
+      if (compact) {
+        const label = portalCompactLabel(state.portal);
+        if (compact.textContent !== label) compact.textContent = label;
+      }
+      if (state.portal.pending && !state.portal.binding) {
+        const title = element("portal-state").querySelector("[data-portal-headline]");
+        const label = portalHeadline(state.portal);
+        if (title && title.textContent !== label) title.textContent = label;
+      }
       for (const summary of element("portal-state").querySelectorAll("[data-observed-at]")) {
         if (Date.now() - Number(summary.dataset.observedAt) > 15000 && !summary.textContent.includes("not live evidence")) summary.textContent += " · last observation (not live evidence)";
       }

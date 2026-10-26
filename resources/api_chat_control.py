@@ -5,6 +5,7 @@ import json
 import re
 import time
 import uuid
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from agent_session_runtime import _atomic_write, _file_lock
@@ -64,11 +65,17 @@ def _receipt(root, host_id, request_id):
     _host_id(host_id)
     if not isinstance(request_id, str) or not re.fullmatch(r"[a-f0-9]{64}", request_id):
         raise ValueError("Use an exact request_id returned by a PKM Chat tool.")
-    record = _read(root / "requests" / host_id / (request_id + ".json"))
+    destination = root / "requests" / host_id / (request_id + ".json")
+    if not destination.exists():
+        destination = _portal_directory(_host(root, host_id)) / (request_id + ".json")
+    record = _read(destination)
     if (record.get("schema") != "pkm.api-chat.request/v1" or record.get("hostId") != host_id
             or record.get("requestId") != request_id):
         raise ValueError("PKM Chat request identity is invalid.")
     status = record.get("status")
+    if record.get("operation") == "portal":
+        if destination.parent != _portal_directory(_host(root, host_id)):
+            raise ValueError("Legacy Portal receipts are not restored. Open a fresh temporary pairing.")
     if status in {"queued", "running"}:
         try:
             _host(root, host_id)
@@ -81,6 +88,13 @@ def _receipt(root, host_id, request_id):
             if status in {"queued", "running"} else None}
 
 
+def _portal_directory(host):
+    directory = Path(host.get("portalRequestDirectory", ""))
+    if not directory.is_absolute() or not directory.name.startswith("pkm-portal-ipc-") or directory.is_symlink():
+        raise ValueError("This Host does not support temporary Portal IPC. Upgrade the Host and pair again.")
+    return directory
+
+
 def _submit(root, host_id, operation, arguments, command_id):
     _host_id(host_id)
     if not isinstance(command_id, str) or not command_id.strip() or len(command_id) > 128:
@@ -88,7 +102,8 @@ def _submit(root, host_id, operation, arguments, command_id):
     payload = {"operation": operation, "arguments": arguments, "commandId": command_id}
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
     request_id = hashlib.sha256(json.dumps([host_id, command_id]).encode("utf-8")).hexdigest()
-    destination = root / "requests" / host_id / (request_id + ".json")
+    directory = _portal_directory(_host(root, host_id)) if operation == "portal" else root / "requests" / host_id
+    destination = directory / (request_id + ".json")
     with _file_lock(destination.with_suffix(".submit.lock")):
         if destination.exists():
             if _read(destination).get("payloadHash") != digest:
@@ -168,8 +183,32 @@ def register_api_chat_tools(mcp, store):
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     def portal_control(host_id: str, operation: str, command_id: str, context_id: str = "",
                        prompt: str = "", request_id: str = "", file_paths: list[str] | None = None) -> dict:
-        """Use a Chat-scoped Portal from Copilot or another MCP agent. First open without context_id: local UI names this conversation and pairs it (links never enter tool arguments). Poll api_chat_request_get for its local receipt and keep contextId in this conversation. status/send/get/cancel/disconnect/switch/permissions/files/reattach require that handle. reattach reconnects the same stored pairing after a restart or drop with an HMAC proof; permissions start empty and open requests are reconciled from durable receipts, never replayed. send needs a stable UUID request_id; get polls the ORIGINAL remote task. permissions opens the local timed permission matrix. files offers one batch of local file_paths, or a local picker when omitted; status reports verified receipts, not automatic installation. Every batch ALWAYS needs controlled-user consent, even under Allow All. Both Hosts must support transfers. External access requires local consent or an unexpired connection grant; MCP cannot authenticate individual Copilot conversations. Remote work uses a bound PKM companion Chat. open completes after pairing, link expiry or void (at most 10 minutes); its receipt state is connected/awaiting-peer/disconnected, and endpointScope=forwarded-localhost means the address is loopback on the computer running the VS Code UI, not proof the peer is unreachable. After pairing, the local user is offered one fixed-deadline external grant bound to that pairing and direction so status polling stops prompting. No automatic replay, role escalation, SSH or NAT traversal."""
-        if operation not in {"open", "status", "send", "get", "cancel", "disconnect", "switch", "permissions", "files", "reattach"}:
+        """Use a temporary Portal from Copilot or another MCP agent.
+
+        First open without context_id: native VS Code UI asks only Controller or Controlled.
+        Controller automatically resolves the endpoint and copies a private code; Controlled
+        pastes it locally and approves control. No name, create/accept or address configuration.
+        Private codes never enter tool arguments. No PKM Chat is created.
+        Poll api_chat_request_get for the local receipt and keep contextId in this conversation.
+        status/send/get/cancel/disconnect/switch/permissions/files require that handle.
+        Disconnect, transport loss or Host restart ends the pairing: open and pair again,
+        never reattach or replay tasks. Pairing credentials, connection history and remote-task
+        receipts are not persisted; same-connection duplicates are suppressed in memory.
+        Task history belongs to controller/controlled Chats; Copilot records only tool
+        information it actually receives. Local controlled execution requires selecting an
+        existing PKM Chat for each task, never auto-creation. send needs a stable UUID
+        request_id; get polls the ORIGINAL remote task while connected. permissions opens
+        local timed authorization. files offers one batch of local file_paths, or a picker
+        when omitted; every batch ALWAYS needs controlled-user consent, even under Allow All.
+        Both Hosts must support transfers. External access requires local consent or an
+        unexpired connection grant; MCP cannot authenticate individual Copilot conversations.
+        open completes after pairing, link expiry or void (at most 10 minutes); its receipt
+        state is connected/awaiting-peer/disconnected. endpointScope=forwarded-localhost means
+        loopback on the VS Code UI computer, not proof the peer is unreachable. After pairing,
+        the local user is offered one fixed-deadline external grant bound to this pairing/
+        direction. No automatic replay, role escalation, SSH or NAT traversal.
+        """
+        if operation not in {"open", "status", "send", "get", "cancel", "disconnect", "switch", "permissions", "files"}:
             raise ValueError("Unsupported Portal operation.")
         if context_id:
             _host_id(context_id, "context_id")

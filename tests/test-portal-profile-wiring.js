@@ -33,7 +33,7 @@ test("controlled Portal forwards exactly the explicit Profile snapshot through t
   const context = vm.createContext(scope);
   const factory = vm.runInContext(ts.transpileModule(`(function () { return ${execution}; })`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context);
-  const host = { portalPermissions: new Map(), portalExecutions: new Map() };
+  const host = { chatPortals:new Map(), portalEpochs:new Map(), portalPermissions: new Map(), portalExecutions: new Map() };
   const execute = factory.call(host);
   const snapshot = { schema: "fixture-explicit-snapshot" };
   assert.deepEqual(await execute("task", new AbortController().signal, "request", snapshot), { ok: true });
@@ -53,21 +53,33 @@ test("human Portal submission reviews disclosure before sending and cancellation
   assert(begin >= 0 && end > begin);
   const body = source.slice(begin + '} else if (selected === "Send task") {'.length, end);
   const sent = [], reviews = [];
-  const room = {};
+  const room = {client:{isConnected:true}};
+  const owner={id:"chat",room};
+  const binding={peerName:"Controlled"};
   const snapshot = { schema: "explicit-review-snapshot" };
   const scope = vm.createContext({
-    room, binding: { peerName: "Controlled" },
-    peer: { submit(...args) { sent.push(args); return "request"; } },
+    room, owner, binding, root:"/knowledge",epoch:0,getStorePath:()=>"/knowledge",
+    peer: { binding,submit(...args) { sent.push(args); return "request"; } },
     portalProfileReview: async id => { reviews.push(id); return snapshot; },
-    vscode: { window: { showInputBox: async () => "task", showInformationMessage: async () => {} } },
+    vscode: { workspace:{isTrusted:true},window: { setStatusBarMessage() {} } },
   });
   const send = vm.runInContext(`(async function () { ${body} })`, scope);
-  const host = { chatPortals: new Map([["chat", { id: "chat", room }]]) };
+  const host = { chatPortals: new Map([["chat",owner]]),portalEpochs:new Map(),
+    portalPrompt:async()=>({action:"submit",fields:{prompt:"task"}}) };
   await send.call(host);
   assert.deepEqual(reviews, ["chat"]);
   assert.strictEqual(sent[0][2], snapshot);
   scope.portalProfileReview = async () => { throw new Error("Profile disclosure cancelled"); };
   await assert.rejects(send.call(host), /cancelled/);
   assert.equal(sent.length, 1);
+  scope.portalProfileReview=async()=>{scope.peer.binding={...binding};return snapshot;};
+  await assert.rejects(send.call(host),/Portal changed during task review/);
+  assert.equal(sent.length,1,"late Profile approval cannot submit to a changed pairing");
+  scope.peer.binding=binding;
+  owner.external=true;
+  scope.portalProfileReview=async()=>assert.fail("External context must not export a PKM Chat Profile");
+  await send.call(host);
+  assert.equal(sent.length,2);
+  assert.equal(sent[1][2],undefined);
   assert(source.includes("peer.submit(args.prompt, args.requestId)"), "MCP-triggered requests must not silently export the controller's private Profiles");
 });

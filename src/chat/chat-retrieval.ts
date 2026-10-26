@@ -1,6 +1,6 @@
 import type { ApiConversation } from "./api-chat-store";
 import { chatMemorySegments, chatMemoryQuery, memoryMatchScore, memoryTerms, retrieveChatMemory, recentChatDialogue } from "./chat-memory";
-import type { RetrievalCandidateV1 } from "../retrieval/retrieval-contracts";
+import type { RetrievalCandidateV1, RetrievalResultV1 } from "../retrieval/retrieval-contracts";
 import { validRetrievalServingIdentity } from "../retrieval/retrieval-contracts";
 import { memoryExclusionReason } from "./chat-memory-policy";
 import type { RetrievalSnapshot } from "../retrieval/retrieval-snapshot";
@@ -19,12 +19,47 @@ export interface ChatRetrievalReceipt {
   selectedCount: number;
   phase?: "recalled" | "prepared" | "sent";
   warning?: string;
+  invocation?: ChatRetrievalInvocation;
 }
 
-export type ChatKnowledgeRetriever = ((query: string, signal: AbortSignal) => Promise<ChatRetrievalCandidate[]>) & {
+export interface ChatRetrievalInvocation {
+  requestId: string;
+  requestedRoute: string;
+  servedRoute: string;
+  semanticStatus: string;
+  modelInvoked: boolean;
+  readyGeneration: number;
+  corpusRevision: string;
+  retrievalId?: string;
+  reason?: string;
+  adaptive?: RetrievalResultV1["adaptive"];
+}
+
+export function validChatRetrievalInvocation(value: unknown): value is ChatRetrievalInvocation {
+  if (!value || typeof value !== "object") return false;
+  const item = value as ChatRetrievalInvocation;
+  const bounded = (text: unknown, max: number) => typeof text === "string" && text.length > 0 && text.length <= max;
+  return bounded(item.requestId, 200) && bounded(item.requestedRoute, 64) && bounded(item.servedRoute, 128)
+    && ["off", "ready", "unavailable", "fallback"].includes(item.semanticStatus) && typeof item.modelInvoked === "boolean"
+    && Number.isSafeInteger(item.readyGeneration) && item.readyGeneration >= 0 && bounded(item.corpusRevision, 512)
+    && (item.retrievalId === undefined || bounded(item.retrievalId, 200))
+    && (item.reason === undefined || bounded(item.reason, 1024))
+    && (item.adaptive === undefined || !!item.adaptive && typeof item.adaptive.enabled === "boolean"
+      && typeof item.adaptive.applied === "boolean"
+      && ["insufficient-feedback", "disabled", "protected-or-unavailable", "no-reliable-gap", "calibrated-score-gap"].includes(item.adaptive.reason)
+      && [item.adaptive.original_count, item.adaptive.returned_count, item.adaptive.invocation].every(count => Number.isSafeInteger(count) && count >= 0));
+}
+
+export interface ChatKnowledgeResult {
+  candidates: ChatRetrievalCandidate[];
+  invocation: ChatRetrievalInvocation;
+}
+
+export type ChatKnowledgeRetriever = ((query: string, signal: AbortSignal) => Promise<ChatRetrievalCandidate[] | ChatKnowledgeResult>) & {
   sourceIsCurrent?: (candidate:ChatRetrievalCandidate) => boolean;
   refreshSourceValidation?: () => void;
   readSnapshot?: () => RetrievalSnapshot;
+  feedback?: (retrievalId: string, relevantSourceIds: string[]) => Promise<unknown>;
 };
 
 export interface ChatRetrievalActivity {
@@ -90,6 +125,7 @@ export function validChatRetrievalReceipt(value: unknown, chatId: string): value
   const receipt = value as ChatRetrievalReceipt;
   const bounded = (text: unknown, max: number): text is string => typeof text === "string" && text.length <= max;
   return !!receipt && receipt.schema === "pkm.chat.retrieval/v1" && receipt.chatId === chatId && bounded(receipt.model, 512) && bounded(receipt.query, 8192)
+    && (receipt.invocation === undefined || validChatRetrievalInvocation(receipt.invocation))
     && (receipt.phase === undefined || ["recalled", "prepared", "sent"].includes(receipt.phase))
     && (receipt.sessionId === undefined || bounded(receipt.sessionId, 128)) && (receipt.warning === undefined || bounded(receipt.warning, 1024))
     && Number.isSafeInteger(receipt.selectedCount) && receipt.selectedCount >= 0

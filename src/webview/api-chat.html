@@ -31,6 +31,11 @@
     <button id="chat-portal" title="Chat Portal: disconnected (closed)" aria-label="Chat Portal" aria-pressed="false"><svg class="portal-door" viewBox="0 0 24 24" aria-hidden="true"><path class="portal-frame" d="M5 21V10a7 7 0 0 1 14 0v11Z"/><path class="portal-leaf" d="M8 20V10a4 4 0 0 1 8 0v10Z"/><circle cx="14" cy="14" r="1"/></svg></button>
   </header>
   <section id="portal-state" aria-label="Portal connection" hidden></section>
+  <dialog id="persona-dialog" aria-label="Current User / Agent Profiles">
+    <header><strong>Current User / Agent Profiles</strong><button id="persona-close" type="button" aria-label="Close Profiles">Close</button></header>
+    <div id="persona-content"></div>
+    <button id="persona-edit" type="button">Edit / manage Profiles</button>
+  </dialog>
   <div id="error" class="error" role="alert" hidden></div>
   <section id="harness-summary" aria-label="Native Harness summary" hidden>
     <span id="harness-summary-text"></span>

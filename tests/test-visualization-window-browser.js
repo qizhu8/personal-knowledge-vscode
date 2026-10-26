@@ -119,7 +119,8 @@ for (const width of [1280,390]) test(`Visualization and standalone Agent Session
   await thumbs.getByRole("button",{name:"Show Retrieval flow details",exact:true}).click();
   assert.equal(await core.getByRole("tab",{name:"Retrieval flow",exact:true}).getAttribute("aria-selected"),"true");
   assert.match(await core.getByRole("tabpanel").innerText(),/note[\s\S]*2 \/ 2 recorded pieces shown/);
-  assert.doesNotMatch(await core.getByRole("tabpanel").innerText(),/Retry note|Old memo/);
+  assert.match(await core.getByRole("tabpanel").innerText(),/Retry note/);
+  assert.doesNotMatch(await thumbs.innerText(),/Retry note|Old memo/);
   await core.getByRole("tab",{name:"Memory / Profiles",exact:true}).click();
   assert.match(await core.getByRole("tabpanel").innerText(),/User Profile[\s\S]*Agent Profile[\s\S]*focus-topic/);
   await core.getByRole("tab",{name:"Harness flow",exact:true}).click();
@@ -191,7 +192,7 @@ for (const [status,hash,expected] of [
   assert.match(await detail.innerText(),/User card · r4/);
   assert((await detail.innerText()).includes(expected));
   assert.match(await detail.innerText(),/Agent Profile[\s\S]*Not recorded/);
-  await detail.getByText("Inspect recorded Profile fields",{exact:true}).click();
+  assert(await detail.getByText("Inspect recorded Profile fields",{exact:true}).evaluate(node => node.parentElement.open));
   assert.match(await detail.innerText(),/Prefer concise tables/);
   assert.match(await detail.innerText(),/separate from learned Chat topics/);
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
@@ -451,6 +452,12 @@ test("visualization window: retrieval stages explain shortlist vs sent, filter c
   assert.equal(loads[0].chatId, managerId);
   assert.equal(loads[0].params.callId, "call4");
   assert.equal(typeof loads[0].params.messageId, "string");
+  await detail.locator(".pkm-vis-flow [data-retrieval-node]").first().press("Enter");
+  const evidence = detail.getByRole("region",{name:"Retrieval candidate evidence"});
+  assert.match(await evidence.innerText(),/Retry note[\s\S]*Source[\s\S]*pkm:\/\/knowledge/);
+  assert.equal(posted.filter(item => item.type === "openSource").length,1,"Inspecting a graph node never navigates away");
+  await evidence.getByRole("button",{name:"Open source",exact:true}).click();
+  assert.equal(posted.filter(item => item.type === "openSource").length,2);
   if (process.env.PKM_VIS_WINDOW_SCREENSHOT) await page.screenshot({ path:`${process.env.PKM_VIS_WINDOW_SCREENSHOT}-retrieval.png`, fullPage:true });
   assert.match(await detail.locator(".pkm-vis-call").filter({ hasText:"search_knowledge" }).innerText(), /aml retry[\s\S]*7 characters|timeout/);
   assert.deepEqual(errors, []);

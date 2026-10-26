@@ -101,7 +101,7 @@ test("dedicated Portal sockets isolate two endpoints without creating Rooms, cre
   assert.equal(c.client.isConnected, true, "closing one Portal cannot close another");
 });
 
-test("real Portal relay preserves explicit pairing/task approval, duplicate suppression and resume without task replay", async t => {
+test("real Portal relay preserves approval/deduplication but a restarted endpoint requires fresh pairing", async t => {
   const f = await fixture(t), channel = f.hub.createPortalChannel(), errors = [], sessions = [];
   let a, b, runs = 0, approvals = 0;
   const left = await f.connect(channel, "left", { onPeer:delivery => void a.receive(delivery) });
@@ -111,10 +111,9 @@ test("real Portal relay preserves explicit pairing/task approval, duplicate supp
     error:error => errors.push(error.message), approvePair:async () => true, approveSwap:async () => true,
     approveTask:async () => { approvals++; return true; }, execute:async prompt => { runs++; return { content:prompt }; },
   };
-  let resume;
-  a = new PeerSession({ ...common, chatId:randomUUID(), connected:() => left.client.isConnected, send:(target, packet) => left.client.sendPeer(target, packet), persist() {} });
+  a = new PeerSession({ ...common, chatId:randomUUID(), connected:() => left.client.isConnected, send:(target, packet) => left.client.sendPeer(target, packet) });
   b = new PeerSession({ ...common, chatId:randomUUID(), connected:() => right.client.isConnected, send:(target, packet) => right.client.sendPeer(target, packet),
-    persist:record => { if (record) resume = record; } });
+  });
   sessions.push(a, b);
   t.after(() => { for (const peer of sessions) peer.dispose(); });
   b.accept(left.client.participantId, a.offer());
@@ -130,12 +129,11 @@ test("real Portal relay preserves explicit pairing/task approval, duplicate supp
   await until(() => left.client.members.length === 1);
   const restarted = await f.connect(channel, "right", { onPeer:delivery => void b.receive(delivery) });
   b = new PeerSession({ ...common, chatId:storedChatId, connected:() => restarted.client.isConnected,
-    send:(target, packet) => restarted.client.sendPeer(target, packet), resumeFrom:resume });
+    send:(target, packet) => restarted.client.sendPeer(target, packet) });
   sessions.push(b);
-  b.resume(left.client.participantId);
-  await until(() => b.binding);
-  assert.equal(b.binding.pairId, a.binding.pairId);
-  assert.equal(runs, 1, "re-attachment does not replay completed tasks");
+  assert.equal(b.binding,undefined);
+  assert.equal(runs, 1, "a restarted endpoint cannot replay or recover a task");
+  assert.equal(await fs.stat(path.join(f.directory,"peer-receipts")).then(()=>true,()=>false),false);
   assert.deepEqual(errors, []);
   assert.deepEqual(f.hub.adminRooms(), []);
   assert.deepEqual(await f.hub.listStoredRooms(), []);
@@ -147,37 +145,41 @@ test("actual Host start/accept uses dedicated transport and leaves Chatroom sele
   const ast = ts.createSourceFile("extension.ts", extension, ts.ScriptTarget.Latest, true);
   const manager = ast.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === "ChatRoomManager");
   let clipboard;
+  const errors=[];
   const context = vm.createContext({
     Map, Set, Date, URL, Promise, setTimeout, clearTimeout, setInterval, clearInterval, ChatHub, ChatClient, PORTAL_TRANSPORT_PATH,
-    randomUUID, os, assertPeerEndpoint, createPortalLink, parsePortalLink, createChatMagicLink, chatInviteMessage,
+    randomUUID, os, assertPeerEndpoint, createPortalLink, parsePortalLink, createChatMagicLink, chatInviteMessage, PeerSession,
+    PortalPermissions:require("../dist/chatroom/portal-permissions").PortalPermissions,
+    agentSessionProjectStateData:async()=>({}),postToPanel(){},
     getStorePath:() => f.directory, getChatCid:() => "fixturecid", portalChanged() {},
-    log:{ warn() {}, debug() {} },
+    log:{ warn() {}, debug() {},error:message=>errors.push(message) },
     vscode:{ workspace:{ isTrusted:true, getConfiguration:() => ({ get:() => 0 }) },
       Uri:{ parse:value => value }, env:{ asExternalUri:async () => ({ scheme:"http", authority:`127.0.0.1:${f.hub.port}` }), clipboard:{ writeText:async value => { clipboard = value; } } },
       window:{ showQuickPick:async choices => choices[0], showInputBox:async options => options.value || clipboard,
-        showInformationMessage:async () => undefined, showWarningMessage:async (_message, _options, action) => action, setStatusBarMessage() {} } },
+        showInformationMessage:async () => undefined, showWarningMessage:async (_message, _options, action) => action, showErrorMessage:message=>errors.push(message), setStatusBarMessage() {} } },
   });
   vm.runInContext(ts.transpileModule(`${manager.getText(ast)}; globalThis.Host = ChatRoomManager;`,
     { compilerOptions:{ target:ts.ScriptTarget.ES2022 } }).outputText, context);
   const host = new context.Host();
+  host.portalPrompt = async () => assert.fail("Controller creation automatically resolves its address without a configuration dialog");
+  host.portalConfirm = async () => true;
   host.hub = f.hub; host.activeKey = "unchanged-chatroom";
   host.portalPreflight = () => f.directory;
   host.startHub = async () => ({ ok:true });
-  host.ensurePeer = () => ({
-    pendingInvitation:{ expiresAt:Date.now() + 600_000 },
-    offer:() => `pkmpeer:v1:${randomUUID()}:${"a".repeat(48)}`,
-    accept() { this.binding = { role:"controlled" }; }, revoke() {}, dispose() {},
-  });
+  host.push=()=>{};
   const owner = { id:randomUUID(), label:"Controller" }, receiver = { id:randomUUID(), label:"Controlled" };
   host.chatPortals.set(owner.id, { ...owner, root:f.directory });
   const receiverHost = new context.Host();
-  receiverHost.ensurePeer = host.ensurePeer;
+  receiverHost.push=()=>{};
+  receiverHost.portalPrompt = host.portalPrompt;
+  receiverHost.portalConfirm = host.portalConfirm;
   receiverHost.portalPreflight = host.portalPreflight;
   receiverHost.chatPortals.set(receiver.id, { ...receiver, root:f.directory });
   t.after(() => { for (const manager of [host, receiverHost]) for (const transport of manager.portalTransports.values()) transport.client.disconnect(); });
-  await host.startPortal({}, owner);
+  await host.startPortal({}, owner, "controller");
   assert.equal(new URL(parsePortalLink(clipboard).url).pathname, PORTAL_TRANSPORT_PATH);
-  await receiverHost.acceptPortal({}, receiver);
+  await receiverHost.acceptPortal({}, receiver, clipboard);
+  await until(()=>host.chatPortals.get(owner.id).room?.peer?.binding&&receiverHost.chatPortals.get(receiver.id).room?.peer?.binding);
   assert.equal(host.portalTransports.size, 1);
   assert.equal(receiverHost.portalTransports.size, 1);
   assert.equal(receiverHost.rooms.size, 0);
@@ -186,30 +188,30 @@ test("actual Host start/accept uses dedicated transport and leaves Chatroom sele
   assert.deepEqual(f.hub.adminRooms(), []);
   assert.deepEqual(await f.hub.listStoredRooms(), []);
   assert.equal(host.state().rooms.length, 0, "Portal does not leak into Chatroom navigation");
-  const link = parsePortalLink(clipboard);
-  host.closePortalTransport(owner.id);
-  const restored = f.hub.createPortalChannel(link.roomId, link.secret);
-  assert.equal(restored.channelId, link.roomId, "resume can restore an in-memory channel from secret storage without rehosting a Room");
+  receiverHost.chatPortals.get(receiver.id).room.peer.revoke();
+  await until(()=>!host.portalTransports.has(owner.id)&&!receiverHost.portalTransports.has(receiver.id));
+  assert.equal(host.portalConnections.has(owner.id),false,"closing clears the transport credential");
+  assert.equal(host.chatPortals.get(owner.id).room,undefined,"closing clears the paired session");
+  assert.equal(host.portalTransports.has(owner.id),false);
+  await host.startPortal({}, owner, "controller");
+  await receiverHost.acceptPortal({}, receiver, clipboard);
+  await until(()=>host.chatPortals.get(owner.id).room?.peer?.binding&&receiverHost.chatPortals.get(receiver.id).room?.peer?.binding);
+  host.portalTransports.get(owner.id).client.disconnect();
+  await until(()=>!host.portalTransports.has(owner.id)&&!receiverHost.portalTransports.has(receiver.id));
+  assert.equal(host.portalConnections.has(owner.id),false,"transport loss also erases credentials and prevents reconnect");
   const hosted = await f.hub.createRoom("Room with spaces", "fixture-room-secret");
   host.hostedKeys.set(hosted.roomId, hosted.secret);
   const invite = parseChatMagicLink(host.roomInvite(hosted.roomId).magicLink);
   assert.equal(decodeURIComponent(new URL(invite.url).pathname), "/Room with spaces", "UUID copy resolves the actual Room name, not a UUID-shaped path");
   assert.equal(invite.roomId, hosted.roomId);
   assert.equal(invite.secret, hosted.secret);
-  host.closePortalTransport(owner.id);
-  host.chatPortals.get(owner.id).room = undefined;
-  const savedConnection = host.portalConnections.get(owner.id);
-  host.loadPortalResumeIndex = async () => {};
-  host.readPortalResume = async () => ({ root:f.directory, connection:savedConnection, record:{ fixture:true } });
-  host.portalStatus = () => ({ connected:false });
-  host.rehostRoom = async () => { throw new Error("Dedicated Portal must not rehost a Room"); };
-  await host.reattachPortal({}, owner);
-  assert.equal(host.portalTransports.get(owner.id).roomId, savedConnection.roomId);
-  assert.equal(f.hub.adminRooms().length, 1, "re-attachment must not add to the one real Chatroom");
+  assert.equal(typeof host.reattachPortal,"undefined","there is no restart-recovery entry point");
+  assert.equal(f.hub.adminRooms().length, 1);
   const failedOwner = { id:randomUUID(), label:"Failed endpoint" };
   host.chatPortals.set(failedOwner.id, { ...failedOwner, root:f.directory });
   context.vscode.env.asExternalUri = async () => { throw new Error("Forwarding fixture failed"); };
-  await assert.rejects(host.startPortal({}, failedOwner), /Forwarding fixture failed/);
+  await assert.rejects(host.startPortal({}, failedOwner, "controller"), /Forwarding fixture failed/);
   assert.equal(host.portalTransports.has(failedOwner.id), false, "a failed invitation releases its socket/channel");
   assert.equal(host.chatPortals.get(failedOwner.id).room, undefined);
+  assert.deepEqual(errors,[]);
 });

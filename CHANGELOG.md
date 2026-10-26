@@ -5,6 +5,96 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.2.122] - 2026-10-26
+
+- Give Agent review the exact PKM host handler source executed by builtin and pipeline Actions (`_execute`, artifact helpers, `execute_steps`), included in the review snapshot hash, so builtin reviews no longer fail for missing material.
+- Give `core.artifact.copy` a controlled smoke example backed by a reserved non-private fixture artifact that exists only in the isolated qualification store.
+
+## [3.2.121] - 2026-10-26
+
+- Keep batch validation compact: one progress line, final pass/fail counts and collapsed per-Action results. Preserve full failure reasons behind explicit expansion.
+
+## [3.2.120] - 2026-10-26
+
+- Show live batch validation progress, current Action/stage, elapsed time and incremental outcomes in Workbench instead of waiting for the entire batch.
+- Enforce the review deadline independently of provider cancellation so a stuck token count, request or response stream fails its item and does not stall the remaining batch.
+
+## [3.2.119] - 2026-10-26
+
+- Add Validate all needed: one effect confirmation and model selection, independent sequential Agent reviews/smoke tests/admissions, continue-on-failure and per-Action result summary.
+- Make Azure DevOps status review self-contained: remove the undeclared recipe runner import, use core az rest GET without the azure-devops extension, declare toolchain requirements and generate revision/host/example-consistent definitions.
+
+## [3.2.118] - 2026-10-26
+
+- Remove automatic Workbench catalog popups, show concise next-step guidance and place pending Action proposals in the left Actions tree with Need Validation badges and persistently highlighted flasks. Keep proposals non-callable until review and smoke tests succeed.
+## [3.2.117] - 2026-10-26
+
+- Add a safe restart-preview path for unverified GitHub publication migrations whose remote changed after Cutover. Archive the prior migration evidence, preserve original rollback state and keep Auto Sync off rather than bypassing commit fences.
+- Preserve schema-3 Markdown resource members during migration collision checks; attachments are not duplicate principal documents. Keep duplicate document/member identities blocked.
+- Separate Action Library into an independent admitted-Action browser with readiness, typed invocation and explicit per-Action Workbench navigation. Keep proposals, editing, review and validation in the Workbench.
+- Fix folder and Move to forms blocked by the embedded Workbench iframe sandbox. Show full nested destinations and inline errors, and expand newly created or moved-to folders automatically.
+
+## [3.2.116] - 2026-10-26
+
+- Guide attempts to drag unverified Actions with a visible dialog and highlighted flask button. Replace browser confirm-based validation consent with an explicit Workbench dialog and show submission, review, test and error feedback.
+- Replace separate manual grant/admission with Validate → selected Agent model code review → consented smoke tests → automatic exact-version admission only after success. Review failure, unavailable models, invalid decisions, changed source or failed tests block admission; staged tests preserve the previous approved version.
+- Require native Workbench review orchestration for non-builtin MCP qualification; keep review-pass injection and admission operations inaccessible to generic agent dispatch. Recheck Root/trust after smoke execution before admission.
+
+## [3.2.115] - 2026-10-26
+
+- Move Action admission review into the right-hand Workbench canvas with readable purpose, inputs, execution, outputs, risks, host, files and version changes. Keep JSON behind Advanced details, preserve drafts when closing review, and reject approvals when the displayed snapshot has changed. Native confirmation now uses a concise summary instead of a JSON dump.
+
+## [3.2.114] - 2026-10-25
+
+- Make agent registration, template creation, composition saves and definition updates submit pending Action proposals rather than modify the formal library. One native operator approval admits and authorizes the exact revision; qualification and effect consent remain separate.
+- Add an Action Library pending-review inbox, explicit approve/reject/cancel handling and review of existing/imported unapproved definitions. Block non-builtin execution without exact-revision admission, including pipelines, and expose no MCP/generic-dispatch approval operation.
+- Preserve the previous approved version while updates await review, reject stale implementation/base reviews, protect approved source from in-place Workbench edits, and reconnect unchanged drafts after admission without automatically validating or running them.
+
+## [3.2.113] - 2026-10-25
+
+- Add Action Library review/grant/revoke controls for exact-revision trusted host execution, requiring native VS Code confirmation and rechecking the implementation before preserving and updating local policy. No MCP self-grant tool or automatic validation/execution is added.
+- Make missing Action host-trust errors actionable: include the exact Action ID/hash and execution-host policy path, explicitly require human review, and tell agents not to self-grant, re-register or retry to bypass authorization.
+
+## [3.2.112] - 2026-10-25
+
+- Simplify Portal setup to Controller (automatically resolve the endpoint and copy a private code) or Controlled (paste the Controller's code and approve control). Remove Portal naming, create/accept selection and the address dialog; keep native external UI, Chat-local controls, explicit authorization and temporary pairing.
+
+## [3.2.111] - 2026-10-25
+
+- Make Portal connections temporary: keep pairing credentials, live connection views and bounded task deduplication in memory; disconnect, transport loss, Root/trust change and Host disposal end the pairing without recovery or automatic reconnect/replay.
+- Remove re-attach/history UI and the MCP recovery operation. Use Host-local OS-temporary IPC for external Portal calls rather than durable Knowledge Root receipts.
+- Clean legacy Portal connection/window keys, indexed secrets, task journals and recognized Portal-only MCP receipts, preserving every Chat/Room history and transferred file. Reject unexpected files/symlinks and report cleanup failures explicitly.
+
+## [3.2.110] - 2026-10-25
+
+- Route external Copilot/MCP Portal setup and consent through native VS Code UI, while keeping PKM Chat-owned Portal interactions in Chat cards. Preserve masked private-link inputs, explicit validation and stale-context rejection.
+- Allocate external Portal connection identities without automatically creating or renaming PKM Chats. Local controlled execution requires selecting an existing Chat for each task; cancellation executes nothing, and temporary permission/progress routing is released afterward. Keep historical auto-created Chats intact.
+
+## [3.2.109] - 2026-10-25
+
+- Move User Profile from Settings into Automation and restore previously saved User Profile pages into the new workspace.
+- Add a Session Profile shortcut inside Agent Sessions to inspect the selected native Chat/Task's current assignment and manage it through the existing explicit Profile workflow; keep historical snapshots separate and Chat's Profiles shortcut available.
+
+## [3.2.108] - 2026-10-25
+
+- Hide disconnected Portal connection details immediately; show a single connected/permission line with meaningful hover/focus details instead of persistent request UUIDs and hashes.
+- Add read-only current User / Agent Profile cards to Chat's Profiles button and an independent Settings User Profile page with existing explicit edit/create/delete flows; do not invoke a model or replace historical Profile snapshots.
+- Keep Agent Sessions Chat entries on one compact line instead of inheriting multi-line Task button styles; retain full-title/empty-Chat hover information and working inline actions.
+- Load the Memory Pyramid thumbnail without a click, reuse its scoped overview across unchanged snapshots, and refresh it when recorded Memory turns/blocks change.
+- Hide pending or unreported token/Credit labels until actual data arrives; preserve independently reported tokens, zero Credits and partial Credit coverage without placeholder noise.
+- Consolidate Portal creation/acceptance and direction into one Chat-local setup card; move pairing, timed permissions, external-client authorization, task/Profile disclosure, direction-switch and immutable file-batch approvals into the owning Chat without exposing private inputs to models or persisted history.
+- Keep Portal permission mode/expiry text stable across timer ticks and status refreshes, avoid unchanged-detail DOM rebuilds, and retain expanded permission/progress details.
+- Narrow Windows background-process CIM enumeration and report bounded, actionable PowerShell failure diagnostics instead of an undifferentiated full-script error; retain current-user ownership checks and explicit failures.
+
+## [3.2.107] - 2026-10-25
+
+- Read large files through bounded previews and exact ranges, and accept an empty directory path as the workspace root instead of rejecting ordinary filesystem tool calls.
+- Improve Memory/Retrieval source inspection and User/Agent Profile review; collapse Agent Sessions groups by default, group public/private/trash navigation, and show Chat choices as vertical radio/checkbox lists.
+- Display input/output tokens independently from exact provider-reported Copilot Credits, preserving zero, missing and partial billing coverage across rounds, persistence and independent Memory accounting.
+- Connect Chat to dual lexical/semantic retrieval using the already-enabled model, retain actual invocation/fallback metadata, and submit relevance feedback only after explicit complete user judgments.
+- Add user-reviewed Task context checkpoints with mandatory newer requirements, unchanged original messages, exact hash/range readback, confirmed revocation and causal agent-report supersession.
+- Require Chat Credit/Memory accounting and real-worker retrieval/checkpoint/controller/browser regression gates before release or local packaging.
+
 ## [3.2.106] - 2026-10-23
 
 - Admit background-service clients by protocol and advertised capabilities rather than exact extension version. Adapt original protocol-v1 registration, make installed-version drift a deduplicated advisory instead of an automatic daemon drain, and restrict unsupported features individually. Keep IPC identity, mutation fencing, no replay, explicit safe-idle drain and daemon downgrade protection.

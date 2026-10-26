@@ -12,10 +12,11 @@ const host = {
   lm:{ tools:[] },
 };
 const originalLoad = Module._load;
-let ApiChatView;
+let ApiChatView, configureUserProfile;
 try {
   Module._load = function(name, ...args) { return name === "vscode" ? host : originalLoad.call(this, name, ...args); };
   ({ ApiChatView } = require("../dist/chat/api-chat-view"));
+  ({ configureUserProfile } = require("../dist/chat/persona-profile-ui"));
 } finally { Module._load = originalLoad; }
 const { ApiChatStore } = require("../dist/chat/api-chat-store");
 const root = path.join(__dirname, ".."), assets = path.join(root, "dist", "webview");
@@ -36,7 +37,7 @@ async function until(predicate) {
   }
 }
 
-test("built Projects/Agent and Chat/Settings Profile entries reach native cards, explicit assignment and persistent edits without inference", async t => {
+test("built Projects/Agent and Chat/Automation Profile entries reach native cards, explicit assignment and persistent edits without inference", async t => {
   const directory = path.join(__dirname, `.profile-browser-${randomUUID()}`);
   fs.mkdirSync(directory, { mode:0o700 });
   const chats = new ApiChatStore(path.join(directory, "state"), "b".repeat(16));
@@ -59,6 +60,11 @@ test("built Projects/Agent and Chat/Settings Profile entries reach native cards,
   const provider = new ApiChatView({ globalStorageUri:{ fsPath:path.join(directory, "host") }, subscriptions:[] });
   provider.store = chats; provider.chat = chat; provider.chats.set(chat.id, chat);
   provider.personaStore = () => profiles; provider.publish = () => {};
+  let currentCards = await provider.readVisualization(chat.id,"profiles",{});
+  assert.equal(currentCards.user.name,"Browser user");
+  assert.equal(currentCards.agentAssigned,false);
+  assert.equal(currentCards.agent,undefined);
+  assert.equal(modelCalls,0,"Read-only current Profile inspection never discovers or invokes a model");
   const taskFiles = () => fs.readdirSync(path.join(directory, "state", "agent-sessions")).sort();
   const originalTasks = taskFiles(), calls = [], errors = [], failures = [];
   const browser = await chromium.launch({ headless:true, args:["--no-sandbox"] });
@@ -70,6 +76,7 @@ test("built Projects/Agent and Chat/Settings Profile entries reach native cards,
     try { await provider.configureAgent(params.sessionId, params.section); }
     catch (error) { failures.push(error.message); }
   });
+
   await page.setContent('<main id="projects"></main><main id="agent-sessions"></main>');
   await page.addScriptTag({ content: `
     const esc = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -84,6 +91,8 @@ test("built Projects/Agent and Chat/Settings Profile entries reach native cards,
   uiAction = "assign";
   await page.locator("#agent-sessions").getByRole("button", { name:"Configure User / Agent Profiles", exact:true }).press("Enter");
   await until(() => chats.load(chat.id, false).agentProfileId === agent.id);
+  currentCards = await provider.readVisualization(chat.id,"profiles",{});
+  assert.equal(currentCards.agent.id,agent.id);
   assert(calls.every(call => call.command === "agentSessionConfigure"
     && call.params.sessionId === chat.sessionId && call.params.section === "profiles"));
   assert.equal(provider.running.size, 0);
@@ -100,6 +109,11 @@ test("built Projects/Agent and Chat/Settings Profile entries reach native cards,
   });
   let chatClicks = 0;
   await chatPage.exposeFunction("profileChatHost", async message => {
+    if (message.type === "personaProfiles") {
+      const data = await provider.readVisualization(chat.id,"profiles",{});
+      await chatPage.evaluate(data=>window.dispatchEvent(new MessageEvent("message",{data})),{type:"personaProfiles",chatId:chat.id,data});
+      return;
+    }
     if (message.type !== "agentConfig") return;
     chatClicks++;
     try { await provider.handle(message); } catch (error) { failures.push(error.message); }
@@ -127,6 +141,20 @@ test("built Projects/Agent and Chat/Settings Profile entries reach native cards,
   uiAction = "edit";
   inputs = ["Browser user", "", "", "BROWSER_USER_EDITED_DURING_BUSY_UI", ""];
   await chatPage.getByRole("button", { name:"User / Agent Profiles", exact:true }).click();
+  const profileDialog=chatPage.getByRole("dialog",{name:"Current User / Agent Profiles",exact:true});
+  await profileDialog.getByText("BROWSER_USER_ONE",{exact:true}).first().waitFor();
+  assert.match(await profileDialog.innerText(),/Browser user.*revision 1/s);
+  assert.equal(profiles.user().revision,1,"opening current cards is read-only");
+  await chatPage.evaluate(chatId=>window.dispatchEvent(new MessageEvent("message",{data:{
+    type:"error",profileError:true,chatId,message:"Profile read failed"
+  }})),"other-chat");
+  assert(!await profileDialog.getByRole("button",{name:"Retry",exact:true}).count());
+  await chatPage.evaluate(chatId=>window.dispatchEvent(new MessageEvent("message",{data:{
+    type:"error",profileError:true,chatId,message:"Profile read failed"
+  }})),chat.id);
+  await profileDialog.getByRole("button",{name:"Retry",exact:true}).click();
+  await profileDialog.getByText("BROWSER_USER_ONE",{exact:true}).first().waitFor();
+  await profileDialog.getByRole("button",{name:"Edit / manage Profiles",exact:true}).click();
   await until(() => profiles.user().revision === 2);
   assert.equal(profiles.user().preferences, "BROWSER_USER_EDITED_DURING_BUSY_UI");
   uiAction = "inspect";
@@ -141,4 +169,50 @@ test("built Projects/Agent and Chat/Settings Profile entries reach native cards,
   assert.equal(modelCalls, 0);
   assert.deepEqual(failures, []);
   assert.deepEqual(errors, []);
+});
+
+test("Automation User Profile page reads and edits the real current store without selecting a Chat or exposing raw IDs",async t=>{
+  const directory=path.join(__dirname,`.profile-settings-${randomUUID()}`);
+  fs.mkdirSync(directory,{mode:0o700});
+  const store=new PersonaProfileStore(path.join(directory,"host"),path.join(directory,"knowledge"));
+  store.save("user",{name:"Settings user",role:"Developer",focus:"Tests",preferences:"<img src=x>Preference text",boundaries:"No deployment"});
+  const extension=fs.readFileSync(path.join(root,"src/extension.ts"),"utf8");
+  const start=extension.indexOf('case "userProfile":'),end=extension.indexOf('case "backgroundTasks":',start);
+  assert(start>=0&&end>start);
+  const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
+  const dispatch=new AsyncFunction("msg","respond","vscode","PersonaProfileStore","configureUserProfile","context","getStorePath",`switch(msg.command){${extension.slice(start,end)}}`);
+  const browser=await chromium.launch({headless:true});
+  t.after(async()=>{await browser.close();fs.rmSync(directory,{recursive:true,force:true});});
+  const page=await browser.newPage({viewport:{width:390,height:900}}),errors=[],calls=[];
+  page.on("pageerror",error=>errors.push(error.message));
+  let input=["Settings user","Engineer","Validation","Updated settings preference","No deployment"];
+  host.window.showQuickPick=async()=>assert.fail("Settings must not require Chat or Profile selection");
+  host.window.showInformationMessage=async(_title,options)=>options?.modal?"Edit":undefined;
+  host.window.showInputBox=async()=>input.shift();
+  await page.exposeFunction("settingsHost",async command=>{
+    calls.push(command);
+    await dispatch({command},reply=>page.evaluate(reply=>userProfileOnSnapshot(reply.data),reply),host,PersonaProfileStore,configureUserProfile,
+      {globalStorageUri:{fsPath:path.join(directory,"host")}},()=>path.join(directory,"knowledge"));
+  });
+  await page.setContent('<main id="detail"></main>');
+  await page.addStyleTag({path:path.join(assets,"agent-harness.css")});
+  await page.addScriptTag({path:path.join(assets,"agent-harness.js")});
+  const script=fs.readFileSync(path.join(root,"src/webview/panel/54-persona-profiles.js"),"utf8");
+  assert(fs.readFileSync(path.join(assets,"panel.js"),"utf8").includes(script));
+  await page.addScriptTag({content:`const state={tab:'userProfile'};const ask=command=>settingsHost(command);${script};showUserProfileTab();`});
+  await page.getByText("<img src=x>Preference text",{exact:true}).waitFor();
+  assert.equal(await page.locator("img,script[src=x]").count(),0);
+  assert.doesNotMatch(await page.locator("#detail").innerText(),new RegExp(store.user().id));
+  await page.getByRole("button",{name:"Edit / manage User Profile",exact:true}).click();
+  await page.getByText("Updated settings preference",{exact:true}).waitFor();
+  assert.equal(store.user().revision,2);
+  assert.deepEqual(calls,["userProfile","userProfileEdit"]);
+  await page.getByRole("button",{name:"Refresh",exact:true}).click();
+  await until(()=>calls.length===3);
+  await page.evaluate(()=>{state.tab="mcp";userProfileOnSnapshot({user:{name:"Late Profile"}});});
+  assert.equal(await page.getByText("Late Profile",{exact:true}).count(),0);
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+  await assert.rejects(dispatch({command:"userProfile"},()=>{}, {...host,workspace:{isTrusted:false}},PersonaProfileStore,configureUserProfile,
+    {},()=>store.knowledgeRoot),/Trust this workspace/);
+  assert.deepEqual(errors,[]);
 });

@@ -69,6 +69,17 @@ export async function configurePersonaProfiles(store: PersonaProfileStore, chat:
     }
     record = store.get("agent", chat.agentProfileId);
   }
+  await editPersonaProfile(store, kind, record, () => {
+    if (chat.agentProfileId === record?.id) persistAssignment(undefined);
+  });
+}
+
+export async function configureUserProfile(store: PersonaProfileStore): Promise<void> {
+  await editPersonaProfile(store, "user", store.user(), () => {});
+}
+
+async function editPersonaProfile(store: PersonaProfileStore, kind: "user" | "agent", record: PersonaProfile | undefined,
+  deleted: () => void): Promise<void> {
   const action = await vscode.window.showInformationMessage(record ? `${record.name} · revision ${record.revision}` : `No ${kind} Profile configured`, {
     modal: true,
     detail: `Host: ${hostname()}\nScope: ${store.syncEnabled ? `Repository cards: ${store.knowledgeRoot}/profiles` : kind === "user" ? `OS user / VS Code profile (${store.privateDirectory})` : `Knowledge Root ${store.knowledgeRoot}`}\n\n${record ? `ID: ${record.id}\nUpdated: ${record.updatedAt}\n\nRole: ${record.role}\nFocus: ${record.focus}\nWorking preferences: ${record.preferences}\nResponsibility boundaries: ${record.boundaries}` : "No preference context is applied."}\n\nConfigured focus is not verified competence or permission. Changes apply next attempt / retry; running attempts do not change. ${store.syncEnabled ? "Repository cards: transfer requires separately authorized GitHub Sync targets. Deletion may synchronize a tombstone; Git history and other copies remain." : "Private Host storage, no automatic cross-device sync."} Deletion stops future use; historical Chat snapshots remain until that history is deleted.`,
@@ -80,7 +91,7 @@ export async function configurePersonaProfiles(store: PersonaProfileStore, chat:
     }, "Delete Profile");
     if (confirmed === "Delete Profile") {
       store.delete(record);
-      if (chat.agentProfileId === record.id) persistAssignment(undefined);
+      deleted();
     }
     return;
   }
@@ -95,5 +106,5 @@ export async function configurePersonaProfiles(store: PersonaProfileStore, chat:
     content[key] = value;
   }
   const saved = store.save(kind, content, record);
-  await vscode.window.showInformationMessage(`${saved.name} saved at revision ${saved.revision}. ${kind === "agent" && selection.action === "create" ? "Use Assign Agent Profile to apply it explicitly." : "Applies next attempt / retry."}`);
+  await vscode.window.showInformationMessage(`${saved.name} saved at revision ${saved.revision}. ${kind === "agent" && !record ? "Use Assign Agent Profile to apply it explicitly." : "Applies next attempt / retry."}`);
 }

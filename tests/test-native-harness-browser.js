@@ -6,6 +6,40 @@ const { createNativeHarnessServer } = require("../dist/runtime/native-harness-se
 const { fixture, sessionId } = require("./native-harness-fixture");
 const { createChatBudgetLedger, recordChatBudgetUsage, recordChatBudgetRuntime } = require("../dist/chat/chat-budget-ledger");
 const { themes, applyTheme } = require("./ui-theme-fixtures");
+test("Dashboard inspects current User and Chat-assigned Agent Profiles separately from historical snapshots without inference", async t => {
+  const browser = await chromium.launch({headless:true}); t.after(() => browser.close());
+  const page = await browser.newPage({viewport:{width:390,height:1000}});
+  const errors = []; page.on("pageerror",error => errors.push(error.message));
+  await page.setContent('<main id="host"></main>');
+  await page.addStyleTag({path:path.join(__dirname,"../src/webview/agent-harness.css")});
+  await page.addScriptTag({path:path.join(__dirname,"../src/webview/agent-harness.js")});
+  const data = fixture(); data.profileReader = true;
+  data.harness.attempts[1].profileContext = {user:{name:"Historical user",revision:1,preferences:"Old preferences"}};
+  await page.evaluate(initial => {
+    window.profileReads = [];
+    window.profileEdits = 0;
+    window.controller = PkmAgentHarness.mount(document.getElementById("host"),{initial,configureProfiles:()=>{window.profileEdits++;},request:async method => {
+      window.profileReads.push(method);
+      if (method !== "profiles") throw new Error("Unexpected operation");
+      return {scope:"Private Host cards",agentAssigned:true,
+        user:{name:"Current user",revision:2,preferences:"New preferences",boundaries:"No uploads"},
+        agent:{name:"Assigned reviewer",revision:3,role:"Reviewer",focus:"UI acceptance"}};
+    }});
+  },data);
+  await page.evaluate(()=>controller.showProfiles());
+  const current = page.getByRole("region",{name:"Current User and Agent Session Profiles"});
+  await current.getByText("Current user · r2",{exact:true}).waitFor();
+  assert.match(await current.innerText(),/New preferences[\s\S]*No uploads[\s\S]*Agent Session Profile[\s\S]*Assigned reviewer · r3[\s\S]*UI acceptance/);
+  assert.match(await page.getByRole("tabpanel").innerText(),/Historical user · r1[\s\S]*Old preferences/);
+  assert.deepEqual(await page.evaluate(() => profileReads),["profiles"]);
+  await current.getByRole("button",{name:"Refresh current Profiles",exact:true}).click();
+  await current.getByText("Current user · r2",{exact:true}).waitFor();
+  assert.deepEqual(await page.evaluate(() => profileReads),["profiles","profiles"]);
+  await current.getByRole("button",{name:"Manage Session Profile",exact:true}).click();
+  assert.equal(await page.evaluate(()=>profileEdits),1);
+  assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+  assert.deepEqual(errors,[]);
+});
 
 test("release Dashboard themes preserve controls, compact diagrams and high-contrast stages", async t => {
   const browser = await chromium.launch({ headless:true });
@@ -184,12 +218,12 @@ test("Dashboard shows recorded persistent Profiles and does not let an empty ret
   await page.getByRole("tab", {name:"Memory / Profiles",exact:true}).click();
   const memory = page.getByRole("tabpanel");
   assert.match(await memory.innerText(), /User Profile[\s\S]*Explicit user · r3[\s\S]*Agent Profile[\s\S]*Not recorded/);
-  await memory.getByText("Profile snapshot recorded for this attempt",{exact:true}).click();
+  assert(await memory.getByText("Profile snapshot recorded for this attempt",{exact:true}).evaluate(node => node.parentElement.open));
   assert.match(await memory.innerText(),/Concise evidence[\s\S]*No production restarts/);
   await page.getByRole("tab", {name:"Retrieval flow",exact:true}).click();
   await page.getByText("Piece categories and evidence",{exact:true}).click();
   assert.match(await page.getByRole("tabpanel").innerText(),/note[\s\S]*2 piece[\s\S]*1 selected[\s\S]*memory[\s\S]*1 piece[\s\S]*1 selected \/ 1 sent/);
-  assert.doesNotMatch(await page.getByRole("tabpanel").innerText(),/Actual source|deadbeef|cafebabe|profile-secret|private profile locator/);
+  assert.match(await page.getByRole("tabpanel").locator(".pkm-harness-chosen-piece title").first().textContent(),/Actual source hash deadbeef/);
   assert.doesNotMatch(await page.locator(".pkm-harness-diagram-grid").innerText(),/deadbeef|cafebabe|profile-secret/);
   assert.equal(await page.getByRole("list",{name:"Retrieval piece categories"}).getByRole("listitem").count(),2);
   const selectedTab = page.getByRole("tab",{name:"Retrieval flow",exact:true});
@@ -230,7 +264,8 @@ test("Retrieval pool samples 125 pieces, retains all six selected connections an
     assert(matching,"every connection originates in an actual sampled selected candidate");
     assert.match(await detail.innerText(),/Candidates: 125[\s\S]*Selected: 6[\s\S]*Sent: 3/);
     assert.match(await detail.innerText(),/32 \/ 125 recorded pieces shown/);
-    assert.doesNotMatch(await detail.innerHTML(),/private-hash|Secret source/);
+    assert.match(await svg.locator('.pkm-harness-chosen-piece title').first().textContent(),/Secret source 119[\s\S]*source-119[\s\S]*Selected within budget/);
+    assert.doesNotMatch(await page.locator(".pkm-harness-diagram-grid").innerHTML(),/private-hash|Secret source/);
     await svg.getByRole("button",{name:"Inspect selected piece 120: memory",exact:true}).focus();
     await page.keyboard.press("Enter");
     assert.match(await detail.locator('[aria-label="Retrieval piece evidence"]').innerText(),/source-119[\s\S]*lexical[\s\S]*Selected within budget[\s\S]*transmission not established/);
@@ -272,7 +307,9 @@ test("Shared Memory pyramid uses stored levels and edges, lazily inspects pieces
         throw new Error(`Unexpected request: ${method}`);
       }});
     },{data,store});
-    assert.deepEqual(await page.evaluate(()=>window.reads),[],"the four-thumbnail overview does not scan the memory database");
+    const thumbnail=page.locator('.pkm-harness-diagram-thumbnail[data-diagram="memory"]');
+    await thumbnail.locator("svg.pkm-harness-memory-graph").waitFor();
+    assert.deepEqual(await page.evaluate(()=>window.reads),["memoryOverview"],"the thumbnail fetches one scoped overview without a mouse click");
     await page.getByRole("tab",{name:"Memory / Profiles",exact:true}).click();
     const detail=page.getByRole("tabpanel"),graph=detail.getByRole("group",{name:"Stored Memory pyramid",exact:true});
     await graph.waitFor();
@@ -280,17 +317,43 @@ test("Shared Memory pyramid uses stored levels and edges, lazily inspects pieces
     assert.equal(await graph.locator(".pkm-harness-memory-edge").count(),1);
     assert.equal(await graph.locator('[data-memory-state=sent]').count(),1);
     assert.equal(await graph.locator('[data-memory-state=prepared]').count(),1);
+    assert.match(await graph.locator('.pkm-harness-memory-piece title').first().textContent(),/topic:one[\s\S]*revision 2[\s\S]*stored summary/);
     await graph.getByRole("button",{name:"Inspect topic, level 1, piece 1",exact:true}).press("Enter");
     const evidence=detail.locator('[aria-label="Stored Memory piece evidence"]');
     await evidence.getByText(/Stored source evidence/).waitFor();
     assert.equal(await evidence.locator("img,script").count(),0);
     assert.deepEqual(await page.evaluate(()=>window.reads),["memoryOverview","memoryPiece"]);
+    await page.evaluate(value=>{for(let i=0;i<30;i++)window.memoryController.update(value,true);},data);
+    assert.deepEqual(await page.evaluate(()=>window.reads),["memoryOverview","memoryPiece"],"unchanged snapshots reuse the overview rather than repeatedly querying storage");
     if(process.env.PKM_RING_SCREENSHOT) await detail.screenshot({path:`${process.env.PKM_RING_SCREENSHOT}-memory-${width}.png`});
     const prepared=structuredClone(data);prepared.harness.attempts[1].budgetReceipts[0].status="prepared";
     await page.evaluate(value=>window.memoryController.update(value,true),prepared);
     assert.equal(await graph.locator('[data-memory-state=sent]').count(),0,"a prepared round is never proof of transmission");
+    const changed=structuredClone(prepared);
+    changed.harness.attempts[1].memory.turn="new-memory-turn";
+    await page.evaluate(value=>window.memoryController.update(value,true),changed);
+    await thumbnail.locator("svg.pkm-harness-memory-graph").waitFor();
+    assert.equal(await page.evaluate(()=>window.reads.filter(method=>method==="memoryOverview").length),2,"new Memory evidence refreshes the thumbnail without interaction");
     await page.close();
   }
+});
+
+test("Memory thumbnail reports read failures without interaction and does not retry on every snapshot",async t=>{
+  const browser=await chromium.launch({headless:true});t.after(()=>browser.close());
+  const page=await browser.newPage();
+  await page.setContent('<main id="host"></main>');
+  await page.addScriptTag({path:path.join(__dirname,"../src/webview/agent-harness.js")});
+  const data=fixture();data.memoryStoreReader=true;
+  await page.evaluate(data=>{
+    window.reads=[];
+    window.controller=PkmAgentHarness.mount(document.getElementById("host"),{initial:data,request:async method=>{
+      reads.push(method);throw new Error("Memory inspection unavailable");
+    }});
+  },data);
+  const thumb=page.locator('.pkm-harness-diagram-thumbnail[data-diagram="memory"]');
+  await thumb.getByText("Memory inspection unavailable",{exact:true}).waitFor();
+  await page.evaluate(data=>{for(let i=0;i<30;i++)controller.update(data,true);},data);
+  assert.deepEqual(await page.evaluate(()=>reads),["memoryOverview"],"failed automatic reads stay explicit and cached until evidence changes or manual refresh");
 });
 
 test("production browser: round ledger distinguishes provider usage, estimates and unknown thinking without model requests", { timeout:60000 }, async t => {

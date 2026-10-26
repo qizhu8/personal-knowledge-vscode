@@ -119,6 +119,9 @@ def assert_single_module_and_trash(browser):
               {nodeId:'archived-module',state:'succeeded',instruction:'Historical node content',dependsOn:[],usage}]}]}];
           renderAgentSessions();
         }""", usage)
+        workspace = page.locator(".agent-sessions-workspace")
+        assert "cattree-collapsed" in workspace.get_attribute("class")
+        workspace.get_by_role("button", name="Restore category tree", exact=True).click()
         dock = page.locator('.cattree-trash-dock')
         dock.locator('.knowledge-trash-dock-row').press("Space")
         dock.locator('.agent-session-trash-row').press("Enter")
@@ -195,6 +198,10 @@ def assert_shared_trash_docks(browser):
               recipeId:'recipe_trash_ui', name:'Trashed Recipe'}];
           }""")
           page.evaluate("renderGlobalRecipes()" if area == "recipes" else "renderAgentSessions()")
+        if area == "agentSessions":
+          restore_tree = page.get_by_role("button", name="Restore category tree", exact=True)
+          if restore_tree.count():
+            restore_tree.click()
         dock = page.locator('.cattree-trash-dock:visible')
         row = dock.locator('.knowledge-trash-dock-row')
         button = row.get_by_role("button", name="Delete All", exact=True)

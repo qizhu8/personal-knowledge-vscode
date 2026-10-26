@@ -75,8 +75,26 @@ export function abortable<T>(promise: PromiseLike<T>, signal: AbortSignal): Prom
   });
 }
 
+interface StagedTextEdit {
+  base: string;
+  diskHash: string;
+  text: string;
+  undo: string[];
+}
+
+// Shared across tool instances/turns, isolated by host and Chat. Nothing is written
+// to a VS Code working copy until an explicitly approved save.
+const stagedTextEdits = new WeakMap<typeof vscode, Map<string, Map<string, StagedTextEdit>>>();
+const textHash = (text: string | Buffer) => createHash("sha256").update(text).digest("hex");
+
 export function createBuiltinTools(enabled: string[], host: typeof vscode = vscode, onApproval?: (name: string, waiting: boolean) => void, onEdit?: (change: ApiChatEditChange) => void, requestApproval?: (name: string, prompt: string, detail: string, signal: AbortSignal, boundary?: "workspace" | "outside-workspace", resource?: string) => Promise<boolean>, executionRoots?: readonly vscode.Uri[], processEvidenceDirectory?: string, requestQuestion?: (prompt: string, schema: QuestionSchema, signal: AbortSignal, verify?: (answer: Record<string, unknown>) => Promise<void>) => Promise<Record<string, unknown> | undefined>, portalContextId?: string): ApiChatTool[] {
   const roots = executionRoots ? [...executionRoots] : (host.workspace.workspaceFolders || []).map(folder => folder.uri);
+  let scopes = stagedTextEdits.get(host);
+  if (!scopes) { scopes = new Map(); stagedTextEdits.set(host, scopes); }
+  const scope = portalContextId || processEvidenceDirectory || roots.map(root => root.fsPath).join("\0");
+  let staged = scopes.get(scope);
+  if (!staged) { staged = new Map(); scopes.set(scope, staged); }
+  const drafts = staged;
   const active = (signal: AbortSignal) => { if (signal.aborted) throw new Error("Request cancelled."); if (host.workspace.isTrusted === false) throw new Error("Tools require a trusted workspace."); };
   const approve = async (name: string, prompt: string, detail: string, action: string, signal: AbortSignal, boundary: "workspace" | "outside-workspace" = "outside-workspace", resource?: string) => {
     onApproval?.(name, true);
@@ -106,15 +124,27 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
     active(signal);
     if (await abortable(fs.promises.realpath(location.uri.fsPath), signal) !== location.target) throw new Error("File path changed after approval.");
     const uri = host.Uri.file(location.target);
-    if ((await abortable(host.workspace.fs.stat(uri), signal)).size > 160_000) throw new Error("Tool file exceeds 160 KB.");
+    const readOnly = name === "read_file" || name === "search_text";
+    if ((await abortable(host.workspace.fs.stat(uri), signal)).size > (readOnly ? 16 * 1024 * 1024 : 160_000)) {
+      throw new Error(readOnly ? "Text read exceeds the 16 MiB file limit. Choose a smaller file." : "Tool file exceeds 160 KB.");
+    }
     return uri;
   };
   const documentFor = async (args: Record<string, unknown>, signal: AbortSignal, name: string) => {
     const uri = await resolve(args, signal, name);
     const document = await abortable(host.workspace.openTextDocument(uri), signal);
     const text = document.getText();
-    if (text.includes("\0") || Buffer.byteLength(text, "utf8") > 160_000) throw new Error("Choose a text file smaller than 160 KB.");
+    if (text.includes("\0")) throw new Error("Choose a text file without binary content.");
+    const limit = name === "read_file" || name === "search_text" ? 16 * 1024 * 1024 : 160_000;
+    if (Buffer.byteLength(text, "utf8") > limit) throw new Error(`Text document exceeds the ${limit}-byte tool limit.`);
     return document;
+  };
+  const checkedDraft = async (document: vscode.TextDocument, signal: AbortSignal) => {
+    const draft = drafts.get(document.uri.fsPath);
+    if (draft && (document.isClosed || document.getText() !== draft.base || textHash(await abortable(fs.promises.readFile(document.uri.fsPath), signal)) !== draft.diskHash)) {
+      throw new Error("Staged edit conflict: document or disk content changed. Draft retained; inspect or discard it. No edit was replayed.");
+    }
+    return draft;
   };
   const files = async (args: Record<string, unknown>, signal: AbortSignal) => {
     const root = rootFor(args);
@@ -330,14 +360,21 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
       active(signal);
       return JSON.stringify(cancelChatProcess(processEvidenceDirectory, record.handle));
     }),
-    definition("read_file", "Read text, up to 200 lines and 12,000 characters. Workspace-relative or absolute paths; outside-workspace access requires permission. Hidden/sensitive paths excluded.", { path: { type: "string" }, startLine: { type: "integer", minimum: 1 }, endLine: { type: "integer", minimum: 1 } }, ["path"], async (args, signal) => {
-      const document = await documentFor(args, signal, "read_file");
+    definition("read_file", "Read a precise text range, up to 200 lines and 12,000 characters from a file up to 16 MiB. Use search_text with a narrow glob to locate relevant lines first; use nextStartLine for subsequent pages. Workspace-relative or absolute paths; outside-workspace access requires permission. Hidden/sensitive paths excluded.", { path: { type: "string" }, startLine: { type: "integer", minimum: 1 }, endLine: { type: "integer", minimum: 1 } }, ["path"], async (args, signal) => {
       const start = Number(args.startLine ?? 1); const end = Number(args.endLine ?? start + 199);
       if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start || end - start >= 200) throw new Error("Choose 1-200 lines with valid line numbers.");
-      const lines = document.getText().split(/\r?\n/);
+      const document = await documentFor(args, signal, "read_file");
+      const draft = await checkedDraft(document, signal);
+      const lines = (draft?.text ?? document.getText()).split(/\r?\n/);
+      if (start > lines.length) throw new Error(`Start line ${start} exceeds the document's ${lines.length} lines.`);
       const selected = lines.slice(start - 1, end).join("\n");
-      const result = { path: args.path, startLine: start, endLine: Math.min(end, lines.length), content: selected.slice(0, 12_000), truncated: end < lines.length || selected.length > 12_000 };
-      while (JSON.stringify(result).length > 16_000) { result.content = result.content.slice(0, Math.floor(result.content.length * 0.8)); result.truncated = true; }
+      const result = { path: args.path, staged: !!draft, startLine: start, endLine: Math.min(end, lines.length), totalLines: lines.length,
+        content: selected.slice(0, 12_000), truncated: end < lines.length || selected.length > 12_000,
+        contentTruncated: selected.length > 12_000, nextStartLine: undefined as number | undefined };
+      while (JSON.stringify(result).length > 15_900) { result.content = result.content.slice(0, Math.floor(result.content.length * 0.8)); result.truncated = true; }
+      result.contentTruncated = result.content.length < selected.length;
+      result.endLine = start + result.content.split("\n").length - 1;
+      if (!result.contentTruncated && result.endLine < lines.length) result.nextStartLine = result.endLine + 1;
       return JSON.stringify(result);
     }),
     definition("find_files", "List up to 200 workspace-relative file names matching a glob.", { glob: { type: "string" } }, [], async (args, signal) => {
@@ -347,8 +384,8 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
       for (const name of names.slice(0, 100)) { if (JSON.stringify([...chosen, name]).length > 12_000) break; chosen.push(name); }
       return JSON.stringify({ files: chosen, truncated: uris.length >= 200 || names.length > chosen.length });
     }),
-    definition("list_directory", "List up to 200 entries in one directory without reading files or following symlinks. Accepts workspace-relative or absolute paths. Hidden dot-directories (including .vscode-server and .copilot), node_modules and sensitive paths are excluded even in Allow All; do not retry through another file/process tool to bypass that boundary. Outside-workspace access uses this Chat's permissions.", { path: { type: "string" } }, [], async (args, signal) => {
-      const location = await physicalPath(args, args.path ?? ".", signal);
+    definition("list_directory", "List up to 200 entries in one directory without reading files or following symlinks. Missing or empty path means the selected workspace root. Accepts workspace-relative or absolute paths. Hidden dot-directories (including .vscode-server and .copilot), node_modules and sensitive paths are excluded even in Allow All; do not retry through another file/process tool to bypass that boundary. Outside-workspace access uses this Chat's permissions.", { path: { type: "string" } }, [], async (args, signal) => {
+      const location = await physicalPath(args, args.path === "" || args.path === undefined ? "." : args.path, signal);
       if (location.outside && await approve("list_directory", `Read directory ${location.target}?`,
         `Directory: ${location.target}\nOnly entry names and types are sent to the model; files are not read.`, "Allow access", signal, "outside-workspace", location.target) !== "Allow access") throw new Error("Directory access declined by the user.");
       active(signal);

@@ -295,7 +295,12 @@ async def main(bridge):
                 graph = {"action_id": "stdio.graph.add", "name": "Stdio graph", "nodes": [
                   {"id": "date", "action_id": block["action_id"], "content_hash": block["content_hash"], "parameters": {"value": "2026-10-08"}}], "edges": []}
                 assert (await client.call_tool("action_graph_check", {"graph": graph})).structured_content["implementations"][0]["kind"] == "pipeline"
-                assert (await client.call_tool("action_graph_save", {"graph": graph})).structured_content["display_name"] == "Stdio graph"
+                submitted = (await client.call_tool("action_graph_save", {"graph": graph})).structured_content
+                assert submitted["state"] == "pending_operator_approval" and submitted["registered"] is False and submitted["callable"] is False, submitted
+                assert by_name["action_proposals"].annotations.readOnlyHint is True
+                assert not {"proposal_decide", "host_trust_update"} & set(by_name)
+                pending = (await client.call_tool("action_proposals", {})).structured_content["proposals"]
+                assert any(item["proposal_id"] == submitted["proposal_id"] and item["definition"]["display_name"] == "Stdio graph" for item in pending), pending
                 actions = (await client.call_tool("action_retrieve", {"task": "cosmos directory list"})).structured_content
                 assert not any(candidate["action_id"].startswith("cosmos.") for candidate in actions["candidates"])
                 assert actions["selected_action_id"] is None

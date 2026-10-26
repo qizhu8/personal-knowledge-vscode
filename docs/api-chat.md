@@ -8,10 +8,10 @@ side has its own **Open Chat** action. A newly created invitation shows the
 existing side and an awaiting-peer placeholder; **Copy magic code** copies the
 complete one-time link through the Host clipboard, never into webview state.
 Copy is only available while the invitation is unredeemed and unexpired.
-**Remove** forgets an ended pairing's history, including both local sides; it
-does not disconnect a live Portal, delete its Chats or revoke saved re-attach
-credentials. A pairing with any live/reconnecting/other-window side cannot be
-removed. Button actions use data-bound listeners, not generated JavaScript.
+Only current-window live connections and unexpired invitations are shown.
+Disconnected/ended pairings have no history or recovery entry. External
+connection identities do not offer **Open Chat**, because they are not Chats.
+Button actions use data-bound listeners, not generated JavaScript.
 
 The Chat sidebar retains its webview context while hidden. Switching away and
 back preserves the live conversation DOM and draft instead of requiring page
@@ -104,8 +104,9 @@ IP/hostname endpoints or be controlled independently. Open the current Chat's
 and an open door while connected. Role-specific wizards remain in status/details,
 not on this two-state button. Chat List has no global Portal button.
 **PKM: Portal** asks which Chat owns the connection.
-Agent Sessions passes its native Chat identity. Opening or using a Portal does
-not select a different Chat, interrupt its current local turn or replace history.
+Agent Sessions passes its native Chat identity. Portal setup and approvals open
+the owning Chat to display local interaction cards; they do not interrupt its
+current model turn or replace history.
 
 **Portal link (recommended).** No Room needs to exist beforehand.
 
@@ -114,19 +115,21 @@ a wizard or role-specific decoration. Clicking it opens the Portal controls to
 prepare a connection change; it does not immediately disconnect or switch roles.
 Role-specific wizards remain in status and connection details.
 
-1. Choose **Start a Portal**, then this Chat's direction: **Controller** (the
-   default) or **Controlled**. For example Windows can create a controlled
-   endpoint so the existing Linux conversation can test it. PKM starts the Hub,
+1. Choose **Controller** or **Controlled**. No Portal name, create/accept selector
+   or endpoint entry is required. **Controller** always generates the code:
+   PKM starts the Hub,
    opens a peer channel and copies a one-time `pkmportal:v1:` link
    (transport address/credentials, role and pairing code; ten-minute expiry).
    In a Remote window the Hub port is forwarded with
    VS Code port forwarding, so the link uses `localhost` on the computer that
    shows the initiator's window; the receiving window must run on that computer.
-   Alternatively enter a reachable **WSS** address (IP or hostname). A link
-   cannot create network reachability, certificates or NAT traversal.
-2. In the other Chat choose **Accept a Portal link**, paste it privately and
-   explicitly confirm the stated direction and endpoint. When the initiator is
-   controlled it must also approve the incoming controller. One transport cannot be
+   The endpoint is resolved automatically; there is no address configuration
+   dialog. A link cannot repair a broken forwarding tunnel or create network
+   reachability, certificates or NAT traversal.
+2. In the other Chat choose **Controlled**, paste the Controller's code into the
+   private password input and explicitly **Allow control**. There is no second
+   direction selector. Codes created with the old reversed (controlled-initiator)
+   flow are rejected by setup; generate a fresh Controller code. One transport cannot be
    attached to another local Chat. Pasting alone grants nothing; a link redeemed
    in the wrong direction is rejected.
 3. Control direction is fixed. **Switch control direction…** first asks the
@@ -138,8 +141,11 @@ Role-specific wizards remain in status and connection details.
 
 **Copy a forgotten invitation.** Projects → Portal Connections includes an
 **Awaiting peer** section with **Copy magic link** for unredeemed, unexpired
-invitations owned by this window. The Host copies directly to the clipboard;
-the secret link is never included in webview snapshots or persisted history.
+invitations owned by this window. The Host copies directly to the clipboard.
+Links entered during setup stay only in the local card's transient input/draft
+and Host decision result, never in saved webview state, Chat history, model
+requests or MCP arguments. Copying an existing invitation never publishes its
+secret in a webview snapshot.
 Redeemed, revoked or expired links cannot be reused. Invitations remain
 memory-only and disappear on Host restart; established pairings use re-attach.
 
@@ -166,7 +172,7 @@ After pairing:
 
 **Copilot and other MCP clients.** Discover a Host with
 `api_chat_capabilities`, then call `portal_control` with `operation="open"`
-and no context ID. Local UI names the conversation and handles link copying/
+and no context ID. Local UI asks only for the role and handles link copying/
 pasting; credentials are never returned to the model or written into the
 MCP request queue. Poll the returned local request with `api_chat_request_get`
 to get its `contextId`. Keep it in this conversation. Subsequent operations
@@ -192,7 +198,7 @@ explicit resumption. The event is labelled **PKM · Portal status event**, not
 disconnect or role/pair changes prevent a queued review from running; the
 queue reports the reason instead of replaying a remote task.
 
-External Copilot/MCP contexts do **not** auto-wake the companion PKM Chat or
+External Copilot/MCP contexts do **not** auto-wake a PKM Chat or
 inject messages into Copilot. Use an explicit status/get request when the user
 asks, or keep the external agent's own approved blocking watcher/program
 waiting for results (as with Chatroom standby). A pushed transport receipt
@@ -204,17 +210,23 @@ unexpired grant to remember access to the current connection. That grant trusts
 the local MCP client holding the handle, not a cryptographically authenticated
 Copilot conversation; a caller-supplied name is not authorization. External handles
 cannot access PKM Chat-owned contexts. Remote execution for an external context
-uses one dedicated, visible PKM companion Chat; it cannot inject a task into an
-existing Copilot UI conversation. The controller's Copilot conversation remains
-the planning/reporting surface. Pairing is never re-attached automatically after a
-Host restart or Knowledge Root change; see **Re-attach** below for the explicit path.
+requires local selection of an existing, non-Trash PKM Chat for each task;
+cancelling selection executes nothing. No Chat is created automatically. It
+cannot inject a task into an existing Copilot UI conversation. The controller's Copilot conversation remains
+the planning/reporting surface. Disconnect, transport loss, Host restart or
+Knowledge Root/trust change ends the pairing; a fresh invitation and consent
+are required. There is no re-attach or restart-recovery operation.
 
-New external companions have a `Portal:` title and are placed in the **Portal**
-Chat group rather than Ungroup. They retain ordinary inspectable execution
-history and permissions, and creating one does not switch the currently selected
-Chat. Reuse its returned `contextId`: an `open` without a context ID creates a
-new companion, even if the label matches. Existing titles alone do not prove
-provenance; historical Chats are not automatically hidden, merged or deleted.
+External `open` allocates a Portal-only identity, not a Chat, Task or Chat group.
+Its role selection, code entry and local authorization use VS Code native
+dialogs/Quick Input and do not focus PKM Chat. Reuse the returned `contextId`;
+another `open` without it creates another connection context, not another Chat.
+If this endpoint acts as controlled, the selected existing Chat keeps its own
+history and receives only that approved task. Its Portal permission routing is
+scoped to the active execution and released afterward. A Chat already owning
+another Portal cannot be selected. Wire progress remains bound to the paired
+connection identity; successful execution results identify the actual Chat.
+Previously auto-created `Portal:` Chats are not automatically deleted or hidden.
 Opening a Portal on a normal existing Chat does not regroup that Chat.
 
 The Chat List does not display the selected Chat's Portal details; those remain
@@ -224,29 +236,35 @@ must not reserve space below the list for that connection.
 Dedicated `pkm.peer/v1` frames are directed to one authenticated Portal endpoint.
 The Hub replaces supplied sender identities and does not store peer frames in
 chat history; ordinary messages and catch-up history never trigger remote work.
-The controlled Host first creates an exclusive, synced claim under local
-`.pkm/state/peer-tasks`. Duplicate IDs do not execute again, altered content is
-rejected, and interrupted claims remain unknown rather than being replayed.
-Claims are not a distributed exactly-once transaction for external side effects.
+The controlled Host claims task IDs synchronously in bounded memory before
+approval. Duplicate IDs do not execute again; altered content is rejected even
+while approval is pending. Fingerprints are not evicted to permit replay; after
+1,000 incoming task records the user must pair again. No task claims/results are
+written to `.pkm/state/peer-tasks`, and no restart recovery or replay is supported.
+This is not a distributed exactly-once transaction for external side effects.
 
-**Re-attach (`resume-v1`, 3.2.83+ on both Hosts).** After pairing, each Host keeps
-the pairing (pair ID, derived HMAC secret, role, peer Chat identity, controller
-outgoing receipts) and its transport details in VS Code SecretStorage, never in
-knowledge, Sync or ordinary logs. After a restart or network loss, the Chat door
-shows *Re-attach available*; choose **Re-attach previous Portal** in the Portal menu
-or call `portal_control` with `operation="reattach"`. The initiator restarts its
-in-memory channel if it hosted it; the other side reconnects using saved transport
-credentials. Both
-sides must be online on the same transport and Knowledge Root. A nonce-bound HMAC
-proof must match the stored pair, the expected peer Chat and the complementary
-role; mismatches are rejected without attaching. Reusable permissions and external
-grants are **not** restored. The controlled Host then re-sends durable receipts for
-the controller's open requests: interrupted running/awaiting tasks become `unknown`,
-missing journals become `unknown`, completed results are recovered, and nothing is
-replayed. Revoke forgets the stored pairing on both sides; Disconnect keeps it.
-Pre-3.2.83 Hosts must pair once more after upgrading.
+**Temporary lifecycle (3.2.111+).** Pairing, credentials, permissions, pending
+approvals, observations, transfer receipts and task deduplication live only in
+the current Host. Disconnect/revoke/transport loss clears them, closes the
+dedicated channel and cancels local execution. It does not roll back external
+effects; inspect the original Chat before deciding on new work. Controller and
+controlled Chat histories remain the durable record. Copilot history contains
+only requests/results actually received, not unread remote progress.
 
-Legacy Room-backed links and saved connections remain compatible. Their existing
+The MCP file-based transport uses a private, per-Host OS-temporary IPC directory
+instead of persistent Portal request/receipt files under Knowledge Root. These
+transport mailboxes are removed on orderly Host disposal and cannot be polled
+or used to recover a pairing after that Host is offline. A crash may leave OS
+temporary files; they are not rediscovered or replayed as Portal state.
+
+On activation and before Portal use, targeted migration deletes indexed legacy
+Portal secrets, old connection/window state, old task journals and recognized
+Portal-only records from shared MCP mailboxes. Chat/Room histories, normal Chat
+tool receipts, transferred files and historical automatically-created Chats are
+preserved. Cleanup errors are reported and block Portal operations until retried;
+unexpected task-journal files and symlink escapes are not deleted.
+
+Legacy Room-backed links remain compatible. Their existing
 Rooms are not automatically deleted or renamed; all newly created Portals use the
 dedicated peer endpoint. Version-1 links retain their historical Room-named fields
 for compatibility, not as a request to create a Room.
@@ -262,8 +280,7 @@ task per local Portal connection, 100 outgoing requests per pairing, 16,000-char
 48 KiB frames and a 12,000-character answer preview (oversized encoded receipts
 are additionally bounded to fit the frame).
 Pairing and live controls are session-local and must be re-established after
-Host restart; claims remain to prevent replay, but automatic Chat attachment and
-outgoing receipt recovery are not implemented. Real Linux/Windows installed-host
+Host restart; no claims or pairing credentials are restored. Real Linux/Windows installed-host
 acceptance remains separate from local automated tests. Machine/Chat labels are peer-advertised metadata; transport
 participant identity and the approved pairing determine routing.
 
@@ -282,6 +299,20 @@ and 12,000 in total) is mirrored to the controller only under a reusable, unscop
 `progress-read` lease plus an unscoped lease for that tool's own dimension; otherwise
 the controller sees the tool status with output marked as withheld.
 
+The Permissions card combines dimensions, workspace/chosen-folder scope and
+duration in one submission, with an explicit acknowledgement for durations over
+15 minutes or until disconnected. Pair approval, task approval, direction
+switches, external-client access, per-attempt Profile disclosure and file-batch
+permits use local cards for PKM Chat-owned Portals. External Copilot/MCP-owned
+Portals use native VS Code dialogs instead, including setup and external-access
+consent. Private link inputs are masked, and neither surface sends answers to
+the model. The same context/trust/binding checks apply to both surfaces.
+These cards work while a tool is awaiting permission and do not send their
+answers to the model or authorize ordinary model-owned decisions. Native
+file/folder pickers and confirmations owned by VS Code/OS remain native.
+Cancelling, expiry, Chat disposal or a changed trust/Root/pairing context prevents
+late approval. Form validation errors keep the card available for correction.
+
 The default is a fixed 15-minute deadline, never sliding renewal. Longer or custom
 durations and Until disconnected are allowed after warning. Until disconnected is
 not persisted permanent access: disconnect, Host restart, role/identity, Root or
@@ -292,8 +323,16 @@ from the same Permissions menu. Program execution and Allow All are **not an OS/
 network sandbox** and cannot guarantee that arbitrary code cannot copy data by a
 different channel. Do not grant them to an untrusted controller.
 
-**Visible state and attribution.** Both bound Chats show Controller/Controlled,
-peer identity and front/back wizard visuals independently of task execution.
+**Visible state and attribution.** The default connection strip is one line:
+**Portal Connected - Permission all/scoped/Ask** (or a pairing/reconnecting
+state). Hover or keyboard focus reveals Controller/Controlled, peer labels,
+permission details and remote progress. Protocol UUIDs, request identities and
+raw transfer hashes are not displayed. Disconnect immediately hides the strip,
+including historical remote progress; retained receipts still prevent replay.
+Permission mode and expiry use the same label during rendering and clock ticks;
+an until-disconnected grant does not alternate with an incomplete countdown label.
+Unchanged Portal state keeps its existing details DOM, and actual progress changes
+preserve the permission matrix and remote-observation expansion state.
 Public task snapshots include stage, partial answer, tool names/status, waiting
 approval/question titles, errors and terminal state. UI and `status`/`get` use
 the same per-original-request snapshots. Hidden/background webviews do not stop
@@ -766,10 +805,11 @@ The native control API and `list_chats` return `chatUrl`; use that URL as the
 `chat_id`/`chatId` input to get, send, cancel, or `ask_chat`. Legacy UUID inputs
 remain accepted for compatibility, but are not resource links.
 
-User messages align right and assistant messages align left. Every message has a
-small bottom-right token footer: pending messages show `Awaiting token usage`,
-valid reported input/output counts are shown when supplied, and absent counts show
-`Token usage not reported`. Request input includes history/context/tools; it is not an
+User messages align right and assistant messages align left. A small bottom-right
+token footer appears only when valid reported input/output counts are available.
+Pending or unreported usage and Credits have no placeholder text; each is shown
+independently when reported, including reported zero and partial Credit coverage.
+Request input includes history/context/tools; it is not an
 independent count for the user message. Counts cover reported model rounds only,
 not unreported rounds or provider billing. Workflow stages use identical compact
 colored dots, with status/tooltips and expandable activity preserved.
@@ -825,6 +865,37 @@ context/output budget, not an unrelated 100,000-character ceiling. Required inpu
 explicit context and active tool results are never silently shortened; if these
 alone exceed the budget, the request fails before model dispatch. Optional
 retrieved references and recent dialogue are admitted only when they fit.
+
+### User-approved Task context checkpoints
+
+With an explicit active Task and **Use earlier Chat context** enabled, open
+**Retrieval and Chat memory** and choose **Review Task checkpoint**. Enter a
+summary of the covered user inputs, including constraints, prohibitions and
+unresolved requirements, and explicitly confirm that you reviewed the originals.
+This does not call a model or approve any tool, expenditure or Task completion.
+Nothing is consolidated automatically; cancelling leaves the Task unchanged.
+
+The approved summary replaces the covered prefix of Task user inputs only in
+future model context. Later requirements remain mandatory and take precedence.
+Older agent working-state reports cannot override the approved replacement.
+The stored work goal and original Chat messages are retained unchanged. Its
+context source list uses the final covered input as a boundary anchor, followed
+by all newer inputs, so the old prefix does not keep growing that list.
+
+`session_info` remains available while a checkpoint is active, even if not
+otherwise selected. `checkpointAfter` pages 32 covered input identities;
+`taskInputId` reads an original input with a bounded preview, `contentHash` and
+UTF-16 offsets. For an exact half-open range, pass that hash as `inputHash`,
+plus `inputStart` and `inputEnd` (at most 4,000 characters per read).
+These reads never replay tool effects. A changed/missing checkpoint source
+fails explicitly; it is not silently replaced with a guessed summary.
+
+**Revoke checkpoint** requires confirmation and restores the original input
+requirements, which can exceed the model budget again. A revoked latest
+checkpoint does not reactivate an older approval. History off and another Task
+cannot reuse it. Retrying an input covered by a checkpoint requires revoking or
+reviewing that checkpoint first. Approvals are persisted, limited to 128 per
+Chat, and cover 1–10,000 inputs with a summary of at most 4,000 characters.
 
 Automatic PKM knowledge references have a separate **8,000-token input budget per
 model round**, independent of the model window. Long L1 sources are refined into
@@ -1237,7 +1308,11 @@ actual tool statuses, registered names, token/usage-frame observations and the
 exact test command, exit code, marker and file hashes. Success requires that
 every probe passes, and the fixture test remains unchanged and passes against
 the saved module. Each probe has a separate verdict and failure receipt.
-`credits: null` means not supplied by the public API, never zero credits.
+`credits: null` means no provider credit report was received, never zero credits.
+When present, `credits` is an exact decimal string. `creditsStatus` is `reported`,
+`partial`, or `not-reported`; `creditUsage` retains the raw nano-AIU total as a
+decimal string and the reported/total call counts. A partial amount is not a
+complete turn total.
 Local mocked tests or a browser preview are not substitutes for this acceptance.
 
 The built-in **PKM Chat E2E Acceptance** Recipe in `System/PKM/Chat` guides three
@@ -1280,9 +1355,10 @@ The default follows discovered model output metadata (4096 when unavailable),
 not a fixed 1024-token agent total. This is not a provider-enforced output-token
 or billing cap. Generation and hidden reasoning may consume additional quota
 before cancellation. Verified provider-specific usage data parts can supply
-actual token counts; providers omitting them show unavailable usage. The public
-API does not guarantee usage data or expose actual charges, so PKM shows
-**Billing unavailable** or **Credits unavailable**, without invented prices.
+actual token counts; providers omitting them leave usage labels hidden. The public
+API does not guarantee usage or billing metadata. PKM shows reported Copilot
+Credits when supplied, hiding the label otherwise without invented prices;
+other providers' billing remains unavailable unless explicitly reported.
 Providers control access, quota and billing. PKM instructions/reference context
 are supplied as user messages because this API has no system-message role.
 
@@ -1315,15 +1391,35 @@ output and warns when in-flight execution may already have occurred.
 converts model-priced input, cached input, cache writes where applicable and
 output into GitHub AI Credits: **1 AI credit = USD 0.01**. Rates can depend on
 model/context tier; cached input is not necessarily free. Some existing annual
-plans remain on legacy premium-request billing. This conversion is not a contract
-that internal `AIU` telemetry equals UI credits, nor a billing unit for other
-providers.
+plans remain on legacy premium-request billing. Copilot credits are not a
+billing unit inferred for other providers.
 
-For discovered Copilot models, the UI shows **Credits unavailable**: the public
-VS Code Language Model API does not supply billed credits, account plan or quota.
-It does not show zero, invent a tariff, or apply Copilot's unit to direct HTTP
-providers. Other native providers retain **Billing unavailable**; configured
-direct HTTP prices remain in their configured currency.
+The Copilot provider can report `usage.copilot_usage.total_nano_aiu` in the
+Language Model API's `usage` data part. PKM preserves this non-negative safe
+integer as `copilotNanoAiu` on each call's usage snapshot. **1 credit =
+1,000,000,000 nano-AIU**, with model-specific pricing already applied by the
+provider. No additional model multiplier is applied. Exact integer totals and
+decimal-string Credit amounts are computed before display; repeated cumulative
+frames replace the same round, rather than charging that round twice.
+
+Assistant replies display both input/output tokens and provider-reported
+Credits. Activity shows the same information per model round; the Harness,
+diagnostics, controller responses and E2E receipts preserve the amount and
+coverage. Main Chat totals include quota-clarification calls, but **exclude
+Memory and other workers**. Memory preparation and durable post-reply receipts
+retain independent token and Credit totals, including failed calls with
+received usage, and survive worker restarts. Never add a preparation snapshot
+to the full durable receipt: the latter already includes preparation.
+
+Missing credit reports are **not zero**. If only some attempted calls have
+reports, the UI labels the known sum **partial** and shows coverage. A reported
+zero remains zero. Historical Chats without billing metadata remain unknown.
+The composer says **Credits reported after the call**, not an invented forecast.
+This provider-specific metadata is optional: account plan, remaining quota,
+other workers and a complete account invoice are not supplied by it. Other
+native providers retain **Billing unavailable**; configured direct HTTP prices
+remain separate estimates in their configured currency. Compatible HTTP usage
+with the same explicit Copilot billing field is preserved, never synthesized.
 
 The direct HTTP **First-call estimate** is not a whole-turn cost cap: each tool
 round can resend history and growing tool results, adding input costs even when
@@ -1347,11 +1443,26 @@ context connects. Type filtering changes the view, not model context. Sources
 include Chat Memory segments, Skills, Notes, Scripts, Recipes, Research and
 indexed subscriptions. API/function kinds are extensible visualization contracts;
 no API/function source adapter or automatic execution is implemented.
-The current knowledge route is lexical unified retrieval, not a learned ranking
-model. Raw scores/components and source URIs are inspectable. Memory uses bounded
+Chat requests **dual lexical + semantic retrieval** using the already-enabled
+Retrieval configuration. It does not download or enable a model. When semantic
+retrieval is off or unavailable, the worker's lexical route and explicit fallback
+reason remain visible; unavailable retrieval does not fabricate semantic success.
+Raw scores/components and source URIs are inspectable. Memory uses bounded
 dialogue and a lexical-overlap rule; pools are interleaved rather than falsely
 globally ranked across incomparable scoring methods. Flow thickness is normalized
 within the scoring method and is not a probability.
+
+The inspector records requested/served routes, semantic status, whether a model
+was invoked, request/retrieval identities, generation and adaptive result counts.
+Invocation metadata survives prepared/sent receipts and reopening Chat.
+**Review relevance** is available for a recorded successful model invocation:
+explicitly label relevant returned sources and any missed relevant source IDs,
+then acknowledge that the judgment is complete. No source is preselected.
+An explicit complete all-negative judgment is allowed; its Recall is undefined,
+not zero. Cancelling, selecting prompt context or completing a Task never trains
+the retriever. Expired receipts and worker failures are surfaced as errors.
+The existing local calibration/result-count policy is unchanged; these judgments
+do not fine-tune model weights.
 
 Memory belongs to one Chat, with optional Task branches and 1,200-character
 source slices. Content-hashed IDs change when the source or tool outcome changes.
@@ -1439,19 +1550,46 @@ anything. Runtime parameters and diagnostics are expandable.
 Harness uses a compact arrow-connected stage flow, not a second large lifecycle
 ring or duplicate **Last recorded / Run** summary. Stage selection still exposes
 the exact recorded evidence; full execution graphs remain available. Retrieval
-groups candidates into category blocks with piece, selected and sent counts,
-without listing memory hashes, candidate IDs or per-item labels. A later empty
+groups candidates into category blocks with piece, selected and sent counts.
+Thumbnails remain compact and omit source identities. In the enlarged graph,
+hovering a candidate shows its recorded label, source, scoring method, score,
+selection reason and transmission state. Selected blocks show short labels;
+clicking or pressing Enter/Space opens local evidence details instead of
+automatically navigating away. Stored Memory tooltips also show the piece label,
+revision and a bounded summary preview, explicitly marked current or stale.
+A later empty
 receipt does not hide the latest populated receipt; its provenance remains
 explicit. Selection alone is not proof of transmission. The dedicated window
 retains the Chat tree and additional Memory storage, search and timeline views;
 their navigation is no longer another set of diagram previews.
 
 **Collaboration Profiles** shows the attempt's immutable User / Agent Profile
-snapshot (including revision and expandable fields), separately from learned Chat
+snapshot (including revision and initially expanded fields), separately from learned Chat
 topics. It never substitutes today's edited Profile for historical context.
 Transmission requires a `sent` round manifest containing that snapshot's exact
 message hash. Missing snapshots mean **Not recorded**, not an inferred or newly
 created Profile. The User Profile remains explicit, private persistent context.
+The shared Agent Sessions / Visualization Dashboard also has a **Current User /
+Agent Session Profiles** section with the current User card and this Chat's
+explicitly assigned Agent card. It is a read-only local inspection, with a refresh
+button and explicit errors for unavailable cards; it does not invoke a model or
+enable Profile Sync. Current cards apply to the next attempt and never replace
+the separately labelled historical snapshot.
+
+The Chat toolbar's **Profiles** button also opens the current User / Agent cards
+directly, without a model request or a managed Task. **Edit / manage Profiles**
+opens the existing explicit configuration flow. **Automation > User Profile** is
+an independent current-User page with Refresh and edit/create/delete controls;
+it does not require selecting a Chat or assigning an Agent Profile. Both entry
+points display the current fields and revision, keep read errors explicit, and
+do not change Profile Sync or the historical snapshots by merely viewing them.
+
+**Automation > Agent Sessions** owns the **Session Profile** entry. Select a
+PKM Chat or native Task, then use this shortcut to inspect its current assigned
+Agent Session Profile in the Dashboard. **Manage Session Profile** uses that
+selected session's existing explicit assignment/editing flow; **Refresh current
+Profiles** reloads the cards after editing. Unassigned cards remain explicit,
+and external sessions are not silently assigned a PKM Profile.
 
 The Memory chain separates:
 
@@ -1508,8 +1646,19 @@ turning History off, and without rewriting persisted evidence.
 Tools require a trusted workspace. Available tools start enabled; saved exclusions
 remain meaningful:
 
-- `read_file`: bounded authorized text reads; `find_files`: bounded workspace glob listing;
-  `search_text`: bounded literal search, not regex or shell.
+- `read_file`: authorized text reads from files up to 16 MiB, limited to 200 lines,
+  12,000 content characters and a bounded serialized result per call. Use
+  `search_text` with a narrow glob to locate relevant lines before reading.
+  Results include `totalLines`, the displayed `endLine`, `contentTruncated` and,
+  when a whole range fits, `nextStartLine`. Character-truncated ranges explicitly
+  omit the next-line cursor; choose a smaller line range rather than skipping
+  undisplayed text. Binary content is rejected. Edit/save tools and explicitly
+  attached context files retain their separate 160 KB limits.
+- `find_files`: bounded workspace glob listing; `search_text`: bounded literal
+  search, not regex or shell, including text files up to the same 16 MiB read limit.
+- `list_directory`: bounded entry names/types, never file bodies. Omitted or empty
+  `path` means the selected workspace root, not the filesystem root. Outside-root
+  approval and hidden/sensitive-path exclusions remain enforced.
 - `replace_text`: a unique exact replacement, with policy-based PKM approval.
   Stale versions are rejected; edits remain unsaved in VS Code.
 - `run_process`: policy-based approval for non-interactive program launch, separate
@@ -1551,6 +1700,9 @@ remain meaningful:
   user instructions. Reading or restoring a report does not reconcile those
   inputs, authorize effects, or certify acceptance.
 - `ask_user`: native single/multi-choice picker and optional free-text input.
+  Inline Chat forms display enumerated choices vertically as radio buttons
+  (single choice) or checkboxes (multiple choice), not dropdowns. All options
+  remain visible, long labels wrap, and defaults and draft answers survive updates.
   Dismissal returns a cancelled answer, not consent. Answers are model-visible;
   this is not a secret/password collection tool.
 - `ask_session`: one explicitly approved question to an advertised idle,
@@ -1894,7 +2046,7 @@ suite was reviewed; the whole Copilot suite was not ported or executed.
 | Capability | PKM native Chat status |
 | --- | --- |
 | Model picker, context/output controls, rename/status/timer | Implemented; actual catalog, no guessed model identities |
-| Chat Memory and typed knowledge retrieval | Automatic lexical/rule baseline; Top 10/20 collapsible source previews and retrieval flow, Task segments, bounded injection; no learned-model claim |
+| Chat Memory and typed knowledge retrieval | Dual knowledge retrieval using the enabled model, explicit lexical fallback and relevance feedback; bounded rule-based Chat Memory; Top 10/20 source previews and invocation receipts |
 | External Markdown Skills and explicit attachments | User-authorized snapshots, separate from Chat Memory |
 | Workspace/outside read/edit/save and program execution | Bounded builtins, physical-path checks and Protective/Ask/All policy |
 | User question UI | Sixth builtin; choices/free text, dismissal/cancellation tested |
@@ -1905,7 +2057,7 @@ suite was reviewed; the whole Copilot suite was not ported or executed.
 | Images | Gated native binary input and actual response display/save; no direct HTTP vision/generation tool |
 | Copilot execution/search subagents and auto-wake | Not implemented; Session questions are not an equivalent |
 | Terminal interaction, debugger/test/diagnostics/browser tools | Not built in; explicitly configured MCP may expose separate tools |
-| Automatic context compression, cumulative credit cap | Not implemented; credits/quota unavailable through the API |
+| Automatic context compression, cumulative credit cap | Not implemented; optional reported credits are accounting, not a prepaid cap or remaining quota |
 | Voice | Intentionally excluded |
 
 There is no honest percentage of "all Copilot functions" from this partial

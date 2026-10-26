@@ -104,6 +104,7 @@ async def main():
                 assert await call(client, "portal_control", portal_args) == opened
                 await rejected(client, "portal_control", {**portal_args, "operation": "status"}, "contextId")
                 await rejected(client, "portal_control", {**portal_args, "operation": "execute"}, "Unsupported")
+                await rejected(client, "portal_control", {**portal_args, "operation": "reattach"}, "Unsupported")
                 portal_send = {**portal_args, "operation": "send", "command_id": "remote-test",
                                "context_id": host_id, "prompt": "Test the remote Windows installation",
                                "request_id": host_id}
@@ -121,6 +122,11 @@ async def main():
                 assert file_receipt["result"]["paths"] == files_args["file_paths"]
                 await rejected(client, "portal_control", {**files_args, "file_paths": []}, "file_paths")
                 await rejected(client, "portal_control", {**files_args, "operation": "status"}, "file_paths")
+                host_record = json.loads((store / ".pkm/state/api-chat-control/hosts" / f"{host_id}.json").read_text())
+                portal_directory = pathlib.Path(host_record["portalRequestDirectory"])
+                assert portal_directory.is_absolute() and portal_directory.name.startswith("pkm-portal-ipc-")
+                assert len(list(portal_directory.glob("*.json"))) == 3
+                assert not list(requests.glob("*.json")), "Portal must not write receipts to Knowledge Root"
                 (requests / ("0" * 64 + ".json")).write_text("{invalid", encoding="utf-8")
                 create_args = {"host_id": host_id, "title": "Visible Agent QA", "command_id": "create-once"}
                 submitted = await asyncio.gather(*(call(client, "api_chat_create", create_args) for _ in range(4)))
@@ -165,6 +171,8 @@ async def main():
                 interrupted = await call(client, "api_chat_send", interrupted_args)
                 await receipt(client, interrupted, "running")
                 await stop(process)
+                assert not portal_directory.exists(), "Host disposal must remove temporary Portal IPC"
+                await rejected(client, "api_chat_request_get", {"host_id": host_id, "request_id": portal["request_id"]}, "Host is offline")
                 unknown = await receipt(client, interrupted, "outcome_unknown")
                 assert (await call(client, "api_chat_send", interrupted_args))["status"] == "outcome_unknown"
                 record = json.loads((requests / (unknown["request_id"] + ".json")).read_text())

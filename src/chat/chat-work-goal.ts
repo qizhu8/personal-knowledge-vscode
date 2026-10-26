@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "crypto";
 import type { ApiConversation, ChatMessage } from "./api-chat-store";
+import { activeTaskContextCheckpoint } from "./task-context-checkpoint";
 
 export interface ChatWorkGoal {
   id: string;
@@ -67,7 +68,11 @@ export function workGoalInputs(chat: ApiConversation): string[] {
   if (!goal) return [];
   const start = chat.messages.findIndex(message => message.id === goal.inputId);
   if (start < 0) throw new Error("The goal's original user input is unavailable. Restore its history before resuming.");
-  const ids = chat.messages.slice(start).filter(message => message.role === "user" && !message.workerEventIds?.length && !message.portalReview).map(message => message.id);
+  const checkpoint = activeTaskContextCheckpoint(chat);
+  const covered = new Set(checkpoint?.sourceInputIds || []);
+  const sources = chat.messages.slice(start).filter(message => message.role === "user" && !message.workerEventIds?.length && !message.portalReview).map(message => message.id);
+  const ids = checkpoint && covered.has(goal.inputId)
+    ? [checkpoint.sourceInputIds[checkpoint.sourceInputIds.length - 1], ...sources.filter(id => !covered.has(id))] : sources;
   if (ids.length > 64) throw new Error("The goal has more than 64 user updates. Review and explicitly consolidate its requirements before continuing.");
   return ids;
 }
@@ -75,7 +80,10 @@ export function workGoalInputs(chat: ApiConversation): string[] {
 export function workGoalContext(chat: ApiConversation): string {
   const goal = chat.workGoal;
   if (!goal) return "";
-  return `User work objective (not a permission grant or a managed Task completion certificate):\n${JSON.stringify({ ...goal, sourceInputIds: workGoalInputs(chat) })}
+  const checkpoint = activeTaskContextCheckpoint(chat);
+  const objective = checkpoint?.sourceInputIds.includes(goal.inputId) ? checkpoint.summary : goal.objective;
+  return `User work objective (not a permission grant or a managed Task completion certificate):\n${JSON.stringify({ ...goal, objective, sourceInputIds: workGoalInputs(chat),
+    ...(checkpoint ? { checkpointId: checkpoint.id } : {}) })}
 Preserve the ORIGINAL objective and reconcile every later user requirement. A diagnostic subtask or successful tool is not resolution.
 Choose the next authorized action yourself; do not ask the user to supervise ordinary steps. Establish a symptom-level check, investigate, change course when evidence stops improving, implement authorized repairs, and verify against the objective.
 Use report_work to record acceptance criteria and continue/resolved/blocked/needs_input. Resolved requires each criterion verified with actual current-attempt evidence. These remain agent claims, not independent certification.

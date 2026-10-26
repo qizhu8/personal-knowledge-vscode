@@ -129,6 +129,12 @@ def main():
         assert "No captured Checkpoints" in contents.inner_text()
         assert "No captured Recipe runs" in contents.inner_text()
         page.evaluate("state.tab='agentSessions'; projectSnapshot.agentSessions[0].task='Long Session title '.repeat(30); renderAgentSessions()")
+        workspace = page.locator(".agent-sessions-workspace")
+        assert "cattree-collapsed" in workspace.get_attribute("class")
+        workspace.get_by_role("button", name="Restore category tree", exact=True).click()
+        group = workspace.locator(".agent-session-tree .tree-cat-hdr").first
+        assert group.get_attribute("aria-expanded") == "false"
+        group.press("Enter")
         for width, height in [(1280, 900), (390, 844)]:
             page.set_viewport_size({"width": width, "height": height})
             page.locator(".agent-session-row").first.click(button="right")

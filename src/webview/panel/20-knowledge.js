@@ -139,7 +139,7 @@ document.querySelectorAll('.tab').forEach(t =>
     if (!hasCachedProjectView) renderEmptyDetail();
     closePaperViews();
     updatePaperChrome();
-    const fullWidthTab = ['actions', 'mcp', 'skillRouter', 'environments', 'servers', 'subscriptions', 'githubSync', 'backgroundTasks', 'portalConnections', 'agentSessions', 'agentSnapshots', 'recipes', 'projects', 'chatroom'].includes(state.tab);
+    const fullWidthTab = ['actions', 'mcp', 'userProfile', 'skillRouter', 'environments', 'servers', 'subscriptions', 'githubSync', 'backgroundTasks', 'portalConnections', 'agentSessions', 'agentSnapshots', 'recipes', 'projects', 'chatroom'].includes(state.tab);
     document.getElementById('layout-resizer').style.display = fullWidthTab ? 'none' : '';
     document.getElementById('sidebar-toggle').style.display = fullWidthTab ? 'none' : '';
     document.getElementById('content-toolbar').style.display = fullWidthTab ? 'none' : '';
@@ -194,6 +194,10 @@ document.querySelectorAll('.tab').forEach(t =>
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
       showGitHubSyncTab();
+    } else if (state.tab === 'userProfile') {
+      document.getElementById('sidebar').style.display = 'none';
+      document.getElementById('searchbox').style.display = 'none';
+      showUserProfileTab();
     } else if (state.tab === 'backgroundTasks') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';

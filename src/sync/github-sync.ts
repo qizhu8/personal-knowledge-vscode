@@ -4136,6 +4136,28 @@ export class GitHubPublicationMigration {
     return path.join(this.migrationRoot, "stage", MANIFEST_PATH);
   }
 
+  restartPreview(source: GitHubPublicationMigrationSource): GitHubPublicationMigrationReceipt {
+    const existing = this.requireMarker();
+    if (existing.repository !== source.target.repository || existing.branch !== source.target.branch) {
+      throw new Error("GitHub migration repository or branch changed; restart refused.");
+    }
+    if (source.target.publication?.manualVerificationCompleted) {
+      throw new Error("GitHub publication is already verified; a migration restart is not required.");
+    }
+    const preview = this.buildPreview(source);
+    const archive = path.join(this.migrationRoot, "history", randomUUID());
+    fs.mkdirSync(archive, { recursive: true });
+    fs.copyFileSync(this.markerPath, path.join(archive, "migration.json"));
+    for (const directory of ["backup", "stage"]) {
+      const original = path.join(this.migrationRoot, directory);
+      if (fs.existsSync(original)) fs.cpSync(original, path.join(archive, directory), { recursive: true });
+    }
+    source.target.automation.enabled = false;
+    source.target.automation.initialSyncCompleted = false;
+    this.writeMarker({ ...preview, targetBackup: existing.targetBackup });
+    return preview;
+  }
+
   preview(source: GitHubPublicationMigrationSource): GitHubPublicationMigrationReceipt {
     const receipt = this.buildPreview(source);
     const existing = this.readMarker();
@@ -4159,7 +4181,12 @@ export class GitHubPublicationMigration {
       const parsed = this.migrationManifest(source);
       const singleFileTypes = new Set<GitHubSyncContentType>(["skills", "notes", "papers", "scripts", "recipes", "agentSnapshots"]);
       for (const [key, files] of groupManagedFiles(parsed.files)) {
-        if (singleFileTypes.has(files[0].type) && files.length > 1 && !isScriptSidecarEntity(files)) {
+        const markdownResources = parsed.schema === GITHUB_SYNC_MANIFEST_SCHEMA
+          && ["skills", "notes", "papers"].includes(files[0].type)
+          && files.filter(file => !file.member).length <= 1
+          && files.every(file => !file.member
+            || file.member === file.path && file.path.split("/").slice(0, -1).some(isMarkdownAssetDirectory));
+        if (singleFileTypes.has(files[0].type) && files.length > 1 && !isScriptSidecarEntity(files) && !markdownResources) {
           collisions.push(`Stable identity ${key.replace("\0", ":")} maps to ${files.length} files.`);
         }
       }
@@ -4214,7 +4241,8 @@ export class GitHubPublicationMigration {
     if (preview.collisions.length) throw new Error(`GitHub migration has unresolved collisions: ${preview.collisions.join("; ")}`);
     const stagedManifest = manifestJson(parsed.files, parsed.deletions);
     const stagedDigest = createHash("sha256").update(stagedManifest).digest("hex");
-    fs.rmSync(this.migrationRoot, { recursive: true, force: true });
+    fs.rmSync(path.join(this.migrationRoot, "stage"), { recursive: true, force: true });
+    fs.rmSync(path.join(this.migrationRoot, "backup"), { recursive: true, force: true });
     fs.mkdirSync(path.dirname(this.stagedManifestPath()), { recursive: true });
     writeAtomic(this.stagedManifestPath(), Buffer.from(stagedManifest, "utf8"));
     writeAtomic(path.join(this.migrationRoot, "backup", MANIFEST_PATH), Buffer.from(source.manifest, "utf8"));

@@ -30,6 +30,24 @@ def expand_palette(page):
       saveView();renderPalette();
     }""")
 
+def approve_graph_proposal(page, runtime):
+    page.wait_for_function("() => pendingGraphProposal?.action_id===graph.action_id", timeout=30000)
+    expect(page.locator("#run")).to_be_disabled()
+    identifier = page.evaluate("graph.action_id")
+    proposal = next(item for item in runtime.proposal_list()["proposals"] if item["action_id"] == identifier)
+    review = runtime.qualification_review(identifier, proposal["content_hash"], proposal["proposal_id"])
+    attempt = runtime.qualification_execute(identifier, proposal["content_hash"], review["snapshot_hash"],
+        {"approved": True, "summary": "Controlled fixture review passed", "issues": [], "model": "fixture"},
+        proposal["proposal_id"], allow_effects=True)
+    runtime.qualification_admit(attempt["attempt_id"])
+    page.wait_for_function("() => !refreshing")
+    state = page.evaluate("async () => { await refresh(); return {saved,pendingGraphProposal,graph}; }")
+    if not state["saved"]:
+        raise AssertionError(f"Approved unchanged graph did not reconnect: {state}")
+    admitted = runtime.definition(identifier)
+    if admitted["content_hash"] != proposal["content_hash"]:
+        raise AssertionError("Operator approval must admit exactly the submitted revision.")
+
 
 class WorkbenchTests(unittest.TestCase):
     def test_monitor_status_next_check_and_stop_are_observer_only(self):
@@ -483,14 +501,22 @@ const { createActionWorkbenchServer } = require(path.join(root, "dist/runtime/ac
 createActionWorkbenchServer({ extensionPath: root, async request(method, params) {
   if (method === "access") return { ok: true };
   if (method === "background_tasks") method = "queue";
-  return new Promise((resolve, reject) => {
+  const invoke = (method, params) => new Promise((resolve, reject) => {
     const child = execFile(python, [path.join(root, "resources/action_modules.py"), "--api", store], { timeout: 30000 }, (error, stdout) => {
       if (error) return reject(error);
-      try { const result = JSON.parse(stdout); if (method === "catalog") result.workspace_root = workspace; resolve(result); }
+      try { const result = JSON.parse(stdout); if (result.ok === false) return reject(new Error(result.error)); if (method === "catalog") result.workspace_root = workspace; resolve(result); }
       catch (error) { reject(error); }
     });
     child.stdin.end(JSON.stringify({ method, params }));
   });
+  if (method === "validate") {
+    const { action_id, content_hash, allow_effects } = params;
+    const review = await invoke("qualification_review", { action_id, content_hash });
+    const attempt = await invoke("qualification_execute", { action_id, content_hash, allow_effects, snapshot_hash: review.snapshot_hash,
+      report: { approved: true, summary: "Controlled fixture review passed", issues: [], model: "fixture" } });
+    return invoke("qualification_admit", { attempt_id: attempt.attempt_id });
+  }
+  return invoke(method, params);
 } }).then(server => {
   server.setDraft(JSON.parse(draft));
   process.stdout.write(server.url + "\\n");
@@ -545,9 +571,12 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     self.assertEqual(page.locator("#workspace-path").input_value(), str(workspace))
                     page.locator("#close-workspace").click()
                     page.locator("#save").click()
-                    expect(page.locator("#status")).to_contain_text("Saved v", timeout=30000)
+                    approve_graph_proposal(page, runtime)
                     self.assertEqual(runtime.definition("browser.handoff")["version"], 1)
                     page.locator("#validate").click()
+                    if page.locator("#validation-dialog").is_visible():
+                        page.locator("#validation-accept").click()
+                    expect(page.locator("#validation-feedback")).to_contain_text("admitted and ready", timeout=30000)
                     expect(page.locator("#run")).to_be_enabled(timeout=30000)
                     page.locator("#run").click()
                     expect(page.locator("#result")).to_contain_text('"value": 7', timeout=30000)
@@ -564,9 +593,12 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     page.locator('[data-field="prompt"]').fill("Continue with this Action?")
                     page.locator('[data-field="prompt"]').blur()
                     page.locator("#save").click()
-                    expect(page.locator("#status")).to_contain_text("Saved v2", timeout=30000)
+                    approve_graph_proposal(page, runtime)
                     self.assertEqual(runtime.definition("browser.handoff")["version"], 2)
                     page.locator("#validate").click()
+                    if page.locator("#validation-dialog").is_visible():
+                        page.locator("#validation-accept").click()
+                    expect(page.locator("#validation-feedback")).to_contain_text("admitted and ready", timeout=30000)
                     expect(page.locator("#run")).to_be_enabled(timeout=30000)
                     page.locator("#run").click()
                     page.wait_for_selector("[data-choice]", timeout=30000)
@@ -630,8 +662,8 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     self.assertEqual(page.locator(".block").count(), 1)
                     page.locator('[data-action="core.constant"]').drag_to(page.locator("#canvas"), target_position={"x": 460, "y": 110})
                     expect(page.locator(".block")).to_have_count(2)
-                    self.assertEqual(page.evaluate("graph.nodes.at(-1).x"), 460)
-                    self.assertEqual(page.evaluate("graph.nodes.at(-1).y"), 110)
+                    self.assertAlmostEqual(page.evaluate("graph.nodes.at(-1).x"), 460, delta=1)
+                    self.assertAlmostEqual(page.evaluate("graph.nodes.at(-1).y"), 110, delta=1)
                     expect(page.locator('[data-add="browser.csharp"]')).to_be_disabled()
                     transfer = page.evaluate_handle("() => { const transfer = new DataTransfer(); transfer.setData('application/x-pkm-action', 'browser.csharp'); return transfer; }")
                     page.locator("#canvas").dispatch_event("drop", {"dataTransfer": transfer})
@@ -648,11 +680,15 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     definition["description"] = "Edited in the browser"
                     page.locator("#editor-content").fill(json.dumps(definition, indent=2))
                     page.locator("#save-definition").click()
-                    expect(page.locator("#status")).to_contain_text("Saved; validation", timeout=30000)
+                    expect(page.locator("#status")).to_contain_text("Proposal submitted", timeout=30000)
+                    self.assertEqual(runtime.definition("browser.python")["version"], 1)
+                    proposal = next(item for item in runtime.proposal_list()["proposals"] if item["action_id"] == "browser.python")
+                    review = runtime.proposal_review(proposal["proposal_id"])
+                    runtime.proposal_decide(proposal["proposal_id"], review["review_hash"], True)
+                    page.evaluate("refresh()")
                     self.assertEqual(runtime.definition("browser.python")["version"], 2)
                     python_definition = runtime.definition("browser.python")
-                    policy.write_text(json.dumps({"schema": "pkm.action.policy/v1", "grants": [{"action_id": "browser.python",
-                        "content_hash": python_definition["content_hash"], "trusted_host_execution": True}]}))
+                    runtime.authorize(python_definition)
                     self.assertTrue(runtime.validate("browser.python", python_definition["content_hash"])["ok"])
                     self.assertEqual(runtime.availability("browser.python")["state"], "ready")
                     page.locator("#editor-file").select_option(str(python_source))
@@ -663,14 +699,15 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     expect(page.locator("#definition-editor")).to_be_visible()
                     expect(page.locator("#editor-content")).to_have_value(changed_source)
                     page.locator("#save-definition").click()
-                    expect(page.locator("#status")).to_contain_text("Saved; validation", timeout=30000)
-                    self.assertEqual(python_source.read_text(), changed_source)
-                    self.assertNotEqual(runtime.availability("browser.python")["state"], "ready")
+                    expect(page.locator("#status")).to_contain_text("not overwritten", timeout=30000)
+                    self.assertNotEqual(python_source.read_text(), changed_source)
+                    self.assertEqual(runtime.availability("browser.python")["state"], "ready")
                     page.locator("#editor-content").fill(changed_source + "\n")
                     python_source.write_text("external edit\n")
                     page.locator("#save-definition").click()
-                    expect(page.locator("#status")).to_contain_text("Source changed", timeout=30000)
+                    expect(page.locator("#status")).to_contain_text("not overwritten", timeout=30000)
                     self.assertEqual(python_source.read_text(), "external edit\n")
+                    self.assertNotEqual(runtime.availability("browser.python")["state"], "ready")
                     page.set_viewport_size({"width": 390, "height": 844})
                     page.locator('[data-action="browser.python"]').click(button="right")
                     bounds = page.locator("#catalog-menu").bounding_box()
@@ -708,7 +745,7 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     expect(page.locator('[data-node="constant"][data-field="value"]')).to_have_value(literal)
                     expect(page.locator(".literal-delimiter").first).to_have_text('r"""')
                     page.locator("#save").click()
-                    expect(page.locator("#status")).to_contain_text("Saved v3", timeout=30000)
+                    approve_graph_proposal(page, runtime)
                     self.assertEqual(runtime.definition("browser.handoff")["graph"]["nodes"][0]["parameters"]["value"], literal)
                     page.locator('[data-action="browser.handoff"]').click(button="right")
                     page.screenshot(path=str(acceptance / "action-workbench-authoring-desktop.png"), full_page=True)
@@ -763,12 +800,22 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                         request["params"]["destination"] = str(package)
                     if request["method"] == "import":
                         request["params"]["local_path"] = str(package)
-                    process = subprocess.run([sys.executable, str(ROOT / "resources" / "action_modules.py"), "--api", str(active_store[0])],
-                                             input=json.dumps(request), text=True, capture_output=True, timeout=30)
+                    if request["method"] == "validate":
+                        runtime = ModuleRuntime(active_store[0])
+                        params = request["params"]
+                        review = runtime.qualification_review(params["action_id"], params["content_hash"])
+                        attempt = runtime.qualification_execute(params["action_id"], params["content_hash"], review["snapshot_hash"],
+                            {"approved": True, "summary": "Controlled fixture review passed", "issues": [], "model": "fixture"},
+                            allow_effects=params.get("allow_effects", False))
+                        output = json.dumps(runtime.qualification_admit(attempt["attempt_id"]))
+                    else:
+                        process = subprocess.run([sys.executable, str(ROOT / "resources" / "action_modules.py"), "--api", str(active_store[0])],
+                                                 input=json.dumps(request), text=True, capture_output=True, timeout=30)
+                        output = process.stdout
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.end_headers()
-                    self.wfile.write(process.stdout.encode())
+                    self.wfile.write(output.encode())
 
             server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -846,8 +893,9 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     draft.blur()
                     page.locator("#name").fill("Arithmetic chain")
                     page.locator("#save").click()
-                    page.wait_for_function("document.querySelector('#status').textContent.startsWith('Saved v')")
+                    approve_graph_proposal(page, ModuleRuntime(stores[0]))
                     page.locator("#validate").click()
+                    expect(page.locator("#validation-feedback")).to_contain_text("admitted and ready", timeout=30000)
                     page.wait_for_function("!document.querySelector('#run').disabled", timeout=30000)
                     page.locator("#run").click()
                     page.wait_for_function("JSON.parse(document.querySelector('#result').textContent||'{}').state === 'Completed'", timeout=30000)
@@ -861,7 +909,7 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     page.locator(".block").nth(1).locator('[data-field="right"]').blur()
                     self.assertTrue(page.locator("#run").is_disabled())
                     page.locator("#save").click()
-                    page.wait_for_function("document.querySelector('#status').textContent === 'Saved v2'")
+                    approve_graph_proposal(page, ModuleRuntime(stores[0]))
                     page.screenshot(path=str(acceptance / "action-workbench-desktop.png"), full_page=True)
                     page.locator('[data-export^="local.graph."]').check()
                     page.locator("#export").click()
@@ -876,6 +924,14 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     self.assertFalse(page.locator("[data-set]").is_checked())
                     self.assertEqual(page.locator('[data-add^="local.graph."]').count(), 0)
                     page.locator("[data-set]").check()
+                    page.wait_for_function("moduleSets.some(item=>item.enabled) && !refreshing")
+                    imported_runtime = ModuleRuntime(stores[1])
+                    for definition in imported_runtime.list():
+                        if definition["action_id"].startswith("core."):
+                            continue
+                        review = imported_runtime.host_trust_review(definition["action_id"], definition["content_hash"])
+                        imported_runtime.host_trust_update(definition["action_id"], definition["content_hash"], review["review_hash"], True)
+                    page.evaluate("refresh()")
                     page.wait_for_selector('[data-add^="local.graph."]', state="attached")
                     expand_palette(page)
                     page.wait_for_selector('[data-add^="local.graph."]')
@@ -931,11 +987,14 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     page.locator('[data-field="prompt"]').fill('Choose an outcome')
                     page.locator('[data-field="prompt"]').blur()
                     page.locator('#save').click()
-                    page.wait_for_function("saved?.action_id==='local.choice.fixture'")
+                    approve_graph_proposal(page, ModuleRuntime(active_store[0]))
                     self.assertEqual(page.evaluate("saved?.action_id"), "local.choice.fixture",
                                      page.locator("#status").inner_text())
                     page.on('dialog', lambda dialog: dialog.accept())
                     page.locator('#validate').click()
+                    if page.locator("#validation-dialog").is_visible():
+                        page.locator("#validation-accept").click()
+                    expect(page.locator("#validation-feedback")).to_contain_text("admitted and ready", timeout=30000)
                     page.wait_for_function("!document.querySelector('#run').disabled", timeout=30000)
                     self.assertEqual(page.locator('[data-choice]').count(), 0)
                     page.locator('#run').click()

@@ -38,6 +38,7 @@ const REQUIRED_UI_ARTIFACTS = Object.freeze([
   "dist/webview/mermaid.js",
   "dist/webview/forcegraph3d.js",
   "resources/sidebar-icon.svg",
+  "resources/action-library.html",
 ]);
 
 function validateUiArtifacts(root) {

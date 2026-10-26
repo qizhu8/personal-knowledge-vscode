@@ -42,6 +42,14 @@ This is scenario coverage, not a percentage inferred from test counts.
 The older `test:chat-coverage` command instruments two **Chatroom meeting**
 modules; its percentage does not measure PKM Chat coverage.
 
+The mandatory release/package `test:chat-retrieval:run` gate additionally covers
+the real-worker dual-routing/explicit-feedback chain (synthetic encoder), actual
+Chat review confirmations and the rendered checkpoint/relevance controls.
+User-approved checkpoint growth, exact original readback and source/Task
+boundaries are part of the context gate. See the
+[checkpoint/retrieval cases](./CHAT_CONTEXT_TEST_CASES.md#approved-checkpoint-and-production-retrieval-follow-up).
+These offline results do not close DAILY-HOST-01–04.
+
 Evidence levels:
 
 - **Connected browser/controller:** real built Chat DOM, real event handlers

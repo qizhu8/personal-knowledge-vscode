@@ -45,24 +45,36 @@ existing local revision and exact dependency pins. It returns JSON Pointer paths
 
 The actual response also includes a schema identifier. Passing this check is not
 proof of CLI availability, authentication, grants, dependency qualification,
-resource resolution or output behavior. Registration rechecks the contract and
-the existing dependency-readiness/revision guards. No dry-run grants execution.
+resource resolution or output behavior. Proposal submission rechecks the contract;
+admission rechecks exact dependency revisions and readiness. No dry-run grants execution.
 
 ## Minimal CLI Lifecycle
 
 1. Copy `authoring.examples.cli` from capabilities.
-2. Check it, then call `action_register({"definition": ...})`. Retain the returned
-   `action_id` and `content_hash`.
-3. Have the operator review the exact implementation and grant its pinned
-   `action_id`/`content_hash` trusted host execution. This is **not sandboxed**.
-   The existing local policy is at
-   `<knowledge-root>/.pkm/state/actions/policy.json`; an authorized operator entry
-   has `action_id`, `content_hash` and `trusted_host_execution: true` in `grants`.
-   Do not have an agent grant itself permissions or copy production credentials
-   into definitions.
-4. Call `action_validation_enqueue` with the exact ID/hash. Read
-   `action_validation_status`, then `action_get`. Validation executes the
-   declared smoke examples on this host; it is not a static check.
+2. Check it, then call `action_register({"definition": ...})`. This submits a
+   **proposal**, not a formal library entry. Retain `proposal_id`, `action_id`
+   and `content_hash`. The response is `state: "pending_operator_approval"`,
+   `registered: false`, `callable: false`, `next_owner: "operator"`.
+   `action_proposals()` lists pending submissions.
+3. Stop and ask the operator to open **Action Workbench**. Pending proposals appear
+   under **Components > Actions** with **Need Validation** and a highlighted flask.
+   Click the flask to start review-first validation, or double-click the row to
+   inspect it in the right-hand canvas. The
+   right-hand canvas shows purpose, input/output fields, execution commands or
+   composition steps, declared risks, host, version changes and source files.
+   The full JSON and fingerprints are optional **Advanced details**, not the
+   primary review UI. Click **Validate: Agent review and smoke tests**. This
+   authorizes an Agent code review followed by the declared tests, not immediate
+   admission. Select a callable VS Code review model (model credits may apply).
+   Missing models, incomplete/invalid review decisions and findings all block
+   execution. There is no separate manual grant or admission confirmation.
+4. Review any smoke-effect consent dialog. Agent review runs first; only a
+   passing review starts real smoke execution. Only passing tests admit and
+   qualify the exact version. Review/test failure preserves the previous
+   approved definition. Validation feedback shows review progress, cancellation,
+   errors or success. Read `action_get` afterwards to inspect readiness.
+   Direct non-builtin MCP validation returns `ACTION_CODE_REVIEW_REQUIRED`:
+   hand off to the Workbench instead of bypassing review or editing local policy.
 5. When availability is `ready`, call:
 
 ```json
@@ -88,6 +100,155 @@ External source files should be listed in implementation `files` so changes
 invalidate the host fingerprint. Qualification pins the definition and host
 environment, is time-limited and does not transfer to another host.
 
+### Updates and Existing Definitions
+
+An update requires a larger version and a new proposal. The previous approved
+definition stays in the formal library and remains usable until the new revision
+passes review and smoke tests. Admission checks that the base revision, implementation fingerprints
+and exact dependencies have not changed during review. Qualification does not
+automatically transfer to the new version.
+
+Save changed source at a **new versioned path**, declare it in `files`, and submit
+the updated definition. Workbench source editing cannot overwrite an approved
+implementation. These are PKM lifecycle guards, not filesystem isolation: external
+tools can still modify files, making existing qualification stale.
+
+`action_template_create`, `action_graph_save` and Workbench definition/composition
+saves follow the same proposal process. A composition draft is not runnable while
+pending; after successful review and tests the unchanged draft reconnects to its admitted revision.
+Existing definitions and enabled imported ModuleSets without admission appear
+under **Pending operator review**, not the callable library. Use **Review in
+canvas**, then **Validate: Agent review and smoke tests** to qualify and admit them; no silent migration or
+agent self-approval occurs. Built-in system Actions are preinstalled exceptions.
+
+## Trusted Host Execution Authorization
+
+If an agent encounters:
+
+```text
+ACTION_HOST_TRUST_REQUIRED: Missing operator approval for this exact Action revision; this is not a definition/schema error.
+```
+
+the selected `program` or `mcp` implementation has no matching operator grant.
+The error also supplies the exact Action ID, registered content hash and local
+operator policy path, followed by an explicit agent stop/operator handoff.
+Older installed versions use the shorter message
+`Operator must grant this pinned implementation trusted host execution; this is not a sandbox.`;
+it means the same gate.
+This is an execution trust gate, not a Portal permission or a schema error.
+Build, qualification and execution can reach this gate. Registering a definition
+does not grant execution permission, and a later authorization error does not
+by itself prove that registration failed. Do not repeatedly register the Action
+or change its version to work around this error.
+
+The grant matches both the exact `action_id` and `content_hash`. A grant for
+another revision does not authorize this one. A `pipeline` does not require this
+direct implementation grant, but its executable dependencies still require their
+own authorization and qualification. **Every non-builtin pipeline still requires
+operator admission**, so wrapping a program in a pipeline is not a bypass.
+`ACTION_ADMISSION_REQUIRED` means formal admission is missing; direct policy
+editing cannot admit a pending proposal.
+
+### Action Library and Operator Review in Workbench
+
+**Automation > Action Library** (or **PKM: Open Action Library**) independently
+lists admitted Actions, including those needing revalidation. Search and inspect
+without opening Workbench. Ready public Actions support explicitly approved typed
+invocations; Run details can be opened in Workbench. Pending proposals do not appear
+in Library. Select **Open in Workbench** on an Action to explicitly locate it there;
+an unsaved Workbench draft requires confirmation before replacement.
+
+Open **PKM: Open Action Workbench**. No catalog modal opens automatically, including
+when restoring an older tab. A short next-step notice tells you to click a highlighted
+flask. The left tree includes pending proposals and unapproved definitions under
+**Actions**; every non-ready public Action has a **Need Validation** label and a
+highlighted flask. Pending rows cannot be exported or added to a composition.
+Showing them does not admit or authorize them, and the previous approved version
+remains the executable catalog version until admission succeeds.
+
+Click the flask beside an Action to validate its exact proposal/revision. Double-click
+a pending row to inspect the implementation first. **Review / test Actions** shows
+only next-step guidance initially; the full catalog is under its Advanced disclosure.
+Click the toolbar refresh button to fetch newly submitted proposals without reloading
+the VS Code window. The right-hand review canvas shows the execution
+host, inputs, outputs, selected implementation, risks and source files; its
+optional Advanced details includes the full definition, exact revision, policy
+path and source-file fingerprints. Click Validate to start the Agent review/test
+pipeline. Review the referenced source files too;
+fingerprints are not a code audit. Programs, build commands and MCP servers run
+with the host's OS permissions and available credentials, not in a sandbox.
+
+Builtin and pipeline Actions execute PKM host code rather than declared source
+files; their review material includes the exact executing handler source and
+is covered by the review snapshot hash. `core.artifact.copy` smoke tests copy a
+reserved fixture artifact created only inside the isolated qualification store.
+
+**Validate all needed** takes a snapshot of every public **Need Validation** row
+(including pending proposals). Confirm the batch's declared effects and inspect
+exact examples in **Smoke test inputs**, then select one review model. PKM reviews,
+tests and admits each pinned revision independently, sequentially. A failed item
+does not prevent later items from being checked; the final summary lists every
+success and error. Successful admissions are retained, not rolled back when another
+item fails. Cancelling model selection executes nothing. Root/trust changes block
+further execution/admission. Refresh and inspect readiness before retrying an
+interrupted batch; no uncertain smoke execution is replayed automatically.
+During a batch, Workbench displays completed/total progress, the current Action,
+review/test/admission stage and elapsed stage time in one line. Results are
+collapsed by default; expand **Results**, then an individual Action to read its
+complete failure reason. The final line shows passed/failed counts. Review
+has a hard three-minute deadline even if the model provider ignores cancellation;
+the timed-out item fails without smoke execution and the remaining queue continues.
+
+Action `dependencies` pins other Actions, not arbitrary Python imports or CLI
+packages. Implementation source/helpers must be included in declared fingerprinted
+files and fit the review limits. Describe required external toolchains explicitly
+and pin executable files where available. The Azure DevOps status adapter uses
+core Azure CLI `az rest` GET (no azure-devops extension), a self-contained bounded
+command runner and existing host authentication. Its authoring factory accepts
+the intended version/examples; factory defaults are not an executing Action.
+
+In the Workbench category tree, **Add group** creates a root folder; right-click
+a folder and select **Add subgroup** to create a child. The dialog shows the parent
+path. **Move to** offers all writable folders, including full nested paths.
+Successful creation/moves expand the destination; failures stay visible inside the
+dialog instead of appearing behind it. The Core tree remains read-only.
+
+Clicking Validate is the operator's authorization for this review/test attempt.
+Source and definition are provided to the selected review model as untrusted
+data. The review must return an explicit pass with no blocking issues before
+the host runs smoke tests. Review availability and JSON-shape checks fail closed.
+Source size limits stop review rather than silently truncating it.
+
+Smoke tests execute in a separate qualification registry, with exact-version
+execution permissions scoped to that registry. The formal registry and previous
+approved version stay unchanged. After passing tests the host rechecks Root and
+workspace trust; admission rechecks source/base/dependencies and environment
+before preserving unrelated policy fields and saving qualification/admission.
+Failed tests retain evidence in the local qualification-attempt directory.
+Tests may still have real effects: a staging registry is not an OS sandbox.
+
+Opening the review canvas never executes anything. **Back to canvas** and
+**Cancel review** preserve the original draft. The detail page retains native
+confirmation for **Revoke host execution for this revision**, not a separate
+manual grant flow. Browser Workbench uses the same trusted host orchestration.
+There is no MCP/generic-dispatch operation for injecting a code-review pass,
+grant or admission. Agents should direct the operator to Validate and wait.
+
+### Local Review State
+
+Pending proposals, exact-revision admissions and execution policy live under
+`<knowledge-root>/.pkm/state/actions/` on the execution host. These are
+operator-managed state, not agent-editable authoring inputs. Editing only
+`policy.json` does **not** admit a proposal or move it into the registry.
+Use the native review workflow instead of asking an agent to patch local files.
+Portal permissions, Chat tool approvals and workspace trust do not imply admission.
+
+Use the native **Revoke host execution for this revision** control to withdraw
+future admission/authorization. It also removes the revision from the formal
+library. Revocation does not undo effects or guarantee termination of existing
+work. Explicit qualification, effect approval and available host credentials
+remain separate requirements.
+
 ## Read-Only HTTP Example
 
 `authoring.examples.http_get_json` is an actual Python program implementation:
@@ -99,19 +260,20 @@ domain-specific 401/403/404/network diagnostics.
 
 There is deliberately no default live smoke URL. In an isolated workspace, start
 an authorized loopback fixture returning JSON and add its URL to `examples`,
-then check/register the resulting definition. Grant the exact revision and
-enqueue qualification with `allow_effects: true`: even read-only network access
+then check/submit the resulting definition. Click Workbench Validate to review
+and qualify the exact revision, consenting to its smoke effects: even read-only network access
 is an effect requiring consent. This does not authorize cloud access. Changing
-the fixture/example changes the revision and requires a corresponding grant.
+the fixture/example changes the revision and requires a new review/test attempt.
 
 The executable regression serves a real local HTTP endpoint and follows
-register -> grant -> qualify -> call. It also checks 403, invalid JSON and the
+privileged test setup -> qualify -> call. Public Workbench flows additionally
+test Agent review before staged qualification/admission. It also checks 403, invalid JSON and the
 response bound. It does not access any external service.
 
 ## Read-Only Pipeline Status and Durable Monitoring
 
 Call `action_template_create` with your chosen `action_id` and
-`parameters: {"template_id":"azuredevops-pipeline-status"}` to explicitly register
+`parameters: {"template_id":"azuredevops-pipeline-status"}` to submit a proposal for
 the Azure DevOps query adapter. It uses the host's existing Azure CLI identity;
 it never logs in, changes identity, queues a pipeline or cancels remote work.
 The host CLI binary, when present at authoring time, is pinned in argv and
@@ -125,8 +287,8 @@ Its output includes `remote_id`, `pipeline_id`, `observed_at`, `url`, raw
 `status`/`result`, normalized `terminal` and bounded active/failed task metadata.
 `completed/failed`, `completed/canceled` and partial success are terminal too.
 Registration includes no live smoke input. Add an explicitly authorized fixture
-or read-only test run in a new definition revision, grant and qualify that exact
-revision before calling it.
+or read-only test run in a new definition revision, then click Workbench Validate:
+Agent review and passing smoke tests must admit that exact revision before calling it.
 
 For monitoring, use `action_template_create` with:
 

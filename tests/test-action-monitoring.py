@@ -4,16 +4,17 @@ import asyncio
 import json
 import os
 import platform
+import signal
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "resources"))
-from action_azuredevops import query, cli_failure, status_definition
+from action_azuredevops import query, cli_failure, status_definition, execute
 from action_modules import ModuleRuntime
 from action_monitoring import append_event, event_page
 from action_runtime import ActionRuntime, register_action_tools
@@ -21,6 +22,35 @@ from fastmcp import Client, FastMCP
 
 
 class StatusAdapter(unittest.TestCase):
+    def test_self_contained_capture_bounds_timeout_and_revision_factory(self):
+        result = execute([sys.executable, "-c", "print('x'*70000)"])
+        self.assertTrue(result["stdout_truncated"])
+        self.assertEqual(len(result["stdout"]), 65536)
+        self.assertEqual(cli_failure(result)["failure"]["code"], "response_too_large")
+        failed = execute([sys.executable, "-c", "import sys;sys.stderr.write('denied');sys.exit(3)"])
+        self.assertFalse(failed["ok"])
+        self.assertEqual(failed["stderr"], "denied")
+        missing = execute([str(Path(tempfile.gettempdir()) / "pkm-fixture-no-such-azure-cli")])
+        self.assertFalse(missing["ok"])
+        self.assertTrue(missing["stderr"])
+        process = Mock(pid=123, returncode=-9)
+        process.wait.side_effect = [subprocess.TimeoutExpired("az", 20), -9]
+        with patch("action_azuredevops.subprocess.Popen", return_value=process), \
+                patch("action_azuredevops.os.name", "posix"), \
+                patch("action_azuredevops.os.killpg") as kill:
+            result = execute(["az", "rest"])
+        kill.assert_called_once_with(123, signal.SIGKILL)
+        self.assertTrue(result["timed_out"])
+        self.assertFalse(result["ok"])
+        examples = [{"inputs": {"organization": "https://example.visualstudio.com", "project": "Fixture", "run_id": "1"}}]
+        definition = status_definition("fixture.status.revision", version=3, examples=examples)
+        self.assertEqual(definition["version"], 3)
+        self.assertEqual(definition["examples"], examples)
+        self.assertEqual(definition["implementations"][0]["platforms"], [platform.system()])
+        self.assertEqual(definition["implementations"][0]["program"], sys.executable)
+        source = Path(__file__).resolve().parents[1] / "resources" / "action_azuredevops.py"
+        self.assertNotIn("recipe_runtime", source.read_text())
+
     def test_real_cli_adapter_register_qualify_and_monitor_without_cloud(self):
         with tempfile.TemporaryDirectory(prefix="pkm-ado-cli-fixture-") as directory:
             root = Path(directory)
@@ -29,10 +59,11 @@ class StatusAdapter(unittest.TestCase):
             executable.write_text("#!" + sys.executable + "\nimport json,sys\nfrom pathlib import Path\n"
                 "args=sys.argv[1:]\n"
                 f"with Path({str(calls)!r}).open('a') as stream: stream.write(json.dumps(args)+'\\n')\n"
-                "if args[:3]==['pipelines','build','show']:\n"
-                "    print(json.dumps({'id':args[args.index('--id')+1],'definition':{'id':50205},"
+                "if args[0]=='rest' and '/timeline?' not in args[args.index('--url')+1]:\n"
+                "    remote=args[args.index('--url')+1].split('/builds/')[1].split('?')[0]\n"
+                "    print(json.dumps({'id':remote,'definition':{'id':50205},"
                 "'status':'completed','result':'succeeded'}))\n"
-                "elif args[:2]==['devops','invoke'] and args[args.index('--http-method')+1]=='GET':\n"
+                "elif args[0]=='rest' and args[args.index('--method')+1]=='GET':\n"
                 "    print(json.dumps({'records':[]}))\n"
                 "else: raise ValueError('No mutations permitted by fixture')\n")
             executable.chmod(0o700)
@@ -57,8 +88,7 @@ class StatusAdapter(unittest.TestCase):
             self.assertEqual(completed["output"]["remote_id"], inputs["run_id"])
             actual_calls = [json.loads(line) for line in calls.read_text().splitlines()]
             self.assertTrue(actual_calls)
-            self.assertTrue(all(argv[:3] == ["pipelines", "build", "show"] or
-                                argv[:2] == ["devops", "invoke"] and argv[argv.index("--http-method") + 1] == "GET"
+            self.assertTrue(all(argv[0] == "rest" and argv[argv.index("--method") + 1] == "GET"
                                 for argv in actual_calls))
 
     def test_all_terminal_results_running_tasks_and_precise_string_identity(self):
@@ -70,7 +100,7 @@ class StatusAdapter(unittest.TestCase):
             def execute(argv):
                 calls.append(argv)
                 value = ({"id": remote, "definition": {"id": 50205}, "status": "completed", "result": result}
-                         if "pipelines" in argv else {"records": [
+                         if "/timeline?" not in argv[argv.index("--url") + 1] else {"records": [
                              {"name": "task", "state": "completed", "result": "failed"}]})
                 return {"ok": True, "stdout": json.dumps(value)}
 
@@ -80,8 +110,8 @@ class StatusAdapter(unittest.TestCase):
             self.assertEqual(output["remote_id"], remote)
             self.assertIn(remote, output["url"])
             self.assertEqual(output["tasks"][0]["result"], "failed")
-            self.assertEqual(calls[0][1:4], ["pipelines", "build", "show"])
-            self.assertIn("--http-method", calls[1])
+            self.assertEqual(calls[0][1], "rest")
+            self.assertIn("--method", calls[1])
             self.assertIn("GET", calls[1])
 
     def test_errors_do_not_export_cli_secrets_or_switch_identity(self):

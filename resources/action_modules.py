@@ -70,6 +70,7 @@ def object_schema(properties, required=None):
 
 INTEGER = {"type": "integer", "minimum": -(2 ** 63), "maximum": 2 ** 63 - 1}
 ARTIFACT = object_schema({"artifact_id": {"type": "string", "pattern": "^artifact_[0-9a-f]{32}$"}})
+COPY_FIXTURE_ARTIFACT = "artifact_" + "0" * 32
 
 
 def builtin_definitions():
@@ -89,7 +90,8 @@ def builtin_definitions():
          {"inputs": {"value": " 1.5e2 ", "trim": True}, "output": {"value": 150.0}}]),
         ("core.artifact.write", "Write managed UTF-8 text", object_schema({"text": {"type": "string", "maxLength": 65536}}),
          ARTIFACT, [{"inputs": {"text": "non-private Action fixture"}}]),
-        ("core.artifact.copy", "Copy a referenced artifact", object_schema({"source": ARTIFACT}), ARTIFACT, []),
+        ("core.artifact.copy", "Copy a referenced managed artifact into a new managed artifact owned by this run",
+         object_schema({"source": ARTIFACT}), ARTIFACT, [{"inputs": {"source": {"artifact_id": COPY_FIXTURE_ARTIFACT}}}]),
     ]:
         result[name] = {**common, "action_id": name, "description": description,
                         "input_schema": inputs, "output_schema": outputs, "examples": examples,
@@ -129,13 +131,144 @@ def builtin_definitions():
 
 
 class ModuleRuntime:
-    def __init__(self, store):
+    def __init__(self, store, proposal_mode=False):
         self.store = Path(store).resolve()
         self.root = self.store / ".pkm" / "state" / "actions"
         self.registry = self.store / "actions"
         self.module_sets = self.store / "action-module-sets"
+        origin_path = self.root / "qualification-origin.json"
+        self.qualification_origin = Path(json.loads(origin_path.read_text(encoding="utf-8"))["store"]) if origin_path.exists() else None
+        if self.qualification_origin:
+            self.module_sets = self.qualification_origin / "action-module-sets"
         self.runs = ActionRunStore(self.root)
         self.recovery = ActionRecovery(self)
+        self.proposal_mode = proposal_mode
+
+    def proposal_list(self):
+        proposals = []
+        for path in sorted((self.root / "proposals").glob("*.json")):
+            record = json.loads(path.read_text(encoding="utf-8"))
+            if record.get("state") == "pending":
+                proposals.append(record)
+        return {"ok": True, "proposals": proposals}
+
+    def proposal_read(self, proposal_id):
+        if not isinstance(proposal_id, str) or not re.fullmatch(r"proposal_[a-f0-9]{32}", proposal_id):
+            raise ValueError("Invalid Action proposal identity.")
+        record = json.loads((self.root / "proposals" / (proposal_id + ".json")).read_text(encoding="utf-8"))
+        if record.get("proposal_id") != proposal_id or record.get("state") != "pending":
+            raise ValueError("This Action proposal is no longer pending; refresh the proposal list.")
+        return record
+
+    def proposal_review(self, proposal_id, reject=False):
+        record = self.proposal_read(proposal_id)
+        if reject:
+            review = {"action_id": record["action_id"], "content_hash": record["content_hash"],
+                      "definition": record["definition"], "proposal_id": proposal_id, "record": record,
+                      "host": platform.node(), "platform": platform.system(),
+                      "policy_path": str(self.root / "policy.json"), "implementation": None, "files": {},
+                      "reject": True}
+            return {**review, "review_hash": digest(review)}
+        name = record["action_id"]
+        previous = self.definition(name) if (self.registry / (name + ".json")).exists() else None
+        if record["base_content_hash"] != (previous["content_hash"] if previous else None):
+            raise ValueError("The approved Action changed since this proposal was submitted; submit a fresh proposal.")
+        definition = self.definition_value(record["definition"])
+        if definition["content_hash"] != record["content_hash"]:
+            raise ValueError("Proposal or Action runtime changed; submit a fresh proposal for review.")
+        review = self._host_review(definition)
+        review.update({"proposal_id": proposal_id, "base_content_hash": record["base_content_hash"]})
+        review["review_hash"] = digest({key: value for key, value in review.items() if key != "review_hash"})
+        return review
+
+    def proposal_decide(self, proposal_id, review_hash, approve):
+        if type(approve) is not bool:
+            raise ValueError("Choose explicit proposal approval or rejection.")
+        with self.lock():
+            review = self.proposal_review(proposal_id, reject=not approve)
+            if review["review_hash"] != review_hash:
+                raise ValueError("Proposal, implementation or authorization changed during review; review again.")
+            record = self.proposal_read(proposal_id)
+            proposal_path = self.root / "proposals" / (proposal_id + ".json")
+            if not approve:
+                _atomic_write(proposal_path, {**record, "state": "rejected", "decided_at": now().isoformat()})
+                return {"ok": True, "state": "rejected", "proposal_id": proposal_id}
+            name = record["action_id"]
+            self.validate_definition({key: value for key, value in record["definition"].items() if key != "knowledgeId"})
+            self.completed_dependencies(name, record["definition"]["dependencies"])
+            if record["base_content_hash"]:
+                self.authoring_idle(name)
+            registry_path = self.registry / (name + ".json")
+            policy_path = self.root / "policy.json"
+            admission_path = self.root / "admissions" / (name + ".json")
+            policy = json.loads(policy_path.read_text(encoding="utf-8")) if policy_path.exists() else {
+                "schema": "pkm.action.policy/v1", "grants": []}
+            policy["grants"].append({"action_id": name, "content_hash": record["content_hash"],
+                                     "trusted_host_execution": True})
+            writes = [(policy_path, policy), (registry_path, record["definition"]),
+                      (admission_path, {"content_hash": record["content_hash"]}),
+                      (proposal_path, {**record, "state": "approved", "decided_at": now().isoformat()})]
+            self.write_review_changes(writes)
+        return {"ok": True, "state": "approved", "proposal_id": proposal_id, "action_id": name,
+                "content_hash": record["content_hash"], "next_action": "Inspect validation status and explicitly enqueue qualification. No validation or Action was executed."}
+
+    @staticmethod
+    def write_review_changes(writes):
+        previous = [(path, json.loads(path.read_text(encoding="utf-8")) if path.exists() else None) for path, _ in writes]
+        attempted = []
+        try:
+            for index, (path, value) in enumerate(writes):
+                attempted.append(previous[index])
+                _atomic_write(path, value)
+        except Exception as failure:
+            restore_errors = []
+            for path, value in reversed(attempted):
+                try:
+                    if value is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        _atomic_write(path, value)
+                except OSError as restore_error:
+                    restore_errors.append(f"{path}: {restore_error}")
+            if restore_errors:
+                raise RuntimeError(f"Action review update failed ({failure}); rollback also failed: "
+                                   + "; ".join(restore_errors) + ". Operator must inspect the local registry, admissions and policy.") from failure
+            raise
+
+    def propose(self, definition, expected_content_hash=None):
+        self.validate_definition(definition)
+        name = definition["action_id"]
+        with self.lock():
+            path = self.registry / (name + ".json")
+            previous = self.definition(name) if path.exists() else None
+            if expected_content_hash is not None and (not previous or previous["content_hash"] != expected_content_hash):
+                raise ValueError("Action changed; refresh before proposing an update.")
+            if name in self.loaded_module_definitions():
+                raise ValueError("Unload the packaged provider before proposing a local definition with this identity.")
+            if previous and definition["version"] <= previous["version"]:
+                raise ValueError("Updating an Action requires a larger version.")
+            value = {"dependencies": {}, "casts": {}, "examples": [], **definition,
+                     "knowledgeId": previous["knowledgeId"] if previous else "action_" + digest(name)[:24]}
+            proposed = self.definition_value(value)
+            for record in self.proposal_list()["proposals"]:
+                if (record["action_id"] == name and record["content_hash"] == proposed["content_hash"]
+                        and record["base_content_hash"] == (previous["content_hash"] if previous else None)):
+                    return self.proposal_result(record)
+            record = {"schema": "pkm.action.proposal/v1", "proposal_id": "proposal_" + uuid.uuid4().hex,
+                      "state": "pending", "action_id": name, "content_hash": proposed["content_hash"],
+                      "base_content_hash": previous["content_hash"] if previous else None,
+                      "definition": value, "submitted_at": now().isoformat()}
+            _atomic_write(self.root / "proposals" / (record["proposal_id"] + ".json"), record)
+        return self.proposal_result(record)
+
+    @staticmethod
+    def proposal_result(record):
+        return {"ok": True, "state": "pending_operator_approval", "next_owner": "operator",
+                "proposal_id": record["proposal_id"], "action_id": record["action_id"],
+                "content_hash": record["content_hash"], "registered": False, "callable": False,
+                "next_action": "Ask the operator to review this proposal in Automation > Action Library. "
+                               "Click Review in canvas, then Validate: Agent code review runs before smoke tests. "
+                               "Only passing review and tests admit this version. Do not self-grant, call or retry registration."}
 
     def module_set_path(self, module_set_id, version):
         if not isinstance(module_set_id, str) or not re.fullmatch(r"[a-z][a-z0-9_.-]{2,100}", module_set_id) or type(version) is not int or version < 1:
@@ -282,6 +415,10 @@ class ModuleRuntime:
             raise ValueError("enabled must be a boolean.")
         directory = self.module_set_path(module_set_id, version)
         manifest = self.installed_module_manifest(module_set_id, version, verify_files=enabled)
+        if self.proposal_mode and enabled:
+            current = self.settings().get("enabled_module_sets", {}).get(module_set_id)
+            if current is not None and current != version:
+                raise PermissionError("A different ModuleSet version is enabled. Agent updates cannot replace the approved provider; ask the operator to review the package change first.")
         with self.lock():
             settings = self.settings()
             previous = dict(settings.get("enabled_module_sets", {}))
@@ -325,6 +462,10 @@ class ModuleRuntime:
                 settings["enabled_module_sets"] = previous
                 _atomic_write(self.root / "settings.json", settings)
                 raise
+            if enabled and not self.proposal_mode:
+                for name in manifest["actions"]:
+                    definition = self.definition(name)
+                    _atomic_write(self.root / "admissions" / (name + ".json"), {"content_hash": definition["content_hash"]})
         return {"ok": True, "module_set_id": module_set_id, "version": version, "enabled": enabled}
 
     def module_set_remove(self, module_set_id, version):
@@ -721,6 +862,8 @@ class ModuleRuntime:
                 "source_hash": hashlib.sha256(content).hexdigest()}
 
     def source_save(self, action_id, filename, content, source_hash):
+        if self.proposal_mode:
+            raise PermissionError("Approved Action source files are not overwritten by authoring requests. Save changed code at a new path and submit a definition proposal referencing it; the approved version must remain unchanged.")
         if not isinstance(content, str) or len(content.encode("utf-8")) > 512 * 1024:
             raise ValueError("Implementation source exceeds the editor limit.")
         with self.lock():
@@ -777,9 +920,13 @@ class ModuleRuntime:
         packages = self.module_set_list()["module_sets"]
         actions = [{**value, "execution_contract": action_contract(value), "read_only": True, "editable": False, "language": "Python", "languages": ["Python"]}
                    for value in self.components()]
+        pending_admissions = []
         for definition in self.list():
             identifier = definition["action_id"]
             system = identifier in builtin_definitions()
+            if not system and not self.admitted(definition):
+                pending_admissions.append(definition)
+                continue
             languages = sorted(self.action_languages(definition))
             try:
                 self.implementation(definition)
@@ -803,7 +950,8 @@ class ModuleRuntime:
             parts = action["category"].split("/")
             groups.update("/".join(parts[:index]) for index in range(1, len(parts) + 1))
         return {"ok": True, "actions": actions, "groups": sorted(groups),
-                "module_sets": packages, "queue": self.queue_status()}
+                "module_sets": packages, "queue": self.queue_status(),
+                "proposals": self.proposal_list()["proposals"], "pending_admissions": pending_admissions}
 
     def workspace(self):
         value = self.settings().get("workspace_roots", {}).get(PLATFORM_KEYS.get(platform.system()))
@@ -827,6 +975,10 @@ class ModuleRuntime:
     def library_get(self, action_id):
         catalog = self.catalog()
         action = next((item for item in catalog["actions"] if item["action_id"] == action_id), None)
+        if action is None:
+            action = next((item for item in catalog["pending_admissions"] if item["action_id"] == action_id), None)
+            if action is not None:
+                action = {**action, "availability": self.availability(action_id)}
         if action is None:
             raise ValueError("Action is not enabled in the current library.")
         if action.get("component") or action.get("visibility") == "private":
@@ -1007,6 +1159,8 @@ class ModuleRuntime:
                 "next_action": "action_register" if not diagnostics else "fix_definition"}
 
     def register(self, definition, expected_content_hash=None):
+        if self.proposal_mode:
+            return self.propose(definition, expected_content_hash)
         self.validate_definition(definition)
         name = definition["action_id"]
         with self.lock():
@@ -1023,7 +1177,15 @@ class ModuleRuntime:
                      "knowledgeId": previous["knowledgeId"] if previous else "action_" + uuid.uuid4().hex}
             self.completed_dependencies(name, value["dependencies"])
             _atomic_write(path, value)
-        return self.definition(name)
+            admitted = self.definition(name)
+            _atomic_write(self.root / "admissions" / (name + ".json"), {"content_hash": admitted["content_hash"]})
+        return admitted
+
+    def admitted(self, definition):
+        if definition["action_id"] in builtin_definitions():
+            return True
+        path = self.root / "admissions" / (definition["action_id"] + ".json")
+        return path.is_file() and json.loads(path.read_text(encoding="utf-8")).get("content_hash") == definition["content_hash"]
 
     def implementation(self, definition):
         selected = self.settings().get("implementation_bindings", {}).get(definition["action_id"])
@@ -1209,6 +1371,8 @@ class ModuleRuntime:
             raise error_type(f"{label} ({definition['action_id']}) {field}: {error}") from error
 
     def _resource_path(self, definition, reference):
+        if self.qualification_origin:
+            return ModuleRuntime(self.qualification_origin)._resource_path(definition, reference)
         if not isinstance(reference, str) or not reference:
             raise ValueError("Action resource reference must be a nonempty string.")
         if reference.startswith("pkm://") or reference.startswith("${module_assets}/"):
@@ -1514,7 +1678,207 @@ class ModuleRuntime:
             raise RuntimeError("Build failed; see retained bounded build-result.json. Execution qualification was not granted.")
         return self.build_state(definition)
 
+    def host_trust_review(self, action_id, content_hash):
+        definition = self.definition(action_id)
+        if definition["content_hash"] != content_hash:
+            raise ValueError("Action changed; refresh and review the current revision.")
+        return self._host_review(definition)
+
+    def runtime_review_sources(self, definition):
+        """Builtin and core-component implementations live in PKM itself; expose the exact executing handlers."""
+        import inspect
+        implementation = self.implementation(definition)
+        handlers = []
+        if implementation["kind"] == "builtin":
+            handlers = [ModuleRuntime._execute, ModuleRuntime.artifact, ModuleRuntime.artifact_path,
+                        ModuleRuntime.create_artifact, ModuleRuntime.validation_fixtures]
+        elif implementation["kind"] == "pipeline":
+            handlers = [execute_steps]
+        return {"pkm-runtime:" + handler.__module__ + "." + handler.__qualname__: inspect.getsource(handler)
+                for handler in handlers}
+
+    def validation_fixtures(self, action_id):
+        # Reserved smoke-only artifact; exists only inside the isolated qualification store.
+        if action_id != "core.artifact.copy" or not (self.root / "qualification-origin.json").exists():
+            return
+        artifact_id = COPY_FIXTURE_ARTIFACT
+        if self.artifact_path(artifact_id).exists():
+            return
+        content = b"non-private Action copy fixture"
+        path = self.root / "validation-fixtures" / artifact_id
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        _atomic_write(self.artifact_path(artifact_id), {"artifact_id": artifact_id, "path": str(path),
+            "digest": hashlib.sha256(content).hexdigest(), "ownership": "borrowed", "owner_root": None,
+            "references": [], "published": True, "gc_state": "retained"})
+
+    def qualification_review(self, action_id, content_hash, proposal_id=None):
+        review = self.proposal_review(proposal_id) if proposal_id else self.host_trust_review(action_id, content_hash)
+        if review["action_id"] != action_id or review["content_hash"] != content_hash:
+            raise ValueError("Choose the exact proposed Action revision.")
+        sources = {}
+        total = 0
+        for filename in review["files"]:
+            path = Path(filename)
+            if path.suffix.lower() not in {".py", ".cs", ".js", ".ts", ".sh", ".go", ".rs", ".java", ".mjs", ".cjs", ".ps1"}:
+                continue
+            if path.stat().st_size > 128 * 1024:
+                raise ValueError("Source is too large for complete automatic review: " + filename)
+            sources[filename] = path.read_text(encoding="utf-8")
+            total += len(sources[filename].encode("utf-8"))
+            if total > 256 * 1024:
+                raise ValueError("Action sources exceed the automatic review limit; split the implementation.")
+        sources.update(self.runtime_review_sources(review["definition"]))
+        review["sources"] = sources
+        review["workspace"] = str(self.workspace())
+        review["settings"] = self.settings()
+        review["snapshot_hash"] = digest(review)
+        return review
+
+    def qualification_execute(self, action_id, content_hash, snapshot_hash, report, proposal_id=None, allow_effects=False):
+        if (not isinstance(report, dict) or report.get("approved") is not True
+                or not isinstance(report.get("summary"), str) or not report["summary"].strip()
+                or report.get("issues") != [] or not isinstance(report.get("model"), str) or not report["model"]):
+            raise PermissionError("Code review did not pass; no smoke test or admission was performed.")
+        review = self.qualification_review(action_id, content_hash, proposal_id)
+        if review["snapshot_hash"] != snapshot_hash:
+            raise ValueError("Implementation changed after code review; review again before execution.")
+        definition = review["definition"]
+        if type(allow_effects) is not bool or (set(definition["effects"]) != {"pure"} and not allow_effects):
+            raise PermissionError("Explicit consent to smoke test effects is required.")
+        if not definition["examples"]:
+            raise ValueError("Action has no controlled smoke examples.")
+        self.completed_dependencies(action_id, definition["dependencies"])
+        # A separate registry keeps the previous approved version authoritative throughout smoke execution.
+        stage = ModuleRuntime(self.root / "qualification-attempts" / ("attempt_" + uuid.uuid4().hex))
+        stage.registry.mkdir(parents=True)
+        stage.root.mkdir(parents=True)
+        for path in self.registry.glob("*.json"):
+            shutil.copy2(path, stage.registry / path.name)
+        for folder in ("admissions", "validations", "builds"):
+            source = self.root / folder
+            if source.exists():
+                shutil.copytree(source, stage.root / folder)
+        _atomic_write(stage.root / "qualification-origin.json", {"store": str(self.store)})
+        stage = ModuleRuntime(stage.store)
+        settings = self.settings()
+        _atomic_write(stage.root / "settings.json", settings)
+        policy_path = self.root / "policy.json"
+        policy = json.loads(policy_path.read_text(encoding="utf-8")) if policy_path.exists() else {
+            "schema": "pkm.action.policy/v1", "grants": []}
+        policy["grants"].append({"action_id": action_id, "content_hash": content_hash, "trusted_host_execution": True})
+        _atomic_write(stage.root / "policy.json", policy)
+        if proposal_id or (self.registry / (action_id + ".json")).exists():
+            raw = {key: value for key, value in definition.items()
+                   if key not in {"content_hash", "implementation_hash", "source_id"}}
+            _atomic_write(stage.registry / (action_id + ".json"), raw)
+        _atomic_write(stage.root / "admissions" / (action_id + ".json"), {"content_hash": content_hash})
+        _atomic_write(stage.root / "code-review.json", {**report, "snapshot_hash": snapshot_hash})
+        result = stage.validate(action_id, content_hash)
+        if not result["ok"]:
+            raise ValueError("Smoke tests failed; Action was not admitted. Evidence: " + str(stage.root / "validations"))
+        _atomic_write(stage.root / "qualification-request.json", {
+            "action_id": action_id, "content_hash": content_hash, "snapshot_hash": snapshot_hash,
+            "report": report, "proposal_id": proposal_id, "completed_at": time.time(), "result": result})
+        return {"ok": True, "state": "tested", "attempt_id": stage.store.name}
+
+    def qualification_admit(self, attempt_id):
+        if not isinstance(attempt_id, str) or not re.fullmatch(r"attempt_[a-f0-9]{32}", attempt_id):
+            raise ValueError("Invalid qualification attempt identity.")
+        stage = ModuleRuntime(self.root / "qualification-attempts" / attempt_id)
+        request = json.loads((stage.root / "qualification-request.json").read_text(encoding="utf-8"))
+        if time.time() - request["completed_at"] > 600:
+            raise ValueError("Qualification attempt expired before admission; review and validate again.")
+        action_id, content_hash = request["action_id"], request["content_hash"]
+        snapshot_hash, proposal_id, report, result = (request[key] for key in ("snapshot_hash", "proposal_id", "report", "result"))
+        definition = stage.definition(action_id)
+        policy_path = self.root / "policy.json"
+        with self.lock():
+            current = self.qualification_review(action_id, content_hash, proposal_id)
+            if current["snapshot_hash"] != snapshot_hash:
+                raise ValueError("Implementation or base revision changed during smoke tests; Action was not admitted.")
+            self.authoring_idle(action_id)
+            if self.implementation(definition) != stage.implementation(definition):
+                raise ValueError("Staged implementation differs from the execution environment; Action was not admitted.")
+            if result["environment_fingerprint"] != stage.fingerprint(definition):
+                raise ValueError("Host environment changed after smoke tests; Action was not admitted.")
+            policy = json.loads(policy_path.read_text(encoding="utf-8")) if policy_path.exists() else {
+                "schema": "pkm.action.policy/v1", "grants": []}
+            policy["grants"].append({"action_id": action_id, "content_hash": content_hash, "trusted_host_execution": True})
+            writes = [(policy_path, policy),
+                      (self.root / "admissions" / (action_id + ".json"), {"content_hash": content_hash}),
+                      (self.root / "validations" / (action_id + ".json"), result),
+                      (self.root / "code-reviews" / (action_id + ".json"),
+                       {**report, "snapshot_hash": snapshot_hash, "content_hash": content_hash})]
+            if proposal_id:
+                record = self.proposal_read(proposal_id)
+                writes.insert(1, (self.registry / (action_id + ".json"), record["definition"]))
+                writes.append((self.root / "proposals" / (proposal_id + ".json"),
+                               {**record, "state": "approved", "decided_at": now().isoformat()}))
+            for build_path in (stage.root / "builds").glob("*.json"):
+                writes.insert(0, (self.root / "builds" / build_path.name, json.loads(build_path.read_text(encoding="utf-8"))))
+            self.write_review_changes(writes)
+        return {"ok": True, "state": "succeeded", "stage": "qualified", "action_id": action_id,
+                "content_hash": content_hash, "registered": True, "report": report,
+                "evidence": result["evidence"], "evidence_root": str(stage.root)}
+
+    def _host_review(self, definition):
+        action_id, content_hash = definition["action_id"], definition["content_hash"]
+        implementation = self.implementation(definition)
+        files = {}
+        for owner in (implementation, implementation.get("build", {}), implementation.get("server", {})):
+            for filename in owner.get("files", []) + owner.get("source_files", []):
+                source = Path(filename)
+                files[str(source)] = hashlib.sha256(source.read_bytes()).hexdigest()
+        policy_path = self.root / "policy.json"
+        policy = json.loads(policy_path.read_text(encoding="utf-8")) if policy_path.exists() else {
+            "schema": "pkm.action.policy/v1", "grants": []}
+        if policy.get("schema") != "pkm.action.policy/v1" or not isinstance(policy.get("grants"), list) or any(
+                not isinstance(grant, dict) for grant in policy["grants"]):
+            raise ValueError("Invalid operator policy; refusing to replace existing grants.")
+        review = {"action_id": action_id, "content_hash": content_hash, "definition": definition,
+                  "implementation": implementation, "files": files, "host": platform.node(),
+                  "platform": platform.system(), "policy_path": str(policy_path),
+                  "dependency_revisions": {child: self.definition(child)["content_hash"]
+                                           for child in definition["dependencies"]},
+                  "admitted": self.admitted(definition),
+                  "granted": any(grant.get("action_id") == action_id and grant.get("content_hash") == content_hash
+                                 and grant.get("trusted_host_execution") is True for grant in policy["grants"])}
+        return {"ok": True, **review, "review_hash": digest(review)}
+
+    def host_trust_update(self, action_id, content_hash, review_hash, grant):
+        if type(grant) is not bool:
+            raise ValueError("Choose an explicit grant or revoke operation.")
+        with self.lock():
+            review = self.host_trust_review(action_id, content_hash)
+            if review["review_hash"] != review_hash:
+                raise ValueError("Action, implementation or authorization changed during review; review again.")
+            path = self.root / "policy.json"
+            policy = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {
+                "schema": "pkm.action.policy/v1", "grants": []}
+            matches = [item for item in policy["grants"]
+                       if item.get("action_id") == action_id and item.get("content_hash") == content_hash]
+            if grant:
+                if matches:
+                    for item in matches:
+                        item["trusted_host_execution"] = True
+                else:
+                    policy["grants"].append({"action_id": action_id, "content_hash": content_hash,
+                                            "trusted_host_execution": True})
+            else:
+                for item in matches:
+                    item.pop("trusted_host_execution", None)
+            admission = self.root / "admissions" / (action_id + ".json")
+            self.write_review_changes([(path, policy), (admission, {"content_hash": content_hash if grant else None})])
+        return {"ok": True, "granted": grant, "action_id": action_id, "content_hash": content_hash}
+
     def authorize(self, definition):
+        if not self.admitted(definition):
+            raise PermissionError("ACTION_ADMISSION_REQUIRED: This Action revision is not approved for the formal library. "
+                                  "Agent: stop; ask the operator to open Automation > Action Library > Review in canvas "
+                                  "and click Validate. Agent code review must pass before smoke tests; successful tests "
+                                  "automatically admit the exact version. No manual grant is needed. Do not call, "
+                                  "self-approve, edit policy/admissions or retry registration.")
         implementation = self.implementation(definition)
         if implementation["kind"] == "builtin" or implementation["kind"] == "pipeline":
             return
@@ -1522,7 +1886,23 @@ class ModuleRuntime:
         policy = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
         if not any(grant.get("action_id") == definition["action_id"] and grant.get("content_hash") == definition["content_hash"]
                    and grant.get("trusted_host_execution") is True for grant in policy.get("grants", [])):
-            raise PermissionError("Operator must grant this pinned implementation trusted host execution; this is not a sandbox.")
+            raise PermissionError(
+                "ACTION_HOST_TRUST_REQUIRED: Missing operator approval for this exact Action revision; "
+                "this is not a definition/schema error.\n"
+                f"action_id: {definition['action_id']}\n"
+                f"content_hash: {definition['content_hash']}\n"
+                f"Operator policy on the MCP execution host: {path}\n"
+                "Agent: stop and ask the human operator to click the flask Validate button for this Action. "
+                "Agent code review runs first; only a passing review permits smoke tests. Successful tests "
+                "save trusted_host_execution for this exact action_id/content_hash and admit it automatically "
+                "while preserving existing grants. No separate manual grant is needed. Do not self-authorize; do not edit the policy; "
+                "do not re-register, change versions or retry automatically to bypass this gate. "
+                "Portal/Chat approvals do not grant Action host trust. "
+                "Execution uses host OS permissions; this is not a sandbox. "
+                "Do not retry action_validation_enqueue to bypass the review; use the Workbench review/test flow. "
+                "Normal invocation still requires readiness and effect consent. "
+                "See docs/guides/action-authoring.md#trusted-host-execution-authorization."
+            )
 
     def availability(self, action_id):
         definition = self.definition(action_id)
@@ -1763,6 +2143,10 @@ class ModuleRuntime:
 
     def validate(self, action_id, content_hash, progress=None, cancel_path=None):
         definition = self.definition(action_id)
+        if self.proposal_mode and action_id not in builtin_definitions():
+            raise PermissionError("ACTION_CODE_REVIEW_REQUIRED: Open this Action in the Workbench and click the flask Validate button. "
+                                  "The host asks an Agent to review code before smoke tests and admission. "
+                                  "Do not grant policy access manually or retry direct validation.")
         if content_hash != definition["content_hash"] or not definition["examples"]:
             raise ValueError("Pin a definition with controlled smoke examples.")
         self.authorize(definition)
@@ -1772,6 +2156,7 @@ class ModuleRuntime:
         if progress:
             progress("build" if self.implementation(definition).get("build") else "preflight")
         self.ensure_build(definition, cancel_path)
+        self.validation_fixtures(action_id)
         fingerprint = self.fingerprint(definition)
         if progress:
             progress("test")
@@ -1821,6 +2206,9 @@ class ModuleRuntime:
             queue["worker_pid"] = None
 
     def queue_enqueue(self, action_id, content_hash, priority="demand", allow_effects=False, launch=True):
+        if self.proposal_mode and action_id not in builtin_definitions():
+            raise PermissionError("ACTION_CODE_REVIEW_REQUIRED: Click Validate in the PKM Workbench. "
+                                  "Agent review must pass before smoke tests and automatic admission; no manual grant is needed.")
         priorities = {"demand": 0, "graph": 1, "module_set": 2, "idle": 3}
         if priority not in priorities or type(allow_effects) is not bool:
             raise ValueError("Invalid validation priority or effect consent.")
@@ -2278,7 +2666,7 @@ if __name__ == "__main__":
     elif len(sys.argv) == 3 and sys.argv[1] == "--validation-queue":
         ModuleRuntime(sys.argv[2]).queue_worker()
     elif len(sys.argv) == 3 and sys.argv[1] == "--api":
-        runtime = ModuleRuntime(sys.argv[2])
+        runtime = ModuleRuntime(sys.argv[2], proposal_mode=True)
         from action_runtime import ActionRuntime
         platform_runtime = ActionRuntime(sys.argv[2])
         request = json.load(sys.stdin)
@@ -2289,6 +2677,11 @@ if __name__ == "__main__":
                    "check_graph": runtime.graph_definition, "call": runtime.call, "run": platform_runtime.get, "cancel_run": platform_runtime.cancel,
                    "platform_call": platform_runtime.call, "retrieve": platform_runtime.retrieve,
                    "library_get": runtime.library_get,
+                   "host_trust_review": runtime.host_trust_review, "host_trust_update": runtime.host_trust_update,
+                   "proposal_list": runtime.proposal_list, "proposal_review": runtime.proposal_review,
+                   "proposal_decide": runtime.proposal_decide,
+                   "qualification_review": runtime.qualification_review, "qualification_execute": runtime.qualification_execute,
+                   "qualification_admit": runtime.qualification_admit,
                    "definition_get": lambda action_id: {**platform_runtime.definition(action_id),
                        "availability": platform_runtime.availability(action_id) if action_id.startswith("cosmos.")
                            else runtime.availability(action_id)},

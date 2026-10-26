@@ -3,14 +3,15 @@
 import datetime
 import json
 import os
+import platform
 import re
 import shutil
+import signal
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from urllib.parse import quote
-
-from recipe_runtime import _execute_command_worker
 
 
 def fail(code, message, blocked=False):
@@ -39,11 +40,37 @@ def cli_failure(result):
 def execute(argv):
     with tempfile.TemporaryDirectory(prefix="pkm-ado-query-") as directory:
         root = Path(directory)
-        spec = {"program": argv[0], "args": argv[1:], "cwd": os.getcwd(),
-                "timeoutSeconds": 20, "maxOutputBytes": 65536}
-        (root / "command.json").write_text(json.dumps(spec), encoding="utf-8")
-        _execute_command_worker(root / "command.json", root / "result.json")
-        return json.loads((root / "result.json").read_text(encoding="utf-8"))
+        stdout_path, stderr_path = root / "stdout", root / "stderr"
+        options = {"start_new_session": True} if os.name != "nt" else {
+            "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
+        try:
+            with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
+                process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
+                                           shell=False, env={**os.environ, "AZURE_EXTENSION_USE_DYNAMIC_INSTALL": "no"}, **options)
+                timed_out = False
+                try:
+                    process.wait(timeout=20)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    if os.name == "nt":
+                        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL, check=True,
+                                       creationflags=subprocess.CREATE_NO_WINDOW)
+                    else:
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    process.wait()
+            with stdout_path.open("rb") as stdout, stderr_path.open("rb") as stderr:
+                output, errors = stdout.read(65537), stderr.read(65537)
+            return {"ok": process.returncode == 0 and not timed_out, "timed_out": timed_out,
+                    "stdout": output[:65536].decode("utf-8", errors="replace"),
+                    "stderr": errors[:65536].decode("utf-8", errors="replace"),
+                    "stdout_truncated": len(output) > 65536, "stderr_truncated": len(errors) > 65536}
+        except OSError as error:
+            return {"ok": False, "stderr": str(error), "stdout": "", "timed_out": False}
 
 
 def query(inputs, runner=execute, executable=None):
@@ -56,8 +83,10 @@ def query(inputs, runner=execute, executable=None):
     az = executable or shutil.which("az")
     if not az:
         return fail("missing_toolchain", "Azure CLI is not installed on the Action execution host; PKM does not install it.", True)
-    common = ["--organization", organization, "--project", project, "--output", "json", "--only-show-errors"]
-    result = runner([az, "pipelines", "build", "show", "--id", run_id, *common])
+    base = organization.rstrip("/") + "/" + quote(project, safe="") + "/_apis/build/builds/" + run_id
+    common = ["--method", "GET", "--resource", "499b84ac-1321-427f-aa17-267ca6975798",
+              "--output", "json", "--only-show-errors"]
+    result = runner([az, "rest", "--url", base + "?api-version=7.1", *common])
     if not result.get("ok") or result.get("stdout_truncated"):
         return cli_failure(result)
     try:
@@ -73,10 +102,7 @@ def query(inputs, runner=execute, executable=None):
     terminal = status == "completed"
     if terminal and outcome not in {"succeeded", "failed", "canceled", "partiallySucceeded", "skipped", "none"}:
         return fail("invalid_response", "A completed run requires an explicit result.")
-    timeline = runner([az, "devops", "invoke", "--organization", organization,
-        "--area", "build", "--resource", "timeline", "--route-parameters",
-        "project=" + project, "buildId=" + run_id, "--api-version", "7.1",
-        "--http-method", "GET", "--output", "json", "--only-show-errors"])
+    timeline = runner([az, "rest", "--url", base + "/timeline?api-version=7.1", *common])
     if not timeline.get("ok") or timeline.get("stdout_truncated"):
         return cli_failure(timeline)
     try:
@@ -94,7 +120,8 @@ def query(inputs, runner=execute, executable=None):
         "status": status, "result": outcome, "terminal": terminal, "tasks": tasks}}
 
 
-def status_definition(action_id):
+def status_definition(action_id, version=1, examples=None):
+    """Authoring factory: callers supply revision/examples; CLI execution never calls this."""
     az = shutil.which("az")
     script = str(Path(__file__).resolve())
     inputs = {"organization": {"type": "string", "pattern": r"^https://(?:dev\.azure\.com/[A-Za-z0-9_.-]+|[A-Za-z0-9_.-]+\.visualstudio\.com)/?$"},
@@ -103,13 +130,13 @@ def status_definition(action_id):
     outputs = {"remote_id": {"type": "string"}, "pipeline_id": {"type": "string"},
                "observed_at": {"type": "string"}, "url": {"type": "string"}, "status": {"type": "string"},
                "result": {"type": ["string", "null"]}, "terminal": {"type": "boolean"}, "tasks": {"type": "array"}}
-    return {"schema": "pkm.action.definition/v1", "action_id": action_id, "version": 1,
-            "description": "Read-only Azure DevOps build and task status using the explicitly authorized host CLI identity.",
+    return {"schema": "pkm.action.definition/v1", "action_id": action_id, "version": version,
+            "description": "Read-only Azure DevOps build and task status. Requires the host's Azure CLI and existing operator authentication; uses az rest GET only, not the azure-devops extension. Each query has a 20-second timeout and 64-KiB captured-output limit. Temporary local capture files are removed. Never queues a run, installs tools or logs in.",
             "effects": ["remote-read"], "input_schema": {"type": "object", "properties": inputs,
                 "required": list(inputs), "additionalProperties": False},
             "output_schema": {"type": "object", "properties": outputs, "required": list(outputs), "additionalProperties": False},
-            "examples": [], "implementations": [{"id": "azure-cli", "kind": "program",
-                "platforms": ["Linux", "Windows", "Darwin"], "program": "python",
+            "examples": examples or [], "implementations": [{"id": "azure-cli", "kind": "program",
+                "platforms": [platform.system()], "program": sys.executable,
                 "args": [script, *(["--azure-cli", az] if az else [])], "files": [script, *([az] if az else [])],
                 "result_protocol": "pkm.action.result/v1"}]}
 

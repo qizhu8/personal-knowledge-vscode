@@ -15,7 +15,43 @@ export interface ChatModelProfile {
   includeUsage: boolean;
   outputTokenParameter: "max_tokens" | "max_completion_tokens";
 }
-export interface ChatTokenUsage { inputTokens: number; outputTokens: number; cachedInputTokens?: number; reasoningTokens?: number; }
+export interface ChatTokenUsage { inputTokens: number; outputTokens: number; cachedInputTokens?: number; reasoningTokens?: number; copilotNanoAiu?: number; }
+
+export interface CopilotCreditSummary {
+  source: "provider.copilot_usage.total_nano_aiu";
+  status: "reported" | "partial" | "not-reported";
+  reportedCalls: number;
+  totalCalls: number;
+  totalNanoAiu?: string;
+  credits?: string;
+}
+
+export function reportedCopilotUsage(usage: unknown): { copilotNanoAiu?: number } {
+  if (!usage || typeof usage !== "object" || !("copilot_usage" in usage) || usage.copilot_usage === undefined) return {};
+  const billing = usage.copilot_usage;
+  if (!billing || typeof billing !== "object" || !("total_nano_aiu" in billing)
+    || typeof billing.total_nano_aiu !== "number" || !Number.isSafeInteger(billing.total_nano_aiu) || billing.total_nano_aiu < 0) {
+    throw new Error("Provider Copilot credit usage is invalid; an exact non-negative nano-AIU integer is required.");
+  }
+  return { copilotNanoAiu: billing.total_nano_aiu };
+}
+
+export function copilotCreditSummary(calls: readonly ({ copilotNanoAiu?: number } | undefined)[]): CopilotCreditSummary {
+  let total = 0n, reportedCalls = 0;
+  for (const call of calls) {
+    if (call?.copilotNanoAiu === undefined) continue;
+    if (!Number.isSafeInteger(call.copilotNanoAiu) || call.copilotNanoAiu < 0) throw new Error("Invalid Copilot credit usage.");
+    total += BigInt(call.copilotNanoAiu); reportedCalls++;
+  }
+  const amount = total.toString().padStart(10, "0");
+  const fraction = amount.slice(-9).replace(/0+$/, "");
+  return {
+    source: "provider.copilot_usage.total_nano_aiu",
+    status: !reportedCalls ? "not-reported" : reportedCalls === calls.length ? "reported" : "partial",
+    reportedCalls, totalCalls: calls.length,
+    ...(reportedCalls ? { totalNanoAiu: total.toString(), credits: `${amount.slice(0, -9)}${fraction ? `.${fraction}` : ""}` } : {}),
+  };
+}
 
 export function reportedReasoningTokens(usage: { completion_tokens: number; completion_tokens_details?: { reasoning_tokens?: unknown } }): { reasoningTokens?: number } {
   const value = usage.completion_tokens_details?.reasoning_tokens;

@@ -3,6 +3,12 @@
   const terminal = value => ({ succeeded:'complete', completed:'complete', complete:'complete', failed:'failed', skipped:'ignored', ignored:'ignored' })[value] || '';
   const list = value => Array.isArray(value) ? value : [];
   const key = (...parts) => JSON.stringify(parts);
+  function creditLabel(summary, translate = (text, values = {}) => text.replace(/\{(\w+)\}/g, (_, key) => values[key] ?? `{${key}}`)) {
+    if (!summary?.reportedCalls || summary.credits === undefined) return '';
+    return summary.status === 'partial'
+      ? translate('{credits} credits (partial: {reported}/{total} calls)', { credits:summary.credits, reported:summary.reportedCalls, total:summary.totalCalls })
+      : translate('{credits} credits', { credits:summary.credits });
+  }
 
   function svgShape(parent, tag, attrs, text) {
     const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
@@ -64,7 +70,9 @@
       const state = sent.has(piece.id) ? 'sent' : prepared.has(piece.id) ? 'prepared' : 'stored';
       const group = svgShape(svg,'g',{'data-piece':index,'data-memory-state':state,class:'pkm-harness-memory-piece',
         'aria-label':`Inspect ${piece.kind}, level ${piece.level}, piece ${index+1}`});
-      svgShape(group,'title',{},`${piece.kind} / ${state} / ${piece.summary_current ? 'summary current' : piece.summary ? 'summary stale' : 'no summary'}`);
+      svgShape(group,'title',{},onInspect
+        ? `${piece.label || piece.id}\n${piece.kind} / level ${piece.level} / revision ${piece.revision ?? 'unknown'}\n${state} / ${piece.summary_current ? 'summary current' : piece.summary ? 'summary stale' : 'no summary'}${piece.summary ? `\n${String(piece.summary).slice(0,600)}` : ''}`
+        : `${piece.kind} / ${state}`);
       svgShape(group,'rect',{x,y,width:64,height:22,rx:5});
       svgShape(group,'text',{x:x+32,y:y+15,'text-anchor':'middle'},String(piece.kind).slice(0,9));
       pieceInteraction(svg,group,index,onInspect && (() => onInspect(piece)));
@@ -73,6 +81,7 @@
   }
 
   function retrievalPieceFlow(candidates, onInspect) {
+    const description = item => `${item.label || item.id || 'Unnamed piece'}\n${item.kind || 'unknown'} / ${item.evidenceState === 'sent' ? 'sent evidence recorded' : item.selected ? 'selected, no sent evidence' : 'not selected'}\nSource: ${item.sourceUri || 'not recorded'}\n${item.method || 'unknown method'} / score ${item.score ?? 'not recorded'}\n${item.reason || 'No selection reason recorded'}`.slice(0,1800);
     const selected = candidates.map((item, index) => ({ item, index })).filter(({ item }) => item.selected);
     const shown = selected.slice(0, 24);
     const sample = [...shown, ...candidates.map((item, index) => ({ item, index }))
@@ -111,7 +120,7 @@
       const group = shape('g', { class:'pkm-harness-pool-piece', 'data-selected':!!item.selected, 'data-piece':index });
       group.setAttribute('aria-label', `Inspect candidate ${index+1}: ${item.kind || 'unknown'}`);
       pieceInteraction(svg,group,index,onInspect && (() => onInspect(item,index)));
-      shape('title', {}, `${item.kind || 'unknown'} / ${item.selected ? 'selected' : 'not selected'}`, group);
+      shape('title', {}, onInspect ? description(item) : `${item.kind || 'unknown'} / ${item.selected ? 'selected' : 'not selected'}`, group);
       shape('rect', { x, y, width:36, height:22, rx:4 }, undefined, group);
       shape('text', { x:x + 18, y:y + 15, 'text-anchor':'middle' }, String(item.kind || '?').slice(0, 4), group);
     });
@@ -121,9 +130,9 @@
         'data-sent':item.evidenceState === 'sent' });
       group.setAttribute('aria-label', `Inspect selected piece ${index+1}: ${item.kind || 'unknown'}`);
       pieceInteraction(svg,group,index,onInspect && (() => onInspect(item,index)));
-      shape('title', {}, `${item.kind || 'unknown'} / ${item.evidenceState === 'sent' ? 'sent evidence recorded' : 'selected, no sent evidence'}`, group);
+      shape('title', {}, onInspect ? description(item) : `${item.kind || 'unknown'} / ${item.evidenceState === 'sent' ? 'sent evidence recorded' : 'selected, no sent evidence'}`, group);
       shape('rect', { x:420, y, width:164, height:22, rx:5 }, undefined, group);
-      shape('text', { x:430, y:y + 15 }, String(item.kind || 'unknown').slice(0, 18), group);
+      shape('text', { x:430, y:y + 15 }, String(onInspect ? item.label || item.kind || 'unknown' : item.kind || 'unknown').slice(0, 18), group);
       if (item.evidenceState === 'sent') shape('circle', { cx:574, cy:y + 11, r:3 }, undefined, group);
     });
     if (!shown.length) shape('text', { x:420, y:70 }, 'None recorded');
@@ -627,7 +636,8 @@
         ['Waiting on', harness.waiting?.kind === 'dependency' ? harness.waiting.detail : backgroundRuns.length ? `${backgroundRuns.length} Action Run(s)` : 'nothing recorded'],
         ['Action Runs', referenced.length ? referenced.map(run => `${run.actionId}: ${run.state}`).join(', ') : 'none referenced'],
         ['Prepared model rounds', String(list(attempt?.budgetReceipts).length)],
-        ['Reported usage', usage ? `${usage.inputTokens ?? '?'} in / ${usage.outputTokens ?? '?'} out` : 'not reported'],
+        ...(usage ? [['Reported usage', `${usage.inputTokens ?? '?'} in / ${usage.outputTokens ?? '?'} out`]] : []),
+        ...(creditLabel(attempt?.validation?.reportedCredits) ? [['Copilot credits (Chat only)', creditLabel(attempt.validation.reportedCredits)]] : []),
         ['Liveness', session.liveness?.state || 'not recorded'],
       ],
       evaluate:[
@@ -764,7 +774,7 @@
     let session, model, active, sequence = 0, disposed = false, loading = false, pending = false, pendingForce = false;
     let tabs = [], views = new Map(), auto = true, ringSelected, dashboardAttemptId, lifecycleInspection = false, dashboardDiagram = 'harness';
     const memoryReads = new Map();
-    let memoryPieceChoice;
+    let memoryPieceChoice, memoryRevision;
     const toolbar = el('header'), title = el('h2'), status = el('span'), error = el('p', '', 'pkm-harness-error');
     error.setAttribute('role', 'alert');
     const manual = button('Refresh', () => void refresh(true));
@@ -935,8 +945,9 @@
         ['Thinking quota', receipt?.ledger?.thinkingPolicy === 'provider-default' ? 'Provider default (no override)' : 'not recorded'],
         ['Context window', quantity(receipt?.requested?.contextWindow)],
         ['Output token limit (effective)', quantity(receipt?.effective?.outputTokens)],
-        ['Token usage (input / output)', `${quantity(usage?.inputTokens)} / ${quantity(usage?.outputTokens)}`],
-        ['Reasoning tokens', quantity(usage?.reasoningTokens)],
+        ...(usage ? [['Token usage (input / output)', `${quantity(usage.inputTokens)} / ${quantity(usage.outputTokens)}`]] : []),
+        ...(creditLabel(attempt?.validation?.reportedCredits) ? [['Copilot credits (Chat only)', creditLabel(attempt.validation.reportedCredits)]] : []),
+        ...(Number.isSafeInteger(usage?.reasoningTokens) && usage.reasoningTokens >= 0 ? [['Reasoning tokens', quantity(usage.reasoningTokens)]] : []),
         ['Model rounds / tools', `${receipts.length} prepared / ${list(attempt?.toolCalls).length} recorded`],
       ]) { const row = el('tr'); row.append(el('th', label), el('td', value)); body.append(row); }
       parameters.append(body);
@@ -1029,7 +1040,7 @@
       }
       const memory = card('memory', 'Memory / Profiles', attempt?.memory?.accounting && key('memory-accounting', attempt.messageId));
       let memoryOverview;
-      if (session.memoryStoreReader && (dashboardDiagram === 'memory' || memoryReads.has(key('memoryOverview',{})))) {
+      if (session.memoryStoreReader) {
         const state = readDashboardMemory('memoryOverview');
         memory.append(button('Refresh stored Memory', () => { memoryReads.clear(); memoryPieceChoice = undefined; drawDashboard(); }));
         if (state.loading) memory.append(el('p','Reading stored Memory...'));
@@ -1041,7 +1052,8 @@
           if (memoryPieceChoice) {
             const evidence = el('section'); evidence.setAttribute('aria-label','Stored Memory piece evidence');
             const piece = readDashboardMemory('memoryPiece',{piece:memoryPieceChoice.id,after:0});
-            evidence.append(el('h4',`${memoryPieceChoice.kind} / level ${memoryPieceChoice.level}`));
+            evidence.append(el('h4',memoryPieceChoice.label || memoryPieceChoice.id),
+              el('p',`${memoryPieceChoice.kind} / level ${memoryPieceChoice.level} / ${memoryPieceChoice.id}`));
             if (piece.loading) evidence.append(el('p','Reading stored piece...'));
             else if (piece.error) evidence.append(el('p',piece.error,'pkm-harness-error'));
             else {
@@ -1059,6 +1071,30 @@
         }
       }
       const profiles = attempt?.profileContext;
+      if (session.profileReader) {
+        const current = el('section'); current.setAttribute('aria-label','Current User and Agent Session Profiles');
+        current.append(el('h4','Current User / Agent Session Profiles'));
+        const state = readDashboardMemory('profiles');
+        current.append(button('Refresh current Profiles', () => { memoryReads.delete(key('profiles',{})); drawDashboard(); }));
+        if (options.configureProfiles) current.append(button('Manage Session Profile', () => options.configureProfiles()));
+        if (state.loading) current.append(el('p','Reading current Profiles...'));
+        else if (state.error) current.append(el('p',state.error,'pkm-harness-error'));
+        else {
+          current.append(el('small',`${state.data.scope}. Current cards apply to the next attempt; they do not replace historical snapshots.`));
+          for (const kind of ['user','agent']) {
+            const profile = state.data[kind];
+            current.append(el('h4',kind === 'user' ? 'User Profile' : 'Agent Session Profile'),
+              el('p',profile ? `${profile.name} · r${profile.revision}` : kind === 'agent' && !state.data.agentAssigned ? 'Not assigned' : 'Not configured'));
+            if (profile) {
+              const fields = el('dl');
+              for (const field of ['role','focus','preferences','boundaries']) fields.append(el('dt',field),el('dd',profile[field] || 'Not configured'));
+              current.append(fields);
+            }
+          }
+        }
+        memory.append(current);
+      }
+      memory.append(el('h4','Selected attempt · historical User / Agent Profiles'));
       const profileTable = el('table', undefined, 'pkm-harness-parameters'), profileBody = el('tbody');
       profileTable.setAttribute('aria-label', 'Recorded collaboration Profiles');
       for (const kind of ['user', 'agent']) {
@@ -1068,7 +1104,7 @@
       }
       profileTable.append(profileBody); memory.append(profileTable);
       if (profiles) {
-        const details = el('details'); details.append(el('summary', 'Profile snapshot recorded for this attempt'));
+        const details = el('details'); details.open = true; details.append(el('summary', 'Profile snapshot recorded for this attempt'));
         const fields = el('table', undefined, 'pkm-harness-parameters'), body = el('tbody');
         for (const kind of ['user', 'agent']) for (const field of ['role', 'focus', 'preferences', 'boundaries']) if (profiles[kind]?.[field]) {
           const row = el('tr'); row.append(el('th', `${kind} / ${field}`), el('td', profiles[kind][field])); body.append(row);
@@ -1088,7 +1124,11 @@
         });
         preparation.append(pyramid, el('small', kinds.length ? 'Recorded preparation blocks grouped by kind, not stored abstraction levels. Open Visualization / Memory for the scoped storage pyramid and provenance.' : 'Receipt recorded no preparation blocks.'));
         if (attempt.memory.error) preparation.append(el('p', `Memory preparation error: ${attempt.memory.error}`, 'pkm-harness-unknown'));
-        if (attempt.memory.accounting) preview(preparation, key('memory-accounting', attempt.messageId));
+        if (attempt.memory.accounting) {
+          const credits = creditLabel(attempt.memory.accounting.credits);
+          if (credits) preparation.append(el('p', `Memory preparation: ${credits}. Separate from Chat credits; post-reply organization is in the durable Memory receipt.`));
+          preview(preparation, key('memory-accounting', attempt.messageId));
+        }
       }
       const retrieval = card('retrieval', 'Retrieval flow', attempt && key('retrieval', attempt.messageId));
       const retrievalRecords = list(attempt?.retrieval);
@@ -1121,10 +1161,10 @@
           const evidence = el('section');
           evidence.setAttribute('aria-label','Retrieval piece evidence');
           const diagram = retrievalPieceFlow(candidates,(item,index) => {
-            evidence.replaceChildren(el('h4',`Piece ${index+1} / ${item.kind || 'unknown'}`));
+            evidence.replaceChildren(el('h4',item.label || `Piece ${index+1} / ${item.kind || 'unknown'}`));
             const fields = el('dl');
             for (const [label,value] of [
-              ['Source',item.sourceUri],['Method',item.method],['Score',item.score],
+              ['Identity',item.id],['Kind',item.kind],['Source',item.sourceUri],['Method',item.method],['Score',item.score],
               ['Selection reason',item.reason],['Evidence',item.evidenceState === 'sent' ? 'Sent evidence recorded'
                 : item.selected ? 'Selected; transmission not established' : 'Not selected'],
             ]) fields.append(el('dt',label),el('dd',value === undefined || value === '' ? 'Not recorded' : String(value)));
@@ -1160,6 +1200,9 @@
         } else if (id === 'memory') {
           if (memoryOverview) {
             const mini = memoryPyramid(memoryOverview,attempt); mini.setAttribute('aria-hidden','true'); thumb.append(mini);
+          } else if (session.memoryStoreReader) {
+            const memoryState = memoryReads.get(key('memoryOverview',{}));
+            thumb.append(el('small', memoryState?.error || 'Reading stored Memory...', memoryState?.error ? 'pkm-harness-error' : undefined));
           }
           const groups = el('div', undefined, 'pkm-harness-category-mini');
           for (const kind of new Set(list(attempt?.memory?.blocks).map(block => block.kind))) groups.append(el('span', kind));
@@ -1298,6 +1341,10 @@
       if (!force && !auto && next.sessionId === session?.sessionId) return;
       capture();
       if (session?.sessionId !== next.sessionId) { sequence++; tabs = []; views = new Map(); active = null; memoryReads.clear(); memoryPieceChoice = undefined; }
+      const revision = key(next.sessionId, list(next.harness?.attempts).map(attempt => [
+        attempt.messageId, attempt.memory?.turn, attempt.memory?.blocks, attempt.memory?.error
+      ]));
+      if (revision !== memoryRevision) { memoryReads.clear(); memoryPieceChoice = undefined; memoryRevision = revision; }
       session = next; model = build(next);
       active = active === RING || model.graphs.has(active) ? active : RING;
       tabs = tabs.filter(id => id === RING || model.graphs.has(id)); if (!tabs.includes(active)) tabs.push(active);
@@ -1311,6 +1358,7 @@
       if (disposed || !session || (!force && (!auto || document.visibilityState === 'hidden' || !root.isConnected))) return;
       if (loading) { pending = true; pendingForce = pendingForce || force; return; }
       loading = true;
+      if (force) { memoryReads.clear(); memoryPieceChoice = undefined; }
       const id = session.sessionId, current = ++sequence; manual.disabled = true;
       try {
         const next = await options.request('snapshot', { sessionId:id });
@@ -1338,12 +1386,46 @@
         dashboardDiagram = 'harness'; lifecycleInspection = false; ringSelected = dashboardLifecycle().current; drawDashboard(); open(RING);
         root.querySelector('.pkm-harness-stage[aria-current="step"]')?.focus({ preventScroll:true });
       },
+      showProfiles() {
+        dashboardDiagram = 'memory'; lifecycleInspection = false; drawDashboard(); open(RING);
+        const current = root.querySelector('[aria-label="Current User and Agent Session Profiles"]');
+        if (current) { current.tabIndex = -1; current.focus(); }
+      },
       attach(parent) { parent.append(root); },
       notify() { void refresh(); },
       dispose() { disposed = true; sequence++; clearInterval(timer); document.removeEventListener('visibilitychange', visible); root.remove(); }
     };
   }
-  const api = { build, layout, terminal, mount, describeToolCall, toolActivityDetails, memoryPyramid };
+  function profileCards(data, includeAgent = true) {
+    const root = document.createElement('section');
+    root.className = 'pkm-persona-cards';
+    const scope = document.createElement('p'); scope.textContent = data.scope; root.append(scope);
+    for (const kind of includeAgent ? ['user', 'agent'] : ['user']) {
+      const section = document.createElement('section'), title = document.createElement('h3');
+      title.textContent = kind === 'user' ? 'User Profile' : 'Agent Session Profile';
+      section.append(title);
+      const profile = data[kind];
+      if (!profile) {
+        const empty = document.createElement('p');
+        empty.textContent = kind === 'agent' && !data.agentAssigned ? 'Not assigned to this Chat' : 'Not configured';
+        section.append(empty);
+      } else {
+        const name = document.createElement('strong'); name.textContent = `${profile.name} · revision ${profile.revision}`; section.append(name);
+        const fields = document.createElement('dl');
+        for (const [label, value] of [['Role', profile.role], ['Focus', profile.focus], ['Working preferences', profile.preferences], ['Responsibility boundaries', profile.boundaries]]) {
+          const term = document.createElement('dt'), content = document.createElement('dd');
+          term.textContent = label; content.textContent = value || 'Not specified'; fields.append(term, content);
+        }
+        section.append(fields);
+      }
+      root.append(section);
+    }
+    const note = document.createElement('p');
+    note.textContent = 'Current cards apply to the next attempt. Historical attempt snapshots are unchanged. Profiles are preferences, not permissions.';
+    root.append(note);
+    return root;
+  }
+  const api = { build, layout, terminal, mount, describeToolCall, toolActivityDetails, memoryPyramid, creditLabel, profileCards };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.PkmAgentHarness = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

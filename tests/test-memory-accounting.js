@@ -69,6 +69,26 @@ test("Real Memory prepare/extract receipts preserve separate totals and survive 
   assert.deepEqual(await service.receipt("complete"), committed);
 });
 
+test("Memory credits persist exact provider units independently, including missing and failed model calls", async t => {
+  const { service } = fixture(t);
+  const value = { ...intent, usage:{ ...intent.usage, copilotNanoAiu:123_456_789 } };
+  const prepared = await service.prepare("scope", "credits", { id:"u", text:"Account for Memory" }, [], 5000,
+    async () => value, new AbortController().signal);
+  assert.equal(prepared.receipt.accounting.credits.credits, "0.123456789");
+  assert.equal(prepared.receipt.calls[0].usage.copilotNanoAiu, 123_456_789);
+  const committed = await service.commit("scope", "credits", { id:"u", text:"Account for Memory" }, { id:"a", text:"Recorded" },
+    async () => { throw new MemoryModelError("provider interrupted", { text:"", usage:{ inputTokens:3, outputTokens:1, copilotNanoAiu:1 } }); },
+    new AbortController().signal);
+  assert.equal(committed.accounting.credits.credits, "0.12345679");
+  assert.equal(committed.accounting.credits.status, "reported");
+  const client = await service.client;
+  client.child.kill("SIGKILL"); await client.exit;
+  assert.deepEqual((await service.receipt("credits")).accounting.credits, committed.accounting.credits);
+  const partial = memoryTurnAccounting(receipt([{ status:"complete", usage:value.usage }, { status:"failed" }]));
+  assert.equal(partial.credits.status, "partial");
+  assert.equal(partial.credits.totalCalls, 2);
+});
+
 test("Failed Memory inference records partial usage and timing, while unknown usage stays unknown", async t => {
   const { service } = fixture(t);
   const metadata = { ...accounting(), inferenceTiming: { ...accounting().inferenceTiming, outcome: "interrupted" } };
@@ -113,6 +133,7 @@ test("Python rejects malformed model metadata before mutating a pending step, an
   for (const params of [
     { usage: { inputTokens: true, outputTokens: 0 } },
     { usage: { inputTokens: 1, outputTokens: 0, cachedInputTokens: 2 } },
+    ...[-1, true, 0.5, "1", Number.MAX_SAFE_INTEGER + 1].map(copilotNanoAiu => ({ usage:{ inputTokens:1, outputTokens:0, copilotNanoAiu } })),
     { accounting: { ...accounting(), provider: "imaginary" } },
     { accounting: { ...accounting(), durationMs: -1 } },
     { accounting: { ...accounting(), inferenceTiming: { ...accounting().inferenceTiming, maxInactivityMs: 11 } } },

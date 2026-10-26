@@ -62,6 +62,25 @@ rmdir .ctx-offline-fixtures
 
 ## Required mechanism observability
 
+### Approved checkpoint and production retrieval follow-up
+
+These regressions run through `test:chat-context` and the mandatory
+`test:chat-retrieval:run` release/package prerequisite:
+
+| Case | Required invariant | Executable evidence |
+|---|---|---|
+| CTX-CP01 | 4/16/64/256 large old inputs retain every original before approval; the same approved summary bounds subsequent input below 5,000 conservative units, with less than 100 units of growth | `test-chat-context-contracts.js` |
+| CTX-CP02 | New prohibitions remain mandatory; work-goal context consolidates only the approved prefix; original source identities and text survive store reload | `test-chat-context-contracts.js` |
+| CTX-CP03 | Hash/range readback is exact; changed/missing sources, covered retries, History off and another Task cannot silently reuse the approval | `test-chat-context-contracts.js` |
+| CTX-CP04 | Actual confirmation rejects unreviewed or stale approvals; cancellation writes nothing; approval/revocation persists without a model request or permission grant | `fixtures/chat-review-controller.js`, via `test-api-chat.js` |
+| CTX-KF01 | Production dual adapter reaches the real Python worker; successful invocation returns source/feedback identity; explicit complete judgments reach actual HTTP feedback and local calibration | `test-chat-retrieval-integration.js` (synthetic encoder, not model-quality acceptance) |
+| CTX-KF02 | Missing invocation status fails explicitly; model-off and actual encoder-fallback paths are not reported as successful semantic serving | `test-chat-retrieval-integration.js` |
+| CTX-KF03 | Prepared/sent/reloaded Chat receipts retain invocation identity; ordinary selection/completion never trains; wrong-Chat, incomplete, cancelled and expired feedback remain explicit | `fixtures/chat-review-controller.js`, via `test-api-chat.js` |
+| CTX-KF04 | Narrow rendered inspector shows actual routes/fallback and emits correct review/checkpoint/revocation events | `test-chat-activity-browser.js` |
+
+The synthetic long-Task fixture measures bounded request construction, not live
+model understanding, automatic compression quality or installed-Host behavior.
+
 Each production attempt must expose bounded events sufficient to verify:
 
 | Event | Required observations |

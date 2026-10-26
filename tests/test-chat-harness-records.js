@@ -21,6 +21,23 @@ function commit(chat, reply, args) {
   return report;
 }
 
+test("checkpoint replaces only prior agent interpretation and exposes supersession identity, including equal clock timestamps",()=>{
+  const {createTaskContextCheckpoint}=require("../dist/chat/task-context-checkpoint");
+  const {chat,reply}=fixture();
+  chat.id="a".repeat(36);chat.includeHistory=true;chat.sessionId="agent_session_"+"a".repeat(32);
+  chat.messages.forEach(message=>{message.taskId=chat.sessionId;});
+  const old=commit(chat,reply,{kind:"task",goal:"Old interpretation",sourceInputIds:["input"]});
+  chat.taskContextCheckpoints=[createTaskContextCheckpoint(chat,"User-approved replacement. Never deploy.")];
+  const checkpoint=chat.taskContextCheckpoints[0];
+  assert.equal(checkpoint.previousTaskReportId,old.id);
+  old.at=Date.parse(checkpoint.approvedAt);
+  assert.equal(currentHarnessTaskState(chat).report,undefined);
+  assert.equal(currentHarnessTaskState(chat).supersedesReportId,old.id);
+  const updated=commit(chat,reply,{kind:"task",goal:"Reconcile the approved replacement",sourceInputIds:["input"],supersedes:old.id});
+  updated.at=old.at;
+  assert.equal(currentHarnessTaskState(chat).report.id,updated.id,"causal report identity must win over equal timestamps");
+});
+
 test("task goal/constraints use actual source input identities, supersede explicitly and survive failed replies", () => {
   const { chat, reply } = fixture();
   const initial = commit(chat, reply, { kind:"task", goal:"Fix tests", constraints:["Do not deploy"], acceptance:["Tests pass"], openQuestions:["Why failing?"], sourceInputIds:["input"] });

@@ -83,6 +83,15 @@ scan and results are cached for five seconds. There is no permanent polling or
 process-stop control. Collection is bounded to ten seconds and failures are shown
 explicitly instead of being reported as an empty list.
 
+On Windows, CIM enumeration first filters candidate executable names in the
+provider, then checks known PKM entrypoints and the current user's SID. Owner
+lookup failures remain errors, not permission to include another user's process.
+PowerShell failures identify timeout, missing executable, output overflow or exit
+code and include bounded stderr when present; the full inventory script is not
+the error message. A failed inventory is not evidence of high CPU or an Extension
+Host stall. This inventory measures age and RSS, not CPU utilization. Windows
+runtime acceptance is separate from mocked Windows command/error regressions.
+
 The default overview shows only total processes and summed RSS. Host, sampling
 time, installed/window version baselines, scope and interpretation notes are
 behind **Snapshot details**, collapsed initially. PID rows show only PID,

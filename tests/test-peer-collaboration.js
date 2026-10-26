@@ -59,7 +59,7 @@ test("peer transport rejects unencrypted remote endpoints and malformed or overs
   }
 });
 
-test("pairing, per-task approval, original receipts and durable duplicate suppression", async t => {
+test("pairing, per-task approval, original receipts and in-memory duplicate suppression", async t => {
   const f = await fixture(t);
   assert.equal(f.a.binding.role, "controller");
   assert.equal(f.b.binding.role, "controlled");
@@ -76,8 +76,7 @@ test("pairing, per-task approval, original receipts and durable duplicate suppre
   assert(f.errors.some(error => /different content/.test(error)));
   assert.equal(f.runs, 1);
   const files = await fs.readdir(f.directory);
-  assert.equal(files.length, 1);
-  assert.equal(JSON.parse(await fs.readFile(path.join(f.directory, files[0]), "utf8")).receipt.state, "completed");
+  assert.equal(files.length, 0);
 });
 
 test("denial remains denied on duplicate delivery, without execution or a second approval", async t => {
@@ -169,36 +168,50 @@ test("original request cancellation aborts work and reports unknown effects rath
   assert.equal(f.runs, 1);
 });
 
-test("claimed interrupted tasks after Host recovery are never replayed", async t => {
+test("temporary task receipts never touch disk and completed duplicate requests stay suppressed", async t => {
   const f = await fixture(t);
   const id = f.a.submit("original");
   await until(() => f.a.receipts.get(id)?.state === "completed");
-  const [name] = await fs.readdir(f.directory), file = path.join(f.directory, name);
-  const record = JSON.parse(await fs.readFile(file, "utf8"));
-  record.receipt = { requestId: id, state: "running" };
-  await fs.writeFile(file, JSON.stringify(record));
+  assert.deepEqual(await fs.readdir(f.directory),[]);
   f.a.receipts.delete(id);
   f.a.submit("original", id);
-  await until(() => f.a.receipts.get(id)?.state === "unknown"
-    && /not replayed/.test(f.a.receipts.get(id)?.error || ""));
+  await until(() => f.a.receipts.get(id)?.state === "completed");
   assert.equal(f.runs, 1);
-  assert.match(f.a.receipts.get(id).error, /not replayed/);
 });
 
-test("two Hosts sharing a journal cannot execute the same task twice", async t => {
+test("a restarted Host has no pairing and rejects old tasks without disk recovery", async t => {
   let finish;
   const f = await fixture(t, { execute: async () => new Promise(resolve => { finish = resolve; }) });
   const id = f.a.submit("one side effect");
   await until(() => f.runs === 1);
   const receipts = [];
   const second = new PeerSession({ ...f.common, send: (_target, value) => receipts.push(value) });
-  second.binding = { ...f.b.binding };
   t.after(() => second.dispose());
-  await second.receive({ from: "controller", fromName: "controller", packet: packet("task", second.binding.pairId, id, { prompt: "one side effect" }) });
+  await second.receive({ from: "controller", fromName: "controller", packet: packet("task", f.b.binding.pairId, id, { prompt: "one side effect" }) });
   assert.equal(f.runs, 1);
-  assert.equal(receipts.at(-1).payload.state, "unknown");
+  assert.equal(receipts.length,0);
+  assert(f.errors.some(error=>/approved connection/.test(error)));
   finish({ effects: 1 });
   await until(() => f.a.receipts.get(id)?.state === "completed");
+});
+
+test("changed content is rejected during approval and task memory never evicts replay fingerprints",async t=>{
+  const f=await fixture(t);
+  let approve;
+  f.b.options.approveTask=async()=>new Promise(resolve=>{approve=resolve;});
+  const id=f.a.submit("approved content only");
+  await until(()=>approve);
+  await f.b.receive({from:"controller",fromName:"controller",packet:packet("task",f.b.binding.pairId,id,{prompt:"changed while pending"})});
+  assert(f.errors.some(error=>/different content/.test(error)));
+  assert.equal(f.runs,0);
+  approve(true);await until(()=>f.a.receipts.get(id)?.state==="completed"&&!f.b.processing.size);
+  while(f.b.tasks.size<1000)f.b.tasks.set(randomUUID(),{fingerprint:"previous",receipt:{state:"completed"}});
+  await f.b.receive({from:"controller",fromName:"controller",packet:packet("task",f.b.binding.pairId,randomUUID(),{prompt:"must not execute"})});
+  assert.equal(f.b.tasks.size,1000);
+  assert(f.errors.some(error=>/1,000-task limit/.test(error)));
+  f.a.submit("approved content only",id);
+  await new Promise(resolve=>setTimeout(resolve,20));
+  assert.equal(f.runs,1,"the earliest fingerprint still suppresses replay at capacity");
 });
 
 test("revocation while a local approval is pending prevents dispatch", async t => {
@@ -210,7 +223,8 @@ test("revocation while a local approval is pending prevents dispatch", async t =
   f.a.revoke();
   await until(() => !f.b.binding);
   decide(true);
-  await until(() => f.b.receipts.get(id)?.state === "cancelled");
+  await until(() => f.b.processing.size === 0);
+  assert.equal(f.b.receipts.size,0,"revoked connections retain no receipts");
   assert.equal(f.runs, 0);
 });
 

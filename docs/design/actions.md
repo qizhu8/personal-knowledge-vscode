@@ -34,6 +34,23 @@ Registration does not grant execution permission. Dependency discovery does not
 prove readiness. Linux acceptance does not qualify Windows. Exit code zero does
 not prove a remote transfer completed or an output contract was satisfied.
 
+Public agent authoring submits proposals, not formal registry writes. The Workbench
+lists pending proposals and existing/imported unapproved definitions separately
+from admitted Actions. The independent Library lists only admitted Actions.
+Clicking Validate in Workbench authorizes Agent code review, followed
+by consented smoke execution only after a passing review. Successful tests
+automatically admit/authorize the exact version; no separate manual grant or
+admission dialog is required. Updates
+keep the previous approved revision usable while pending, require a higher
+version and cannot overwrite approved implementation files in the Workbench.
+Admission rechecks the base revision, selected implementation, source fingerprints,
+environment and dependency revisions; the host rechecks Root/trust after tests.
+Qualification uses a staged registry so failed tests leave the previous approved
+definition untouched. Review failure/unavailability blocks code execution.
+Cancelling or rejecting never installs the proposal.
+Pipelines need admission too; no MCP or generic agent-dispatch approval tool is
+exposed. Built-in system components remain preinstalled exceptions.
+
 For the current machine-readable registration schema, non-executing definition
 check, working CLI/HTTP examples, host boundaries and remaining monitor
 limitations, see [Authoring Actions Through MCP](../guides/action-authoring.md).
@@ -64,14 +81,26 @@ destination and overwrite-conflict UX or live qualification acceptance.
 
 ### Action Library and nested authoring
 
-Automation's **Action Library** and `personalKnowledge.openActions` open the
-searchable Library in the existing Workbench. Search by identity, name,
-description or capability, inspect the original definition/I/O schemas/effects
-and implementations, select an implementation, qualify declared examples, or
-explicitly approve a typed invocation. Opening, searching and inspecting do not
-qualify or execute an Action. Package enable/disable is separate from permission.
+Automation's **Action Library** and `personalKnowledge.openActionLibrary` open
+an independent admitted-Action webview. Search by identity, name, folder or
+description, inspect I/O/effects and readiness, or explicitly approve a typed
+invocation. All admitted Actions remain visible even when not ready. Proposals
+do not appear here. Only an explicit **Open in Workbench** / Run link navigates
+to Workbench. The Library bridge rejects authoring and validation operations.
+`personalKnowledge.openActions` opens Workbench itself, not a Library modal.
+Workbench's **Review / test Actions** list owns proposals, implementation review,
+editing and qualification. Opening/searching does not qualify or execute.
 
-The inspector separates installation, enabled state, grant, qualification,
+**Validate all needed** snapshots the public Need Validation rows and exact
+proposal/hash pins. One effects confirmation and model selection starts sequential
+ordinary review/test/admission flows, not a special bulk approval path. Each
+item retains its own outcome; failure continues the remaining queue. Native
+orchestration rechecks Root/trust before each item and after review/testing.
+Cancellation before model selection runs nothing; unknown/interrupted results
+never trigger automatic smoke retries. Batch operations remain inaccessible to
+MCP/generic dispatch, just like single qualification orchestration.
+
+The Workbench inspector separates installation, enabled state, grant, qualification,
 environment and authoritative readiness. Ordinary qualification is checked against
 the definition hash, environment and expiry. Components need no operator grant;
 private platform grant status is explicitly **runtime-checked**, not a claim that
@@ -80,7 +109,7 @@ executor rechecks permission/readiness at launch. Its original Run history,
 inspection, checkpoints, cancellation/recovery and **Open in Project** routes
 remain the lifecycle authority.
 
-Input fields and advanced JSON stay synchronized. Editing clears approval.
+Workbench input fields and advanced JSON stay synchronized. Editing clears approval.
 The original launch key and exact inputs are saved before submission; an unknown
 response retains them across reload. Explicitly retrying that same submission
 reuses the original key rather than launching a replacement. Draft restoration

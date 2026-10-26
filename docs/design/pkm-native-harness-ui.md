@@ -81,9 +81,13 @@ are not invented learned-memory levels. Prepared references are blue and sent
 reference membership is green. An ID match in a historical sent manifest does
 not prove that the current mutable stored revision was sent.
 
-Opening the Memory detail tab lazily reads the existing scoped Memory overview;
-the four-thumbnail overview alone does not scan the database. Refresh is
-explicit, errors remain visible, and clicking a block reads its bounded evidence.
+The Memory thumbnail automatically reads one existing scoped Memory overview
+when the dashboard opens; no click or hover is required. The cached overview is
+reused across unchanged snapshots and is invalidated when recorded Memory
+turns/blocks change. Manual dashboard or stored-Memory refresh can also reread
+it. Loading and read failures are visible on the thumbnail; clicking a block
+still lazily reads only that piece's bounded evidence. Inspection does not invoke
+an inference or embedding model.
 The detailed Visualization view uses the same pyramid, with the inventory,
 provenance and source reader kept behind disclosure. Inventory expansion
 survives refresh. Native Agent Session webviews/browser pages use the existing

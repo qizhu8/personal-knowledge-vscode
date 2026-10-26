@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { imageSize } from "image-size";
 import { createHash } from "crypto";
-import { ChatTokenUsage, ThinkingBudget, checkReportedOutput, reportedReasoningTokens } from "./api-chat-models";
+import { ChatTokenUsage, ThinkingBudget, checkReportedOutput, reportedReasoningTokens, reportedCopilotUsage } from "./api-chat-models";
 import { ChatInferenceClock, ChatInferenceTiming } from "./chat-inference-timing";
 
 export interface ChatImage { label: string; mimeType: "image/png" | "image/jpeg"; dataBase64: string; }
@@ -282,7 +282,7 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
       activity();
       if (chunk.usage) {
         if (![chunk.usage.prompt_tokens, chunk.usage.completion_tokens].every(value => Number.isSafeInteger(value) && value >= 0)) throw new Error("The provider returned invalid token usage; no pending tool was executed.");
-        measuredUsage = { inputTokens: chunk.usage.prompt_tokens, outputTokens: chunk.usage.completion_tokens, cachedInputTokens: chunk.usage.prompt_tokens_details?.cached_tokens, ...reportedReasoningTokens(chunk.usage) };
+        measuredUsage = { inputTokens: chunk.usage.prompt_tokens, outputTokens: chunk.usage.completion_tokens, cachedInputTokens: chunk.usage.prompt_tokens_details?.cached_tokens, ...reportedReasoningTokens(chunk.usage), ...reportedCopilotUsage(chunk.usage) };
         request.onUsage?.(measuredUsage);
       }
       const choice = chunk.choices[0];

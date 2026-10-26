@@ -52,6 +52,9 @@ test("built Agent Session tree retains empty Chats without false expansion and s
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.setContent('<main id="tree" aria-label="Agent Sessions"></main>');
+  await page.addStyleTag({path:path.join(root,"src/webview/panel.css")});
+  await page.addStyleTag({content:'#tree{width:300px}.agent-session-list{width:300px}'});
+  await page.locator("#tree").evaluate(node=>node.classList.add("agent-session-list"));
   await page.addScriptTag({ content: `
     const projectSnapshot = { agentSessionGroups: [
       { groupId:'empty', hostSessionId:'079bf2d9-f761-4a46-9a00-662f05ce9f16', hostKind:'pkm', libraryGroupId:'research', libraryGroupTitle:'Research', title:'Empty Chat', portal:{connected:false,binding:{role:'controlled'}} },
@@ -74,11 +77,17 @@ test("built Agent Session tree retains empty Chats without false expansion and s
       {sessionId:'task-parent', groupId:'parent', task:'Parent Task'}
     ]);
   ` });
+  const category = page.locator('.tree-cat-hdr[title="chat-library:research"]');
+  assert.equal(await category.getAttribute("aria-expanded"), "false");
+  await category.press("Enter");
   const empty = page.locator('.tree-cat-hdr[title="empty"]');
   assert.equal(await empty.getAttribute("role"), "group");
   assert.equal(await empty.getAttribute("aria-expanded"), null);
   assert.equal(await empty.locator(".tree-cat-arrow").innerText(), "");
-  assert.match(await empty.innerText(), /Empty Chat.*No Task/s);
+  assert.match(await empty.innerText(), /Empty Chat/);
+  assert.match(await empty.locator(".agent-session-chat-title").getAttribute("title"),/No Task · Chat history is separate/);
+  assert(await empty.evaluate(node=>node.getBoundingClientRect().height<=36),"Chat entries must stay on one compact line with production list CSS");
+  assert(await empty.getByRole("button",{name:"Open Chat Dashboard: Empty Chat"}).evaluate(node=>node.getBoundingClientRect().height<=24));
   assert.equal(await empty.locator(".tree-cat-count").innerText(), "0 Tasks");
   assert.equal(await empty.locator(".agent-session-pkm-icon").count(), 1);
   assert.equal(await empty.evaluate(node => node.nextElementSibling === null), true);
@@ -87,11 +96,20 @@ test("built Agent Session tree retains empty Chats without false expansion and s
   assert.equal(await page.evaluate(() => selectedChat), "079bf2d9-f761-4a46-9a00-662f05ce9f16");
   await empty.getByRole("button", { name: "Chat Group actions" }).click();
   assert.equal(await page.evaluate(() => menuTarget), "empty");
+  await page.evaluate(()=>{
+    projectSnapshot.agentSessionGroups[0].title="A very long Windows controlled Chat title that must never create a multi-line card";
+    document.getElementById("tree").innerHTML=agentSessionTree([{sessionId:"task-parent",groupId:"parent",task:"Parent Task"}]);
+  });
+  assert(await empty.evaluate(node=>node.getBoundingClientRect().height<=36));
+  assert(await page.locator("#tree").evaluate(node=>node.scrollWidth<=node.clientWidth),"long Chat titles must not overflow the sidebar");
   const parent = page.locator('.tree-cat-hdr[title="parent"]');
-  assert.equal(await parent.getAttribute("aria-expanded"), "true", "A parent with only empty worker Chats is still expandable");
+  assert.equal(await parent.getAttribute("aria-expanded"), "false", "A parent with children defaults to collapsed");
   const worker = page.locator('.tree-cat-hdr[title="worker"]');
   assert.equal(await worker.getAttribute("aria-expanded"), null);
   await parent.focus();
+  await page.keyboard.press("Enter");
+  assert.equal(await parent.getAttribute("aria-expanded"), "true");
+  assert.equal(await worker.isVisible(), true);
   await page.keyboard.press("Enter");
   assert.equal(await parent.getAttribute("aria-expanded"), "false");
   assert.equal(await worker.isVisible(), false);
@@ -162,6 +180,7 @@ test("ordinary Chat selection mounts its real read-only dashboard, survives refr
     }
   ` });
   assert.equal(await page.locator("#native-agent-harness h2").innerText(), "Existing managed Task");
+  await page.locator('.tree-cat-hdr[title="chat-library:ungroup"]').press("Enter");
   await page.getByRole("button", {name:"Open Chat Dashboard: First Chat",exact:true}).press("Enter");
   assert.equal(await page.locator("#native-agent-harness h2").innerText(), "First Chat");
   assert.match(await page.locator(".agent-session-content > .agent-session-group-binding").innerText(), /does not create a managed Task/);
@@ -179,6 +198,7 @@ test("ordinary Chat selection mounts its real read-only dashboard, survives refr
   await page.getByRole("heading", {name:"Second Chat persisted",exact:true}).waitFor();
   assert.equal(await page.getByRole("heading", {name:"STALE First Chat",exact:true}).count(), 0);
   assert.match(await page.locator(".pkm-harness-warning").innerText(), /Chat-only execution view/);
+  await page.locator('.tree-cat-hdr[title="managed"]').press("Enter");
   await page.getByRole("button", {name:/Existing managed Task/}).first().press("Enter");
   assert.equal(await page.locator("#native-agent-harness h2").innerText(), "Existing managed Task");
   assert.deepEqual(await page.evaluate(() => requests.map(request => ({

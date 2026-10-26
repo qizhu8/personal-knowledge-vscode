@@ -6,6 +6,11 @@ const vm = require("node:vm");
 const root = path.join(__dirname, "..");
 const projects = fs.readFileSync(path.join(root, "src/webview/panel/15-projects.js"), "utf8");
 const knowledge = fs.readFileSync(path.join(root, "src/webview/panel/20-knowledge.js"), "utf8");
+const initialCollapse = projects.match(/^let agentSessionTreeCollapsed = .*;$/m)[0];
+const collapsedByDefault = saved => new Function("vscode", `${initialCollapse}; return agentSessionTreeCollapsed;`)({getState:() => saved});
+assert.equal(collapsedByDefault(undefined),true,"The Agent Sessions CatTree sidebar defaults to collapsed");
+assert.equal(collapsedByDefault({agentSessionTreeCollapsed:false}),false,"An explicit expanded preference is preserved");
+assert.equal(collapsedByDefault({agentSessionTreeCollapsed:true}),true);
 const group = (id, chat, category, title, extra = {}) => ({
   groupId: id, hostSessionId: chat, hostKind: "pkm", libraryGroupId: category,
   libraryGroupTitle: title, title: chat, ...extra,
@@ -72,7 +77,7 @@ assert.doesNotMatch(emptyRow, /aria-expanded|toggleCat|chevron-down|chevron-righ
 for (const name of ["manager", "worker", "existing", "chat-library:research"]) {
   const row = rendered.match(new RegExp(`<div class="tree-cat-hdr[^>]*title="${name}"[^>]*>[\\s\\S]*?<\\/div>`))?.[0];
   assert(row, `${name} stays visible`);
-  assert.match(row, /aria-expanded="true"/, `${name} has real children`);
+  assert.match(row, /aria-expanded="false"/, `${name} has real children but defaults to collapsed`);
 }
 assert.match(rendered, /agent-session-row/);
 assert.doesNotMatch(rendered, /title="deleted"/);
@@ -81,7 +86,7 @@ assert.equal(context.agentSessionTree([], true), "", "Archived empty Chats are n
 context.projectSnapshot.agentSessionGroups.push(group("parent-empty", "Parent", "writing", "Writing", { workerTreeId: "empty-tree" }),
   group("child-empty", "Child", "writing", "Writing", { workerTreeId: "empty-tree", workerParentChatId: "Parent" }));
 const emptyWorkers = context.agentSessionTree([]);
-assert.match(emptyWorkers, /aria-expanded="true"[^>]*title="parent-empty"/, "Parent with only a worker Chat is expandable");
+assert.match(emptyWorkers, /aria-expanded="false"[^>]*title="parent-empty"/, "Parent with only a worker Chat is expandable but defaults to collapsed");
 assert.match(emptyWorkers, /role="group"[^>]*title="child-empty"/, "No Task worker is a Chat leaf");
 const genericEmpty = context.renderCatTree({ folders: { Empty: { folders: {}, items: [] } }, items: [] },
   [], 0, () => "", "", null, null, { renderFolderLabel: name => name });

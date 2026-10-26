@@ -1,4 +1,8 @@
 .pkm-harness { color:var(--vscode-foreground,#dce5ee); background:var(--vscode-editor-background,#17212b); font:14px system-ui,sans-serif; padding:16px; min-width:0; box-sizing:border-box; }
+.pkm-persona-cards { min-width:0; overflow-wrap:anywhere; }
+.pkm-persona-cards section { padding:10px 0; border-bottom:1px solid var(--vscode-panel-border,#556779); }
+.pkm-persona-cards dt { font-weight:600; margin-top:8px; }
+.pkm-persona-cards dd { margin:4px 0; white-space:pre-wrap; }
 .pkm-harness * { box-sizing:border-box; }
 .pkm-harness-dashboard { container-type:inline-size; }
 .pkm-harness-diagnostics { width:100%; max-height:210px; overflow:auto; border:1px solid var(--vscode-panel-border,#556779); border-radius:6px; padding:8px 10px; margin-bottom:12px; }
@@ -21,6 +25,8 @@
 .pkm-harness :is(.pkm-harness-diagram-card,.pkm-harness-diagram-thumbnail) [data-status=running] rect { stroke:var(--vscode-progressBar-background,#3794ff); }
 .pkm-harness :is(.pkm-harness-diagram-card,.pkm-harness-diagram-thumbnail) text { fill:var(--vscode-foreground,#dce5ee); font:12px system-ui,sans-serif; }
 .pkm-harness-diagram-card > small { display:block; margin:6px 0; }
+.pkm-harness-diagram-card :is(dd,pre,p) { overflow-wrap:anywhere; white-space:pre-wrap; }
+.pkm-harness-diagram-card dd { margin-inline-start:16px; }
 .pkm-harness-preview-edge { fill:none; stroke:var(--vscode-focusBorder,#70c2ff); stroke-width:2; }
 .pkm-harness-flow-preview { list-style:none; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px 22px; margin:10px 0; padding:0; }
 .pkm-harness-flow-preview li { min-width:0; position:relative; }

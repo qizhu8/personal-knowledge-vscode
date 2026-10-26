@@ -43,6 +43,13 @@ html=html.replaceAll('%%I18N_PAYLOAD_B64%%',Buffer.from(JSON.stringify({setting:
     window.acquireVsCodeApi=()=>({getState:()=>window.__state,setState:value=>{window.__state=value;return value},postMessage:message=>{
      window.__requests.push(message);
      if(message.command==='duplicatePanel')window.__duplicates.push(message.state);
+     if(message.command==='userProfile')deliver({command:'userProfile',data:{scope:'Private Host cards',user:{name:'Automation user',revision:1,preferences:'Explicit preferences'}}});
+     if(message.command==='projectState')deliver({command:'projectState',data:{projects:[],agentSessions:[],agentSessionGroups:[
+      {groupId:'profile-chat',hostSessionId:'11111111-1111-4111-8111-111111111111',hostKind:'pkm',title:'Profile Chat'}
+     ]}});
+     if(message.command==='nativeHarness')deliver({command:'nativeHarnessResult',requestId:message.requestId,data:
+      message.method==='profiles'?{scope:'Private Host cards',agentAssigned:true,agent:{name:'Session reviewer',revision:2,focus:'Review this session'}}:
+      {sessionId:message.params.chatId,origin:'pkm-native',task:'Profile Chat',status:'unknown',harness:{attempts:[]},profileReader:true}});
      if(message.command==='actionWorkbenchDocument')deliver({command:'actionWorkbenchDocument',html:documentHtml});
      if(message.command==='actionWorkbenchRequest'){
       window.__actionRequests.push(message.message);
@@ -126,6 +133,24 @@ html=html.replaceAll('%%I18N_PAYLOAD_B64%%',Buffer.from(JSON.stringify({setting:
    const box=await network.boundingBox();assert(box&&box.x>=0&&box.x+box.width<=width+1,`${theme}/${width}: server network selector remains reachable: ${JSON.stringify(box)}`);
   }
   await themeAudit.close();
+  const profiles=await pageFor({tab:'userProfile',workspace:'settings'});
+  await profiles.getByText('Automation user · revision 1',{exact:true}).waitFor();
+  assert.equal(await profiles.evaluate(()=>state.workspace),'automation','restoring the old Settings entry migrates to Automation');
+  assert.equal(await profiles.locator('[data-workspace-group="settings"] [data-tab="userProfile"]').count(),0);
+  await profiles.locator('.workspace-button[data-workspace="automation"]').click();
+  await profiles.locator('.tab[data-tab="agentSessions"]').click();
+  await profiles.waitForFunction(()=>projectSnapshot?.agentSessionGroups?.length===1);
+  assert.deepEqual(errors,[]);
+  await profiles.getByRole('button',{name:'Restore category tree',exact:true}).click();
+  await profiles.locator('.tree-cat-hdr').filter({hasText:'Ungroup'}).click();
+  await profiles.getByRole('button',{name:'Open Chat Dashboard: Profile Chat',exact:true}).click();
+  await profiles.getByRole('button',{name:'Session Profile',exact:true}).click();
+  const sessionProfile=profiles.getByRole('region',{name:'Current User and Agent Session Profiles'});
+  await sessionProfile.getByText('Session reviewer · r2',{exact:true}).waitFor();
+  await sessionProfile.getByRole('button',{name:'Manage Session Profile',exact:true}).click();
+  assert.deepEqual(await profiles.evaluate(()=>window.__requests.filter(r=>r.command==='agentSessionConfigure').map(r=>({sessionId:r.sessionId,section:r.section}))),
+   [{sessionId:'11111111-1111-4111-8111-111111111111',section:'profiles'}]);
+  assert.equal(await profiles.evaluate(()=>window.__requests.some(r=>['send','api_chat_send'].includes(r.command))),false);
   assert.deepEqual(await second.evaluate(()=>window.__cspViolations),[]);
   const child=second.frames().find(frame=>frame.parentFrame());assert(child);assert.deepEqual(await child.evaluate(()=>window.__cspViolations),[],'embedded renderer must satisfy CSP');
   assert.deepEqual(errors,[]);
