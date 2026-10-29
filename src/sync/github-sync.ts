@@ -1635,7 +1635,9 @@ async function localGitRoot(storeRoot: string): Promise<string | undefined> {
   let directory = path.resolve(storeRoot);
   for (;;) {
     if (fs.existsSync(path.join(directory, ".git"))) {
-      return git(directory, ["rev-parse", "--show-toplevel"]);
+      await git(directory, ["rev-parse", "--show-toplevel"]);
+      // Git resolves root symlinks; relative catalog paths must retain the caller's namespace.
+      return directory;
     }
     const parent = path.dirname(directory);
     if (parent === directory) return undefined;

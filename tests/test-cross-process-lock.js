@@ -8,6 +8,7 @@ const { withCrossProcessLockSync } = require("../dist/runtime/cross-process-lock
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-cross-process-lock-"));
 const lockPath = path.join(root, "projects.lock");
+const releasedPath = path.join(root, "released");
 const waitArray = new Int32Array(new SharedArrayBuffer(4));
 
 function waitForFile(file, timeoutMs = 3000) {
@@ -33,14 +34,27 @@ try {
 
   const child = spawn(process.execPath, ["-e", `
     const fs = require("fs");
+    const path = require("path");
     const lock = process.argv[1];
     fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, nonce: "child", acquiredAt: Date.now(), owner: "Project store" }));
-    setTimeout(() => { fs.unlinkSync(lock); process.exit(0); }, 300);
-  `, lockPath], { stdio: "ignore" });
+    const timeout = setTimeout(() => { throw new Error("No competing lock attempt"); }, 3000);
+    const waiting = setInterval(() => {
+      if (!fs.readdirSync(path.dirname(lock)).some(name => name.startsWith(path.basename(lock) + ".") && name.endsWith(".pending"))) return;
+      clearInterval(waiting);
+      clearTimeout(timeout);
+      setTimeout(() => {
+        fs.writeFileSync(process.argv[2], "released");
+        fs.unlinkSync(lock);
+        process.exit(0);
+      }, 100);
+    }, 10);
+  `, lockPath, releasedPath], { stdio: "ignore" });
   waitForFile(lockPath);
   const startedAt = Date.now();
-  assert.strictEqual(withCrossProcessLockSync(lockPath, "Project store", () => "waited"), "waited");
-  assert(Date.now() - startedAt >= 200, "a live competing window should receive a brief chance to release the lock");
+  assert.strictEqual(withCrossProcessLockSync(lockPath, "Project store", () => {
+    assert(fs.existsSync(releasedPath), "a live competing window must release its lock before another writer enters");
+    return "waited";
+  }), "waited");
   assert(Date.now() - startedAt < 2000, "lock acquisition should continue as soon as the other window releases it");
   child.unref();
 

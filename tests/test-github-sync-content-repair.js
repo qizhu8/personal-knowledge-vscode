@@ -74,6 +74,11 @@ const candidate = "#CS\r\nvoid Run() {}\r\n#ENDCS\r\n";
     fs.writeFileSync(source, text);
     catalog.scripts.push({ id: name, cat: "", label: name, source, destination: `scripts/${name}.script` });
   }
+  const rootAlias = path.join(root, "root-alias");
+  fs.symlinkSync(root, rootAlias, "junction");
+  assert.deepEqual([...await sync.githubSyncExcludedPaths(rootAlias, [
+    "scripts/Ignored.script", "scripts/Empty.script",
+  ])], ["scripts/Ignored.script"], "ignore evaluation must preserve a symlinked Knowledge Root's path namespace");
   const target = sync.normalizeGitHubSyncTarget({ id: "primary", name: "Primary", repository: path.join(root, "nonexistent-remote.git") });
   const checkouts = path.join(root, "checkouts");
   catalog.recipes.push({ id: legacy.recipeId, cat: "Examples", label: "Legacy", isPrivate: false,

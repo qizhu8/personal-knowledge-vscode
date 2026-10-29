@@ -14,6 +14,8 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Changes since 3.2.151
 
+- Preserve the Knowledge Root's logical path when evaluating Git ignore rules, including macOS temporary-directory aliases and symlinked Roots.
+
 - Complete cache-usage and automatic-reference labels across all 11 supported UI languages. Refresh privacy-safe release media against the current settings tabs and manifest version.
 
 - Compact Router into a connected runtime graph with hover explanations and one node-selected Parameters / Controls / Graphs / Metrics inspector. Keep real tuning controls, route-scoped plots, keyboard navigation and selection/focus/scroll across refreshes; remove the prose-heavy overview.

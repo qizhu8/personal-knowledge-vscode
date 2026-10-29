@@ -166,6 +166,11 @@ pending operations or active callbacks remains an explicit uncertain-work error.
 
 ## Remote replacement workflow
 
+Git ignore evaluation keeps the repository root and catalog paths in the same
+logical path namespace. Git's canonicalized root must not be mixed with a
+symlinked Knowledge Root or a macOS temporary-directory alias; otherwise valid
+members can appear outside the repository or beyond a symbolic link.
+
 1. Fetch a read-only snapshot in an independent Git cache. Validate the current
    manifest and exact blob digests, missing/omitted members, schemas, Script
    identities and tombstone consistency. Historical Base newline exceptions are
