@@ -42,6 +42,8 @@ The workflow builds its own VSIX from the selected commit and refuses a version 
 It installs both Python and Node Playwright browsers before the full release gate;
 the Node dependency is declared in `devDependencies` so clean `npm ci` installs
 can run JavaScript browser tests. Browser suites run serially to limit contention.
+`PKM_TEST_PYTHON` is bound to the setup-python output, not a developer's local
+managed test environment.
 
 ## Verify
 

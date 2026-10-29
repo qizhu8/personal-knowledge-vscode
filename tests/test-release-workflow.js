@@ -62,6 +62,8 @@ assert(workflow.indexOf("- name: Install Node browser test runtime") < workflow.
   "Node browser setup must precede release validation");
 assert(workflow.includes("PKM_BROWSER_CONCURRENCY: 1"),
   "release validation must retain the verified serialized browser plan");
+assert(workflow.includes("id: python") && workflow.includes("PKM_TEST_PYTHON: ${{ steps.python.outputs.python-path }}"),
+  "release tests must use the configured runner Python, not a developer-only virtualenv");
 assert(workflow.includes("PKM_STARTUP_SCENARIO_BUDGET_MS: 20000"),
   "release validation must allow bounded cold-runner startup overhead");
 
