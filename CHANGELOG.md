@@ -15,6 +15,7 @@ This project follows [Semantic Versioning](https://semver.org/).
 ### Changes since 3.2.151
 
 - Preserve the Knowledge Root's logical path when evaluating Git ignore rules, including macOS temporary-directory aliases and symlinked Roots.
+- Reserve Windows lock destinations exclusively before publishing directory locks, so a live legacy file lock cannot be overwritten.
 
 - Complete cache-usage and automatic-reference labels across all 11 supported UI languages. Refresh privacy-safe release media against the current settings tabs and manifest version.
 

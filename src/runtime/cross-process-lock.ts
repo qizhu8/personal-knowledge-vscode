@@ -49,11 +49,23 @@ function lockAttempt(lockPath: string, owner: string): { acquire: () => boolean;
   }
   return {
     acquire: () => {
-      // Publishing a nonempty directory is exclusive on Windows and POSIX.
-      // Reapers remove only the observed nonce member, never a successor's lock.
-      try { fs.renameSync(staging, lockPath); return true; }
+      let reserved = false;
+      try {
+        // Windows rename can replace a legacy file lock; reserve the destination first.
+        if (process.platform === "win32") {
+          fs.linkSync(path.join(staging, member), lockPath);
+          reserved = true;
+        }
+        fs.renameSync(staging, lockPath);
+        return true;
+      }
       catch (error: any) {
         if (!["EEXIST", "ENOTEMPTY", "EPERM", "EACCES", "ENOTDIR", "EISDIR"].includes(error?.code)) throw error;
+      } finally {
+        if (reserved) {
+          try { if (fs.lstatSync(lockPath).isFile()) unlinkWithRetry(lockPath); }
+          catch (error: any) { if (error?.code !== "ENOENT") throw error; }
+        }
       }
       let stat: fs.Stats;
       try { stat = fs.lstatSync(lockPath); }
