@@ -45,6 +45,7 @@ jobs:
           cache: npm
 
       - name: Set up Python
+        id: python
         if: inputs.mode == 'publish'
         uses: actions/setup-python@v7
         with:
@@ -80,6 +81,7 @@ jobs:
         env:
           PKM_STARTUP_SCENARIO_BUDGET_MS: 20000
           PKM_BROWSER_CONCURRENCY: 1
+          PKM_TEST_PYTHON: ${{ steps.python.outputs.python-path }}
         run: npm run test:release
 
       - name: Package VSIX
