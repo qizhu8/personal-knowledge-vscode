@@ -39,6 +39,9 @@ The workflow has no push, tag, release, or scheduled trigger. Publishing occurs 
 6. Select `publish` and enter the exact manifest version.
 
 The workflow builds its own VSIX from the selected commit and refuses a version mismatch.
+It installs both Python and Node Playwright browsers before the full release gate;
+the Node dependency is declared in `devDependencies` so clean `npm ci` installs
+can run JavaScript browser tests. Browser suites run serially to limit contention.
 
 ## Verify
 
