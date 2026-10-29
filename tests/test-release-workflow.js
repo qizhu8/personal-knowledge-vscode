@@ -54,6 +54,14 @@ assert(workflow.includes('"playwright>=1.47.0,<2.0.0"'),
   "release validation must install the Python Playwright dependency used by browser tests");
 assert(workflow.includes("python -m playwright install --with-deps chromium"),
   "release validation must install Chromium and its runner dependencies");
+assert(require("../package.json").devDependencies.playwright,
+  "npm ci must install Node Playwright for JavaScript browser tests");
+assert(workflow.includes("run: npx playwright install --with-deps chromium"),
+  "release validation must install the browser matching Node Playwright");
+assert(workflow.indexOf("- name: Install Node browser test runtime") < workflow.indexOf("- name: Build and validate"),
+  "Node browser setup must precede release validation");
+assert(workflow.includes("PKM_BROWSER_CONCURRENCY: 1"),
+  "release validation must retain the verified serialized browser plan");
 assert(workflow.includes("PKM_STARTUP_SCENARIO_BUDGET_MS: 20000"),
   "release validation must allow bounded cold-runner startup overhead");
 
