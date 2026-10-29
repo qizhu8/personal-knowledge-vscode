@@ -215,8 +215,8 @@ async function main() {
     const descriptor = readMetadata(persistenceOptions);
     assert.strictEqual(descriptor.protocol, api.PKM_SERVICE_PROTOCOL);
     const identity = api.pkmServiceIdentity(persistenceOptions);
-    assert.strictEqual(fs.statSync(identity.serviceDirectory).mode & 0o077, 0);
     if (process.platform !== "win32") {
+      assert.strictEqual(fs.statSync(identity.serviceDirectory).mode & 0o077, 0);
       assert(fs.statSync(identity.endpoint).isSocket());
       assert.strictEqual(fs.statSync(path.dirname(identity.endpoint)).mode & 0o077, 0);
       assert(Buffer.byteLength(identity.endpoint) < 100);
@@ -227,6 +227,8 @@ async function main() {
       bad.write(oversized);
       await closed;
       assert(live(descriptor.pid), "oversized frames must close only the offending peer");
+    } else {
+      assert(identity.endpoint.startsWith("\\\\.\\pipe\\pkm-sync-"), "Windows service IPC must use its named-pipe endpoint");
     }
     await Promise.all(hosts.map(disposeHost));
     assert(live(descriptor.pid), "independent service survives all original hosts exiting");
