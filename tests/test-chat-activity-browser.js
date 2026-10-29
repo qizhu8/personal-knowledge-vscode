@@ -115,6 +115,20 @@ test("Chat shows tokens and exact provider credits independently, including zero
   assert.match(await message.locator(".message-credits").getAttribute("title"), /Memory and workers are accounted separately/);
   await message.locator(".activity > summary").click();
   assert.match(await message.locator(".activity-usage").innerText(), /123 in \/ 45 out.*1\.000000001 credits/);
+  assert.match(await message.locator(".activity-usage").innerText(), /Cache usage not reported/);
+  for (const cached of [0, 100]) {
+    await page.evaluate(cached => {
+      window.__state.chat.messages[0].budgetReceipts[0].ledger.providerUsage.cachedInputTokens = cached;
+      window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+    }, cached);
+    assert.match(await message.locator(".activity-usage").textContent(), new RegExp(`${cached} cached input`));
+    assert.equal(await message.locator(".message-credits").innerText(), "1.000000001 credits");
+  }
+  await page.evaluate(() => {
+    window.__state.chat.messages[0].budgetReceipts[0].ledger.providerUsage.cachedInputTokens = 124;
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  assert.match(await message.locator(".activity-usage").textContent(), /Cache usage not reported/);
   await page.evaluate(() => {
     Object.assign(window.__state.chat.messages[0].creditUsage, { status:"partial", reportedCalls:1, totalCalls:2, credits:"0", totalNanoAiu:"0" });
     window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
@@ -126,6 +140,7 @@ test("Chat shows tokens and exact provider credits independently, including zero
   }, { locale:"zh-hans", english:JSON.parse(fs.readFileSync(path.join(__dirname, "../resources/locales/en.json"))).strings,
     strings:JSON.parse(fs.readFileSync(path.join(__dirname, "../resources/locales/zh-hans.json"))).strings });
   assert.equal(await message.locator(".message-credits").innerText(), "0 Credit（不完整：1/2 次调用）");
+  assert.match(await message.locator(".activity-usage").textContent(), /未报告缓存用量/);
   await page.evaluate(() => {
     delete window.__state.chat.messages[0].creditUsage;
     window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
@@ -429,6 +444,33 @@ for (const width of [360, 1280]) test(`Activity categories preserve chronology, 
   assert.deepEqual(errors, []);
 });
 
+test("running activity is expanded and collapses once the run finishes", async t => {
+  const { page, errors } = await open(t, 360);
+  await page.evaluate(() => {
+    const now = Date.now();
+    window.__state.chat.progress = { attemptId:"fold-attempt", startedAt:now, status:"running", steps:[{ label:"Thinking", status:"running", startedAt:now }] };
+    window.__state.busy = true;
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  const live = page.locator('.activity[data-attempt="fold-attempt"]').first();
+  assert.equal(await live.evaluate(node => node.open), true);
+  await page.waitForTimeout(50);
+  await page.evaluate(() => {
+    const now = Date.now();
+    const progress = { attemptId:"fold-attempt", startedAt:now - 1000, finishedAt:now, status:"complete", steps:[{ label:"Thinking", status:"complete", startedAt:now - 1000 }] };
+    window.__state.chat.progress = undefined;
+    window.__state.chat.messages = [{ id:"fold-message", role:"assistant", status:"complete", content:"Done", progress }];
+    window.__state.busy = false;
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  const finished = page.locator('[data-message-id="fold-message"] .activity[data-attempt="fold-attempt"]');
+  assert.equal(await finished.evaluate(node => node.open), false);
+  await finished.locator(":scope > summary").click();
+  await page.evaluate(() => window.dispatchEvent(new MessageEvent("message", { data:window.__state })));
+  assert.equal(await finished.evaluate(node => node.open), true, "a finished activity the user expands stays expanded");
+  assert.deepEqual(errors, []);
+});
+
 test("queued message editing preserves draft and focus across completion and requires host hold acknowledgement", async t => {
   const { page, errors } = await open(t, 360);
   await page.evaluate(() => {
@@ -722,6 +764,76 @@ test("short Chat pages expose earlier user messages without requiring a scroll e
   assert.deepEqual(errors, []);
 });
 
+test("latest Chat follows layout growth and Portal updates only while the reader stays at the bottom", async t => {
+  const { page, errors } = await open(t);
+  const messages = page.locator("#messages");
+  await page.evaluate(() => {
+    __state.chat.messages = [{ id:"follow-reply", role:"assistant", content:"Latest output\n\n".repeat(100), status:"streaming" }];
+    window.dispatchEvent(new MessageEvent("message", { data:__state }));
+  });
+  const atBottom = () => page.waitForFunction(() => {
+    const node = document.getElementById("messages");
+    return node.scrollHeight - node.clientHeight - node.scrollTop <= 1;
+  }, undefined, { timeout: 3000 });
+  await atBottom();
+  await page.evaluate(() => {
+    const content = document.querySelector("#messages .content");
+    const delayed = document.createElement("div");
+    delayed.id = "delayed-chat-layout"; delayed.style.height = "220px";
+    content.append(delayed);
+  });
+  await atBottom();
+  await page.setViewportSize({ width:390, height:550 });
+  await atBottom();
+  await page.setViewportSize({ width:900, height:900 });
+  await atBottom();
+  await page.waitForTimeout(60);
+  await page.evaluate(id => window.dispatchEvent(new MessageEvent("message", { data:{
+    type:"delta", chatId:id, id:"follow-reply", text:"Progress after enlarging the window\n\n".repeat(12),
+  } })), chatId);
+  await page.waitForFunction(() => document.getElementById("messages").textContent.includes("Progress after enlarging"));
+  await atBottom();
+  await page.evaluate(() => {
+    if (document.getElementById("delayed-chat-layout")) return;
+    const delayed = document.createElement("div");
+    delayed.id = "delayed-chat-layout"; delayed.style.height = "220px";
+    document.querySelector("#messages .content").append(delayed);
+  });
+  await atBottom();
+  await messages.hover();
+  await page.mouse.wheel(0, -180);
+  await page.waitForFunction(() => {
+    const node = document.getElementById("messages");
+    return node.scrollHeight - node.clientHeight - node.scrollTop > 100;
+  });
+  const top = await messages.evaluate(node => node.scrollTop);
+  await page.evaluate(() => { document.getElementById("delayed-chat-layout").style.height = "440px"; });
+  await page.waitForTimeout(100);
+  assert(Math.abs(await messages.evaluate(node => node.scrollTop) - top) <= 1, "Delayed layout must not move a history reader");
+  await page.evaluate(() => {
+    __state.chat.portalCommands = [{ requestId:"follow-command", role:"controlled", peerName:"Windows",
+      command:{ program:"cmd", arguments:["/c","echo progress"], timeoutSeconds:30 }, startedAt:Date.now(), updatedAt:Date.now(), state:"running" }];
+    window.dispatchEvent(new MessageEvent("message", { data:__state }));
+  });
+  assert(Math.abs(await messages.evaluate(node => node.scrollTop) - top) <= 1, "Portal updates must preserve history position");
+  await messages.evaluate(node => { node.scrollTop = node.scrollHeight; });
+  await atBottom();
+  await page.waitForTimeout(60);
+  await page.evaluate(() => {
+    __state.chat.messages.push({ id:"follow-new", role:"assistant", content:"New progress\n\n".repeat(15), status:"complete" });
+    window.dispatchEvent(new MessageEvent("message", { data:__state }));
+  });
+  await atBottom();
+  await page.evaluate(() => {
+    Object.assign(__state.chat.portalCommands[0], { state:"completed",
+      result:{ exitCode:0, stdout:"Portal task progress\n".repeat(60), stderr:"" }, updatedAt:Date.now() });
+    window.dispatchEvent(new MessageEvent("message", { data:__state }));
+  });
+  await atBottom();
+  assert.match(await page.locator('[data-portal-command="follow-command"]').innerText(), /Completed/);
+  assert.deepEqual(errors, []);
+});
+
 test("upward mouse wheel is not pulled back to the bottom by streaming updates", async t => {
   const { page, errors } = await open(t);
   await page.evaluate(() => {
@@ -1003,11 +1115,13 @@ test("terminal wizards sleep side-on at a desk with animated zZZ; failures keep 
     const { page } = await open(t);
     const results = await page.evaluate(() => {
       const results = [];
-      for (const role of [undefined, "manager", "worker", "controller", "controlled"]) for (const state of ["completed", "new-result", "failed", "running", "stopped"]) {
+      for (const role of [undefined, "manager", "worker", "controller", "controlled"]) for (const state of ["completed", "new-result", "failed", "running", "paused", "stopped"]) {
         const node = window.PkmChatStatusIndicator(state, role);
         document.body.append(node);
         results.push({ state, role, label:node.getAttribute("aria-label"), stateAttr:node.dataset.state,
           sleeping:node.classList.contains("wizard-sleeping"), sooty:node.classList.contains("wizard-sooty"),
+          onBreak:node.classList.contains("wizard-on-break"), cup:!!node.querySelector(".wizard-break-cup"),
+          steam:node.querySelectorAll(".wizard-break-steam").length,
           zzz:node.querySelector(".wizard-zzz")?.textContent, eyes:node.querySelectorAll(".wizard-eye").length,
           facing:node.querySelector("svg")?.dataset.facing, desk:!!node.querySelector(".wizard-desk"),
           face:node.querySelector(".wizard-face") && Number(node.querySelector(".wizard-face").getAttribute("width")) * Number(node.querySelector(".wizard-face").getAttribute("height")),
@@ -1031,6 +1145,12 @@ test("terminal wizards sleep side-on at a desk with animated zZZ; failures keep 
         assert.equal(result.sooty, true); assert.equal(result.eyes, 2); assert(result.face <= 42);
         assert.equal(result.light, "rgb(239, 108, 108)"); assert.notEqual(result.lightDisplay, "none");
         assert.deepEqual(result.lightPosition, ["0px", "0px"]); assert.equal(result.lightShape, "50%");
+      } else if (["paused", "stopped"].includes(result.state)) {
+        assert.equal(result.onBreak, true); assert.equal(result.cup, true); assert.equal(result.steam, 2);
+        assert.equal(result.sleeping, false); assert.equal(result.sooty, false); assert.equal(result.zzz, undefined);
+        assert.equal(result.stateAttr, result.state, "Paused and Stopped remain distinct states");
+        assert.equal(result.light, result.state === "paused" ? "rgb(227, 179, 65)" : "rgb(157, 163, 168)");
+        assert.equal(result.lightShape, "50%");
       }
       else { assert.equal(result.sleeping, false); assert.equal(result.sooty, false); }
     }
@@ -1059,6 +1179,60 @@ test("terminal wizards sleep side-on at a desk with animated zZZ; failures keep 
     assert.deepEqual(animation, ["none", "none", "none", "none"]);
 });
 
+test("paused wizards take a tea break, animate gently, honor reduced motion and appear in Portal status", async t => {
+  const { page, errors } = await open(t, 390);
+  await page.evaluate(() => {
+    window.__state.chat.paused = true;
+    window.__state.chats[0].status = window.__state.library.chats[0].status = "paused";
+    window.dispatchEvent(new MessageEvent("message", {data:window.__state}));
+  });
+  assert.equal(await page.locator('#chat-status .wizard-on-break[data-state="paused"]').count(), 1);
+  assert.equal(await page.locator('.chat-list-open .wizard-on-break[data-state="paused"]').count(), 1);
+  assert.equal(await page.locator("#send").getAttribute("aria-label"), "Resume Chat");
+  await page.locator("#send").click();
+  assert.equal(await page.evaluate(() => __posts.filter(item => item.type === "resume").length), 1,
+    "the new status animation does not change resume behavior");
+  const frames = () => page.locator("#chat-status .wizard-break-breathe, #chat-status .wizard-break-steam")
+    .evaluateAll(nodes => nodes.map(node => getComputedStyle(node).transform));
+  const before = await frames();
+  await page.waitForTimeout(260);
+  const after = await frames();
+  assert.equal(before.length, 3);
+  assert(before.every((value, index) => value !== after[index]), "body and both steam wisps actually animate");
+  await page.evaluate(async () => {
+    document.body.classList.add("chat-backgrounded");
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
+  const frozen = await frames();
+  await page.waitForTimeout(180);
+  assert.deepEqual(await frames(), frozen, "tea-break animation freezes in background views");
+  await page.evaluate(() => document.body.classList.remove("chat-backgrounded"));
+  await page.emulateMedia({reducedMotion:"reduce"});
+  assert.deepEqual(await page.locator("#chat-status .wizard-break-breathe, #chat-status .wizard-break-steam, #chat-status .wizard-eye")
+    .evaluateAll(nodes => nodes.map(node => getComputedStyle(node).animationName)), ["none", "none", "none", "none", "none"]);
+  await page.emulateMedia({reducedMotion:"no-preference"});
+  for (const role of ["controller", "controlled"]) {
+    await page.evaluate(role => {
+      window.__state.portal = {connected:true, binding:{role, peerName:"Fixture peer"}};
+      window.dispatchEvent(new MessageEvent("message", {data:window.__state}));
+    }, role);
+    const indicator = page.locator("#chat-status .wizard-on-break");
+    assert.equal(await indicator.getAttribute("data-state"), "paused");
+    assert.match(await indicator.getAttribute("aria-label"), new RegExp(`${role}.*Paused`, "i"));
+    assert.equal(await page.locator("#chat-portal .portal-open").count(), 1,
+      "pausing changes the Chat status, not the Portal connection");
+  }
+  await page.evaluate(() => {
+    window.__state.chat.paused = false;
+    window.__state.chats[0].status = window.__state.library.chats[0].status = "running";
+    window.dispatchEvent(new MessageEvent("message", {data:window.__state}));
+  });
+  assert.equal(await page.locator("#chat-status .wizard-on-break").count(), 0);
+  assert.equal(await page.locator("#chat-status .portal-open").count(), 1, "resuming restores the Portal status scene");
+  assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth+1));
+  assert.deepEqual(errors, []);
+});
+
 test("old cancelled responses show an understandable stopped notice, not an error or unexplained square", async t => {
   const { page, errors } = await open(t);
   await page.evaluate(() => {
@@ -1072,9 +1246,11 @@ test("old cancelled responses show an understandable stopped notice, not an erro
   assert.equal(await page.getByRole("button", { name:/Retry response in place/ }).count(), 1);
   const indicator = await page.evaluate(() => {
     const node = window.PkmChatStatusIndicator("stopped"); document.body.append(node);
-    return { label:node.getAttribute("aria-label"), fill:getComputedStyle(node, "::before").backgroundImage };
+    return { label:node.getAttribute("aria-label"), fill:getComputedStyle(node, "::before").backgroundImage,
+      resting:node.classList.contains("wizard-on-break"), light:getComputedStyle(node, "::before").backgroundColor };
   });
-  assert.equal(indicator.label, "Stopped"); assert.match(indicator.fill, /linear-gradient/);
+  assert.equal(indicator.label, "Stopped"); assert.equal(indicator.fill, "none");
+  assert.equal(indicator.resting, true); assert.equal(indicator.light, "rgb(157, 163, 168)");
   await page.evaluate(localization => {
     window.__state.localization = localization;
     window.__state.chat.messages[0].error = "Response stopped. Earlier tool actions were not undone. Review their results before retrying.";
@@ -1172,6 +1348,29 @@ test("model activity distinguishes rounds and reserves waiting labels for the cu
   assert.deepEqual(errors, []);
 });
 
+test("advertised tools are listed first and the running event is last with a blue dot", async t => {
+  const { page, errors } = await open(t, 600);
+  await page.evaluate(() => {
+    const now = Date.now() - 3000;
+    const progress = { attemptId:"order-attempt", startedAt:now, status:"running", tools:["read_file", "run_process"], steps:[
+      { label:"Generating response", kind:"model", round:0, at:now, status:"complete" },
+      { label:"Waiting for first output", kind:"model", round:1, at:now + 1000, status:"running" },
+    ] };
+    window.__state.busy = true;
+    window.__state.chat.progress = progress;
+    window.__state.chat.messages = [{ id:"order", role:"assistant", status:"streaming", content:"", progress, reasoningSummaries:[{ round:1, text:"Compare both files first." }] }];
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
+  const rows = page.locator('[data-message-id="order"] .workflow-events > li:not(.activity-availability):not(.activity-planned)');
+  assert.match(await rows.first().innerText(), /Tools available to the model \(2\)/);
+  assert.equal(await rows.first().getAttribute("data-status"), "context");
+  assert.match(await rows.last().innerText(), /Model round 2: Waiting for model response \(the model may be reasoning\) · running/);
+  const dot = await rows.last().locator(".workflow-dot").evaluate(node => getComputedStyle(node).backgroundColor);
+  assert.equal(dot, "rgb(55, 148, 255)", "running dot uses the theme's chart blue");
+  assert.match(await rows.last().locator(".activity-thinking").innerText(), /Thinking: …Compare both files first\./);
+  assert.deepEqual(errors, []);
+});
+
 test("live activity starts readable and expanded, preserves collapse and separates reported reasoning usage", async t => {
   const { page, errors } = await open(t, 390);
   await page.evaluate(() => {
@@ -1197,7 +1396,7 @@ test("live activity starts readable and expanded, preserves collapse and separat
   assert.match(await activity.locator(":scope > summary").innerText(), /Read src\/main.ts, lines 94-130/);
   assert.equal(await tool.locator(".activity-usage").innerText(), "");
   const model = activity.locator(".activity-event").filter({ hasText:"Model round 1: Model response received" });
-  assert.equal(await model.locator(".activity-usage").innerText(), "100 in / 20 out · 7 reasoning");
+  assert.equal(await model.locator(".activity-usage").innerText(), "100 in / 20 out · 7 reasoning · Cache usage not reported");
   assert.match(await model.locator(".activity-usage").getAttribute("title"), /included in output/);
   await activity.locator(":scope > summary").click();
   await page.waitForTimeout(20);
@@ -1258,7 +1457,7 @@ for (const width of [1280, 390, 320]) test(`activity rows contain their own deta
   assert.equal(await tool.locator("img").count(), 0);
   assert.equal(await page.evaluate(() => Boolean(window.__unsafe)), false);
   const model = details.filter({ hasText:"Model round 1: Model response received" });
-  assert.equal(await model.locator(".activity-usage").innerText(), "100 in / 20 out");
+  assert.equal(await model.locator(".activity-usage").innerText(), "100 in / 20 out · Cache usage not reported");
   const order = await model.locator("summary").evaluate(node => [...node.children].map(child => child.className));
   assert(order.indexOf("activity-usage") < order.indexOf("elapsed"));
   await model.locator("summary").click();
@@ -1378,5 +1577,159 @@ test("disconnected Portal hides stale endpoint/receipts and connected details om
   assert.equal(await page.locator("#portal-state").isVisible(),false);
   assert.equal(await page.locator("#portal-state").textContent(),"");
   assert.equal(await page.locator("#chat-portal").getAttribute("aria-pressed"),"false");
+  assert.deepEqual(errors,[]);
+});
+
+test("Portal file transfers appear before folder selection, update in place and show verified receipt", async t => {
+  const {page,errors}=await open(t,390);
+  await page.evaluate(()=>{
+    __state.chat.messages=[
+      {id:"before",role:"user",status:"complete",content:"Transfer the package",recordedAt:"2026-01-01T00:00:00.000Z"},
+      {id:"after",role:"assistant",status:"complete",content:"Offered",recordedAt:"2026-01-01T00:10:00.000Z"}];
+    __state.chat.portalTransfers=[{transferId:"00000000-0000-4000-8000-000000000001",
+      direction:"incoming",peerName:"Linux peer",state:"awaiting-approval",bytes:0,totalBytes:100,
+      files:[{name:"<b>package</b>.vsix",size:100,sha256:"a".repeat(64)}],
+      startedAt:"2026-01-01T00:05:00.000Z",updatedAt:"2026-01-01T00:05:00.000Z"}];
+    window.dispatchEvent(new MessageEvent("message",{data:__state}));
+  });
+  const card=page.locator("article.portal-transfer");
+  assert.match(await card.innerText(),/Choose a destination folder, then approve/);
+  assert.deepEqual(await page.$$eval("#messages > article",nodes=>nodes.map(node=>node.dataset.messageId||"transfer")),["before","transfer","after"]);
+  assert.equal(await card.locator("b").count(),0);
+  await page.evaluate(()=>{
+    Object.assign(__state.chat.portalTransfers[0],{state:"transferring",bytes:50});
+    window.dispatchEvent(new MessageEvent("message",{data:__state}));
+  });
+  assert.equal(await card.count(),1);
+  assert.equal(await card.locator("progress").getAttribute("value"),"50");
+  await page.evaluate(()=>{
+    Object.assign(__state.chat.portalTransfers[0],{state:"completed",bytes:100,savedPaths:["C:\\Received\\package.vsix"]});
+    window.dispatchEvent(new MessageEvent("message",{data:__state}));
+  });
+  assert.match(await card.innerText(),/Completed · receipt verified/);
+  assert.match(await card.innerText(),/C:\\Received\\package.vsix/);
+  assert.match(await card.innerText(),/No automatic installation or execution/);
+  await page.evaluate(()=>{
+    Object.assign(__state.chat.portalTransfers[0],{direction:"outgoing",state:"offered",bytes:0,savedPaths:undefined});
+    window.dispatchEvent(new MessageEvent("message",{data:__state}));
+  });
+  assert.match(await card.innerText(),/Waiting for receiver to choose a folder and approve/);
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+  assert.deepEqual(errors,[]);
+});
+
+test("Portal direct commands appear in the Chat timeline with status, command line and visible output", async t => {
+  const {page,errors}=await open(t,390);
+  await page.evaluate(()=>{
+    __state.chat.messages=[
+      {id:"before",role:"user",status:"complete",content:"Debug Windows",recordedAt:"2026-01-01T00:00:00.000Z"},
+      {id:"after",role:"assistant",status:"complete",content:"Diagnosed",recordedAt:"2026-01-01T00:10:00.000Z"}];
+    __state.chat.portalCommands=[{requestId:"00000000-0000-4000-8000-000000000001",role:"controlled",peerName:"yuwang8@linux",
+      program:"C:\\Python\\python.exe",arguments:["-c","print('<b>hi</b>')"],timeoutSeconds:90,state:"failed",
+      startedAt:"2026-01-01T00:05:00.000Z",updatedAt:"2026-01-01T00:05:09.000Z",exitCode:1,stdout:"<script>bad()</script>",stderr:"SSLError",truncated:true}];
+    window.dispatchEvent(new MessageEvent("message",{data:__state}));
+  });
+  const order=await page.$$eval("#messages > article",nodes=>nodes.map(node=>node.dataset.messageId||`cmd:${node.dataset.portalCommand}`));
+  assert.deepEqual(order,["before","cmd:00000000-0000-4000-8000-000000000001","after"],"commands interleave by time");
+  const card=page.locator("article.portal-command");
+  assert.match(await card.innerText(),/Portal command ← yuwang8@linux/);
+  assert.match(await card.innerText(),/Failed · exit 1/);
+  assert.match(await card.locator(".portal-command-line").innerText(),/python\.exe -c "print\('<b>hi<\/b>'\)"/);
+  assert.match(await card.locator(".portal-command-terminal").innerText(),/<script>bad\(\)<\/script>[\s\S]*SSLError/);
+  assert.equal(await card.locator(".portal-command-terminal").isVisible(),true);
+  assert.equal(await page.locator("article.portal-command script, article.portal-command b").count(),0,"output is text, never HTML");
+  await page.evaluate(()=>{
+    __state.chat.portalCommands.push({requestId:"00000000-0000-4000-8000-000000000002",role:"controller",peerName:"yuwang8@DESKTOP",
+      program:"cmd.exe",arguments:["/c","ver"],timeoutSeconds:60,state:"unknown",detail:"Sent to transport; awaiting executing Host authorization.",
+      startedAt:"2026-01-01T00:20:00.000Z",updatedAt:"2026-01-01T00:20:00.000Z"});
+    window.dispatchEvent(new MessageEvent("message",{data:__state}));
+  });
+  assert.match(await page.locator("#messages > article").last().innerText(),/Portal command → yuwang8@DESKTOP[\s\S]*Outcome unknown/);
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+  assert.deepEqual(errors,[]);
+});
+
+test("Portal command terminal cards distinguish every reported state without inferring completion from stderr", async t => {
+  const {page,errors}=await open(t,360);
+  const states=[
+    ["awaiting-approval","Awaiting approval",undefined,undefined],
+    ["running","Running",undefined,undefined],
+    ["completed","Completed",0,"warning on stderr"],
+    ["failed","Failed",1,"command failed"],
+    ["denied","Declined",undefined,undefined],
+    ["cancelled","Cancelled",undefined,undefined],
+    ["unknown","Outcome unknown",0,"result not received"],
+  ];
+  await page.evaluate(states=>{
+    __state.chat.portalCommands=states.map(([state,_label,exitCode,stderr],index)=>({
+      requestId:`terminal-${index}`,role:"controller",peerName:"Windows peer",program:"pwsh.exe",
+      arguments:["-NoProfile","<script>alert(1)</script>"],cwd:"C:\\Users\\Public\\work",timeoutSeconds:30,
+      state,...(exitCode===undefined?{}:{exitCode}),...(stderr?{stderr}:{}),
+      startedAt:new Date(Date.UTC(2026,0,1,0,index)).toISOString(),
+      updatedAt:new Date(Date.UTC(2026,0,1,0,index)).toISOString(),
+    }));
+    window.dispatchEvent(new MessageEvent("message",{data:__state}));
+  },states);
+  const cards=page.locator("article.portal-command");
+  assert.equal(await cards.count(),states.length);
+  for(let index=0;index<states.length;index++){
+    const [state,label,exitCode]=states[index];
+    const card=cards.nth(index);
+    assert.equal(await card.getAttribute("data-portal-command"),`terminal-${index}`);
+    assert.equal(await card.getAttribute("aria-label"),`Portal command → Windows peer · ${label}`);
+    assert.match(await card.locator(".portal-command-status").getAttribute("aria-label"),new RegExp(`Status: ${label}`));
+    assert.match(await card.locator(".portal-command-status").innerText(),new RegExp(label));
+    assert(await card.evaluate((node,state)=>node.classList.contains(`portal-command-${state}`),state));
+    if(exitCode!==undefined) assert.match(await card.locator(".portal-command-status").innerText(),new RegExp(`exit ${exitCode}`));
+    assert.match(await card.locator(".portal-command-line").innerText(),/^\$\s+pwsh\.exe/);
+    assert.match(await card.locator(".portal-command-meta").innerText(),/C:\\Users\\Public\\work[\s\S]*30s/);
+  }
+  assert.match(await cards.nth(2).locator(".portal-command-status").innerText(),/Completed · exit 0/,
+    "stderr does not override the explicit successful state");
+  assert.equal(await cards.nth(2).locator(".portal-command-status").innerText().then(text=>/Failed/.test(text)),false);
+  assert.match(await cards.nth(6).locator(".portal-command-status").innerText(),/Outcome unknown · exit 0/,
+    "an exit code alone does not turn an unknown result into completion");
+  assert.equal(await cards.nth(2).locator(".portal-command-terminal").isVisible(),true,
+    "output is visible without expanding a disclosure");
+  assert.equal(await page.locator("article.portal-command script").count(),0,"command text is rendered safely");
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+  assert.deepEqual(errors,[]);
+});
+
+test("Portal output uses one 20-percent viewport terminal and shows the latest results", async t => {
+  const {page,errors}=await open(t,390);
+  await page.evaluate(()=>{
+    __state.chat.portalCommands=[{requestId:"bounded-terminal",role:"controlled",peerName:"Linux",
+      program:"cmd",arguments:["/c","echo test"],timeoutSeconds:15,state:"running",
+      startedAt:"2026-01-01T00:05:00.000Z",updatedAt:"2026-01-01T00:05:01.000Z",
+      stdout:Array.from({length:200},(_,i)=>`stdout ${i}`).join("\n"),
+      stderr:Array.from({length:100},(_,i)=>`stderr ${i}`).join("\n"),detail:"latest detail"}];
+    window.dispatchEvent(new MessageEvent("message",{data:__state}));
+  });
+  const terminal=page.locator(".portal-command-terminal");
+  const check=async()=>{
+    const metrics=await terminal.evaluate(node=>({
+      height:node.getBoundingClientRect().height,viewport:innerHeight,
+      overflow:node.scrollHeight>node.clientHeight,
+      bottom:node.scrollHeight-node.clientHeight-node.scrollTop,
+    }));
+    assert(Math.abs(metrics.height-metrics.viewport*0.2)<=1,"one terminal is exactly 20% of the viewport");
+    assert(metrics.overflow,"long output scrolls inside the terminal");
+    assert(metrics.bottom<=1,"new output shows the latest result");
+    assert.equal(await terminal.count(),1,"stdout, stderr and detail share one scrolling area");
+  };
+  await check();
+  for(const height of [500,1000]){
+    await page.setViewportSize({width:390,height});
+    assert(Math.abs(await terminal.evaluate(node=>node.getBoundingClientRect().height-innerHeight*0.2))<=1);
+    await page.evaluate(()=>{
+      __state.chat.portalCommands[0].stdout+="\n"+Array(300).fill("more output").join("\n");
+      __state.chat.portalCommands[0].detail="newest result";
+      window.dispatchEvent(new MessageEvent("message",{data:__state}));
+    });
+    await check();
+  }
+  assert.match(await terminal.innerText(),/newest result/);
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
   assert.deepEqual(errors,[]);
 });

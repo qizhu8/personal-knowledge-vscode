@@ -37,8 +37,10 @@ not prove a remote transfer completed or an output contract was satisfied.
 Public agent authoring submits proposals, not formal registry writes. The Workbench
 lists pending proposals and existing/imported unapproved definitions separately
 from admitted Actions. The independent Library lists only admitted Actions.
-Clicking Validate in Workbench authorizes Agent code review, followed
-by consented smoke execution only after a passing review. Successful tests
+Clicking Validate in Workbench requests Agent risk information, followed
+by smoke execution after the user confirms the risks and exact test scope.
+Exact bundled core revisions use deterministic environment self-tests without a model.
+Successful tests
 automatically admit/authorize the exact version; no separate manual grant or
 admission dialog is required. Updates
 keep the previous approved revision usable while pending, require a higher
@@ -46,7 +48,11 @@ version and cannot overwrite approved implementation files in the Workbench.
 Admission rechecks the base revision, selected implementation, source fingerprints,
 environment and dependency revisions; the host rechecks Root/trust after tests.
 Qualification uses a staged registry so failed tests leave the previous approved
-definition untouched. Review failure/unavailability blocks code execution.
+definition untouched. Agent findings do not veto user-authorized operations.
+An unavailable/incomplete assessment is explicitly disclosed for confirmation.
+Cancellation, missing consent, stale revisions, invalid execution conditions and
+failed tests still prevent admission. Readiness means environment tests passed,
+not that the Action is certified safe.
 Cancelling or rejecting never installs the proposal.
 Pipelines need admission too; no MCP or generic agent-dispatch approval tool is
 exposed. Built-in system components remain preinstalled exceptions.
@@ -82,8 +88,14 @@ destination and overwrite-conflict UX or live qualification acceptance.
 ### Action Library and nested authoring
 
 Automation's **Action Library** and `personalKnowledge.openActionLibrary` open
-an independent admitted-Action webview. Search by identity, name, folder or
-description, inspect I/O/effects and readiness, or explicitly approve a typed
+the **Action Library** view inside the existing PKM extension panel, not a separate
+editor tab. The searchable, resizable category tree mirrors Workbench navigation:
+expand/collapse nested folders, navigate with arrow keys, and select a clearly
+highlighted Action with its readiness badge. Search, expansion, selection and tree
+width restore without executing Actions; Library and Workbench keep separate UI
+state, scoped to the current Knowledge Root. The command explicitly reopens the
+Library renderer; ordinary tab switching retains it. Search by identity, name,
+folder or description, inspect I/O/effects and readiness, or explicitly approve a typed
 invocation. All admitted Actions remain visible even when not ready. Proposals
 do not appear here. Only an explicit **Open in Workbench** / Run link navigates
 to Workbench. The Library bridge rejects authoring and validation operations.
@@ -200,11 +212,11 @@ rejected as transport failures. MCP Run records retain their existing execution
 Validation uses isolated fixture stores and mock programs only:
 
 ```sh
-.venv/bin/python tests/test-action-durable-runs.py
-.venv/bin/python tests/test-action-modules.py
-.venv/bin/python tests/test-action-runtime.py
-.venv/bin/python tests/test-action-workbench.py
-.venv/bin/python tests/test-action-recovery-e2e.py
+~/pkm-envs/personal-knowledge-vscode-dev/bin/python tests/test-action-durable-runs.py
+~/pkm-envs/personal-knowledge-vscode-dev/bin/python tests/test-action-modules.py
+~/pkm-envs/personal-knowledge-vscode-dev/bin/python tests/test-action-runtime.py
+~/pkm-envs/personal-knowledge-vscode-dev/bin/python tests/test-action-workbench.py
+~/pkm-envs/personal-knowledge-vscode-dev/bin/python tests/test-action-recovery-e2e.py
 npm run build
 node tests/test-chat-action-recovery-e2e.js
 node tests/test-action-browser.js
@@ -1012,14 +1024,32 @@ For example, a `core.for` body can use Math Expression:
 }
 ```
 
+### Component Implementations
+
+Stateless components (`core.constant`, `core.cast`, `core.lookup`,
+`core.file-path`, `core.math-expression`) ship Python, JavaScript and TypeScript
+implementations with identical semantics. Python is the default. A pipeline step
+selects another with `"implementation": "javascript"` or `"typescript"`; the
+Workbench shows an **Implementation** selector on those blocks. JavaScript runs
+`action_components.js`; TypeScript is compiled with the extension and runs its
+JavaScript output, so no compiler is needed at runtime. Both run in the
+VS Code-provided Node runtime. Control-flow, timing and interaction components
+run only in the host (Python) and reject other implementations.
+
+The host still validates inputs and outputs and resolves `pkm://` and
+`${module_assets}` paths. JavaScript/TypeScript differences: integers beyond
+±(2^53−1) are rejected; nested integral floats are returned as integers; `~user`
+paths are unsupported.
+
 Each iteration receives a distinct deterministic child invocation key. Action
 effects and readiness remain enforced inside selected branches and loop bodies.
 
 User Action requests persist with the Run, including requests from descendant
 Actions. Qualification uses the explicitly declared `test_choice`; real execution
-waits for a live answer, cancellation or deadline. The Workbench opens
-`@pkm-actions` in native VS Code Chat on hosts supporting Chat Participants
-(VS Code 1.91+). VS Code 1.90 and the browser preview use the Workbench's chat area.
+waits for a live answer, cancellation or deadline. Both native VS Code and browser
+Workbench use the Workbench's inline chat forms. PKM does not register deprecated
+Chat Participants; agent access uses the existing PKM MCP provider instead.
+The legacy answer command remains supported and opens the original Run in Workbench.
 No QuickPick, InputBox or system-level notification asks for the choice. Responses
 are checked against the declared options and current run state.
 

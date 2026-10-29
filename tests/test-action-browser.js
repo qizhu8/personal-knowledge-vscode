@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 const root = path.join(__dirname, "..");
-let handler, listener, disposal, trusted = true, healthy = true;
+let listener, disposal, trusted = true, healthy = true;
 let domains = ["automation"], nextResult = { ok: true, requests: [] };
 let storePath = "/isolated/test/store";
 let workspaceRoots = { linux: root };
@@ -12,6 +12,7 @@ const baselineEvents = [];
 let profiling = false;
 let serviceHook;
 let accelerateReviewTimeout = false;
+let confirmationHook;
 const disposable = { dispose() {} };
 const authoringRequests = {
   group_create: { name: "Tools", parent: "" },
@@ -25,14 +26,14 @@ const authoringRequests = {
 };
 const webview = { cspSource: "vscode-webview:", html: "", asWebviewUri: uri => String(uri),
   onDidReceiveMessage(callback) { listener = callback; return disposable; },
-  async postMessage(message) { replies.push(message); } };
+  async postMessage(message) { replies.push(message); if (message.progress?.confirmation) confirmationHook?.(message.progress.confirmation, message); } };
 const vscode = {
   version: "1.100.0",
   lm: {}, LanguageModelChatMessage: {}, CancellationTokenSource: class {}, ProgressLocation: {},
   env: { async asExternalUri(uri) { return uri; }, async openExternal(uri) { executions.push(["external", String(uri)]); return true; } },
   workspace: { get isTrusted() { return trusted; }, getConfiguration: () => ({ get: key => key === "loadProfilingEnabled" ? profiling : workspaceRoots,
     async update(key, value, target) { assert.strictEqual(key, "actions.workspaceRoots"); assert.strictEqual(target, 1); workspaceRoots = value; } }) },
-  chat: { createChatParticipant(id, callback) { assert.strictEqual(id, "personalKnowledge.actions"); handler = callback; return disposable; } },
+  chat: { createChatParticipant() { throw Error("Deprecated Chat Participants must not be registered"); } },
   commands: { registerCommand(id, callback) { commands.set(id, callback); return disposable; },
     async executeCommand(...args) { executions.push(args); } },
   window: { createWebviewPanel: () => ({ webview, onDidDispose(callback) { disposal = callback; }, ...disposable }),
@@ -69,28 +70,37 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
 
 (async () => {
   const context = { extensionUri: root, extensionPath: root, globalStorageUri: { fsPath: "/isolated/global" }, subscriptions: [] };
-  moduleExports.initializeActionChat(context);
+  moduleExports.initializeActionCommands(context);
+  const manifest = require("../package.json");
+  assert.strictEqual(manifest.contributes.chatParticipants, undefined);
+  assert(manifest.contributes.mcpServerDefinitionProviders.some(provider => provider.id === "personalKnowledge.pkm"));
   const runId = "action_run_" + "a".repeat(32), requestId = "choice_" + "b".repeat(32);
-  const stream = { messages: [], buttons: [], markdown(value) { this.messages.push(value); }, button(value) { this.buttons.push(value); } };
-  nextResult = { ok: true, requests: [{ run_id: runId, request_id: requestId, prompt: "Choose", options: [{ label: "First" }, { label: "Second" }] }] };
-  await handler({ prompt: runId }, {}, stream, { isCancellationRequested: false });
-  assert.strictEqual(stream.buttons.length, 2);
-  assert.deepStrictEqual(Array.from(stream.buttons[1].arguments), [runId, requestId, 1]);
-  assert.strictEqual(serviceCalls.at(-1).method, "choices");
   nextResult = { ok: true };
-  await commands.get("personalKnowledge.answerActionChoice")(...stream.buttons[1].arguments);
+  const beforeChoiceAnswer = executions.length;
+  await commands.get("personalKnowledge.answerActionChoice")(runId, requestId, 1);
   assert.deepStrictEqual(serviceCalls.at(-1), { method: "answer_choice", params: { run_id: runId, request_id: requestId, index: 1 } });
-  assert.strictEqual(executions.at(-1)[0], "workbench.action.chat.open");
+  assert.strictEqual(executions.length, beforeChoiceAnswer, "answer must not navigate to deprecated native Chat");
+  assert(webview.html.includes(runId), "answer must open Workbench for the original Run");
   await assert.rejects(commands.get("personalKnowledge.answerActionChoice")(runId, requestId, -1), /Invalid/);
   trusted = false;
   await assert.rejects(commands.get("personalKnowledge.answerActionChoice")(runId, requestId, 1), /trusted/);
   trusted = true;
   const beforeLibraryNavigation = executions.length;
+  const beforeLibraryHtml = webview.html;
   moduleExports.openActionLibrary(context);
-  assert.match(webview.html, /<title>Action Library<\/title>/);
-  assert(!webview.html.includes('id="canvas"'));
-  assert.match(webview.html, /script-src 'nonce-[a-f0-9]+'/);
-  assert.strictEqual(executions.length, beforeLibraryNavigation, "opening Library must not navigate to Workbench");
+  assert.strictEqual(executions.length, beforeLibraryNavigation + 1);
+  assert.strictEqual(executions.at(-1)[0], "personalKnowledge.openEmbeddedActionLibrary");
+  assert.strictEqual(webview.html, beforeLibraryHtml, "Library must not create another editor webview");
+  const libraryHtml = moduleExports.renderEmbeddedActionLibrary(context, { knowledgeRoot: storePath, selection: "test.authoring", query: "</script>" });
+  assert.match(libraryHtml, /<title>Action Library<\/title>/);
+  assert(!libraryHtml.includes('id="canvas"'));
+  assert.match(libraryHtml, /script-src 'nonce-[a-f0-9]+'/);
+  assert.match(libraryHtml, /\\u003c\/script>/);
+  assert.match(libraryHtml, /knowledgeRoot:"\/isolated\/test\/store"/);
+  const foreignLibrary = moduleExports.renderEmbeddedActionLibrary(context, { knowledgeRoot: "/other-root", launch: { run_id: "foreign-run" } });
+  assert(!foreignLibrary.includes("foreign-run"), "another Root's launch must not resume observation");
+  const workbenchListener = listener;
+  listener = message => moduleExports.handleActionLibraryMessage(context, { knowledgeRoot: "/isolated/test/store", ...message }, reply => replies.push(reply));
   nextResult = { ok: true, actions: [{ action_id: "test.authoring" }], proposals: [{ proposal_id: "hidden" }], pending_admissions: ["hidden"] };
   await listener({ requestId: "library-catalog", method: "catalog" });
   assert.deepStrictEqual(JSON.parse(JSON.stringify(replies.at(-1).result)), { ok: true, actions: [{ action_id: "test.authoring" }] });
@@ -109,6 +119,9 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
   await listener({ requestId: "library-root", method: "catalog" });
   assert.match(replies.at(-1).result.error, /Root changed/);
   storePath = "/isolated/test/store";
+  await listener({ requestId: "library-no-root", knowledgeRoot: undefined, method: "call" });
+  assert.match(replies.at(-1).result.error, /Root changed/);
+  listener = workbenchListener;
   moduleExports.openActionWorkbench(context, runId, undefined, true);
   assert.strictEqual(executions.at(-1)[0], "personalKnowledge.openEmbeddedActions", "legacy commands focus the embedded view");
   assert.strictEqual(executions.at(-1)[1].runId, runId);
@@ -199,6 +212,19 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
   vscode.ProgressLocation={Notification:15};
   vscode.window.showQuickPick=async items=>items[0];
   vscode.window.withProgress=async(options,callback)=>callback({report(){}});
+  let riskDecision="Run these tests";
+  const riskNotices=[];
+  const previousWarning=vscode.window.showWarningMessage;
+  vscode.window.showWarningMessage=async(message,options,...choices)=>{
+    assert(!choices.includes("Run these tests"),"Workbench webviews confirm risks with the inline card, not a native modal");
+    return previousWarning(message,options,...choices);
+  };
+  const riskCards=[];
+  confirmationHook=(confirmation,message)=>{
+    riskCards.push({confirmation,message});riskNotices.push(JSON.stringify(confirmation.items));
+    for(const item of confirmation.items)assert.deepStrictEqual(Array.from(Object.keys(item)).sort(),["action_id","content_hash","effects","examples","incomplete","issues","model","summary"]);
+    Promise.resolve().then(()=>listener({requestId:"risk-decision",method:"review_decision",params:{decision_id:confirmation.id,run:riskDecision==="Run these tests"}}));
+  };
   const savedReviewResult=nextResult;
   nextResult={...nextResult,state:"tested",attempt_id:"attempt_"+"c".repeat(32),definition:{action_id:trustParams.action_id,effects:["pure"]},sources:{},snapshot_hash:"snapshot"};
   beforeTrust=serviceCalls.length;
@@ -207,6 +233,13 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
   assert.deepStrictEqual(serviceCalls.slice(beforeTrust).map(call=>call.method),["qualification_review","qualification_execute","qualification_admit"]);
   assert.strictEqual(serviceCalls.at(-2).params.report.model,"fixture:fixture");
   assert.strictEqual(modelCalls,1);
+  assert.strictEqual(serviceCalls.at(-2).params.report.user_confirmed,true);
+  const beforeSelfTestModels=modelCalls;
+  nextResult={...nextResult,validation_kind:"environment-self-test"};
+  await listener({requestId:"core-self-test",method:"validate",params:trustParams});
+  assert.strictEqual(modelCalls,beforeSelfTestModels,"bundled core must not call a model");
+  assert.strictEqual(serviceCalls.at(-2).params.report.model,"pkm:environment-self-test");
+  delete nextResult.validation_kind;
   let modelSelections=0;
   vscode.window.showQuickPick=async items=>{modelSelections++;return items[0]};
   const beforeBatch=serviceCalls.length;
@@ -225,12 +258,18 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
   ]}});
   assert.strictEqual(modelSelections,1,"a batch selects its model once");
   const batchResult=replies.at(-1).result;
-  assert.deepStrictEqual(Array.from(batchResult.results,item=>item.state),["failed","succeeded"]);
-  assert.match(batchResult.results[0].error,/First item rejected/);
-  assert.deepStrictEqual(serviceCalls.slice(beforeBatch).map(item=>item.method),["qualification_review","qualification_review","qualification_execute","qualification_admit"]);
+  assert.deepStrictEqual(Array.from(batchResult.results,item=>item.state),["succeeded","succeeded"]);
+  assert(riskNotices.some(notice=>notice.includes("Missing source")));
+  assert.deepStrictEqual(serviceCalls.slice(beforeBatch).map(item=>item.method),["qualification_review","qualification_review","qualification_execute","qualification_admit","qualification_execute","qualification_admit"],
+    "every Action is assessed before any smoke test runs");
+  const batchCard=riskCards.at(-1);
+  assert.strictEqual(batchCard.message.requestId,"validate-batch");
+  assert.deepStrictEqual(Array.from(batchCard.confirmation.items,item=>item.action_id),["batch.first","batch.second"],"a batch asks once for all Actions");
+  assert.strictEqual(riskCards.filter(card=>card.message.requestId==="validate-batch").length,1);
+  assert.strictEqual(batchCard.message.progress.stage,"Awaiting your confirmation");
   assert.strictEqual(serviceCalls.at(-2).params.proposal_id,"proposal_second");
   const batchProgress = replies.filter(item=>item.requestId==="validate-batch"&&item.progress).map(item=>item.progress);
-  assert(batchProgress.some(item=>item.completed===1&&item.result?.state==="failed"));
+  assert(batchProgress.some(item=>item.completed===1&&item.result?.state==="succeeded"));
   assert(batchProgress.some(item=>item.action_id==="batch.second"&&item.stage.startsWith("Smoke tests")));
   assert.strictEqual(batchProgress.at(-1).completed,2);
   const originalModels=vscode.lm.selectChatModels;
@@ -254,9 +293,10 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
     ]}});
     accelerateReviewTimeout=false;
     const result=replies.at(-1).result;
-    assert.deepStrictEqual(Array.from(result.results,item=>item.state),["failed","succeeded"]);
-    assert.match(result.results[0].error,/timed out after 3 minutes/);
-    assert.deepStrictEqual(serviceCalls.slice(start).map(item=>item.method),["qualification_review","qualification_review","qualification_execute","qualification_admit"]);
+    assert.deepStrictEqual(Array.from(result.results,item=>item.state),["succeeded","succeeded"]);
+    assert(riskNotices.some(notice=>notice.includes("timed out after 3 minutes")));
+    assert.deepStrictEqual(serviceCalls.slice(start).map(item=>item.method),["qualification_review","qualification_review","qualification_execute","qualification_admit","qualification_execute","qualification_admit"]);
+    assert.strictEqual(riskCards.at(-1).confirmation.items[0].incomplete,true);
   }
   vscode.lm.selectChatModels=originalModels;
   batchReviews=0;
@@ -275,7 +315,7 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
     {action_id:"batch.second",content_hash:"second"},
   ]}});
   assert.deepStrictEqual(Array.from(replies.at(-1).result.results,item=>item.state),["failed","failed"]);
-  assert.deepStrictEqual(serviceCalls.slice(beforeChangedBatch).map(item=>item.method),["qualification_review","qualification_execute"],
+  assert.deepStrictEqual(serviceCalls.slice(beforeChangedBatch).map(item=>item.method),["qualification_review","qualification_review","qualification_execute"],
     "Root changes block admission and all subsequent batch execution");
   storePath="/isolated/test/store";
   const callsBeforeInvalidBatch=serviceCalls.length;
@@ -286,7 +326,7 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
   vscode.window.showQuickPick=async()=>undefined;
   await listener({requestId:"cancel-batch",method:"validate_batch",params:{allow_effects:true,items:[{action_id:"batch.first",content_hash:"first"}]}});
   assert.strictEqual(replies.at(-1).result.cancelled,true);
-  assert.strictEqual(serviceCalls.length,callsBeforeInvalidBatch,"cancelled model selection starts no item");
+  assert.strictEqual(serviceCalls.length,callsBeforeInvalidBatch+1,"cancelled model selection reads only the pinned review, never executes");
   serviceHook=undefined;
   nextResult={...savedReviewResult,state:"tested",attempt_id:"attempt_"+"c".repeat(32),definition:{action_id:trustParams.action_id,effects:["pure"]},sources:{},snapshot_hash:"snapshot"};
   vscode.window.showQuickPick=async items=>items[0];
@@ -300,9 +340,34 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
   for(const output of [JSON.stringify({approved:false,summary:"Unsafe test",issues:["Writes production data"]}),"not JSON",
     JSON.stringify({approved:true,summary:"Contradictory verdict",issues:["Unresolved issue"]})]){
     reviewText=output;beforeTrust=serviceCalls.length;
-    await listener({requestId:"review-validate-blocked",method:"validate",params:trustParams});
-    assert.ok(replies.at(-1).result.error);
+    riskDecision=undefined;
+    await listener({requestId:"risk-cancel",method:"validate",params:trustParams});
+    assert.strictEqual(replies.at(-1).result.cancelled,true);
     assert.deepStrictEqual(serviceCalls.slice(beforeTrust).map(call=>call.method),["qualification_review"]);
+    riskDecision="Run these tests";
+    await listener({requestId:"risk-confirm",method:"validate",params:trustParams});
+    assert.ok(!replies.at(-1).result.error,replies.at(-1).result.error);
+    assert.strictEqual(serviceCalls.at(-2).params.report.user_confirmed,true);
+  }
+  {
+    const cardsBefore=riskCards.length,warning=vscode.window.showWarningMessage,nativeTitles=[];
+    vscode.window.showWarningMessage=async(message,options,...choices)=>{
+      if(choices.includes("Run these tests")){nativeTitles.push(message);assert.match(options.detail,/Contradictory verdict/);return "Run these tests"}
+      return warning(message,options,...choices);
+    };
+    const externalBefore=executions.length;
+    await moduleExports.openActionWorkbenchInBrowser(context);
+    const opened=new URL(executions.slice(externalBefore).find(entry=>entry[0]==="external")[1]);
+    const token=new URLSearchParams(opened.hash.slice(1)).get("token");
+    beforeTrust=serviceCalls.length;
+    const response=await fetch(opened.origin+"/api",{method:"POST",headers:{Origin:opened.origin,"Content-Type":"application/json",Authorization:"Bearer "+token},
+      body:JSON.stringify({method:"validate",params:trustParams})});
+    const browserResult=await response.json();
+    assert.ok(!browserResult.error,browserResult.error);
+    assert.deepStrictEqual(nativeTitles,["Run tests for "+trustParams.action_id+"?"],"browser Workbench has no progress channel, so it keeps the native confirmation");
+    assert.strictEqual(riskCards.length,cardsBefore);
+    assert.deepStrictEqual(serviceCalls.slice(beforeTrust).map(call=>call.method),["qualification_review","qualification_execute","qualification_admit"]);
+    vscode.window.showWarningMessage=warning;
   }
   vscode.window.showQuickPick=async()=>undefined;beforeTrust=serviceCalls.length;
   await listener({requestId:"review-model-cancel",method:"validate",params:trustParams});
@@ -352,8 +417,12 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
   await listener({ requestId: "p2-untrusted", method: "open_project", params: { run_id: runId } });
   assert.match(replies.at(-1).result.error, /trusted/);
   trusted = true;
+  const beforeShowChoices = executions.length;
   await listener({ requestId: "1", method: "show_choices", params: { run_id: runId } });
-  assert.match(executions.at(-1)[1].query, /^@pkm-actions action_run_/);
+  assert.strictEqual(replies.at(-1).result.inline_chat, true);
+  assert.strictEqual(executions.length, beforeShowChoices);
+  await listener({ requestId: "invalid-choices", method: "show_choices", params: { run_id: "invalid" } });
+  assert.match(replies.at(-1).result.error, /Invalid Action Run/);
   await listener({ requestId: "2", method: "unknown", params: {} });
   assert.strictEqual(replies.at(-1).result.ok, false);
   domains = [];
@@ -364,9 +433,7 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
   assert.match(replies.at(-1).result.error, /Runtime unavailable/);
   healthy = true;
   vscode.version = "1.90.0";
-  const previousHandler = handler;
-  moduleExports.initializeActionChat(context);
-  assert.strictEqual(handler, previousHandler);
+  moduleExports.initializeActionCommands(context);
   const beforeFallback = executions.length;
   await listener({ requestId: "5", method: "show_choices", params: { run_id: runId } });
   assert.strictEqual(replies.at(-1).result.inline_chat, true);
@@ -449,5 +516,5 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
     assert.match((await call("catalog")).error, /Knowledge Root changed/);
     storePath = "/isolated/test/store";
   } finally { context.subscriptions.forEach(item => item.dispose()); }
-  console.log("native Action chat buttons, managed runtime, access gates, CSP and message dispatch passed");
+  console.log("Action Workbench choice routing, no deprecated Chat Participant, managed runtime, access gates, CSP and message dispatch passed");
 })().catch(error => { console.error(error); process.exitCode = 1; });

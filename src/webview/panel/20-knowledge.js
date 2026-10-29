@@ -114,7 +114,7 @@ document.querySelectorAll('.tab').forEach(t =>
   t.addEventListener('click', () => {
     loadProfileEvent('webview.tab.clicked', { workspace:workspaceForTab(t.dataset.tab), surface:t.dataset.tab });
     capturePanelViewState();
-    setEmbeddedActionsVisible(t.dataset.tab === 'actions');
+    setEmbeddedActionsVisible(t.dataset.tab);
     stashKnowledgeTabView(state.tab);
     if (state.tab === 'chatroom' && t.dataset.tab !== 'chatroom') chatCaptureDraft();
     if (state.tab === 'servers' && t.dataset.tab !== 'servers') stopSubscribedServerMonitoring();
@@ -139,11 +139,11 @@ document.querySelectorAll('.tab').forEach(t =>
     if (!hasCachedProjectView) renderEmptyDetail();
     closePaperViews();
     updatePaperChrome();
-    const fullWidthTab = ['actions', 'mcp', 'userProfile', 'skillRouter', 'environments', 'servers', 'subscriptions', 'githubSync', 'backgroundTasks', 'portalConnections', 'agentSessions', 'agentSnapshots', 'recipes', 'projects', 'chatroom'].includes(state.tab);
+    const fullWidthTab = ['actionLibrary', 'actions', 'mcp', 'userProfile', 'skillRouter', 'environments', 'servers', 'subscriptions', 'githubSync', 'backgroundTasks', 'portalConnections', 'agentSessions', 'agentSnapshots', 'recipes', 'projects', 'chatroom'].includes(state.tab);
     document.getElementById('layout-resizer').style.display = fullWidthTab ? 'none' : '';
     document.getElementById('sidebar-toggle').style.display = fullWidthTab ? 'none' : '';
     document.getElementById('content-toolbar').style.display = fullWidthTab ? 'none' : '';
-    if (state.tab === 'actions') {
+    if (['actions','actionLibrary'].includes(state.tab)) {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
       showEmbeddedActions();
@@ -2048,7 +2048,7 @@ async function exportMarkdown(mode) {
   tmp.innerHTML = inner;
   // Inline mermaid diagrams as self-contained SVG so the exported file needs no
   // runtime. Use the light theme to match the export page's white background.
-  await renderMermaid(tmp, 'default');
+  await renderMermaid(tmp, 'default', false);
   _mermaidReady = false;
   initMermaidOnce();
   tmp.querySelectorAll('pre code').forEach(el => safeHljs(el));
@@ -2084,7 +2084,7 @@ async function renderLinkedExport(data) {
     catch (e) { inner = '<pre>' + esc(n.content || '') + '</pre>'; }
     const tmp = document.createElement('div');
     tmp.innerHTML = inner;
-    await renderMermaid(tmp, 'default');
+    await renderMermaid(tmp, 'default', false);
     tmp.querySelectorAll('pre code').forEach(el => safeHljs(el));
     files.push({ filename: n.filename, slug: n.slug, bodyHtml: tmp.innerHTML });
   }

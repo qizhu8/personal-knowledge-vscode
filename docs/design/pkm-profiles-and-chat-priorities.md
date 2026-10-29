@@ -31,13 +31,43 @@ inspect evidence afterwards. Opening a dashboard is not sufficient acceptance.
 ### User Profile
 
 A small, explicitly maintained set of stable preferences across Chats and
-Projects: communication, collaboration, development and verification habits.
+Projects: communication, collaboration, development and verification habits,
+plus explicit reusable user requirements with their applicability conditions.
 Do not store credentials, inferred sensitive traits, project facts, temporary
 instructions or entire conversations.
 
-Proposed record: schema, stable ID, revision, updated time, and short preference
-entries. V1 should use direct user editing. Memory may eventually suggest an
-update, but must not silently promote a guess to an accepted preference.
+The accepted card uses direct user editing. A separate, private/root-scoped
+`pkm.user-profile-fragments/v1` collection now captures model-derived habits,
+interests, focus areas, cautions and requirements from completed local PKM Chat turns, with
+explicit history backfill. Each independently retrievable fragment retains stable
+identity, tags, revision and verbatim message evidence. A keyword cloud filters
+these fragments; frequency is not confidence or retrieval relevance. Derived
+observations never silently become accepted preferences, permission or mandatory
+Chat context. Requirements alone can be semantically qualified for the current
+local human request and enter budgeted context as defeasible user context.
+An AML-specific unavailable-extension constraint must not be recalled for
+generic document writing or PKM tests, and current corrections take precedence.
+Handwritten cards and their historical snapshots remain unchanged.
+See [Chat Profile behavior and fragment contract](../api-chat.md) for collection
+scope, model usage, exclusions, cancellation, storage limits and removal behavior.
+
+Profile and Agent Session visualizations share the existing **Cache / Memory /
+Disk** logical tier contract, not a new age-based classification:
+
+- **Cache / short-term:** actual model context. The Root-wide Profile has no
+  selected Chat context and says so explicitly. Inspect the selected Session's
+  last sent manifest there; prepared input is not proof of transmission. A stored
+  requirement enters Cache only when selected, budgeted and actually sent.
+- **Memory / mid-term:** Chat-derived, evidence-backed fragments and their
+  keyword cloud. The read-only snapshot adds `storageTier: "memory"` without
+  rewriting v1 records, invoking a model, or changing their identity and revision.
+- **Disk / long-term:** the explicitly maintained accepted Profile card. It has
+  an independent lifetime; observations do not automatically become preferences
+  or published Note/Skill assets.
+
+The shared renderer does not equate Piece abstraction Level, statement age,
+retrieval selection or model confidence with a temporal tier. Source-backed
+fragments remain private observations, not additional authority.
 
 ### Agent Profile
 

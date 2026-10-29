@@ -1,7 +1,42 @@
 # 4.0.0 Release Readiness
 
-Review date: 2026-10-25. Development version remains **3.2.106**.
-**4.0.0 is a target, not a published or installed release.**
+## Current release preparation - 2026-10-29
+
+The extension manifest and lockfile now target **4.0.0 stable**. Release notes
+include the compact Router inspector and the Profile, memory-tier and media
+changes since 3.2.151. This is release preparation, not a publication receipt.
+
+The complete `npm run test:release` gate passed with
+`PKM_BROWSER_CONCURRENCY=1`, including all nine full-browser suites and five
+isolated startup scenarios. Meeting-module coverage remains 99.74% lines,
+72.29% branches and 100% functions. Whitespace/version discipline, locale parity
+(484 keys across 11 locales) and publishing-workflow contracts passed.
+
+Release preparation corrected stale Profile disclosure and pending-action test
+expectations, added the embedded Action Library surface contract and completed
+nine locale catalogs. Privacy-safe screenshots/GIFs were regenerated from
+synthetic fixtures; capture now navigates the actual settings tabs and verifies
+the manifest version instead of showing hard-coded historical release numbers.
+
+These are local gate results, not live-model quality, provider billing,
+Windows/macOS or authorized real two-machine acceptance.
+
+The local `personal-knowledge-4.0.0.vsix` passed stable metadata/boundary checks,
+isolated Chat/Sync dependency loading, packaged Chat-library operations and the
+independent PKM service lifecycle. Release media was visually inspected using
+synthetic fixtures only. No commit, push, Marketplace publication or replacement
+of the user's installed extension was performed during this preparation.
+Marketplace publication uses the manually dispatched
+[OIDC workflow](../.github/workflows/publish-marketplace.yml) from the exact
+committed release source; a local VSIX does not publish the extension.
+
+The earlier acceptance limitations below remain historical evidence, not proof
+that the current candidate passed native, live-model or two-machine acceptance.
+
+## Historical readiness review - 2026-10-25
+
+Development version at that review was **3.2.106**.
+The following sections record subsequent local development checks.
 
 ## Action Library / Workbench separation follow-up
 

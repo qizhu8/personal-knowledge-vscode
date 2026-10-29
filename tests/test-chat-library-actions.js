@@ -165,11 +165,11 @@ test("current Task todos are read-only, refreshed from the owned Session and nev
   assert.throws(() => f.store.taskPlan(chat), /does not belong/);
 });
 
-test("built Automation navigation places Action Library third, before Recipe Library and the Action Workbench", () => {
+test("built Automation navigation places Action Library after the profile and session views, before Recipe Library and the Action Workbench", () => {
   const html = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "panel.html"), "utf8");
   const automation = html.match(/aria-label="Automation views">([\s\S]*?)<\/div>/)[1];
   assert.deepEqual([...automation.matchAll(/<button\b[^>]*>([^<]+)<\/button>/g)].map(match => match[1]),
-    ["Agent Sessions", "Agent Snapshot", "Action Library", "Recipe Library", "Action Workbench"]);
+    ["User Profile", "Agent Sessions", "Agent Snapshot", "Action Library", "Recipe Library", "Action Workbench"]);
 });
 
 test("operation identities and public summaries persist without entering the visible assistant answer", t => {

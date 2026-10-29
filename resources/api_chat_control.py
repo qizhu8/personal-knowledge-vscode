@@ -182,16 +182,37 @@ def register_api_chat_tools(mcp, store):
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     def portal_control(host_id: str, operation: str, command_id: str, context_id: str = "",
-                       prompt: str = "", request_id: str = "", file_paths: list[str] | None = None) -> dict:
-        """Use a temporary Portal from Copilot or another MCP agent.
+                       prompt: str = "", request_id: str = "", file_paths: list[str] | None = None,
+                       command: dict | None = None, requirements: dict | None = None) -> dict:
+        """Use a temporary Portal or an explicitly configured saved endpoint.
+
+        connections lists local saved endpoints and live temporary connections.
+        A saved endpoint id can be used as context_id after separate local external-access
+        approval. Configure and pair named endpoints in Portal Connections on both Hosts.
+        Named endpoints reconnect across restarts without replaying tasks; each side
+        independently enables incoming control and grants revocable local permissions.
+        Replacing or deleting a bound Chat clears its grants and stops old execution.
+        The following open workflow creates a temporary Portal, not a saved endpoint.
 
         First open without context_id: native VS Code UI asks only Controller or Controlled.
         Controller automatically resolves the endpoint and copies a private code; Controlled
         pastes it locally and approves control. No name, create/accept or address configuration.
         Private codes never enter tool arguments. No PKM Chat is created.
         Poll api_chat_request_get for the local receipt and keep contextId in this conversation.
-        status/send/get/cancel/disconnect/switch/permissions/files require that handle.
-        Disconnect, transport loss or Host restart ends the pairing: open and pair again,
+        status/send/command/get/attempts/cancel/disconnect/switch/permissions/files require that handle.
+        command executes a structured {program, arguments, cwd?, timeoutSeconds?} directly
+        on the executing Host without any LLM. Only that Host grants code execution.
+        route selects exactly one already-connected, authorized-direction Host matching
+        requirements {platform?: win32|linux|darwin, programs?: [cmd|powershell|bash|...]}.
+        route may omit context_id; ambiguity or missing capabilities fails without execution.
+        Routing never copies credentials, pairs silently or automatically replays commands.
+        get/cancel use the returned contextId and original request_id for either mode.
+        get always reads the original attempt, not the latest Chat message. attempts
+        requests explicit executing-user consent to share linked manual rerun results,
+        separately from the immutable original receipt; never replays the task.
+        Both Hosts must advertise commands-v1; older Hosts require upgrading and pairing again.
+        Brief transport loss keeps the pairing for 2 minutes (status=reconnecting) while it reconnects;
+        disconnect, Host restart or a longer outage ends it: open and pair again,
         never reattach or replay tasks. Pairing credentials, connection history and remote-task
         receipts are not persisted; same-connection duplicates are suppressed in memory.
         Task history belongs to controller/controlled Chats; Copilot records only tool
@@ -208,23 +229,39 @@ def register_api_chat_tools(mcp, store):
         the local user is offered one fixed-deadline external grant bound to this pairing/
         direction. No automatic replay, role escalation, SSH or NAT traversal.
         """
-        if operation not in {"open", "status", "send", "get", "cancel", "disconnect", "switch", "permissions", "files"}:
+        if operation not in {"open", "connections", "status", "send", "command", "route", "get", "attempts", "cancel", "disconnect", "switch", "permissions", "files"}:
             raise ValueError("Unsupported Portal operation.")
         if context_id:
             _host_id(context_id, "context_id")
-        elif operation != "open":
+        elif operation not in {"open", "route", "connections"}:
             raise ValueError("Use the contextId from this conversation's Portal open receipt.")
         if not isinstance(prompt, str) or len(prompt) > 16000:
             raise ValueError("Portal prompt must contain at most 16000 characters.")
-        if operation in {"send", "get", "cancel"}:
+        if operation in {"send", "command", "route", "get", "attempts", "cancel"}:
             _host_id(request_id, "request_id")
         if operation == "send" and not prompt.strip():
             raise ValueError("Portal send requires an explicit nonempty instruction.")
+        if operation in {"command", "route"}:
+            if not isinstance(command, dict) or not isinstance(command.get("program"), str) or not command["program"].strip():
+                raise ValueError("Portal command requires an explicit program.")
+            arguments = command.get("arguments")
+            if (not isinstance(arguments, list) or len(arguments) > 32
+                    or any(not isinstance(value, str) or "\0" in value for value in arguments)
+                    or len(json.dumps(command)) > 16000):
+                raise ValueError("Portal command requires bounded string arguments.")
+        elif command is not None:
+            raise ValueError("command is only valid for command/route.")
+        if operation == "route" and not isinstance(requirements, dict):
+            raise ValueError("Portal route requires explicit capability requirements.")
+        if operation != "route" and requirements is not None:
+            raise ValueError("requirements is only valid for route.")
         if file_paths is not None and (operation != "files" or not file_paths or len(file_paths) > 64
                                        or any(not isinstance(value, str) or not value or len(value) > 4096 for value in file_paths)):
             raise ValueError("file_paths requires 1-64 bounded local paths and operation=files.")
         return _submit(root, host_id, "portal", {"operation": operation, "contextId": context_id,
-                       "prompt": prompt, "requestId": request_id, **({"paths": file_paths} if file_paths is not None else {})}, command_id)
+                       "prompt": prompt, "requestId": request_id, **({"paths": file_paths} if file_paths is not None else {}),
+                       **({"command": command} if command is not None else {}),
+                       **({"requirements": requirements} if requirements is not None else {})}, command_id)
 
     return {"api_chat_capabilities": api_chat_capabilities, "api_chat_models": api_chat_models,
             "api_chat_list": api_chat_list, "api_chat_create": api_chat_create, "api_chat_send": api_chat_send,

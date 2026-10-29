@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { fixture, sessionId, actionId, runId, childId } = require("./native-harness-fixture");
-const { build, layout, terminal, describeToolCall, toolActivityDetails } = require("../src/webview/agent-harness");
+const { build, layout, terminal, describeToolCall, toolActivityDetails, memoryTiers, memoryTierObservations } = require("../src/webview/agent-harness");
 const { apiChatHarnessSnapshot, apiChatSessionHarnessSnapshot } = require("../dist/chat/api-chat-store");
 const { ChatHistoryStorage } = require("../dist/chat/chat-history-storage");
 const { recordedActionReferences, readHarnessActions } = require("../dist/runtime/native-harness-actions");
@@ -15,6 +15,35 @@ function temporary(t) {
   t.after(() => fs.rmSync(directory, { recursive:true, force:true }));
   return directory;
 }
+
+test("logical Memory tiers are independent of abstraction level, age and preparation, using only the last sent manifest", () => {
+  assert.deepEqual(memoryTiers.map(tier => [tier.id,tier.horizon]),[
+    ["cache","Short-term"],["memory","Mid-term"],["disk","Long-term"],
+  ]);
+  const attempt = {
+    budgetReceipts:[
+      {round:0,status:"sent",contextPlan:{manifest:[{referenceIds:["memory:old"]},{referenceIds:[]}]}},
+      {round:1,status:"sent",contextPlan:{manifest:[{referenceIds:["memory:latest"]}]}},
+      {round:2,status:"prepared",contextPlan:{manifest:[{referenceIds:["memory:unsent"]},{referenceIds:[]},{referenceIds:[]}]}},
+    ],
+    retrieval:[{receipt:{candidates:[
+      {id:"note-v1",sourceId:"note:one",kind:"note"}, {id:"note-v2",sourceId:"note:one",kind:"note"},
+      {id:"skill:one",kind:"skill"}, {id:"chat:one",kind:"chat"}, {id:"unknown",kind:"invented"},
+    ]}}],
+    profileContext:{user:{name:"Historical card"}},
+  };
+  const observed = memoryTierObservations({pieces:[{level:0},{level:9},{level:87}]},attempt);
+  assert.equal(observed.cache.summary,"1 recorded messages");
+  assert.match(observed.cache.detail,/round 1[\s\S]*Historical/);
+  assert.equal(observed.memory.summary,"3 displayed pieces");
+  assert.equal(observed.disk.summary,"2 asset references / 1 Profile snapshots");
+  assert.match(observed.disk.detail,/not a Knowledge Root inventory/);
+  assert.match(memoryTierObservations(undefined,{budgetReceipts:[attempt.budgetReceipts[2]]}).cache.summary,/No sent manifest/);
+  assert.match(memoryTierObservations(undefined).memory.summary,/unavailable/);
+  assert.match(memoryTierObservations({pieces:[]}).memory.summary,/^0 displayed/);
+  assert.match(memoryTierObservations(undefined).cache.detail,/unknown, not empty/);
+  assert.equal(memoryTierObservations(undefined,{budgetReceipts:[{status:"sent",contextPlan:{manifest:[]}}]}).cache.summary,"0 recorded messages");
+});
 
 test("readable tool activity uses recorded inputs without changing identity or inventing external semantics", () => {
   for (const [name, args, expected] of [

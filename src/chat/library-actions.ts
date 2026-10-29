@@ -26,7 +26,8 @@ async function chooseChatGroup(store: ApiChatStore, host: Pick<typeof vscode, "w
 }
 
 export async function handleChatLibraryAction(message: { type?: string; id?: string; value?: string | boolean }, store: ApiChatStore,
-  host: Pick<typeof vscode, "window">, isRunning: (id: string) => boolean, forget: (id: string) => void, deleted?: (id: string) => void | Promise<void>): Promise<void> {
+  host: Pick<typeof vscode, "window">, isRunning: (id: string) => boolean, forget: (id: string) => void, deleted?: (id: string) => void | Promise<void>,
+  removed?: (id: string) => void | Promise<void>): Promise<void> {
   const id = String(message.id);
   switch (message.type) {
     case "groupCreate": {
@@ -54,7 +55,7 @@ export async function handleChatLibraryAction(message: { type?: string; id?: str
     case "trashChat": {
       if (isRunning(id)) throw new Error("Stop the running Chat before moving it to Trash.");
       const choice = await host.window.showWarningMessage("Move Chat to Trash? Task Session evidence is preserved.", { modal: true }, "Move to Trash");
-      if (choice === "Move to Trash") { await store.libraryMutation("trash", id); forget(id); } return;
+      if (choice === "Move to Trash") { await store.libraryMutation("trash", id); await removed?.(id); forget(id); } return;
     }
     case "restoreChat": await store.libraryMutation("restore", id); return;
     case "deleteChat": {
@@ -62,7 +63,7 @@ export async function handleChatLibraryAction(message: { type?: string; id?: str
       if (choice === "Delete permanently") {
         if (!store.library.read().placements[id]?.trashedAt) throw new Error("Move this Chat to Trash before permanently deleting it.");
         if (isRunning(id)) throw new Error("Stop the running Chat before permanently deleting it.");
-        await deleted?.(id); await store.libraryMutation("delete", id); forget(id);
+        await deleted?.(id); await store.libraryMutation("delete", id); await removed?.(id); forget(id);
       } return;
     }
     case "emptyTrash": {
@@ -72,7 +73,7 @@ export async function handleChatLibraryAction(message: { type?: string; id?: str
         for (const item of await store.trashList()) {
           try {
             if (isRunning(item.id)) throw new Error("Stop the running Chat before permanently deleting it.");
-            await deleted?.(item.id); await store.libraryMutation("delete", item.id); forget(item.id);
+            await deleted?.(item.id); await store.libraryMutation("delete", item.id); await removed?.(item.id); forget(item.id);
           } catch (error) { failures.push(`${item.title} (${item.id}): ${error instanceof Error ? error.message : String(error)}`); }
         }
         if (failures.length) throw new Error(`Some Chats could not be deleted and remain in Trash:\n${failures.join("\n")}`);

@@ -33,12 +33,72 @@
     });
   }
 
+  const memoryTiers = Object.freeze([
+    Object.freeze({ id:'cache', label:'Cache', horizon:'Short-term', meaning:'Actual model context, evidenced by a sent manifest.' }),
+    Object.freeze({ id:'memory', label:'Memory', horizon:'Mid-term', meaning:'Organized Chat history and source-backed derived observations.' }),
+    Object.freeze({ id:'disk', label:'Disk', horizon:'Long-term', meaning:'Independently maintained knowledge assets and accepted Profile cards.' }),
+  ]);
+  function memoryTierObservations(data, attempt) {
+    const sent = list(attempt?.budgetReceipts).filter(receipt => receipt.status === 'sent').at(-1);
+    const manifest = sent?.contextPlan?.manifest;
+    const assetKinds = new Set(['note','skill','paper','research','script','action','recipe']);
+    const assets = new Set(list(attempt?.retrieval).flatMap(record => list(record.receipt?.candidates))
+      .filter(candidate => assetKinds.has(candidate.kind))
+      .map(candidate => candidate.sourceId || candidate.id).filter(id => typeof id === 'string' && id.length));
+    const cards = ['user','agent'].filter(kind => attempt?.profileContext?.[kind]).length;
+    return {
+      cache:{ summary:Array.isArray(manifest) ? `${manifest.length} recorded messages` : 'No sent manifest recorded',
+        detail:Array.isArray(manifest)
+          ? `Last recorded sent round ${sent.round ?? 'unknown'}. Historical payload evidence, not a live view into the provider. Prepared rounds are not sent evidence.`
+          : 'Context is unknown, not empty. Prepared references and stored pieces do not prove transmission.' },
+      memory:{ summary:Array.isArray(data?.pieces) ? `${data.pieces.length} displayed pieces` : 'Stored overview unavailable',
+        detail:'Chat-scoped, bounded stored organization. Abstraction Levels belong inside Memory; they are not temporal tiers or expiry rules.' },
+      disk:{ summary:`${assets.size} asset references / ${cards} Profile snapshots`,
+        detail:'References recorded in this attempt, not a Knowledge Root inventory or proof that assets still exist. Note, Skill and other saved assets have independent lifetimes; retrieval does not move or promote them.' },
+    };
+  }
+  function memoryTierPyramid(observations, onSelect) {
+    const root = document.createElement('div');
+    root.className = 'pkm-harness-memory-tiers';
+    root.setAttribute('role','group'); root.setAttribute('aria-label','Cache / Memory / Disk tiers');
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox','0 0 600 282');
+    svg.setAttribute('preserveAspectRatio','none'); svg.setAttribute('aria-hidden','true');
+    svg.classList.add('pkm-harness-memory-graph'); root.append(svg);
+    memoryTiers.forEach((tier,index) => {
+      const observation = observations[tier.id], y = 8 + index * 90, top = 330 + index * 78, bottom = top + 72;
+      svgShape(svg,'path',{d:`M${300-top/2} ${y} L${300+top/2} ${y} L${300+bottom/2} ${y+82} L${300-bottom/2} ${y+82} Z`,
+        class:'pkm-harness-memory-layer','data-tier-background':tier.id});
+      const row = document.createElement('div'), title = document.createElement('strong'), summary = document.createElement('span');
+      row.className = 'pkm-harness-memory-tier'; row.dataset.memoryTier = tier.id; row.dataset.piece = tier.id;
+      row.setAttribute('role','group');
+      row.setAttribute('aria-label',`${tier.label} / ${tier.horizon}. ${observation.summary}. ${observation.detail}`);
+      row.title = `${tier.meaning}\n${observation.summary}\n${observation.detail}`;
+      title.textContent = `${tier.label} / ${tier.horizon}`; summary.textContent = observation.summary;
+      row.append(title,summary); root.append(row);
+      pieceInteraction(root,row,tier.id,onSelect && (() => onSelect(tier.id)));
+    });
+    return root;
+  }
+  const abstractionExpansion = new WeakMap();
   function memoryPyramid(data, attempt, onInspect) {
+    const pyramid = memoryTierPyramid(memoryTierObservations(data,attempt));
+    if (!onInspect || !Array.isArray(data?.pieces)) return pyramid;
+    const section = document.createElement('section'), details = document.createElement('details'), summary = document.createElement('summary');
+    section.className = 'pkm-harness-memory-stack';
+    details.className = 'pkm-harness-memory-abstraction-detail';
+    details.open = abstractionExpansion.get(data) === true;
+    details.addEventListener('toggle',() => abstractionExpansion.set(data,details.open));
+    summary.textContent = 'Inside Memory: stored abstraction levels and evidence';
+    details.append(summary,memoryPiecePyramid(data,attempt,onInspect)); section.append(pyramid,details);
+    return section;
+  }
+  function memoryPiecePyramid(data, attempt, onInspect) {
     const pieces = list(data.pieces), levels = [...new Set(pieces.map(piece => piece.level))].sort((a,b) => b-a);
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     const height = Math.max(150, levels.length * 100 + 50);
     svg.setAttribute('viewBox', `0 0 600 ${height}`);
-    svg.setAttribute('role', 'group'); svg.setAttribute('aria-label', 'Stored Memory pyramid');
+    svg.setAttribute('role', 'group'); svg.setAttribute('aria-label', 'Stored Memory Piece abstraction graph');
     svg.classList.add('pkm-harness-memory-graph');
     const positions = new Map(), layers = [], sent = new Set(), prepared = new Set(list(attempt?.memory?.blocks).map(block => block.piece));
     for (const receipt of list(attempt?.budgetReceipts).filter(receipt => receipt.status === 'sent')) {
@@ -1048,7 +1108,7 @@
         else {
           memoryOverview = state.data;
           memory.append(memoryPyramid(memoryOverview,attempt,piece => { memoryPieceChoice = piece; drawDashboard(); }),
-            el('small','Live stored levels and recorded edges. Blue: prepared reference; green: sent reference, not proof the current revision was sent. Click a piece for evidence.'));
+            el('small','Cache / Memory / Disk are logical tiers, not age buckets. Expand Inside Memory for stored abstraction levels and evidence. Blue: prepared reference; green: historical sent membership, not proof the current revision was sent.'));
           if (memoryPieceChoice) {
             const evidence = el('section'); evidence.setAttribute('aria-label','Stored Memory piece evidence');
             const piece = readDashboardMemory('memoryPiece',{piece:memoryPieceChoice.id,after:0});
@@ -1069,6 +1129,7 @@
             memory.append(evidence);
           }
         }
+        if (!memoryOverview) memory.append(memoryPyramid(undefined,attempt));
       }
       const profiles = attempt?.profileContext;
       if (session.profileReader) {
@@ -1198,9 +1259,8 @@
           if (svg) { const mini = svg.cloneNode(true); mini.setAttribute('aria-hidden', 'true'); thumb.append(mini); }
           thumb.append(el('small', `${model.overview.recipes.length} Recipe / ${model.overview.actions.length} Action binding(s)`));
         } else if (id === 'memory') {
-          if (memoryOverview) {
-            const mini = memoryPyramid(memoryOverview,attempt); mini.setAttribute('aria-hidden','true'); thumb.append(mini);
-          } else if (session.memoryStoreReader) {
+          const mini = memoryPyramid(memoryOverview,attempt); mini.setAttribute('aria-hidden','true'); thumb.append(mini);
+          if (!memoryOverview && session.memoryStoreReader) {
             const memoryState = memoryReads.get(key('memoryOverview',{}));
             thumb.append(el('small', memoryState?.error || 'Reading stored Memory...', memoryState?.error ? 'pkm-harness-error' : undefined));
           }
@@ -1425,7 +1485,7 @@
     root.append(note);
     return root;
   }
-  const api = { build, layout, terminal, mount, describeToolCall, toolActivityDetails, memoryPyramid, creditLabel, profileCards };
+  const api = { build, layout, terminal, mount, describeToolCall, toolActivityDetails, memoryTiers, memoryTierObservations, memoryTierPyramid, memoryPyramid, creditLabel, profileCards };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.PkmAgentHarness = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

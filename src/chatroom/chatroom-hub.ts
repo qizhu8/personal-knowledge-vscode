@@ -15,7 +15,7 @@ import { SecretStorageLike } from "./chat-room-credentials";
 import { ChatJoinApprovalManager, JoinApprovalResult, PendingJoinApproval } from "./chat-join-approval";
 import { assertCollaborationMessageCanConverge, CollaborationError, CollaborationWarning, communicationReceiptTemplate, normalizeCollaborationMessage } from "./collaboration-model";
 import { parsePeerPacket, PORTAL_TRANSPORT_PATH } from "./peer-protocol";
-import { PortalRelay } from "./portal-relay";
+import { PortalRelay, PortalRelayChannelSnapshot } from "./portal-relay";
 
 function constantTimeEquals(a: string, b: string): boolean {
   const ba = Buffer.from(a, "utf-8");
@@ -84,7 +84,7 @@ interface RosterEntry {
 export interface AdminRoomInfo { roomId: string; room: string; owner: string; members: number; }
 
 export class ChatHub {
-  private readonly portalRelay = new PortalRelay();
+  private readonly portalRelay = new PortalRelay(message => this.log(message));
   private http:  Server | null = null;
   private wss:   WebSocketServer | null = null;
   private conns: Map<WebSocket, HubConn> = new Map();
@@ -335,7 +335,7 @@ export class ChatHub {
         // Only now that the bind succeeded do we create the WS server.
         const wss = new WebSocketServer({ server: httpServer });
         wss.on("connection", (ws, request) => {
-          if (request.url === PORTAL_TRANSPORT_PATH) this.portalRelay.accept(ws);
+          if (request.url === PORTAL_TRANSPORT_PATH) this.portalRelay.accept(ws, `${request.socket.remoteAddress || "unknown"}:${request.socket.remotePort || 0}`);
           else this.onConnection(ws);
         });
         wss.on("error", e => this.log(`chat hub wss error: ${(e as Error).message}`));
@@ -382,7 +382,9 @@ export class ChatHub {
     return this.portalRelay.create(channelId, secret);
   }
 
-  closePortalChannel(channelId: string): void { this.portalRelay.close(channelId); }
+  closePortalChannel(channelId: string, reason?: string): void { this.portalRelay.close(channelId, reason); }
+
+  portalChannelsSnapshot(): PortalRelayChannelSnapshot[] { return this.portalRelay.snapshot(); }
 
   async rehostRoom(roomId: string): Promise<{ roomId: string; room: string; secret: string; hostToken: string }> {
     if (!this.lifecycle) throw new Error("Chat Hub lifecycle is not configured or running.");

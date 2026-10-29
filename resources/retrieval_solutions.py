@@ -5,6 +5,7 @@ import math
 import hashlib
 import os
 import secrets
+import re
 from pathlib import Path
 import shutil
 import sqlite3
@@ -14,13 +15,20 @@ from retrieval_solution_resources import process_sample, resource_plan
 
 
 class RetrievalLearning:
-    """Query-free, context-isolated calibration from explicit complete judgments."""
+    """Bounded local ranker/calibrator; frozen embeddings, replayable judgments."""
 
     MIN_JUDGED_CALLS = 8
     BASE_SLOPE = 4.0
     BASE_BIAS = -2.0
     MIN_GAP = 0.15
+    RETAIN_PROBABILITY = 0.65
+    DISCARD_PROBABILITY = 0.35
+    THRESHOLD_EWMA = 0.1
     RETENTION = 512
+    FEATURES = 512
+    MAX_CANDIDATES = 256
+    MAX_QUERY = 8192
+    MAX_LABEL_BYTES = 262144
 
     def __init__(self, state: Path):
         self.database = state / "retrieval-learning.sqlite3"
@@ -35,10 +43,34 @@ class RetrievalLearning:
                     id INTEGER PRIMARY KEY AUTOINCREMENT, receipt TEXT UNIQUE, context TEXT,
                     milliseconds REAL, returned INTEGER, candidates TEXT, cut INTEGER,
                     eligible INTEGER, recall REAL, label_digest TEXT, success INTEGER);
+                CREATE TABLE IF NOT EXISTS query_judgments (
+                    context TEXT NOT NULL, query_key TEXT NOT NULL, receipt TEXT NOT NULL,
+                    call_id INTEGER NOT NULL, candidates TEXT NOT NULL, query_features TEXT NOT NULL,
+                    labels TEXT NOT NULL, label_digest TEXT NOT NULL, version INTEGER NOT NULL,
+                    PRIMARY KEY(context,query_key));
             """)
             connection.execute("INSERT OR IGNORE INTO settings VALUES ('salt',?)", (secrets.token_hex(32),))
             connection.execute("INSERT OR IGNORE INTO settings VALUES ('enabled','true')")
             self.salt = connection.execute("SELECT value FROM settings WHERE key='salt'").fetchone()[0]
+            additions = {
+                "models": {"weights": "TEXT NOT NULL DEFAULT '[]'", "revision": "INTEGER NOT NULL DEFAULT 0",
+                           "model_labels": "INTEGER NOT NULL DEFAULT 0", "user_labels": "INTEGER NOT NULL DEFAULT 0",
+                           "prequential": "TEXT NOT NULL DEFAULT '{}'"},
+                "calls": {"labels": "TEXT", "provenance": "TEXT", "version": "INTEGER NOT NULL DEFAULT 0",
+                          "query_features": "TEXT NOT NULL DEFAULT '[]'", "brier": "REAL", "log_loss": "REAL",
+                          "query_key": "TEXT"},
+            }
+            for table, columns in additions.items():
+                existing = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+                for column, definition in columns.items():
+                    if column not in existing:
+                        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            if not connection.execute("SELECT 1 FROM settings WHERE key='learner_version'").fetchone():
+                # Legacy digests do not contain replayable labels. Never retain their gradients.
+                connection.execute("UPDATE models SET slope=?,bias=?,threshold=?,samples=0,safe_streak=0",
+                                   (self.BASE_SLOPE, self.BASE_BIAS, self.MIN_GAP))
+                connection.execute("UPDATE calls SET label_digest=NULL,recall=NULL")
+                connection.execute("INSERT INTO settings VALUES ('learner_version','2')")
         os.chmod(self.database, 0o600)
 
     def connect(self):
@@ -46,6 +78,16 @@ class RetrievalLearning:
 
     def identity(self, value):
         return hashlib.sha256((self.salt + str(value)).encode("utf-8")).hexdigest()
+
+    def calibration_status(self, enabled, samples, streak):
+        ready = bool(enabled and samples >= self.MIN_JUDGED_CALLS and streak >= self.MIN_JUDGED_CALLS)
+        return {
+            "state": "disabled" if not enabled else "ready" if ready else "collecting-feedback",
+            "calibration_ready": ready,
+            "judged_calls": samples,
+            "safe_streak": streak,
+            "minimum_judged_calls": self.MIN_JUDGED_CALLS,
+        }
 
     @staticmethod
     def probability(x, slope, bias):
@@ -65,16 +107,58 @@ class RetrievalLearning:
         with self.lock, self.connect() as connection:
             connection.execute("UPDATE settings SET value=? WHERE key='enabled'", (json.dumps(enabled),))
 
-    def observe(self, result, milliseconds):
+    def features(self, source, query_features):
+        keys = ["source:" + source, "source-secondary:" + source]
+        if query_features:
+            keys.append("query-source:" + source + ":".join(query_features))
+            keys.extend("token-source:" + source + token for token in query_features[:8])
+        values = {}
+        for key in keys:
+            digest = self.identity(key)
+            index = int(digest[:8], 16) % self.FEATURES
+            sign = 1 if int(digest[8], 16) % 2 else -1
+            values[index] = values.get(index, 0) + sign / math.sqrt(len(keys))
+        return values
+
+    def ranked(self, candidates, query_features, weights):
+        values = []
+        for index, item in enumerate(candidates):
+            features = self.features(item["id"], query_features)
+            delta = sum(weights[key] * value for key, value in features.items())
+            score = max(0.0, min(1.0, item.get("base_x", item["x"]) + .75 * math.tanh(delta)))
+            values.append({**item, "x": score, "position": index, "features": features})
+        return sorted(values, key=lambda item: (-item["x"], item.get("base_position", item["position"])))
+
+    def observe(self, result, milliseconds, query=None, output_limit=None):
         if not result.get("model_invoked"):
             return
         hits = result.get("hits") or []
-        scores = [float(hit["score"]) for hit in hits]
-        valid = all(math.isfinite(score) for score in scores) and all(
-            scores[i] >= scores[i + 1] for i in range(len(scores) - 1))
+        delivered_limit = min(len(hits), output_limit) if output_limit is not None else len(hits)
+        valid = isinstance(hits, list) and len(hits) <= self.MAX_CANDIDATES
+        scores = []
+        if valid:
+            try:
+                scores = [float(hit["score"]) for hit in hits]
+                valid = (all(math.isfinite(score) for score in scores) and
+                         all(scores[i] >= scores[i + 1] for i in range(len(scores) - 1)) and
+                         all(isinstance(hit.get("source_id"), str) and
+                             0 < len(hit["source_id"]) <= 4096 for hit in hits) and
+                         all(isinstance(hit.get("metadata") or {}, dict) and
+                             all((hit.get("metadata") or {}).get(key) is None or
+                                 isinstance((hit.get("metadata") or {}).get(key), str)
+                                 for key in ("priority", "source_priority")) for hit in hits) and
+                         len({hit["source_id"] for hit in hits}) == len(hits))
+            except (TypeError, ValueError, KeyError):
+                valid = False
+        query_valid = query is None or isinstance(query, str) and len(query) <= self.MAX_QUERY
+        valid = valid and query_valid
+        query_features = sorted({self.identity(token) for token in
+                                 re.findall(r"\w+", query.casefold())[:16]}) if query and query_valid else []
+        query_key = self.identity("query:" + " ".join(query.casefold().split())) if isinstance(query, str) and query_valid else None
         scale = max((abs(score) for score in scores), default=0) or 1
-        candidates = [{"id": self.identity(hit["source_id"]), "x": max(0, min(1, score / scale))}
-                      for hit, score in zip(hits, scores)]
+        candidates = [{"id": self.identity(hit["source_id"]), "x": max(0, min(1, score / scale)),
+                       "base_x": max(0, min(1, score / scale)), "base_position": index}
+                      for index, (hit, score) in enumerate(zip(hits, scores))] if valid else []
         package = result.get("model_attempt_package_id") or (result.get("skill_serving") or {}).get("release_id") or "unavailable"
         corpus = str(result.get("corpus_revision") or "")
         route = result.get("route")
@@ -85,13 +169,26 @@ class RetrievalLearning:
                                 for hit in hits for key in ("priority", "source_priority")))
         receipt = secrets.token_hex(24)
         with self.lock, self.connect() as connection:
-            connection.execute("INSERT OR IGNORE INTO models VALUES (?,?,?,?,?,?,?,?,?)",
+            connection.execute("INSERT OR IGNORE INTO models(context,package,corpus,route,slope,bias,threshold,samples,safe_streak) VALUES (?,?,?,?,?,?,?,?,?)",
                                (context, package, corpus, route, self.BASE_SLOPE, self.BASE_BIAS, self.MIN_GAP, 0, 0))
-            slope, bias, threshold, samples, streak = connection.execute(
-                "SELECT slope,bias,threshold,samples,safe_streak FROM models WHERE context=?", (context,)).fetchone()
+            slope, bias, threshold, samples, streak, serialized_weights, revision = connection.execute(
+                "SELECT slope,bias,threshold,samples,safe_streak,weights,revision FROM models WHERE context=?", (context,)).fetchone()
             enabled = connection.execute("SELECT value FROM settings WHERE key='enabled'").fetchone()[0] == "true"
-            k, gap = self.gap(candidates)
-            cut = len(hits)
+            weights = json.loads(serialized_weights) or [0.0] * self.FEATURES
+            reranked = bool(enabled and eligible and samples and any(weights))
+            delivered = hits
+            if reranked:
+                ranked = self.ranked(candidates, query_features, weights)
+                delivered = [{**hits[item["position"]], "base_score": hits[item["position"]]["score"],
+                              "base_score_semantics": hits[item["position"]].get("score_semantics", "engine-defined"),
+                              "learned_score": item["x"], "score": item["x"],
+                              "score_semantics": "engine-defined", "rank": rank}
+                             for rank, item in enumerate(ranked, 1)]
+                scoring_candidates = ranked
+            else:
+                scoring_candidates = candidates
+            k, gap = self.gap(scoring_candidates)
+            cut = delivered_limit
             reason = "insufficient-feedback"
             if not enabled:
                 reason = "disabled"
@@ -99,22 +196,97 @@ class RetrievalLearning:
                 reason = "protected-or-unavailable"
             elif samples >= self.MIN_JUDGED_CALLS and streak >= self.MIN_JUDGED_CALLS:
                 reason = "no-reliable-gap"
-                if (k and gap >= threshold and
-                        self.probability(candidates[k - 1]["x"], slope, bias) >= .65 and
-                        self.probability(candidates[k]["x"], slope, bias) <= .35):
+                if (k and k < delivered_limit and gap >= threshold and
+                        self.probability(scoring_candidates[k - 1]["x"], slope, bias) >= self.RETAIN_PROBABILITY and
+                        self.probability(scoring_candidates[k]["x"], slope, bias) <= self.DISCARD_PROBABILITY):
                     cut, reason = k, "calibrated-score-gap"
-            cursor = connection.execute("INSERT INTO calls(receipt,context,milliseconds,returned,candidates,cut,eligible,success) VALUES (?,?,?,?,?,?,?,?)",
-                                        (receipt, context, milliseconds, cut, json.dumps(candidates), cut, int(eligible),
-                                         int(bool(result.get("ok")) and result.get("semantic_status") == "ready")))
+            # Store the baseline features in delivered order so recall uses what the caller saw.
+            stored = [{key: value for key, value in item.items() if key not in {"features", "position"}}
+                      for item in scoring_candidates]
+            cursor = connection.execute("INSERT INTO calls(receipt,context,milliseconds,returned,candidates,cut,eligible,success,query_features,query_key) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                        (receipt, context, milliseconds, cut, json.dumps(stored), cut, int(eligible),
+                                         int(bool(result.get("ok")) and result.get("semantic_status") == "ready"),
+                                         json.dumps(query_features), query_key))
             invocation = cursor.lastrowid
+            expired_contexts = {row[0] for row in connection.execute(
+                "SELECT DISTINCT context FROM calls WHERE labels IS NOT NULL AND id NOT IN "
+                "(SELECT id FROM calls ORDER BY id DESC LIMIT ?)", (self.RETENTION,))}
             connection.execute("DELETE FROM calls WHERE id NOT IN (SELECT id FROM calls ORDER BY id DESC LIMIT ?)", (self.RETENTION,))
-            connection.execute("DELETE FROM models WHERE context NOT IN (SELECT DISTINCT context FROM calls)")
+            connection.execute("DELETE FROM models WHERE context NOT IN (SELECT context FROM calls UNION SELECT context FROM query_judgments)")
+            for expired in expired_contexts:
+                self.rebuild(connection, expired)
         result["retrieval_id"] = receipt
-        result["adaptive"] = {"enabled": enabled, "applied": cut < len(hits), "reason": reason,
-                              "original_count": len(hits), "returned_count": cut, "invocation": invocation}
-        result["hits"] = hits[:cut]
+        result["adaptive"] = {"enabled": enabled, "applied": cut < delivered_limit, "reason": reason,
+                              "original_count": delivered_limit, "returned_count": cut, "invocation": invocation}
+        if reranked and "score_semantics" in result:
+            result["base_score_semantics"] = result["score_semantics"]
+            result["score_semantics"] = "engine-defined"
+        result["online_learning"] = {"enabled": enabled, "applied": reranked, "revision": revision,
+                                     "ranker_revision": revision, "calibrator_revision": revision,
+                                     "embedding_updated": False}
+        result["hits"] = delivered[:cut]
 
-    def feedback(self, receipt, relevant_source_ids, complete):
+    def rebuild(self, connection, context):
+        """Replay retained effective labels, never an old superseded gradient."""
+        weights = [0.0] * self.FEATURES
+        slope, bias, threshold = self.BASE_SLOPE, self.BASE_BIAS, self.MIN_GAP
+        samples = streak = model_labels = user_labels = 0
+        total_brier = total_loss = 0.0
+        evaluated = 0
+        connection.execute("UPDATE calls SET brier=NULL,log_loss=NULL WHERE context=?", (context,))
+        effective = connection.execute(
+            "SELECT c.id,c.candidates,c.query_features,c.labels,c.provenance FROM calls c "
+            "WHERE c.context=? AND c.labels IS NOT NULL AND NOT EXISTS "
+            "(SELECT 1 FROM query_judgments q WHERE q.context=c.context AND q.query_key=c.query_key) "
+            "UNION ALL SELECT call_id,candidates,query_features,labels,'user' FROM query_judgments WHERE context=? "
+            "ORDER BY 1", (context, context)).fetchall()
+        for call, serialized, query, labels, provenance in effective:
+            candidates = json.loads(serialized)
+            relevant = set(json.loads(labels))
+            ranked = self.ranked(candidates, json.loads(query), weights)
+            gradients = []
+            brier = loss = 0.0
+            for item in ranked:
+                target = int(item["id"] in relevant)
+                probability = self.probability(item["x"], slope, bias)
+                brier += (target - probability) ** 2
+                loss -= target * math.log(max(1e-12, probability)) + (1 - target) * math.log(max(1e-12, 1 - probability))
+                gradients.append((target - probability, item["x"]))
+            count = len(ranked)
+            if count:
+                brier, loss = brier / count, loss / count
+                total_brier += brier
+                total_loss += loss
+                evaluated += 1
+                # Calibrator sees the current ranker's score, before either update.
+                slope = max(.1, min(16, slope + .25 * sum(error * x for error, x in gradients) / count))
+                bias = max(-12, min(12, bias + .25 * sum(error for error, _ in gradients) / count))
+                updates = {}
+                for item in ranked:
+                    error = int(item["id"] in relevant) - self.probability(item["x"], self.BASE_SLOPE, self.BASE_BIAS)
+                    for feature, value in item["features"].items():
+                        updates[feature] = updates.get(feature, 0.0) + error * value
+                for feature, update in updates.items():
+                    weights[feature] = max(-4.0, min(4.0, weights[feature] + .5 * update / max(1, count / 8)))
+            connection.execute("UPDATE calls SET brier=?,log_loss=? WHERE id=?",
+                               (brier if count else None, loss if count else None, call))
+            k, gap = self.gap(ranked)
+            safe = bool(relevant and k and gap >= self.MIN_GAP and relevant.issubset({item["id"] for item in ranked[:k]}))
+            target = max(self.MIN_GAP, gap * .75) if safe else min(.95, max(self.MIN_GAP, gap + .1))
+            threshold = max(self.MIN_GAP, min(.95, (1 - self.THRESHOLD_EWMA) * threshold + self.THRESHOLD_EWMA * target))
+            samples += 1
+            streak = streak + 1 if safe else 0
+            model_labels += provenance in ("self", "model")
+            user_labels += provenance == "user"
+        metrics = {"evaluated_calls": evaluated, "brier": total_brier / evaluated if evaluated else None,
+                   "log_loss": total_loss / evaluated if evaluated else None,
+                   "evaluation": "pre-update-retained-replay"}
+        connection.execute("UPDATE models SET slope=?,bias=?,threshold=?,samples=?,safe_streak=?,weights=?,"
+                           "revision=revision+1,model_labels=?,user_labels=?,prequential=? WHERE context=?",
+                           (slope, bias, threshold, samples, streak, json.dumps(weights), model_labels,
+                            user_labels, json.dumps(metrics), context))
+
+    def feedback(self, receipt, relevant_source_ids, complete, provenance="user"):
         if (not isinstance(receipt, str) or len(receipt) != 48 or
                 any(char not in "0123456789abcdef" for char in receipt)):
             raise ValueError("Invalid retrieval_id")
@@ -122,56 +294,109 @@ class RetrievalLearning:
                 not 0 <= len(relevant_source_ids) <= 10000 or
                 any(not isinstance(value, str) or not value or len(value) > 4096 for value in relevant_source_ids)):
             raise ValueError("Provide relevant_source_ids and complete=true for explicit complete relevance judgments")
+        if sum(len(value.encode("utf-8")) for value in relevant_source_ids) > self.MAX_LABEL_BYTES:
+            raise ValueError("Relevance judgments exceed the bounded label size")
+        if provenance not in ("self", "model", "user"):
+            raise ValueError("provenance must be model or user (self is a model alias)")
+        provenance = "model" if provenance == "self" else provenance
         relevant = {self.identity(value) for value in relevant_source_ids}
         digest = self.identity(json.dumps(sorted(relevant)))
         with self.lock, self.connect() as connection:
-            row = connection.execute("SELECT context,candidates,cut,eligible,recall,label_digest FROM calls WHERE receipt=?", (receipt,)).fetchone()
+            row = connection.execute("SELECT context,candidates,cut,eligible,recall,label_digest,provenance,version,query_key,id,query_features FROM calls WHERE receipt=?", (receipt,)).fetchone()
             if not row:
                 raise ValueError("Unknown or expired retrieval_id; only the latest 512 model calls are retained")
-            context, serialized, cut, eligible, previous_recall, previous_digest = row
-            if previous_digest:
-                if previous_digest != digest:
-                    raise ValueError("Feedback already recorded with different judgments")
-                return {"ok": True, "recall": previous_recall, "duplicate": True}
+            context, serialized, cut, eligible, previous_recall, previous_digest, previous_provenance, version, query_key, call_id, query_features = row
+            authority = connection.execute(
+                "SELECT receipt,label_digest FROM query_judgments WHERE context=? AND query_key=?",
+                (context, query_key)).fetchone() if query_key is not None else None
+            query_labeled = query_key is not None and connection.execute(
+                "SELECT 1 FROM calls WHERE context=? AND query_key=? AND labels IS NOT NULL LIMIT 1",
+                (context, query_key)).fetchone() is not None
+            enabled = connection.execute("SELECT value FROM settings WHERE key='enabled'").fetchone()[0] == "true"
+            ignored = bool(provenance == "model" and (previous_provenance == "user" or authority))
+            duplicate = bool(previous_digest == digest and previous_provenance == provenance)
+            if provenance == "user" and authority and authority != (receipt, digest):
+                duplicate = False
+            if duplicate or ignored:
+                samples, streak, revision, model_labels, user_labels = connection.execute(
+                    "SELECT samples,safe_streak,revision,model_labels,user_labels FROM models WHERE context=?", (context,)).fetchone()
+                return {"ok": True, "recall": previous_recall, "duplicate": duplicate, "ignored": ignored,
+                        "reason": "user-precedence" if ignored else "duplicate", "trained": False,
+                        "superseded": False, "version": version, "provenance": "user" if ignored else previous_provenance,
+                        "revision": revision, "ranker_revision": revision, "calibrator_revision": revision,
+                        "model_labels": model_labels, "user_labels": user_labels,
+                        **self.calibration_status(enabled, samples, streak)}
             if not eligible:
                 raise ValueError("This call is not eligible for relevance calibration")
+            if not enabled:
+                raise ValueError("Online retrieval learning is disabled")
             candidates = json.loads(serialized)
             retained = {item["id"] for item in candidates[:cut]}
             recall = len(retained & relevant) / len(relevant) if relevant else None
-            slope, bias, threshold, samples, streak = connection.execute(
-                "SELECT slope,bias,threshold,samples,safe_streak FROM models WHERE context=?", (context,)).fetchone()
-            gradients = [(int(item["id"] in relevant) - self.probability(item["x"], slope, bias), item["x"])
-                         for item in candidates]
-            if gradients:
-                slope = max(.1, min(16, slope + .25 * sum(error * x for error, x in gradients) / len(gradients)))
-                bias = max(-12, min(12, bias + .25 * sum(error for error, _ in gradients) / len(gradients)))
-            k, gap = self.gap(candidates)
-            safe = bool(relevant and k and gap >= self.MIN_GAP and relevant.issubset({item["id"] for item in candidates[:k]}))
-            target = max(self.MIN_GAP, gap * .75) if safe else min(.95, max(self.MIN_GAP, gap + .1))
-            threshold = max(self.MIN_GAP, min(.95, .9 * threshold + .1 * target))
-            connection.execute("UPDATE models SET slope=?,bias=?,threshold=?,samples=?,safe_streak=? WHERE context=?",
-                               (slope, bias, threshold, samples + 1, streak + 1 if safe else 0, context))
-            connection.execute("UPDATE calls SET recall=?,label_digest=? WHERE receipt=?", (recall, digest, receipt))
-        return {"ok": True, "recall": recall, "trained": True, "judged_calls": samples + 1}
+            connection.execute("UPDATE calls SET recall=?,label_digest=?,labels=?,provenance=?,version=? WHERE receipt=?",
+                               (recall, digest, json.dumps(sorted(relevant)), provenance, version + 1, receipt))
+            if provenance == "user" and query_key is not None:
+                connection.execute(
+                    "INSERT INTO query_judgments(context,query_key,receipt,call_id,candidates,query_features,labels,label_digest,version) "
+                    "VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(context,query_key) DO UPDATE SET "
+                    "receipt=excluded.receipt,call_id=excluded.call_id,candidates=excluded.candidates,"
+                    "query_features=excluded.query_features,labels=excluded.labels,label_digest=excluded.label_digest,version=excluded.version",
+                    (context, query_key, receipt, call_id, serialized, query_features, json.dumps(sorted(relevant)), digest, version + 1))
+            self.rebuild(connection, context)
+            samples, streak, revision, model_labels, user_labels = connection.execute(
+                "SELECT samples,safe_streak,revision,model_labels,user_labels FROM models WHERE context=?", (context,)).fetchone()
+        return {"ok": True, "recall": recall, "trained": True,
+                "duplicate": False, "ignored": False, "superseded": bool(previous_digest or authority or
+                                                                      provenance == "user" and query_labeled), "version": version + 1,
+                "provenance": provenance, "revision": revision, "ranker_revision": revision, "calibrator_revision": revision,
+                "model_labels": model_labels, "user_labels": user_labels,
+                **self.calibration_status(enabled, samples, streak)}
 
     def summary(self):
         with self.lock, self.connect() as connection:
             enabled = connection.execute("SELECT value FROM settings WHERE key='enabled'").fetchone()[0] == "true"
+            stored_calls = connection.execute("SELECT COUNT(*) FROM calls").fetchone()[0]
+            stored_user_judgments = connection.execute("SELECT COUNT(*) FROM query_judgments").fetchone()[0]
             calls = connection.execute(
-                "SELECT id,context,milliseconds,returned,recall,success FROM calls ORDER BY id DESC LIMIT 256").fetchall()
+                "SELECT c.id,c.context,c.milliseconds,c.returned,c.recall,c.success,c.provenance,c.version,c.brier,c.log_loss,"
+                "CASE WHEN c.labels IS NULL THEN 0 WHEN EXISTS(SELECT 1 FROM query_judgments q "
+                "WHERE q.context=c.context AND q.query_key=c.query_key AND q.receipt<>c.receipt) THEN 0 ELSE 1 END "
+                ",c.candidates,c.cut,c.labels FROM calls c ORDER BY c.id DESC LIMIT 256").fetchall()
             models = []
-            for context, package, corpus, route, slope, bias, threshold, samples, streak in connection.execute(
-                    "SELECT * FROM models WHERE context IN (SELECT context FROM calls ORDER BY id DESC LIMIT 256) ORDER BY rowid DESC LIMIT 16"):
+            for context, package, corpus, route, slope, bias, threshold, samples, streak, weights, revision, model_labels, user_labels, metrics in connection.execute(
+                    "SELECT context,package,corpus,route,slope,bias,threshold,samples,safe_streak,weights,revision,model_labels,user_labels,prequential "
+                    "FROM models WHERE context IN (SELECT context FROM calls ORDER BY id DESC LIMIT 256) ORDER BY rowid DESC LIMIT 16"):
                 models.append({"context": context, "package_id": package, "corpus_revision": corpus, "route": route,
-                               "judged_calls": samples, "safe_streak": streak, "threshold": threshold,
+                               **self.calibration_status(enabled, samples, streak), "threshold": threshold,
                                "baseline": {"slope": self.BASE_SLOPE, "bias": self.BASE_BIAS},
-                               "current": {"slope": slope, "bias": bias}})
+                               "current": {"slope": slope, "bias": bias}, "revision": revision,
+                               "ranker_revision": revision, "calibrator_revision": revision,
+                               "model_labels": model_labels, "user_labels": user_labels,
+                               "ranker": {"features": self.FEATURES, "weights": json.loads(weights),
+                                          "weight_bound": 4.0, "active": bool(enabled and samples)},
+                               "prequential": json.loads(metrics)})
         return {"enabled": enabled, "minimum_judged_calls": self.MIN_JUDGED_CALLS, "models": models,
-                "calls": [{"invocation": i, "context": context, "runtime_ms": ms, "returned_count": count, "recall": recall, "success": bool(success)}
-                          for i, context, ms, count, recall, success in reversed(calls)],
-                "retention": "latest 512 model calls locally; latest 256 shown; no query text",
+                "stored_calls": stored_calls, "stored_user_judgments": stored_user_judgments,
+                "policy": {"minimum_gap": self.MIN_GAP, "retain_probability": self.RETAIN_PROBABILITY,
+                           "discard_probability": self.DISCARD_PROBABILITY, "threshold_ewma": self.THRESHOLD_EWMA,
+                           "retention_calls": self.RETENTION},
+                "calls": [{"invocation": i, "context": context, "runtime_ms": ms, "returned_count": count,
+                           "recall": recall,
+                           "precision": self.precision(candidates, cut, labels),
+                           "success": bool(success), "provenance": provenance, "version": version,
+                           "prequential_brier": brier, "prequential_log_loss": loss, "training_effective": bool(effective)}
+                          for i, context, ms, count, recall, success, provenance, version, brier, loss, effective, candidates, cut, labels in reversed(calls)],
+                "retention": "latest 512 model calls locally; latest 256 shown; latest user authority per context+query persists beyond receipt expiry; no query text",
                 "calibration": "sigmoid(slope * normalized_rank_score + bias); relative to each call's highest absolute score",
-                "learning": "explicit complete relevance judgments only; embedding weights remain frozen"}
+                "learning": "complete self/user relevance judgments train ranker and calibrator; latest user overrides same context+normalized query across receipts; legacy without query key uses receipt precedence; embeddings frozen",
+                "embedding_updated": False}
+
+    @staticmethod
+    def precision(serialized_candidates, cut, serialized_labels):
+        if serialized_labels is None:
+            return None
+        retained = {item["id"] for item in json.loads(serialized_candidates)[:cut]}
+        return len(retained & set(json.loads(serialized_labels))) / len(retained) if retained else None
 
 
 class SolutionManager:
@@ -234,8 +459,11 @@ class SolutionManager:
                 continue
             try:
                 manifest = load_installed(self.directory, root.name, verify=False)
+                encoder_files = manifest["files"]
                 packages.append({
                     "package_id": root.name, "name": manifest["name"],
+                    "encoder_bundle_id": hashlib.sha256(json.dumps(encoder_files, sort_keys=True).encode()).hexdigest()
+                    if encoder_files else None,
                     "architecture": manifest["architecture"], "license": manifest["license"],
                     "validation": manifest["validation"],
                     "bytes": sum(item["bytes"] for item in manifest["files"].values()),
@@ -364,6 +592,7 @@ class SolutionManager:
                 self.build_ms = round((time.perf_counter() - start) * 1000, 2)
                 self.progress = {"phase": "ready", "current": len(versions), "total": len(versions)}
                 self.index = {"reused": getattr(candidate, "index_reused", False),
+                              "statistics": getattr(candidate, "index_statistics", None),
                               "bytes": getattr(candidate, "index_bytes", None), "persistent": True,
                               "embedding_cache_hits": getattr(candidate, "embedding_cache_hits", 0),
                               "embedding_cache_misses": getattr(candidate, "embedding_cache_misses", 0),

@@ -36,6 +36,7 @@ process.on("message", message => {
     });
   } else if (message.type === "hold") {
     hold = true;
+    process.send?.({type:"held", pid:process.pid});
   } else if (message.type === "configure") {
     coordinator.configure([{
       id: "primary",

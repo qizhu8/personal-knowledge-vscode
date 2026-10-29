@@ -158,9 +158,11 @@ assert.match(css, /\[data-workspace="tools"\],\[data-workspace-group="tools"\]\{
 assert.match(css, /\[data-workspace="automation"\],\[data-workspace-group="automation"\]\{--workspace-color:#e25555\}/, "Automation uses a distinct red identity color");
 assert.strictEqual((html.match(/class="workspace-context-title"/g) || []).length, 5, "five non-interactive workspace titles");
 assert.strictEqual((html.match(/class="workspace-context-tabs" role="tablist"/g) || []).length, 5, "each workspace exposes a distinct tab list");
-assert.match(html, /<span class="workspace-context-title">Automation<\/span>[\s\S]*?data-tab="agentSessions">Agent Sessions<\/button>\s*<button[^>]*data-tab="agentSnapshots">Agent Snapshot<\/button>\s*<button[^>]*openActionLibrary\(event\)[^>]*>Action Library<\/button>\s*<button[^>]*data-tab="recipes">Recipe Library<\/button>/, "Automation places Action Library third, immediately before Recipe Library");
-assert.match(bundle, /function openActionLibrary\(event\)[\s\S]*?command:'openActionLibrary'/, "Action Library entry opens the existing durable Action workbench");
-assert.match(extensionSource, /case "openActionLibrary":[\s\S]*?openActionWorkbench\(context, undefined, undefined, true\)/, "extension host opens the library view rather than an unrelated Run");
+assert.match(html, /<span class="workspace-context-title">Automation<\/span>[\s\S]*?data-tab="agentSessions">Agent Sessions<\/button>\s*<button[^>]*data-tab="agentSnapshots">Agent Snapshot<\/button>\s*<button[^>]*data-tab="actionLibrary">Action Library<\/button>\s*<button[^>]*data-tab="recipes">Recipe Library<\/button>/, "Automation places Action Library third, immediately before Recipe Library");
+assert.match(bundle, /const embeddedActionViews = \{ actions:[^\n]*actionLibrary:/, "Library and Workbench retain independent embedded renderers");
+assert.match(extensionSource, /case "openActionLibrary":\s*\{\s*openActionLibrary\(context\);/, "extension host opens the library view rather than an unrelated Run");
+assert.match(fs.readFileSync(path.join(__dirname, "..", "src", "ui", "action-browser.ts"), "utf8"),
+  /export function openActionLibrary\(context[^)]*\)[\s\S]*?executeCommand\("personalKnowledge\.openEmbeddedActionLibrary"/, "Action Library focuses the existing extension panel");
 assert.match(html, /<span class="workspace-context-title">Projects<\/span>[\s\S]*?data-tab="projects">Overview<\/button>[\s\S]*?data-tab="chatroom">Threads<\/button>/, "Projects owns Project Overview and Chatroom Threads navigation");
 assert.match(css, /\.workspace-context-title\{[^}]*font-family:[^}]*font-size:16px/, "workspace headings use distinct display typography");
 assert.match(css, /\.tab\.active::after\{[^}]*background:var\(--accent\)/, "active tabs have a dedicated selection indicator");
@@ -242,7 +244,7 @@ assert.match(css, /\.recipe-graph-canvas,\.agent-runtime-graph,\.agent-tech-tree
 assert.match(css, /\.recipe-graph-node[^}]*\.agent-runtime-node,\.agent-tech-node,\.agent-tech-root\{[^}]*border-top:3px solid var\(--workflow-node-accent\)/, "workflow graph surfaces share the Recipe module card skeleton");
 assert.match(bundle, /knowledge:\['skills','notes','papers'\]/);
 assert.match(bundle, /tools:\['prompts','scripts','packages','environments','servers'\]/);
-assert.match(bundle, /automation:\['agentSessions','agentSnapshots','recipes','actions'\]/);
+assert.match(bundle, /automation:\['userProfile','agentSessions','agentSnapshots','actionLibrary','recipes','actions'\]/);
 assert.match(html, /data-tab="agentSnapshots">Agent Snapshot</);
 assert.match(extensionSource, /case "agentSnapshotCreate"/);
 assert.doesNotMatch(extensionSource, /case "agentSnapshotRotate"/);

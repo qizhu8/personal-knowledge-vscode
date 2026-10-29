@@ -177,3 +177,26 @@ test("cancellation escalates for descendants with closed pipes after the direct 
   await delay(2700);
   assert.equal(fs.existsSync(path.join(root, "closed-pipes-effect")), false);
 }));
+
+test("process evidence survives transient Windows rename denials and still reports persistent failures", () => {
+  const { writeChatProcessRecord } = require("../dist/chat/chat-process-runtime");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-process-record-"));
+  const original = fs.renameSync;
+  try {
+    const handle = "process_" + "a".repeat(64);
+    const record = { schema:"pkm.chat.process/v1", handle, spec:spec(root, ""), state:"running", createdAt:Date.now(), updatedAt:Date.now(), stdoutBytes:0, stderrBytes:0 };
+    let denials = 3;
+    fs.renameSync = (...args) => {
+      if (denials-- > 0) throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code:"EPERM" });
+      return original(...args);
+    };
+    writeChatProcessRecord(root, record);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(root, "record.json"), "utf8")).state, "running");
+    fs.renameSync = () => { throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code:"EPERM" }); };
+    assert.throws(() => writeChatProcessRecord(root, { ...record, state:"complete" }), /EPERM/);
+    assert.deepEqual(fs.readdirSync(root), ["record.json"], "temporary evidence files are removed after a failed replacement");
+  } finally {
+    fs.renameSync = original;
+    fs.rmSync(root, { recursive:true, force:true });
+  }
+});

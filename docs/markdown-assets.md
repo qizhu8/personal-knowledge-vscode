@@ -13,6 +13,28 @@ Mermaid source can remain fenced in the document or be an attached source file.
 Attaching an image does not automatically make it model-visible or send it to a
 vision API.
 
+Browser Markdown previews (Notes, Skills and Research) fit Mermaid diagrams to their container width by default,
+including side-by-side layouts. Each diagram has independent zoom-in, zoom-out,
+Fit width and 100% controls; enlarged diagrams scroll within their own viewport.
+Focus the diagram viewport to use `+` / `-`, `0` (original size) or `F` (fit).
+Fit mode follows container resizing; manual zoom stays unchanged until Fit width
+is selected. These controls do not modify the Markdown source.
+Manual zoom is bounded to 1%-400%. Printing hides the controls, fits media to the
+page and removes viewport height limits so diagrams are not cropped.
+PKM's built-in Markdown previews use the same controls for both Mermaid diagrams
+and ordinary images. Ordinary browser images are unchanged. Static HTML/linked
+exports keep plain SVG diagrams and images without interactive controls.
+
+Use **Fullscreen** to expand a diagram or image to the available browser/webview
+window. The modal keeps keyboard focus inside; **Escape** or **Exit fullscreen**
+restores the original zoom mode, scroll position and control focus. This works
+without requiring the browser's native fullscreen permission.
+Hold **Ctrl** (Windows/Linux) or **Command** (macOS) while scrolling over media to
+zoom around the pointer. Ordinary scrolling remains unchanged. Enlarged media
+can be panned by dragging non-text, non-link areas with the left mouse button.
+Text labels remain selectable; links and controls retain their normal behavior.
+Shift-drag retains selection behavior instead of starting a pan.
+
 ## Navigation and operations
 
 Expand a document in native Navigation to see its resource folder, then its

@@ -158,6 +158,8 @@ class ImportedSkillPath:
         self.embedding_cache_bytes = embedding_cache.target.stat().st_size
         self.embedding_cache_hits = embedding_cache.hits
         self.embedding_cache_misses = embedding_cache.misses
+        from retrieval_solution_index import index_statistics
+        self.index_statistics = index_statistics(self.retriever)
         # Serving queries must not retain the build's cancellation/progress callback.
         self.retriever._encoder = encoder
         report("ready", len(self.documents), len(self.documents))

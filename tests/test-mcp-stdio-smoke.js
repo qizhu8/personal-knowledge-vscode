@@ -192,6 +192,7 @@ async def main(bridge):
                 feedback = by_name["retrieval_feedback"]
                 assert feedback.annotations.readOnlyHint is False
                 assert feedback.inputSchema["properties"]["complete"]["default"] is False
+                assert feedback.inputSchema["properties"]["provenance"]["default"] == "model"
                 for route in ["semantic", "dual", "lexical"]:
                     search = (await client.call_tool("search_knowledge", {"query": "fixture", "limit": 3,
                         "route": route, "capability_source_ids": ["source-0"]})).structured_content
@@ -212,7 +213,10 @@ async def main(bridge):
                     "retrieval_id": "stdio-receipt", "relevant_source_ids": ["source-0"], "complete": True})).structured_content
                 assert trained == {"ok": True, "recall": 1.0}
                 assert bridge.calls[-1] == ("/retrieval-feedback", {"retrieval_id": "stdio-receipt",
-                    "relevant_source_ids": ["source-0"], "complete": True})
+                    "relevant_source_ids": ["source-0"], "complete": True, "provenance": "model"})
+                await client.call_tool("retrieval_feedback", {"retrieval_id": "stdio-receipt",
+                    "relevant_source_ids": [], "complete": True, "provenance": "user"})
+                assert bridge.calls[-1][1]["provenance"] == "user"
                 expired = (await client.call_tool("retrieval_feedback", {
                     "retrieval_id": "expired", "relevant_source_ids": [], "complete": True})).structured_content
                 assert expired["ok"] is False and "expired" in expired["error"]

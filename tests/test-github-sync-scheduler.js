@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 const assert = require("assert");
-const { GitHubSyncScheduler, GitHubSyncDeferredError } = require("../dist/sync/github-sync-scheduler.js");
+const { GitHubSyncScheduler, GitHubSyncDeferredError, GITHUB_SYNC_AUTHENTICATION_RETRY_MS,
+  isGitHubSyncAuthenticationFailure } = require("../dist/sync/github-sync-scheduler.js");
 const { GitHubSyncContentRepairError } = require("../dist/sync/github-sync-content-repair.js");
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
@@ -179,7 +180,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
     clearTimeout: timer => failureTimers.delete(timer.id),
     onAutoPaused: targetId => autoPaused.push(targetId),
     shouldExecute: async () => true,
-    execute: async () => { throw new Error("authentication expired"); }
+    execute: async () => { throw new Error("transient failure"); }
   });
   failing.configure(failingTargets);
   assert.strictEqual(failing.snapshot().paused.status, "paused");
@@ -187,7 +188,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
   await flush();
   await flush();
   assert.strictEqual(failing.snapshot().paused.status, "error", "manual failures remain visible when Auto Sync is off");
-  assert.strictEqual(failing.snapshot().paused.lastError, "authentication expired");
+  assert.strictEqual(failing.snapshot().paused.lastError, "transient failure");
   assert.strictEqual(failing.snapshot().retry.status, "error");
   assert([...failureTimers.values()].some(timer => timer.delay === 9 * 60_000), "a transient failure retries after the configured interval");
   assert.strictEqual(failing.request("retry", "change"), false, "file changes cannot revive a failed backup");
@@ -202,11 +203,94 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
   assert.strictEqual(failureTimers.size, 0, "automatic retries stop after three consecutive failures");
   assert.strictEqual(failingTargets[1].enabled, false, "exhausting automatic retries turns Auto Sync off for the failing target");
   assert.deepStrictEqual(autoPaused, ["retry"], "manual failures do not invoke automatic-pause persistence");
-  assert.strictEqual(failing.snapshot().retry.lastError, "authentication expired", "auto-pause retains the actual failure");
+  assert.strictEqual(failing.snapshot().retry.lastError, "transient failure", "auto-pause retains the actual failure");
   assert.strictEqual(failing.request("retry", "interval"), false, "the exhausted retry budget survives new automatic requests");
   assert.strictEqual(failing.request("retry", "manual"), true, "ordinary manual Sync remains available after auto-pause");
   await flush();
   failing.dispose();
+
+  assert.equal(GITHUB_SYNC_AUTHENTICATION_RETRY_MS, 15 * 60_000);
+  for (const failure of [
+    { error:"VS Code canceled credential access", errorCode:"CREDENTIAL_READ_CANCELED" },
+    { error:"Secret storage unavailable", phase:"authenticating" },
+    { error:"fatal: Authentication failed for https://github.com/example/repo.git" },
+    { error:"Permission denied (publickey)." },
+  ]) assert(isGitHubSyncAuthenticationFailure(failure));
+  assert(!isGitHubSyncAuthenticationFailure({ error:"fetch failed: connection reset", phase:"fetch" }));
+  assert(!isGitHubSyncAuthenticationFailure({ error:"Repository not found", phase:"fetch" }),
+    "an unknown repository is not sufficient evidence of an authentication failure");
+
+  for (const intervalMinutes of [2, 30]) {
+    let clock = Date.parse("2026-10-27T23:00:00Z"), attempts = 0, recovered = false;
+    const authTimers = new Map(), pauses = [];
+    const authTarget = { id:"auth", enabled:true, intervalMinutes, syncOnChange:true };
+    const auth = new GitHubSyncScheduler({
+      now:() => clock,
+      setTimeout:(callback, delay) => {
+        const timer = { id:nextTimer++, unref() {} };
+        authTimers.set(timer.id, {callback, delay}); return timer;
+      },
+      clearTimeout:timer => authTimers.delete(timer.id),
+      onAutoPaused:id => pauses.push(id),
+      execute:async () => {
+        attempts++;
+        if (!recovered) {
+          clock += 10_000;
+          throw Object.assign(new Error("VS Code credential storage is temporarily unavailable"),
+            {code:"CREDENTIAL_READ_TIMEOUT", phase:"authenticating"});
+        }
+      },
+    });
+    auth.configure([authTarget]); await flush();
+    for (let retry = 0; retry < 4; retry++) {
+      assert.equal(authTarget.enabled, true, "authentication failures never switch Auto off after three attempts");
+      assert.equal(auth.snapshot().auth.status, "error");
+      assert.equal(authTimers.size, 1);
+      assert.equal([...authTimers.values()][0].delay, 15 * 60_000,
+        "retry is fifteen minutes after the failed credential read finishes, independent of the configured interval");
+      auth.notifyContentChanged();
+      assert.equal(authTimers.size, 1, "watcher events cannot bypass authentication backoff");
+      assert.equal(auth.request("auth", "configuration"), false);
+      auth.configure([authTarget]);
+      assert.equal([...authTimers.values()][0].delay, 15 * 60_000,
+        "reconfiguration preserves persisted authentication delay even after the ordinary failure budget is exhausted");
+      const [id, timer] = [...authTimers.entries()][0]; authTimers.delete(id);
+      clock += timer.delay; timer.callback(); await flush();
+    }
+    assert.deepEqual(pauses, []);
+    assert.equal(attempts, 5);
+    clock += 4 * 60_000;
+    auth.configure([authTarget]);
+    assert.equal([...authTimers.values()][0].delay, 11 * 60_000,
+      "reload resumes only the remaining delay, without resetting or shortening the fifteen-minute deadline");
+    recovered = true;
+    assert.equal(auth.request("auth", "manual"), true, "manual retry remains immediate");
+    await flush();
+    assert.equal(attempts, 6);
+    assert.equal(authTarget.lastFailure, undefined);
+    assert.equal(auth.snapshot().auth.lastError, undefined);
+    assert.equal(auth.snapshot().auth.status, "scheduled");
+    assert.equal([...authTimers.values()][0].delay, intervalMinutes * 60_000,
+      "success restores the original configured interval instead of retaining the authentication delay");
+    auth.notifyContentChanged();
+    assert([...authTimers.values()].some(timer => timer.delay === 2000), "sync-on-change resumes after recovery");
+    auth.configure([{...authTarget, enabled:false,
+      lastFailure:{at:new Date(clock).toISOString(), error:"Authentication failed", reason:"interval", attempts:3}}]);
+    assert.equal(authTimers.size, 0, "a deliberately disabled target stays off even with a persisted authentication failure");
+    auth.dispose();
+  }
+
+  const fatalAuthTarget = {id:"fatal", enabled:true, intervalMinutes:2, syncOnChange:true};
+  const fatalAuth = new GitHubSyncScheduler({
+    shouldRetryFailure:() => false,
+    execute:async () => { throw Object.assign(new Error("Authentication failed; recovery record was NOT saved"), {phase:"authenticating"}); },
+  });
+  fatalAuth.configure([fatalAuthTarget]); await flush();
+  assert.equal(fatalAuthTarget.enabled, false, "an explicit unsafe-to-retry decision overrides the authentication backoff");
+  assert.equal(fatalAuthTarget.lastFailure.retryable, false);
+  fatalAuth.configure([{...fatalAuthTarget, enabled:true}]);
+  assert.equal(fatalAuth.snapshot().fatal.nextSyncAt, undefined, "reload must preserve a fatal failure's no-retry decision");
+  fatalAuth.dispose();
 
   const deferredTimers = new Map();
   const deferredTarget = { id: "offline", enabled: true, intervalMinutes: 5, syncOnChange: true };

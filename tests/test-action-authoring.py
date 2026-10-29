@@ -23,8 +23,10 @@ class Authoring(unittest.TestCase):
     def test_review_first_validation_admits_only_after_smoke_passes(self):
         agent = ModuleRuntime(self.runtime.store, proposal_mode=True)
         proposal = agent.register(self.example)
-        report = {"approved": True, "summary": "Controlled echo; no external effects.", "issues": [], "model": "fixture-reviewer"}
+        report = {"approved": False, "user_confirmed": True, "summary": "User acknowledged the stated risk.",
+                  "issues": ["Implementation context is incomplete."], "model": "fixture-reviewer"}
         review = agent.qualification_review(proposal["action_id"], proposal["content_hash"], proposal["proposal_id"])
+        self.assertEqual(review["validation_kind"], "risk-review")
         self.assertFalse((agent.registry / (proposal["action_id"] + ".json")).exists())
         result = agent.qualification_execute(proposal["action_id"], proposal["content_hash"], review["snapshot_hash"],
                                              report, proposal["proposal_id"])
@@ -33,9 +35,10 @@ class Authoring(unittest.TestCase):
         result = agent.qualification_admit(result["attempt_id"])
         self.assertTrue(result["registered"])
         self.assertEqual(agent.availability(proposal["action_id"])["state"], "ready")
+        self.assertEqual(result["report"]["issues"], report["issues"])
         self.assertEqual(agent.proposal_list()["proposals"], [])
 
-    def test_failed_review_or_smoke_does_not_replace_previous_approved_version(self):
+    def test_unconfirmed_risks_or_failed_smoke_do_not_replace_previous_approved_version(self):
         original = self.runtime.register(self.example)
         self.grant(original)
         self.assertTrue(self.runtime.validate(original["action_id"], original["content_hash"])["ok"])
@@ -45,12 +48,12 @@ class Authoring(unittest.TestCase):
         agent = ModuleRuntime(self.runtime.store, proposal_mode=True)
         proposal = agent.register(updated)
         review = agent.qualification_review(proposal["action_id"], proposal["content_hash"], proposal["proposal_id"])
-        report = {"approved": False, "summary": "Invalid test.", "issues": ["Incorrect expected output"], "model": "fixture"}
+        report = {"approved": False, "user_confirmed": False, "summary": "Invalid test.", "issues": ["Incorrect expected output"], "model": "fixture"}
         with patch.object(ModuleRuntime, "validate", side_effect=AssertionError("failed review must not execute")):
-            with self.assertRaisesRegex(PermissionError, "Code review did not pass"):
+            with self.assertRaisesRegex(PermissionError, "Confirm the risk notice"):
                 agent.qualification_execute(proposal["action_id"], proposal["content_hash"], review["snapshot_hash"],
                                              report, proposal["proposal_id"])
-        report.update(approved=True, issues=[])
+        report.update(user_confirmed=True)
         with self.assertRaisesRegex(ValueError, "Smoke tests failed"):
             agent.qualification_execute(proposal["action_id"], proposal["content_hash"], review["snapshot_hash"],
                                          report, proposal["proposal_id"])
@@ -70,7 +73,7 @@ class Authoring(unittest.TestCase):
                       "source_files": [str(builder)], "outputs": ["echo.py"]}}
         agent = ModuleRuntime(self.runtime.store, proposal_mode=True)
         proposal = agent.register(definition)
-        report = {"approved": True, "issues": [], "summary": "Fixture build reviewed", "model": "fixture"}
+        report = {"user_confirmed": True, "issues": [], "summary": "Fixture build reviewed", "model": "fixture"}
         review = agent.qualification_review(proposal["action_id"], proposal["content_hash"], proposal["proposal_id"])
         builder.write_text(builder.read_text() + "\n")
         with patch.object(ModuleRuntime, "validate", side_effect=AssertionError("changed source cannot execute")):

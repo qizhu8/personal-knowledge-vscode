@@ -26,6 +26,9 @@ import { agentSnapshotRecovery, AgentSnapshotContents, AgentSnapshotSummary } fr
 import { assertHarnessRecipeBinding, currentHarnessTaskState, HarnessBinding } from "./chat-harness-records";
 import { copilotCreditSummary } from "./api-chat-models";
 import { validTaskContextCheckpoint, type TaskContextCheckpoint } from "./task-context-checkpoint";
+import { validPortalTaskLink, type PortalTaskLink } from "./portal-task-attempts";
+import { validPortalCommandRecords } from "./portal-command-activity";
+import { validPortalTransferRecords } from "./portal-transfer-activity";
 
 export interface ChatContext { id: string; label: string; content: string; }
 export interface QueuedChatInput { id: string; text: string; mode: "steer" | "task"; editToken?: string; attemptId?: string; executionContext?: ChatExecutionContext; portalReview?: PortalReview; }
@@ -67,6 +70,22 @@ export interface ApiChatProgress {
     kind?: "model" | "tool"; round?: number; toolCallId?: string; finishedAt?: number;
     category?: "llm" | "cmd" | "info"; operation?: "inference" | "token-count" | "model-access" | "retrieval" | "preparation" | "command" | "display" }>;
 }
+type ApiChatProgressStep = ApiChatProgress["steps"][number];
+
+/**
+ * Settles earlier steps before `next` is appended. Tool steps finish only on their own
+ * Completed/Failed event, so approvals or other stages during a running tool cannot mark it complete.
+ */
+export function settleProgressSteps(steps: ApiChatProgressStep[], next: Pick<ApiChatProgressStep, "label" | "toolCallId" | "operation">, now = Date.now()): void {
+  const previous = steps[steps.length - 1];
+  if (previous && ["running", "waiting"].includes(previous.status || "") && !(previous.kind === "tool" && previous.toolCallId)
+    && !(previous.operation === "inference" && next.operation === "token-count")) { previous.status = "complete"; previous.finishedAt = now; }
+  const outcome = next.toolCallId && /^(Completed|Failed) tool:/.exec(next.label)?.[1];
+  if (outcome) for (const step of steps) if (step.toolCallId === next.toolCallId && ["running", "waiting"].includes(step.status || "")) {
+    step.status = outcome === "Failed" ? "failed" : "complete"; step.finishedAt = now;
+  }
+}
+
 export interface ChatPlanningPossibility {
   id: string;
   parentId?: string;
@@ -96,6 +115,7 @@ export interface ChatMemoryRecord {
 }
 export interface ChatMessage {
   profileContext?: PersonaSnapshot;
+  profileRequirementRecall?: import("./user-profile-fragments").ProfileRequirementRecall;
   id: string;
   recordedAt?: string;
   executionContext?: ChatExecutionContext;
@@ -121,16 +141,19 @@ export interface ChatMessage {
   fromSessionId?: string;
   fromChatId?: string;
   portalSource?: import("../chatroom/portal-runtime").PortalSource;
+  portalTask?: PortalTaskLink;
   portalReview?: PortalReview;
   delegationId?: string;
   delegations?: ChatDelegation[];
   submissionId?: string;
   inputKind?: "steer" | "task";
+  inputOrigin?: "local-user" | "agent";
   workerEventIds?: string[];
   unattributedFileChanges?: boolean;
   elapsedMs?: number;
   usage?: import("./api-chat-models").ChatTokenUsage;
   auxiliaryModelUsage?: Array<{ usage?: import("./api-chat-models").ChatTokenUsage }>;
+  retrievalLearning?: import("./chat-retrieval-learning").RetrievalLearningReceipt;
   usageMetadata?: { frames: number; validFrames: number; invalidFrames: number };
   estimatedCost?: number;
   currency?: string;
@@ -182,6 +205,8 @@ export interface ApiConversation {
   mcpServers?: import("./api-chat-mcp").ApiChatMcpServer[];
   workerState?: ChatWorkerState;
   workerActivity?: WorkerActivity;
+  portalCommands?: import("./portal-command-activity").PortalCommandRecord[];
+  portalTransfers?: import("./portal-transfer-activity").PortalTransferRecord[];
 }
 
 export function chatHistoryPage(chat: ApiConversation, beforeId?: string) {
@@ -235,7 +260,13 @@ export function apiChatContextSummary(message: ChatMessage) {
     retrieval: { candidateCount: candidates.length, selectedCount: message.retrieval?.selectedCount || 0,
       selectedKinds: Object.fromEntries([...kinds].slice(0, 8)), omittedKinds: Math.max(0, kinds.size - 8),
       warningPresent: !!message.retrieval?.warning,
+      onlineLearning:message.retrieval?.invocation?.onlineLearning,
     },
+    learning:message.retrievalLearning ? {
+      status:message.retrievalLearning.status, provenance:message.retrievalLearning.provenance,
+      judgedSources:message.retrievalLearning.judgedSources, relevantSources:message.retrievalLearning.relevantSources,
+      error:message.retrievalLearning.error, acknowledgment:message.retrievalLearning.acknowledgment,
+    } : undefined,
     evidence: "Full source identities, hashes and manifests are retained locally in the Chat retrieval inspector; not included in this summary.",
   };
 }
@@ -366,6 +397,7 @@ export function apiChatHarnessSnapshot(chat: ApiConversation, fullResults = fals
       })),
       reasoningSummaries: message.reasoningSummaries,
       profileContext: message.profileContext,
+      profileRequirementRecall: message.profileRequirementRecall,
       associatedProblem: input?.content || "",
       problemSource: input?.workerEventIds?.length ? "worker-event" : input?.inputKind || "user-input",
       planning: message.planning ? {
@@ -927,7 +959,9 @@ export class ApiChatStore {
         || message.executionContext !== undefined && !validExecutionContext(message.executionContext)
         || message.profileContext !== undefined && !validPersonaSnapshot(message.profileContext)
         || message.portalSource !== undefined && !validPortalSource(message.portalSource)
+        || message.portalTask !== undefined && (message.role !== "assistant" || !validPortalTaskLink(message.portalTask))
         || message.portalReview !== undefined && !validPortalReview(message.portalReview)
+        || message.inputOrigin !== undefined && !["local-user", "agent"].includes(message.inputOrigin)
         || message.taskId !== undefined && (typeof message.taskId !== "string" || message.taskId.length > 128)
         || message.retrieval !== undefined && !validChatRetrievalReceipt(message.retrieval, chat.id)
         || message.retrievalActivity !== undefined && !validChatRetrievalActivity(message.retrievalActivity, chat.id)
@@ -975,6 +1009,8 @@ export class ApiChatStore {
           || chat.debugRequest.evidenceCallIds.length > 32 || chat.debugRequest.evidenceCallIds.some(id => typeof id !== "string" || id.length > 200)))
       || chat.memoryTasks !== undefined && (!Array.isArray(chat.memoryTasks) || chat.memoryTasks.length > 4096 || chat.memoryTasks.some(task => !task || typeof task.id !== "string" || task.id.length > 128 || typeof task.title !== "string" || task.title.length > 512 || typeof task.createdAt !== "string" || !Number.isFinite(Date.parse(task.createdAt))))
       || chat.paused !== undefined && typeof chat.paused !== "boolean"
+      || chat.portalCommands !== undefined && !validPortalCommandRecords(chat.portalCommands)
+      || chat.portalTransfers !== undefined && !validPortalTransferRecords(chat.portalTransfers)
       || chat.workerActivity !== undefined && !validWorkerActivity(chat.workerActivity)
       || chat.workerState !== undefined && (!chat.workerState || !/^[a-f0-9-]{36}$/.test(chat.workerState.treeId)
         || !validExecutionContext(chat.workerState.executionContext) || typeof chat.workerState.sleeping !== "boolean" || typeof chat.workerState.stopped !== "boolean"

@@ -141,7 +141,12 @@ for (const width of [1280, 390]) test(`Memory observation chain: real levels, pr
   await page.locator(`[data-chat-id="${managerId}"] > .pkm-vis-treerow`).click();
   await page.getByRole("navigation", { name:"Dashboard views" }).getByRole("button", { name:/^Memory/ }).click();
   const detail = page.locator(".pkm-vis-main-detail");
-  const pyramid = detail.getByRole("group",{name:"Stored Memory pyramid",exact:true});
+  const tiers = detail.getByRole("group",{name:"Cache / Memory / Disk tiers",exact:true});
+  await tiers.waitFor();
+  assert.equal(await tiers.locator("[data-memory-tier]").count(),3);
+  assert.match(await tiers.locator('[data-memory-tier=cache]').getAttribute("aria-label"),/1 recorded messages/);
+  await detail.getByText("Inside Memory: stored abstraction levels and evidence",{exact:true}).click();
+  const pyramid = detail.getByRole("group",{name:"Stored Memory Piece abstraction graph",exact:true});
   await pyramid.waitFor();
   assert.equal(await pyramid.locator(".pkm-harness-memory-edge").count(),1);
   assert.equal(await pyramid.locator('[data-memory-state=sent]').count(),1);

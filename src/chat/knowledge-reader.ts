@@ -24,6 +24,12 @@ export function automaticChatSkills(query: string) {
 
 export const CHAT_KNOWLEDGE_KINDS = ["note", "skill", "research", "script", "recipe", "subscription"] as const;
 
+export function explicitlyMentionedKnowledgeTitle(query: string, title: string): boolean {
+  const normalize = (value:string) => value.normalize("NFKC").toLowerCase().trim().replace(/[\s_-]+/g, " ");
+  const name = normalize(title), text = normalize(query);
+  return name.length >= 6 && text.includes(name);
+}
+
 export const CHAT_ASSET_CURATION_GUIDANCE = [
   "Knowledge stewardship for substantive Tasks: search existing knowledge before proposing a new reusable asset; read candidate sources and reuse or update rather than duplicate.",
   "Distinguish evidence Notes and Papers, reusable procedural Skills, executable Scripts and typed Components, contract-validated Actions, and multi-step orchestration Recipes. This is a choice of abstraction and reuse, not a compulsory promotion ladder.",
@@ -47,19 +53,35 @@ export function readChatKnowledge(name: string, kind: string, value: string,
   const subscribed = kind === "subscription" ? readSnapshot!().documents.filter(document =>
     document.content_type === "subscription" && document.visibility === "available") : [];
   const recipes = kind === "recipe" ? new RecipeFilesystemStore(path.join(getStorePath(), ".pkm", "state")).list().recipes : [];
-  const items = kind === "recipe" ? recipes.map(item => ({ id: item.recipeId, title: item.name, category: item.category || "" }))
-    : kind === "subscription" ? subscribed.map(item => ({ id:item.source_id, title:item.title, category:item.metadata.category || "" }))
-    : kind === "script" ? scriptList().map(item => ({ id:item.path, title:item.file, category:item.category }))
+  const items = kind === "recipe" ? recipes.map(item => ({ id: item.recipeId, title: item.name, category: item.category || "", sourceId:`pkm://knowledge/${item.knowledgeId}` }))
+    : kind === "subscription" ? subscribed.map(item => ({ id:item.source_id, title:item.title, category:item.metadata.category || "", sourceId:item.source_id }))
+    : kind === "script" ? scriptList().map(item => ({ id:item.path, title:item.file, category:item.category, sourceId:"" }))
     : (kind === "note" ? noteList(undefined, Number.MAX_SAFE_INTEGER) : kind === "research" ? paperList() : skillList())
-      .map(item => ({ id: String(kind === "skill" ? item.name : item.slug), title: String(kind === "skill" ? item.name : item.title), category: String(item.category || "") }));
+      .map(item => {
+        const id = String(kind === "skill" ? item.name : item.slug);
+        return { id, title:String(kind === "skill" ? item.name : item.title), category:String(item.category || ""),
+          sourceId:item.knowledgeId ? `pkm://knowledge/${item.knowledgeId}`
+            : `pkm://${kind === "skill" ? "skills" : kind === "research" ? "research" : "notes"}/${id.split("/").map(encodeURIComponent).join("/")}` };
+      });
   if (name === "pkm_search") {
-    const matches = items.filter(item => `${item.id} ${item.title} ${item.category}`.toLowerCase().includes(value.toLowerCase()));
+    const terms = memoryTerms(value);
+    const matches = items.map(item => {
+      const fields = `${item.id} ${item.title} ${item.category}`.toLowerCase();
+      const score = (fields.includes(value.toLowerCase()) ? 10_000 : 0)
+        + (explicitlyMentionedKnowledgeTitle(value, item.title) ? 1000 : 0) + memoryMatchScore(fields, terms);
+      return { item, score };
+    }).filter(match => match.score > 0).sort((a, b) => b.score - a.score).map(match => match.item);
     const selected = matches.slice(0, 12);
     if (selected.some(item => item.id.length > 2048)) throw new Error("A matching knowledge identity exceeds the 2,048-character tool limit; it was not silently shortened.");
     const result = { items:selected.map(item => ({ id: item.id, title: item.title.slice(0, 256), category: item.category.slice(0, 128) })), truncated:matches.length > 12 };
     while (JSON.stringify(result).length > 16_000 && result.items.length) { result.items.pop(); result.truncated = true; }
     return JSON.stringify(result);
   }
+  const canonical = items.filter(item => item.sourceId === value
+    || /^knowledge_[A-Za-z0-9._-]+$/.test(value) && item.sourceId === `pkm://knowledge/${value}`);
+  if (canonical.length > 1) throw new Error("Canonical knowledge identity is ambiguous; use an exact local identity returned by pkm_search.");
+  const resolvedScript = kind === "script" && value.startsWith("pkm://") ? scriptGet(value) : undefined;
+  value = resolvedScript?.path || canonical[0]?.id || value;
   if (!items.some(item => item.id === value)) throw new Error("Choose an existing local knowledge identity returned by pkm_search.");
   if (kind === "recipe") {
     const recipe = recipes.find(item => item.recipeId === value)!;
@@ -73,7 +95,7 @@ export function readChatKnowledge(name: string, kind: string, value: string,
       totalCharacters:content.length, offsetEncoding:"utf16", readOnly:true, executableDigest:recipe.executableDigest }, options);
   }
   const record = kind === "note" ? noteGet(value) : kind === "research" ? paperGet(value)
-    : kind === "script" ? scriptGet(value) : kind === "subscription" ? (() => {
+    : kind === "script" ? resolvedScript || scriptGet(value) : kind === "subscription" ? (() => {
       const document = subscribed.find(item => item.source_id === value)!;
       return { content:document.body, revision:document.source_revision, sourceId:document.source_id,
         provenance:document.provenance, readOnly:true };

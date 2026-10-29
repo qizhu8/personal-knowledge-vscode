@@ -10,7 +10,7 @@ const { GitHubSyncConflictError, GitHubSyncExtensionCompatibilityError, githubSy
 const { PkmServiceRecoveryPersistenceError } = require("../dist/runtime/pkm-service.js");
 const { sameKnowledgeRoot } = require("../dist/sync/github-sync-coordinator.js");
 const { GitHubSyncContentRepairError } = require("../dist/sync/github-sync-content-repair.js");
-const { GitHubSyncDeferredError, githubSyncFailureDetails } = require("../dist/sync/github-sync-scheduler.js");
+const { GitHubSyncDeferredError, githubSyncFailureDetails, isGitHubSyncAuthenticationFailure } = require("../dist/sync/github-sync-scheduler.js");
 
 const extension = fs.readFileSync(path.join(__dirname, "../src/extension.ts"), "utf8");
 const start = extension.indexOf("async function finalizeGitHubSyncServiceResult(");
@@ -49,7 +49,7 @@ const context = vm.createContext({
   githubSyncScheduler: undefined, githubSyncCoordinatorStatePath: undefined,
   githubSyncTasks: new Map(), githubSyncForceUpdateAudit: new Map(),
   path, os, randomUUID, createHash, sameKnowledgeRoot, githubSyncResultIsNoChange, GitHubSyncConflictError, GitHubSyncExtensionCompatibilityError, PkmServiceRecoveryPersistenceError,
-  GitHubSyncContentRepairError, GitHubSyncDeferredError, githubSyncFailureDetails,
+  GitHubSyncContentRepairError, GitHubSyncDeferredError, githubSyncFailureDetails, isGitHubSyncAuthenticationFailure,
   readGitHubSyncContentRepair: (_directory, targetId) => repairRecords.get(targetId),
   clearGitHubSyncContentRepair: (_directory, targetId) => { calls.push(["clear-repair"]); repairRecords.delete(targetId); },
   storeGitHubSyncContentRepair: (_directory, error) => {
@@ -95,6 +95,7 @@ const context = vm.createContext({
     calls.push(["validate-receipt"]);
   },
   completeGitHubSyncTransaction: () => calls.push(["complete-receipt"]),
+  archiveSupersededGitHubSyncResult: () => undefined,
   clearGitHubSyncConflict: () => calls.push(["clear-conflict"]),
   storeGitHubSyncConflict: () => calls.push(["store-conflict"]),
   refreshKnowledgeInventory: async () => calls.push(["refresh-inventory"]),
@@ -207,6 +208,37 @@ context.extensionContext = {
   assert.equal(client.receipts.length, 0, "known deferred failures can be acknowledged without another operation");
   assert.equal(target.lastFailure, failureBeforeDeferredRecovery);
   delete client.recoveryError;
+  const originalArchive = context.archiveSupersededGitHubSyncResult;
+  for (const partial of [false, true]) {
+    calls.length = 0;
+    client.receipts = [{ operationId: `superseded-${partial}`, targetId: target.id,
+      outcome: partial ? "error" : "success", reason: "manual", repository: target.repository, branch: target.branch }];
+    context.archiveSupersededGitHubSyncResult = (_state, receipt, current, recovered) => {
+      assert.equal(current, target);
+      assert.equal(recovered, result);
+      calls.push(["archive", receipt.operationId]);
+      return "/preserved/superseded.json";
+    };
+    if (partial) {
+      client.recoveryError = new GitHubSyncConflictError(result.commit, [], [], [], {}, [], []);
+      client.recoveryError.partialResult = result;
+    }
+    await context.recoverGitHubSyncServiceResults(context.extensionContext, client);
+    assert.deepEqual(calls.filter(call => ["archive", "acknowledge"].includes(call[0])).map(call=>call[0]),
+      ["archive", "acknowledge"], "durable archival precedes acknowledging superseded results");
+    assert(!calls.some(call => ["recipe-pulls", "recipe-deletes", "store-conflict", "clear-conflict",
+      "complete-receipt", "service-sync", "refresh-inventory"].includes(call[0])),
+      "superseded results never roll back current content or conflict choices and never repeat Git");
+    assert.equal(client.receipts.length, 0);
+    delete client.recoveryError;
+  }
+  context.archiveSupersededGitHubSyncResult = () => { throw new Error("archive disk failure"); };
+  client.receipts = [{ operationId: "archive-failed", targetId: target.id, outcome: "success",
+    reason: "manual", repository: target.repository, branch: target.branch }];
+  await assert.rejects(() => context.recoverGitHubSyncServiceResults(context.extensionContext, client), /archive disk failure/);
+  assert.equal(client.receipts.length, 1, "failed archival cannot acknowledge or remove the original result");
+  context.archiveSupersededGitHubSyncResult = originalArchive;
+  client.receipts = [];
   client.receipts = [{ operationId: "disconnected-conflict", targetId: "primary", outcome: "error",
     reason: "manual", repository: target.repository, branch: target.branch }];
   client.recoveryError = new GitHubSyncConflictError("a".repeat(40), [{

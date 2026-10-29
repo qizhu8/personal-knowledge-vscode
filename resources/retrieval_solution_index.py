@@ -128,6 +128,19 @@ def scoped_index(retriever, allowed_versions):
     return view
 
 
+def index_statistics(retriever):
+    """Observe admitted index contents, not estimates or API passage counts."""
+    return {
+        "document_count": len(retriever._documents),
+        "document_vector_count": len(retriever._document_vectors),
+        "unit_count": len(retriever._units),
+        "unit_source_count": len({document for document, _ in retriever._units}),
+        "unit_vector_count": len(retriever._unit_vectors),
+        "token_vector_count": sum(len(vectors) for vectors in retriever._token_vectors),
+        "granularity": retriever.architecture.output_granularity,
+    }
+
+
 def cache_key(identity, documents):
     from adaptive_skill_retrieval import architecture_retriever
     implementation = hashlib.sha256(Path(architecture_retriever.__file__).read_bytes() + Path(__file__).read_bytes()).hexdigest()

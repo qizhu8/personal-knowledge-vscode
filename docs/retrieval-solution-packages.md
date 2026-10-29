@@ -3,7 +3,8 @@
 Ordinary installations continue to use Exact/BM25. No model weights are bundled
 in the extension or downloaded automatically. Users can explicitly download the
 pinned default model from Hugging Face, import that model from a local directory,
-or import a complete offline solution ZIP. PKM never trains these weights.
+or import a complete offline solution ZIP. PKM never trains embedding weights.
+Local online learning updates only a separate bounded ranker and sigmoid calibrator.
 
 ## Export from Retrieval Observatory
 
@@ -84,8 +85,9 @@ the displayed calibration function, not the invocation history.
 Calls with no invoked model, including unconfigured
 lexical fallback and empty capability scopes, do not increment the sequence.
 No query text, paths, document content, or raw source IDs are collected by this
-learning history. It retains 512 calls, displays at most 256, and retains only
-models referenced by those calls. Call sequence numbers remain monotonic across
+learning history. It retains 512 calls, displays at most 256, and retains
+models referenced by those calls or persistent user query authorities.
+Call sequence numbers remain monotonic across
 restart and pruning.
 
 History refreshes every ten seconds only while the model-enabled performance
@@ -95,37 +97,168 @@ until an explicit refresh succeeds; late or mismatched responses are ignored.
 Older workers without learning history remain usable for existing retrieval.
 
 `retrieval_feedback(retrieval_id, relevant_source_ids, complete=true)` is a local
-write. The caller must explicitly judge the relevant canonical source IDs,
+write. The worker HTTP endpoint `/retrieval-feedback` accepts the same fields and
+optional `provenance: "model" | "user"` (default `"user"`, preserving older callers;
+`"self"` is accepted as an alias for `"model"`).
+The caller must judge the relevant canonical source IDs,
 including known missed items. Recall is retained-relevant / all-declared-relevant.
 Missing or incomplete judgments are not inferred from usage, task success, or
 silence. Complete all-negative judgments can train calibration, but Recall has
 no denominator and remains unavailable. Repeated identical feedback is
-idempotent; conflicting second feedback and unknown/expired receipts fail
-explicitly.
+idempotent. Explicit complete model self-evaluations (`"self"`) are training truth
+unless overridden by a user; the canonical acknowledgement provenance is `"model"`.
+Task success, reading a source, and usage are never
+labels. User corrections can replace either an earlier self judgment or an
+earlier user judgment. Later model feedback cannot overwrite a user judgment, including on another
+receipt for the same normalized query in the same model/corpus/route context.
+Query identity is a salted hash of the full case-folded query with whitespace
+collapsed (not a hash of only its first tokens). The latest complete user
+judgment for that identity is authoritative: replay excludes **all** earlier
+model examples and older user judgments for that query, while preserving retained
+receipt/provenance audit. `training_effective` on each history call distinguishes
+effective examples from superseded audit. User/model counts describe effective
+training examples, so repeated corrections for one query count as one user label.
+Different queries and contexts remain independent.
+Acknowledgements include `provenance`, `version`, `superseded`, `duplicate`,
+`ignored`, `ranker_revision`, `model_labels`, and `user_labels`; precedence rejection
+returns `ignored: true`, `trained: false`, `reason: "user-precedence"`.
+Unknown/expired receipts and invalid provenance fail explicitly.
+The feedback acknowledgement reports the updated judgment count, consecutive
+safe-judgment streak and whether this context has reached the adaptive-readiness
+gate. “Ready” means eight safe judgments for that model/corpus/route context;
+it does not promise that a later query will be truncated. Each query's `adaptive`
+result says whether its own score gap passed the gate.
 
 The calibration plot compares the actual initialized sigmoid (slope 4, bias -2)
-with the persisted current sigmoid. The input is the rank score divided by that
-call's maximum absolute score, clamped to [0,1]. Explicit complete judgments
-update only slope and bias through bounded logistic-gradient steps. The curve is
+with the persisted current sigmoid. Baseline scores are divided by each call's
+maximum absolute score and clamped to [0,1]. A 512-parameter hashed-feature ranker
+learns source identity and query/source interactions; its weights are bounded to
+[-4,4], with a bounded residual added to the baseline score. The current ranker
+reranks the next eligible query, including after worker restart. Returned trained
+scores are normalized learned scores, with the original score in `base_score`.
+Learned hits advertise `score_semantics: "engine-defined"` and `learned_score`;
+`base_score_semantics` preserves the original semantics (including `"rrf"`).
+Raw per-path scores/ranks/evidence are unchanged. Learning reranks the full
+admitted candidate pool before applying the caller's delivered Top-K limit,
+so a learned item below the baseline Top-K can enter the selected results.
+The calibrator trains on the **current reranked score**, before updating either
+component, not on the obsolete embedding score. Complete judgments update both
+ranker weights and sigmoid slope/bias through bounded logistic updates. The curve is
 an estimated relevance mapping, **not** measured accuracy or embedding training.
 Before the first update, it says **Not Trained Yet**; overlapping curves do not
 mean training has happened. Calibration and gap thresholds are isolated by model
 release, corpus revision, route, and score semantics.
 
-Adaptive Result Count defaults on and has an explicit off switch. It never
+Only salted source hashes, a salted normalized-query identity, and up to 16
+salted query-token hashes are retained;
+there is no raw query, source ID, document content, or embedding write. A receipt
+stores at most 256 candidate features. Feedback permits at most 10,000 IDs,
+4,096 characters per ID and 256 KiB combined UTF-8 labels; queries longer than
+8,192 characters cannot train or rerank. Corrections deterministically rebuild
+the context from its retained effective labels, replacing the old gradient rather
+than layering a correction on top. Pruning labeled receipts likewise rebuilds
+their context, so expired non-authoritative labels leave no residual training.
+The latest user authority per context/query persists independently of the
+512-call history, including its hashed labels and bounded candidate-feature
+snapshot; it continues blocking model feedback and remains one effective training
+example after its original receipt expires. Disabling learning does not delete
+these authorities. This separate human-authority registry grows only on explicit
+user judgments for new context/query identities, not on model feedback.
+Legacy calibration without replayable labels resets to baseline on migration.
+Existing receipt rows without an exact query key retain receipt-only precedence:
+the full query cannot be reconstructed from their token hashes, and migration
+never invents it. A new complete user judgment on a newly issued keyed receipt
+establishes cross-receipt protection for that query.
+
+Learning status exposes bounded weights, ranker/calibrator revisions, self/user
+label counts, and prequential Brier/log-loss. These metrics evaluate each retained
+label **before** its update during chronological replay, never training accuracy;
+corrections recompute the retained stream, not immutable historical quality.
+Search metadata `online_learning` reports `enabled`, `applied`, `revision`,
+`ranker_revision`, `calibrator_revision`, and `embedding_updated: false`.
+
+Adaptive Result Count / online learning defaults on and has an explicit off
+switch (`POST /retrieval-learning` with `{"enabled":false}`). This is also the
+rollback gate: it restores original scores, ordering and counts, suppresses trained
+reranking, and rejects new training until enabled again; persisted state remains
+available for re-enabling. It never
 raises or globally replaces the caller's limit. The worker preserves internal
 candidate oversampling separately from the delivered limit, so MCP overfetch is
 not mistaken for a request for more results.
 
-Truncation requires eight consecutive explicitly judged safe proposals in that
+Truncation requires eight consecutive completely judged safe proposals in that
 context, a normalized score gap of at least the learned threshold (floor 0.15),
 and calibrated estimates of at least 0.65 for the last retained result and at
 most 0.35 for the first discarded result. Threshold targets are smoothed by
 EWMA (0.9 old + 0.1 observed). Missed relevant results reset eligibility.
-Exact terms and highest/required priorities are protected; unavailable/fallback
-model paths, insufficient feedback, disabled adaptation, or no clear cliff keep
+Exact terms and highest/required priorities are protected from both reranking and
+truncation; invalid/unsorted scores and unavailable/fallback model paths cannot
+train. Insufficient feedback, disabled adaptation, or no clear cliff keep
 the original result limit. This is a conservative heuristic, **not a Recall
 guarantee**. Returned counts do not by themselves quantify tokens saved.
+
+### Router workflow and observations
+
+Router's **Retrieval & Performance** tab shows the implemented workflow even
+without an enabled embedding model:
+
+```
+Assets -> frozen encoder A -> admitted index A
+Query + route -> similarity/fusion -> online ranker -> calibrator -> threshold -> L1 results
+Results -> complete judgments -> hashed receipts -> ranker/calibrator/threshold updates
+```
+
+Default keyword routing bypasses the embedding/learning stages. Query encoding
+uses the active encoder, and dual routing fuses scores with RRF(k=60) before
+learned reranking. The calibration plot belongs to the stage **after** the online
+ranker and **before** thresholding. The compact graph shows the shared document/
+query encoder, index, dual-fusion branch, lexical bypass and judgment loop.
+Hover or focus a node for its explanation; click it to update one inspector
+below the graph, without jumping to another section.
+
+The inspector has **Parameters / Controls / Graphs / Metrics** tabs. Selection,
+active tab, diagram scroll and focused controls survive observational refreshes.
+Parameters show actual counts, revisions and policy values; unsupported values
+remain unreported. Controls reuse the real model lifecycle and adaptive-learning
+switch, not decorative sliders. Graphs show stage-specific calibration,
+index contents, pre-update losses or result counts. Metrics are scoped to the
+selected package, corpus and route; worker-wide latency is not presented as an
+isolated stage measurement. Arrow/Home/End navigation operates the detail tabs.
+
+Ready L1 sources, admitted model documents, internal index units, their source
+coverage, document/unit/token vector counts and granularity have distinct
+meanings. These counts observe built/restored arrays, not resource-plan
+estimates. Internal markdown sections can share a source and are not the API's
+L2 passage table. Worker responses are L1 sources; separate source-range
+materialization provides L2 evidence. No persisted L2 passage/file count is
+invented. Older workers, unavailable indexes and unmanaged frozen releases may
+not report internal counts; the UI preserves that uncertainty.
+
+Managed encoder inventory deduplicates declared model-directory file fingerprints
+across imported packages. Different architectures may share an encoder. Missing
+identities or invalid packages make the count incomplete; external caches and
+unmanaged releases are not enumerated. Catalog/status are last-reported
+snapshots; visible-only performance polling observes learning without loading
+models, refreshing the catalog or rebuilding indexes.
+
+Precision is derived from existing receipt candidates, delivered cut and complete
+labels: relevant returned / returned. Recall is relevant returned / declared
+relevant, including declared misses. No judgments or denominator means missing
+data, not zero. All-negative complete labels can produce Precision zero but
+undefined Recall. Top-K-only judgments cannot measure full-corpus Recall.
+Charts use each receipt's recorded judgments, which can later be superseded for
+training. The workflow also exposes retained receipt and persistent user-authority
+counts, effective model/user examples, ranker/calibrator revisions, pre-update
+Brier/log-loss and the actual worker threshold policy.
+
+A dashed candidate node opens **planned, not implemented** encoder replay
+collection, model B/index B, shadow/canary traffic and paired promotion/rollback
+in the same inspector.
+The existing hashed feedback database is not an encoder-training corpus.
+“150 updates” is a proposed warm-up example, not a configured training or
+promotion gate. Displaying this lane enables neither training nor traffic splits.
+
+### Model acquisition and runtime
 
 - **Download from Hugging Face** explicitly confirms acquisition and activation
   of `intfloat/multilingual-e5-small` at revision
@@ -136,6 +269,16 @@ guarantee**. Returned counts do not by themselves quantify tokens saved.
   A 60-second inactivity deadline detects stalled connections without imposing a
   short whole-file deadline on slow downloads. The VS Code notification permits
   cooperative cancellation. Temporary downloads are removed on success/failure.
+  This single action also prepares the PKM-managed `pkm-retrieval` environment
+  under the configured environments root, installs CPU PyTorch and the checked-in
+  model requirements, verifies imports, applies the configuration and builds the
+  index. No separate Python selection, Verify, Configure or Build click is needed.
+  Completion is reported only when this exact package is Ready. Existing verified
+  dependencies are reused; missing imports are repaired in the owned environment.
+  Only the CPU torch wheel comes from download.pytorch.org (without dependencies);
+  everything else resolves through your pip configuration, so an IT-managed
+  `index-url` mirror in `pip.ini`/`pip.conf` or `PIP_INDEX_URL` is honored.
+  Allow several GB of disk space for dependencies, weights and index storage.
 - **Import model directory** accepts the same pinned default model downloaded
   by any other method. A directory picker and explicit activation confirmation
   are required. The nine required model/tokenizer/config files must exactly
@@ -152,19 +295,29 @@ guarantee**. Returned counts do not by themselves quantify tokens saved.
   user selection change blocks setup from overwriting it. Cancellation before
   activation can leave a verified imported package but never silently enable it.
   If activation already committed, use Disable to stop model retrieval.
+  VS Code notifications show only loading started, complete or failed. Dependency
+  installation output, download progress and failure details remain inside PKM;
+  the loading notification still allows cancellation.
 - **Import offline package** retains the existing trusted ZIP interface. Its
   shorter chain ends at **Imported**, not Ready. Review its budget and explicitly
   Enable & build. Merely importing a ZIP does not activate it.
 
 The default recipe uses dense sections with `query: ` and `passage: ` prefixes.
 It carries no copied private-corpus validation scores: local quality must be
-measured separately. No custom repository code, pickle weights, model dependency
-installation or private knowledge uploads are performed by acquisition.
+measured separately. No custom repository code, pickle weights or private knowledge
+uploads are used. Standard model dependencies are installed only in the
+PKM-owned embedding environment after setup consent, never into system Python.
 
-Choose an existing model-capable Python with **Choose model Python** when the
-lightweight MCP runtime lacks inference dependencies. PKM probes the complete
+The main UI exposes one Hugging Face setup action. Local-directory and ZIP
+imports, Python overrides, refresh, disable and model maintenance remain under
+**Advanced model settings** or **Model actions**. An existing model-capable Python
+can still be selected with **Choose model Python** for advanced/offline use;
+that external environment is validated, not modified. PKM probes the complete
 serving/package modules and torch, sentence-transformers, scikit-learn and NumPy
 offline before persisting this choice. It does not modify the MCP or SI environment.
+Automatic provisioning is serialized across Hosts, cancellable, and publishes a
+ready marker only after verification. Package download/import failures remain
+visible at the failed step and do not claim a ready index.
 Worker startup and import load the integrity-checked bundled engine, not an
 unrelated older installed package. Engine sources are extracted to a private
 process-lifetime directory because index fingerprints require real source files.

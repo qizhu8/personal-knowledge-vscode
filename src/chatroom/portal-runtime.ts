@@ -22,6 +22,7 @@ interface PortalRuntime {
   state(chatId: string): Record<string, unknown> | undefined;
   permission(chatId: string, tool: string, resource?: string): boolean;
   invalidate(chatId: string): void;
+  chatRemoved?(chatId: string): Promise<void>;
 }
 let runtime: PortalRuntime | undefined;
 const listeners = new Set<() => void>();
@@ -31,6 +32,7 @@ export function portalState(chatId: string): Record<string, unknown> | undefined
 /** resource: resolved absolute path for files-* tools; folder-scoped grants deny when it is absent or outside. */
 export function portalToolAllowed(chatId: string, tool: string, resource?: string): boolean { return runtime?.permission(chatId, tool, resource) === true; }
 export function invalidatePortalPermissions(chatId: string): void { runtime?.invalidate(chatId); }
+export async function portalChatRemoved(chatId: string): Promise<void> { await runtime?.chatRemoved?.(chatId); }
 // One failing view must not stop other listeners or the caller's Room push.
 export function portalChanged(): void {
   for (const listener of listeners) {

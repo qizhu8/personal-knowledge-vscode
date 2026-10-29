@@ -801,6 +801,7 @@ async function startPkmServiceRuntime(options: PkmServiceBootOptions): Promise<{
   }
   const coordinatorOptions: GitHubSyncCoordinatorOptions & { independentService: boolean } = {
     stateDirectory: identity.stateDirectory, knowledgeRoot: identity.knowledgeRoot,
+    pollMs: shortenedTestInterval("PKM_SERVICE_TEST_POLL_MS", 750),
     extensionVersion: options.extensionVersion, independentService: true,
     shouldExecute: async (targetId, reason) => {
       if (draining) return new Promise<boolean>((resolve, reject) => {
@@ -1163,7 +1164,13 @@ async function startPkmServiceRuntime(options: PkmServiceBootOptions): Promise<{
         for (const connection of connections) notifyError(connection, error);
       }
     }).finally(() => { checkingLifecycle = false; });
-  }, 5_000);
+  }, shortenedTestInterval("PKM_SERVICE_TEST_LIFECYCLE_MS", 5_000));
   lifecycleTimer.unref();
   return { metadata, stopped };
+}
+
+/** Service tests may only shorten fixed timers; missing or out-of-range values keep the production interval. */
+function shortenedTestInterval(name: string, interval: number): number {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value >= 25 && value < interval ? value : interval;
 }

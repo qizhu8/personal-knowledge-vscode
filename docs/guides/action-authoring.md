@@ -63,14 +63,14 @@ admission rechecks exact dependency revisions and readiness. No dry-run grants e
    right-hand canvas shows purpose, input/output fields, execution commands or
    composition steps, declared risks, host, version changes and source files.
    The full JSON and fingerprints are optional **Advanced details**, not the
-   primary review UI. Click **Validate: Agent review and smoke tests**. This
-   authorizes an Agent code review followed by the declared tests, not immediate
+   primary review UI. Click **Validate: risks and environment tests**. This
+   requests Agent risk information followed by the declared tests, not immediate
    admission. Select a callable VS Code review model (model credits may apply).
-   Missing models, incomplete/invalid review decisions and findings all block
-   execution. There is no separate manual grant or admission confirmation.
-4. Review any smoke-effect consent dialog. Agent review runs first; only a
-   passing review starts real smoke execution. Only passing tests admit and
-   qualify the exact version. Review/test failure preserves the previous
+   The Agent explains risks, not grants or denies permission. Findings and incomplete
+   assessments are shown for explicit user confirmation before execution.
+4. Review the smoke-effect consent dialog and Agent risk notice. Cancelling either
+   executes nothing. Only passing environment tests admit and
+   qualify the exact version. Test failure preserves the previous
    approved definition. Validation feedback shows review progress, cancellation,
    errors or success. Read `action_get` afterwards to inspect readiness.
    Direct non-builtin MCP validation returns `ACTION_CODE_REVIEW_REQUIRED`:
@@ -118,7 +118,7 @@ saves follow the same proposal process. A composition draft is not runnable whil
 pending; after successful review and tests the unchanged draft reconnects to its admitted revision.
 Existing definitions and enabled imported ModuleSets without admission appear
 under **Pending operator review**, not the callable library. Use **Review in
-canvas**, then **Validate: Agent review and smoke tests** to qualify and admit them; no silent migration or
+canvas**, then **Validate: risks and environment tests** to qualify and admit them; no silent migration or
 agent self-approval occurs. Built-in system Actions are preinstalled exceptions.
 
 ## Trusted Host Execution Authorization
@@ -151,8 +151,12 @@ editing cannot admit a pending proposal.
 
 ### Action Library and Operator Review in Workbench
 
-**Automation > Action Library** (or **PKM: Open Action Library**) independently
-lists admitted Actions, including those needing revalidation. Search and inspect
+**Automation > Action Library** (or **PKM: Open Action Library**) opens inside
+the existing PKM extension panel. Its resizable folder tree lists admitted Actions,
+including those needing revalidation, with readable names and readiness badges.
+Expand/collapse folders or navigate with arrow keys; search also matches descriptions
+and expands matching paths. Library and Workbench retain their own selection and
+view state. Search and inspect
 without opening Workbench. Ready public Actions support explicitly approved typed
 invocations; Run details can be opened in Workbench. Pending proposals do not appear
 in Library. Select **Open in Workbench** on an Action to explicitly locate it there;
@@ -182,6 +186,11 @@ Builtin and pipeline Actions execute PKM host code rather than declared source
 files; their review material includes the exact executing handler source and
 is covered by the review snapshot hash. `core.artifact.copy` smoke tests copy a
 reserved fixture artifact created only inside the isolated qualification store.
+
+Clicking an Action's flask first offers **Cancel**, **Validate this action**, and
+**Validate all possible actions**. Cancel (or Escape) executes nothing. The single
+option validates the selected revision; the all option uses the same batch flow
+as **Validate all needed**, including pending proposals and effect confirmation.
 
 **Validate all needed** takes a snapshot of every public **Need Validation** row
 (including pending proposals). Confirm the batch's declared effects and inspect
@@ -215,9 +224,22 @@ dialog instead of appearing behind it. The Core tree remains read-only.
 
 Clicking Validate is the operator's authorization for this review/test attempt.
 Source and definition are provided to the selected review model as untrusted
-data. The review must return an explicit pass with no blocking issues before
-the host runs smoke tests. Review availability and JSON-shape checks fail closed.
-Source size limits stop review rather than silently truncating it.
+data. The model describes risky operations and uncertainty; its verdict is not
+an execution veto. The user confirms the pinned version, risks, effects and test
+inputs before tests in an inline card inside the Workbench (one card for a whole
+batch: every selected Action is assessed first, then a single **Run all** starts
+the tests). The browser Workbench, which has no progress channel, uses a concise
+native confirmation instead. Unanswered cards expire after 15 minutes and count
+as Cancel. Missing models, timeouts or malformed responses produce an
+explicit incomplete-assessment warning that also requires confirmation, not a
+success-shaped fallback. Source size limits stop preparation instead of truncating it.
+
+Exact bundled core revisions skip the model and run their controlled examples as
+environment self-tests. They still require workspace/effect consent and a passing
+test result. A `core.*` name alone does not qualify for this path. Self-tests cover
+actual execution and output contracts; artifact-copy tests also verify a distinct
+artifact with identical content. Neither a passed test nor user consent certifies
+safety or removes OS permissions, revision, dependency or environment checks.
 
 Smoke tests execute in a separate qualification registry, with exact-version
 execution permissions scoped to that registry. The formal registry and previous

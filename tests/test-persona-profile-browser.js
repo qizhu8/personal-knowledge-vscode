@@ -6,6 +6,7 @@ const { randomUUID } = require("node:crypto");
 const Module = require("node:module");
 const { chromium } = require(process.env.PKM_PLAYWRIGHT_PATH || "playwright");
 const { PersonaProfileStore } = require("../dist/chat/persona-profiles");
+const { UserProfileFragmentStore } = require("../dist/chat/user-profile-fragments");
 const host = {
   commands:{}, env:{ language:"en" }, window:{},
   workspace:{ isTrusted:true, workspaceFolders:[], getConfiguration:() => ({ get:(_key, fallback) => fallback }) },
@@ -175,6 +176,10 @@ test("Automation User Profile page reads and edits the real current store withou
   const directory=path.join(__dirname,`.profile-settings-${randomUUID()}`);
   fs.mkdirSync(directory,{mode:0o700});
   const store=new PersonaProfileStore(path.join(directory,"host"),path.join(directory,"knowledge"));
+  const fragments=new UserProfileFragmentStore(path.join(directory,"host"),path.join(directory,"knowledge"));
+  host.commands.executeCommand=async command=>{
+    assert.equal(command,"personalKnowledge.userProfileFragments");return fragments.snapshot();
+  };
   store.save("user",{name:"Settings user",role:"Developer",focus:"Tests",preferences:"<img src=x>Preference text",boundaries:"No deployment"});
   const extension=fs.readFileSync(path.join(root,"src/extension.ts"),"utf8");
   const start=extension.indexOf('case "userProfile":'),end=extension.indexOf('case "backgroundTasks":',start);
@@ -200,6 +205,7 @@ test("Automation User Profile page reads and edits the real current store withou
   const script=fs.readFileSync(path.join(root,"src/webview/panel/54-persona-profiles.js"),"utf8");
   assert(fs.readFileSync(path.join(assets,"panel.js"),"utf8").includes(script));
   await page.addScriptTag({content:`const state={tab:'userProfile'};const ask=command=>settingsHost(command);${script};showUserProfileTab();`});
+  await page.locator('.profile-configured-card>summary').click();
   await page.getByText("<img src=x>Preference text",{exact:true}).waitFor();
   assert.equal(await page.locator("img,script[src=x]").count(),0);
   assert.doesNotMatch(await page.locator("#detail").innerText(),new RegExp(store.user().id));
@@ -214,5 +220,7 @@ test("Automation User Profile page reads and edits the real current store withou
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
   await assert.rejects(dispatch({command:"userProfile"},()=>{}, {...host,workspace:{isTrusted:false}},PersonaProfileStore,configureUserProfile,
     {},()=>store.knowledgeRoot),/Trust this workspace/);
+  await assert.rejects(dispatch({command:"userProfileFragmentAction",operation:"remove",knowledgeRoot:"/stale-root"},()=>{},host,PersonaProfileStore,configureUserProfile,
+    {},()=>store.knowledgeRoot),/Knowledge Root changed/);
   assert.deepEqual(errors,[]);
 });

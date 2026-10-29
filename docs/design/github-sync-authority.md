@@ -20,6 +20,22 @@ but clears those records only after successful component and baseline applicatio
 
 ## Offline and disconnected hosts
 
+### Superseded service recovery results
+
+A disconnected Host can leave an older completed or partial-conflict result
+after a later Sync has already been recorded. Recovery must not apply that older
+result over current Recipes, privacy, baseline or conflict choices. When the
+latest transaction is `recorded` and its target, repository, branch and commit
+match the Host's saved baseline, PKM preserves the exact old service receipt
+(including encoded conflict content) under `github-sync/superseded-results/`
+before acknowledging it. Interrupted acknowledgment can safely retry the same
+archive. No Git operation or old result is replayed.
+
+A merely pushed or prepared transaction, missing/mismatched baseline, invalid
+identity or failed archive does not permit acknowledgment. Such results remain
+available for review instead of being silently dropped. This recovery handling
+does not resolve current content conflicts or upgrade a compatible running daemon.
+
 ### Restarting an unverified publication migration
 
 If GitHub changes after Cutover, do not bypass the source-commit fence or mark
@@ -45,8 +61,15 @@ allows the next scheduled check to proceed without toggling Auto again.
 
 Recognized DNS/connection failures during Git clone/fetch also remain visible
 as deferred checks, preserving the Auto setting and retrying at the configured
-interval. Authentication, configuration, conflict and content-repair failures
-keep their existing bounded retry/review behavior. A lost push response or a
+interval. Authentication failures (including unavailable or canceled VS Code
+credential reads) keep Auto Sync enabled and retry once every 15 minutes after
+the failed attempt finishes, even after three failures. Changes and configuration
+refreshes cannot bypass this delay; manual Sync can retry immediately. The next
+successful Sync clears the authentication failure and restores the configured
+interval and sync-on-change behavior. The failure and next retry remain visible,
+and reload or coordinator takeover preserves the delay. No automatic sign-in or
+credential deletion is performed. Configuration, conflict and content-repair
+failures keep their existing bounded retry/review behavior. A lost push response or a
 host lost during execution is not proof that no mutation occurred: those
 operations are not classified as safe deferred reads or automatically replayed.
 Existing disabled targets are not silently re-enabled; they may have been

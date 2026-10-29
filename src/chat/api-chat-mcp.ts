@@ -248,14 +248,29 @@ export function createVscodeTools(names: string[], host: typeof import("vscode")
   const discovered = new Set<string>();
   const attempted = new Set<string>();
   return [{
-    name: "find_vscode_tools", description: "Find enabled VS Code and MCP tools by name/description. Returns exact registered names and input schemas. Search before invoking; paginate with offset. Does not execute tools.",
+    name: "find_vscode_tools", description: "Find enabled VS Code and MCP tools by name/description keywords (any keyword matches; best matches first). Returns exact registered names and input schemas. If nothing matches, returns the names of all enabled tools; search again with one of them. Search before invoking; paginate with offset. Does not execute tools.",
     parameters: { type: "object", properties: { query: { type: "string", maxLength: 200 }, offset: { type: "integer", minimum: 0 } }, required: ["query"], additionalProperties: false },
     execute: async (args, signal) => {
       if (signal.aborted) throw new Error("Request cancelled.");
       if (typeof args.query !== "string" || args.query.length > 200 || args.offset !== undefined && (!Number.isSafeInteger(args.offset) || Number(args.offset) < 0)) throw new Error("Provide a bounded query and non-negative offset.");
-      const words = args.query.toLowerCase().split(/\s+/).filter(Boolean);
-      const matches = catalog.filter(tool => words.every(word => `${tool.name} ${tool.description}`.toLowerCase().includes(word)));
+      const words = [...new Set(args.query.toLowerCase().split(/[^a-z0-9.]+/).filter(word => word.length > 1))];
+      const exact = catalog.find(tool => tool.name.toLowerCase() === String(args.query).trim().toLowerCase());
+      const ranked = catalog.map((tool, index) => {
+        const name = tool.name.toLowerCase(), text = `${name} ${tool.description}`.toLowerCase();
+        const score = tool === exact ? 1000 : words.reduce((sum, word) => sum + (name.includes(word) ? 3 : text.includes(word) ? 1 : 0), 0);
+        return { tool, score, index };
+      }).filter(item => item.score > 0).sort((a, b) => b.score - a.score || a.index - b.index);
+      const matches = ranked.map(item => item.tool);
       const offset = Number(args.offset || 0);
+      if (!matches.length) {
+        const available: Array<{ name: string; summary: string }> = [];
+        for (const tool of catalog) {
+          const entry = { name: tool.name, summary: tool.description.replace(/\s+/g, " ").slice(0, 80) };
+          if (JSON.stringify([...available, entry]).length > 14_000) break;
+          available.push(entry);
+        }
+        return JSON.stringify({ tools: [], total: 0, nextOffset: null, note: "No enabled tool matched. These are the enabled tool names; search again with an exact name to get its schema.", available, availableTotal: catalog.length });
+      }
       const results = [];
       for (const tool of matches.slice(offset, offset + 6)) {
         const entry = { name: tool.name, description: tool.description.slice(0, 600), inputSchema: tool.inputSchema || { type: "object", properties: {} } };

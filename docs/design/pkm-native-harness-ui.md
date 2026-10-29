@@ -74,10 +74,20 @@ Visual inspiration: the process-as-objects approach of
 [WebCrawlerMY demo](https://felixyu9722.github.io/WebCrawlerMY/), not copied code
 or a claim that this visualization is a crawler.
 
-Memory uses the same visual-first approach: a shared pyramid renderer draws
-actual stored levels, sampled piece blocks (up to six per level), and only the
-recorded relationships between displayed pieces. Profiles stay separate; they
-are not invented learned-memory levels. Prepared references are blue and sent
+Memory uses the same visual-first approach. Profile, Session dashboards and
+the Visualization window share the existing three logical tiers: **Cache /
+short-term** (model context), **Memory / mid-term** (organized Chat history and
+derived observations), and **Disk / long-term** (independently maintained assets).
+These are not age buckets, expiry rules or fixed abstraction Levels. Cache shows
+the last recorded sent manifest, never the union of past rounds or a prepared
+payload; an unavailable manifest means unknown, not empty. Disk counts only
+asset references and Profile snapshots recorded in the selected attempt, not a
+Root-wide inventory or proof that referenced assets still exist.
+
+An independent disclosure inside Memory draws actual stored abstraction levels,
+sampled piece blocks (up to six per level), and only recorded relationships
+between displayed pieces. Profiles are not invented learned-memory Levels.
+Prepared references are blue and sent
 reference membership is green. An ID match in a historical sent manifest does
 not prove that the current mutable stored revision was sent.
 

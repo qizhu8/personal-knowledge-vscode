@@ -4,6 +4,7 @@ import { ChatInferenceClock } from "./chat-inference-timing";
 import { ApiChatMessage, ApiChatRequest, ApiChatToolEvent, ChatImage, decodeChatImage, ChatToolLoopGuard, toolBudgetSummary, chatInferenceOutputByteLimit, chatTransportReceipt } from "./api-chat-client";
 import { ChatModelProfile, ChatTokenUsage, checkReportedOutput, reportedReasoningTokens, reportedCopilotUsage } from "./api-chat-models";
 import { abortable } from "./api-chat-tools";
+import { discoverCopilotSdkModels, isCopilotSdkModel, streamCopilotSdkChat } from "./api-chat-copilot-sdk";
 
 export interface VscodeChatModel extends vscode.LanguageModelChat {
   maxOutputTokens?: number;
@@ -16,6 +17,35 @@ export function isVscodeModelAccessError(error: unknown): error is Error & { cod
   return error instanceof Error && "code" in error && typeof error.code === "string" && ["NoPermissions", "NotFound"].includes(error.code);
 }
 
+function errorChainText(error: unknown): string[] {
+  const parts: string[] = [];
+  for (let current = error, depth = 0; current && depth < 4; depth++) {
+    if (current instanceof Error) {
+      parts.push(current.message);
+      if ("code" in current && typeof current.code === "string") parts.push(current.code);
+      current = (current as Error & { cause?: unknown }).cause;
+    } else { if (typeof current === "string") parts.push(current); break; }
+  }
+  return parts.filter(Boolean);
+}
+
+export function isTransientNetworkError(error: unknown): boolean {
+  if (isVscodeModelAccessError(error) || error instanceof VscodeChatError) return false;
+  return /fetch failed|GOAWAY|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|ENETUNREACH|EAI_AGAIN|socket hang up|other side closed|network ?error|UND_ERR_SOCKET|UND_ERR_CLOSED/i.test(errorChainText(error).join(" "));
+}
+
+const networkReasons: Array<[RegExp, string]> = [
+  [/GOAWAY/i, "HTTP/2 GOAWAY"], [/ECONNRESET|other side closed|socket hang up/i, "connection reset"],
+  [/ECONNREFUSED/i, "connection refused"], [/ETIMEDOUT/i, "connection timed out"], [/ENETUNREACH/i, "network unreachable"],
+  [/EAI_AGAIN/i, "DNS lookup failed"], [/EPIPE|UND_ERR_SOCKET|UND_ERR_CLOSED/i, "socket closed"], [/fetch failed|network ?error/i, "fetch failed"],
+];
+
+// Provider messages can contain secrets, so only fixed classifications are surfaced.
+export function modelFailureReason(error: unknown): string {
+  const text = errorChainText(error).join(" ");
+  return networkReasons.filter(([pattern]) => pattern.test(text)).map(([, label]) => label).slice(0, 2).join(", ");
+}
+
 export function assertVscodeModelCallable(vendor: string): void {
   if (vendor === "copilotcli") throw new VscodeChatError("Copilot CLI models are catalog-only in the current provider, not callable through the VS Code Language Model API. Choose a request-capable VS Code model or configure an API provider; PKM does not invoke Copilot Agent Host.");
 }
@@ -24,7 +54,7 @@ export function vscodeModelProfile(model: VscodeChatModel): ChatModelProfile {
   if (!Number.isSafeInteger(model.maxInputTokens) || model.maxInputTokens < 256) throw new VscodeChatError("This model does not report a usable input limit.");
   return {
     id: `vscode:${encodeURIComponent(model.vendor)}:${encodeURIComponent(model.id)}`, model: model.id,
-    label: `${model.name} · ${model.vendor}`, status: "active", contextWindow: model.maxInputTokens,
+    label: `${model.name} · ${model.vendor === "copilot-sdk" ? "Copilot SDK" : model.vendor}`, status: "active", contextWindow: model.maxInputTokens,
     maxOutputTokens: Math.min(Number.isSafeInteger(model.maxOutputTokens) && model.maxOutputTokens! > 0 ? model.maxOutputTokens! : 4096, Math.floor(model.maxInputTokens / 4)),
     currency: "", includeUsage: false, outputTokenParameter: "max_tokens",
     imageInput: model.capabilities?.imageInput === true,
@@ -35,8 +65,14 @@ export async function discoverVscodeModels(host = vscode, signal?: AbortSignal):
   if (!host.lm?.selectChatModels) throw new Error("This VS Code version does not provide the Language Model API. Use an API provider instead.");
   try {
     if (signal?.aborted) throw new Error("Request cancelled.");
-    const pending = host.lm.selectChatModels();
-    const models = (signal ? await abortable(pending, signal) : await pending).filter(model => model.vendor !== "copilotcli");
+    // Neither provider's startup should wait for the other provider's catalog.
+    const pending = Promise.all([
+      Promise.resolve().then(() => host.lm.selectChatModels()),
+      host.authentication ? discoverCopilotSdkModels(host, signal) : Promise.resolve([]),
+    ]);
+    const [nativeModels, sdkModels] = signal ? await abortable(pending, signal) : await pending;
+    const models = [...nativeModels.filter(model => model.vendor !== "copilotcli"), ...sdkModels as unknown as VscodeChatModel[]];
+    if (signal?.aborted) throw new Error("Request cancelled.");
     if (!models.length) throw new Error("No VS Code models callable through the Language Model API are available. Copilot CLI catalog-only entries are excluded. Sign in to a request-capable provider or configure an API connection.");
     return models;
   } catch (error) {
@@ -46,11 +82,12 @@ export async function discoverVscodeModels(host = vscode, signal?: AbortSignal):
   }
 }
 
-type VscodeChatRequest = Pick<ApiChatRequest, "messages" | "purpose" | "signal" | "timeoutMs" | "maxOutputTokens" | "thinkingBudget" | "maxToolRounds" | "loopReviewAfterMs" | "loopReviewClock" | "loopExemptTools" | "onToolLoopNotice" | "contextWindow" | "onImage" | "tools" | "onTool" | "beforeRound" | "beforeFinish" | "automaticKnowledge" | "onTransportPrepared" | "onTransportSent" | "afterTools" | "onStage" | "onModelActivity" | "onUsage" | "onUsageMetadata" | "onInferenceTiming" | "onOutputBudgetWarning">;
+type VscodeChatRequest = Pick<ApiChatRequest, "messages" | "purpose" | "signal" | "timeoutMs" | "maxOutputTokens" | "thinkingBudget" | "maxToolRounds" | "loopReviewAfterMs" | "loopReviewClock" | "loopExemptTools" | "onToolLoopNotice" | "contextWindow" | "onImage" | "tools" | "onTool" | "beforeRound" | "beforeFinish" | "automaticKnowledge" | "onTransportPrepared" | "onTransportSent" | "afterTools" | "onStage" | "onModelActivity" | "onUsage" | "onUsageMetadata" | "onInferenceTiming" | "onOutputBudgetWarning" | "onThinking">;
 type NativePart = { value?: string; callId?: string; name?: string; input?: unknown; data?: Uint8Array; mimeType?: string };
 
 export async function streamVscodeChat(model: VscodeChatModel, request: VscodeChatRequest,
   onText: (text: string) => void, host = vscode): Promise<void> {
+  if (isCopilotSdkModel(model)) return streamCopilotSdkChat(model, request, onText, host);
   const controller = new AbortController();
   const { signal } = request;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -108,6 +145,7 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
       return count;
     };
     if (!hasOutputTokenizer) request.onOutputBudgetWarning?.("Output token counting is unavailable. The per-inference token limit can only be checked from valid provider usage; the separate 100,000-byte inference output limit remains active. Bytes are not tokens.");
+    const thinkingPart = (host as unknown as { LanguageModelThinkingPart?: abstract new (...args: never[]) => unknown }).LanguageModelThinkingPart;
     let imagesReturned = 0;
     let metadataParts = 0;
     for (let round = 0; ; round++) {
@@ -119,11 +157,12 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
       if (!Number.isSafeInteger(remaining) || remaining < 1) throw new VscodeChatError("Choose a positive per-inference output token budget.");
       let outputText = "";
       let nextTokenCheck = remaining;
-      const checkOutputBudget = async (text: string, force = false) => {
+      // UTF-8 bytes bound tokens from above, so the tokenizer runs only once bytes could exceed the remaining budget.
+      const checkOutputBudget = async (text: string) => {
         const bytes = Buffer.byteLength(text, "utf8");
         if (bytes > chatInferenceOutputByteLimit) throw new VscodeChatError("Inference output exceeded the 100,000-byte local size limit. Partial output was preserved; no pending tool was executed.");
         if (!hasOutputTokenizer) return;
-        if (!force && bytes < nextTokenCheck) return;
+        if (bytes < nextTokenCheck) return;
         const tokens = await countTokens(text);
         if (tokens > remaining) throw new VscodeChatError("Local output budget exhausted. Partial output was preserved; provider usage may be higher.");
         nextTokenCheck = bytes + Math.max(1, remaining - tokens);
@@ -147,55 +186,73 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
         justification: "Allow PKM native Chat to use the selected model with your selected context.",
         ...(request.tools?.length && !loop.summarizing ? { tools: request.tools.map(tool => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters })) } : {}),
       };
+      const inputBudget = request.contextWindow === undefined ? model.maxInputTokens : Math.min(request.contextWindow, model.maxInputTokens) - remaining;
+      // Byte-level tokenizers never produce more tokens than UTF-8 bytes, so a fitting byte bound needs no slow tokenizer call.
+      const entryBytes = prompt.map(entry => Buffer.byteLength(JSON.stringify(entry), "utf8"));
+      const toolBytes = options.tools?.length ? Buffer.byteLength(JSON.stringify(options.tools), "utf8") + 32 : 0;
+      const byteBound = entryBytes.reduce((sum, bytes) => sum + bytes + 32, 32) + toolBytes;
       let tokens: number | undefined;
-      let knowledgeTokens = 32;
-      if (hasOutputTokenizer) {
+      let countingMethod: "utf8-byte-upper-bound" | "vscode-countTokens-plus-overhead" | undefined;
+      let knowledgeTokens = messages.reduce((sum, message, index) => request.automaticKnowledge?.includes(message) ? sum + entryBytes[index] + 32 : sum, 32);
+      if (hasOutputTokenizer && !hasImages && Number.isSafeInteger(inputBudget) && byteBound <= inputBudget
+        && (!request.automaticKnowledge || knowledgeTokens <= request.automaticKnowledge.inputBudget)) {
+        tokens = byteBound; countingMethod = "utf8-byte-upper-bound";
+      } else if (hasOutputTokenizer) {
         request.onModelActivity?.({ operation:"token-count", label:"Counting input tokens with VS Code model", status:"running" });
         try {
-          tokens = 32;
-          for (const [index, entry] of prompt.entries()) {
-            const count = await countInput(entry);
-            tokens += count + 32;
-            if (request.automaticKnowledge?.includes(messages[index])) knowledgeTokens += count + 32;
-          }
-          if (options.tools?.length) {
-            const count = await countInput(JSON.stringify(options.tools));
-            tokens += count + 32;
-          }
+          const counts = await Promise.all([...prompt.map(entry => countInput(entry)), ...(options.tools?.length ? [countInput(JSON.stringify(options.tools))] : [])]);
+          tokens = counts.reduce((sum, count) => sum + count + 32, 32);
+          knowledgeTokens = messages.reduce((sum, message, index) => request.automaticKnowledge?.includes(message) ? sum + counts[index] + 32 : sum, 32);
+          countingMethod = "vscode-countTokens-plus-overhead";
           request.onModelActivity?.({ operation:"token-count", label:"Counting input tokens with VS Code model", status:"complete" });
         } catch (error) {
           request.onModelActivity?.({ operation:"token-count", label:"Counting input tokens with VS Code model", status:"failed" });
           throw error;
         }
       }
-      const transport = chatTransportReceipt("vscode", prompt, options.tools || [], tokens);
+      const transport = chatTransportReceipt("vscode", prompt, options.tools || [], tokens, countingMethod);
       if (request.automaticKnowledge) {
         const knowledgeBudget = request.automaticKnowledge;
-        if (!hasOutputTokenizer) knowledgeTokens = messages.reduce((sum, message, index) =>
-          knowledgeBudget.includes(message) ? sum + Buffer.byteLength(JSON.stringify(prompt[index]), "utf8") + 32 : sum, 32);
         if (!Number.isSafeInteger(knowledgeBudget.inputBudget) || knowledgeBudget.inputBudget < 32
           || knowledgeTokens > knowledgeBudget.inputBudget) throw new VscodeChatError("Automatic PKM reference input budget exceeded; no model request was sent.");
         transport.automaticKnowledge = { inputBudget:knowledgeBudget.inputBudget, inputTokens:knowledgeTokens,
-          countingMethod:hasOutputTokenizer ? "vscode-countTokens-plus-overhead" : "utf8-byte-upper-bound" };
+          countingMethod:countingMethod === "vscode-countTokens-plus-overhead" ? countingMethod : "utf8-byte-upper-bound" };
       }
-      const inputBudget = request.contextWindow === undefined ? model.maxInputTokens : Math.min(request.contextWindow, model.maxInputTokens) - remaining;
       if (!Number.isSafeInteger(inputBudget) || transport.inputTokens > inputBudget) throw new VscodeChatError(`${hasImages ? "Image context" : "Native context"} budget exceeded. Remove optional context or increase Context.`);
       try { request.onTransportPrepared?.(transport); }
       catch (error) { throw new VscodeChatError(error instanceof Error ? error.message : "Transport receipt persistence failed."); }
       request.onStage?.("connecting");
       inferenceClock.start();
-      const response = await abortable(model.sendRequest(prompt, options, cancellation.token), controller.signal);
-      activity();
+      let iterator: AsyncIterator<NativePart | string>;
+      let pending: IteratorResult<NativePart | string> | undefined;
+      for (let networkRetries = 1; ; networkRetries--) {
+        try {
+          const response = await abortable(model.sendRequest(prompt, options, cancellation.token), controller.signal);
+          activity();
+          request.onStage?.("waiting");
+          const structured = (response as typeof response & { stream?: AsyncIterable<NativePart> }).stream;
+          iterator = (structured || response.text)[Symbol.asyncIterator]();
+          pending = await abortable(iterator.next(), controller.signal);
+          break;
+        } catch (error) {
+          // Nothing was received in this round, so one retry cannot duplicate output, tools or billing.
+          if (networkRetries <= 0 || signal.aborted || timedOut || !isTransientNetworkError(error)) throw error;
+          const label = `Network interrupted before output (${modelFailureReason(error)}); retrying once`;
+          request.onModelActivity?.({ operation:"inference", label, status:"running" });
+          await abortable(new Promise(resolve => setTimeout(resolve, 1000)), controller.signal);
+          request.onModelActivity?.({ operation:"inference", label, status:"complete" });
+          request.onStage?.("connecting");
+        }
+      }
       request.onTransportSent?.(transport);
-      request.onStage?.("waiting");
-      const structured = (response as typeof response & { stream?: AsyncIterable<NativePart> }).stream;
-      const iterator: AsyncIterator<NativePart | string> = (structured || response.text)[Symbol.asyncIterator]();
       const calls: NonNullable<ApiChatMessage["tool_calls"]> = [];
       let responseText = "";
       const responseImages: ChatImage[] = [];
       let usage: ChatTokenUsage | undefined;
+      let thinkingBytes = 0;
       while (true) {
-        const next = await abortable(iterator.next(), controller.signal);
+        const next = pending ?? await abortable(iterator.next(), controller.signal);
+        pending = undefined;
         if (next.done) break;
         activity();
         const part = next.value;
@@ -212,7 +269,7 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
           const arguments_ = JSON.stringify(part.input);
           if (!arguments_ || arguments_.length > 32_000 || !part.input || typeof part.input !== "object" || Array.isArray(part.input)) throw new VscodeChatError("Invalid tool arguments. No pending tool was executed.");
           outputText += JSON.stringify({ id: part.callId, name: part.name, arguments: arguments_ });
-          await checkOutputBudget(outputText, true);
+          await checkOutputBudget(outputText);
           callIds.add(part.callId); calls.push({ id: part.callId, type: "function", function: { name: part.name, arguments: arguments_ } });
         } else if (native.LanguageModelDataPart && part instanceof native.LanguageModelDataPart) {
           if (["usage", "stateful_marker", "thinking", "context_management", "phase_data", "cache_control"].includes(part.mimeType || "")) {
@@ -244,9 +301,17 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
           try { decodeChatImage(image); } catch { throw new VscodeChatError("Invalid PNG/JPEG image response; partial output was preserved."); }
           responseImages.push(image); request.onImage(image);
           inferenceClock.publicOutput();
+        } else if (thinkingPart && part instanceof thinkingPart) {
+          const value = (part as { value?: unknown }).value;
+          const text = Array.isArray(value) ? value.filter(item => typeof item === "string").join("") : typeof value === "string" ? value : "";
+          // Readable thinking only; encrypted/opaque reasoning metadata is never shown or stored.
+          if (text && thinkingBytes < 32 * 1024) {
+            const kept = Buffer.from(text, "utf8").subarray(0, 32 * 1024 - thinkingBytes).toString("utf8").replace(/\uFFFD$/, "");
+            thinkingBytes += Buffer.byteLength(kept, "utf8");
+            if (kept) request.onThinking?.(kept);
+          }
         } else throw new VscodeChatError("The model returned an unsupported response part.");
       }
-      if (outputText) await checkOutputBudget(outputText, true);
       clearTimeout(timer);
       inferenceClock.finish("stream-ended");
       if (usage) { unreportedUsage = undefined; request.onUsage?.(usage); }
@@ -279,6 +344,15 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
         }
         request.onTool?.(event);
         let result: string;
+        const reused = loop.reuse(call.function.name, call.function.arguments, messages);
+        if (reused) {
+          result = reused.result;
+          request.onTool?.({ ...event, status: "complete", result });
+          loop.record(tool, call.function.name, call.function.arguments, reused.original);
+          messages.push({ role: "tool", content: result, tool_call_id: call.id });
+          continue;
+        }
+        let succeeded = false;
         try {
           if (!tool) throw new Error("This tool is not enabled for the request.");
           result = await abortable(Promise.resolve().then(() => {
@@ -286,12 +360,14 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
             return tool.execute(JSON.parse(call.function.arguments), signal);
           }), signal);
           if (typeof result !== "string" || result.length > 16_000) throw new Error("Tool result exceeded the local limit.");
+          succeeded = true;
           request.onTool?.({ ...event, status: "complete", result });
         } catch (error) {
           if (signal.aborted) throw new VscodeChatError("Request cancelled.");
           result = JSON.stringify({ error: error instanceof Error ? error.message : "Tool failed." });
           request.onTool?.({ ...event, status: "failed", result });
         }
+        loop.remember(call.function.name, call.function.arguments, call.id, result, succeeded);
         loop.record(tool, call.function.name, call.function.arguments, result);
         messages.push({ role: "tool", content: result, tool_call_id: call.id });
       }
@@ -306,7 +382,13 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
       throw failure;
     }
     if (error instanceof VscodeChatError) throw error;
-    throw new Error("VS Code model request failed. Check extension permission, model availability and account quota. Partial output was preserved.");
+    if (errorChainText(error).some(text => text.includes("Auto mode needs a prompt or a command to route a request."))) {
+      throw new VscodeChatError("Copilot Auto could not route the tool follow-up through the VS Code Language Model API. Select Auto · Copilot SDK (or a specific model), then retry explicitly. Completed tool results were preserved; no automatic retry was performed.");
+    }
+    const reason = modelFailureReason(error);
+    throw new Error(isTransientNetworkError(error)
+      ? `VS Code model request failed: network interrupted (${reason}). This is usually temporary; retry the message. Partial output was preserved.`
+      : `VS Code model request failed. Check extension permission, model availability and account quota. Partial output was preserved.`);
   } finally {
     clearTimeout(timer);
     signal.removeEventListener("abort", cancel);

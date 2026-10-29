@@ -114,7 +114,7 @@ for test in recipe-recompile github-sync-content-repair github-sync-content-repa
   node "tests/test-$test.js" || exit 1
 done
 for test in recipe-compiler-contract recipe-mcp-runtime recipe-mcp-transport; do
-  .venv/bin/python "tests/test-$test.py" || exit 1
+  ~/pkm-envs/personal-knowledge-vscode-dev/bin/python "tests/test-$test.py" || exit 1
 done
 git --no-pager diff --check
 ```

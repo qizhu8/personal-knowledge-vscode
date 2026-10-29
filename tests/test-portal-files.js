@@ -85,6 +85,23 @@ test("controller uploads to controlled peer after the controlled receiver approv
   assert.deepEqual(pair.errors, []);
 });
 
+test("incoming batch publishes awaiting approval before the destination picker resolves", async t => {
+  const src = tempDir(t, "trace-src");
+  let release;
+  const selection = new Promise(resolve => { release = resolve; });
+  const pair = link({ b: { controlled: true, destination: () => selection } });
+  t.after(() => { pair.a.dispose(); pair.b.dispose(); });
+  const offered = pair.a.offer([writeFile(src, "test.txt", "trace")]);
+  await until(() => pair.b.statuses.length > 0);
+  assert.equal(lastState(pair.a), "offered");
+  assert.equal(lastState(pair.b), "awaiting-approval");
+  assert.equal(pair.b.statuses[0].files[0].name, "test.txt");
+  assert.equal(pair.wire.some(item => item.payload.op === "chunk"), false);
+  release(undefined);
+  assert.equal((await (await offered).done).state, "cancelled");
+  assert.match(pair.b.statuses.at(-1).reason, /No destination chosen/);
+});
+
 test("controlled sender approves before publishing anything, then controller receiver chooses destination", async t => {
   const src = tempDir(t, "src"); const dst = tempDir(t, "dst");
   const bytes = randomBytes(30000);

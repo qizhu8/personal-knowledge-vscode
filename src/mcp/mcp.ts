@@ -52,7 +52,7 @@ asyncio.run(main())
 }
 
 // ── MCP server scaffold ────────────────────────────────────────────────────
-export const UNIFIED_MCP_VERSION = "2.18.0";
+export const UNIFIED_MCP_VERSION = "2.19.0";
 const PROMPT_MANAGER_WHEEL = "uone_prompt_manager-0.1.0-py3-none-any.whl";
 const PROMPT_MANAGER_WHEEL_SHA256 = "eb9fd76058134f9ab9711d8e7604c75f761db5762d93e67f65740dc07fdc1518";
 const RETRIEVAL_ENGINE_WHEEL = "adaptive_skill_retrieval-0.3.0.dev2026100504-py3-none-any.whl";
@@ -778,6 +778,8 @@ function generateMcpServerFiles(context: vscode.ExtensionContext, mcpDir: string
   fs.copyFileSync(path.join(context.extensionPath, "resources", "action_run_store.py"), path.join(mcpDir, "action_run_store.py"));
   fs.copyFileSync(path.join(context.extensionPath, "resources", "action_recovery.py"), path.join(mcpDir, "action_recovery.py"));
   fs.copyFileSync(path.join(context.extensionPath, "resources", "action_components.py"), path.join(mcpDir, "action_components.py"));
+  fs.copyFileSync(path.join(context.extensionPath, "resources", "action_components.js"), path.join(mcpDir, "action_components.js"));
+  fs.copyFileSync(path.join(context.extensionPath, "dist", "components", "action-components.js"), path.join(mcpDir, "action_components_ts.js"));
   fs.copyFileSync(path.join(context.extensionPath, "resources", "recipe_health.py"), recipeHealthPy);
   fs.copyFileSync(path.join(context.extensionPath, "resources", "agent_session_runtime.py"), agentSessionRuntimePy);
   fs.copyFileSync(path.join(context.extensionPath, "resources", "api_chat_control.py"), path.join(mcpDir, "api_chat_control.py"));
@@ -1024,15 +1026,18 @@ def retrieval_status() -> str:
 
 
 @_feature_tool("knowledge", "skillRouter")
-def retrieval_feedback(retrieval_id: str, relevant_source_ids: List[str], complete: bool = False) -> str:
-  """Submit explicit complete relevance judgments for a model retrieval receipt.
+def retrieval_feedback(retrieval_id: str, relevant_source_ids: List[str], complete: bool = False,
+                       provenance: str = "model") -> str:
+  """Submit complete relevance judgments for a model retrieval receipt.
 
   Include all known relevant canonical source IDs, including missed results.
   complete=true asserts complete judgments; task success, usage and silence are
-  not relevance labels. This trains local scalar calibration, never model weights.
+  not relevance labels. Model self-evaluation trains the local online ranker and
+  calibrator by default; embeddings remain frozen. Use provenance="user" only for
+  explicit user judgments, which supersede model labels and replay training.
   """
   return json.dumps(_retrieval_request("/retrieval-feedback", {
-    "retrieval_id": retrieval_id, "relevant_source_ids": relevant_source_ids, "complete": complete,
+    "retrieval_id": retrieval_id, "relevant_source_ids": relevant_source_ids, "complete": complete, "provenance": provenance,
   }), ensure_ascii=False)
 
 

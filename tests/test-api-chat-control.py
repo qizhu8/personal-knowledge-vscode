@@ -127,6 +127,18 @@ async def main():
                 assert portal_directory.is_absolute() and portal_directory.name.startswith("pkm-portal-ipc-")
                 assert len(list(portal_directory.glob("*.json"))) == 3
                 assert not list(requests.glob("*.json")), "Portal must not write receipts to Knowledge Root"
+                direct_args = {**portal_args, "operation": "command", "context_id": host_id,
+                               "command_id": "direct-command", "request_id": host_id,
+                               "command": {"program": "cmd.exe", "arguments": ["/c", "echo PKM_PORTAL_CMD_TEST"], "timeoutSeconds": 10}}
+                direct = await receipt(client, await call(client, "portal_control", direct_args), "succeeded")
+                assert direct["result"]["command"] == direct_args["command"]
+                routed_args = {**direct_args, "operation": "route", "command_id": "routed-command",
+                               "context_id": "", "requirements": {"platform": "win32", "programs": ["cmd"]}}
+                routed = await receipt(client, await call(client, "portal_control", routed_args), "succeeded")
+                assert routed["result"]["requirements"] == routed_args["requirements"]
+                await rejected(client, "portal_control", {**direct_args, "command": None}, "explicit program")
+                await rejected(client, "portal_control", {**direct_args, "command": {"program": "cmd.exe", "arguments": "\u0000"}}, "string arguments")
+                await rejected(client, "portal_control", {**routed_args, "requirements": None}, "capability requirements")
                 (requests / ("0" * 64 + ".json")).write_text("{invalid", encoding="utf-8")
                 create_args = {"host_id": host_id, "title": "Visible Agent QA", "command_id": "create-once"}
                 submitted = await asyncio.gather(*(call(client, "api_chat_create", create_args) for _ in range(4)))

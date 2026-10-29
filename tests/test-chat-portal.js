@@ -5,24 +5,36 @@ const os = require("node:os");
 const path = require("node:path");
 const vm = require("node:vm");
 const Module = require("node:module");
-const { randomUUID } = require("node:crypto");
+const { randomUUID, createHmac } = require("node:crypto");
 const ts = require("typescript");
 const { PeerSession } = require("../dist/chatroom/peer-session");
 const { assertPeerEndpoint } = require("../dist/chatroom/peer-protocol");
 const { PortalPermissions, PORTAL_PERMISSION_DIMENSIONS } = require("../dist/chatroom/portal-permissions");
 const { PortalFiles } = require("../dist/chatroom/portal-files");
 const { toolPermissionScope } = require("../dist/chat/permissions");
-const { PortalConnectionJournal, endpointLabel, endpointScope } = require("../dist/chatroom/portal-connections");
+const { PortalConnectionJournal, portalConnectionAccess, endpointLabel, endpointScope } = require("../dist/chatroom/portal-connections");
 const { createPortalLink, parsePortalLink } = require("../dist/chatroom/portal-link");
 const { validateQuestionAnswer } = require("../dist/chat/chat-questions");
+const { PortalEndpointStore } = require("../dist/chatroom/portal-endpoint-store");
+
+function endpointStore() {
+  const state = new Map(), secrets = new Map();
+  const store = new PortalEndpointStore({ get: key => state.get(key), update: async (key, value) => { state.set(key, value); } },
+    { get: async key => secrets.get(key), store: async (key, value) => { secrets.set(key, value); }, delete: async key => { secrets.delete(key); } });
+  return new Proxy(store, { get(target, key) {
+    const value = Reflect.get(target, key);
+    return typeof value === "function" ? (...args) => value.apply(target, args.map(arg => structuredClone(arg))) : value;
+  } });
+}
 
 function managerFixture() {
   const source = fs.readFileSync(path.join(__dirname, "../src/extension.ts"), "utf8");
   const ast = ts.createSourceFile("extension.ts", source, ts.ScriptTarget.Latest, true);
   const declaration = ast.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === "ChatRoomManager");
   const scope = {
-    PeerSession, PortalPermissions, PORTAL_PERMISSION_DIMENSIONS, PortalFiles, toolPermissionScope, PortalConnectionJournal, endpointLabel, endpointScope, portalChanged() {},
-    assertPeerEndpoint, parsePortalLink, path, os, process, randomUUID, setTimeout, setInterval, clearInterval, AbortController, root: "/fixture", executions: [], confirmations: [],
+    ...require("../dist/chatroom/portal-command"),
+    PeerSession, PortalPermissions, PORTAL_PERMISSION_DIMENSIONS, PortalFiles, toolPermissionScope, PortalConnectionJournal, portalConnectionAccess, endpointLabel, endpointScope, portalChanged() {}, portalLog() {}, hubLog() {},
+    assertPeerEndpoint, parsePortalLink, preflightPortalEndpoint:async () => {}, path, os, process, randomUUID, setTimeout, setInterval, clearInterval, AbortController, root: "/fixture", executions: [], confirmations: [],
     getStorePath: () => scope.root,
     portalInteraction: async (chatId, interaction, current) => {
       scope.confirmations.push({ chatId, title: interaction.title, options: { detail: interaction.detail }, interaction });
@@ -36,6 +48,8 @@ function managerFixture() {
       return scope.allow === false ? undefined : { action: interaction.choices[0].value, fields: {} };
     },
     portalReviewReceiver: async (chatId, review) => { scope.reviews.push({ chatId, review }); }, reviews: [],
+    portalCommandRecorder: undefined,
+    portalTransferRecorder: async (chatId, status, peerName) => { scope.transferTraces.push({ chatId, status, peerName }); }, transferTraces: [],
     remoteChatExecutor: async (prompt, _signal, requestId, chatId, _observer, source) => {
       scope.executions.push({ prompt, requestId, chatId, source });
       return { chatId, content: prompt };
@@ -47,7 +61,7 @@ function managerFixture() {
       showErrorMessage: async message => { scope.errors.push(message); },
     } },
     agentSessionProjectStateData: async () => ({}), postToPanel() {},
-    log: { error() {} }, errors: [],
+    log: { error() {}, info() {}, action() {} }, errors: [],
   };
   scope.requestNativePortalInteraction = async (interaction, current) => {
     scope.nativePrompts = (scope.nativePrompts || 0) + 1;
@@ -62,6 +76,31 @@ function managerFixture() {
   return { scope, manager };
 }
 
+test("Portal file status reaches the bound Chat before the picker, but never invents an external Chat", async () => {
+  for (const external of [false, true]) {
+    const { scope, manager } = managerFixture();
+    const owner = { id: randomUUID(), label: "Portal test" };
+    const binding = { role: "controlled", peerId: "peer", peerName: "controller", peerCapabilities: ["files-v1"] };
+    const room = { client: { isConnected: true }, peer: { binding, sendFiles() {} } };
+    manager.chatPortals.set(owner.id, { ...owner, root: scope.root, external, room });
+    let release;
+    scope.vscode.window.showOpenDialog = () => new Promise(resolve => { release = resolve; });
+    const engine = manager.filesForPortal(owner, room);
+    try {
+      const received = engine.handle({ kind: "portal-file", op: "manifest", transferId: randomUUID(),
+        files: [{ name: "test.vsix", size: 1, sha256: "a".repeat(64) }], totalBytes: 1 });
+      assert.equal(scope.transferTraces.length, external ? 0 : 1);
+      if (!external) {
+        assert.equal(scope.transferTraces[0].chatId, owner.id);
+        assert.equal(scope.transferTraces[0].status.state, "awaiting-approval");
+      }
+      release(undefined);
+      await received;
+      if (!external) assert.equal(scope.transferTraces.at(-1).status.state, "cancelled");
+    } finally { engine.dispose(); }
+  }
+});
+
 async function until(predicate) {
   const deadline = Date.now() + 3000;
   while (!predicate()) {
@@ -69,6 +108,222 @@ async function until(predicate) {
     await new Promise(resolve => setTimeout(resolve, 5));
   }
 }
+
+  test("deleting and replacing a named endpoint Chat aborts execution, clears grants and retains the connection", async () => {
+    const { scope, manager } = managerFixture();
+    const store = endpointStore();
+    const oldChatId = randomUUID(), nextChatId = randomUUID();
+    const endpoint = await store.create({ name: "Linux endpoint", root: scope.root, localMachine: "linux", chatId: oldChatId, chatName: "Old Chat" });
+    manager.endpointStore = store;
+    await store.update(endpoint.id, { acceptsIncoming: true, permissions: ["code-execute"] });
+    let published = 0;
+    const binding = { pairId: randomUUID(), role: "controlled", peerId: "peer", peerName: "Windows" };
+    const room = { client: { isConnected: true }, peer: { binding, publishEndpointState: () => { published++; } } };
+    manager.chatPortals.set(endpoint.id, { id: endpoint.id, label: endpoint.name, root: scope.root, external: false, room });
+    const execution = new AbortController();
+    manager.portalExecutions.set(endpoint.id, execution);
+    manager.applyEndpointPermissions(store.get(endpoint.id));
+    assert.equal(manager.portalToolAllowed(oldChatId, "run_process"), true);
+    await manager.portalChatRemoved(oldChatId);
+    assert.equal(execution.signal.aborted, true);
+    assert.equal(store.get(endpoint.id).deleted, true);
+    assert.equal(store.get(endpoint.id).acceptsIncoming, false);
+    assert.equal(store.get(endpoint.id).permissions.length, 0);
+    assert.equal(manager.chatPortals.get(endpoint.id).room, room);
+    assert.equal(published, 1);
+    manager.endpointLocks.set(endpoint.id, () => {});
+    scope.portalChooseContext = async () => ({ id: nextChatId, label: "Replacement Chat" });
+    await manager.managePersistentEndpoint({}, "bind", endpoint.id);
+    assert.equal(store.get(endpoint.id).chatId, nextChatId);
+    assert.equal(store.get(endpoint.id).deleted, false);
+    assert.equal(store.get(endpoint.id).acceptsIncoming, false);
+    assert.equal(manager.portalToolAllowed(nextChatId, "run_process"), false);
+    assert.equal(published, 2);
+  });
+
+  test("named endpoint extension callbacks execute in both directions and clear receiving grants when remote Chat changes", async t => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-portal-duplex-manager-"));
+    const a = managerFixture(), b = managerFixture();
+    a.scope.root = b.scope.root = directory;
+    a.manager.endpointStore = endpointStore(); b.manager.endpointStore = endpointStore();
+    const left = await a.manager.endpointStore.create({ name: "Linux endpoint", root: directory, localMachine: "linux", chatId: randomUUID(), chatName: "Linux Chat" });
+    const right = await b.manager.endpointStore.create({ name: "Windows endpoint", root: directory, localMachine: "windows", chatId: randomUUID(), chatName: "Windows Chat" });
+    let local, remote;
+    const roomA = { roomId: "duplex", url: "wss://receiver.example.test", client: { isConnected: true, sendPeer: (_target, packet) => void remote.receive({ from: "a", fromName: "Linux", packet }) } };
+    const roomB = { roomId: "duplex", url: "wss://sender.example.test", client: { isConnected: true, sendPeer: (_target, packet) => void local.receive({ from: "b", fromName: "Windows", packet }) } };
+    a.manager.chatPortals.set(left.id, { id: left.id, label: left.name, root: directory, external: false, room: roomA });
+    b.manager.chatPortals.set(right.id, { id: right.id, label: right.name, root: directory, external: false, room: roomB });
+    const context = { globalStorageUri: { fsPath: directory } };
+    local = a.manager.ensurePeer(roomA, directory, { id: left.id, label: left.name }, context);
+    remote = b.manager.ensurePeer(roomB, directory, { id: right.id, label: right.name }, context);
+    t.after(() => {
+      local.dispose(); remote.dispose();
+      a.manager.invalidatePortal(left.id); b.manager.invalidatePortal(right.id);
+      fs.rmSync(directory, { recursive: true, force: true });
+    });
+    local.pair("b", remote.invite());
+    await until(() => local.binding && remote.binding);
+    const transport = { url: "wss://receiver.example.test", roomId: randomUUID(), user: "fixture", cid: "fixture", host: false };
+    await a.manager.endpointStore.pair(left.id, local.binding, transport, "s".repeat(32));
+    await b.manager.endpointStore.pair(right.id, remote.binding, transport, "s".repeat(32));
+    for (const [manager, endpoint] of [[a.manager, left], [b.manager, right]]) {
+      await manager.endpointStore.update(endpoint.id, { acceptsIncoming: true, permissions: ["code-execute"] });
+      manager.applyEndpointPermissions(manager.endpointStore.get(endpoint.id));
+    }
+    local.publishEndpointState(); remote.publishEndpointState();
+    await until(() => local.peerEndpoint?.acceptsIncoming && remote.peerEndpoint?.acceptsIncoming);
+    const first = local.submitCommand({ program: "node", arguments: ["-e", "process.stdout.write('left-to-right')"], timeoutSeconds: 30 });
+    const second = remote.submitCommand({ program: "node", arguments: ["-e", "process.stdout.write('right-to-left')"], timeoutSeconds: 30 });
+    await until(() => local.receipts.get(first)?.state === "completed" && remote.receipts.get(second)?.state === "completed");
+    assert.equal(local.receipts.get(first).result.stdout, "left-to-right");
+    assert.equal(remote.receipts.get(second).result.stdout, "right-to-left");
+    await b.manager.portalChatRemoved(right.chatId);
+    await until(() => local.peerEndpoint?.deleted && !a.manager.endpointStore.get(left.id).acceptsIncoming);
+    assert.equal(a.manager.endpointStore.get(left.id).permissions.length, 0);
+    assert.equal(b.manager.endpointStore.get(right.id).permissions.length, 0);
+  });
+test("saved named endpoints restore over a real relay after extension restart without replaying commands", async t => {
+  const { WebSocketServer } = require("ws");
+  const { ChatClient } = require("../dist/chatroom/chatroom-client");
+  const { PortalRelay } = require("../dist/chatroom/portal-relay");
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-portal-restore-manager-"));
+  const relay = new PortalRelay();
+  const server = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+  server.on("connection", socket => relay.accept(socket));
+  await new Promise(resolve => server.once("listening", resolve));
+  const url = `ws://127.0.0.1:${server.address().port}/pkm/portal`;
+  const channel = relay.create();
+  const pairId = randomUUID(), aStore = endpointStore(), bStore = endpointStore();
+  const left = await aStore.create({ name: "Left", root: directory, localMachine: "linux", chatId: randomUUID(), chatName: "Left Chat" });
+  const right = await bStore.create({ name: "Right", root: directory, localMachine: "windows", chatId: randomUUID(), chatName: "Right Chat" });
+  const participant = cid => createHmac("sha256", channel.secret).update(cid).digest("hex").slice(0, 32);
+  const caps = ["persistent-v1", "commands-v1", "platform:linux", "program:node"];
+  for (const [store, endpoint, peer, cid, peerCid, role] of [
+    [aStore, left, right, "left", "right", "controller"], [bStore, right, left, "right", "left", "controlled"],
+  ]) {
+    await store.pair(endpoint.id, { pairId, peerId: participant(peerCid), peerName: peer.name, role,
+      peerChatId: peer.chatId, peerChatName: peer.chatName, peerCapabilities: caps },
+    { url, roomId: channel.channelId, user: endpoint.name, cid, host: false }, channel.secret);
+    await store.update(endpoint.id, { acceptsIncoming: true, permissions: ["code-execute"] });
+  }
+  const managers = [];
+  t.after(async () => {
+    for (const manager of managers) await manager.dispose();
+    relay.stop();
+    await new Promise(resolve => server.close(resolve));
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+  const restore = async (store, endpoint) => {
+    const { scope, manager } = managerFixture();
+    scope.root = directory; scope.ChatClient = ChatClient;
+    manager.endpointStore = store;
+    manager.endpointContext = { globalStorageUri: { fsPath: directory } };
+    manager.endpointLocks.set(endpoint.id, () => {});
+    managers.push(manager);
+    await manager.connectPersistentEndpoint(endpoint.id);
+    return manager;
+  };
+  const a = await restore(aStore, left);
+  const b = await restore(bStore, right);
+  const peer = manager => manager.chatPortals.values().next().value.room.peer;
+  await until(() => peer(a).endpointConfirmed && peer(b).endpointConfirmed);
+  const requestId = peer(a).submitCommand({ program: "node", arguments: ["-e", "process.stdout.write('before-restart')"], timeoutSeconds: 30 });
+  await until(() => peer(a).receipts.get(requestId)?.state === "completed");
+  await a.dispose(); await b.dispose();
+  const restartedA = await restore(aStore, left);
+  const restartedB = await restore(bStore, right);
+  await until(() => peer(restartedA).endpointConfirmed && peer(restartedB).endpointConfirmed);
+  assert.equal(peer(restartedA).receipts.size, 0, "restart does not replay the old command or invent a receipt");
+  assert.equal(restartedB.portalPermissions.get(right.id).allows("code-execute"), true, "explicit durable receiving permission survives restart");
+  const nextId = peer(restartedB).submitCommand({ program: "node", arguments: ["-e", "process.stdout.write('after-restart-reverse')"], timeoutSeconds: 30 });
+  await until(() => peer(restartedB).receipts.get(nextId)?.state === "completed");
+  assert.equal(peer(restartedB).receipts.get(nextId).result.stdout, "after-restart-reverse");
+});
+
+test("new Portal Hub rotates an occupied port without stopping the existing Hub and publishes the change", async t => {
+  const { ChatHub } = require("../dist/chatroom/chatroom-hub");
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-portal-hub-rotation-"));
+  const occupied = new ChatHub();
+  const secretMap = new Map();
+  const secrets = { get: async key => secretMap.get(key), store: async (key, value) => { secretMap.set(key, value); }, delete: async key => { secretMap.delete(key); } };
+  occupied.configureLifecycle(path.join(directory, "first"), 1024, "fixture-owner", secrets);
+  const { scope, manager } = managerFixture();
+  manager.hub = new ChatHub();
+  manager.persistenceRoot = path.join(directory, "second");
+  manager.installationId = "fixture-owner";
+  manager.secretStorage = secrets;
+  scope.ChatHub = ChatHub;
+  scope.vscode.window.setStatusBarMessage = () => {};
+  t.after(async () => { await manager.hub.stop(); await occupied.stop(); fs.rmSync(directory, { recursive: true, force: true }); });
+  await occupied.start(0);
+  const oldPort = occupied.port;
+  const result = await manager.startHub(oldPort, true);
+  assert.equal(result.ok, true, result.error);
+  assert.notEqual(manager.hub.port, oldPort);
+  assert.equal(occupied.isRunning, true);
+  const response = await fetch(`http://127.0.0.1:${oldPort}/.well-known/pkm-chat-hub`);
+  assert.equal((await response.json()).protocol, "pkm-chat-hub:v1", "original listener remains responsive");
+  const status = manager.portalConnectionHistory().hubPort;
+  assert.equal(status.requestedPort, oldPort);
+  assert.equal(status.actualPort, manager.hub.port);
+  assert.equal(status.state, "ready");
+  assert.equal(status.reason, "in-use");
+  const { PORTAL_TRANSPORT_PATH } = require("../dist/chatroom/peer-protocol");
+  const owner = { id: randomUUID(), label: "Rotated listener" };
+  const peer = { pendingInvitation: { expiresAt: Date.now() + 600000 }, offer: () => `pkmpeer:v1:${randomUUID()}:${"a".repeat(48)}` };
+  const room = { client: { isConnected: true, participantId: "local-participant" }, peer, user: "local" };
+  manager.chatPortals.set(owner.id, { ...owner, root: scope.root });
+  manager.portalPreflight = () => scope.root;
+  manager.joinPortalTransport = (_id, connection) => {
+    assert.match(connection.url, new RegExp(`:${manager.hub.port}/`));
+    return room;
+  };
+  manager.ensurePeer = () => peer;
+  let forwarded, copied;
+  scope.getChatCid = () => "fixture-client";
+  scope.PORTAL_TRANSPORT_PATH = PORTAL_TRANSPORT_PATH;
+  scope.createPortalLink = createPortalLink;
+  scope.vscode.workspace.getConfiguration = () => ({ get: () => oldPort });
+  scope.vscode.Uri = { parse: value => value };
+  scope.vscode.env = {
+    asExternalUri: async value => { forwarded = value; return { scheme: "http", authority: `localhost:${manager.hub.port}` }; },
+    clipboard: { writeText: async value => { copied = value; } },
+  };
+  await manager.startPortal({}, owner, "controller");
+  assert.equal(forwarded, `http://localhost:${manager.hub.port}`, "forward the selected port, never the occupied configured one");
+  assert.equal(parsePortalLink(copied).url, `ws://localhost:${manager.hub.port}${PORTAL_TRANSPORT_PATH}`);
+  assert.equal(manager.portalConnections.get(owner.id).port, manager.hub.port);
+  manager.refreshStoredRooms = async () => {};
+  await manager.stopHub();
+  assert.equal(manager.portalConnectionHistory().hubPort.state, "stopped");
+  assert.equal(manager.portalConnectionHistory().hubPort.actualPort, undefined, "a stopped Hub must not claim to be listening");
+});
+
+test("saved listener startup does not rotate and failed fallback cannot claim a listening port", async () => {
+  for (const rotate of [false, true]) {
+    const { manager } = managerFixture();
+    const calls = [];
+    manager.hub = { isRunning: false, configureArchive() {}, configurePersistence() {},
+      start: async port => { calls.push(port); throw Object.assign(new Error(port ? "occupied" : "fallback failed"), { code: port ? "EADDRINUSE" : "EACCES" }); } };
+    const result = await manager.startHub(37009, rotate);
+    assert.equal(result.ok, false);
+    assert.deepEqual(calls, rotate ? [37009, 0] : [37009]);
+    const status = manager.portalConnectionHistory().hubPort;
+    assert.equal(status.state, "failed");
+    assert.equal(status.actualPort, undefined);
+  }
+});
+
+test("non-conflict Hub errors never trigger rotation", async () => {
+  const { manager } = managerFixture();
+  const calls = [];
+  manager.hub = { isRunning: false, configureArchive() {}, configurePersistence() {},
+    start: async port => { calls.push(port); throw Object.assign(new Error("access denied"), { code: "EACCES" }); } };
+  const result = await manager.startHub(37009, true);
+  assert.equal(result.ok, false);
+  assert.deepEqual(calls, [37009]);
+  assert.equal(manager.portalConnectionHistory().hubPort.state, "failed");
+});
 
 test("Chat-scoped routing keeps controller/controlled roles, endpoints, requests and disconnects independent", async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-chat-portal-"));
@@ -361,6 +616,49 @@ test("Portal file operation routes a multi-file batch without disconnecting and 
   assert.deepEqual([...sender.scope.errors, ...receiver.scope.errors], []);
 });
 
+test("Portal direct command offers Always allow until disconnected and skips later prompts", async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-portal-always-"));
+  const sender = managerFixture(), receiver = managerFixture();
+  sender.scope.root = receiver.scope.root = directory;
+  const a = { id: randomUUID(), label: "Controller" }, b = { id: randomUUID(), label: "Controlled" };
+  let local, remote;
+  const roomA = { roomId: "always", url: "wss://receiver.example.test:443", client: { isConnected: true, sendPeer: (_target, packet) => void remote.receive({ from: "a", fromName: a.label, packet }) } };
+  const roomB = { roomId: "always", url: "wss://sender.example.test:443", client: { isConnected: true, sendPeer: (_target, packet) => void local.receive({ from: "b", fromName: b.label, packet }) } };
+  const caps = [`platform:${process.platform}`, "program:node"];
+  sender.manager.portalCommandCaps = receiver.manager.portalCommandCaps = caps;
+  sender.manager.chatPortals.set(a.id, { ...a, root: directory, external: false, room: roomA });
+  receiver.manager.chatPortals.set(b.id, { ...b, root: directory, external: false, room: roomB });
+  local = sender.manager.ensurePeer(roomA, directory, a); remote = receiver.manager.ensurePeer(roomB, directory, b, { globalStorageUri: { fsPath: directory } });
+  t.after(() => {
+    sender.manager.invalidatePortal(a.id); receiver.manager.invalidatePortal(b.id);
+    local.dispose(); remote.dispose(); fs.rmSync(directory, { recursive: true, force: true });
+  });
+  local.pair("b", remote.invite()); await until(() => local.binding && remote.binding);
+  const prompts = [];
+  receiver.scope.portalAnswer = async (_chatId, interaction) => {
+    prompts.push(interaction);
+    return { action: "always", fields: {} };
+  };
+  const run = async () => {
+    const requestId = randomUUID();
+    await sender.manager.portalControl({}, { operation: "command", contextId: a.id, requestId,
+      command: { program: "node", arguments: ["-e", "process.stdout.write('ok')"], timeoutSeconds: 30 } }, false);
+    await until(() => ["completed", "failed"].includes(local.receipts.get(requestId)?.state));
+    return local.receipts.get(requestId);
+  };
+  const first = await run();
+  assert.equal(first.state, "completed", JSON.stringify(first));
+  assert.equal(prompts.length, 1);
+  assert.equal(prompts[0].choices.map(choice => choice.value).join(","), "run,always,permissions,cancel");
+  assert.equal(receiver.manager.portalPermissions.get(b.id).allows("code-execute"), true);
+  assert.equal(receiver.manager.portalPermissions.get(b.id).snapshot().grants[0].expiresAt ?? null, null);
+  const second = await run();
+  assert.equal(second.state, "completed", JSON.stringify(second));
+  assert.equal(prompts.length, 1, "Always allow must not prompt again on the same pairing");
+  receiver.manager.invalidatePortal(b.id);
+  assert.notEqual(receiver.manager.portalPermissions.get(b.id)?.allows("code-execute"), true, "disconnect revokes the grant");
+});
+
 test("Portal leases gate real tool scopes, expire at a fixed deadline and never approve file batches", () => {
   const { scope, manager } = managerFixture();
   const id = randomUUID(), pairId = randomUUID();
@@ -405,10 +703,11 @@ test("remote execution uses the existing bound Chat without changing selection, 
     remoteControlledRequests: new Set(), agentControlledRequests: new Set(), remoteSources: new Map(), approvals: new Map(), decisions: new Map(),
     openStore() {}, store: { namespace: chat.workspaceNamespace, resolveChat: id => { assert.equal(id, chat.id); return chat; } },
     assertRunnable() {},
-    send: async (_prompt, target) => {
+    send: async (_prompt, target, parent) => {
       assert.equal(target, chat);
       assert.equal(provider.remoteControlledRequests.has(chat.id), true);
-      target.messages.push({ id: "reply", role: "assistant", status: "complete", content: "Windows tested" });
+      target.messages.push({ id: parent.portalTask.replyId, role: "assistant", status: "complete", content: "Windows tested",
+        portalTask: { ...parent.portalTask } });
     },
   });
   const result = await provider.executeRemoteTask("test Windows", new AbortController().signal, randomUUID(), chat.id);

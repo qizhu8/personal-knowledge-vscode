@@ -12,6 +12,10 @@ process.env.PKM_SERVICE_TEST_EXTENSION_ROOT = extensionRoot;
 const buildRoot = process.env.PKM_SERVICE_BUILD_DIR
   ? path.resolve(process.env.PKM_SERVICE_BUILD_DIR) : path.join(extensionRoot, "dist");
 process.env.PKM_SERVICE_BUILD_DIR = buildRoot;
+// Daemons inherit these; they shorten the 750 ms Sync poll and 5 s lifecycle check without changing behavior.
+process.env.PKM_SERVICE_TEST_POLL_MS ??= "50";
+process.env.PKM_SERVICE_TEST_LIFECYCLE_MS ??= "250";
+const lifecycleMs = Number(process.env.PKM_SERVICE_TEST_LIFECYCLE_MS) || 5000;
 const api = require(path.join(buildRoot, "runtime", "pkm-service.js"));
 const syncApi = require(path.join(buildRoot, "sync", "github-sync.js"));
 const repairApi = require(path.join(buildRoot, "sync", "github-sync-content-repair.js"));
@@ -299,7 +303,7 @@ async function main() {
     offline.dispose();
     const offlineIdentity = api.pkmServiceIdentity(offlineOptions);
     const offlineState = () => JSON.parse(fs.readFileSync(path.join(offlineIdentity.stateDirectory, "coordinator.json"), "utf8"));
-    await wait(5500);
+    await wait(Math.max(1500, lifecycleMs * 3));
     assert.equal(offlineState().targets.offline.enabled, true,
       "an independent service without any connected host must preserve the user's Auto setting");
     assert.equal(offlineState().targets.offline.lastFailure, undefined,
@@ -407,10 +411,11 @@ async function main() {
     }
 
     const fixtureOptions = optionsFor("binary-and-recovery", version, true);
-    let job, completed, failed, releasePostprocess;
+    let job, completed, failed, releasePostprocess, fixtureExecutionCount = 0;
     const fixtureClient = await connect({
       ...fixtureOptions,
       execute: async (targetId) => {
+        fixtureExecutionCount++;
         try {
           if (job.name === "credential-timeout") {
             fixtureClient.report(targetId, "authenticating", "Reading credentials");
@@ -457,6 +462,33 @@ async function main() {
     assert.equal(fixtureClient.snapshot().fixture.lastErrorCode, "CREDENTIAL_READ_TIMEOUT");
     assert.equal(fixtureClient.snapshot().fixture.lastErrorPhase, "authenticating");
     assert.match(fixtureClient.snapshot().fixture.lastError, /GitHub was not contacted/);
+    const fixtureCoordinatorPath = path.join(api.pkmServiceIdentity(fixtureOptions).stateDirectory, "coordinator.json");
+    const authenticationFailure = JSON.parse(fs.readFileSync(fixtureCoordinatorPath, "utf8")).targets.fixture.lastFailure;
+    const automaticAuthenticationTarget = {
+      id:"fixture", enabled:true, intervalMinutes:2, syncOnChange:true,
+      lastFailure:{...authenticationFailure, attempts:3},
+    };
+    const executionsBeforeBackoff = fixtureExecutionCount;
+    await fixtureClient.configure([automaticAuthenticationTarget]);
+    await until(() => fixtureClient.snapshot().fixture?.nextSyncAt, "persisted authentication retry deadline");
+    assert.equal(Date.parse(fixtureClient.snapshot().fixture.nextSyncAt) - Date.parse(authenticationFailure.at), 15 * 60_000,
+      "the real independent service preserves fifteen-minute authentication backoff over RPC after three failures");
+    assert.equal(await fixtureClient.request("fixture", "configuration"), false);
+    await fixtureClient.notifyContentChanged();
+    await wait(100);
+    assert.equal(fixtureExecutionCount, executionsBeforeBackoff, "automatic requests cannot bypass the service authentication delay");
+    job = {name:"binary"}; completed = undefined; failed = undefined;
+    assert.equal(await fixtureClient.request("fixture", "manual"), true, "manual recovery bypasses authentication backoff over RPC");
+    await until(() => completed && fixtureClient.snapshot().fixture?.lastSuccessAt, "authentication recovery through daemon Sync");
+    const recoveredAuthenticationTarget = JSON.parse(fs.readFileSync(fixtureCoordinatorPath, "utf8")).targets.fixture;
+    assert.equal(fixtureExecutionCount, executionsBeforeBackoff + 1);
+    assert.equal(recoveredAuthenticationTarget.enabled, true);
+    assert.equal(recoveredAuthenticationTarget.lastFailure, undefined);
+    assert.equal(fixtureClient.snapshot().fixture.lastError, undefined);
+    assert.equal(Date.parse(fixtureClient.snapshot().fixture.nextSyncAt)
+      - Date.parse(fixtureClient.snapshot().fixture.lastSuccessAt), 2 * 60_000,
+    "successful daemon Sync restores the configured interval over IPC without toggling Auto");
+    await fixtureClient.configure([{id:"fixture", enabled:false, intervalMinutes:1440, syncOnChange:false}]);
     const catalog = emptyCatalog();
     catalog.skills.push({ extra: { nested: [fixtureBytes, Buffer.alloc(0)], literalTag: { $pkm: "buffer", data: "not an encoding" } } });
     const progress = [];

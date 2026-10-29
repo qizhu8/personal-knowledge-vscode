@@ -198,7 +198,26 @@ export interface RetrievalResultHitV1 {
   provenance: Record<string, unknown>;
 }
 
+export interface OnlineRetrievalLearning {
+  enabled: boolean;
+  applied: boolean;
+  revision: number;
+  ranker_revision: number;
+  calibrator_revision: number;
+  embedding_updated: false;
+}
+
+export function validOnlineRetrievalLearning(value: unknown): value is OnlineRetrievalLearning {
+  if (!value || typeof value !== "object") return false;
+  const item = value as OnlineRetrievalLearning;
+  return typeof item.enabled === "boolean" && typeof item.applied === "boolean"
+    && (!item.applied || item.enabled)
+    && item.embedding_updated === false
+    && [item.revision, item.ranker_revision, item.calibrator_revision].every(count => Number.isSafeInteger(count) && count >= 0);
+}
+
 export interface RetrievalResultV1 {
+  online_learning?: OnlineRetrievalLearning;
   retrieval_id?: string;
   model_invoked?: boolean;
   learning_error?: string;
@@ -435,6 +454,9 @@ export function compileRetrievalResultV1(input: unknown): RetrievalCompileResult
   }
   const value = input as Record<string, unknown>;
   const diagnostics: RetrievalContractDiagnostic[] = [];
+  if (value.online_learning !== undefined && !validOnlineRetrievalLearning(value.online_learning)) {
+    diagnostics.push({ code:"field", pointer:"/online_learning", message:"Invalid online learning revisions or embedding update claim." });
+  }
   if (value.schema !== RETRIEVAL_RESULT_SCHEMA_V1) diagnostics.push({ code: "schema", pointer: "/schema", message: `Expected ${RETRIEVAL_RESULT_SCHEMA_V1}.` });
   if (value.ok !== true) diagnostics.push({ code: "field", pointer: "/ok", message: "A successful result must set ok to true." });
   if (!boundedText(value.requestId, 256)) diagnostics.push({ code: "field", pointer: "/requestId", message: "requestId must be bounded text." });

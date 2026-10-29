@@ -140,7 +140,7 @@ function managedFixture(t, options = {}) {
     publish(overrides) { active = publish(overrides); return active; },
     async connect(signal = new AbortController().signal, closeOptions) {
       const launch = options.python ? {
-        command: path.resolve(__dirname, "../.venv/bin/python"),
+        command: require("./dev-paths").testPython,
         args: ["-c", pythonService, active.manifestPath, path.resolve(__dirname, "../resources")],
         env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
       } : { command: process.execPath, args: ["-e", service, note, active.manifestPath,

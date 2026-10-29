@@ -20,6 +20,7 @@ import { RetrievalIndexEventStore } from "./retrieval-index-events";
 import { withCrossProcessLock } from "../runtime/cross-process-lock";
 import { stageRetrievalRuntime } from "./retrieval-runtime";
 import { downloadRetrievalModel, type DefaultRetrievalModel } from "./retrieval-model-download";
+import { ensureRetrievalModelEnvironment } from "./retrieval-model-environment";
 
 export interface RetrievalModelSetup {
   operationId: string;
@@ -30,6 +31,7 @@ export interface RetrievalModelSetup {
   packageId?: string;
   error?: string;
   failedPhase?: string;
+  detail?: string;
   ownerPid?: number;
 }
 
@@ -135,14 +137,16 @@ export interface RetrievalSolutionStatus {
   fallback: string;
   progress?: { phase: string; current: number; total: number | null };
   observed?: { elapsed_seconds?: number; rss_bytes?: number | null; sampled_peak_rss_bytes?: number | null; cpu_core_equivalents?: number; scope?: string };
-  index?: { reused?: boolean; bytes?: number | null; persistent?: boolean; embedding_cache_hits?: number; embedding_cache_misses?: number; embedding_cache_bytes?: number };
+  index?: { reused?: boolean; bytes?: number | null; persistent?: boolean; embedding_cache_hits?: number; embedding_cache_misses?: number; embedding_cache_bytes?: number;
+    statistics?: { document_count: number; document_vector_count: number; unit_count: number; unit_source_count: number;
+      unit_vector_count: number; token_vector_count: number; granularity: string } | null };
   process?: { rss_bytes: number | null; host_available_memory_bytes: number | null; logical_cpus: number | null; scope: string };
 }
 
 export interface RetrievalSolutionCatalog extends RetrievalSolutionStatus {
   ok: boolean;
   packages: Array<{
-    package_id: string; name: string; architecture?: string;
+    package_id: string; name: string; architecture?: string; encoder_bundle_id?: string | null;
     license?: string; bytes?: number; validation?: Record<string, unknown>; error?: string;
     resources?: {
       kind: string; document_count: number; content_type_counts: Record<string, number>; unit_count: number; dimensions: number | null;
@@ -163,9 +167,16 @@ export interface RetrievalSolutionCatalog extends RetrievalSolutionStatus {
   learning?: {
     enabled: boolean;
     minimum_judged_calls: number;
-    calls: Array<{ invocation: number; context: string; runtime_ms: number; returned_count: number; recall: number | null; success: boolean }>;
+    stored_calls?: number;
+    stored_user_judgments?: number;
+    policy?: { minimum_gap: number; retain_probability: number; discard_probability: number; threshold_ewma: number; retention_calls: number };
+    calls: Array<{ invocation: number; context: string; runtime_ms: number; returned_count: number; recall: number | null; precision?: number | null; success: boolean }>;
     models: Array<{ context: string; package_id: string; corpus_revision: string; route: string;
-      judged_calls: number; safe_streak: number; threshold: number;
+      judged_calls: number; safe_streak: number; minimum_judged_calls?: number;
+      calibration_ready?: boolean; state?: "disabled" | "collecting-feedback" | "ready"; threshold: number;
+      revision?: number; ranker_revision?: number; calibrator_revision?: number; model_labels?: number; user_labels?: number;
+      ranker?: { features: number; active: boolean; weights: number[]; weight_bound: number };
+      prequential?: { evaluated_calls: number; brier: number | null; log_loss: number | null; evaluation: string };
       baseline: { slope: number; bias: number }; current: { slope: number; bias: number } }>;
     retention: string;
     calibration: string;
@@ -233,11 +244,13 @@ export class RetrievalWorkerManager {
       try {
         publish({});
         const resources = path.dirname(this.runtimeFiles().script);
-        const endpoint = await this.ensure();
+        let endpoint = await this.ensure();
         const selection = await this.request<RetrievalSolutionStatus & { selection_revision:number }>(endpoint, "/solutions");
-        if (source !== "archive") await this.runPython(this.modelRuntime().python, [path.join(resources, "retrieval_runtime.py")], 60_000);
+        if (source !== "archive") await this.prepareModelEnvironment(source === "huggingface", signal,
+          detail => publish({ detail }));
+        endpoint = await this.ensure();
         signal.throwIfAborted();
-        publish({ phase:"acquire" });
+        publish({ phase:"acquire", detail:source === "huggingface" ? "Downloading verified model files" : "Importing model files" });
         if (source === "huggingface") {
           const model: DefaultRetrievalModel = JSON.parse(fs.readFileSync(path.join(resources, "retrieval-default-model.json"), "utf8"));
           const total = Object.values(model.manifest.files).reduce((sum, file) => sum + file.bytes, 0);
@@ -249,17 +262,32 @@ export class RetrievalWorkerManager {
         }
         signal.throwIfAborted();
         if (!sourcePath) throw new Error("Choose a local model directory or solution ZIP.");
-        publish({ phase:"verify" });
+        publish({ phase:"verify", detail:"Verifying model checksums and package identity" });
         const result = source === "archive" ? await this.importSolution(sourcePath) : await this.runPython(this.modelRuntime().python, [
           path.join(resources, "retrieval_solution.py"), "--model-directory", sourcePath, "--state", this.stateDir,
         ], 120_000);
         if (typeof result.package_id !== "string" || !/^[a-f0-9]{64}$/.test(result.package_id)) throw new Error("Model importer returned an invalid package identity.");
-        publish({ phase:"configure", packageId:result.package_id });
+        publish({ phase:"configure", packageId:result.package_id, detail:"Applying embedding retrieval configuration" });
         signal.throwIfAborted();
         if (source !== "archive") {
           await this.request(endpoint, "/solutions", "POST", { action:"enable", package_id:result.package_id, expected_revision:selection.selection_revision });
         }
-        publish({ phase:source === "archive" ? "ready" : "index" });
+        publish({ phase:source === "archive" ? "ready" : "index", detail:source === "archive" ? "Offline package imported" : "Building embedding index" });
+        if (source !== "archive") {
+          const deadline = Date.now() + 30 * 60_000;
+          while (true) {
+            signal.throwIfAborted();
+            const status = await this.solutions();
+            signal.throwIfAborted();
+            if (status.active_package_id === result.package_id && status.state === "ready") break;
+            if (status.error || status.state === "blocked") throw new Error(status.error || "Embedding index build is blocked.");
+            if (status.requested_package_id !== result.package_id) throw new Error("Embedding model selection changed during setup. This setup did not finish.");
+            if (Date.now() >= deadline) throw new Error("Embedding index build has not finished after 30 minutes. Inspect index status; no build was replayed.");
+            publish({ detail: status.progress?.phase || "Building embedding index" });
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+          publish({ phase:"ready", detail:"Embedding retrieval is ready" });
+        }
       } catch (error) {
         publish({ failedPhase:setup.phase, phase:signal.aborted ? "cancelled" : "failed", error:(error as Error).message });
         throw error;
@@ -267,6 +295,23 @@ export class RetrievalWorkerManager {
         if (temporary) await fs.promises.rm(temporary, { recursive:true, force:true });
       }
     });
+  }
+
+  private async prepareModelEnvironment(managed: boolean, signal: AbortSignal, report: (detail: string) => void): Promise<void> {
+    const resources = path.dirname(this.runtimeFiles().script);
+    if (!managed && this.modelRuntime().configured) {
+      await this.runPython(this.modelRuntime().python, [path.join(resources, "retrieval_runtime.py")], 60_000);
+      return;
+    }
+    const python = await ensureRetrievalModelEnvironment({
+      directory: this.managedModelEnvironment,
+      basePython: this.python,
+      requirements: path.join(resources, "retrieval-model-requirements.txt"),
+      signal, report,
+      verify: async python => { await this.runPython(python, [path.join(resources, "retrieval_runtime.py")], 60_000); },
+    });
+    signal.throwIfAborted();
+    await this.configureModelRuntime(python);
   }
 
   async solutions(): Promise<RetrievalSolutionCatalog> {
@@ -286,14 +331,14 @@ export class RetrievalWorkerManager {
     return result.learning;
   }
 
-  async submitFeedback(retrievalId: string, relevantSourceIds: string[]): Promise<unknown> {
+  async submitFeedback(retrievalId: string, relevantSourceIds: string[], provenance: "user" | "model" = "user"): Promise<unknown> {
     if (typeof retrievalId !== "string" || !retrievalId || retrievalId.length > 200
       || !Array.isArray(relevantSourceIds) || relevantSourceIds.length > 10000
-      || relevantSourceIds.some(id => typeof id !== "string" || !id || id.length > 4096)) {
+      || relevantSourceIds.some(id => typeof id !== "string" || !id || id.length > 4096) || !["user", "model"].includes(provenance)) {
       throw new Error("Invalid explicit retrieval relevance judgments.");
     }
     const result = await this.request<{ ok?: boolean; error?: string }>(await this.ensure(), "/retrieval-feedback", "POST", {
-      retrieval_id: retrievalId, relevant_source_ids: relevantSourceIds, complete: true,
+      retrieval_id: retrievalId, relevant_source_ids: relevantSourceIds, complete: true, provenance,
     });
     if (!result || result.ok !== true) throw new Error(typeof result?.error === "string" ? result.error : "Retrieval feedback was not acknowledged.");
     return result;
@@ -365,7 +410,7 @@ export class RetrievalWorkerManager {
       let failure: unknown;
       try { failure = JSON.parse(error.stderr); } catch { throw error; }
       if (!failure || typeof failure !== "object" || !("error" in failure) || typeof failure.error !== "string") throw error;
-      throw new Error(`${failure.error}${path.basename(args[0]) === "retrieval_runtime.py" ? ". Choose a model-capable Python under Runtime & storage settings; dependencies are not installed automatically." : ""}`);
+      throw new Error(`${failure.error}${path.basename(args[0]) === "retrieval_runtime.py" ? ". Download from Hugging Face prepares and repairs the PKM-managed model environment automatically." : ""}`);
     }
     const result: unknown = JSON.parse(stdout);
     if (!result || typeof result !== "object" || Array.isArray(result) || !("ok" in result) || result.ok !== true) {
@@ -380,6 +425,7 @@ export class RetrievalWorkerManager {
     private readonly python: string,
     private readonly engineVersion: string,
     private readonly configurationHash = "exact-bm25-fuzzy-dual-rrf-v1",
+    private readonly managedModelEnvironment = path.join(stateDir, "model-environment"),
   ) {}
 
   private endpointPath(): string { return path.join(this.stateDir, "worker.json"); }

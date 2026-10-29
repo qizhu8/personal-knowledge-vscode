@@ -109,14 +109,14 @@
     return wizardTemplates.get(role).cloneNode(true);
   };
   const terminalWizard = state => {
-    const icon = document.createElement("span"); icon.className = `chat-role-icon chat-terminal-wizard ${state === "completed" ? "wizard-sleeping" : "wizard-sooty"}`;
+    const icon = document.createElement("span"); icon.className = `chat-role-icon chat-terminal-wizard ${state === "completed" ? "wizard-sleeping" : state === "failed" ? "wizard-sooty" : "wizard-on-break"}`;
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("aria-hidden", "true"); svg.classList.add("pixel-wizard");
-    const rect = (x, y, width, height, color, className) => {
+    const rect = (x, y, width, height, color, className, parent = svg) => {
       const node = document.createElementNS(svg.namespaceURI, "rect");
       for (const [key, value] of Object.entries({ x, y, width, height, fill:color })) node.setAttribute(key, String(value));
       if (className) node.setAttribute("class", className);
-      svg.append(node);
+      parent.append(node);
     };
     if (state === "completed") {
       svg.dataset.facing = "side";
@@ -132,6 +132,25 @@
         text.setAttribute("class", "wizard-snore"); text.style.animationDelay = `${index * -.6}s`; text.textContent = letter; snores.append(text);
       }
       svg.append(snores);
+    } else if (state === "paused" || state === "stopped") {
+      svg.dataset.facing = "front";
+      const resting = document.createElementNS(svg.namespaceURI, "g");
+      resting.classList.add("wizard-break-breathe"); svg.append(resting);
+      for (const [x, y, width, height, color, className] of [
+        [8, 2, 2, 2, "#c8b4ef"], [6, 4, 6, 3, "#9983ce"], [4, 7, 12, 2, "#c8b4ef"],
+        [7, 9, 7, 6, "#f6ceaa", "wizard-face"], [6, 9, 1, 5, "#795440"],
+        [8, 11, 1, 1, "#493649", "wizard-eye"], [11, 11, 1, 1, "#493649", "wizard-eye"],
+        [9, 14, 3, 1, "#795440"], [7, 16, 8, 5, "#9983ce"], [9, 17, 1, 3, "#c8b4ef"],
+        [6, 21, 4, 1, "#30273f"], [12, 21, 4, 1, "#30273f"], [13, 16, 3, 2, "#f6ceaa"],
+      ]) rect(x, y, width, height, color, className, resting);
+      const cup = document.createElementNS(svg.namespaceURI, "g"); cup.classList.add("wizard-break-cup"); resting.append(cup);
+      rect(15, 15, 5, 4, "#e4ce8c", undefined, cup); rect(16, 15, 3, 1, "#795440", undefined, cup);
+      rect(20, 16, 2, 2, "#e4ce8c", undefined, cup); rect(14, 19, 7, 1, "#c8b4ef", undefined, cup);
+      for (let index = 0; index < 2; index++) {
+        const steam = document.createElementNS(svg.namespaceURI, "g");
+        steam.classList.add("wizard-break-steam"); steam.style.animationDelay = `${index * -1.2}s`; svg.append(steam);
+        rect(16 + index * 2, 11 - index, 1, 2, "#b8b0c9", undefined, steam);
+      }
     } else {
       svg.dataset.facing = "front";
       rect(9, 5, 2, 2, "#c8b4ef"); rect(7, 7, 6, 3, "#9983ce"); rect(5, 10, 11, 2, "#c8b4ef");
@@ -143,8 +162,8 @@
   };
   window.PkmChatStatusIndicator = (value, role) => {
     const labels = { running: 'Running', stopped: 'Stopped', failed: 'Failed', completed: 'Completed', 'awaiting-input': 'Waiting for Input', 'awaiting-result': 'Waiting for delegated result', 'new-result': 'Completed: unread result', paused: 'Paused', idle: 'Idle' };
-    const state = value === 'awaiting-input' ? 'waiting-input' : value === 'awaiting-result' ? 'waiting-result' : value === 'new-result' ? 'completed' : value === 'paused' ? 'stopped' : ['running', 'stopped', 'failed', 'completed'].includes(value) ? value : 'idle';
-    const node = ["completed", "failed"].includes(state) ? terminalWizard(state)
+    const state = value === 'awaiting-input' ? 'waiting-input' : value === 'awaiting-result' ? 'waiting-result' : value === 'new-result' ? 'completed' : ['running', 'stopped', 'paused', 'failed', 'completed'].includes(value) ? value : 'idle';
+    const node = ["completed", "failed", "paused", "stopped"].includes(state) ? terminalWizard(state)
       : role || state === 'running' ? window.PkmChatWorkingIcon(role) : document.createElement('span');
     node.classList.add('chat-status-indicator'); node.removeAttribute('aria-hidden'); node.dataset.state = state;
     if (role) node.dataset.chatRole = role;

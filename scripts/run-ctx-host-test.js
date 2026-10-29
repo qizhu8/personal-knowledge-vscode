@@ -24,7 +24,7 @@ async function main() {
     }));
     packaged = packageExtension(root, temporary);
     display = await startVirtualDisplay(root);
-    const executable = await downloadAndUnzipVSCode("1.90.0");
+    const executable = await downloadAndUnzipVSCode({ version: "1.90.0", cachePath: require("../tests/dev-paths").vscodeTestCache });
     execFileSync(path.join(path.dirname(executable), "bin", "code"), [
       "--install-extension", path.join(temporary, "personal-knowledge.vsix"),
       `--user-data-dir=${user}`, `--extensions-dir=${extensions}`, "--force",

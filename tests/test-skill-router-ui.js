@@ -160,7 +160,10 @@ assert.match(detail.innerHTML, /Search data collector/);
 assert.match(detail.innerHTML, /pkm\.skill_context · pkm\.search_knowledge · pkm\.search_notes/);
 assert.match(detail.innerHTML, /tool_search and grep_search do not expose invocation events/);
 assert.doesNotMatch(detail.innerHTML, /type="radio"|Choose target|Preferred target/);
-assert.doesNotMatch(detail.innerHTML, /(^|[^a-z0-9])l2([^a-z0-9]|$)/i);
+assert.match(detail.innerHTML, /L2 evidence ranges are materialized separately/);
+assert.match(detail.innerHTML, /Candidate · planned/);
+assert.match(detail.innerHTML, /150 updates is a proposal, not a configured gate/);
+assert.match(detail.innerHTML, /aria-label="Stage details"/);
 context.toggleSolution('l1_online', false);
 context.moveSource('agent-native', -1);
 assert.strictEqual(JSON.stringify(calls), JSON.stringify([
@@ -171,7 +174,7 @@ assert.match(panelCss, /\.sr-table-wrap\{max-width:100%;overflow-x:auto\}/);
 assert.match(panelCss, /\.sr-parameter-map\{[^}]*overflow-x:auto/);
 assert.match(panelCss, /\.sr-source-row\{[^}]*cursor:grab/);
 assert.match(panelCss, /\.sr-dashboard \.settings-subtabs\{[^}]*grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/);
-assert.match(panelJs, /Recall unavailable: no complete relevance judgments/);
+assert.match(panelJs, /unavailable: no reported judgments with a valid denominator/);
 assert.match(panelJs, /Number\.isFinite\(point\.y\)/);
 assert.match(panelJs, /Original and Current Calibration Functions/);
 

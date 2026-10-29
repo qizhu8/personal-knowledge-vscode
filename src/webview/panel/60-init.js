@@ -21,7 +21,7 @@ if (restoredButton) restoredButton.dispatchEvent(new MouseEvent('click'));
 else ask('list', { tab:'skills', filter:'all', q:'' });
 
 function retryInitialViewRequest() {
-  if (state.tab === 'actions') { actionsDocumentPending = false; showEmbeddedActions(); }
+  if (['actions','actionLibrary'].includes(state.tab)) { embeddedActionViews[state.tab].pending = false; showEmbeddedActions(); }
   else if (['agentSessions','agentSnapshots','projects','recipes'].includes(state.tab)) ask('projectState', {});
   else if (state.tab === 'environments') ask('envList', {});
   else if (state.tab === 'servers') ask('serverList', {});

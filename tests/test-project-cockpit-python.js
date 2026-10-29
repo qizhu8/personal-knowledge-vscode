@@ -10,7 +10,7 @@ const { projectCockpit, projectCockpits } = require("../dist/workflows/project-c
 const { promoteChatProject, handleProjectCockpitRequest } = require("../dist/workflows/project-cockpit-host");
 
 const repository = path.resolve(__dirname, "..");
-const python = process.env.PKM_TEST_PYTHON || path.join(repository, ".venv", "bin", "python");
+const python = require("./dev-paths").testPython;
 const directory = path.join(__dirname, ".project-python-work", crypto.randomUUID());
 const root = path.join(directory, "store");
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));

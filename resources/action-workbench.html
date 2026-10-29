@@ -92,7 +92,7 @@ const chat=document.createElement('section');chat.id='action-chat';chat.hidden=t
 byId('open-browser').hidden=!vscode;byId('open-browser').onclick=()=>perform('open_browser',{draft:{graph,saved,currentRun,pendingLaunch,lastRun,editorState,privateLaunch,libraryDraft:initialView?.libraryDraft,nestedDraft:initialView?.nestedDraft,treeCollapsed:document.querySelector('.layout').classList.contains('tree-collapsed'),catExpanded}});
 byId('background-tasks').hidden=!vscode&&!browserToken;byId('background-tasks').onclick=async()=>{const result=await perform('background_tasks');if(!vscode&&result){queue=result;renderQueue();byId('queue').scrollIntoView({block:'nearest'})}};
 function request(method,params={}){const timeout=method==='validate_batch'?Math.min(2147483647,1200000*Math.max(1,params.items?.length||0)):method==='validate'?1200000:35000;if(!vscode)return fetch('api',{method:'POST',headers:{'Content-Type':'application/json',...(browserToken?{Authorization:'Bearer '+browserToken}:{})},body:JSON.stringify({method,params}),signal:AbortSignal.timeout(timeout)}).then(response=>response.json()).then(result=>{if(result.ok===false)throw Error(result.error);return result}).catch(error=>{if(['AbortError','TimeoutError'].includes(error.name))throw Error('Request timed out; reconcile before retrying.');throw error});return new Promise((resolve,reject)=>{const requestId=String(++requestSequence),timer=setTimeout(()=>{pending.delete(requestId);reject(Error('Request timed out; reconcile before retrying.'))},timeout);pending.set(requestId,{resolve,reject,timer});vscode.postMessage({requestId,method,params})})}
-window.addEventListener('message',event=>{const item=pending.get(event.data.requestId);if(!item)return;if(event.data.progress){updateBatchProgress(event.data.progress);return}clearTimeout(item.timer);pending.delete(event.data.requestId);event.data.result?.ok===false?item.reject(Error(event.data.result.error)):item.resolve(event.data.result)});
+window.addEventListener('message',event=>{const item=pending.get(event.data.requestId);if(!item)return;if(event.data.progress){if(event.data.progress.confirmation)window.pkmRiskReview?.show(event.data.progress.confirmation,event.data.requestId);updateBatchProgress(event.data.progress);return}clearTimeout(item.timer);pending.delete(event.data.requestId);window.pkmRiskReview?.hide(event.data.requestId);event.data.result?.ok===false?item.reject(Error(event.data.result.error)):item.resolve(event.data.result)});
 let actions=[],groups=[],moduleSets=[],queue={jobs:[]},graph=initialView?.graph||{action_id:'local.graph.'+crypto.randomUUID().replaceAll('-',''),name:'New composition',nodes:[],edges:[]},saved=initialView?.saved||null,source=null,pendingInput=null,selectedEdge=null,wireGesture=null,history=[],selectedExports=new Set(),refreshing=false,currentRun=initialView?.currentRun||null,previewWorkspace='',hostWorkspace='',editorState=initialView?.editorState||null,catalogOperation=null;
 let startingRun=false,cancellingRun=null,pendingLaunch=initialView?.pendingLaunch||null,lastRun=initialView?.lastRun||null,refreshQueued=false;
 const runHistory=document.createElement('section');runHistory.id='run-history';runHistory.innerHTML='<h2>Durable Runs</h2><label>Recent Runs <select id="recent-runs"><option value="">Select a Run</option></select></label> <button id="recover-runs">Recover interrupted Runs</button><p>Recovery inspects the original Run. It never automatically replays effects.</p>';byId('result').before(runHistory);
@@ -257,7 +257,7 @@ function renderPalette(){
 			{label:'Move to',icon:'move',disabled:protectedAction,run:()=>openCatalogDialog('move',action)}])};
 		row.onkeydown=event=>{if(event.key==='ContextMenu'||(event.shiftKey&&event.key==='F10')){event.preventDefault();row.oncontextmenu(keyboardMenuEvent(row))}else if(event.key==='Enter'&&event.target===row)open()};
 	});
-	document.querySelectorAll('[data-qualify]').forEach(button=>button.onclick=()=>startActionValidation(paletteActions.find(item=>item.action_id===button.dataset.qualify)));
+	document.querySelectorAll('[data-qualify]').forEach(button=>button.onclick=()=>chooseActionValidation(paletteActions.find(item=>item.action_id===button.dataset.qualify)));
     document.querySelectorAll('[data-private]').forEach(button=>button.onclick=()=>openPrivateAction(actions.find(action=>action.action_id===button.dataset.private)));
 	document.querySelectorAll('[data-add]').forEach(button=>button.onclick=()=>addBlock(button.dataset.add));
 	document.querySelectorAll('[data-export]').forEach(input=>input.onchange=()=>input.checked?selectedExports.add(input.dataset.export):selectedExports.delete(input.dataset.export));
@@ -400,6 +400,7 @@ function renderGraph(){
 	  row.querySelector('button').onclick=()=>{if(graph.edges.some(edge=>edge.target===node.id))return status('Disconnect math inputs before applying the example.',true);remember();node.parameters=structuredClone(example.inputs);persist();renderGraph()};
 	 }
 	for(const node of graph.nodes){if(!node.value_type)continue;const row=document.createElement('label');row.className='component-type';const label=node.action_id==='core.cast'?'Target type':'Value type';row.innerHTML=label+' <select data-value-type="'+node.id+'" aria-label="'+label+' for '+node.id+'">'+['string','integer','number','boolean','object','array','null'].map(type=>'<option '+(type===node.value_type?'selected':'')+'>'+type+'</option>').join('')+'</select>';document.querySelector('[data-block="'+node.id+'"] .ports').before(row);row.querySelector('select').onchange=event=>{remember();node.value_type=event.target.value;if(node.action_id==='core.constant')node.parameters.value=initialValue(properties(definition(node),'input').value);if(node.action_id==='core.cast')node.parameters.target_type=node.value_type;persist();renderGraph()}}
+	for(const node of graph.nodes){const choices=definition(node)?.component_implementations||[];if(choices.length<2)continue;const row=document.createElement('label');row.className='component-type';const current=node.implementation||'python';row.innerHTML='Implementation <select data-implementation="'+esc(node.id)+'" aria-label="Implementation for '+esc(node.id)+'">'+choices.map(choice=>'<option value="'+esc(choice.id)+'" '+(choice.id===current?'selected':'')+'>'+esc(choice.language)+'</option>').join('')+'</select>';document.querySelector('[data-block="'+node.id+'"] .ports').before(row);row.querySelector('select').onchange=event=>{remember();if(event.target.value==='python')delete node.implementation;else node.implementation=event.target.value;persist();renderGraph()}}
 	document.querySelectorAll('[data-fold]').forEach(button=>{button.innerHTML='<i class="codicon codicon-chevron-'+(button.getAttribute('aria-expanded')==='true'?'down':'right')+'" aria-hidden="true"></i>';button.onclick=()=>{const node=graph.nodes.find(item=>item.id===button.dataset.fold);node.collapsed=!node.collapsed;saveView();renderGraph()}});
 	document.querySelectorAll('[data-compact]').forEach(select=>select.onchange=()=>{graph.nodes.find(node=>node.id===select.dataset.node)['compact_'+select.dataset.compact]=select.value;saveView();renderGraph()});
 	document.querySelectorAll('[data-delete]').forEach(button=>button.onclick=()=>{remember();graph.nodes=graph.nodes.filter(node=>node.id!==button.dataset.delete);graph.edges=graph.edges.filter(edge=>edge.source!==button.dataset.delete&&edge.target!==button.dataset.delete);clearSelection();if(graph.output_node===button.dataset.delete)graph.output_node=graph.nodes.at(-1)?.id;persist();renderGraph()});
@@ -616,7 +617,7 @@ let batchValidating=false;
 function actionsNeedingValidation(){return workbenchActions().filter(action=>!action.component&&action.visibility!=='private'&&action.availability.state!=='ready')}
 function updateWorkbenchTasks(){
  const count=actionsNeedingValidation().length;
- workbenchTasks.textContent=count?count+' Actions need validation. Click a highlighted flask on the left: Agent review → smoke tests → ready.':'No Actions need validation. Drag a ready Action from the left to compose.';
+ workbenchTasks.textContent=count?count+' Actions need validation. Click a highlighted flask on the left to test the environment.':'No Actions need validation. Drag a ready Action from the left to compose.';
  byId('library-next-step').textContent=workbenchTasks.textContent;
  batchValidateButton.disabled=!count||batchValidating;
 }
@@ -643,11 +644,101 @@ validationStyle.textContent+='@media(max-width:600px){.layout.review-open{grid-t
 const validationDialog=document.createElement('dialog');validationDialog.id='validation-dialog';
 validationDialog.innerHTML='<h2 id="validation-title"></h2><p id="validation-message"></p><details id="validation-input-details" hidden><summary>Smoke test inputs</summary><pre id="validation-inputs"></pre></details><div class="tools"><button id="validation-dismiss">Cancel</button><button id="validation-accept"></button></div>';
 document.body.append(validationDialog);
+const validationChoiceDialog=document.createElement('dialog');validationChoiceDialog.id='validation-choice-dialog';
+validationChoiceDialog.setAttribute('aria-labelledby','validation-choice-title');
+validationChoiceDialog.innerHTML='<h2 id="validation-choice-title">Validation</h2><div class="tools"><button id="validation-choice-cancel">Cancel</button><button id="validation-choice-this">Validate this action</button><button id="validation-choice-all">Validate all possible actions</button></div>';
+document.body.append(validationChoiceDialog);
+let validationChoiceAction=null;
+function chooseActionValidation(action){
+ if(!action)return status('Select an Action to validate.',true);
+ if(batchValidating||validationDialog.open||validationChoiceDialog.open)return;
+ validationChoiceAction=structuredClone(action);
+ byId('validation-choice-all').disabled=!actionsNeedingValidation().length;
+ validationChoiceDialog.showModal();
+ byId('validation-choice-cancel').focus();
+}
+byId('validation-choice-cancel').onclick=()=>validationChoiceDialog.close();
+byId('validation-choice-this').onclick=()=>{
+ const action=validationChoiceAction;validationChoiceDialog.close();
+ if(action)startActionValidation(action);
+};
+byId('validation-choice-all').onclick=()=>{validationChoiceDialog.close();batchValidateButton.click()};
+validationChoiceDialog.addEventListener('close',()=>{validationChoiceAction=null});
 const validationFeedback=document.createElement('section');validationFeedback.id='validation-feedback';validationFeedback.hidden=true;validationFeedback.setAttribute('role','status');byId('status').after(validationFeedback);
 const batchProgress=document.createElement('section');batchProgress.id='batch-validation-progress';batchProgress.hidden=true;
 batchProgress.innerHTML='<progress id="batch-validation-bar" max="1" value="0" aria-label="Batch validation progress"></progress><span id="batch-validation-stage"></span><details id="batch-validation-details"><summary>Results</summary><ul id="batch-validation-results"></ul></details>';
 validationStyle.textContent+='#batch-validation-progress{padding:8px 12px}#batch-validation-results{max-height:240px;overflow:auto;padding-left:20px}#batch-validation-results pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0}';
 validationFeedback.after(batchProgress);
+const riskReview=document.createElement('section');riskReview.id='risk-review';riskReview.hidden=true;riskReview.setAttribute('role','alertdialog');riskReview.setAttribute('aria-labelledby','risk-review-title');
+validationStyle.textContent+='#risk-review{margin:10px 12px;border:1px solid var(--line);border-left:3px solid var(--vscode-editorWarning-foreground,#cca700);border-radius:6px;background:var(--panel);max-height:min(70vh,640px);display:flex;flex-direction:column}'
+ +'#risk-review>header{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line)}#risk-review>header .codicon{color:var(--vscode-editorWarning-foreground,#cca700)}#risk-review>header small{color:var(--muted);margin-left:auto}'
+ +'#risk-review-items{overflow:auto;padding:4px 12px}.risk-item{padding:10px 0;border-bottom:1px solid var(--line)}.risk-item:last-child{border-bottom:0}'
+ +'.risk-head{display:flex;align-items:center;flex-wrap:wrap;gap:6px}.risk-head strong{overflow-wrap:anywhere}.risk-head code{color:var(--muted);font-size:11px}'
+ +'.risk-chip{font-size:11px;padding:0 6px;border-radius:9px;border:1px solid var(--line);color:var(--muted)}.risk-chip[data-effect]:not([data-effect="pure"]){color:var(--vscode-editorWarning-foreground,#cca700);border-color:currentColor}'
+ +'.risk-summary{margin:6px 0}.risk-incomplete{color:var(--vscode-editorWarning-foreground,#cca700)}.risk-issues{margin:4px 0;padding-left:18px}.risk-issues li{margin:2px 0;overflow-wrap:anywhere}'
+ +'.risk-item details{margin-top:4px}.risk-item summary{cursor:pointer;color:var(--muted);font-size:12px}.risk-item pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0;padding:6px;background:var(--bg);border-radius:3px;font-size:12px}'
+ +'.risk-meta{color:var(--muted);font-size:11px}#risk-review>footer{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:10px 12px;border-top:1px solid var(--line)}#risk-review>footer small{color:var(--muted);margin-right:auto}'
+ +'#risk-review-run{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);border-color:transparent}#risk-review-run:hover{background:var(--vscode-button-hoverBackground,#1177bb)}';
+riskReview.innerHTML='<header><span class="codicon codicon-shield" aria-hidden="true"></span><strong id="risk-review-title"></strong><small id="risk-review-scope"></small></header><div id="risk-review-items"></div>'
+ +'<footer><small>Tests run with this host account\'s permissions. Passing tests do not certify safety.</small><button type="button" id="risk-review-cancel">Cancel</button><button type="button" id="risk-review-run"></button></footer>';
+batchProgress.before(riskReview);
+let riskReviewState=null;
+function riskReviewItem(item){
+ const article=document.createElement('article');article.className='risk-item';
+ const head=document.createElement('div');head.className='risk-head';
+ const icon=document.createElement('span');icon.className='codicon codicon-'+(item.incomplete?'warning risk-incomplete':item.issues.length?'info':'pass');icon.setAttribute('aria-hidden','true');
+ const name=document.createElement('strong');name.textContent=item.action_id;
+ const version=document.createElement('code');version.textContent=item.content_hash.slice(0,12);version.title=item.content_hash;
+ head.append(icon,name,version,...item.effects.map(effect=>{const chip=document.createElement('span');chip.className='risk-chip';chip.dataset.effect=effect;chip.textContent=effect;return chip}));
+ const summary=document.createElement('p');summary.className='risk-summary'+(item.incomplete?' risk-incomplete':'');summary.textContent=item.summary;
+ article.append(head,summary);
+ if(item.issues.length){
+  const list=document.createElement('ul');list.className='risk-issues';
+  const shown=item.issues.length>4?item.issues.slice(0,3):item.issues;
+  for(const issue of shown){const row=document.createElement('li');row.textContent=issue;list.append(row)}
+  article.append(list);
+  if(shown.length<item.issues.length){
+   const more=document.createElement('details'),label=document.createElement('summary'),rest=document.createElement('ul');rest.className='risk-issues';
+   label.textContent=(item.issues.length-shown.length)+' more';
+   for(const issue of item.issues.slice(shown.length)){const row=document.createElement('li');row.textContent=issue;rest.append(row)}
+   more.append(label,rest);article.append(more);
+  }
+ }
+ const examples=Array.isArray(item.examples)?item.examples:[];
+ if(examples.length){
+  const inputs=document.createElement('details'),inputsLabel=document.createElement('summary'),inputsBody=document.createElement('pre');
+  inputsLabel.textContent='Test inputs ('+examples.length+')';
+  inputsBody.textContent=JSON.stringify(examples.map(example=>example?.inputs??example),null,2);
+  inputs.append(inputsLabel,inputsBody);article.append(inputs);
+ }
+ const meta=document.createElement('div');meta.className='risk-meta';meta.textContent=item.model==='unavailable'?'No model assessed this Action':'Assessed by '+item.model;
+ article.append(meta);
+ return article;
+}
+function showRiskReview(confirmation,requestId){
+ riskReviewState={id:confirmation.id,requestId};
+ const count=confirmation.items.length;
+ byId('risk-review-title').textContent=count===1?'Run smoke tests for '+confirmation.items[0].action_id+'?':'Run smoke tests for '+count+' Actions?';
+ const incomplete=confirmation.items.filter(item=>item.incomplete).length;
+ byId('risk-review-scope').textContent=[incomplete?incomplete+' with incomplete risk information':'',confirmation.self_tests?confirmation.self_tests+' core self-test'+(confirmation.self_tests===1?'':'s')+' also run':''].filter(Boolean).join(' · ');
+ byId('risk-review-items').replaceChildren(...confirmation.items.map(riskReviewItem));
+ byId('risk-review-run').textContent=count===1?'Run tests':'Run all '+count;
+ riskReview.hidden=false;riskReview.scrollIntoView({block:'nearest'});byId('risk-review-run').focus();
+}
+function hideRiskReview(requestId){
+ if(!riskReviewState||(requestId!==undefined&&riskReviewState.requestId!==requestId))return;
+ riskReviewState=null;riskReview.hidden=true;byId('risk-review-items').replaceChildren();
+}
+async function decideRiskReview(run){
+ const state=riskReviewState;if(!state)return;
+ hideRiskReview();
+ try{await request('review_decision',{decision_id:state.id,run})}
+ catch(error){validationNotice(error.message||String(error),true)}
+}
+byId('risk-review-run').onclick=()=>decideRiskReview(true);
+byId('risk-review-cancel').onclick=()=>decideRiskReview(false);
+riskReview.addEventListener('keydown',event=>{if(event.key==='Escape')decideRiskReview(false)});
+window.pkmRiskReview={show:showRiskReview,hide:hideRiskReview};
 let batchProgressState=null;
 function updateBatchProgress(progress){
  if(!batchValidating)return;
@@ -667,7 +758,7 @@ function appendBatchResult(result){
 function renderBatchStage(){
  if(!batchProgressState)return;
  const p=batchProgressState;
- const stage=p.stage.startsWith('Agent code review')?'Review':p.stage.startsWith('Smoke tests')?'Testing':p.stage.startsWith('Admitting')?'Admitting':p.stage;
+ const stage=p.stage.startsWith('Agent ')?'Review':p.stage.startsWith('Smoke tests')?'Testing':p.stage.startsWith('Admitting')?'Admitting':p.stage;
  byId('batch-validation-stage').textContent=' '+p.completed+'/'+p.total+(p.action_id?' · '+p.action_id:'')+' · '+stage+(batchValidating?' · '+Math.floor((Date.now()-p.started)/1000)+'s':'');
 }
 let validationTarget=null,validationJob=null;
@@ -676,7 +767,7 @@ batchValidateButton.onclick=()=>{
  const items=actionsNeedingValidation().map(action=>structuredClone(action));if(!items.length)return;
  validationTarget={items};
  byId('validation-title').textContent='Validate all '+items.length+' Actions';
- byId('validation-message').textContent='Choose one review model. Each exact version is reviewed and tested independently; failures do not stop the others. Successful items are admitted automatically. Model credits may apply.\n\n'+items.map(action=>action.action_id+' · v'+action.version+'\nEffects: '+(action.effects||[]).join(', ')).join('\n\n')+'\n\nApprove only if the declared smoke tests are authorized. Expand Smoke test inputs to inspect the exact examples.';
+ byId('validation-message').textContent='Core Actions run environment self-tests. Other Actions show Agent risk information for your confirmation before testing. Failures do not stop the others. Passing tests do not certify safety.\n\n'+items.map(action=>action.action_id+' · v'+action.version+'\nEffects: '+(action.effects||[]).join(', ')).join('\n\n')+'\n\nApprove only if the declared smoke tests are authorized. Expand Smoke test inputs to inspect the exact examples.';
  showValidationInputs(items);
  byId('validation-accept').textContent='Review and validate this batch';
  validationDialog.showModal();
@@ -725,7 +816,7 @@ function startActionValidation(action,priority='demand'){
  if(!effects)return enqueueActionValidation(action,priority,false);
  validationTarget={action,priority,explain:false};
  byId('validation-title').textContent='Validate Action: confirm real execution';
- byId('validation-message').textContent=action.action_id+'\nValidate first asks an Agent to review the implementation. Only a passing review starts the smoke tests. Successful tests admit this version into the library; no separate grant is needed.\nDeclared effects: '+action.effects.join(', ')+'\n\nTests may use the host account for the declared effects. Failed or unavailable review blocks execution. Approve only if these tests are authorized. Expand Smoke test inputs to inspect the exact examples.';
+ byId('validation-message').textContent=action.action_id+'\nCore Actions run environment self-tests. Other Actions show Agent risk information; you decide whether to run the tests.\nDeclared effects: '+action.effects.join(', ')+'\n\nTests use the host account. Passing tests do not certify safety. Expand Smoke test inputs to inspect the exact examples.';
  showValidationInputs([action]);
  byId('validation-accept').textContent='Validate these examples';
  validationDialog.showModal();
@@ -740,12 +831,12 @@ byId('validation-accept').onclick=()=>{
  else enqueueActionValidation(target.action,target.priority,true);
 };
 async function enqueueActionValidation(action,priority,allowEffects){
- validationJob=null;validationNotice('Agent code review for '+action.action_id+'… Choose a review model in VS Code. Smoke tests run only after review passes.');
+ validationJob=null;validationNotice('Validating environment for '+action.action_id+'… Non-core Actions ask for risk confirmation before testing.');
  try{
   const result=await request('validate',{action_id:action.action_id,content_hash:action.content_hash,priority,allow_effects:allowEffects,...(action.proposal_id?{proposal_id:action.proposal_id}:{})});
-  if(result.cancelled){validationNotice('Code review cancelled. No smoke tests or admission were performed.');return}
+  if(result.cancelled){validationNotice('Validation cancelled. No smoke tests or admission were performed.');return}
   if(result.state==='succeeded'){
-   validationNotice('Code review and smoke tests passed for '+action.action_id+'. This version is admitted and ready to drag onto the canvas.\n'+(result.report?.summary||''));
+   validationNotice('Environment tests passed for '+action.action_id+'. This version is ready to use; this is not a safety certification.\n'+(result.report?.summary||''));
    closeAdmissionReview();await refresh();return;
   }
   validationJob={job_id:result.job_id,action_id:action.action_id};
@@ -770,7 +861,7 @@ function reviewFields(schema){
  return entries.length?'<dl>'+entries.map(([name,field])=>'<dt>'+esc(field.title||name)+'</dt><dd>'+esc(field.description||name)+' · '+esc(field.type||'value')+((schema.required||[]).includes(name)?' · required':' · optional')+(field.enum?' · choices: '+esc(field.enum.join(', ')):'')+'</dd>').join('')+'</dl>':'<p>'+esc(schema?.description||'No named fields declared; inspect the full schema in Advanced details.')+'</p>';
 }
 function reviewSteps(steps){
- return '<ol>'+(steps||[]).map(step=>'<li><strong>'+esc(step.id||'Step')+'</strong> — '+esc(step.action_id||step.component||step.kind||'Operation')+(step.steps?reviewSteps(step.steps):'')+'</li>').join('')+'</ol>';
+ return '<ol>'+(steps||[]).map(step=>'<li><strong>'+esc(step.id||'Step')+'</strong> — '+esc(step.action_id||step.component||step.kind||'Operation')+(step.implementation?' ('+esc({javascript:'JavaScript',typescript:'TypeScript'}[step.implementation]||step.implementation)+')':'')+(step.steps?reviewSteps(step.steps):'')+'</li>').join('')+'</ol>';
 }
 function reviewCommand(command){
  return '<dl><dt>Executable</dt><dd><code>'+esc(command.program||'Not specified')+'</code></dd><dt>Fixed arguments</dt><dd><code>'+esc((command.args||[]).join('\n')||'None')+'</code></dd></dl>';
@@ -794,10 +885,10 @@ async function openAdmissionReview(params,grant=true){
   reviewCanvas.innerHTML='<header><h2 tabindex="-1">'+esc(action.display_name||action.action_id)+'</h2><button id="close-admission-review">Back to canvas</button></header><p>'+esc(action.description||'No description supplied. Ask the author to explain the purpose before approval.')+'</p><p>'+esc(action.action_id)+' · version '+esc(action.version)+' · '+(params.proposal_id?'Pending proposal':'Existing definition awaiting authorization')+'</p>'
    +'<div class="review-flow"><section class="review-card"><h3>1. Inputs</h3>'+reviewFields(action.input_schema)+'</section><section class="review-card"><h3>2. Execution</h3>'+execution+'</section><section class="review-card"><h3>3. Outputs</h3>'+reviewFields(action.output_schema)+'</section></div>'
    +'<div class="review-grid"><section class="review-card review-risk"><h3>Access and risks</h3><ul>'+(action.effects||[]).map(effect=>'<li>'+esc(effects[effect]||effect)+'</li>').join('')+'</ul><p>Declared effects describe intent, not enforced restrictions. This is NOT a sandbox: programs, builds and MCP servers use the host account and its credentials.</p><p>Host: '+esc(review.host)+' · '+esc(review.platform)+'</p></section>'
-   +'<section class="review-card"><h3>Version and changes</h3><p>'+(previous?'Approved v'+esc(previous.version)+' → proposed v'+esc(action.version)+'. The old version stays usable until review and tests pass.':'No approved version is currently visible in this library.')+'</p><p>'+(changed.length?'Changed: '+esc(changed.map(key=>changeNames[key]).join(', ')):'No previous-version changes to compare.')+'</p>'+(previous&&changed.includes('effects')?'<p>Previous effects: '+esc(previous.effects.join(', '))+'<br>Proposed effects: '+esc(action.effects.join(', '))+'</p>':'')+'<p>Click Validate to authorize Agent code review followed by smoke tests. Only passing review and tests admit this version. No separate manual grant is needed.</p></section>'
+   +'<section class="review-card"><h3>Version and changes</h3><p>'+(previous?'Approved v'+esc(previous.version)+' → proposed v'+esc(action.version)+'. The old version stays usable until tests pass.':'No approved version is currently visible in this library.')+'</p><p>'+(changed.length?'Changed: '+esc(changed.map(key=>changeNames[key]).join(', ')):'No previous-version changes to compare.')+'</p>'+(previous&&changed.includes('effects')?'<p>Previous effects: '+esc(previous.effects.join(', '))+'<br>Proposed effects: '+esc(action.effects.join(', '))+'</p>':'')+'<p>Click Validate for Agent risk information and environment tests. You decide whether to run the tests; passing tests admit this version but do not certify safety.</p></section>'
    +'<section class="review-card"><h3>Implementation files</h3><ul>'+Object.keys(review.files||{}).map(file=>'<li><code>'+esc(file)+'</code></li>').join('')+'</ul><p>Review source before approving. File fingerprints detect changes; they do not prove safety.</p></section>'
    +'<section class="review-card"><h3>Dependencies and checks</h3><ul>'+Object.keys(action.dependencies||{}).map(id=>'<li>'+esc(id)+'</li>').join('')+'</ul><p>'+esc((action.examples||[]).length)+' declared smoke test(s). Approval does not run these tests.</p></section></div>'
-   +'<p id="admission-review-error" role="alert"></p><div class="review-actions"><button id="admission-confirm">'+(grant?'Validate: Agent review and smoke tests':'Reject this proposal')+'</button><button id="admission-cancel">Cancel review</button></div><details><summary>Advanced details: exact revision, source fingerprints and full definition (JSON)</summary><pre>'+esc(JSON.stringify(review,null,2))+'</pre></details>';
+   +'<p id="admission-review-error" role="alert"></p><div class="review-actions"><button id="admission-confirm">'+(grant?'Validate: risks and environment tests':'Reject this proposal')+'</button><button id="admission-cancel">Cancel review</button></div><details><summary>Advanced details: exact revision, source fingerprints and full definition (JSON)</summary><pre>'+esc(JSON.stringify(review,null,2))+'</pre></details>';
   byId('close-admission-review').onclick=closeAdmissionReview;byId('admission-cancel').onclick=closeAdmissionReview;reviewCanvas.querySelector('h2').focus();
   byId('admission-confirm').onclick=async()=>{
    if(grant)return startActionValidation({...action,...(params.proposal_id?{proposal_id:params.proposal_id}:{})});

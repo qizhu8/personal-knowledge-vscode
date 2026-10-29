@@ -156,9 +156,11 @@ test("host snapshots reread target state after async work and tag overlapping re
   const fresh = context.githubSyncStateData(host, false);
   pending[1]("token");
   const latest = await fresh;
+  targets = [{ id: "t", authentication: { method: "vscode" }, lastSync: { at: "later" } }];
   pending[0]("token");
   const late = await old;
-  assert(latest.snapshotSequence > late.snapshotSequence);
+  assert(late.snapshotSequence > latest.snapshotSequence, "sequence follows the final state read, not request start time");
   assert.equal(late.targets[0].lastFailure, undefined, "even a long-running snapshot cannot carry pre-success target errors");
-  assert.equal(late.targets[0].lastSync.at, "now");
+  assert.equal(latest.targets[0].lastSync.at, "now");
+  assert.equal(late.targets[0].lastSync.at, "later", "a slower request rereads and publishes the latest persisted state");
 });

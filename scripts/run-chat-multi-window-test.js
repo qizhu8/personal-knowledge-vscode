@@ -53,7 +53,7 @@ async function main() {
       { stdio: "pipe", timeout: 15000 });
     display = await startVirtualDisplay(root);
     environment.DISPLAY = display?.display || process.env.DISPLAY;
-    const executable = await downloadAndUnzipVSCode(process.env.PKM_CHAT_VSCODE_VERSION || "stable");
+    const executable = await downloadAndUnzipVSCode({ version: process.env.PKM_CHAT_VSCODE_VERSION || "stable", cachePath: require("../tests/dev-paths").vscodeTestCache });
     const installerUser = path.join(temporary, "installer-user");
     execFileSync(path.join(path.dirname(executable), "bin", "code"), [
       "--install-extension", path.join(temporary, "personal-knowledge.vsix"), `--user-data-dir=${installerUser}`,

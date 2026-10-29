@@ -5,6 +5,8 @@ import { materializeRetrievalCandidates, materializeRetrievalSource, retrievalDo
   retrievalSourceValidation, type RetrievalSnapshot } from "../retrieval/retrieval-snapshot";
 import { validChatRetrievalInvocation, type ChatKnowledgeRetriever, type ChatRetrievalCandidate } from "./chat-retrieval";
 
+const CHAT_RETRIEVAL_TOP_K = 8;
+
 export function createChatKnowledgeRetriever(
   worker: () => Pick<RetrievalWorkerManager, "query" | "submitFeedback"> | undefined,
   readSnapshot: () => RetrievalSnapshot,
@@ -14,12 +16,12 @@ export function createChatKnowledgeRetriever(
     const current = worker();
     if (!current) throw new Error("The unified retrieval worker is not ready.");
     const result = await current.query({ schema: "pkm.retrieval.query/v1", requestId: `chat-${randomUUID()}`, text: query,
-      level: "l1-source", scope: { capabilityId: "pkm-chat-context" }, topK: 20, route: "dual",
+      level: "l1-source", scope: { capabilityId: "pkm-chat-context" }, topK: CHAT_RETRIEVAL_TOP_K, route: "dual",
       generation: { mode: "latest-ready" }, diagnostics: "summary", deadlineMs: 5000 }, signal);
     if (signal.aborted) throw new Error("Retrieval cancelled.");
     if (!result.semantic_status || typeof result.model_invoked !== "boolean") throw new Error("The retrieval worker omitted its semantic/model invocation status.");
     const snapshot = readSnapshot();
-    const candidates = result.hits.map<ChatRetrievalCandidate>(hit => {
+    const candidates = result.hits.slice(0, CHAT_RETRIEVAL_TOP_K).map<ChatRetrievalCandidate>(hit => {
       const document = retrievalDocumentForSource(snapshot, hit.sourceId, hit.sourceRevision, hit.contentHash);
       const candidate: ChatRetrievalCandidate = {
         id: hit.sourceId, level: "l1-source", kind: hit.contentType, label: hit.title, sourceUri: hit.sourceUri, score: hit.score,
@@ -45,16 +47,17 @@ export function createChatKnowledgeRetriever(
       readyGeneration: result.readyGeneration, corpusRevision: result.corpusRevision,
       ...(result.retrieval_id ? { retrievalId: result.retrieval_id } : {}),
       ...(result.adaptive ? { adaptive: result.adaptive } : {}),
+      ...(result.online_learning ? { onlineLearning:result.online_learning } : {}),
       ...(result.semantic_reason || result.learning_error ? { reason: [result.semantic_reason, result.learning_error].filter(Boolean).join("; ").slice(0, 1024) } : {}),
     };
     if (!validChatRetrievalInvocation(invocation)) throw new Error("The retrieval worker returned invalid Chat invocation metadata.");
     return { candidates: materialized.candidates, invocation };
   }, {
     ...validation, readSnapshot,
-    feedback: async (retrievalId: string, relevantSourceIds: string[]) => {
+    feedback: async (retrievalId: string, relevantSourceIds: string[], provenance: "user" | "model" = "user") => {
       const current = worker();
       if (!current) throw new Error("The unified retrieval worker is not ready.");
-      return current.submitFeedback(retrievalId, relevantSourceIds);
+      return current.submitFeedback(retrievalId, relevantSourceIds, provenance);
     },
   });
 }

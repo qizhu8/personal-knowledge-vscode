@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "resources"))
-from action_modules import COPY_FIXTURE_ARTIFACT, ModuleRuntime
+from action_modules import COPY_FIXTURE_ARTIFACT, ModuleRuntime, builtin_definitions
 from action_runtime import ActionRuntime, register_action_tools
 from fastmcp import Client, FastMCP
 from jsonschema import ValidationError
@@ -160,11 +160,12 @@ class Builtins(unittest.TestCase):
         self.assertEqual(children[0]["state"], "cancelled")
 
     def test_builtin_review_includes_runtime_source_and_copy_qualifies_with_staged_fixture(self):
-        report = {"approved": True, "summary": "Reviewed host handlers.", "issues": [], "model": "fixture"}
+        report = {"user_confirmed": True, "summary": "Bundled host handlers.", "issues": [], "model": "fixture"}
         for action_id, handler in (("core.artifact.copy", "ModuleRuntime._execute"),
                                    ("core.delay", "action_components.execute_steps")):
             definition = self.runtime.definition(action_id)
             review = self.runtime.qualification_review(action_id, definition["content_hash"])
+            self.assertEqual(review["validation_kind"], "environment-self-test")
             self.assertTrue(any(name.endswith(handler) and source.strip() for name, source in review["sources"].items()))
         definition = self.runtime.definition("core.artifact.copy")
         review = self.runtime.qualification_review("core.artifact.copy", definition["content_hash"])
@@ -172,6 +173,37 @@ class Builtins(unittest.TestCase):
                                                     review["snapshot_hash"], report, allow_effects=True)
         self.assertTrue(self.runtime.qualification_admit(tested["attempt_id"])["ok"])
         self.assertFalse(self.runtime.artifact_path(COPY_FIXTURE_ARTIFACT).exists())
+
+    def test_every_bundled_core_passes_environment_qualification(self):
+        report = {"user_confirmed": True, "summary": "Controlled environment test.",
+                  "issues": [], "model": "pkm:environment-self-test"}
+        for action_id in builtin_definitions():
+            with self.subTest(action_id=action_id):
+                definition = self.runtime.definition(action_id)
+                review = self.runtime.qualification_review(action_id, definition["content_hash"])
+                self.assertEqual(review["validation_kind"], "environment-self-test")
+                attempt = self.runtime.qualification_execute(action_id, definition["content_hash"],
+                    review["snapshot_hash"], report, allow_effects=True)
+                self.runtime.qualification_admit(attempt["attempt_id"])
+                self.assertEqual(self.runtime.availability(action_id)["state"], "ready")
+
+    def test_artifact_read_rejects_changed_content_oversize_and_symlink(self):
+        source = Path(self.temporary.name) / "source.txt"
+        source.write_text("fixture")
+        reference = self.runtime.import_artifact(str(source))
+        metadata = self.runtime.artifact(reference["artifact_id"])
+        self.assertEqual(self.runtime.artifact_content(metadata), b"fixture")
+        source.write_text("changed")
+        with self.assertRaisesRegex(ValueError, "digest changed"):
+            self.runtime.artifact_content(metadata)
+        with source.open("wb") as handle:
+            handle.truncate(64 * 1024 * 1024 + 1)
+        with self.assertRaisesRegex(ValueError, "64 MiB"):
+            self.runtime.artifact_content(metadata)
+        source.unlink()
+        source.symlink_to(Path(self.temporary.name) / "other.txt")
+        with self.assertRaises(PermissionError):
+            self.runtime.artifact_content(metadata)
 
     def test_mcp_auto_timer_and_bounded_wait_return_original_run(self):
         async def exercise():

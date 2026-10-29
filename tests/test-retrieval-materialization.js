@@ -30,6 +30,26 @@ test("worker-indexed revisions resolve to current physical sources and survive s
   assert.equal(materializeRetrievalCandidates([hit], snapshot, "deploy")[0].content, undefined);
 });
 
+test("medium-sized sources are structurally refined before materialization", () => {
+  const body = "# Benchmark\n\nConditions: CPU-only; not approved.\n\n## Background\n\n"
+    + "Unrelated material.\n\n".repeat(300)
+    + "## Results\n\nDo not deploy: p99 latency is 125 ms.\n";
+  assert(body.length > 4_000 && body.length < 160_000);
+  const source = document(body), indexed = indexedRetrievalDocument(source), parent = candidate(indexed);
+  const candidates = materializeRetrievalCandidates([parent], { documents:[source] }, "latency deploy");
+  assert.equal(candidates[0].content, undefined, "The complete source is not sent just because it is below the transport ceiling");
+  const evidence = candidates.find(item => item.content?.includes("125 ms"));
+  assert(evidence);
+  assert(evidence.range.start > 4_000);
+  assert.equal(evidence.content, body.slice(evidence.range.start, evidence.range.end));
+  assert(passageReferenceGroup(evidence, candidates).some(item => item.content.includes("CPU-only; not approved.")));
+  const materialized = candidates.filter(item => item.content);
+  assert(materialized.every(item => item.content.length <= 4_000), "Each materialized range stays within the structural-unit bound");
+  const injectedUtf8ByteUpperBound = materialized.reduce((total, item) => total + Buffer.byteLength(item.content, "utf8"), 0);
+  assert(injectedUtf8ByteUpperBound < 8_000, `Fixture evidence must fit below the 8,000-byte token upper bound; got ${injectedUtf8ByteUpperBound}`);
+  assert(materialized.length <= 16, "Candidate count remains below the per-source structural candidate boundary");
+});
+
 test("large sources reach tail passages without transporting or substituting their prefix", () => {
   const body = "# Research\n\nConditions: CPU-only; not approved.\n\n## Background\n\n"
     + "Unrelated material.\r\n\r\n".repeat(10000) + "## Results\n\nDo not deploy: p99 latency is 125 ms.\r\n";

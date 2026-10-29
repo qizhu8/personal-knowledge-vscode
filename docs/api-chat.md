@@ -1,15 +1,64 @@
 # Independent API Chat
 
+The Chat follows new messages, progress and Portal activity while the reader is
+at the latest content, including delayed content resizing and viewport changes.
+Scrolling up pauses following without pulling the reader out of history;
+returning to the bottom resumes it. Loading older messages preserves the viewport.
+
 ## Portal connection overview
 
-Projects > Portal Connections shows one row per pairing, with **Controlled**
+Projects > Portal Connections has **Saved endpoints** and temporary live Portals.
+Create a named endpoint on each machine, optionally bind an existing PKM Chat,
+then explicitly pair them using a private code.
+Choose **General Enteray** for an endpoint without a PKM Chat binding, or
+**Bind PKM Chat** to select an existing PKM Chat.
+Both Hosts must support persistent endpoints; old temporary Portals are not
+silently upgraded. The saved row labels
+**Local** and **Remote** identities, Chat bindings, connection state and each
+direction's independent receiving-control switch.
+
+Saved pairings reconnect after disconnects/restarts; commands and model tasks are
+never replayed. Pairing credentials stay in VS Code SecretStorage, configuration
+in workspace-local state, not the synchronized Knowledge Root. A local endpoint
+is owned by one extension process at a time. Host-side listener forwarding must
+remain reachable; there is no automatic NAT traversal or firewall bypass.
+When creating a new Portal, an occupied configured Hub port falls back once to
+an OS-selected free port without stopping the existing listener. Portal
+Connections displays requested and actual ports, the conflict reason, and the
+impact on new codes versus saved remote addresses. A failed fallback remains
+an explicit error. Saved listener restoration never silently rotates: the
+peer still has its saved address, so restore the port/forwarding or explicitly
+remove and pair the endpoints again.
+**Disconnect** pauses this endpoint in the current window; **Remove** forgets its
+pairing and credentials. Restart permits reconnection of saved pairings.
+
+**Local permissions** controls what this machine accepts from that peer. Incoming
+control is disabled by default. Explicitly saved permissions survive restart and
+can be revoked here; ungranted operations still require local approval. Saved
+permission dimensions are unscoped, including file read/write outside workspace
+folders, and the confirmation explicitly warns about this breadth. Arbitrary
+code execution is not sandboxed. File batches always need their own approval.
+Both directions may operate simultaneously without switching roles.
+
+Deleting/trashing a bound Chat leaves the endpoint visible with `deleted`, stops
+its active execution and clears its receiving permissions. **Replace Chat**
+explicitly binds another existing Chat and requires fresh receiving authorization.
+The connected peer sees updated/deleted Chat identity; an offline peer is marked
+not synchronized. Old requests never transfer to a replacement Chat.
+
+The Chat `portal` tool can list `connections` and select a saved `connectionId`,
+or use the endpoint bound to its Chat by default. Capability routing requires a
+unique connected matching endpoint; ambiguity does not execute anything. External
+MCP access to a saved endpoint still requires separate local client authorization.
+
+Temporary live Portals show one row per pairing, with **Controlled**
 on the left and **Controller** on the right. When both Chats are local, each
 side has its own **Open Chat** action. A newly created invitation shows the
 existing side and an awaiting-peer placeholder; **Copy magic code** copies the
 complete one-time link through the Host clipboard, never into webview state.
 Copy is only available while the invitation is unredeemed and unexpired.
-Only current-window live connections and unexpired invitations are shown.
-Disconnected/ended pairings have no history or recovery entry. External
+Only current-window temporary live connections and unexpired invitations are shown.
+Disconnected/ended temporary pairings have no history or recovery entry. External
 connection identities do not offer **Open Chat**, because they are not Chats.
 Button actions use data-bound listeners, not generated JavaScript.
 
@@ -27,7 +76,10 @@ The legacy Chatroom code-coverage percentage does not represent PKM Chat.
 Completed responses use a small side-profile wizard sleeping at a desk with
 animated zZZ and a green light. Failed responses use a smaller sooty face with
 a visible upper-right red light. Stopped/cancelled is separate from Failed:
-it uses a neutral pause glyph and a plain-language notice, not a red error.
+it uses a tea-break wizard with a neutral light and a plain-language notice, not a red error.
+Paused Chats use the same awake wizard holding a steaming cup, with a gentle
+breathing animation and an amber light. Paused and Stopped keep their distinct
+labels and resume/retry behavior; neither is shown as completed or failed.
 The notice distinguishes an unfinished tool from already completed tools;
 stopping a response cannot undo prior actions. Older generic cancellation
 messages are clarified when displayed, without rewriting stored evidence.
@@ -87,6 +139,21 @@ its answer quality.
 
 ## PKM Portal / PKM 传送门 (Chat-scoped)
 
+Portal request receipts describe the original execution and are never replaced by
+a later Chat response. Explicit **Retry** of a failed/interrupted Portal response
+records a linked manual attempt with its own reply/attempt IDs and status. Its
+confirmation also asks to share that attempt's public answer with the original
+controller, subject to the same Portal binding and current read authorization.
+The read-only `ApiChatView.readPortalTaskAttempts(chatId, requestId, replyId?)`
+provider returns the original identity, explicitly selected attempt (original by
+default), and separate latest linked attempt/result. It never uses the latest
+unrelated Chat response, hidden reasoning, or tool arguments. Transport callers
+must authorize the original binding/request before sharing this projection;
+querying it never executes or retries work. Cancellation does not establish that
+a long-running tool or external side effect has stopped.
+Older replies without recorded Portal lineage are not retroactively attributed
+by prompt text, timestamps, or their position in Chat history.
+
 PKM Portal is the user-facing name for the peer-to-peer connection between two
 agents over the existing Chat transport. It does not imply NAT traversal or a
 new transport. Existing protocol fields, command IDs and tool names are unchanged.
@@ -132,6 +199,11 @@ Role-specific wizards remain in status and connection details.
    flow are rejected by setup; generate a fresh Controller code. One transport cannot be
    attached to another local Chat. Pasting alone grants nothing; a link redeemed
    in the wrong direction is rejected.
+   After local consent, an eight-second WebSocket preflight checks endpoint
+   reachability without sending the private code or joining a channel.
+   A successful preflight is not pairing approval. Pairing refusals are returned
+   to the matching pending request immediately instead of waiting for a generic
+   timeout; unrelated or stale rejection messages cannot cancel a new attempt.
 3. Control direction is fixed. **Switch control direction…** first asks the
    requester to confirm, then the peer must explicitly **Allow switch**; roles
    flip only after both consents, never while a remote task is active, and
@@ -147,13 +219,17 @@ and Host decision result, never in saved webview state, Chat history, model
 requests or MCP arguments. Copying an existing invitation never publishes its
 secret in a webview snapshot.
 Redeemed, revoked or expired links cannot be reused. Invitations remain
-memory-only and disappear on Host restart; established pairings use re-attach.
+memory-only and disappear on Host restart. Established pairings reconnect only
+within the two-minute transport-loss grace period while the same Hosts remain
+running. Temporary Portal Host restart requires a fresh invitation and consent,
+not re-attachment. Saved endpoints use the separate explicit persistent pairing
+mode described above.
 
 After pairing:
 
 1. Continue asking the controller Chat to work on the remote machine. Enable
    the **PKM Portal** builtin capability: it exposes `portal` with
-   `open/status/send/get/cancel/disconnect/switch/permissions/files`. `send` uses a stable request
+   `open/status/send/command/route/get/attempts/cancel/disconnect/switch/permissions/files`. `send` uses a stable request
    UUID and returns delivery only; `get` reads that exact remote request's answer
    back into this conversation. Manual **Send task** remains available.
    The target approves the exact instruction separately from pairing. Execution
@@ -169,6 +245,65 @@ After pairing:
    the original request, and **Disconnect** revokes pairing and requests
    cancellation. Cancellation cannot undo effects or implicitly terminate
    previously approved durable background commands.
+
+**Direct command, without a remote model.** Native Portal controls offer
+**Run command (no model)** when the peer advertises `commands-v1`.
+`command` accepts a stable request UUID and a structured command:
+`{program, arguments, cwd?, timeoutSeconds?}`. Arguments are a string array,
+not an implicitly evaluated shell command. Choose a shell program explicitly
+when shell syntax is needed. The working directory must be absolute on the
+executing Host; timeout defaults to 60 seconds (allowed range 1–86,400).
+Both Hosts must be upgraded and paired again to advertise/negotiate the new
+command capability; an old pairing is not evidence of support.
+
+`route` additionally takes explicit requirements:
+`{platform: 'win32'|'linux'|'darwin', programs?: ['cmd'|'powershell'|'bash'|...]}`.
+It selects only a **unique connected matching Host** with the required advertised
+platform/program capabilities. No match or multiple matches fails without
+executing, silently choosing another machine, or falling back to model inference.
+An advertised program does not prove that its account, credential, service or
+network access is configured. Credentials are neither copied nor assumed.
+The executing side must grant `code-execute`, approve **Run once**, or choose
+**Always allow until disconnected** in the command prompt for the actual command.
+**Always** grants `code-execute` to that pairing only until disconnect, not
+restart-persistent permission; revoke it from Portal permissions.
+
+Every direct command leaves a visible trace in the Portal's bound Chat on
+**both** Hosts: a timeline card with direction (→ sent / ← received), peer,
+the exact program and arguments, status (awaiting approval, running, exit code,
+declined, cancelled, unknown) and always-visible stdout/stderr tails (2,000
+characters each). Output shares one scrollable terminal per card, fixed at 20%
+of the webview height; new results scroll to the latest output instead of
+expanding the card. The latest 50 commands are kept per Chat. These cards are
+display-only records: they are never queued, never sent to a model and never
+re-run.
+
+File batches also appear as display-only cards in each bound PKM Chat, starting
+before the incoming destination picker opens. Cards show the file names, pending
+approval, byte progress, verified completion, cancellation or failure, and local
+saved paths when available. The latest 50 batches are kept; progress is saved at
+most once per second, with immediate state transitions. Receipt verification is
+not installation. External MCP Portals have no bound local PKM Chat: their
+controller uses tool receipts and Portal status instead; no Chat is auto-created.
+
+Direct commands make **zero remote model calls**. The initiating agent may
+still consume tokens while deciding which route/command to request; this is not
+a claim of zero total agent tokens. Use `get` and `cancel` with the original
+request ID to inspect/cancel that execution, never submit a new request merely
+to discover its outcome. Cancellation does not undo prior side effects and an
+unconfirmed process stop must not be represented as successful termination.
+
+**Manual response retries.** `get` preserves the immutable original request
+receipt, even if a human later retries its failed Chat response successfully.
+Use `attempts` to explicitly request linked manual-attempt information. Sharing
+requires controlled-user consent; Retry confirmation also discloses sharing of
+that attempt's public answer/status. The response exposes separate retry
+lineage and original/latest reply/attempt IDs and statuses, not a replacement
+receipt or an unrelated latest Chat response. A query never replays work.
+
+Fixture coverage is not installed-host acceptance: real Windows acceptance of
+direct commands, capability routing, cancellation and retry-result inspection
+is still pending.
 
 **Copilot and other MCP clients.** Discover a Host with
 `api_chat_capabilities`, then call `portal_control` with `operation="open"`
@@ -209,7 +344,8 @@ operations require local consent showing the named context, or an explicit
 unexpired grant to remember access to the current connection. That grant trusts
 the local MCP client holding the handle, not a cryptographically authenticated
 Copilot conversation; a caller-supplied name is not authorization. External handles
-cannot access PKM Chat-owned contexts. Remote execution for an external context
+cannot access temporary PKM Chat-owned contexts. Saved endpoints can be selected
+explicitly, with their own local external-access approval. Remote execution for an external context
 requires local selection of an existing, non-Trash PKM Chat for each task;
 cancelling selection executes nothing. No Chat is created automatically. It
 cannot inject a task into an existing Copilot UI conversation. The controller's Copilot conversation remains
@@ -395,7 +531,11 @@ independently, and selecting a Task restores its existing Task dashboard.
 Completed Chats and unread results use a sleeping wizard with zzz and a green
 status light. Failed Chats use a sooty wizard with white blinking eyes. Manager/
 worker roles remain available in status labels and metadata; reduced motion
-disables blinking and hidden/background animation is paused.
+disables blinking and hidden/background animation is paused. Paused and Stopped
+Chats show an awake tea-break wizard with animated breathing/steam, an amber
+Paused light or a neutral Stopped light. These animations also honor reduced
+motion and background suspension. The paused wizard remains visible in the
+Chat header when a Portal is bound; the Portal button still shows its connection.
 
 Tool-enabled explicit Tasks receive knowledge-stewardship guidance: search and
 read existing assets before proposing new ones, distinguish evidence from
@@ -1579,10 +1719,88 @@ the separately labelled historical snapshot.
 The Chat toolbar's **Profiles** button also opens the current User / Agent cards
 directly, without a model request or a managed Task. **Edit / manage Profiles**
 opens the existing explicit configuration flow. **Automation > User Profile** is
-an independent current-User page with Refresh and edit/create/delete controls;
-it does not require selecting a Chat or assigning an Agent Profile. Both entry
-points display the current fields and revision, keep read errors explicit, and
-do not change Profile Sync or the historical snapshots by merely viewing them.
+a root-scoped **fragments + keyword cloud** page; it does not require selecting a
+Chat or assigning an Agent Profile. Its derived observations are separate from
+the handwritten current card under **Handwritten Profile / accepted preferences**.
+Both entry points keep card read errors explicit and do not change Profile Sync
+or historical attempt snapshots merely by viewing them.
+
+Completed local human Chat turns automatically schedule tool-free extraction
+through the configured **Memory model**, without delaying the Chat or writing a
+background revision into its history file. **Backfill history** explicitly scans
+existing non-Trash PKM Chats in this Knowledge Root. The automatic toggle is
+private/root-scoped; **Stop backfill** cancels the history job. Memory-off Chats,
+messages outside the configured memory age policy, worker/agent-origin messages
+and known Portal traffic are excluded. Legacy local `user` messages without origin
+metadata are eligible; assistant/tool output is never a user Profile source.
+Reading or refreshing the page never invokes a model.
+
+Fragments have five kinds: habits, interests, focus areas, cautions and
+**requirements**. Requirements capture explicitly reusable user directions and
+environment constraints, not just likes or interests. Their text retains the
+target, applicability conditions and stated limitations. For example, avoiding
+an unavailable AML `ml` CLI extension is not a ban on all AML and is irrelevant
+to generic document writing or PKM tests.
+
+The model
+must cite exact substrings of the original user messages. Invalid JSON, unsupported
+source quotes, changed/deleted sources, unavailable models and cancellation remain
+explicit failures, not empty successful summaries. Empty, valid extraction results
+are recorded so the same source revision is not repeatedly billed. No observation
+is automatically accepted into the handwritten card, used as permission, or
+included in Profile Sync/Portal disclosure. Only applicable requirements can
+enter budgeted Chat context as described below; other observations are not
+automatically injected. Extraction may
+incur model usage; the latest activity records its processed count, model and
+last-batch usage when supplied by the provider.
+
+For local human requests with History enabled, the configured Memory model
+selects **only requirements applicable to the current request**, independently
+of keyword frequency and the general User Profile. Recent dialogue may resolve
+ambiguous follow-ups but must not carry an old topic into an explicitly different
+task. Unrelated requests and explicit current corrections return no matching
+requirement. Reading the Profile still invokes no model.
+
+Selection checks all stored requirements in batches of at most 16 under a
+combined 60-second cancellation boundary, without silently taking a newest-N
+subset. Unknown IDs, stale revisions, duplicate matches and non-verbatim request
+quotes fail closed. Model/parser errors produce a visible warning, failure
+receipt and no requirement injection, not a successful empty match. The
+`profileRequirementRecall` reply receipt retains applicability matches, per-call
+usage/accounting and failures separately from the main Chat's usage.
+
+Qualified requirements are optional `user-requirement` references under the
+existing automatic knowledge/context budget, with source evidence and explicit
+current-input precedence. Actual inclusion is recorded in budgeted selection and
+sent manifests, not inferred from a match. New in-flight user steering
+conservatively invalidates earlier matches for the remaining rounds; the next
+human turn selects requirements again. Changed/removed fragments are excluded
+by revision checks. Workers, delegated input, Portal traffic and Memory-off
+requests do not trigger this private recall. Disabling automatic extraction
+does not erase saved requirements or disable their recall; remove a requirement
+or disable History to exclude it.
+
+The cloud sizes words by the number of fragments carrying that tag, **not**
+semantic relevance or certainty. Select a word or category, or search fragment
+text/tags/source quotes. Source excerpts link to the original Chat. Removal
+requires confirmation and a matching fragment revision; the same stable identity
+is suppressed from automatic recreation. Deleting a Chat does not automatically
+erase previously extracted fragments; remove them separately.
+
+Private records use `pkm.user-profile-fragments/v1` under extension storage,
+partitioned by the resolved Knowledge Root, never the synced `profiles/` directory.
+The read-only `personalKnowledge.userProfileFragments` command with operation
+`read` returns `fragments`, keyword counts and an activity receipt. Each fragment
+has a stable `id`, `kind`, `text`, `tags`, `revision`, `provenance:"model"`,
+timestamps and source evidence (Chat namespace/ID, message ID, content revision,
+segment offsets and verbatim quote). A later retrieval adapter can index these
+fragments independently; task-specific requirement selection does not add
+embeddings or publish private observations to the knowledge index.
+Source offsets use JavaScript UTF-16 indices.
+History resumes using saved source revision/segment identities; interrupted
+in-flight extraction is not automatically replayed on startup. Re-run Backfill
+to continue. Storage is bounded to 1,000 active fragments, 1,000 suppressed IDs,
+50,000 processed source segments and 16 MB; capacity errors save no partial batch.
 
 **Automation > Agent Sessions** owns the **Session Profile** entry. Select a
 PKM Chat or native Task, then use this shortcut to inspect its current assigned

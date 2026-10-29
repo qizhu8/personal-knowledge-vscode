@@ -33,7 +33,8 @@ test("controlled Portal forwards exactly the explicit Profile snapshot through t
   const context = vm.createContext(scope);
   const factory = vm.runInContext(ts.transpileModule(`(function () { return ${execution}; })`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context);
-  const host = { chatPortals:new Map(), portalEpochs:new Map(), portalPermissions: new Map(), portalExecutions: new Map() };
+  const host = { chatPortals:new Map(), portalEpochs:new Map(), portalPermissions: new Map(), portalExecutions: new Map(), portalTaskChats: new Map(),
+    endpointChatId: id => id, endpoint: () => undefined };
   const execute = factory.call(host);
   const snapshot = { schema: "fixture-explicit-snapshot" };
   assert.deepEqual(await execute("task", new AbortController().signal, "request", snapshot), { ok: true });

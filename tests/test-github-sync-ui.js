@@ -287,9 +287,21 @@ assert.match(coreSource, /githubSyncMigration:180000/,
 for (const label of ["Staging…", "Verifying…", "Cutting over…", "Rolling back…"]) {
   assert(source.includes(`data-pending-label="${label}"`), `${label} must provide migration progress feedback`);
 }
-assert.match(source, /One-time GitHub publication upgrade[\s\S]*Required once for targets created before PKM 3\.2\.1[\s\S]*does not change local files or GitHub/,
-  "the target card explains the migration purpose, scope, and read-only preview");
-assert.match(source, /migrationCompleted \? ''/,
+assert.match(source, /One-time GitHub publication upgrade[\s\S]*PKM format from before 3\.2\.1[\s\S]*Upgrade from this machine[\s\S]*Cut over \(switch to the new format\)[\s\S]*Rollback discards the staged copy; neither path changes your local files/,
+  "the target card explains the migration purpose, both upgrade paths, and what Cut over and Rollback mean");
+assert.match(source, /githubSyncUpgradeFromLocal\('[\s\S]*ask\('githubSyncForceUpdate', \{ targetId, publicationUpgrade:true \}/,
+  "local-authority targets can finish the publication upgrade in one confirmed publish");
+assert.match(extensionSource, /publicationUpgrade[\s\S]*supersedeWithLocalAuthority\(\)/,
+  "the one-step upgrade retires any unfinished staged migration before publishing");
+assert.match(extensionSource, /reason === "force-local-authority" \|\| \(!wasInitialSyncCompleted && !current\.publication\)/,
+  "a successful local-authority publish records the current publication capability");
+assert.match(coreSource, /command === 'githubSyncMigrationResult'\) \{ finishAction\('githubSyncMigration'\)/,
+  "migration buttons must unlock on the migration result even if its state snapshot is superseded");
+assert.match(coreSource, /is still running\. Wait for it to finish before trying again\./,
+  "clicks blocked by a pending action must explain why instead of being silently ignored");
+assert.match(extensionSource, /targets = readGitHubSyncTargets\(context\);\n[^\n]*\n  const snapshotSequence = \+\+githubSyncStateSequence;/,
+  "GitHub Sync snapshots are ordered by read time so slow snapshots cannot hide newer migration state");
+assert.match(source, /migrationCompleted = [^;]*\['cutover','rolled-back'\][\s\S]*migrationCompleted \? ''/,
   "the one-time migration panel disappears after a successful post-cutover sync");
 assert.match(source, /inventory\/retrieval refresh[\s\S]*Auto Sync remains off/,
   "the cutover UI explains the required manual verification and automation gate");
@@ -530,7 +542,7 @@ assert.match(source, /Force use Local · replace GitHub\?[\s\S]*one more native 
   "Force Update is available only through a local danger button with a first explicit confirmation");
 assert.match(extensionSource, /showInputBox\(\{[\s\S]*Explain why this destructive local-authority update is required[\s\S]*A reason is required/,
   "Force Update requires a non-empty user comment before the final native confirmation");
-assert.match(extensionSource, /Actor: \$\{actor\}[\s\S]*Reason: \$\{comment\.trim\(\)\}[\s\S]*Force use Local/,
+assert.match(extensionSource, /actionLabel = publicationUpgrade \? "Upgrade from this machine" : "Force use Local"[\s\S]*Actor: \$\{actor\}[\s\S]*Reason: \$\{comment\.trim\(\)\}[\s\S]*actionLabel,\n/,
   "the final native confirmation identifies the actor and audit comment");
 assert.match(source, /Recheck with Remote/, "a manual sync can re-evaluate conflicts after schema migration or remote changes");
 assert.match(source, /Sync with Remote/, "the primary action names the pull-merge-push workflow");

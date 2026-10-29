@@ -10,7 +10,7 @@ const { handleProjectCockpitRequest, promoteChatProject, actionRunProject } = re
 // Reuse the already installed Playwright driver; do not install tooling for acceptance.
 function browserDriver() {
   try { return require("playwright"); } catch {}
-  const libraries = path.join(__dirname, "..", ".venv", "lib");
+  const libraries = path.join(require("./dev-paths").testVenv, "lib");
   for (const directory of fs.readdirSync(libraries)) {
     const driver = path.join(libraries, directory, "site-packages", "playwright", "driver", "package");
     if (fs.existsSync(driver)) return require(driver);

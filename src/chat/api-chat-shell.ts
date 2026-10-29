@@ -62,13 +62,17 @@ export function renderApiChat(view: vscode.WebviewView, context: vscode.Extensio
 
 export function registerApiChatShell(context: vscode.ExtensionContext, load: () => Promise<ApiChatView>): {
   readonly isBusy: boolean;
+  portalChatBindings(): Promise<Array<{ id: string; title: string }>>;
   executeRemoteTask(prompt: string, signal: AbortSignal, requestId: string, chatId: string, observer?: import("../chatroom/portal-runtime").PortalObserver, source?: import("../chatroom/portal-runtime").PortalSource, profileSnapshot?: import("./persona-profiles").PersonaSnapshot): Promise<unknown>;
+  readPortalTaskAttempts(chatId: string, requestId: string, replyId?: string): Promise<import("./portal-task-attempts").PortalTaskAttempts | undefined>;
   reviewPortalProfiles(chatId: string): Promise<import("./persona-profiles").PersonaSnapshot | undefined>;
   portalContext(chatId?: string, label?: string): Promise<{ id: string; label: string }>;
   renamePortalContext(chatId: string, label: string): Promise<{ id: string; label: string }>;
   choosePortalContext(): Promise<{ id: string; label: string } | undefined>;
   requestPortalInteraction(chatId: string, interaction: import("./portal-interaction").PortalInteraction, current: () => boolean): Promise<import("./portal-interaction").PortalInteractionAnswer | undefined>;
   receivePortalReview(chatId: string, review: import("../chatroom/portal-runtime").PortalReview): Promise<void>;
+  recordPortalCommand(chatId: string, activity: import("./portal-command-activity").PortalCommandActivity): Promise<void>;
+  recordPortalTransfer(chatId: string, status: import("../chatroom/portal-files").PortalTransferStatus, peerName: string): Promise<void>;
 } {
   let backend: ApiChatView | undefined;
   let loading: Promise<ApiChatView> | undefined;
@@ -116,6 +120,7 @@ export function registerApiChatShell(context: vscode.ExtensionContext, load: () 
     vscode.commands.registerCommand("personalKnowledge.readChatHarness", async (chatId: string, method: string, params: Record<string, unknown>) =>
       (await getBackend()).readVisualization(chatId, method, params)),
     vscode.commands.registerCommand("personalKnowledge.configureApiChatSession", async (sessionId: string, section: string) => (await getBackend()).configureAgent(sessionId, section)),
+    vscode.commands.registerCommand("personalKnowledge.userProfileFragments", async (operation: string, params: Record<string, unknown>) => (await getBackend()).userProfileFragments(operation, params)),
     vscode.commands.registerCommand("personalKnowledge.recoverAgentSnapshot", async (snapshotId: string) => (await getBackend()).recoverAgentSnapshot(snapshotId)),
     vscode.commands.registerCommand("personalKnowledge.testApiChatE2E", async () => (await getBackend()).runAcceptance()),
     vscode.commands.registerCommand("personalKnowledge.exportMcpToolSets", async () => (await getBackend()).exportMcpToolSets()),
@@ -123,7 +128,11 @@ export function registerApiChatShell(context: vscode.ExtensionContext, load: () 
   registerVisualizationWindow(context, getBackend);
   registerApiChatHost(context, async (operation, args) => (await getBackend()).agentControl(operation, args), busy);
   return { get isBusy() { return busy(); },
+    readPortalTaskAttempts: async (chatId, requestId, replyId) => (await getBackend()).readPortalTaskAttempts(chatId, requestId, replyId),
     receivePortalReview: async (chatId, review) => (await getBackend()).receivePortalReview(chatId, review),
+    portalChatBindings: async () => (await getBackend()).portalChatBindings(),
+    recordPortalCommand: async (chatId, activity) => (await getBackend()).recordPortalCommand(chatId, activity),
+    recordPortalTransfer: async (chatId, status, peerName) => (await getBackend()).recordPortalTransfer(chatId, status, peerName),
     executeRemoteTask: async (prompt, signal, requestId, chatId, observer, source, profileSnapshot) => (await getBackend()).executeRemoteTask(prompt, signal, requestId, chatId, observer, source, profileSnapshot),
     reviewPortalProfiles: async chatId => (await getBackend()).reviewPortalProfiles(chatId),
     requestPortalInteraction: async (chatId, interaction, current) => (await getBackend()).requestPortalInteraction(chatId, interaction, current),

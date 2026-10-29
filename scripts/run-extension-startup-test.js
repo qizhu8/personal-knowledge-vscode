@@ -72,6 +72,7 @@ async function main() {
       const resultPath = path.join(testRoot, `startup-result-${scenario.name}.json`);
       await runTests({
         version: "1.90.0",
+        cachePath: require("../tests/dev-paths").vscodeTestCache,
         extensionDevelopmentPath: packagedExtensionPath,
         extensionTestsPath: path.join(root, "tests", "extension-startup"),
         extensionTestsEnv: {
@@ -162,7 +163,7 @@ function packageExtension(root, testRoot) {
 
 async function startVirtualDisplay(root) {
   if (process.env.DISPLAY) return null;
-  const bundled = path.join(root, ".vscode-test", "tools", "xvfb", "usr", "bin", "Xvfb");
+  const bundled = path.join(require("../tests/dev-paths").vscodeTestCache, "tools", "xvfb", "usr", "bin", "Xvfb");
   const system = spawnSync("which", ["Xvfb"], { encoding: "utf8" }).stdout.trim();
   const executable = fs.existsSync(bundled) ? bundled : system;
   if (!executable) throw new Error("Extension startup tests require DISPLAY or Xvfb. Install xvfb before running the release gate.");

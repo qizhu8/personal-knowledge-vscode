@@ -124,11 +124,11 @@ provider, modify the live knowledge root or push a knowledge repository.
 
 ```sh
 npm run build
-.venv/bin/python tests/test-action-durable-runs.py
-.venv/bin/python tests/test-action-modules.py
-.venv/bin/python tests/test-action-runtime.py
-.venv/bin/python tests/test-action-recovery-e2e.py
-PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu22.04-x64 .venv/bin/python tests/test-action-workbench.py
+~/pkm-envs/personal-knowledge-vscode-dev/bin/python tests/test-action-durable-runs.py
+~/pkm-envs/personal-knowledge-vscode-dev/bin/python tests/test-action-modules.py
+~/pkm-envs/personal-knowledge-vscode-dev/bin/python tests/test-action-runtime.py
+~/pkm-envs/personal-knowledge-vscode-dev/bin/python tests/test-action-recovery-e2e.py
+PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu22.04-x64 ~/pkm-envs/personal-knowledge-vscode-dev/bin/python tests/test-action-workbench.py
 node tests/test-chat-action-recovery-e2e.js
 node tests/test-project-cockpit-python.js
 ```

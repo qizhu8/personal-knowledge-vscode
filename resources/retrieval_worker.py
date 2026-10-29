@@ -368,14 +368,21 @@ def search(payload):
     started = time.perf_counter()
     epoch, requested_package, _, _ = solutions.capture()
     result = search_unmeasured(payload)
+    learning_limit = result.pop("_learning_output_limit", None)
+    learning_pool = result.pop("_learning_candidates", None)
     if solutions.capture()[0] != epoch:
         result = {**{key: result.get(key) for key in ("model_invoked", "model_attempt_package_id", "corpus_revision", "route")},
                   "ok": False, "code": "solution-changed", "error": "Solution changed during this request; retry against the active path."}
     try:
-        retrieval_learning.observe(result, round((time.perf_counter() - started) * 1000, 3))
+        if result.get("model_invoked") and learning_pool is not None:
+            result["hits"] = learning_pool
+        retrieval_learning.observe(result, round((time.perf_counter() - started) * 1000, 3),
+                                   payload.get("query"), learning_limit)
     except sqlite3.Error as error:
         print(f"Retrieval learning persistence failed: {error}", file=sys.stderr, flush=True)
         result["learning_error"] = f"Adaptive result count unavailable; unmodified results returned: {error}"
+        if learning_limit is not None:
+            result["hits"] = result.get("hits", [])[:learning_limit]
     solution = result.get("solution", {})
     reason = solution.get("reason") or ("error" if not result.get("ok") else "default")
     try:
@@ -705,6 +712,8 @@ def search_unmeasured(payload):
         "content_type_routing": result.content_type_routing,
         "route_index_versions": dict(result.route_index_versions),
         "hits": hits[:result_limit],
+        "_learning_candidates": hits,
+        "_learning_output_limit": result_limit,
         "diagnostics": [] if diagnostics_level == "none" else diagnostics[:100],
         "stale": False,
         "incomplete": incomplete or limit_reached or truncated,
@@ -734,7 +743,10 @@ class Handler(BaseHTTPRequestHandler):
         return secrets.compare_digest(self.headers.get("X-PKM-Retrieval-Token", ""), token)
 
     def payload(self):
-        length = min(int(self.headers.get("Content-Length", "0") or 0), 256 * 1024 * 1024)
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        bound = 1024 * 1024 if self.path == "/retrieval-feedback" else 4096 if self.path == "/retrieval-learning" else 256 * 1024 * 1024
+        if length < 0 or length > bound:
+            raise ValueError("Request body exceeds this endpoint's size bound")
         return json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
 
     def do_GET(self):
@@ -764,6 +776,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             payload = self.payload()
+            if not isinstance(payload, dict):
+                raise ValueError("Request body must be an object")
             if self.path == "/index":
                 revision = str(payload.get("corpus_revision") or "")
                 if revision and revision in {ready_revision, building_revision}:
@@ -786,7 +800,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200 if result.get("ok") else 404, result)
             elif self.path == "/retrieval-feedback":
                 self.reply(200, retrieval_learning.feedback(payload.get("retrieval_id"),
-                                                            payload.get("relevant_source_ids"), payload.get("complete")))
+                                                            payload.get("relevant_source_ids"), payload.get("complete"),
+                                                            payload.get("provenance", "user")))
             elif self.path == "/retrieval-learning":
                 retrieval_learning.configure(payload.get("enabled"))
                 self.reply(200, {"ok": True, "learning": retrieval_learning.summary()})

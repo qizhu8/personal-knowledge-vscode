@@ -15,7 +15,7 @@ const { connectApiChatMcp } = require("../dist/chat/api-chat-mcp");
 Module._load = originalLoad;
 const { ApiChatStore } = require("../dist/chat/api-chat-store");
 const root = path.resolve(__dirname, "..");
-const python = process.env.PKM_TEST_PYTHON || path.join(root, ".venv/bin/python");
+const python = require("./dev-paths").testPython;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const event = delta => `data: ${JSON.stringify({ choices: [{ delta, finish_reason: null }] })}\n\n`;
 const finish = reason => `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: reason }] })}\n\ndata: [DONE]\n\n`;

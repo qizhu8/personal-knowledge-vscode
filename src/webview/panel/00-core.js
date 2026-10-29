@@ -204,8 +204,9 @@ let _mmSeq = 0;
 // Replace each mermaid code block inside `root` with a rendered SVG diagram.
 // Returns a promise that resolves once every diagram in `root` has rendered,
 // so callers (e.g. HTML export) can await fully-inlined SVGs.
-async function renderMermaid(root, theme) {
+async function renderMermaid(root, theme, interactive = true) {
   if (!root) return;
+  if (interactive) PkmMediaZoom.renderImages(root);
   const blocks = [...root.querySelectorAll('code.language-mermaid')];
   if (!blocks.length) return;
   try {
@@ -238,6 +239,11 @@ async function renderMermaid(root, theme) {
     return Promise.resolve().then(() => mermaid.render(id, src)).then(res => {
       cleanupTemporaryNodes();
       holder.innerHTML = res.svg;
+      if (interactive) {
+        const svg = holder.querySelector('svg');
+        if (!svg) throw new Error('Mermaid did not produce an SVG diagram.');
+        PkmMediaZoom.attach(holder, svg, svg.viewBox.baseVal.width || svg.width.baseVal.value, 'Diagram');
+      }
       if (res.bindFunctions) res.bindFunctions(holder);
     }).catch(err => {
       cleanupTemporaryNodes();
@@ -262,7 +268,7 @@ function fileSelectorCategoryTree(items) {
 function fileSelectorTreeItems(node) { return [...node.items, ...Object.values(node.folders).flatMap(fileSelectorTreeItems)]; }
 const uiIcon = (name, label = '') => `<span class="codicon codicon-${name}" aria-hidden="true"></span>${label ? `<span>${esc(label)}</span>` : ''}`;
 const ICON = {todo:uiIcon('circle-outline'),done:uiIcon('pass-filled'),'data-path':uiIcon('folder'),observation:uiIcon('eye'),general:uiIcon('note')};
-const surfacePanelTitles = { skills:'Skills', notes:'Notes', papers:'Research', agentSessions:'Agent Sessions', recipes:'Recipe Library', actions:'Action Workbench', prompts:'Prompts', scripts:'Scripts', packages:'Packages', environments:'Environments', servers:'Servers', projects:'Projects', chatroom:'Threads', portalConnections:'Portal Connections', subscriptions:'Network & Sharing', githubSync:'GitHub Sync', backgroundTasks:'Background Tasks', mcp:'General & MCP', userProfile:'User Profile', skillRouter:'Router' };
+const surfacePanelTitles = { skills:'Skills', notes:'Notes', papers:'Research', agentSessions:'Agent Sessions', recipes:'Recipe Library', actionLibrary:'Action Library', actions:'Action Workbench', prompts:'Prompts', scripts:'Scripts', packages:'Packages', environments:'Environments', servers:'Servers', projects:'Projects', chatroom:'Threads', portalConnections:'Portal Connections', subscriptions:'Network & Sharing', githubSync:'GitHub Sync', backgroundTasks:'Background Tasks', mcp:'General & MCP', userProfile:'User Profile', skillRouter:'Router' };
 let lastPanelTitle = '';
 function setPanelTitle(title) {
   const next = String(title || 'Personal Knowledge Manager').trim();
@@ -369,10 +375,6 @@ function changeUiLanguage(setting) {
   if (uiI18n.catalogs?.[setting]) applyUiLanguage({ setting, resolved: setting });
   ask('setUiLanguage', { language: setting });
 }
-function openActionLibrary(event) {
-  event?.preventDefault();
-  vscode.postMessage({ command:'openActionLibrary' });
-}
 function languageOptionsHtml() {
   const options = [`<option value="auto" data-i18n="language.auto" ${uiI18n.setting === 'auto' ? 'selected' : ''}>${esc(t('language.auto'))}</option>`];
   for (const locale of uiI18n.locales || []) options.push(`<option value="${esc(locale.id)}" ${uiI18n.setting === locale.id ? 'selected' : ''}>${esc(locale.label)}</option>`);
@@ -384,7 +386,7 @@ scheduleUiTranslation();
 const workspaceSurfaces = Object.freeze({
   knowledge:['skills','notes','papers'],
   tools:['prompts','scripts','packages','environments','servers'],
-  automation:['userProfile','agentSessions','agentSnapshots','recipes','actions'],
+  automation:['userProfile','agentSessions','agentSnapshots','actionLibrary','recipes','actions'],
   projects:['projects','chatroom','portalConnections'],
   settings:['mcp','skillRouter','subscriptions','githubSync','backgroundTasks']
 });
@@ -574,7 +576,12 @@ function beginAction(command, button) {
   if (!timeout || (!trashLabel && !(button instanceof HTMLButtonElement))) return true;
   if (trashLabel && Object.keys(knowledgeTrashActionLabels).some(action => pendingActionButtons.has(action))) return false;
   if (!(button instanceof HTMLButtonElement)) button = document.createElement('button');
-  if (button.disabled || pendingActionButtons.has(command)) return false;
+  if (button.disabled) return false;
+  if (pendingActionButtons.has(command)) {
+    const running = pendingActionButtons.get(command).find(entry => entry.button.isConnected) || pendingActionButtons.get(command)[0];
+    showActionError(button, `${running?.label || 'The previous request'} is still running. Wait for it to finish before trying again.`);
+    return false;
+  }
   clearActionError(button);
   const entries = pendingActionButtons.get(command) || [];
   const entry = { button, html:button.innerHTML, label:(button.textContent || command).trim(), timer:0, progress:null };
@@ -933,6 +940,7 @@ window.addEventListener('message', e => {
   else if (command === 'serverPickFolder') { onServerPickFolder(e.data.dir); }
   else if (command === 'subscriptionState') { finishAction('subscriptionState','subscriptionConfigure','subscriptionSetOnline','subscriptionUpsertShare','subscriptionDeleteShare','subscriptionAdd','subscriptionMountGitHub','subscriptionRename','subscriptionSetPriority','subscriptionRefresh','subscriptionRemove','subscriptionUnblockIp','subscriptionRotateSecret'); subscriptionOnState(data); finishLoadingProgress(); }
   else if (command === 'githubSyncState') { if (githubSyncOnState(data) !== false) { finishAction('githubSyncState','githubSyncSave','githubSyncDelete','githubSyncRun','githubSyncAutomationToggle','githubSyncMigration','githubSyncConflictChoose','githubSyncConflictChooseAll','githubSyncConflictDelete','githubSyncConflictDeleteAll','githubSyncConflictDeleteLocal','githubSyncConflictDeleteLocalAll','githubSyncConflictValidate','githubSyncConflictAgent','githubSyncConflictAgentAll','githubSyncConflictDiscard'); finishLoadingProgress(); } }
+  else if (command === 'githubSyncMigrationResult') { finishAction('githubSyncMigration'); }
   else if (command === 'githubSyncRepairResult') { githubSyncOnRepairResult(data); }
   else if (command === 'githubSyncConflictAcceptProgress') { updateActionProgress('githubSyncConflictAccept', data?.text || 'Applying choices…'); }
   else if (command === 'githubSyncConflictAccepted') {
@@ -944,7 +952,7 @@ window.addEventListener('message', e => {
   else if (command === 'githubSyncRuntimeState') { githubSyncOnRuntimeState(data); }
   else if (command === 'githubSyncAutomationResult') { githubSyncOnAutomationResult(data); }
   else if (command === 'githubSyncRuntimeSnapshot') { for (const [targetId, runtime] of Object.entries(data || {})) githubSyncOnRuntimeState({ targetId, state:runtime }); }
-  else if (command === 'userProfile') { userProfileOnSnapshot(data); finishAction('userProfileEdit'); finishLoadingProgress(); }
+  else if (command === 'userProfile') { userProfileOnSnapshot(data); finishAction('userProfileEdit'); finishAction('userProfileFragmentAction'); finishLoadingProgress(); }
   else if (command === 'backgroundTasks') { backgroundTasksOnSnapshot(data); finishLoadingProgress(); }
   else if (command === 'backgroundProcesses') { backgroundProcessesOnSnapshot(data); }
   else if (command === 'retrievalSolutions') { skillRouterSolutionsOnSnapshot(data); }

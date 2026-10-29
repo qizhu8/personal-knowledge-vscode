@@ -120,7 +120,8 @@ assert.match(extension, /case "subscriptionDeleteShare"[\s\S]{0,800}showWarningM
 assert.match(extension, /brokerDeleteCancelled/);
 assert.doesNotMatch(panel, /if \(confirm\(`Delete Share/);
 assert.match(panel, /function beginAction\(command, button\)/);
-assert.match(panel, /button\.disabled \|\| pendingActionButtons\.has\(command\)/);
+assert.match(panel, /if \(button\.disabled\) return false/);
+assert.match(panel, /if \(pendingActionButtons\.has\(command\)\) \{[\s\S]{0,400}showActionError\(button,[\s\S]{0,200}return false/);
 assert.match(panel, /const actionButton = button \|\| \(silent \? null : window\.event\?\.currentTarget\)/);
 assert.match(panel, /if \(!beginAction\(command, actionButton\)\) return/);
 assert.match(panel, /function hasPendingActionPrefix\(prefix\)/);

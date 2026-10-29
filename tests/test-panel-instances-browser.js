@@ -134,6 +134,7 @@ html=html.replaceAll('%%I18N_PAYLOAD_B64%%',Buffer.from(JSON.stringify({setting:
   }
   await themeAudit.close();
   const profiles=await pageFor({tab:'userProfile',workspace:'settings'});
+  await profiles.getByText('Handwritten Profile / accepted preferences',{exact:true}).click();
   await profiles.getByText('Automation user · revision 1',{exact:true}).waitFor();
   assert.equal(await profiles.evaluate(()=>state.workspace),'automation','restoring the old Settings entry migrates to Automation');
   assert.equal(await profiles.locator('[data-workspace-group="settings"] [data-tab="userProfile"]').count(),0);

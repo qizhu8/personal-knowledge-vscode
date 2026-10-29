@@ -7,7 +7,8 @@ export function stageRetrievalRuntime(state: string, workerScript: string): { sc
   const resources = path.dirname(workerScript);
   const packagePath = path.join(resources, "..", "package.json");
   const version: string = fs.existsSync(packagePath) ? JSON.parse(fs.readFileSync(packagePath, "utf8")).version : "0.0.0";
-  const files = fs.readdirSync(resources).filter(name => /^retrieval[^/]*\.py$/.test(name) || name === "retrieval-default-model.json").sort();
+  const files = fs.readdirSync(resources).filter(name => /^retrieval[^/]*\.py$/.test(name)
+    || name === "retrieval-default-model.json" || name === "retrieval-model-requirements.txt").sort();
   const vendor = path.join(resources, "vendor");
   if (fs.existsSync(vendor)) files.push(...fs.readdirSync(vendor)
     .filter(name => /^adaptive_skill_retrieval-.*\.whl$/.test(name)).sort().map(name => `vendor/${name}`));

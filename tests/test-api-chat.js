@@ -611,6 +611,7 @@ else (async () => {
   await testCrossProcessStore();
   await testAcceptanceIsolation();
   await testVscodeModels();
+  await testCopilotSdkChannel();
   await testToolLoop();
   await testNativeTools();
   await testMcp();
@@ -854,6 +855,7 @@ async function testController() {
   class MockFileSystemError extends Error { constructor(code) { super(code); this.code = code; } }
   context.globalStorageUri = { fsPath: directory, path: directory };
   let nativeClient; let originalNativeDiscovery; let originalNativeStream;
+  let pickerHost;
   let started;
   let provider;
   try {
@@ -879,16 +881,17 @@ async function testController() {
       };
       if (parent?.filename.endsWith("knowledge-reader.js") && name === "../workflows/recipe-filesystem-store") return { RecipeFilesystemStore: class { list() { return { recipes: [{ recipeId: "recipe_fixture", name: "Selected Recipe", revision: 3, executableDigest: "a".repeat(64), definition: { spec: { nodes: [{ nodeId: "inspect", instructions: "Read actual evidence" }] } } }] }; } } };
       if (name === "vscode") return {
-        commands: { executeCommand: async () => {} }, QuickPickItemKind: { Separator: -1 }, FileSystemError: MockFileSystemError,
+        commands: { executeCommand: async () => {} }, QuickPickItemKind: { Separator: -1 }, ProgressLocation: { Notification: 15 }, FileSystemError: MockFileSystemError,
         Uri: { joinPath: (uri, ...parts) => ({ fsPath: path.join(uri.fsPath, ...parts), path: path.join(uri.fsPath, ...parts) }) },
         LanguageModelTextPart: class {}, CancellationTokenSource: class { constructor() { this.token = {}; } cancel() { this.token.cancelled = true; } dispose() {} },
         lm: { tools: registeredTools, invokeTool: async (name, options) => { nativeInvocations.push({ name, options }); return { content: [] }; } },
         window: {
+          withProgress: async (_options, run) => run({}, { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) }),
           showTextDocument: async () => {},
           showInformationMessage: async (title, ...actions) => title.startsWith("PKM Chat [") ? showChatNotification("info", title, actions) : undefined,
           showErrorMessage: (title, ...actions) => showChatNotification("error", title, actions),
           showWarningMessage: async (title, ...actions) => { if (title.startsWith("PKM Chat [")) return showChatNotification("warning", title, actions); nativeConfirmations.push(title); return sessionApproval; },
-          showQuickPick: async items => picks.length ? picks.shift()(items) : typeof items[0] === "string" ? items[0] : items.filter(item => ["read_file", "note", "Selected skill"].includes(item.id)),
+          showQuickPick: async items => { items = await items; return picks.length ? picks.shift()(items) : typeof items[0] === "string" ? items[0] : items.filter(item => ["read_file", "note", "Selected skill"].includes(item.id)); },
           showInputBox: async options => { if (inputs.length) return inputs.shift()(options); throw new Error("VS Code connection must not request API credentials"); },
           showOpenDialog: async () => selectedFiles, showSaveDialog: async () => saveDestination,
         },
@@ -901,6 +904,7 @@ async function testController() {
     Module._load = function(name, ...args) {
       const loaded = mockedLoad.call(this, name, ...args);
       if (name === "vscode") {
+        if (args[0]?.filename.endsWith("api-chat-view.js")) pickerHost = loaded;
         loaded.env = { clipboard: { writeText: async value => { copiedChatIds.push(value); } } };
         loaded.commands.executeCommand = async (command, value) => { if (command === "personalKnowledge.goToPkmPath") openedPkmPaths.push(value); };
       }
@@ -1976,8 +1980,65 @@ async function testController() {
     assert.strictEqual(provider.chat.modelProvider, "vscode"); assert.strictEqual(configuration.apiChatProvider, "openai-compatible");
     assert.strictEqual(provider.settings().selectedProfile.inputPricePerMillion, undefined);
     let credentialReads = 0; context.secrets.get = async () => { credentialReads++; throw new Error("No native API key reads"); };
-    picks.push(items => { assert.deepStrictEqual(items.map(item => item.label), models.map(model => model.name)); return items[0]; });
+    picks.push(items => {
+      assert(items.some(item => item.id === "__connect_copilot_sdk__"));
+      assert.deepStrictEqual(items.filter(item => item.id && item.id !== "__connect_copilot_sdk__").map(item => item.label), models.map(model => model.name));
+      assert.deepStrictEqual(items.filter(item => item.kind === -1).map(item => item.label), ["Copilot Models (Raw Model)", "Copilot SDK (Agent mode)", "fixture"]);
+      return items.find(item => item.id === nativeClient.vscodeModelProfile(models[0]).id);
+    });
     await provider.handle({ type: "chooseModel" }); assert.strictEqual(credentialReads, 0);
+    const groupedModels = [
+      { ...models[0], id: "sdk-model", name: "SDK model", vendor: "copilot-sdk" },
+      models[1], models[0],
+      { ...models[0], id: "auto", name: "Auto", vendor: "copilot-sdk" },
+      { ...models[0], id: "auto", name: "Auto" },
+    ];
+    const originalQuickPick = pickerHost.window.showQuickPick;
+    let finishPickerDiscovery, pickerOpened = false;
+    nativeClient.discoverVscodeModels = () => new Promise(resolve => { finishPickerDiscovery = resolve; });
+    pickerHost.window.showQuickPick = (items, options) => {
+      assert.equal(typeof items.then, "function", "picker opens while model discovery is pending");
+      pickerOpened = true;
+      finishPickerDiscovery(groupedModels);
+      return originalQuickPick(items, options);
+    };
+    picks.push(items => {
+      assert.deepStrictEqual(items.map(item => item.id || item.label), [
+        "Copilot Models (Raw Model)", "vscode:copilot:auto", "vscode:copilot:current-native",
+        "Copilot SDK (Agent mode)", "vscode:copilot-sdk:auto", "vscode:copilot-sdk:sdk-model", "__connect_copilot_sdk__",
+        "fixture", "vscode:fixture:next-native",
+      ]);
+      return items.find(item => item.id === "vscode:copilot:current-native");
+    });
+    try {
+      await provider.handle({ type: "chooseModel" });
+      assert.equal(pickerOpened, true);
+      assert.equal(provider.chat.vscodeModelId, "vscode:copilot:current-native", "grouping preserves provider-specific selection");
+    } finally {
+      pickerHost.window.showQuickPick = originalQuickPick;
+      nativeClient.discoverVscodeModels = async () => models;
+    }
+    const sdkDiscovery = require("../dist/chat/api-chat-copilot-sdk");
+    const originalSdkDiscovery = sdkDiscovery.discoverCopilotSdkModels;
+    let consentRequested = false;
+    try {
+      sdkDiscovery.discoverCopilotSdkModels = async (_host, _signal, _deps, interactive) => {
+        assert.equal(interactive, true); consentRequested = true; return models;
+      };
+      nativeClient.discoverVscodeModels = async () => {
+        if (!consentRequested) throw new Error("No VS Code models available before connection");
+        return models;
+      };
+      picks.push(items => items.find(item => item.id === "__connect_copilot_sdk__"),
+        items => items.find(item => item.id === nativeClient.vscodeModelProfile(models[0]).id));
+      await provider.handle({ type: "chooseModel" });
+      assert.equal(consentRequested, true, "connection remains reachable when passive discovery fails");
+      assert.equal(provider.chat.vscodeModelId, nativeClient.vscodeModelProfile(models[0]).id);
+      assert.equal(provider.running.size, 0, "connecting a model does not start inference");
+    } finally {
+      sdkDiscovery.discoverCopilotSdkModels = originalSdkDiscovery;
+      nativeClient.discoverVscodeModels = async () => models;
+    }
     const nativeRequests = []; let nativeStarted;
     nativeClient.streamVscodeChat = (model, request, onText) => request.purpose === "memory" ? Promise.resolve()
       : new Promise((resolve, reject) => { nativeRequests.push({ model, request, onText, resolve, reject }); request.signal.addEventListener("abort", () => reject(new Error("Request cancelled.")), { once: true }); nativeStarted(); });
@@ -2248,6 +2309,169 @@ async function testController() {
   }
 }
 
+async function testCopilotSdkChannel() {
+  const Module = require("module"); const originalLoad = Module._load;
+  let sdkChannel;
+  try {
+    Module._load = function(name, ...rest) { return name === "vscode" ? {} : originalLoad.call(this, name, ...rest); };
+    sdkChannel = require("../dist/chat/api-chat-copilot-sdk");
+  } finally { Module._load = originalLoad; }
+  const { discoverCopilotSdkModels, streamCopilotSdkChat, copilotSdkPrompt, isCopilotSdkModel, disposeCopilotSdk } = sdkChannel;
+  const sessions = []; const deleted = []; let script;
+  const sdk = {
+    defineTool: (name, config) => ({ name, ...config }),
+    CopilotClient: class {}, RuntimeConnection: { forStdio: () => ({}) },
+  };
+  const client = {
+    rpc: { models: { list: async ({ gitHubToken }) => { assert.equal(gitHubToken, "token"); return { models: [
+      { id: "auto", name: "Auto", capabilities: {}, billing: { discountPercent: 10 } },
+      { id: "gpt-x", name: "GPT X", capabilities: { family: "gpt", limits: { max_prompt_tokens: 400000, max_output_tokens: 64000 }, supports: { tool_calls: true, vision: true, reasoning_effort: ["low", "high"] } }, billing: { tokenPrices: { maxPromptTokens: 272000 } } },
+      { id: "disabled", policy: { state: "disabled" }, capabilities: { limits: { max_prompt_tokens: 1000 } } },
+    ] }; } } },
+    createSession: async config => {
+      const handlers = []; const sent = [];
+      const session = { sessionId: `s${sessions.length}`, config, sent, aborted: 0,
+        on: handler => { handlers.push(handler); return () => {}; },
+        emit: (type, data = {}) => handlers.forEach(handler => handler({ type, data })),
+        send: async options => { sent.push(options); setImmediate(() => script(session, options)); return "m"; },
+        abort: async () => { session.aborted++; session.emit("session.idle", { aborted: true }); },
+        disconnect: async () => {},
+      };
+      sessions.push(session); return session;
+    },
+    deleteSession: async id => { deleted.push(id); },
+  };
+  const deps = { client: async () => ({ sdk, client }), token: async () => "token" };
+  const models = await discoverCopilotSdkModels({}, undefined, deps);
+  assert.deepEqual(models.map(model => model.id), ["auto", "gpt-x"], "service-routed models are offered first; disabled models are hidden");
+  const model = models[1];
+  assert.equal(models[0].copilotSdk.routed, true); assert.equal(models[0].maxInputTokens, 272000, "Auto inherits the tightest limits of models it can route to");
+  assert.equal(models[0].maxOutputTokens, 64000); assert.equal(models[0].capabilities.toolCalling, true);
+  assert.ok(isCopilotSdkModel(model)); assert.equal(model.vendor, "copilot-sdk"); assert.equal(model.maxInputTokens, 272000, "long-context pricing tier is not offered");
+  assert.equal(model.maxOutputTokens, 64000); assert.equal(model.copilotSdk.routed, false); assert.equal(model.capabilities.imageInput, true);
+  await disposeCopilotSdk();
+  assert.deepEqual(await discoverCopilotSdkModels({}, undefined, { ...deps, token: async () => undefined }), [], "no sign-in means no SDK models");
+  const consent = [];
+  const authDeps = { ...deps, token: async interactive => { consent.push(interactive); return interactive ? "token" : undefined; } };
+  assert.deepEqual(await discoverCopilotSdkModels({}, undefined, authDeps), []);
+  const connected = await discoverCopilotSdkModels({}, undefined, authDeps, true);
+  assert.deepEqual(connected.map(item => item.id), ["auto", "gpt-x"]);
+  assert.deepEqual(consent, [false, true], "explicit connection can request consent after passive discovery found no session");
+  await assert.rejects(discoverCopilotSdkModels({}, undefined, { ...deps, token: async () => undefined }, true), /GitHub account access/);
+  await assert.rejects(discoverCopilotSdkModels({}, undefined, { ...deps, client: async () => { throw new Error("private diagnostic"); } }, true),
+    error => /Cannot discover Copilot SDK models/.test(error.message) && !/private diagnostic/.test(error.message));
+  await disposeCopilotSdk();
+  const fs = require("fs"); const path = require("path"); const originalExists = fs.existsSync;
+  const serverRoot = path.resolve("/fixture/remote-server");
+  const sdkDir = path.join(serverRoot, "node_modules", "@github", "copilot-sdk");
+  const cliPath = path.join(serverRoot, "node_modules", "@github", "copilot", "index.js");
+  try {
+    fs.existsSync = candidate => [path.join(sdkDir, "package.json"), cliPath].includes(candidate);
+    assert.deepEqual(sdkChannel.locateCopilotSdkRuntime("/missing-client-app", path.join(serverRoot, "node")), { sdkDir, cliPath },
+      "remote discovery falls back to the extension host executable's installation");
+    assert.deepEqual(sdkChannel.locateCopilotSdkRuntime(undefined, path.join(serverRoot, "node")), { sdkDir, cliPath });
+    // Only the glibc package is installed; the result must not depend on the extension host's libc probe.
+    const nativeDir = path.join(serverRoot, "node_modules", "@github", `copilot-sdk-${process.platform}-${process.arch}`, "prebuilds", `${process.platform}-${process.arch}`);
+    const wrapper = path.join(nativeDir, process.platform === "win32" ? "copilot-runtime.exe" : "copilot-runtime");
+    fs.existsSync = candidate => [path.join(sdkDir, "package.json"), wrapper, path.join(nativeDir, "runtime.node")].includes(candidate);
+    assert.deepEqual(sdkChannel.locateCopilotSdkRuntime(undefined, path.join(serverRoot, "node")), { sdkDir, cliPath: wrapper },
+      "newer VS Code builds ship a native runtime package, which PKM passes to the SDK explicitly");
+    fs.existsSync = candidate => [path.join(sdkDir, "package.json"), wrapper].includes(candidate);
+    assert.equal(sdkChannel.locateCopilotSdkRuntime(undefined, path.join(serverRoot, "node")), undefined, "incomplete native runtime is rejected");
+    fs.existsSync = candidate => candidate === path.join(sdkDir, "package.json");
+    assert.equal(sdkChannel.locateCopilotSdkRuntime(undefined, path.join(serverRoot, "node")), undefined);
+  } finally { fs.existsSync = originalExists; }
+
+  const prompt = copilotSdkPrompt([{ role: "system", content: "Rules" }, { role: "user", content: "hi" }, { role: "assistant", content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: "{}" } }] },
+    { role: "tool", content: "data", tool_call_id: "c1" }, { role: "assistant", content: "Hello" }, { role: "user", content: "next", images: [{ label: "a.png", mimeType: "image/png", dataBase64: "AA==" }] }]);
+  assert.equal(prompt.system, "Rules"); assert.equal(prompt.images.length, 1);
+  assert.match(prompt.prompt, /<conversation>[\s\S]*### user\nhi[\s\S]*\[called tool read \(c1\) with \{\}\][\s\S]*### tool result c1\ndata[\s\S]*### assistant\nHello\n<\/conversation>\n\nCurrent user message:\nnext$/);
+  assert.equal(copilotSdkPrompt([{ role: "user", content: "only" }]).prompt, "only");
+
+  // Two turns: tool call, then thinking + answer, with per-turn usage including Copilot credits.
+  script = async (session, options) => {
+    if (options.source === "system") return;
+    session.emit("session.auto_mode_resolved", { chosenModel: "gpt-x" });
+    session.emit("session.fusion_route_started", { attemptId: "r1" });
+    session.emit("session.fusion_resolved", { pattern: "solo", primaryModel: "gpt-x", secondaryModel: null });
+    session.emit("assistant.turn_start", { turnId: "opaque-first-turn" });
+    session.emit("assistant.message", { messageId:"tool-request", content: "", toolRequests: [{ toolCallId: "t1", name: "pkm_lookup", arguments: { key: "a" } }] });
+    const tool = session.config.tools[0];
+    await tool.handler({ key: "a" }, { toolCallId: "t1" });
+    session.emit("assistant.turn_start", { turnId: "opaque-second-turn" });
+    session.emit("assistant.usage", { turnId:"opaque-first-turn", inputTokens: 100, outputTokens: 10, copilotUsage: { totalNanoAiu: 5 } });
+    session.emit("assistant.reasoning_delta", { deltaContent: "**Thinking** about it" });
+    session.emit("assistant.message_delta", { messageId:"final-answer", deltaContent: "ans" });
+    session.emit("assistant.message_delta", { messageId:"final-answer", deltaContent: "wer" });
+    session.emit("assistant.message", { messageId:"final-answer", content: "answer", toolRequests: [] });
+    session.emit("assistant.message", { messageId:"final-answer", content: "answer", toolRequests: [] });
+    session.emit("assistant.usage", { turnId:"opaque-second-turn", inputTokens: 120, outputTokens: 8, reasoningTokens: 3, cacheReadTokens: 100, copilotUsage: { totalNanoAiu: 7 } });
+    session.emit("session.idle", {});
+  };
+  let text = ""; let thinking = ""; const usage = []; const usageRounds = []; const tools = []; const receipts = []; const sentReceipts = []; const activities = [];
+  const request = { messages: [{ role: "system", content: "Rules" }, { role: "user", content: "question" }], signal: new AbortController().signal, maxOutputTokens: 1000,
+    tools: [{ name: "pkm_lookup", description: "Lookup", parameters: { type: "object" }, execute: async args => `value ${args.key}` }],
+    onTool: event => tools.push(`${event.status}:${event.result || ""}`), onThinking: value => { thinking += value; }, onUsage: (value, round) => {usage.push(value); usageRounds.push(round);}, onTransportPrepared: receipt => receipts.push(receipt), onTransportSent: receipt => sentReceipts.push(receipt), onModelActivity: event => activities.push(`${event.status}:${event.label}`) };
+  await streamCopilotSdkChat(model, request, value => { text += value; }, {}, deps);
+  const first = sessions.at(-1);
+  assert.equal(text, "answer", "streamed deltas are not duplicated by the final message");
+  assert.equal(thinking, "**Thinking** about it");
+  for (const label of ["Auto selected gpt-x", "HydraFusion · choosing a workflow", "HydraFusion · solo · gpt-x"]) assert.ok(activities.includes(`complete:${label}`), label);
+  assert.ok(!activities.some(item => item.startsWith("failed:")), "resolved routing leaves no failed activity");
+  assert.deepEqual(tools, ["running:", "complete:value a"]);
+  assert.deepEqual(usage.map(item => item.copilotNanoAiu), [5, 7]); assert.equal(usage[1].reasoningTokens, 3); assert.equal(usage[1].cachedInputTokens, 100);
+  assert.deepEqual(usageRounds, [0, 1], "opaque provider turn IDs are mapped to monotonically increasing local ledgers");
+  assert.equal(receipts.length, 2); assert.equal(sentReceipts.length, 2, "each accepted internal SDK inference has a sent receipt");
+  assert.equal(first.config.reasoningSummary, "concise"); assert.deepEqual(first.config.availableTools, ["pkm_lookup"]);
+  assert.deepEqual(first.config.systemMessage, { mode: "replace", content: "Rules" }); assert.equal(first.config.tools[0].defer, "never");
+  assert.deepEqual(first.config.onPermissionRequest({ kind: "shell" }).kind, "reject");
+  assert.deepEqual(first.config.onPermissionRequest({ kind: "custom-tool", toolName: "pkm_lookup" }).kind, "approve-once");
+  assert.equal(receipts[0].provider, "vscode"); assert.equal(receipts[0].countingMethod, "utf8-byte-upper-bound");
+  assert.ok(deleted.includes(first.sessionId), "session transcript is deleted after the request");
+
+  script = async session => {
+    session.emit("assistant.turn_start", { turnId:"opaque-distinct" });
+    session.emit("assistant.message", { messageId:"legitimate-one", content:"repeat", toolRequests:[] });
+    session.emit("assistant.message", { messageId:"legitimate-two", content:"repeat", toolRequests:[] });
+    session.emit("session.idle");
+  };
+  let repeated = "";
+  await streamCopilotSdkChat(model, request, value => { repeated += value; }, {}, deps);
+  assert.equal(repeated, "repeatrepeat", "identical text in distinct message identities is not incorrectly deduplicated");
+
+  script = async session => {
+    session.emit("assistant.turn_start", { turnId:"callback-failure" });
+    session.emit("assistant.usage", { inputTokens:10, outputTokens:1 });
+    session.emit("session.idle");
+  };
+  await assert.rejects(streamCopilotSdkChat(model, { ...request, onUsage:() => { throw new Error("Ledger persistence failed"); } },
+    () => {}, {}, deps), /Ledger persistence failed/, "SDK listener exceptions must fail the request, not silently lose accounting");
+
+  // afterTools stops the run without asking the model for another turn.
+  script = async session => {
+    session.emit("assistant.turn_start", { turnId: "0" });
+    session.emit("assistant.message", { content: "", toolRequests: [{ toolCallId: "t1", name: "pkm_lookup", arguments: { key: "b" } }] });
+    await session.config.tools[0].handler({ key: "b" }, { toolCallId: "t1" });
+  };
+  await streamCopilotSdkChat(model, { ...request, afterTools: () => true }, () => {}, {}, deps);
+  assert.equal(sessions.at(-1).aborted, 1);
+
+  // Provider errors are classified without echoing provider text.
+  script = async session => { session.emit("assistant.turn_start", { turnId: "0" }); session.emit("session.error", { errorType: "quota", message: "secret provider detail" }); };
+  await assert.rejects(streamCopilotSdkChat(model, request, () => {}, {}, deps), error => /\(quota\)/.test(error.message) && !/secret/.test(error.message));
+
+  // Cancellation aborts the session and reports a plain cancellation.
+  const controller = new AbortController();
+  script = async session => { session.emit("assistant.turn_start", { turnId: "0" }); controller.abort(); };
+  await assert.rejects(streamCopilotSdkChat(model, { ...request, signal: controller.signal }, () => {}, {}, deps), /Request cancelled/);
+  assert.ok(sessions.at(-1).aborted >= 1); assert.ok(deleted.includes(sessions.at(-1).sessionId));
+
+  // Missing sign-in fails before a session is created.
+  const before = sessions.length;
+  await assert.rejects(streamCopilotSdkChat(model, request, () => {}, {}, { ...deps, token: async () => undefined }), /GitHub sign-in is required/);
+  assert.equal(sessions.length, before);
+}
+
 async function testVscodeModels() {
   const Module = require("module"); const originalLoad = Module._load;
   let adapter;
@@ -2275,11 +2499,15 @@ async function testVscodeModels() {
   assert.strictEqual(output, "done"); assert.strictEqual(execution, 1); assert.strictEqual(events[1].status, "complete"); assert.strictEqual(prompts[0].options.tools[0].inputSchema.type, "object");
   const inputCounts = new Map();
   let countedRounds = 0;
-  const countedInputModel = { ...model,
+  let byteBoundCounts = 0;
+  await streamVscodeChat({ ...model, countTokens:async () => { byteBoundCounts++; return 1; } }, { ...request, tools:[] }, () => {}, host);
+  assert.equal(byteBoundCounts, 0, "a UTF-8 byte bound that fits the context skips slow tokenizer calls");
+  // A small context forces precise counting, because the byte bound no longer fits.
+  const countedInputModel = { ...model, maxInputTokens:250,
     countTokens: async value => {
       const key = JSON.stringify(value);
       inputCounts.set(key, (inputCounts.get(key) || 0) + 1);
-      return 10;
+      return 1;
     },
     sendRequest: async () => ({ stream:(async function* () {
       if (++countedRounds === 1) yield new CallPart("count-cache-call", "read_file", { path:"file.txt" });
@@ -2296,17 +2524,70 @@ async function testVscodeModels() {
     assert.deepEqual(modelActivities[i + 1], { ...modelActivities[i], status:"complete" });
   }
   const invalidCountActivities = [];
-  await assert.rejects(streamVscodeChat({ ...countedInputModel, countTokens:async value => typeof value === "string" && value === "done" ? NaN : 10,
+  await assert.rejects(streamVscodeChat({ ...countedInputModel, countTokens:async value => typeof value === "string" && value === "done" ? NaN : 1,
     sendRequest:async () => ({ stream:(async function* () { yield new TextPart("done"); })() }) },
-    { ...request, tools:[], onModelActivity:event => invalidCountActivities.push(event) }, () => {}, host), /Output token count is unavailable/);
+    { ...request, tools:[], maxOutputTokens:2, onModelActivity:event => invalidCountActivities.push(event) }, () => {}, host), /Output token count is unavailable/);
   assert.equal(invalidCountActivities.at(-1).status, "failed", "invalid tokenizer output cannot be recorded as completed");
   assert.match(invalidCountActivities.at(-1).label, /output tokens/);
   const immutableInputs = [...inputCounts].filter(([key]) => key.includes("Instructions") || key.includes("question") || key.includes("inputSchema"));
   assert.strictEqual(immutableInputs.length, 3);
   assert(immutableInputs.every(([, count]) => count === 1), "unchanged message and tool schema token counts are reused only within this invocation");
-  await streamVscodeChat(countedInputModel, { ...request, tools:[] }, () => {}, host);
+  await streamVscodeChat({ ...countedInputModel, maxInputTokens:150 }, { ...request, tools:[] }, () => {}, host);
   assert([...inputCounts].filter(([key]) => key.includes("Instructions") || key.includes("question")).every(([, count]) => count === 2),
     "token count cache must not cross invocations or models");
+  let dedupeRounds = 0; let dedupeExecutions = 0; let writes = 0; const dedupeEvents = [];
+  const dedupeTools = [{ name:"read_file", label:"Read files", description:"Read", parameters:{ type:"object" }, execute:async () => { dedupeExecutions++; return "file contents"; } },
+    { name:"save_file", label:"Save file", description:"Save", parameters:{ type:"object" }, execute:async () => { writes++; return "saved"; } }];
+  const dedupePrompts = [];
+  await streamVscodeChat({ ...model, sendRequest:async messages => { dedupePrompts.push(messages); return { stream:(async function* () {
+    const round = ++dedupeRounds;
+    if (round === 1) { yield new CallPart("d-1", "read_file", { path:"a.txt" }); yield new CallPart("d-2", "read_file", { path:"a.txt" }); }
+    else if (round === 2) { yield new CallPart("d-3", "save_file", { path:"a.txt" }); yield new CallPart("d-4", "read_file", { path:"a.txt" }); }
+    else yield new TextPart("done");
+  })() }; } }, { ...request, tools:dedupeTools, onTool:event => dedupeEvents.push(event) }, () => {}, host);
+  assert.equal(dedupeExecutions, 2, "an identical read reuses the earlier result, but a write makes the next read execute again");
+  assert.equal(writes, 1);
+  const reusedEvent = dedupeEvents.find(event => event.id === "d-2" && event.status === "complete");
+  assert.equal(JSON.parse(reusedEvent.result).sameAsToolCall, "d-1");
+  let thinkingText = ""; let thinkingOutput = "";
+  class ThinkingPart { constructor(value) { this.value = value; } }
+  await streamVscodeChat({ ...model, sendRequest:async () => ({ stream:(async function* () {
+    yield new ThinkingPart("Plan the "); yield new ThinkingPart(["answer", "."]); yield new ThinkingPart(""); yield new TextPart("final");
+  })() }) }, { ...request, tools:[], onThinking:text => { thinkingText += text; } }, text => { thinkingOutput += text; }, { ...host, LanguageModelThinkingPart:ThinkingPart });
+  assert.equal(thinkingText, "Plan the answer.", "readable thinking is reported separately");
+  assert.equal(thinkingOutput, "final", "thinking never enters the answer text");
+  const goaway = () => Object.assign(new TypeError("fetch failed"), { cause:Object.assign(new Error('HTTP/2: "GOAWAY" frame received with code 0'), { code:"UND_ERR_SOCKET" }) });
+  let flakyCalls = 0; let flakyText = ""; const flakyActivities = [];
+  const flakyModel = { ...model, sendRequest:async () => {
+    if (++flakyCalls === 1) throw goaway();
+    return { stream:(async function* () { yield new TextPart("recovered"); })() };
+  } };
+  await streamVscodeChat(flakyModel, { ...request, tools:[], onModelActivity:event => flakyActivities.push(event) }, text => { flakyText += text; }, host);
+  assert.equal(flakyCalls, 2); assert.equal(flakyText, "recovered");
+  assert(flakyActivities.some(event => event.operation === "inference" && /retrying once/.test(event.label) && /GOAWAY/.test(event.label)));
+  let downCalls = 0;
+  await assert.rejects(streamVscodeChat({ ...model, sendRequest:async () => { downCalls++; throw goaway(); } }, { ...request, tools:[] }, () => {}, host),
+    /network interrupted \(HTTP\/2 GOAWAY, socket closed\)/);
+  assert.equal(downCalls, 2, "a transient network failure is retried exactly once");
+  let midStreamCalls = 0;
+  await assert.rejects(streamVscodeChat({ ...model, sendRequest:async () => { midStreamCalls++; return { stream:(async function* () { yield new TextPart("partial"); throw goaway(); })() }; } },
+    { ...request, tools:[] }, () => {}, host), /network interrupted/);
+  assert.equal(midStreamCalls, 1, "no retry once output has been received");
+  let deniedCalls = 0;
+  await assert.rejects(streamVscodeChat({ ...model, sendRequest:async () => { deniedCalls++; throw Object.assign(new Error("denied"), { code:"NoPermissions" }); } },
+    { ...request, tools:[] }, () => {}, host), /access was denied/);
+  assert.equal(deniedCalls, 1);
+  let autoCalls = 0; let autoTools = 0;
+  await assert.rejects(streamVscodeChat({ ...model, id:"auto", vendor:"copilot", sendRequest:async () => {
+    if (++autoCalls === 1) return { stream:(async function* () { yield new CallPart("auto-lookup", "read_file", {}); })() };
+    throw new Error("Auto mode needs a prompt or a command to route a request. private provider detail");
+  } }, { ...request, tools:[{ ...request.tools[0], execute:async () => { autoTools++; return "found"; } }] }, () => {}, host),
+  error => /Select Auto · Copilot SDK/.test(error.message) && !/private provider detail/.test(error.message));
+  assert.equal(autoCalls, 2, "routing failures are not retried automatically");
+  assert.equal(autoTools, 1, "completed tools are not replayed");
+  await assert.rejects(streamVscodeChat({ ...model, sendRequest:async () => {
+    throw new Error("wrapper", { cause:new Error("Auto mode needs a prompt or a command to route a request.") });
+  } }, { ...request, tools:[] }, () => {}, host), /Select Auto · Copilot SDK/);
   for (const loopReviewAfterMs of [undefined, 0]) {
     let idleRounds = 0;
     let idleText = "";
@@ -2353,7 +2634,7 @@ async function testVscodeModels() {
       assert.strictEqual(options.tools, undefined);
       assert(messages.some(message => message.content.some(part => part.value?.includes(toolBudgetSummary))));
     }
-    const parts = options.tools ? [new CallPart(`bounded-${boundedRounds}`, "read_file", { path: "file.txt" })] : [new TextPart("Summary from completed results")];
+    const parts = options.tools ? [new CallPart(`bounded-${boundedRounds}`, "read_file", { path: `file-${boundedRounds}.txt` })] : [new TextPart("Summary from completed results")];
     return { stream: (async function* () { yield* parts; })() };
   } };
   await streamVscodeChat(boundedModel, { ...request, maxToolRounds: 2 }, text => { boundedAnswer += text; }, host);
@@ -2374,8 +2655,8 @@ async function testVscodeModels() {
     if (nativeBatchRounds === 1) for (let index = 0; index < 5; index++) yield new CallPart(`batch-${index}`, "read_file", { path: "same.txt" });
     else { assert.strictEqual(options.tools, undefined); yield new TextPart("Three results retained"); }
   })() }) };
-  await streamVscodeChat(batchModel, { ...request, maxOutputTokens: 4096, onToolLoopNotice: async notice => { nativeBatchNotices.push(notice); assert.strictEqual(execution - beforeNativeBatch, 3); return "summarize"; } }, () => {}, host);
-  assert.strictEqual(execution - beforeNativeBatch, 3, "The fourth native call in the same batch must await approval");
+  await streamVscodeChat(batchModel, { ...request, maxOutputTokens: 4096, onToolLoopNotice: async notice => { nativeBatchNotices.push(notice); assert.strictEqual(execution - beforeNativeBatch, 1); return "summarize"; } }, () => {}, host);
+  assert.strictEqual(execution - beforeNativeBatch, 1, "identical reads in one batch execute once; the fourth call still awaits stall review");
   assert.strictEqual(nativeBatchNotices.length, 1);
   assert.strictEqual(nativeBatchNotices[0].reason, "stalled");
   const imageHost = { ...host, LanguageModelDataPart: DataPart };
@@ -2401,15 +2682,15 @@ async function testVscodeModels() {
   const countedModel = { ...metadataModel([new TextPart("\u4e2d".repeat(900))]), countTokens: async text => Array.from(text).length };
   await streamVscodeChat(countedModel, { ...request, tools: [], maxOutputTokens: 1024 }, text => { chineseOutput += text; }, imageHost);
   assert.strictEqual(chineseOutput.length, 900, "The model tokenizer, not UTF-8 bytes, determines the native output budget");
-  await assert.rejects(streamVscodeChat({ ...countedModel, countTokens: async () => NaN }, { ...request, tools: [] }, () => {}, imageHost), /Input token count is unavailable/);
+  await assert.rejects(streamVscodeChat({ ...countedModel, maxInputTokens: 100, countTokens: async () => NaN }, { ...request, tools: [] }, () => {}, imageHost), /Input token count is unavailable/);
   await assert.rejects(streamVscodeChat({ ...countedModel, countTokens: async () => 1025 }, { ...request, tools: [] }, () => {}, imageHost), /Local output budget exhausted/);
   const outputCountingAbort = new AbortController();
   const outputCountingFallback = setTimeout(() => outputCountingAbort.abort(), 250);
   try {
-    await assert.rejects(streamVscodeChat({ ...metadataModel([new TextPart("short response")]), countTokens: () => new Promise(() => {}) }, { ...request, tools: [], timeoutMs: 25, loopReviewAfterMs: 0, signal: outputCountingAbort.signal }, () => {}, imageHost), /timed out/);
+    await assert.rejects(streamVscodeChat({ ...metadataModel([new TextPart("short response")]), countTokens: () => new Promise(() => {}) }, { ...request, tools: [], maxOutputTokens: 4, timeoutMs: 25, loopReviewAfterMs: 0, signal: outputCountingAbort.signal }, () => {}, imageHost), /timed out/);
   } finally { clearTimeout(outputCountingFallback); }
   let countedTools = 0;
-  await assert.rejects(streamVscodeChat({ ...model, countTokens: async () => 1025, sendRequest: async () => ({ stream: (async function* () { yield new CallPart("over-budget", "read_file", { path: "file.txt" }); })() }) }, { ...request, tools: [{ ...request.tools[0], execute: async () => { countedTools++; return "contents"; } }] }, () => {}, host), /Local output budget exhausted/);
+  await assert.rejects(streamVscodeChat({ ...model, countTokens: async () => 1025, sendRequest: async () => ({ stream: (async function* () { yield new CallPart("over-budget", "read_file", { path: "file.txt" }); })() }) }, { ...request, maxOutputTokens: 10, tools: [{ ...request.tools[0], execute: async () => { countedTools++; return "contents"; } }] }, () => {}, host), /Local output budget exhausted/);
   assert.strictEqual(countedTools, 0, "Over-budget output must never execute pending tools");
   const usagePart = usage => new DataPart(new TextEncoder().encode(JSON.stringify(usage)), "usage");
   await assert.rejects(streamVscodeChat(metadataModel([new TextPart("kept"), usagePart({ prompt_tokens: 10, completion_tokens: 1025 })]), { ...request, tools: [] }, () => {}, imageHost), /per-inference token budget/);
@@ -2510,7 +2791,7 @@ async function testVscodeModels() {
 }
 
 let toolEventSequence = 0;
-function toolEvents(name = "read_file", arguments_ = '{"path":"sample.txt"}', text = "", suffix = String(++toolEventSequence)) {
+function toolEvents(name = "sample_probe", arguments_ = '{"path":"sample.txt"}', text = "", suffix = String(++toolEventSequence)) {
   return events([
     ...(text ? [delta(text)] : []),
     `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_", type: "function", function: { name: name.slice(0, 3), arguments: arguments_.slice(0, 8) } }] }, finish_reason: null }] })}\n\n`,
@@ -2527,27 +2808,27 @@ async function testToolLoop() {
   const timedNotices = [];
   const timedGuard = new ChatToolLoopGuard({ maxToolRounds: 1, loopReviewAfterMs: 1800000, loopReviewClock: () => reviewTime,
     onToolLoopNotice: async notice => { timedNotices.push(notice); return "continue"; } });
-  for (let index = 0; index < 3; index++) timedGuard.record(undefined, "read_file", "{}", "same");
+  for (let index = 0; index < 3; index++) timedGuard.record(undefined, "sample_probe", "{}", "same");
   reviewTime = 1799999; await timedGuard.beforeRound(100, signal);
   assert.strictEqual(timedNotices.length, 1, "Proven repeated calls pause immediately, independently of the active-time review interval");
   reviewTime = 1800000; await timedGuard.beforeRound(101, signal);
   assert.strictEqual(timedNotices.length, 1); assert.strictEqual(timedNotices[0].reason, "stalled");
-  for (let index = 0; index < 3; index++) timedGuard.record(undefined, "read_file", "{}", "same");
+  for (let index = 0; index < 3; index++) timedGuard.record(undefined, "sample_probe", "{}", "same");
   await timedGuard.beforeRound(102, signal);
   assert.strictEqual(timedNotices.length, 2, "Continuation cannot suppress fresh repeated-call evidence");
-  timedGuard.record(undefined, "read_file", "{}", "changed");
+  timedGuard.record(undefined, "sample_probe", "{}", "changed");
   reviewTime = 3600000; await timedGuard.beforeRound(103, signal);
   assert.strictEqual(timedNotices.length, 2, "Fresh results invalidate that tool's earlier loop evidence");
-  for (let index = 0; index < 3; index++) timedGuard.record(undefined, "read_file", "{}", "same again");
+  for (let index = 0; index < 3; index++) timedGuard.record(undefined, "sample_probe", "{}", "same again");
   await timedGuard.beforeRound(104, signal); assert.strictEqual(timedNotices.length, 3);
   const timedCancellation = new ChatToolLoopGuard({ loopReviewAfterMs: 0, onToolLoopNotice: async () => "cancel" });
-  for (let index = 0; index < 3; index++) timedCancellation.record(undefined, "read_file", "{}", "same");
+  for (let index = 0; index < 3; index++) timedCancellation.record(undefined, "sample_probe", "{}", "same");
   await assert.rejects(timedCancellation.beforeRound(0, signal), /cancelled by the user/);
   assert.throws(() => new ChatToolLoopGuard({ loopReviewAfterMs: NaN }), /non-negative/);
   const guardNotices = [];
   const guard = new ChatToolLoopGuard({ onToolLoopNotice: async notice => { guardNotices.push(notice); return "continue"; } });
   for (let index = 0; index < 30; index++) {
-    guard.record(undefined, "read_file", JSON.stringify({ path: `file-${index}` }), "unchanged contents");
+    guard.record(undefined, "sample_probe", JSON.stringify({ path: `file-${index}` }), "unchanged contents");
     await guard.beforeRound(index, signal);
   }
   assert.strictEqual(guardNotices.length, 0, "Different arguments represent progress, not a loop");
@@ -2559,13 +2840,13 @@ async function testToolLoop() {
   assert.strictEqual(guardNotices.length, 2, "Continuation grants a bounded new block, not unlimited execution");
   const progressNotices = [];
   const progressGuard = new ChatToolLoopGuard({ onToolLoopNotice: async notice => { progressNotices.push(notice); return "continue"; } });
-  for (let index = 0; index < 6; index++) { progressGuard.record(undefined, "read_file", "{}", JSON.stringify({ progress: index })); await progressGuard.beforeRound(index, signal); }
+  for (let index = 0; index < 6; index++) { progressGuard.record(undefined, "sample_probe", "{}", JSON.stringify({ progress: index })); await progressGuard.beforeRound(index, signal); }
   assert.strictEqual(progressNotices.length, 0, "Changing results must reset repetition detection");
-  progressGuard.record(undefined, "read_file", '{"a":1,"b":2}', '{"content":"same","status":"ready"}');
-  progressGuard.record(undefined, "read_file", '{"b":2,"a":1}', '{"status":"ready","content":"same"}');
+  progressGuard.record(undefined, "sample_probe", '{"a":1,"b":2}', '{"content":"same","status":"ready"}');
+  progressGuard.record(undefined, "sample_probe", '{"b":2,"a":1}', '{"status":"ready","content":"same"}');
   await progressGuard.beforeRound(7, signal);
   assert.strictEqual(progressNotices.length, 0);
-  progressGuard.record(undefined, "read_file", '{"a":1,"b":2}', '{"content":"same","status":"ready"}');
+  progressGuard.record(undefined, "sample_probe", '{"a":1,"b":2}', '{"content":"same","status":"ready"}');
   await progressGuard.beforeRound(8, signal);
   assert.strictEqual(progressNotices[0].reason, "stalled");
   assert.strictEqual(progressNotices[0].repeats, 3, "Canonical argument/result equality detects three unchanged attempts");
@@ -2585,10 +2866,10 @@ async function testToolLoop() {
   const pendingDecision = waitingGuard.beforeRound(1, waitingController.signal);
   await decisionEntered; waitingController.abort(); await assert.rejects(pendingDecision, /cancelled/);
   const calls = []; const stages = []; let round = 0; let output = "";
-  const tools = [{ name: "read_file", description: "Read", parameters: { type: "object" }, execute: async args => { calls.push(args); return '{"content":"sample"}'; } }];
+  const tools = [{ name: "sample_probe", description: "Read", parameters: { type: "object" }, execute: async args => { calls.push(args); return '{"content":"sample"}'; } }];
   await streamApiChat({ ...base, tools, maxOutputTokens: 100, onTool: event => stages.push(event), fetch: async (_, options) => {
     const payload = JSON.parse(options.body);
-    if (round++ === 0) { assert.strictEqual(payload.tools[0].function.name, "read_file"); return toolEvents(); }
+    if (round++ === 0) { assert.strictEqual(payload.tools[0].function.name, "sample_probe"); return toolEvents(); }
     assert.strictEqual(payload.messages[1].tool_calls[0].id, "call_1");
     assert.strictEqual(payload.messages[2].role, "tool");
     assert.strictEqual(payload.messages[2].content, '{"content":"sample"}');
@@ -2601,7 +2882,7 @@ async function testToolLoop() {
   let perInferenceRounds = 0; const inferenceBudgets = [];
   await streamApiChat({ ...base, tools: budgetTools, maxOutputTokens: 32, beforeRound: (_messages, budget) => inferenceBudgets.push(budget), fetch: async (_url, options) => {
     assert.strictEqual(JSON.parse(options.body).max_completion_tokens, 32);
-    return ++perInferenceRounds <= 6 ? toolEvents("read_file", JSON.stringify({ path: `piece-${perInferenceRounds}` })) : events([delta("finished"), done]);
+    return ++perInferenceRounds <= 6 ? toolEvents("sample_probe", JSON.stringify({ path: `piece-${perInferenceRounds}` })) : events([delta("finished"), done]);
   } }, () => {});
   assert.deepStrictEqual(inferenceBudgets, Array(7).fill(32), "Measured tool-round usage must not accumulate against the task's next inference budget");
   let exceededTools = 0;
@@ -2613,7 +2894,7 @@ async function testToolLoop() {
   ]) }, () => {}), /invalid token usage/);
   let byteRounds = 0; let byteAnswer = "";
   await streamApiChat({ ...base, tools: budgetTools, maxOutputTokens: 65536, fetch: async () => {
-    if (++byteRounds < 3) return toolEvents("read_file", JSON.stringify({ path: `long-${byteRounds}` }), "x".repeat(60_000));
+    if (++byteRounds < 3) return toolEvents("sample_probe", JSON.stringify({ path: `long-${byteRounds}` }), "x".repeat(60_000));
     return events([delta("done"), done]);
   } }, text => { byteAnswer += text; });
   assert(byteAnswer.length > 100_000, "Inference storage limits must not become cumulative task limits");
@@ -2625,14 +2906,14 @@ async function testToolLoop() {
   let thirtyFetches = 0; let thirtyExecutions = 0; const thirtyNotices = [];
   await streamApiChat({ ...base, maxOutputTokens: 1024, tools: [{ ...tools[0], execute: async () => { thirtyExecutions++; return "completed"; } }], onToolLoopNotice: async notice => {
     thirtyNotices.push(notice); assert.strictEqual(thirtyExecutions, 30, "The 31st tool must not execute before confirmation"); return "continue";
-  }, fetch: async () => ++thirtyFetches <= 31 ? toolEvents("read_file", JSON.stringify({ path: `sample-${thirtyFetches}` })) : events([delta("done"), done]) }, () => {});
+  }, fetch: async () => ++thirtyFetches <= 31 ? toolEvents("sample_probe", JSON.stringify({ path: `sample-${thirtyFetches}` })) : events([delta("done"), done]) }, () => {});
   assert.strictEqual(thirtyExecutions, 31);
   assert.deepStrictEqual(thirtyNotices, [{ reason: "round-limit", rounds: 30, limit: 30 }]);
   let batchFetches = 0; let batchExecutions = 0; const batchNotices = [];
   await streamApiChat({ ...base, maxOutputTokens: 4096, tools: [{ ...tools[0], execute: async () => { batchExecutions++; return "same result"; } }], onToolLoopNotice: async notice => {
     batchNotices.push(notice); assert.strictEqual(batchExecutions, 3); return "summarize";
   }, fetch: async (_url, options) => {
-    if (++batchFetches === 1) return events([`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: Array.from({ length: 5 }, (_, index) => ({ index, id: `batch-${index}`, type: "function", function: { name: "read_file", arguments: "{}" } })) }, finish_reason: "tool_calls" }] })}\n\n`, "data: [DONE]\n\n"]);
+    if (++batchFetches === 1) return events([`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: Array.from({ length: 5 }, (_, index) => ({ index, id: `batch-${index}`, type: "function", function: { name: "sample_probe", arguments: "{}" } })) }, finish_reason: "tool_calls" }] })}\n\n`, "data: [DONE]\n\n"]);
     const payload = JSON.parse(options.body); assert.strictEqual(payload.tools, undefined);
     assert.strictEqual(payload.messages.filter(message => message.role === "tool" && message.content.includes("Not executed")).length, 2);
     return events([delta("Three results retained"), done]);
@@ -3070,6 +3351,10 @@ async function testVscodeTools() {
   await assert.rejects(invoke.execute({ name: "mcp_pkm_search_notes", input: { query: "test" } }, controller.signal), /Find an enabled/);
   const catalog = JSON.parse(await find.execute({ query: "pkm notes" }, controller.signal));
   assert.strictEqual(catalog.tools[0].name, "mcp_pkm_search_notes"); assert(catalog.tools[0].inputSchema.properties.query);
+  const loose = JSON.parse(await find.execute({ query: "+mcp_pkm unrelated words, search" }, controller.signal));
+  assert.strictEqual(loose.tools[0].name, "mcp_pkm_search_notes", "any keyword matches, punctuation and underscores split words");
+  const none = JSON.parse(await find.execute({ query: "zzzz qqqq" }, controller.signal));
+  assert.deepStrictEqual(none.tools, []); assert.strictEqual(none.available[0].name, "mcp_pkm_search_notes", "an empty search lists enabled tool names");
   await assert.rejects(invoke.execute({ name: "disabled_tool", input: {} }, controller.signal), /Find an enabled/);
   approved = false; await assert.rejects(invoke.execute({ name: "mcp_pkm_search_notes", input: { query: "test" } }, controller.signal), /declined/); assert.strictEqual(invoked.length, 0);
   approved = true; assert.strictEqual(JSON.parse(await invoke.execute({ name: "mcp_pkm_search_notes", input: { query: "test" } }, controller.signal)).content, "PKM result");

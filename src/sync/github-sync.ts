@@ -126,6 +126,7 @@ export interface GitHubSyncTarget {
     attempts?: number;
     errorCode?: string;
     phase?: string;
+    retryable?: boolean;
   };
   lastResolutionReport?: GitHubSyncResolutionReport;
   pendingDeletions?: GitHubSyncDeletionEvidence[];
@@ -714,6 +715,7 @@ export function normalizeGitHubSyncTarget(value: any, createId: () => string = r
       ...(Number.isInteger(value.lastFailure.attempts) && value.lastFailure.attempts > 0 ? { attempts: value.lastFailure.attempts } : {}),
       ...(typeof value.lastFailure.errorCode === "string" ? { errorCode: value.lastFailure.errorCode } : {}),
       ...(typeof value.lastFailure.phase === "string" ? { phase: value.lastFailure.phase } : {}),
+      ...(value.lastFailure.retryable === false ? { retryable: false } : {}),
     };
   }
   if (Array.isArray(value?.pendingDeletions)) {
@@ -4322,6 +4324,18 @@ export class GitHubPublicationMigration {
     marker.phase = "rolled-back";
     this.writeMarker(marker);
     fs.rmSync(path.join(this.migrationRoot, "stage"), { recursive: true, force: true });
+    return this.receipt(marker);
+  }
+
+  /** Retires an unfinished staged migration because a local-authority publish will rewrite GitHub in the current schema. */
+  supersedeWithLocalAuthority(): GitHubPublicationMigrationReceipt | undefined {
+    const marker = this.readMarker();
+    if (!marker) return undefined;
+    if (marker.phase !== "cutover" && marker.phase !== "rolled-back") {
+      marker.phase = "rolled-back";
+      this.writeMarker(marker);
+      fs.rmSync(path.join(this.migrationRoot, "stage"), { recursive: true, force: true });
+    }
     return this.receipt(marker);
   }
 

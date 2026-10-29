@@ -34,7 +34,8 @@ function liveRefreshScript(version: string): string {
     if (event.target.closest('.reader-search')) return;
     if (event.target.matches('input,textarea,select') || event.target.isContentEditable) dirty = true;
   });
-  window.addEventListener('load', () => {
+  window.addEventListener('load', async () => {
+    await globalThis.pkmMermaidReady;
     try {
       const saved = JSON.parse(sessionStorage.getItem(key) || 'null');
       sessionStorage.removeItem(key);
@@ -88,12 +89,15 @@ export async function startLiveMarkdownServer(
     authorizePath?: (pathname: string) => boolean;
     identity?: Record<string, string | number | boolean>;
     favicon?: Buffer;
+    mermaid?: { library: Buffer; renderer: Buffer };
   } = {},
 ): Promise<LiveMarkdownServer> {
   const roots = assetRoots.map(item => ({ prefix: item.prefix.replace(/^\/+|\/+$/g, ""), root: resolve(item.root) }))
     .sort((left, right) => right.prefix.length - left.prefix.length);
   const accessToken = String(options.accessToken || "");
   const cookieName = `pkm_preview_${accessToken.slice(0, 10)}`;
+  const diagramVersion = options.mermaid
+    ? createHash("sha256").update(options.mermaid.library).update(options.mermaid.renderer).digest("hex") : "";
   const server = createServer((req, res) => {
     try {
       const requestUrl = new URL(String(req.url || "/"), "http://localhost");
@@ -112,11 +116,21 @@ export async function startLiveMarkdownServer(
         res.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "public, max-age=86400" });
         res.end(options.favicon); return;
       }
+      if (options.mermaid && (pathname === "/_pkm/mermaid.js" || pathname === "/_pkm/mermaid-renderer.js")) {
+        res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "private, max-age=86400",
+          "X-Content-Type-Options": "nosniff" });
+        res.end(req.method === "HEAD" ? undefined : pathname === "/_pkm/mermaid.js" ? options.mermaid.library : options.mermaid.renderer);
+        return;
+      }
       if (options.authorizePath && !options.authorizePath(pathname)) { res.writeHead(404); res.end("Not found"); return; }
       if (pathname.endsWith(".html")) {
         const documentPath = pathname.replace(/^\/+/, "").replace(/\.html$/i, "");
-        const html = renderDocument(documentPath);
+        let html = renderDocument(documentPath);
         if (!html) { res.writeHead(404); res.end("Markdown document not found"); return; }
+        if (options.mermaid && /<code\b[^>]*\bclass=["'][^"']*\bmermaid\b/i.test(html)) {
+          const diagrams = `<script defer src="/_pkm/mermaid.js?v=${diagramVersion}"></script><script defer src="/_pkm/mermaid-renderer.js?v=${diagramVersion}"></script>`;
+          html = html.includes("</body>") ? html.replace("</body>", `${diagrams}</body>`) : html + diagrams;
+        }
         const version = `"${createHash("sha256").update(html).digest("hex")}"`;
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store, no-cache, must-revalidate", ETag: version });
         if (req.method === "HEAD") { res.end(); return; }

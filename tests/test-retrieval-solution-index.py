@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "resources"))
 from adaptive_skill_retrieval import SkillDocument
 from adaptive_skill_retrieval.architecture_retriever import ArchitectureRetriever
 from adaptive_skill_retrieval.retrieval_architectures import architecture_by_id
-from retrieval_solution_index import EmbeddingCache, cache_key, persist_index, restore_index, scoped_index
+from retrieval_solution_index import EmbeddingCache, cache_key, index_statistics, persist_index, restore_index, scoped_index
 from retrieval_solution_resources import process_sample, resource_plan
 
 ARCHITECTURES = [
@@ -49,6 +49,18 @@ class TestPersistentIndex(unittest.TestCase):
                     second = ArchitectureRetriever(architecture_by_id(name), self.config, encoder=Encoder())
                     with patch.object(second._encoder, "encode_documents", side_effect=AssertionError("must reuse index")):
                         restore_index(second, self.documents, target)
+                        statistics = index_statistics(second)
+                    self.assertEqual(statistics, index_statistics(first))
+                    self.assertEqual(statistics["document_count"], 5)
+                    self.assertEqual(statistics["document_vector_count"], 5)
+                    self.assertEqual(statistics["unit_source_count"], 5)
+                    self.assertEqual(statistics["unit_count"], 10 if second.architecture.output_granularity == "markdown_section" else 5)
+                    if "token_encoder" in second.architecture.operators:
+                        self.assertEqual(statistics["unit_vector_count"], 0)
+                        self.assertGreater(statistics["token_vector_count"], statistics["unit_count"])
+                    else:
+                        self.assertEqual(statistics["unit_vector_count"], statistics["unit_count"])
+                        self.assertEqual(statistics["token_vector_count"], 0)
                     self.assertEqual(first.search("Python testing", 5), second.search("Python testing", 5))
                     self.assertEqual(first._document_vectors, second._document_vectors)
                     self.assertEqual(first._token_vectors, second._token_vectors)
@@ -57,6 +69,10 @@ class TestPersistentIndex(unittest.TestCase):
                     self.assertEqual([hit.skill_version for hit in scoped.search("Python testing", 5)], list(admitted))
                     self.assertEqual(len(second._documents), 5, "Request scopes must not mutate shared index")
                     self.assertEqual(scoped_index(second, set()).search("Python", 5), [])
+                    empty = index_statistics(scoped_index(second, set()))
+                    for key in ("document_count", "document_vector_count", "unit_count", "unit_source_count",
+                                "unit_vector_count", "token_vector_count"):
+                        self.assertEqual(empty[key], 0, "an observed empty index is zero, unlike missing telemetry")
 
     def test_cache_identity_changes_with_corpus_and_package(self):
         self.assertNotEqual(cache_key("a", self.documents), cache_key("b", self.documents))

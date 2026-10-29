@@ -36,6 +36,7 @@ const REQUIRED_UI_ARTIFACTS = Object.freeze([
   "dist/webview/katex.css",
   "dist/webview/cytoscape.js",
   "dist/webview/mermaid.js",
+  "dist/webview/standalone-mermaid.js",
   "dist/webview/forcegraph3d.js",
   "resources/sidebar-icon.svg",
   "resources/action-library.html",

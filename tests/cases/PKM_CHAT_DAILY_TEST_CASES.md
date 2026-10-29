@@ -21,7 +21,7 @@ and repeats initial/restart acceptance in actual Extension Hosts.
 
 Use `npm run test:mcp-lifecycle` for the separate generated-runtime and real
 FastMCP concurrency gate (generation changes, fencing, actual drain and uncertain
-writes). It needs the existing repository `.venv` plus a `python` on PATH with
+writes). It needs the shared dev venv `~/pkm-envs/personal-knowledge-vscode-dev` (see `tests/dev-paths.js`) plus a `python` on PATH with
 the test FastMCP dependencies; it neither installs dependencies nor touches live
 MCP registrations. Keep this environment-dependent gate distinct from browser
 coverage and Windows acceptance.

@@ -5,7 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const ts = require("typescript");
 const { readStoredGitHubSyncCredentials, GitHubSyncCredentialError } = require("../dist/sync/github-sync-credentials");
-const { GitHubSyncScheduler, githubSyncFailureDetails } = require("../dist/sync/github-sync-scheduler");
+const { GitHubSyncScheduler, githubSyncFailureDetails, isGitHubSyncAuthenticationFailure } = require("../dist/sync/github-sync-scheduler");
 const { normalizeGitHubSyncTarget } = require("../dist/sync/github-sync");
 
 const target = normalizeGitHubSyncTarget({ id:"share", name:"CreativeGen Share",
@@ -101,6 +101,9 @@ test("scheduler and persisted target normalization preserve failure code, phase 
     assert.equal(persisted.lastFailure.errorCode, state.lastErrorCode);
     assert.equal(persisted.lastFailure.phase, state.lastErrorPhase);
     assert.equal(persisted.lastFailure.attempts, 3);
+    const unsafe = normalizeGitHubSyncTarget({ ...target, lastFailure:{ ...automatic.lastFailure, retryable:false } });
+    assert.equal(unsafe.lastFailure.retryable, false, "an unsafe-to-retry decision survives target normalization");
+    assert.equal(isGitHubSyncAuthenticationFailure(unsafe.lastFailure), false);
     scheduler.configure([{ ...automatic, lastFailure:persisted.lastFailure }]);
     assert.equal(scheduler.snapshot().share.lastErrorCode, state.lastErrorCode);
     assert.equal(scheduler.snapshot().share.lastErrorPhase, state.lastErrorPhase);
@@ -161,7 +164,7 @@ test("actual Host execution persists and logs an authentication timeout without 
       acknowledgeExecutionErrors:async () => {} },
     githubSyncDiagnostics:{ record:(event, fields) => events.push({ event, ...fields }) },
     readGitHubSyncCredentials:() => readStoredGitHubSyncCredentials(() => new Promise(() => {}), target, 5),
-    githubSyncFailureDetails,
+    githubSyncFailureDetails, isGitHubSyncAuthenticationFailure,
     mutateGitHubSyncTargets:async (_context, _owner, mutation) => mutation([saved]),
     GitHubSyncContentRepairError:UnrelatedError, GitHubSyncExtensionCompatibilityError:UnrelatedError,
     GitHubSyncConflictError:UnrelatedError, PkmServiceRecoveryPersistenceError:UnrelatedError,

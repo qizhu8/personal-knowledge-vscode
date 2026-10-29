@@ -79,6 +79,8 @@ test("Router model lifecycle preserves focus, budgets and truthful progress on n
   }
   await page.getByRole("tab", { name:"Retrieval & Performance", exact:true }).click();
   assert.match(await page.locator("#sr-performance").innerText(), /Model retrieval is not enabled/);
+  await page.locator("#sr-flow-encoder").click();
+  await page.getByRole("tab", {name:"Controls",exact:true}).click();
   const packageId = "a".repeat(64);
   const catalog = {
     state: "building", requested_package_id: packageId, active_package_id: null,
@@ -98,6 +100,8 @@ test("Router model lifecycle preserves focus, budgets and truthful progress on n
   assert.doesNotMatch(await section.innerText(), /Ready \/ active/);
   assert.match(await page.locator("#sr-model-readiness").locator("..").textContent(), /unavailable/);
   assert.equal(await section.locator("progress").getAttribute("value"), "16");
+  assert.equal(await section.getByRole("button", {name:"Enable & build", exact:true}).isVisible(), false, "manual activation is advanced-only; the download flow builds automatically");
+  await section.locator("summary", {hasText:"Model actions"}).click();
   assert(await section.getByRole("button", { name: "Enable & build", exact: true }).isDisabled());
   assert.doesNotMatch(await section.innerText(), /a{64}|Index estimate|model-runtime\/bin\/python|Source validation/);
   const modelDetails = section.getByRole("button", { name:'Offline <model> "package" details', exact:true });
@@ -110,6 +114,8 @@ test("Router model lifecycle preserves focus, budgets and truthful progress on n
   await page.setViewportSize({ width:320, height:1000 });
   await page.waitForFunction(() => [...document.querySelectorAll('.sr-hover.open .sr-hover-panel')]
     .every(node => { const box = node.getBoundingClientRect(); return box.left >= 0 && box.right <= innerWidth + 1; }));
+  assert.equal(await section.getByRole("button", { name: "Refresh models" }).isVisible(), false, "advanced buttons do not clutter the default setup view");
+  await section.locator("summary", {hasText:"Advanced model settings"}).click();
   await section.getByRole("button", { name: "Refresh models" }).focus();
   for (const width of [320, 360, 1280]) {
     await page.setViewportSize({ width, height: 1000 });
@@ -136,6 +142,7 @@ test("Router model lifecycle preserves focus, budgets and truthful progress on n
   await runtimeDetails.press("Escape");
   assert.equal(await runtimePopover.isVisible(), false, "Escape dismisses details without moving focus");
   assert.equal(await runtimeDetails.evaluate(node => document.activeElement === node), true);
+  if (!await section.getByRole("button", {name:"Rebuild", exact:true}).isVisible()) await section.locator("summary", {hasText:"Model actions"}).click();
   await section.getByRole("button", { name: "Rebuild", exact: true }).click();
   const action = await page.evaluate(() => __posts.at(-1));
   assert.equal(action.command, "retrievalSolutionRebuild");

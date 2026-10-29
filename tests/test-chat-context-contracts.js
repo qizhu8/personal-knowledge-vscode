@@ -19,6 +19,7 @@ const host = {
   CancellationTokenSource:undefined, LanguageModelChatMessage:undefined,
   LanguageModelTextPart:undefined, LanguageModelToolCallPart:undefined, LanguageModelToolResultPart:undefined,
   LanguageModelDataPart:undefined, ConfigurationTarget:undefined,
+  QuickPickItemKind:{ Separator:-1 },
 };
 let ApiChatView;
 try {
@@ -511,7 +512,7 @@ async function transportFixture(t, source, options = {}) {
       requests.push(payload);
       const delta = options.respond ? await options.respond(payload, requests.length - 1) : { content:"Synthetic response" };
       res.writeHead(200, { "Content-Type": "text/event-stream" });
-      res.end(`data: ${JSON.stringify({ choices: [{ delta, finish_reason:null }] })}\n\n`
+      res.end(`data: ${JSON.stringify({ choices: [{ delta, finish_reason:null }], ...(options.usage ? {usage:options.usage(requests.length - 1)} : {}) })}\n\n`
         + `data: ${JSON.stringify({ choices:[{ delta:{}, finish_reason:delta.tool_calls ? "tool_calls" : "stop" }] })}\n\ndata: [DONE]\n\n`);
     } catch (error) {
       errors.push(error);
@@ -533,10 +534,11 @@ async function transportFixture(t, source, options = {}) {
     retrievalQueries.push(query);
     if (options.retrievalError) throw options.retrievalError;
     if (options.retrievalHang) return new Promise(() => {});
-    return options.candidates || [];
+    return options.invocation ? {candidates:options.candidates || [], invocation:options.invocation} : options.candidates || [];
   };
   if (options.sourceIsCurrent) retriever.sourceIsCurrent = options.sourceIsCurrent;
   if (options.refreshSourceValidation) retriever.refreshSourceValidation = options.refreshSourceValidation;
+  if (options.feedback) retriever.feedback = options.feedback;
   const provider = new ApiChatView(extension, retriever);
   t.after(() => provider.dispose());
   provider.store = new ApiChatStore(path.join(directory, ".pkm", "state"), fixtures.namespace);
@@ -557,6 +559,82 @@ async function transportFixture(t, source, options = {}) {
   });
   return { provider, requests, retrievalQueries, errors, directory };
 }
+
+test("successful Chat self-evaluates relevance, persists feedback and bills the separate no-tool model call; user correction overrides it", async t => {
+  const labels = [], candidate = {id:"online-source", sourceId:"online-source", level:"l1-source", kind:"note",
+    label:"Online evidence", sourceUri:"pkm://fixture/online", score:1, method:"synthetic:test", reason:"fixture", selected:false,
+    sourceRevision:"1", contentHash:"a".repeat(64), content:"The target sampling upper limit is 1000."};
+  const fixture = await transportFixture(t, fixtures.conversation(), {
+    candidates:[candidate], invocation:{requestId:"online-query", retrievalId:"online-receipt", requestedRoute:"dual",
+      servedRoute:"lexical+semantic", modelInvoked:true, semanticStatus:"ready", readyGeneration:1, corpusRevision:"fixture"},
+    respond:(payload, round) => {
+      if (!round) return {content:"The upper limit is 1000."};
+      assert(!payload.tools?.length, "the evaluator must not execute tools");
+      assert.equal(payload.max_tokens, 1024);
+      assert.match(payload.messages[0].content, /self-evaluator/);
+      return {content:'{"labels":[{"index":0,"relevant":true}]}'};
+    },
+    usage:round => ({prompt_tokens:round ? 20 : 10, completion_tokens:round ? 3 : 5}),
+    feedback:async (...args) => {labels.push(args); return {ok:true, revision:labels.length, ranker_revision:labels.length,
+      calibrator_revision:labels.length, provenance:args[2], trained:true, model_labels:args[2] === "model" ? 1 : 0, user_labels:args[2] === "user" ? 1 : 0};},
+  });
+  await fixture.provider.send("What is the upper sampling limit?");
+  const reply = fixture.provider.chat.messages.at(-1);
+  assert.equal(reply.status, "complete", reply.error);
+  assert.equal(reply.content, "The upper limit is 1000.");
+  assert.equal(reply.retrievalLearning?.status, "learned", JSON.stringify({learning:reply.retrievalLearning, retrieval:reply.retrieval}));
+  assert.deepEqual(labels, [["online-receipt", ["online-source"], "model"]]);
+  assert.equal(fixture.requests.length, 2);
+  assert.equal(reply.budgetReceipts.length, 1, "self-evaluation must not overwrite the answer's round ledger");
+  assert.equal(reply.auxiliaryModelUsage.length, 1);
+  assert.equal(reply.usage.inputTokens, 30); assert.equal(reply.usage.outputTokens, 8);
+  assert.equal(fixture.provider.store.load(fixture.provider.chat.id, false).messages.at(-1).retrievalLearning.provenance, "model");
+  fixture.provider.requestDecision = async (...args) => {
+    await args[7]({complete:true, relevant:[], missed:""});
+    return "submit";
+  };
+  await fixture.provider.handle({type:"reviewRetrieval", chatId:fixture.provider.chat.id, id:reply.id});
+  assert.deepEqual(labels.at(-1), ["online-receipt", [], "user"]);
+  assert.equal(reply.retrievalLearning.provenance, "user");
+  assert.deepEqual(fixture.errors, []);
+});
+
+test("invalid self-evaluation never trains and persists an explicit learning failure without changing the answer", async t => {
+  let submissions = 0;
+  const fixture = await transportFixture(t, fixtures.conversation(), {
+    candidates:[{id:"bad-source", sourceId:"bad-source", kind:"note", label:"Fixture", sourceUri:"pkm://fixture/bad",
+      score:1, method:"synthetic:test", reason:"fixture", selected:false, content:"Original evidence"}],
+    invocation:{requestId:"bad-query", retrievalId:"bad-receipt", requestedRoute:"dual",
+      servedRoute:"semantic", modelInvoked:true, semanticStatus:"ready", readyGeneration:1, corpusRevision:"fixture"},
+    respond:(_payload, round) => ({content:round ? '{"labels":[]}' : "Answer"}),
+    feedback:async () => {submissions++; return {ok:true};},
+  });
+  await fixture.provider.send("Compare the evidence");
+  const reply = fixture.provider.chat.messages.at(-1);
+  assert.equal(reply.status, "complete", reply.error);
+  assert.equal(reply.content, "Answer");
+  assert.equal(reply.retrievalLearning?.status, "failed", JSON.stringify(reply.retrieval));
+  assert.match(reply.retrievalLearning.error, /every original source/);
+  assert.equal(submissions, 0);
+});
+
+test("a later model self-evaluation cannot claim to retrain over protected user judgments", async t => {
+  const fixture = await transportFixture(t, fixtures.conversation(), {
+    candidates:[{id:"protected-source", sourceId:"protected-source", kind:"note", label:"Fixture", sourceUri:"pkm://fixture/protected",
+      score:1, method:"synthetic:test", reason:"fixture", selected:false, content:"Original evidence"}],
+    invocation:{requestId:"protected-query", retrievalId:"protected-receipt", requestedRoute:"dual",
+      servedRoute:"semantic", modelInvoked:true, semanticStatus:"ready", readyGeneration:1, corpusRevision:"fixture"},
+    respond:(_payload, round) => ({content:round ? '{"labels":[{"index":0,"relevant":false}]}' : "Answer"}),
+    feedback:async () => ({ok:true, revision:2, ranker_revision:2, calibrator_revision:2,
+      provenance:"user", trained:false, ignored:true, reason:"user-precedence", model_labels:0, user_labels:1}),
+  });
+  await fixture.provider.send("Compare the evidence");
+  const reply = fixture.provider.chat.messages.at(-1);
+  assert.equal(reply.status, "complete", reply.error);
+  assert.equal(reply.retrievalLearning?.status, "user-protected");
+  assert.equal(reply.retrievalLearning.acknowledgment.trained, false);
+  assert.equal(reply.retrievalLearning.acknowledgment.ranker_revision, 2);
+});
 
 test("debug controller rejects advice-only completion and executes real log/process diagnostics before an explicit outcome", async t => {
   let logFile;
@@ -954,9 +1032,10 @@ test("Profile-assigned Chat adopts model/provider switches and preserves pinned 
     LanguageModelChatMessage:{ User:content => ({ role:1, content }), Assistant:content => ({ role:2, content }) },
     CancellationTokenSource:class { token = {}; cancel() {} dispose() {} },
     ConfigurationTarget:{ Global:1 },
+    QuickPickItemKind:{ Separator:-1 },
     workspace:{ ...host.workspace, getConfiguration:() => cfg },
     window:{ ...host.window,
-      showQuickPick:async items => providerChoice === "native" ? items[0] : items.find(item => item.value === "openai-compatible"),
+      showQuickPick:async items => { items = await items; return providerChoice === "native" ? items.find(item => item.id?.startsWith("vscode:")) : items.find(item => item.value === "openai-compatible"); },
       showInputBox:async () => inputs.shift(),
     },
   });
@@ -1117,20 +1196,25 @@ test("remote task wrapper uses its bound Chat, preserves local configuration and
     const chat = fixtures.conversation({ permissionMode:"allow-all", permissionGrants:["process"], includeHistory:true, messages:[] });
     const signal = new AbortController().signal;
     const requestId = "12345678-1234-1234-1234-123456789abc";
+    let replyId;
     const target = {
       disposed:false, openStore() {}, chats:new Map(), store:{ namespace:fixtures.namespace, resolveChat:id => { assert.equal(id, chat.id); return chat; } },
       remoteControlledRequests:new Set(), agentControlledRequests:new Set(), running:new Map(), queueDrains:new Map(), assertRunnable() {},
       send: async (prompt, actual, parent) => {
         assert.equal(actual, chat); assert.equal(prompt, "remote exact instruction"); assert.equal(parent.signal, signal);
+        assert.equal(parent.portalTask.requestId, requestId);
+        replyId = parent.portalTask.replyId;
+        assert.match(replyId, /^[a-f0-9-]{36}$/);
         assert.equal(actual.permissionMode, "allow-all"); assert.deepEqual(actual.permissionGrants, ["process"]);
         assert.equal(actual.includeHistory, true);
         assert(target.remoteControlledRequests.has(chat.id));
         assert(target.agentControlledRequests.has(chat.id));
-        chat.messages.push({ id:"remote-reply", role:"assistant", status:"complete", content:"verified fixture" });
+        chat.messages.push({ id:replyId, role:"assistant", status:"complete", content:"verified fixture",
+          portalTask:{ requestId, originalReplyId:replyId } });
       },
     };
     const result = await ApiChatView.prototype.executeRemoteTask.call(target, "remote exact instruction", signal, requestId, chat.id);
-    assert.equal(result.requestId, requestId); assert.equal(result.replyId, "remote-reply");
+    assert.equal(result.requestId, requestId); assert.equal(result.replyId, replyId);
     assert.equal(target.remoteControlledRequests.size, 0); assert.equal(target.agentControlledRequests.size, 0);
     const aborted = new AbortController(); aborted.abort();
     await assert.rejects(ApiChatView.prototype.executeRemoteTask.call(target, "remote", aborted.signal, requestId), /live, trusted/);
@@ -1879,7 +1963,7 @@ test("native VS Code debug completion uses the same bounded execution gate and c
   assert.equal(JSON.parse(reply.toolCalls[0].result).stdout, "NATIVE_DEBUG_ACTUAL_DIAGNOSTIC");
   assert.equal(fixture.provider.chat.debugRequest.status, "completed");
   const counts = reply.progress.steps.filter(step => step.operation === "token-count");
-  assert(counts.length > 0);
+  assert.equal(counts.length, 0, "a fitting UTF-8 byte bound needs no tokenizer call");
   assert(counts.every(step => step.category === "info"), "local tokenizer work is never a model inference activity");
 });
 
@@ -1935,7 +2019,7 @@ test("CTX-M14: native transformed prompts, Profiles and schemas match persisted 
     assert(JSON.stringify(prompt.messages).includes("NATIVE_PROFILE_REQUIRED_CONTEXT"));
     assert(receipt.contextPlan.manifest.some(item => item.hash === stored.profileContext.messageHash));
     assert.equal(receipt.transport.provider, "vscode");
-    assert.equal(receipt.transport.countingMethod, "vscode-countTokens-plus-overhead");
+    assert.equal(receipt.transport.countingMethod, "utf8-byte-upper-bound");
     assert.deepEqual(receipt.transport.messageHashes, prompt.messages.map(digest));
     assert.equal(receipt.transport.toolSchemaHash, digest(prompt.options.tools));
     const expected = 32 + prompt.messages.reduce((total, message) => total + Buffer.byteLength(JSON.stringify(message), "utf8") + 32, 0)
@@ -1945,7 +2029,7 @@ test("CTX-M14: native transformed prompts, Profiles and schemas match persisted 
     assert.notDeepEqual(receipt.transport.messageHashes, receipt.contextPlan.manifest.map(entry => entry.hash));
   }
   assert(prompts[1].messages.some(message => message.content[0] instanceof ResultPart && message.content[0].callId === "native-evidence"));
-  assert(counts.some(input => input === JSON.stringify(prompts[0].options.tools)));
+  assert.equal(counts.length, 0, "the byte upper bound fits, so no tokenizer call delays dispatch");
   assert(!JSON.stringify(stored.budgetReceipts).includes("Original native response"));
 });
 

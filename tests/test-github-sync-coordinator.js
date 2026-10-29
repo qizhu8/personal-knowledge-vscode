@@ -39,6 +39,7 @@ function waitFor(messages, predicate, label, timeoutMs = 5000) {
   await Promise.all(children.map(child => waitFor(messages, message => message.type === "ready" && message.pid === child.pid, `child ${child.pid} ready`)));
 
   for (const child of children) child.send({ type: "hold" });
+  await Promise.all(children.map(child => waitFor(messages, message => message.type === "held" && message.pid === child.pid, `child ${child.pid} hold acknowledgment`)));
   children[0].send({ type: "requests", reasons: ["interval", "manual"] });
   const first = await waitFor(messages, message => message.type === "execute", "initial execution");
   assert.strictEqual(first.reason, "manual", "durable intents coalesce using the documented reason priority");
@@ -165,6 +166,51 @@ function waitFor(messages, predicate, label, timeoutMs = 5000) {
     "a successor waits for the persisted retry interval instead of replaying a failed claim");
   assert.strictEqual(failureRecovery.snapshot().primary.status, "error");
   failureRecovery.dispose();
+
+  const authState = path.join(runtimeRoot, "auth-state");
+  let authRuns = 0;
+  const auth = new GitHubSyncCoordinator({
+    stateDirectory:authState, knowledgeRoot, extensionVersion:"4.0.0", pollMs:20, leaseMs:200,
+    execute:async () => {
+      authRuns++;
+      throw Object.assign(new Error("VS Code canceled credential access"),
+        {code:"CREDENTIAL_READ_CANCELED", phase:"authenticating"});
+    },
+    onAutoPaused:() => assert.fail("authentication failure must not disable Auto Sync"),
+  });
+  auth.configure([{id:"primary", enabled:true, intervalMinutes:2, syncOnChange:true}]);
+  const authDeadline = Date.now() + 3000;
+  while (auth.snapshot().primary?.status !== "error" && Date.now() < authDeadline) await wait(20);
+  const authDisk = JSON.parse(fs.readFileSync(path.join(authState, "coordinator.json"), "utf8"));
+  assert.equal(authRuns, 1);
+  assert.equal(authDisk.targets.primary.enabled, true);
+  assert.equal(authDisk.targets.primary.lastFailure.errorCode, "CREDENTIAL_READ_CANCELED");
+  assert.equal(Date.parse(auth.snapshot().primary.nextSyncAt) - Date.parse(authDisk.targets.primary.lastFailure.at), 15 * 60_000);
+  auth.dispose();
+  // Model time elapsed while the previous coordinator was offline.
+  const restoredAuthTarget = {...authDisk.targets.primary, lastFailure:{
+    ...authDisk.targets.primary.lastFailure, attempts:3, at:new Date(Date.now() - 15 * 60_000 + 800).toISOString(),
+  }};
+  const authRecovery = new GitHubSyncCoordinator({
+    stateDirectory:authState, knowledgeRoot, extensionVersion:"4.0.0", pollMs:20, leaseMs:200,
+    execute:async () => { authRuns++; },
+    onAutoPaused:() => assert.fail("persisted authentication attempts must not disable Auto Sync"),
+  });
+  authRecovery.configure([restoredAuthTarget]);
+  assert.equal(authRecovery.request("primary", "configuration"), false);
+  assert.equal(authRecovery.request("primary", "interval"), true, "authentication retries remain admitted after three failures");
+  authRecovery.notifyContentChanged();
+  await wait(100);
+  assert.equal(authRuns, 1, "takeover and persisted interval requests cannot bypass the remaining authentication delay");
+  const authRecoveryDeadline = Date.now() + 3000;
+  while ((!authRecovery.snapshot().primary?.lastSuccessAt || authRecovery.snapshot().primary.lastError)
+    && Date.now() < authRecoveryDeadline) await wait(20);
+  assert.equal(authRuns, 2, "an automatic retry succeeds without requiring a manual request");
+  const recoveredAuthDisk = JSON.parse(fs.readFileSync(path.join(authState, "coordinator.json"), "utf8"));
+  assert.equal(recoveredAuthDisk.targets.primary.lastFailure, undefined, "successful recovery durably clears authentication backoff");
+  assert.equal(recoveredAuthDisk.targets.primary.enabled, true);
+  assert.equal(Date.parse(authRecovery.snapshot().primary.nextSyncAt) - Date.parse(authRecovery.snapshot().primary.lastSuccessAt), 2 * 60_000);
+  authRecovery.dispose();
 
   const exhaustedState = path.join(runtimeRoot, "exhausted-state");
   let automaticAttempts = 0;

@@ -12,6 +12,7 @@ import platform
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -23,7 +24,8 @@ from urllib.parse import unquote, urlsplit
 
 from jsonschema import Draft202012Validator, FormatChecker
 from recipe_runtime import _atomic_write, _background_process_options, _execute_command_worker
-from action_components import VALUE_TYPES, component_definitions, execute_steps, validate_steps, referenced_actions, pending_choices, answer_choice
+from action_components import (VALUE_TYPES, component_definitions, component_engine_hash, execute_steps, validate_steps,
+                               referenced_actions, pending_choices, answer_choice, step_languages)
 from action_run_store import ActionRunStore, action_contract
 from action_recovery import ActionRecovery, ActionSuspended, validate_reconciler
 from action_authoring import definition_diagnostics
@@ -267,8 +269,8 @@ class ModuleRuntime:
                 "proposal_id": record["proposal_id"], "action_id": record["action_id"],
                 "content_hash": record["content_hash"], "registered": False, "callable": False,
                 "next_action": "Ask the operator to review this proposal in Automation > Action Library. "
-                               "Click Review in canvas, then Validate: Agent code review runs before smoke tests. "
-                               "Only passing review and tests admit this version. Do not self-grant, call or retry registration."}
+                               "Click Review in canvas, then Validate: confirm Agent risk information before smoke tests. "
+                               "Only passing tests admit this version. Do not self-grant, call or retry registration."}
 
     def module_set_path(self, module_set_id, version):
         if not isinstance(module_set_id, str) or not re.fullmatch(r"[a-z][a-z0-9_.-]{2,100}", module_set_id) or type(version) is not int or version < 1:
@@ -897,8 +899,7 @@ class ModuleRuntime:
             if kind == "builtin":
                 languages.add("Python")
             elif kind == "pipeline":
-                if any(step.get("component") in component_definitions() for step in implementation.get("steps", [])):
-                    languages.add("Python")
+                languages.update(step_languages(implementation.get("steps", [])))
                 for child in definition.get("dependencies", {}):
                     try:
                         languages.update(self.action_languages(self.definition(child), ancestry + (definition["action_id"],)))
@@ -918,8 +919,11 @@ class ModuleRuntime:
     def catalog(self):
         layout = self.catalog_layout()
         packages = self.module_set_list()["module_sets"]
-        actions = [{**value, "execution_contract": action_contract(value), "read_only": True, "editable": False, "language": "Python", "languages": ["Python"]}
-                   for value in self.components()]
+        actions = []
+        for value in self.components():
+            languages = [item["language"] for item in value["component_implementations"]]
+            actions.append({**value, "execution_contract": action_contract(value), "read_only": True, "editable": False,
+                            "language": "Py/JS/TS" if len(languages) == 3 else " / ".join(languages), "languages": languages})
         pending_admissions = []
         for definition in self.list():
             identifier = definition["action_id"]
@@ -1049,7 +1053,7 @@ class ModuleRuntime:
         value["implementation_hash"] = digest({"module": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                                              "run_store": hashlib.sha256(Path(__file__).with_name("action_run_store.py").read_bytes()).hexdigest(),
                                              "recovery": hashlib.sha256(Path(__file__).with_name("action_recovery.py").read_bytes()).hexdigest(),
-                                             "components": hashlib.sha256(Path(__file__).with_name("action_components.py").read_bytes()).hexdigest(),
+                                             "components": component_engine_hash(),
                                              "worker": hashlib.sha256(Path(__file__).with_name("recipe_runtime.py").read_bytes()).hexdigest()})
         value["content_hash"] = digest(value)
         return value
@@ -1059,7 +1063,7 @@ class ModuleRuntime:
         return [self.definition(name) for name in sorted(names)]
 
     def components(self):
-        engine = hashlib.sha256(Path(__file__).with_name("action_components.py").read_bytes()).hexdigest()
+        engine = component_engine_hash()
         return [{**value, "content_hash": digest({"definition": value, "engine": engine}),
                  "source_id": "pkm://components/" + name, "availability": {"state": "ready"}}
                 for name, value in component_definitions().items()]
@@ -1516,7 +1520,11 @@ class ModuleRuntime:
                 raise ValueError("Unknown block parameter: " + identifier)
             for field, value in parameters.items():
                 check(properties[field], value)
-            nodes[identifier] = {"definition": definition, "inputs": parameters, "predecessors": set(), "basic": basic}
+            implementation = node.get("implementation", "python") if basic else None
+            if basic and implementation not in {item["id"] for item in definition["component_implementations"]}:
+                raise ValueError("Unsupported block implementation: " + identifier)
+            nodes[identifier] = {"definition": definition, "inputs": parameters, "predecessors": set(), "basic": basic,
+                                 "implementation": implementation}
             if not basic:
                 dependencies[definition["action_id"]] = definition["content_hash"]
             else:
@@ -1549,7 +1557,8 @@ class ModuleRuntime:
                 if set(node["definition"]["input_schema"].get("required", [])) - set(node["inputs"]):
                     raise ValueError("Missing required block inputs: " + identifier)
                 steps.append({"id": identifier, "component" if node["basic"] else "action_id": node["definition"]["action_id"], "inputs": node["inputs"],
-                              **({"output_schema": node["definition"]["output_schema"]} if node["basic"] else {})})
+                              **({"output_schema": node["definition"]["output_schema"]} if node["basic"] else {}),
+                              **({"implementation": node["implementation"]} if node["basic"] and node["implementation"] != "python" else {})})
         output_node = graph.get("output_node", steps[-1]["id"])
         if output_node not in nodes:
             raise ValueError("Select a valid output block.")
@@ -1690,7 +1699,7 @@ class ModuleRuntime:
         implementation = self.implementation(definition)
         handlers = []
         if implementation["kind"] == "builtin":
-            handlers = [ModuleRuntime._execute, ModuleRuntime.artifact, ModuleRuntime.artifact_path,
+            handlers = [ModuleRuntime._execute, ModuleRuntime.artifact, ModuleRuntime.artifact_content, ModuleRuntime.artifact_path,
                         ModuleRuntime.create_artifact, ModuleRuntime.validation_fixtures]
         elif implementation["kind"] == "pipeline":
             handlers = [execute_steps]
@@ -1732,14 +1741,20 @@ class ModuleRuntime:
         review["sources"] = sources
         review["workspace"] = str(self.workspace())
         review["settings"] = self.settings()
+        builtin = builtin_definitions().get(action_id)
+        review["validation_kind"] = ("environment-self-test" if not proposal_id and builtin is not None
+                                     and self.definition_value(builtin)["content_hash"] == content_hash
+                                     else "risk-review")
         review["snapshot_hash"] = digest(review)
         return review
 
     def qualification_execute(self, action_id, content_hash, snapshot_hash, report, proposal_id=None, allow_effects=False):
-        if (not isinstance(report, dict) or report.get("approved") is not True
+        if (not isinstance(report, dict) or report.get("user_confirmed") is not True
                 or not isinstance(report.get("summary"), str) or not report["summary"].strip()
-                or report.get("issues") != [] or not isinstance(report.get("model"), str) or not report["model"]):
-            raise PermissionError("Code review did not pass; no smoke test or admission was performed.")
+                or not isinstance(report.get("issues"), list)
+                or not all(isinstance(issue, str) for issue in report["issues"])
+                or not isinstance(report.get("model"), str) or not report["model"]):
+            raise PermissionError("Confirm the risk notice before smoke tests; no tests or admission were performed.")
         review = self.qualification_review(action_id, content_hash, proposal_id)
         if review["snapshot_hash"] != snapshot_hash:
             raise ValueError("Implementation changed after code review; review again before execution.")
@@ -1876,7 +1891,7 @@ class ModuleRuntime:
         if not self.admitted(definition):
             raise PermissionError("ACTION_ADMISSION_REQUIRED: This Action revision is not approved for the formal library. "
                                   "Agent: stop; ask the operator to open Automation > Action Library > Review in canvas "
-                                  "and click Validate. Agent code review must pass before smoke tests; successful tests "
+                                  "and click Validate. Confirm the Agent risk notice before smoke tests; successful tests "
                                   "automatically admit the exact version. No manual grant is needed. Do not call, "
                                   "self-approve, edit policy/admissions or retry registration.")
         implementation = self.implementation(definition)
@@ -1893,7 +1908,7 @@ class ModuleRuntime:
                 f"content_hash: {definition['content_hash']}\n"
                 f"Operator policy on the MCP execution host: {path}\n"
                 "Agent: stop and ask the human operator to click the flask Validate button for this Action. "
-                "Agent code review runs first; only a passing review permits smoke tests. Successful tests "
+                "The Agent describes risks for operator confirmation before smoke tests. Successful tests "
                 "save trusted_host_execution for this exact action_id/content_hash and admit it automatically "
                 "while preserving existing grants. No separate manual grant is needed. Do not self-authorize; do not edit the policy; "
                 "do not re-register, change versions or retry automatically to bypass this gate. "
@@ -2145,7 +2160,7 @@ class ModuleRuntime:
         definition = self.definition(action_id)
         if self.proposal_mode and action_id not in builtin_definitions():
             raise PermissionError("ACTION_CODE_REVIEW_REQUIRED: Open this Action in the Workbench and click the flask Validate button. "
-                                  "The host asks an Agent to review code before smoke tests and admission. "
+                                  "The host presents risks for user confirmation before smoke tests and admission. "
                                   "Do not grant policy access manually or retry direct validation.")
         if content_hash != definition["content_hash"] or not definition["examples"]:
             raise ValueError("Pin a definition with controlled smoke examples.")
@@ -2175,6 +2190,10 @@ class ModuleRuntime:
                 time.sleep(0.05)
                 result = self.get(result["run_id"])
             passed = result["state"] == "succeeded" and ("output" not in example or result.get("output") == example["output"])
+            if passed and action_id == "core.artifact.copy":
+                source_id = example["inputs"]["source"]["artifact_id"]
+                copied_id = result["output"]["artifact_id"]
+                passed = copied_id != source_id and self.artifact(copied_id)["digest"] == self.artifact(source_id)["digest"]
             evidence.append({"run_id": result["run_id"], "passed": passed})
             self.gc(result["run_id"], release_outputs=True)
             if result["state"] == "outcome_unknown" or (cancel_path and Path(cancel_path).exists()):
@@ -2208,7 +2227,7 @@ class ModuleRuntime:
     def queue_enqueue(self, action_id, content_hash, priority="demand", allow_effects=False, launch=True):
         if self.proposal_mode and action_id not in builtin_definitions():
             raise PermissionError("ACTION_CODE_REVIEW_REQUIRED: Click Validate in the PKM Workbench. "
-                                  "Agent review must pass before smoke tests and automatic admission; no manual grant is needed.")
+                                  "Confirm the risk notice before smoke tests and automatic admission; no manual grant is needed.")
         priorities = {"demand": 0, "graph": 1, "module_set": 2, "idle": 3}
         if priority not in priorities or type(allow_effects) is not bool:
             raise ValueError("Invalid validation priority or effect consent.")
@@ -2346,13 +2365,39 @@ class ModuleRuntime:
             raise ValueError("Invalid artifact ID.")
         return self.root / "artifacts" / (artifact_id + ".json")
 
+    def artifact_content(self, record, invocation=None):
+        path = Path(record["path"])
+        fixture_root = self.root / "validation-fixtures"
+        is_fixture = ((self.root / "qualification-origin.json").exists()
+                      and path.parent == fixture_root and record["artifact_id"] == COPY_FIXTURE_ARTIFACT)
+        if not is_fixture and not path.resolve().is_relative_to(self.workspace()):
+            raise PermissionError("Artifact is outside the selected workspace.")
+        if record.get("gc_state") == "deleted" or path.is_symlink():
+            raise PermissionError("Artifact is unavailable or replaced by a symlink.")
+        if invocation and record.get("owner_root") not in {None, invocation["root_run_id"]} and not record.get("published"):
+            raise PermissionError("Artifact is outside the invocation scope.")
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        with os.fdopen(os.open(path, flags), "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > 64 * 1024 * 1024:
+                raise ValueError("Artifact must be a regular file no larger than 64 MiB.")
+            content = bytearray()
+            while True:
+                if invocation and self.cancelled(invocation):
+                    raise TimeoutError("Artifact read cancelled or deadline exceeded.")
+                chunk = handle.read(min(1024 * 1024, 64 * 1024 * 1024 + 1 - len(content)))
+                if not chunk:
+                    break
+                content.extend(chunk)
+                if len(content) > 64 * 1024 * 1024:
+                    raise ValueError("Artifact exceeds the 64 MiB allocation limit.")
+        if hashlib.sha256(content).hexdigest() != record["digest"]:
+            raise ValueError("Artifact content digest changed.")
+        return bytes(content)
+
     def artifact(self, artifact_id):
         record = json.loads(self.artifact_path(artifact_id).read_text(encoding="utf-8"))
-        path = Path(record["path"])
-        if record.get("gc_state") == "deleted" or path.is_symlink() or not path.is_file():
-            raise PermissionError("Artifact is unavailable or replaced by a symlink.")
-        if hashlib.sha256(path.read_bytes()).hexdigest() != record["digest"]:
-            raise ValueError("Artifact content digest changed.")
+        self.artifact_content(record)
         return record
 
     def artifact_ids(self, value):
@@ -2523,8 +2568,8 @@ class ModuleRuntime:
             if record["action_id"] == "core.artifact.write":
                 return self.create_artifact(record, inputs["text"].encode("utf-8"))
             if record["action_id"] == "core.artifact.copy":
-                source = self.artifact(inputs["source"]["artifact_id"])
-                return self.create_artifact(record, Path(source["path"]).read_bytes())
+                source = json.loads(self.artifact_path(inputs["source"]["artifact_id"]).read_text(encoding="utf-8"))
+                return self.create_artifact(record, self.artifact_content(source, record))
             raise ValueError("Unknown builtin handler.")
         if implementation["kind"] == "pipeline":
             return execute_steps(self, record, context, implementation)

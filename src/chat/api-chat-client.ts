@@ -41,16 +41,17 @@ export interface ChatTransportReceipt {
   provider: "http" | "vscode";
   messageHashes: string[];
   toolSchemaHash: string;
-  countingMethod: "utf8-byte-estimate" | "vscode-countTokens-plus-overhead";
+  countingMethod: "utf8-byte-estimate" | "utf8-byte-upper-bound" | "vscode-countTokens-plus-overhead";
   inputTokens: number;
+  payloadScope?: "sdk-managed-context";
   automaticKnowledge?: { inputBudget: number; inputTokens: number; countingMethod: "utf8-byte-upper-bound" | "vscode-countTokens-plus-overhead" };
 }
 
 export function chatTransportReceipt(provider: ChatTransportReceipt["provider"], messages: unknown[], tools: unknown[],
-  countedInput?: number): ChatTransportReceipt {
+  countedInput?: number, countedBy: ChatTransportReceipt["countingMethod"] = "vscode-countTokens-plus-overhead"): ChatTransportReceipt {
   const hash = (value:unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
   return { schema:"pkm.chat.transport/v1", provider, messageHashes:messages.map(hash), toolSchemaHash:hash(tools),
-    countingMethod:countedInput === undefined ? "utf8-byte-estimate" : "vscode-countTokens-plus-overhead",
+    countingMethod:countedInput === undefined ? "utf8-byte-estimate" : countedBy,
     inputTokens:countedInput ?? 32 + Buffer.byteLength(JSON.stringify([messages, tools]), "utf8") };
 }
 
@@ -77,9 +78,11 @@ export interface ApiChatRequest {
   onImage?: (image: ChatImage) => void;
   outputTokenParameter?: "max_tokens" | "max_completion_tokens";
   includeUsage?: boolean;
-  onUsage?: (usage: ChatTokenUsage) => void;
+  onUsage?: (usage: ChatTokenUsage, round?: number) => void;
   /** Only explicitly public provider summaries; never hidden reasoning_content or opaque thinking metadata. */
   onReasoningSummary?: (text: string) => void;
+  /** Readable thinking text explicitly streamed by the VS Code model API; never encrypted/opaque reasoning. */
+  onThinking?: (text: string) => void;
   onUsageMetadata?: (valid: boolean) => void;
   onInferenceTiming?: (timing: ChatInferenceTiming) => void;
   onOutputBudgetWarning?: (warning: string) => void;
@@ -110,6 +113,8 @@ export function chatToolRoundLimit(value = 30): number {
 
 export const toolBudgetSummary = "The tool-call round budget or repeated-call review stopped further tool execution. Give the best answer from completed tool results without calling more tools. Clearly state any unresolved work; do not claim it succeeded.";
 export const defaultLoopExemptTools = ["wait", "sleep", "poll", "core.sleep", "mcp_pkm_chat_standby", "mcp_pkm_api_chat_request_get", "mcp_pkm_recipe_run_progress"];
+/** Pure reads whose identical repeat within one request can point to the earlier, still-visible result. */
+export const reusableReadOnlyTools = new Set(["pkm_search", "pkm_read", "read_file", "find_files", "list_directory", "search_text", "find_vscode_tools", "find_actions", "memory_read", "session_info", "list_chats"]);
 
 function stableToolValue(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableToolValue).join(",")}]`;
@@ -122,6 +127,7 @@ export class ChatToolLoopGuard {
   private readonly observed = new Map<string, { signature: string; repeats: number }>();
   private readonly recent: Array<{ key: string; name: string }> = [];
   private stalled?: { tool: string; repeats: number };
+  private readonly reads = new Map<string, { callId: string; result: string }>();
   summarizing = false;
   readonly limit: number;
   private reviewStartedAt: number;
@@ -131,6 +137,27 @@ export class ChatToolLoopGuard {
     this.boundary = this.limit;
     if (request.loopReviewAfterMs !== undefined && (!Number.isFinite(request.loopReviewAfterMs) || request.loopReviewAfterMs < 0)) throw new Error("Choose a non-negative loop review interval.");
     this.reviewStartedAt = now();
+  }
+
+  private readKey(name: string, arguments_: string): string | undefined {
+    if (!reusableReadOnlyTools.has(name)) return undefined;
+    try { return stableToolValue([name, JSON.parse(arguments_)]); } catch { return undefined; }
+  }
+
+  /** Returns a short pointer when an identical read already succeeded and its result is still in the prompt. */
+  reuse(name: string, arguments_: string, messages: ApiChatMessage[]): { result: string; original: string } | undefined {
+    const key = this.readKey(name, arguments_);
+    const earlier = key === undefined ? undefined : this.reads.get(key);
+    if (!earlier || !messages.some(message => message.role === "tool" && message.tool_call_id === earlier.callId && message.content === earlier.result)) return undefined;
+    return { original:earlier.result, result:JSON.stringify({ reused:true, sameAsToolCall:earlier.callId,
+      note:"Identical read-only call already returned this result earlier in this request and nothing has been modified since. Use that result; do not repeat this call." }) };
+  }
+
+  /** Remembers successful pure reads; any other tool may change state, so earlier reads stop being reusable. */
+  remember(name: string, arguments_: string, callId: string, result: string, succeeded: boolean): void {
+    const key = this.readKey(name, arguments_);
+    if (key === undefined) { this.reads.clear(); return; }
+    if (succeeded) this.reads.set(key, { callId, result });
   }
 
   record(tool: ApiChatTool | undefined, name: string, arguments_: string, result: string): void {
@@ -345,6 +372,14 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
       }
       request.onTool?.(event);
       let result: string;
+      const reused = loop.reuse(call.function.name, call.function.arguments, messages);
+      if (reused) {
+        request.onTool?.({ ...event, status: "complete", result: reused.result });
+        loop.record(request.tools.find(item => item.name === call.function.name), call.function.name, call.function.arguments, reused.original);
+        messages.push({ role: "tool", content: reused.result, tool_call_id: call.id });
+        continue;
+      }
+      let succeeded = false;
       try {
         const tool = request.tools.find(item => item.name === call.function.name);
         if (!tool) throw new Error("This tool is not enabled for the request.");
@@ -360,12 +395,14 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
           if (controller.signal.aborted) cancelTool();
         });
         if (typeof result !== "string" || result.length > 16_000) throw new Error("Tool result exceeded the local limit.");
+        succeeded = true;
         request.onTool?.({ ...event, status: "complete", result });
       } catch (error) {
         if (controller.signal.aborted) throw new Error("Request cancelled.");
         result = JSON.stringify({ error: error instanceof Error ? error.message : "Tool failed." });
         request.onTool?.({ ...event, status: "failed", result });
       }
+      loop.remember(call.function.name, call.function.arguments, call.id, result, succeeded);
       loop.record(request.tools.find(item => item.name === call.function.name), call.function.name, call.function.arguments, result);
       messages.push({ role: "tool", content: result, tool_call_id: call.id });
     }

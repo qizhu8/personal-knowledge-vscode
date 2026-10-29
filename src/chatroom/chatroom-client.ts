@@ -49,6 +49,7 @@ export class ChatClient {
   private cid = randomBytes(4).toString("hex");   // stable identity across reconnects
   private log: (m: string) => void;
   private lastMessageId = "";
+  private lastFrameAt = 0;
 
   status:   ChatStatus = "disconnected";
   members:  Member[]   = [];
@@ -62,6 +63,9 @@ export class ChatClient {
   }
 
   get isConnected(): boolean { return this.status === "connected"; }
+
+  /** False once the client gave up for good (local disconnect, room closed, rejected); otherwise it keeps retrying. */
+  get willReconnect(): boolean { return !this.intentionalClose; }
 
   /** This client's stable identity id (its cid) — matches the `sid` in presence. */
   get identity(): string { return this.cid; }
@@ -89,13 +93,16 @@ export class ChatClient {
 
     ws.on("open", () => {
       this.reconnectDelay = 1000;
+      this.lastFrameAt = Date.now();
       this.send({ t: "join", room: this.opts!.room, roomId: this.opts!.roomId, user: this.opts!.user, token: this.opts!.token, kind: this.opts!.kind ?? "human", cid: this.cid, hostToken: this.opts!.hostToken, resumeAfter: this.lastMessageId || undefined, temporary: this.opts!.temporary });
       this.setStatus("connecting", "assigning Room identity automatically…");
       this.startPing();
     });
-    ws.on("message", raw => this.onFrame(raw.toString()));
-    ws.on("close", () => {
+    ws.on("message", raw => { this.lastFrameAt = Date.now(); this.onFrame(raw.toString()); });
+    ws.on("close", (code, reason) => {
       this.stopPing();
+      const silent = this.lastFrameAt ? `${Math.round((Date.now() - this.lastFrameAt) / 1000)}s` : "-";
+      this.log(`chat client socket closed code=${code} reason=${reason.toString() || "-"} intentional=${this.intentionalClose} lastFrame=${silent} ago`);
       if (this.intentionalClose) { this.setStatus("disconnected"); return; }
       this.setStatus("connecting", "reconnecting…");
       this.scheduleReconnect();
@@ -332,7 +339,16 @@ export class ChatClient {
 
   private startPing(): void {
     this.stopPing();
-    this.pingTimer = setInterval(() => this.send({ t: "ping" }), 25_000);
+    this.pingTimer = setInterval(() => {
+      // The hub answers every ping, so 70s of silence means a half-open socket; drop it and let reconnect run.
+      const silent = this.lastFrameAt ? Date.now() - this.lastFrameAt : 0;
+      if (silent > 70_000 && this.ws) {
+        this.log(`chat client: no frames for ${Math.round(silent / 1000)}s; terminating stale socket`);
+        this.ws.terminate();
+        return;
+      }
+      this.send({ t: "ping" });
+    }, 25_000);
     this.pingTimer.unref?.();
   }
 

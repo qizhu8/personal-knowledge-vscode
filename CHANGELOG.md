@@ -5,6 +5,187 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-10-29
+
+### Release highlights
+
+- Bring the 3.2 development series into the 4.0 stable release: PKM Chat and Agent Session inspection, Action Library / Workbench, Portal collaboration, GitHub Sync recovery and local retrieval model management.
+- Keep candidate embedding training, dual-index traffic splitting and automatic model promotion explicitly marked as planned rather than available features.
+
+### Changes since 3.2.151
+
+- Complete cache-usage and automatic-reference labels across all 11 supported UI languages. Refresh privacy-safe release media against the current settings tabs and manifest version.
+
+- Compact Router into a connected runtime graph with hover explanations and one node-selected Parameters / Controls / Graphs / Metrics inspector. Keep real tuning controls, route-scoped plots, keyboard navigation and selection/focus/scroll across refreshes; remove the prose-heavy overview.
+
+- Add an in-Router retrieval-worker workflow connecting frozen encoders/indexes, similarity, online ranking, calibration, thresholding and feedback. Expose measured index contents, deduplicated managed encoder inventory, worker threshold policy and receipt-derived Precision; distinguish L1 sources/internal sections from L2 evidence and explicitly mark dual-model rollout as planned, not enabled.
+
+- Add source-backed User Profile Requirements, distinct from preferences/interests. Qualify them against each local human request with the configured Memory model before budgeted cross-Chat recall; exclude unrelated tasks, preserve current-input precedence and record independent applicability usage/errors.
+
+- Align User Profile and Agent Session Memory pyramids with PKM's existing Cache / Memory / Disk logical tiers. Keep actual abstraction Levels inside Memory, distinguish historical sent context from prepared references, and retain separate accepted Profile cards without age-based reclassification or automatic promotion.
+
+- Replace the empty User Profile page with source-backed habit, interest, focus and caution fragments plus a filterable keyword cloud. Completed local PKM Chat turns extract observations asynchronously using the configured Memory model; explicit history backfill resumes from durable source revisions. Keep observations private/root-scoped and separate from accepted Profile cards, prompts, permissions and Sync. Add source navigation, confirmed removal, learning controls and explicit failure/cancellation receipts.
+
+- PKM Chat Paused/Stopped statuses now use an awake tea-break pixel wizard with gentle breathing and cup-steam animation instead of pause bars. Paused keeps an amber light and Stopped a neutral light; Portal-bound Chat headers, accessibility labels, reduced-motion and hidden-view suspension are supported without changing pause/resume behavior.
+
+- Markdown browser previews for Notes, Skills and Research now provide independent Mermaid zoom controls. Built-in previews also support image zoom, with responsive fit, keyboard controls, bounded scrolling and print-friendly output; static exports remain non-interactive.
+- Zoomable media now supports full-window viewing with Escape/state restoration, pointer-centered Ctrl/Command-wheel zoom and drag-to-pan on non-text, non-link areas, without intercepting ordinary scrolling or text selection.
+
+## [3.2.151] - 2026-10-28
+
+- Saved Portal endpoint actions now use a responsive grid, with General Enteray and Bind PKM Chat labels for endpoint session binding.
+- GitHub Sync recovery now preserves provably superseded service results in a durable archive instead of replaying stale partial results against the latest transaction and blocking startup. Current conflict choices and content are left unchanged; unverified recovery records remain blocked for review.
+- Embedding model setup notifications now show only loading started, complete or failed; detailed installation and download progress remain inside PKM.
+- Portal command output is visible by default in a single scrollable terminal fixed at 20% of the webview height, with new results showing the latest output instead of expanding the card.
+- Chat now keeps following messages, progress and Portal activity through delayed layout growth and viewport changes when viewing the latest content. Scrolling up pauses following; returning to the bottom resumes it without disrupting history paging.
+
+## [3.2.150] - 2026-10-28
+
+- New Portal creation now falls back to a system-selected free port when the configured Hub port is occupied, without stopping another window's Hub. Portal Connections reports the requested/actual ports, the reason and the effect on new pairing codes versus saved remote addresses. Saved listener restoration fails explicitly instead of silently rotating away from the peer's saved address.
+
+## [3.2.149] - 2026-10-28
+
+- Portal Connections now supports explicitly paired, named persistent endpoints, with separate Local/Remote identity, Chat bindings, independent incoming-control switches and revocable long-term local permissions. Credentials use SecretStorage and only saved pairings reconnect; tasks are never automatically replayed.
+- Upgraded named endpoints can execute in both directions concurrently without changing Controller/Controlled roles. Fresh session/revision confirmation rejects stale commands after restart or Chat replacement.
+- Deleting or replacing a bound Chat stops its old execution, clears receiving grants, preserves the endpoint, and updates the connected peer. Deleted bindings remain visible and can be replaced explicitly.
+- Portal commands now use terminal-style output and accessible, explicit pending/running/success/failure/cancelled/unknown states; stderr alone does not imply failure.
+
+## [3.2.148] - 2026-10-28
+
+- Portal file batches now leave display-only cards in bound PKM Chats before the destination picker opens, with file names, pending approval, byte progress, verified completion, saved paths, cancellation and errors. The last 50 batches are retained without model calls or automatic installation.
+- External MCP Portal controllers use tool receipts instead of trying to write traces into nonexistent Chats.
+
+## [3.2.147] - 2026-10-28
+
+- Portal direct commands are now visible in the Portal's bound Chat on both the controller and the controlled Host: each command appears in the timeline with direction, peer, exact program/arguments, live status and exit code, plus collapsible stdout/stderr tails. Traces are bounded (latest 50, 2,000-character tails), display-only, and never sent to a model or replayed.
+
+## [3.2.146] - 2026-10-27
+
+- One-click embedding setup now works behind IT-managed networks: only the CPU torch wheel is fetched from download.pytorch.org (`--no-deps`), while torch's dependencies and every other requirement resolve through the user's pip configuration (for example a corporate `index-url` mirror in `pip.ini`). Previously the PyTorch index overrode the configured mirror and pulled dependencies from blocked `files.pythonhosted.org`.
+- Blocked or unreachable package downloads (TLS handshake, proxy, connection failures) now explain how to configure a pip mirror instead of showing only the raw pip log.
+- Windows: background/Portal direct-command supervisors retry transient `EPERM`/`EBUSY`/`EACCES` when replacing `record.json` (antivirus, indexer or a concurrent reader), and a single failed heartbeat no longer kills a healthy long-running command with `Supervisor evidence failed`.
+
+## [3.2.145] - 2026-10-27
+
+- Portal direct-command prompts now offer **Always allow until disconnected**, granting `code-execute` for the current pairing so later commands from the same controller run without repeated prompts. Disconnect or revoke ends it; Run once and Configure permissions remain available.
+
+## [3.2.144] - 2026-10-27
+
+- Make Hugging Face embedding setup one operation: create or repair the PKM-managed CPU model environment, download pinned weights, verify, configure and build the index through actual Ready status. Missing torch no longer requires users to select or modify Python manually. System Python and the lightweight MCP environment remain unchanged.
+- Keep one primary setup action; move offline import, Python overrides, manual enable/rebuild, disable and deletion into advanced settings. Show real runtime-install and index progress, preserving cancellation, explicit failures and concurrent-selection safeguards.
+
+## [3.2.143] - 2026-10-27
+
+- Retry GitHub Sync authentication failures every 15 minutes without disabling Auto Sync after three attempts. Preserve the backoff across reload, retain immediate manual retries, and restore the configured interval and sync-on-change after a successful synchronization. Deliberately disabled targets remain off; non-authentication failure safeguards are unchanged.
+- Include scheduler/coordinator recovery and Sync dashboard snapshot regressions in the mandatory package gate. Align the overlapping-snapshot test with final-read sequencing so slower requests carrying newer persisted state are not rejected.
+- Preflight Portal endpoint reachability without sending pairing credentials, and deliver request-correlated pairing refusals immediately. Keep temporary pairing and executor-side permission boundaries unchanged.
+
+## [3.2.142] - 2026-10-27
+
+- Protect complete user relevance judgments across later retrieval receipts for the same normalized query, package, corpus and route. Corrections deterministically remove earlier contradictory model examples; subsequent self-evaluations cannot undo them, including after restart or receipt pruning. The inspector explicitly reports protected user feedback rather than claiming that an ignored model judgment trained successfully.
+- Store only salted query hashes for this protection. Legacy receipts without those hashes remain receipt-scoped; reconfirming a correction on a new retrieval enables the stronger same-query guarantee.
+- Accept the existing stable knowledge ID as well as its full canonical URI when reading authorized knowledge, avoiding a failed lookup when a model omits the URI prefix.
+
+## [3.2.141] - 2026-10-27
+
+- Fix explicit document titles losing an equal-score retrieval tie to unrelated semantic matches when selecting automatic references. Named-source passages take precedence within the existing knowledge cap, without displacing higher-priority Chat Memory.
+- Make Chat knowledge search rank title keywords instead of requiring the entire multi-keyword query to be a literal substring. Automatically supplied canonical source IDs can be read directly, avoiding redundant title-translation searches; stale range handles and ambiguous identities still fail explicitly.
+- Retain exact self-evaluated relevant source IDs in the local retrieval inspector for auditing and user corrections. Compact public summaries continue to expose only counts and revision metadata.
+
+## [3.2.140] - 2026-10-27
+
+- Add persistent online retrieval ranking and calibration with frozen embeddings. Successful Chat answers trigger bounded no-tool model relevance self-evaluation; model labels train by default, while explicit user relevance corrections supersede them and deterministically replay learning. The retrieval inspector exposes label provenance, learning failures and applied ranker/calibrator revisions. Self-evaluation model usage is separately recorded and included in total cost.
+- Preserve original source rank when budgeting its structural passages, preventing lower-ranked short whole notes from displacing higher-ranked evidence under the 8,000-byte automatic knowledge cap.
+- Fix Copilot SDK multi-turn accounting with opaque provider turn IDs and late usage frames; every internal inference receives its own ledger. SDK-managed continuation input remains a clearly labeled local estimate, not a claim about the exact wire payload. Deduplicate repeated final events by message identity without dropping legitimate repeated text.
+- Unified MCP 2.19.0 adds model/user feedback provenance. Model self-evaluation is the default; only explicit user judgments may claim user precedence. Disabling online learning restores baseline ranking without changing embedding parameters.
+
+## [3.2.139] - 2026-10-27
+
+- Fix browser Note previews showing Mermaid source instead of diagrams: public and authenticated private readers now load the bundled Mermaid library and renderer from their own server, without a CDN. Mindmaps and flowcharts render independently; malformed diagrams or failed script loads show an explicit error and preserve the source.
+- Keep large diagrams at readable dimensions inside horizontally scrollable regions, and restore reading position after diagrams finish rendering. Ordinary code blocks and already-rendered HTML exports are unchanged.
+- Add browser regressions for desktop/mobile layout, private resource authorization, failed rendering and missing libraries. Updating and reloading the VS Code window that hosts the content gateway is required; refreshing an older running gateway alone cannot load the fix.
+
+## [3.2.138] - 2026-10-27
+
+- Group the Chat model picker into Copilot Models (Raw Model), Copilot SDK (Agent mode), and other providers, with each provider's available Auto entry first. Open the picker in its loading state before discovery finishes; keep SDK connection available when discovery fails.
+- Remove synchronous runtime-report probing and filesystem cleanup from SDK model discovery; allow explicit connection cancellation. A picker refresh joins an already-running catalog discovery instead of invalidating a pending send.
+- Run structured Portal commands without remote model inference. Executing-side approval, real process exit/output, timeout, cancellation, permission expiry and revocation use the existing durable process runtime. Capability routing chooses one connected platform/program match, rejects ambiguity and never copies credentials.
+- Keep original Portal receipts immutable. Separately inspect explicitly linked manual retries with executing-side sharing approval; unrelated or legacy untagged replies are not substituted.
+- Push Portal connection changes automatically, display reconnect deadlines and current local access, and expose the existing permission controls from the connection panel.
+- Bound automatic knowledge retrieval to eight candidates, prefer relevant structured passages over entire documents, and expose persisted feedback judgment/readiness status. This calibrates retrieval selection; it does not train embedding weights.
+- Show provider-reported cached input per inference round (including zero), distinguish unavailable cache reports, and display automatic PKM reference input against its cap. Cached tokens remain included in total input; no cache discount or Credit value is inferred.
+- Unified MCP 2.18.2 refreshes the managed Portal tool schema with direct commands, capability routing and separate attempt inspection. Both Portal Hosts need updating and pairing again for the new protocol capabilities.
+- Extend the release gate with direct command, retry lineage, SDK responsiveness, Portal browser and retrieval materialization/learning regressions. Real Windows acceptance and provider-specific cache savings still require live verification.
+
+## [3.2.137] - 2026-10-27
+
+- Portal survives transport blips: a heartbeat timeout, SSH port-forward hiccup or brief network loss no longer ends the pairing. Both sides keep the pairing, permissions and running task for 2 minutes while the client reconnects with the same identity; the relay replaces a half-open socket instead of rejecting the rejoin as a duplicate; receipts produced while disconnected are re-delivered once after recovery. Only a local disconnect, revoke, closed channel, rejected rejoin or an expired grace period ends the Portal, and expiry now shows a warning. Status reports `reconnecting` with its deadline.
+- Portal diagnostics: the client terminates a socket that has been silent for 70s, logs how long the socket was silent when it closes, logs extension-host event-loop stalls over 5s while a Portal is open, and the controller side now logs when pairing becomes active.
+- Fix Chat Activity showing a still-running tool (e.g. a PowerShell `run_process`) as completed/green: tool steps now finish only on their own Completed/Failed result, so an approval prompt or a later stage no longer settles them early, and approving a tool no longer adds a duplicate untracked "Running tool" row.
+
+## [3.2.136] - 2026-10-27
+
+- Portal diagnostics: both sides now log the Portal lifecycle at info level — link issued/redeemed, relay channel create/join/reject (unknown channel, bad credentials, full, duplicate), socket close codes, heartbeat timeouts, presence changes, local/remote revokes, and every teardown with its trigger. Logs never include link secrets or pairing codes. New **PKM: Portal Diagnostics** command opens a JSON snapshot of the hub, relay channels, per-Chat transports/pairings and recent Portal events.
+
+## [3.2.135] - 2026-10-27
+
+- GitHub Sync one-time publication upgrade: new **Upgrade from this machine** button finishes the upgrade in one confirmed local-authority publish (no Stage / Verify / Cut over) when this machine is the source of truth; it retires any unfinished staged migration, and a successful publish records the new format so the panel disappears. The panel now explains both paths and what Cut over and Rollback mean.
+- Fix migration buttons that silently did nothing (e.g. **Cut over** after **Verify**): migration results now release the pending button directly, GitHub Sync state snapshots are ordered by read time so a slow refresh cannot be discarded as stale, and clicks blocked by a still-running action show a message instead of being ignored.
+
+## [3.2.134] - 2026-10-27
+
+- Replace the native "Run tests for …?" modal with an inline risk card in the Action Workbench: per-Action effects, a short risk summary, issues (collapsed after three), test inputs and the assessing model, with **Cancel** / **Run tests** buttons. Batch validation now assesses every selected Action first and asks once for the whole batch. The browser Workbench keeps a concise native confirmation.
+- Faster release gate (`npm run package`, ~350s → ~100s): build once, run 14 independent test groups in parallel (`scripts/run-package-gate.js`; `PKM_GATE_CONCURRENCY` limits parallelism, group names select a subset), remove duplicate test runs, and skip vsce's redundant prepublish rebuild. Packaged service tests shorten the Sync poll and lifecycle check through test-only environment overrides, which can only lower the production intervals.
+- Development environments moved out of the extension tree: the test Python venv now lives in the shared PKM environments root (`~/pkm-envs/personal-knowledge-vscode-dev`, override with `PKM_TEST_VENV` / `PKM_TEST_PYTHON`) and `@vscode/test-electron` downloads plus Xvfb in `~/.cache/pkm-vscode-test` (`PKM_VSCODE_TEST_CACHE`). `tests/dev-paths.js` resolves both; vsce no longer scans ~16k development files when packaging.
+- Unified MCP 2.18.1: the managed MCP runtime now ships the JavaScript/TypeScript Action component runners (`action_components.js`, `action_components_ts.js`); no tool schema changes.
+
+## [3.2.133] - 2026-10-27
+
+- Fix Copilot SDK connection on newer VS Code builds, which ship the SDK runtime as a native `@github/copilot-sdk-<platform>` package. PKM passes the installed runtime explicitly, because the SDK's own glibc/musl detection can choose a missing `linuxmusl` package inside the extension host. Runtime start failures are reported as such instead of a generic discovery error.
+
+## [3.2.131] - 2026-10-27
+
+- Fix the Copilot SDK onboarding dead end: the model picker always offers **Connect Copilot SDK...**, which requests GitHub account access explicitly and refreshes the catalog without sending a model request. Discovery failures are reported instead of silently hiding the channel. Remote runtime lookup also checks the server installation beside the extension host's Node executable.
+
+## [3.2.130] - 2026-10-27
+
+- Diagnose the legacy Copilot Auto tool-follow-up routing failure explicitly instead of suggesting account quota or permission problems. The message directs users to Auto · Copilot SDK or a concrete model and requires an explicit retry; completed tools are not replayed. This does not change or fix the upstream legacy Auto router.
+
+## [3.2.129] - 2026-10-26
+
+- Copilot SDK channel follows the Copilot service's model routing instead of a fixed PKM list: service-routed models such as **Auto** (and HydraFusion when it is enabled for the account) are offered first and inherit the tightest limits of the models they can route to. The activity list shows the routing decision (for example "Auto selected gpt-6-luna", HydraFusion workflow, phases and fallback). Reasoning summaries are requested for every SDK model.
+
+## [3.2.128] - 2026-10-26
+
+- PKM Chat model thinking: a new **Copilot SDK** model channel (models labelled `· Copilot SDK`) runs Copilot models through the Copilot SDK runtime bundled with VS Code and requests concise reasoning summaries, so GPT and Claude thinking appears in the activity list as in Copilot Chat. The VS Code Language Model API does not expose these summaries. Each request uses a fresh, isolated runtime session that offers only PKM's own tools, rejects every other runtime permission, and has its stored transcript deleted when the request ends. Usage reports Copilot credits per turn. The first use asks for GitHub sign-in through the Accounts menu.
+
+## [3.2.127] - 2026-10-26
+
+- Chat speed: VS Code model requests no longer wait for slow tokenizer calls when the prompt's UTF-8 byte size (an upper bound on tokens) already fits the context; precise counts run in parallel only when needed. Output tokens are counted only when the byte bound could exceed the remaining budget.
+- Chat cost: an identical read-only tool call (read, search, list, tool lookup) within one request reuses the earlier, still-visible result instead of running again; any other tool resets reuse. The model is told to batch independent tool calls.
+- `find_vscode_tools` ranks results by any matching keyword (punctuation and `_` split words) and lists enabled tool names when nothing matches, instead of returning an empty result.
+- Chat thinking: readable thinking streamed by the model (VS Code `LanguageModelThinkingPart`) is shown live in the running Activity row and kept per round, instead of failing the request; encrypted reasoning is never shown. A waiting round now notes that the model may be reasoning.
+- Activity: "Tools available to the model" is listed first, so the running event stays last; running events use a blue, pulsing dot in every theme.
+
+## [3.2.126] - 2026-10-26
+
+- Chat: retry a VS Code model call once when the network drops before any output (for example HTTP/2 GOAWAY or connection reset); later failures name the network cause instead of suggesting permission or quota problems. Provider error text is still never shown.
+- Chat: show token usage and credits on one line; collapse a finished run's activity list (running activity stays expanded; manual expansion is kept).
+
+## [3.2.125] - 2026-10-26
+
+- Stateless core components (Constant, Cast, Lookup, File Path, Math Expression) now have Python, JavaScript and TypeScript implementations with parity tests; select one per block in the Workbench (default Python). Control-flow components remain host-native.
+
+## [3.2.124] - 2026-10-26
+
+- Separate risk information from environment qualification: exact bundled core Actions self-test without a model; other Actions require user confirmation of Agent findings or assessment uncertainty, not an Agent approval verdict. Keep exact-version, trust, consent and passing-test gates.
+- Bound artifact reads to 64 MiB, validate the bytes actually copied, check workspace/scope and cancellation, and assert copied content in the core self-test.
+- Offer Cancel, Validate this action, and Validate all possible actions when clicking an Action flask, before review or effect confirmation.
+
+## [3.2.123] - 2026-10-26
+
+- Remove the deprecated `@pkm-actions` Chat Participant. Keep pending choices in Workbench inline forms, retain MCP agent access, and route legacy answer commands back to the original Run.
+
 ## [3.2.122] - 2026-10-26
 
 - Give Agent review the exact PKM host handler source executed by builtin and pipeline Actions (`_execute`, artifact helpers, `execute_steps`), included in the review snapshot hash, so builtin reviews no longer fail for missing material.
@@ -31,7 +212,7 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 - Add a safe restart-preview path for unverified GitHub publication migrations whose remote changed after Cutover. Archive the prior migration evidence, preserve original rollback state and keep Auto Sync off rather than bypassing commit fences.
 - Preserve schema-3 Markdown resource members during migration collision checks; attachments are not duplicate principal documents. Keep duplicate document/member identities blocked.
-- Separate Action Library into an independent admitted-Action browser with readiness, typed invocation and explicit per-Action Workbench navigation. Keep proposals, editing, review and validation in the Workbench.
+- Keep Action Library inside the existing PKM panel, with a resizable, keyboard-accessible category tree, readable names/readiness badges, persistent search/selection/folders and explicit per-Action Workbench navigation. Library and Workbench retain separate UI state; proposals, editing, review and validation remain in Workbench.
 - Fix folder and Move to forms blocked by the embedded Workbench iframe sandbox. Show full nested destinations and inline errors, and expand newly created or moved-to folders automatically.
 
 ## [3.2.116] - 2026-10-26

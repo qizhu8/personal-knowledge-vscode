@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const path = require("node:path");
 const { setTimeout: delay } = require("node:timers/promises");
+const { randomUUID } = require("node:crypto");
 
 // Reuses the controller host fixture, but runs the production Python worker and SQLite store.
 module.exports = async function testMemoryController(ApiChatView, context, nativeClient, models) {
@@ -8,6 +9,9 @@ module.exports = async function testMemoryController(ApiChatView, context, nativ
   const originalDiscovery = nativeClient.discoverVscodeModels;
   const provider = new ApiChatView({ ...context, extensionPath: path.resolve(__dirname, "..") });
   const calls = [], payloads = [];
+  const profileCalls = [];
+  const requirementCalls = [];
+  let failRequirementRecall = false, steerRequirement = false;
   let failIntent = false, failExtraction = false;
   const failedOutput = JSON.stringify({ statements: [{ topic: "T1", text: "Rejected partial model statement must not be committed.", status: "proposal" }] });
   const answer = "Keep immutable revisions and preserve user constraints. ".repeat(80);
@@ -30,7 +34,20 @@ module.exports = async function testMemoryController(ApiChatView, context, nativ
   nativeClient.streamVscodeChat = async (_model, request, onText) => {
     if (request.purpose !== "memory") {
       if (verifyDiscoveryReuse) assert.equal(discoveries, memoryDiscoveries, "the main request reuses the model catalog checked during Memory preparation");
-      payloads.push(request.messages);
+      const dispatch = () => {
+        request.beforeRound?.(request.messages,request.maxOutputTokens);
+        const transport=require("../dist/chat/api-chat-client").chatTransportReceipt("vscode",request.messages,request.tools || []);
+        request.onTransportPrepared?.(transport);request.onTransportSent?.(transport);
+        payloads.push(structuredClone(request.messages));
+      };
+      dispatch();
+      if (steerRequirement) {
+        steerRequirement=false;
+        const chat=provider.chat;
+        (chat.queuedInputs ||= []).push({id:randomUUID(),text:"Test PKM instead.",mode:"steer",
+          attemptId:chat.progress.attemptId,executionContext:chat.progress.executionContext});
+        provider.persist(chat);dispatch();
+      }
       onText(payloads.length === 1 ? answer : "Fixture response.");
       return;
     }
@@ -38,6 +55,24 @@ module.exports = async function testMemoryController(ApiChatView, context, nativ
     assert.strictEqual(request.timeoutMs, 1_800_000, "Memory uses Chat inactivity timeout without a hidden two-minute cap");
     assert.strictEqual(request.thinkingBudget, 2048, "Memory steps use the default thinking budget");
     const system = request.messages[0].content;
+    if (system.startsWith("Select applicable user requirements")) {
+      const input=JSON.parse(request.messages.at(-1).content);
+      requirementCalls.push(input.current_request);
+      if (failRequirementRecall) throw new Error("Fixture requirement selector unavailable");
+      const applicable=["Inspect my AML pipeline run.","Write an AML document."].includes(input.current_request);
+      onText(JSON.stringify({matches:applicable ? input.requirements.map(item=>({
+        id:item.id,revision:item.revision,request_quote:input.current_request,
+      })) : []}));
+      return;
+    }
+    if (system.startsWith("Extract concise, retrieval-ready User Profile fragments")) {
+      const {sources} = JSON.parse(request.messages.at(-1).content);
+      profileCalls.push(sources.map(source=>source.id));
+      const source = sources.find(source=>source.text === "Review memory design");
+      onText(JSON.stringify({fragments:source ? [{kind:"focus",text:"Memory design",tags:["memory design"],
+        evidence:[{source_id:source.id,quote:source.text}]}] : []}));
+      return;
+    }
     const purpose = system.includes("CURRENT user input") ? "intent" : system.includes("Extract at most") ? "extract" : "summary";
     if (purpose === "intent") memoryDiscoveries = discoveries;
     calls.push(purpose);
@@ -84,6 +119,14 @@ module.exports = async function testMemoryController(ApiChatView, context, nativ
     provider.vscodeModels = [];
     discoveries = 0;
     const first = await send("Review memory design");
+    await provider.profileLearningTail;
+    const profile = await provider.userProfileFragments("read");
+    assert(profileCalls.length > 0, "a completed local human turn must automatically schedule extraction");
+    assert(profile.fragments.some(fragment=>fragment.text === "Memory design"));
+    assert(profile.fragments.every(fragment=>fragment.provenance === "model"));
+    const beforeProfileInspection = profileCalls.length;
+    await provider.userProfileFragments("read");
+    assert.equal(profileCalls.length,beforeProfileInspection,"viewing the derived Profile must not run a model");
     verifyDiscoveryReuse = false;
     assert(memoryDiscoveries > 0, "the fixture must perform real catalog discovery before the main request");
     assert.equal(first.memory.prepare.summaries.length, 0, "no eager summaries");
@@ -166,14 +209,65 @@ module.exports = async function testMemoryController(ApiChatView, context, nativ
       assert.equal(provider.store.load(provider.chat.id, false).messages.at(-1).status, "complete");
     } finally { service.prepare = prepare; service.commit = commit; }
 
+    const {userProfileSources,parseProfileFragments}=require("../dist/chat/user-profile-fragments");
+    const origin=provider.store.create();origin.includeHistory=true;
+    origin.messages.push({id:randomUUID(),role:"user",status:"complete",recordedAt:new Date().toISOString(),
+      content:"Across chats, for AML tasks, ignore the ml extension because we cannot install it."});
+    provider.store.save(origin);
+    const sources=userProfileSources(origin),requirementStore=provider.profileFragments();
+    requirementStore.apply(sources,parseProfileFragments(JSON.stringify({fragments:[{
+      kind:"requirement",text:"For AML tasks, avoid the Azure ML ml CLI extension while it cannot be installed.",
+      tags:["AML","ml extension"],evidence:[{source_id:sources[0].id,quote:sources[0].text}],
+    }]}),sources));
+    await provider.handle({type:"new"});
+    Object.assign(provider.chat,{modelProvider:"vscode",vscodeModelId:nativeClient.vscodeModelProfile(models[1]).id,
+      includeHistory:true,permissionMode:"read-only",builtinTools:["memory_read"],vscodeTools:[]});
+    provider.persist(provider.chat);
+    const hasRequirement=messages=>messages.some(message=>message.content.startsWith("Relevant user requirement from earlier local Chats"));
+    const applicable=await send("Inspect my AML pipeline run.");
+    assert(hasRequirement(payloads.at(-1)),"another Chat must receive the applicable requirement through the real send hook");
+    assert(applicable.retrieval.candidates.some(item=>item.kind==="user-requirement"&&item.selected&&item.evidenceState==="sent"));
+    assert(applicable.budgetReceipts.at(-1).contextPlan.manifest.some(item=>item.referenceIds.some(id=>id.startsWith("user-profile:"))));
+    await send("Write an AML document.");
+    assert(hasRequirement(payloads.at(-1)),"an AML-specific document is not the generic document-writing negative case");
+    for (const query of ["Help me write a document.","Test PKM.","Improve HTML output.",
+      "Ignore the old AML topic and test PKM instead.","The ml extension can now be installed; use it for AML."]) {
+      const excluded=await send(query);
+      assert(!hasRequirement(payloads.at(-1)),`${query} must not receive the AML extension constraint`);
+      assert(!excluded.retrieval.candidates.some(item=>item.kind==="user-requirement"));
+      assert.equal(excluded.profileRequirementRecall.matches.length,0);
+    }
+    steerRequirement=true;
+    const steered=await send("Inspect my AML pipeline run.");
+    assert(hasRequirement(payloads.at(-2)));
+    assert(!hasRequirement(payloads.at(-1)),"new steering must invalidate old matches even in the planner's retained pool");
+    assert.equal(steered.profileRequirementRecall.status,"invalidated");
+    failRequirementRecall=true;
+    const unavailable=await send("Inspect my AML pipeline run.");
+    assert.equal(unavailable.profileRequirementRecall.status,"failed");
+    assert(!hasRequirement(payloads.at(-1)));
+    assert(unavailable.invocationBudgets.some(item=>item.id==="retrieval:user-requirements"&&item.status==="failed"));
+    failRequirementRecall=false;
+    const beforeAgentRequirement=requirementCalls.length;
+    provider.agentControlledRequests.add(provider.chat.id);
+    try {
+      await send("Inspect my AML pipeline run.");
+      assert.equal(requirementCalls.length,beforeAgentRequirement,"agent-origin input must not disclose private user requirements");
+      assert(!hasRequirement(payloads.at(-1)));
+    } finally {provider.agentControlledRequests.delete(provider.chat.id);}
+    const beforeRequirementOff=requirementCalls.length;
     provider.chat.includeHistory = false;
     provider.persist(provider.chat);
     const before = calls.length;
     await provider.handle({ type: "send", text: "History disabled" });
     assert.equal(provider.chat.messages.at(-1).memory, undefined);
     assert.equal(calls.length, before, "History off must skip both memory preparation and commit");
+    assert.equal(requirementCalls.length,beforeRequirementOff,"History off must also skip cross-Chat requirement selection");
+    assert(!hasRequirement(payloads.at(-1)));
+    for (const fragment of requirementStore.snapshot().fragments.filter(item=>item.kind==="requirement")) {
+      requirementStore.remove(fragment.id,fragment.revision);
+    }
     const { configurePortalRuntime } = require("../dist/chatroom/portal-runtime");
-    const { randomUUID } = require("node:crypto");
     const pairId = randomUUID(), requestId = randomUUID();
     let connected = true;
     configurePortalRuntime({ state: id => id === provider.chat.id ? { connected, binding: { role:"controller", pairId } } : undefined,

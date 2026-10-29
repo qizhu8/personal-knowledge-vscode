@@ -70,6 +70,37 @@ class TestSolutionLifecycle(unittest.TestCase):
         self.assertIsNone(self.manager.path)
         self.assertEqual(self.manager.status()["state"], "disabled")
 
+    def test_catalog_deduplicates_declared_encoders_not_architecture_packages(self):
+        first = self.manager.catalog()["packages"][0]
+        self.assertRegex(first["encoder_bundle_id"], r"^[a-f0-9]{64}$")
+        config = {"model": str(self.model), "model_bundle_sha256": local_model_bundle_fingerprint(self.model)[1],
+                  "embedding_enabled": True, "retrieval_architecture_id": "dense-document"}
+        second_archive = self.root / "second-solution.zip"
+        export_package(second_archive, name="Same encoder, different architecture", config=config, validation={}, license="MIT")
+        second_id = import_package(second_archive, self.manager.directory)["package_id"]
+        packages = self.manager.catalog()["packages"]
+        self.assertEqual(len(packages), 2)
+        self.assertNotEqual(first["package_id"], second_id)
+        self.assertEqual({item["encoder_bundle_id"] for item in packages}, {first["encoder_bundle_id"]})
+        (self.model / "model.safetensors").write_bytes(b"different encoder fixture")
+        config["model_bundle_sha256"] = local_model_bundle_fingerprint(self.model)[1]
+        third_archive = self.root / "third-solution.zip"
+        export_package(third_archive, name="Different encoder", config=config, validation={}, license="MIT")
+        import_package(third_archive, self.manager.directory)
+        packages = self.manager.catalog()["packages"]
+        self.assertEqual(len(packages), 3)
+        self.assertEqual(len({item["encoder_bundle_id"] for item in packages}), 2)
+        self.manager.select(self.identity)
+        statistics = {"document_count": 0, "document_vector_count": 0, "unit_count": 0,
+                      "unit_source_count": 0, "unit_vector_count": 0, "token_vector_count": 0,
+                      "granularity": "markdown_section"}
+        with patch("retrieval_serving.ImportedSkillPath", return_value=SimpleNamespace(
+                release_id=self.identity, index_statistics=statistics)):
+            self.manager.build([], "empty-corpus")
+        self.assertEqual(self.manager.status()["index"]["statistics"], statistics)
+        self.manager.select(None)
+        self.assertNotIn("statistics", self.manager.status()["index"], "disabled indexes must not retain stale counts")
+
     def test_unavailable_dependencies_and_invalid_selection_are_explicit(self):
         self.manager.select(self.identity)
         with patch("retrieval_serving.ImportedSkillPath", side_effect=ImportError("local encoder missing")):

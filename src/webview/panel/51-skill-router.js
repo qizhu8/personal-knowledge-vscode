@@ -17,6 +17,10 @@ let skillRouterAdaptivePending;
 let skillRouterPerformanceTimer;
 let skillRouterPerformancePending = '';
 let skillRouterPerformanceError = '';
+let skillRouterWorkflowStage = 'calibrator';
+let skillRouterInspectorTab = 'parameters';
+let skillRouterWorkflowTipTimer;
+const skillRouterInspectorTabs = [['parameters','Parameters'],['controls','Controls'],['graphs','Graphs'],['metrics','Metrics']];
 
 function skillRouterRequestPerformance() {
   if (skillRouterPerformancePending) return;
@@ -83,27 +87,155 @@ function skillRouterChart(series, { label, xLabel, yLabel, percent = false }) {
     }).join('')}</svg>`;
 }
 
-function skillRouterPerformanceHtml() {
+function skillRouterWorkflowState(model, learning, runtime = skillRouterStatusCache?.runtime || {}) {
   const data = skillRouterSolutionCache || {};
-  const runtime = skillRouterStatusCache?.runtime || {};
+  const solution = runtime.solution || data;
+  const active = solution.active_package_id || (runtime.skillServing?.ready ? runtime.skillServing.release_id : '');
+  const index = active ? solution.index?.statistics : undefined;
+  const count = value => Number.isInteger(value) && value >= 0 ? value.toLocaleString() : 'Not reported';
+  const decimal = value => typeof value === 'number' && Number.isFinite(value) ? value.toFixed(3) : 'Not reported';
+  const packages = data.packages;
+  const valid = packages?.filter(item => !item.error) || [];
+  const identities = valid.map(item => typeof item.encoder_bundle_id === 'string'
+    && /^[a-f0-9]{64}$/.test(item.encoder_bundle_id) ? item.encoder_bundle_id : undefined);
+  const bundles = new Set(identities.filter(Boolean));
+  const completeInventory = packages && valid.length === packages.length && identities.every(Boolean);
+  const encoders = !packages ? 'Not reported' : completeInventory ? count(bundles.size) : `${count(bundles.size)} known; inventory incomplete`;
+  const policy = learning?.policy;
+  const revision = solution.corpus_revision || runtime.corpusRevision;
+  const stages = {
+    assets:{ label:'Assets', tip:'Configured L1 sources feed the local index. Counts describe assets, not necessarily physical files.',
+      facts:[['Ready L1 sources', runtime.ready === false ? 'Not ready' : count(runtime.documentCount)], ['Corpus revision', runtime.corpusRevision || 'Not reported']] },
+    encoder:{ label:'Encoder A', tip:`Frozen encoder shared by documents and queries. ${active ? 'Active: ' + active : 'No active embedding model'}. Managed inventory excludes external caches and unmanaged releases.`,
+      facts:[['Total parameters','Not reported'], ['Encoder parameters updated online',0], ['Managed encoders',encoders],
+        ['Imported packages',count(packages?.length)], ['Active package / release',active || 'None'], ['Requested package',solution.requested_package_id || 'None'],
+        ['Architecture',valid.find(item => item.package_id === active)?.architecture || runtime.skillServing?.architecture_id || 'Not reported']] },
+    index:{ label:'Index A', tip:'Built/restored model index. Internal sections are not the API L2 passage table; L2 evidence ranges are materialized separately.',
+      facts:[['Model-index sources',count(index?.document_count)], ['Document vectors',count(index?.document_vector_count)],
+        ['Internal units',count(index?.unit_count)], ['Covered sources',count(index?.unit_source_count)],
+        ['Unit vectors',count(index?.unit_vector_count)], ['Token vectors',count(index?.token_vector_count)],
+        ['Granularity',index?.granularity || 'Not reported'], ['L2 passage table','Not reported'],
+        ['State',solution.state || 'Not reported'], ['Model corpus revision',revision || 'Not reported']] },
+    query:{ label:'Query', tip:'Each caller chooses lexical, semantic or dual. There is no model A/B traffic controller today.',
+      facts:[['Routes','lexical / semantic / dual'], ['Selection','Per query'], ['A/B split','Not implemented']] },
+    lexical:{ label:'Exact + BM25', tip:'Default keyword path. Lexical-only results bypass online ranking, calibration and adaptive thresholding.',
+      facts:[['Engine',runtime.engineVersion || 'Not reported'], ['Ready sources',count(runtime.documentCount)], ['Online learning','Bypassed']] },
+    score:{ label:'Similarity / fusion', tip:'Semantic similarity searches Index A. Dual mode merges semantic and keyword ranks using RRF(k=60).',
+      facts:[['Dual fusion','Reciprocal rank fusion'], ['RRF k',60], ['Candidate scores','Not retained in history']] },
+    ranker:{ label:'Online ranker', tip:'A bounded hashed-feature residual reranks the admitted candidate pool before calibration. Embeddings stay frozen.',
+      facts:[['Trainable parameters',count(model?.ranker?.features)], ['Weight bound',model?.ranker?.weight_bound ?? 'Not reported'],
+        ['Revision',count(model?.ranker_revision)], ['Effective judged calls',count(model?.judged_calls)], ['State',model?.state || 'Not reported']] },
+    calibrator:{ label:'Calibrator', tip:'sigmoid(slope × normalized rank score + bias). Runs after the ranker and before thresholding; the Graphs tab shows this function.',
+      facts:[['Trainable parameters',2], ['Slope',decimal(model?.current?.slope)], ['Bias',decimal(model?.current?.bias)],
+        ['Initial slope',decimal(model?.baseline?.slope)], ['Initial bias',decimal(model?.baseline?.bias)], ['Revision',count(model?.calibrator_revision)]] },
+    threshold:{ label:'Threshold', tip:'A calibrated score gap can reduce the caller limit after consecutive safe complete judgments. No clear gap keeps the original limit; this is not a Recall guarantee.',
+      facts:[['Adaptive parameters',1], ['Gap threshold',decimal(model?.threshold)], ['Gap floor',decimal(policy?.minimum_gap)],
+        ['Retain probability ≥',decimal(policy?.retain_probability)], ['Discard probability ≤',decimal(policy?.discard_probability)],
+        ['EWMA new weight',decimal(policy?.threshold_ewma)], ['Safe streak',`${count(model?.safe_streak)} / ${count(learning?.minimum_judged_calls)}`]] },
+    results:{ label:'L1 results', tip:'Returned sources respect the caller limit. Consumers separately materialize L2 evidence. Top-K judgments cannot establish full-corpus Recall.',
+      facts:[['Output','L1 sources'], ['Caller limit','Upper bound'], ['L2 evidence','Separate source-range materialization']] },
+    feedback:{ label:'Feedback', tip:'Eligible semantic/dual judgments update the ranker, calibrator and gap threshold. User labels override model labels. Unused is not negative; hashed receipts are not an encoder-training corpus.',
+      facts:[['Retained receipts',count(learning?.stored_calls)], ['Receipt capacity',count(policy?.retention_calls)],
+        ['Visible receipts',count(learning?.calls?.length)], ['Persistent user authorities',count(learning?.stored_user_judgments)],
+        ['Effective model examples',count(model?.model_labels)], ['Effective user examples',count(model?.user_labels)]] },
+    candidate:{ label:'Candidate rollout', tip:'Planned only: encoder replay → model B/index B → shadow/canary → paired promotion/rollback. 150 updates is a proposal, not a configured gate.',
+      facts:[['Status','Not implemented'], ['Encoder training','Not enabled'], ['Traffic split','Not enabled'], ['Promotion gate','Not configured']] },
+  };
+  return { data, runtime, solution, active, index, stages, count, decimal };
+}
+
+function skillRouterWorkflowHtml(view) {
+  const node = (stage, id, label, x, y) => `<button type="button" class="sr-flow-node ${stage === 'candidate' ? 'sr-flow-planned' : ''}"
+    id="sr-flow-${id}" style="left:${x}px;top:${y}px" data-workflow-stage="${stage}" data-workflow-tip="${esc(view.stages[stage].tip)}"
+    aria-pressed="${skillRouterWorkflowStage === stage}" aria-controls="sr-inspector" aria-describedby="sr-workflow-tooltip"
+    onpointerenter="skillRouterHoverWorkflow(this)" onpointerleave="skillRouterHideWorkflowTip()" onfocus="skillRouterHoverWorkflow(this)" onblur="skillRouterHideWorkflowTip()"
+    onkeydown="if(event.key==='Escape')skillRouterHideWorkflowTip(true)" onclick="skillRouterSelectWorkflow('${stage}')">${esc(label)}</button>`;
+  return `<div id="sr-workflow" class="sr-workflow">
+    <div class="sr-section-head"><h3>Retrieval worker</h3><span class="sr-flow-hint">Hover to explain · Click to inspect</span>
+      <button class="tbtn" aria-label="Refresh Performance" onclick="skillRouterRequestPerformance()" ${skillRouterPerformancePending ? 'disabled' : ''}>Refresh</button></div>
+    <div class="sr-workflow-viewport" tabindex="0" role="region" aria-label="Retrieval runtime graph">
+      <div class="sr-workflow-canvas">
+        <svg viewBox="0 0 1000 310" aria-hidden="true" class="sr-flow-edges"><defs><marker id="sr-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z"/></marker></defs>
+          <g class="sr-flow-path">${['M130 46H160','M270 46H300','M355 68V112','M75 156V226H160','M130 134H160','M270 134H300','M410 134H440','M550 134H580','M690 134H720','M830 134H860'].map(path => `<path d="${path}"/>`).join('')}
+            <path d="M270 226H355V156" class="sr-flow-dual"/><path d="M215 248V286H915V156" class="sr-flow-lexical"/>
+            ${['M915 156V266H635V248','M580 226H495V156','M635 204V156','M690 226H775V156'].map(path => `<path d="${path}" class="sr-flow-feedback-path"/>`).join('')}
+            <path d="M215 68V112" class="sr-flow-shared"/></g>
+          <g class="sr-flow-edge-label"><text x="20" y="16">Build</text><text x="20" y="103">Search</text>
+            <text x="278" y="218">dual</text><text x="370" y="302">lexical · bypass learning</text><text x="710" y="260">eligible labels</text></g>
+        </svg>
+        ${node('assets','assets','Assets',20,24)}${node('encoder','encoder','Encoder A',160,24)}${node('index','index','Index A',300,24)}
+        ${node('candidate','candidate','Candidate · planned',720,24)}
+        ${node('query','query','Query',20,112)}${node('encoder','query-encoder','Query encoder',160,112)}${node('score','score','Similarity / fusion',300,112)}
+        ${node('ranker','ranker','Ranker',440,112)}${node('calibrator','calibrator','Calibrator',580,112)}${node('threshold','threshold','Threshold',720,112)}${node('results','results','L1 results',860,112)}
+        ${node('lexical','lexical','Exact + BM25',160,204)}${node('feedback','feedback','Feedback',580,204)}
+      </div>
+    </div>
+    <div id="sr-workflow-tooltip" class="sr-hover-panel sr-workflow-tooltip" role="tooltip" hidden
+      onpointerenter="clearTimeout(skillRouterWorkflowTipTimer)" onpointerleave="skillRouterHideWorkflowTip()"></div>
+  </div>`;
+}
+
+function skillRouterSelectWorkflow(stage) {
+  skillRouterWorkflowStage = stage;
+  skillRouterRefreshPerformanceView();
+  skillRouterHideWorkflowTip(true);
+}
+
+function skillRouterSetInspectorTab(tab, focus = false) {
+  if (!skillRouterInspectorTabs.some(([id]) => id === tab)) return;
+  skillRouterInspectorTab = tab;
+  skillRouterRefreshPerformanceView();
+  if (focus) document.getElementById(`sr-inspector-tab-${tab}`)?.focus({ preventScroll:true });
+}
+
+function skillRouterInspectorKey(event) {
+  const index = skillRouterInspectorTabs.findIndex(([id]) => id === skillRouterInspectorTab);
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? 3 : event.key === 'ArrowRight' ? (index + 1) % 4 : event.key === 'ArrowLeft' ? (index + 3) % 4 : -1;
+  if (next < 0) return;
+  event.preventDefault();
+  skillRouterSetInspectorTab(skillRouterInspectorTabs[next][0], true);
+}
+
+function skillRouterHoverWorkflow(button) {
+  clearTimeout(skillRouterWorkflowTipTimer);
+  const tip = document.getElementById('sr-workflow-tooltip');
+  if (!tip) return;
+  tip.textContent = button.dataset.workflowTip;
+  tip.hidden = false;
+  skillRouterPositionPopover(tip, button);
+}
+
+function skillRouterHideWorkflowTip(immediate = false) {
+  clearTimeout(skillRouterWorkflowTipTimer);
+  const close = () => { const tip = document.getElementById('sr-workflow-tooltip'); if (tip) tip.hidden = true; };
+  if (immediate) close(); else skillRouterWorkflowTipTimer = setTimeout(close, 150);
+}
+
+function skillRouterPerformanceHtml(runtime = skillRouterStatusCache?.runtime || {}) {
+  const data = skillRouterSolutionCache || {};
   const selected = data.requested_package_id || data.active_package_id || runtime.semanticStatus === 'ready'
     || runtime.skillServing?.ready;
-  if (!selected) return '<section id="sr-performance" class="sr-section" data-settings-panel="performance"><h3>Retrieval Performance</h3><p role="status">Model retrieval is not enabled. Exact + BM25 remains available. Model setup is below.</p></section>';
   const learning = data.learning;
-  const models = (learning?.models || []).filter(model => (!data.active_package_id || model.package_id === data.active_package_id)
-    && (!data.corpus_revision || model.corpus_revision === data.corpus_revision));
+  const packageId = runtime.solution?.active_package_id || runtime.solution?.requested_package_id
+    || data.active_package_id || data.requested_package_id || runtime.skillServing?.release_id;
+  const corpusRevision = runtime.corpusRevision || data.corpus_revision;
+  const models = (learning?.models || []).filter(model => (!packageId || model.package_id === packageId)
+    && (!corpusRevision || model.corpus_revision === corpusRevision));
   const recent = [...(learning?.calls || [])].reverse();
   const latest = recent.find(call => call.success !== false && models.some(model => model.context === call.context))
     || recent.find(call => models.some(model => model.context === call.context));
   const model = models.find(model => model.context === skillRouterCalibrationContext)
     || models.find(model => model.context === latest?.context);
   if (model) skillRouterCalibrationContext = model.context;
-  const calls = (learning?.calls || []).filter(call => models.some(item => item.context === call.context));
-  const metrics = { runtime:['Runtime (ms)','runtime_ms'], recall:['Recall','recall'], results:['Returned Results','returned_count'] };
+  const calls = (learning?.calls || []).filter(call => model && call.context === model.context);
+  const view = skillRouterWorkflowState(model, learning, runtime);
+  const stage = view.stages[skillRouterWorkflowStage];
+  const facts = entries => `<dl class="sr-inspector-facts">${entries.map(([key, value]) => `<div><dt>${esc(key)}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl>`;
+  const metrics = { runtime:['Runtime (ms)','runtime_ms'], recall:['Recall','recall'], precision:['Precision','precision'], results:['Returned Results','returned_count'] };
   const [label, field] = metrics[skillRouterMetric];
   const plot = skillRouterChart([{ label, points:calls.map(call => ({ x:call.invocation, y:call[field], failed:call.success === false,
     route:models.find(item => item.context === call.context)?.route })) }],
-    { label:`${label} by Model Call`, xLabel:'Model Call Sequence', yLabel:label, percent:skillRouterMetric === 'recall' });
+    { label:`${label} by Model Call`, xLabel:'Model Call Sequence', yLabel:label, percent:['recall','precision'].includes(skillRouterMetric) });
   const curves = model ? ['baseline','current'].map(key => ({
     label:key === 'baseline' ? 'Original' : 'Current',
     points:Array.from({ length:41 }, (_, index) => {
@@ -113,38 +245,85 @@ function skillRouterPerformanceHtml() {
   })) : [];
   const curve = skillRouterChart(curves, { label:'Original and Current Calibration Functions', xLabel:'Normalized Rank Score',
     yLabel:'Estimated Relevance', percent:true });
+  const adaptive = learning ? `<label class="sr-solution-toggle"><input id="sr-adaptive-count" type="checkbox" ${(skillRouterAdaptivePending ?? learning.enabled) ? 'checked' : ''}
+    ${skillRouterSolutionPending ? 'disabled' : ''} onchange="skillRouterSolutionRequest('retrievalAdaptiveCount',undefined,this.checked)">Adaptive Result Count</label>
+    <p class="sr-inspector-note">Controls online ranking, calibration updates and result trimming together.</p>` : '<p role="status">Learning controls are unavailable from this worker.</p>';
+  const lexicalEnabled = skillRouterStatusCache?.solutions?.l1_online?.enabled;
+  const controls = skillRouterWorkflowStage === 'candidate' ? '<p role="status">Not implemented. No training, traffic split or promotion is enabled.</p>'
+    : ['query','lexical'].includes(skillRouterWorkflowStage) ? `${typeof lexicalEnabled === 'boolean' ? `<label class="sr-solution-toggle"><input id="sr-inspector-lexical" type="checkbox" ${lexicalEnabled ? 'checked' : ''} onchange="skillRouterToggleSolution('l1_online',this.checked)">Exact + BM25</label>` : '<p role="status">Route configuration not reported.</p>'}<p class="sr-inspector-note">Search mode is chosen per request, not by a global route knob.</p>`
+    : ['ranker','calibrator','threshold','feedback'].includes(skillRouterWorkflowStage) ? adaptive
+    : skillRouterWorkflowStage === 'encoder' ? ''
+    : '<p role="status">Read-only stage. No independent tuning control is exposed.</p>';
+  let graph = '<p role="status">No stage-specific graph is reported.</p>';
+  if (skillRouterWorkflowStage === 'calibrator') graph = `<div id="sr-calibration">${curve || '<p role="status">No calibration observations for this model and corpus yet.</p>'}
+    <div class="sr-chart-legend"><span>Original (dashed)</span><span>Current (solid)</span><strong>${model?.judged_calls ? `${Number(model.judged_calls)} Judged Calls` : 'Not Trained Yet'}</strong></div></div>`;
+  if (['assets','index'].includes(skillRouterWorkflowStage)) {
+    const sizes = [['Document vectors',view.index?.document_vector_count],['Internal units',view.index?.unit_count],['Covered sources',view.index?.unit_source_count],['Token vectors',view.index?.token_vector_count]];
+    const max = Math.max(1, ...sizes.map(([, value]) => Number.isInteger(value) ? value : 0));
+    graph = `<ul class="sr-index-bars" aria-label="Observed model index contents">${sizes.map(([name, value]) => `<li><span>${name}</span>${Number.isInteger(value) ? `<meter aria-label="${name}" min="0" max="${max}" value="${value}"></meter>` : '<span>Not reported</span>'}<b>${view.count(value)}</b></li>`).join('')}</ul><p class="sr-inspector-note">Internal units are not a persisted L2 passage table.</p>`;
+  }
+  if (['ranker','feedback'].includes(skillRouterWorkflowStage)) graph = skillRouterChart([
+    {label:'Brier',points:calls.map(call => ({x:call.invocation,y:call.prequential_brier}))},
+    {label:'Log-loss',points:calls.map(call => ({x:call.invocation,y:call.prequential_log_loss}))},
+  ], {label:'Pre-update Learning Loss',xLabel:'Model Call Sequence',yLabel:'Loss'}) || '<p role="status">No pre-update loss observations yet.</p>';
+  if (skillRouterWorkflowStage === 'threshold') graph = skillRouterChart([{label:'Returned Results',points:calls.map(call => ({x:call.invocation,y:call.returned_count}))}],
+    {label:'Returned Results by Model Call',xLabel:'Model Call Sequence',yLabel:'Returned Results'}) || '<p role="status">No result-count observations yet.</p>';
+  if (skillRouterWorkflowStage === 'candidate') graph = '<div class="sr-candidate-graph" aria-label="Planned candidate lifecycle"><span>Training replay</span><span>Model B + index B</span><span>Shadow / canary</span><span>Promote / rollback</span></div><p class="sr-inspector-note">Planned only. 150 updates is not a configured gate.</p>';
+  const judged = [...calls].reverse().find(call => Number.isFinite(call.precision) || Number.isFinite(call.recall));
+  const percent = value => Number.isFinite(value) ? `${Math.round(value * 100)}%` : 'Not reported';
+  const benchmark = skillRouterStatusCache?.benchmark;
+  const metricBody = skillRouterWorkflowStage === 'candidate' ? '<p role="status">No candidate traffic or evaluation metrics exist.</p>'
+    : skillRouterWorkflowStage === 'lexical' ? `${facts([['Synthetic Success@5',percent(benchmark?.metrics?.successRate)],['Synthetic Precision@5',percent(benchmark?.metrics?.precisionAt5)]])}<button class="tbtn" onclick="ask('runSkillRouterBenchmark',{})" ${benchmark?.running ? 'disabled' : ''}>${benchmark?.running ? 'Measuring…' : 'Run benchmark'}</button><p class="sr-inspector-note">Synthetic corpus, not live-corpus Recall.</p>`
+    : `${facts([['Latest judged Precision',percent(judged?.precision)],['Latest judged Recall',percent(judged?.recall)],['Pre-update Brier',view.decimal(model?.prequential?.brier)],['Pre-update log-loss',view.decimal(model?.prequential?.log_loss)]])}
+      <label>Metric <select id="sr-metric" aria-label="Performance Metric" onchange="skillRouterSetMetric(this.value)">${Object.entries(metrics).map(([id,[name]]) => `<option value="${id}" ${skillRouterMetric === id ? 'selected' : ''}>${name}</option>`).join('')}</select></label>
+      ${plot || `<p role="status">${['recall','precision'].includes(skillRouterMetric) && calls.length ? `${label} unavailable: no reported judgments with a valid denominator for these calls.` : 'No observations for this route and corpus.'}</p>`}
+      <p class="sr-inspector-note" title="Precision = relevant returned / returned. Recall = relevant returned / declared relevant, including declared misses. All-negative labels can yield Precision 0 but undefined Recall. Runtime excludes persistence/transport and is not encoder or stage-only latency.">Worker-wide timing · judged-pool Recall, not full-corpus Recall · missing labels are gaps.</p>`;
   return `<section id="sr-performance" class="sr-section" data-settings-panel="performance">
-    <div class="sr-section-head"><h3>Retrieval Performance</h3><div class="sr-model-actions"><button class="tbtn" onclick="skillRouterRequestPerformance()" ${skillRouterPerformancePending ? 'disabled' : ''}>Refresh Performance</button><label>Metric <select id="sr-metric" aria-label="Performance Metric" onchange="skillRouterSetMetric(this.value)">
-      ${Object.entries(metrics).map(([id, [name]]) => `<option value="${id}" ${skillRouterMetric === id ? 'selected' : ''}>${esc(name)}</option>`).join('')}</select></label></div></div>
-    ${skillRouterPerformanceError ? `<p role="alert">${esc(skillRouterPerformanceError)}</p>` : ''}
-    ${learning ? `<label class="sr-solution-toggle"><input id="sr-adaptive-count" type="checkbox" ${(skillRouterAdaptivePending ?? learning.enabled) ? 'checked' : ''}
-      ${skillRouterSolutionPending ? 'disabled' : ''} onchange="skillRouterSolutionRequest('retrievalAdaptiveCount',undefined,this.checked)">Adaptive Result Count</label>` : ''}
+    ${skillRouterWorkflowHtml(view)}
+    ${!selected ? '<p role="status" class="sr-inspector-note">Model retrieval is not enabled. Exact + BM25 remains available.</p>' : ''}
+    ${skillRouterPerformanceError || data.learning_error || data.error ? `<p role="alert">${esc(skillRouterPerformanceError || data.learning_error || data.error)}</p>` : ''}
     ${skillRouterAdaptivePending !== undefined ? '<p role="status">Applying Adaptive Result Count...</p>' : ''}
-    ${models.length > 1 ? `<label>Calibration Route <select id="sr-calibration-context" aria-label="Calibration Route" onchange="skillRouterCalibrationContext=this.value;skillRouterRefreshPerformanceView()">
-      ${models.map(item => `<option value="${esc(item.context)}" ${item === model ? 'selected' : ''}>${esc(item.route)}</option>`).join('')}</select></label>` : ''}
-    ${plot || `<p role="status">${skillRouterMetric === 'recall' && calls.length ? 'Recall unavailable: no complete relevance judgments for these calls.' : learning ? 'No model calls for this route and corpus yet.' : 'Call history is unavailable from this worker. It may still be running an older compatible runtime.'}</p>`}
-    <p>One point per actual model retrieval attempt for this package and corpus; hover points for routes. Runtime is worker retrieval time, excluding history persistence and transport, not encoder inference alone. Red points mark failed model attempts. Missing Recall labels are gaps, never zero. Returned Results measures counts, not tokens saved. ${esc(learning?.retention || '')}</p>
-    <section class="sr-section" id="sr-calibration"><h3>Calibration Function</h3>
-    ${curve || '<p role="status">No calibration observations for this model and corpus yet.</p>'}
-    ${model ? `<div class="sr-chart-legend"><span>Original (dashed)</span><span>Current (solid)</span><strong>${model.judged_calls ? `${Number(model.judged_calls)} Judged Calls` : 'Not Trained Yet'}</strong></div>` : ''}
-    <p>Explicit complete relevance judgments update two scalar parameters, not embedding weights. Original is the actual initialized sigmoid, not a previously evaluated model. ${esc(learning?.calibration || '')}</p>
-    ${model ? `<p>Route: ${esc(model.route)} · Gap threshold: ${Number(model.threshold).toFixed(3)} · Consecutive safe judgments: ${Number(model.safe_streak)} / ${Number(learning.minimum_judged_calls)}. The threshold uses EWMA smoothing; it is not a guarantee of Recall. No clear gap or insufficient evidence keeps the caller's original limit. Models, corpus revisions and routes are isolated.</p>` : ''}
-    </section>${data.learning_error ? `<p role="alert">${esc(data.learning_error)}</p>` : ''}
-    </section>`;
+    <section id="sr-inspector" class="sr-inspector" aria-labelledby="sr-inspector-title" data-stage="${skillRouterWorkflowStage}">
+      <header class="sr-inspector-head"><h3 id="sr-inspector-title">${esc(stage.label)}</h3>
+        ${models.length > 1 ? `<label>Context <select id="sr-calibration-context" aria-label="Calibration Route" onchange="skillRouterCalibrationContext=this.value;skillRouterRefreshPerformanceView()">${models.map(item => `<option value="${esc(item.context)}" ${item === model ? 'selected' : ''}>${esc(item.route)}</option>`).join('')}</select></label>` : `<span class="sr-inspector-note">${esc(model?.route || '')}</span>`}</header>
+      <div class="sr-inspector-tabs" role="tablist" aria-label="Stage details" onkeydown="skillRouterInspectorKey(event)">
+        ${skillRouterInspectorTabs.map(([id,name]) => `<button type="button" role="tab" id="sr-inspector-tab-${id}" aria-controls="sr-inspector-${id}" aria-selected="${skillRouterInspectorTab === id}" tabindex="${skillRouterInspectorTab === id ? 0 : -1}" onclick="skillRouterSetInspectorTab('${id}')">${name}</button>`).join('')}
+      </div>
+      <div id="sr-inspector-parameters" class="sr-inspector-panel" role="tabpanel" aria-labelledby="sr-inspector-tab-parameters" ${skillRouterInspectorTab !== 'parameters' ? 'hidden' : ''}>${facts(stage.facts)}</div>
+      <div id="sr-inspector-controls" class="sr-inspector-panel" role="tabpanel" aria-labelledby="sr-inspector-tab-controls" ${skillRouterInspectorTab !== 'controls' ? 'hidden' : ''}>${controls}
+        <div ${skillRouterWorkflowStage !== 'encoder' ? 'hidden' : ''}>${skillRouterSolutionsHtml()}<details class="sr-section"><summary>Connection & serving diagnostics</summary>${skillRouterModelReadiness(runtime)}</details></div>
+      </div>
+      <div id="sr-inspector-graphs" class="sr-inspector-panel" role="tabpanel" aria-labelledby="sr-inspector-tab-graphs" ${skillRouterInspectorTab !== 'graphs' ? 'hidden' : ''}>${graph}</div>
+      <div id="sr-inspector-metrics" class="sr-inspector-panel" role="tabpanel" aria-labelledby="sr-inspector-tab-metrics" ${skillRouterInspectorTab !== 'metrics' ? 'hidden' : ''}>${metricBody}</div>
+    </section></section>`;
 }
 
 function skillRouterRefreshPerformanceView() {
   const root = document.getElementById('sr-performance');
   if (!root) return;
   const focusId = root.contains(document.activeElement) ? document.activeElement.id : '';
+  const focusTabIndex = focusId ? document.activeElement.getAttribute('tabindex') : null;
   const detailFocus = root.contains(document.activeElement) ? document.activeElement.dataset.routerDetail : '';
   const opened = [...root.querySelectorAll('.sr-hover.open > .sr-help')].map(button => button.dataset.routerDetail);
+  const expanded = [...root.querySelectorAll('#sr-text-solutions details[open]')].map(element => element.querySelector('summary')?.textContent);
+  const focused = document.activeElement;
+  const modelFocus = !focusId && root.contains(focused) && focused.closest('#sr-text-solutions')
+    ? { text:focused.textContent, packageId:focused.dataset.packageId } : null;
+  const left = root.querySelector('.sr-workflow-viewport')?.scrollLeft || 0;
   const holder = document.createElement('div');
   holder.innerHTML = skillRouterPerformanceHtml();
   skillRouterCompactView(holder.firstElementChild);
   const replacement = holder.firstElementChild;
   root.replaceWith(replacement);
-  if (focusId) document.getElementById(focusId)?.focus();
+  for (const element of replacement.querySelectorAll('#sr-text-solutions details')) element.open = expanded.includes(element.querySelector('summary')?.textContent);
+  replacement.querySelector('.sr-workflow-viewport').scrollLeft = left;
+  if (focusId) {
+    const focused = document.getElementById(focusId);
+    if (focused && focusTabIndex !== null) focused.setAttribute('tabindex', focusTabIndex);
+    focused?.focus({ preventScroll:true });
+  }
+  if (modelFocus) [...replacement.querySelectorAll('#sr-text-solutions button')].find(button =>
+    button.textContent === modelFocus.text && button.dataset.packageId === modelFocus.packageId)?.focus({ preventScroll:true });
   for (const button of replacement.querySelectorAll('.sr-help')) {
     if (detailFocus === button.dataset.routerDetail) button.focus();
     if (opened.includes(button.dataset.routerDetail)) button.parentElement.dispatchEvent(new Event('pointerenter'));
@@ -153,7 +332,7 @@ function skillRouterRefreshPerformanceView() {
 }
 
 function skillRouterSetMetric(metric) {
-  if (!['runtime','recall','results'].includes(metric)) return;
+  if (!['runtime','recall','precision','results'].includes(metric)) return;
   skillRouterMetric = metric;
   skillRouterRefreshPerformanceView();
 }
@@ -161,6 +340,10 @@ function skillRouterSetMetric(metric) {
 function skillRouterPositionDetails(wrapper) {
   const panel = wrapper.querySelector('.sr-hover-panel');
   const button = wrapper.querySelector('.sr-help');
+  skillRouterPositionPopover(panel, button);
+}
+
+function skillRouterPositionPopover(panel, button) {
   panel.style.width = `${Math.min(460, Math.max(0, innerWidth - 24))}px`;
   panel.style.maxHeight = `${Math.max(0, innerHeight - 24)}px`;
   const target = button.getBoundingClientRect();
@@ -172,6 +355,7 @@ function skillRouterPositionDetails(wrapper) {
 function skillRouterPositionOpenDetails(event) {
   if (event.target?.closest?.('.sr-hover-panel')) return;
   document.querySelectorAll('.sr-hover.open').forEach(skillRouterPositionDetails);
+  skillRouterHideWorkflowTip(true);
 }
 globalThis.addEventListener?.('resize', skillRouterPositionOpenDetails);
 globalThis.addEventListener?.('scroll', skillRouterPositionOpenDetails, true);
@@ -208,6 +392,12 @@ function skillRouterAddDetails(anchor, label, nodes) {
     };
     const open = () => {
       clearTimeout(closeTimer);
+      for (const other of document.querySelectorAll('.sr-hover.open')) {
+        if (other === wrapper) continue;
+        other.querySelector('.sr-hover-panel').hidden = true;
+        other.querySelector('.sr-help').setAttribute('aria-expanded', 'false');
+        other.classList.remove('open');
+      }
       panel.hidden = false;
       wrapper.classList.add('open');
       button.setAttribute('aria-expanded', 'true');
@@ -260,7 +450,7 @@ function skillRouterCompactView(scope) {
   if (scope.matches?.('.sr-section')) sections.unshift(scope);
   for (const section of sections) {
     if (section.closest('.sr-hover-panel')) continue;
-    const anchor = section.querySelector('h3');
+    const anchor = section.querySelector(':scope > .sr-section-head h3, :scope > h3');
     const nodes = [...section.querySelectorAll(':scope > .sr-section-head > div > p, :scope > .sr-source-note, :scope > .sr-facts, :scope > .sr-boundary, :scope > p:not([role]):not(.sr-runtime-error), :scope > .sr-model-setup > p:not([role])')];
     skillRouterAddDetails(anchor, 'Details', nodes);
   }
@@ -298,13 +488,14 @@ function skillRouterSetupHtml(data) {
   const labels = archive ? ['Runtime','Import','Verify','Register','Imported']
     : ['Runtime', setup.source === 'huggingface' ? 'Download' : 'Import', 'Verify', 'Configure', 'Build index', 'Ready'];
   const failed = ['failed','cancelled'].includes(setup.phase);
-  const phase = failed ? setup.failedPhase : setup.phase === 'index' && data.active_package_id === setup.packageId ? 'ready' : setup.phase;
+  const phase = failed ? setup.failedPhase : setup.phase === 'index' && data.state === 'ready' && data.active_package_id === setup.packageId ? 'ready' : setup.phase;
   const blocked = phase === 'index' && data.state === 'blocked';
   const inactive = phase === 'index' && data.requested_package_id !== setup.packageId && data.active_package_id !== setup.packageId;
   const position = steps.indexOf(phase);
   return `<div class="sr-model-setup" role="status" aria-label="Model setup progress">
     <ol class="sr-setup-steps">${steps.map((step, index) => `<li data-step="${step}" class="${index < position ? 'complete' : index === position ? failed || blocked ? 'failed' : 'current' : ''}" ${index === position ? 'aria-current="step"' : ''}><span class="sr-setup-circle" aria-hidden="true"></span><span>${labels[index]}</span></li>`).join('')}</ol>
-    ${setup.source === 'huggingface' && setup.total > 0 ? `<div class="sr-download-progress"><progress aria-label="Model download" value="${Number(setup.current) || 0}" max="${Number(setup.total)}"></progress><span>${skillRouterSolutionBytes(setup.current)} / ${skillRouterSolutionBytes(setup.total)}</span></div>` : ''}
+    ${setup.phase === 'acquire' && setup.source === 'huggingface' && setup.total > 0 ? `<div class="sr-download-progress"><progress aria-label="Model download" value="${Number(setup.current) || 0}" max="${Number(setup.total)}"></progress><span>${skillRouterSolutionBytes(setup.current)} / ${skillRouterSolutionBytes(setup.total)}</span></div>` : ''}
+    ${setup.detail && !failed ? `<p role="status">${esc(setup.detail)}</p>` : ''}
     ${failed || blocked ? `<p role="alert">${esc(setup.error || data.error || 'Index preparation blocked. Check the model Python and retry explicitly.')}</p>` : ''}
     ${archive ? '<p>Imported only. Review the budget below, then choose Enable & build.</p>' : inactive ? '<p>Model is not enabled. Verified files remain available; choose Enable & build to activate it.</p>' : phase === 'index' ? `<p>Building local index${data.progress?.phase ? ': ' + esc(data.progress.phase) : ''}. Exact + BM25 remains available.</p>` : phase === 'ready' ? '<p>Embedding retrieval is ready for semantic / dual queries.</p>' : '<p>Preparation uses local CPU and storage. No knowledge text is sent to Hugging Face.</p>'}
   </div>`;
@@ -337,11 +528,11 @@ function skillRouterSolutionsHtml() {
         <p>${esc(resources.caveat || '')} ${esc(resources.cpu_demand || '')}</p>
         <p>Content types: ${esc(JSON.stringify(resources.content_type_counts || {}))}</p>
         <p>Source validation (not a quality score for this local corpus): ${esc(JSON.stringify(item.validation || {}))}</p></details>
-      <div class="sr-model-actions">
-        <button class="tbtn" data-package-id="${esc(item.package_id)}" onclick="skillRouterSolutionRequest('retrievalSolutionEnable',this.dataset.packageId)" ${disabled || (preparing || item.error ? 'disabled' : '')}>Enable & build</button>
+      <details class="sr-model-advanced"><summary>Model actions</summary><div class="sr-model-actions">
+        ${!active ? `<button class="tbtn" data-package-id="${esc(item.package_id)}" onclick="skillRouterSolutionRequest('retrievalSolutionEnable',this.dataset.packageId)" ${disabled || (preparing || item.error ? 'disabled' : '')}>Enable & build</button>` : ''}
         <button class="tbtn" data-package-id="${esc(item.package_id)}" onclick="skillRouterSolutionRequest('retrievalSolutionRebuild',this.dataset.packageId)" ${disabled || (preparing || item.error ? 'disabled' : '')}>Rebuild</button>
         <button class="tbtn" data-package-id="${esc(item.package_id)}" onclick="skillRouterSolutionRequest('retrievalSolutionDelete',this.dataset.packageId)" ${disabled}>Delete</button>
-      </div></article>`;
+      </div></details></article>`;
   }).join('');
   const progress = data?.progress;
   const observed = data?.observed || {};
@@ -349,20 +540,22 @@ function skillRouterSolutionsHtml() {
   return `<section class="sr-section" id="sr-text-solutions" data-settings-panel="performance"><h3>Embedding retrieval</h3>
     <p>Optional local model. Exact + BM25 works without it.</p>
     <div class="sr-model-actions sr-model-sources">
-      <button class="tbtn" onclick="skillRouterSolutionRequest('retrievalModelDownload')" ${disabled}>Download from Hugging Face</button>
+      <button class="tbtn primary" onclick="skillRouterSolutionRequest('retrievalModelDownload')" ${disabled}>Download from Hugging Face</button></div>
+    <p role="status">One step: prepare PKM environment, download, verify, configure and build the index automatically.</p>
+    <p class="sr-source-note">Multilingual E5 Small · about 470 MiB · MIT. CPU dependencies are installed in PKM's own environment, not system Python. Allow several GB of free disk.</p>
+    ${skillRouterSetupHtml(data)}
+    <details class="sr-model-advanced"><summary>Advanced model settings</summary>
+    <div class="sr-model-actions">
       <button class="tbtn" onclick="skillRouterSolutionRequest('retrievalModelDirectory')" ${disabled}>Import model directory</button>
       <button class="tbtn" onclick="skillRouterSolutionRequest('retrievalSolutionImport')" ${disabled}>Import offline package</button></div>
-    <p class="sr-source-note">Default: Multilingual E5 Small · about 470 MiB · MIT. Local directory supports this same model. ZIP supports other compatible solutions.</p>
-    ${skillRouterSetupHtml(data)}
-    <details data-model-budget="runtime"><summary>Runtime & storage settings</summary>
     <p>Model runtime: <code class="sr-model-id">${esc(data?.modelRuntime?.python || 'Loading…')}</code>
-      · ${data?.modelRuntime?.configured ? 'Explicit model runtime; MCP environment unchanged' : 'Managed MCP runtime (model dependencies must be present)'}</p>
+      · ${data?.modelRuntime?.configured ? 'Model runtime configured; system Python unchanged' : 'PKM prepares the model environment during setup'}</p>
     <p>Inference thread budget: ${esc(data?.modelRuntime?.cpuThreads ?? 'Not reported')} (library setting, not an OS CPU quota).</p>
     <div class="sr-model-actions"><button class="tbtn" onclick="skillRouterSolutionRequest('retrievalSolutionRuntime')" ${disabled}>Choose model Python</button>
-    </div></details>
+    </div>
     <div class="sr-model-actions">
       <button class="tbtn" onclick="skillRouterSolutionRequest('retrievalSolutions')">Refresh models</button>
-      <button class="tbtn" onclick="skillRouterSolutionRequest('retrievalSolutionDisable')" ${disabled}>Disable model</button></div>
+      <button class="tbtn" onclick="skillRouterSolutionRequest('retrievalSolutionDisable')" ${disabled}>Disable model</button></div></details>
     ${skillRouterSolutionPending ? '<p role="status">Applying model configuration…</p>' : ''}
     ${data?.error && !setupError ? `<p role="alert" class="sr-runtime-error">${esc(data.error)}</p>` : ''}
     ${data ? `<p role="status">Current model: ${esc(data.state === 'disabled' || data.state === 'idle' ? 'Not enabled · Exact + BM25 is available' : data.state || 'unavailable')}${preparing && progress ? ` · ${esc(progress.phase)}` : ''}</p>` : '<p role="status">Loading model catalog…</p>'}
@@ -379,27 +572,6 @@ function skillRouterSolutionsHtml() {
 
 function skillRouterRefreshSolutionsView() {
   skillRouterRefreshPerformanceView();
-  const root = document.getElementById('sr-text-solutions');
-  if (!root) return;
-  const open = [...root.querySelectorAll('details[open]')].map(element => element.dataset.modelBudget);
-  const focused = document.activeElement;
-  const focusKey = root.contains(focused) ? { text:focused.textContent, id:focused.dataset.packageId, detail:focused.dataset.routerDetail } : null;
-  const hovered = [...root.querySelectorAll('.sr-hover.open > .sr-help')].map(button => button.dataset.routerDetail);
-  const holder = document.createElement('div');
-  holder.innerHTML = skillRouterSolutionsHtml();
-  const replacement = holder.firstElementChild;
-  skillRouterCompactView(replacement);
-  const readiness = root.querySelector('#sr-model-readiness')?.closest('section');
-  if (readiness) skillRouterAddDetails(replacement.querySelector('h3'), 'Connection & serving diagnostics', [readiness]);
-  root.replaceWith(replacement);
-  replacement.querySelectorAll('details').forEach(element => { element.open = open.includes(element.dataset.modelBudget); });
-  if (focusKey) [...replacement.querySelectorAll('button')].find(element =>
-    focusKey.detail ? element.dataset.routerDetail === focusKey.detail
-      : element.textContent === focusKey.text && element.dataset.packageId === focusKey.id)?.focus();
-  for (const button of replacement.querySelectorAll('.sr-help')) {
-    if (hovered.includes(button.dataset.routerDetail)) button.parentElement.dispatchEvent(new Event('pointerenter'));
-  }
-  applySettingsSubtab('router');
 }
 
 function skillRouterSolutionsOnSnapshot(data) {
@@ -569,9 +741,7 @@ function renderSkillRouterPane(data) {
   document.getElementById('detail').innerHTML = `<div class="sr-dashboard" data-settings-owner="router">
     <header class="sr-head"><div><h2>Router</h2><p>Control Skill source priority and inspect the implemented retrieval engine.</p></div><button class="tbtn" onclick="ask('skillRouterStatus',{})">Refresh</button></header>
     ${skillRouterNavigation()}
-    ${skillRouterPerformanceHtml()}
-    ${skillRouterSolutionsHtml()}
-    ${skillRouterModelReadiness(runtime)}
+    ${skillRouterPerformanceHtml(runtime)}
     <section class="sr-section"><div class="sr-section-head"><div><h3>Skill source priority</h3><p>Drag sources into precedence order. Relevance admission still applies, and explicit or required Skills remain protected.</p></div>${skillRouterStatusBadge(skillRouterSourceSaving ? 'Saving…' : `${orderedSources.length} sources`, skillRouterSourceSaving ? 'warn' : 'good')}</div><div class="sr-source-list">${sourceRows || '<div class="empty">No Skill sources are available.</div>'}</div><p class="sr-source-note">PKM Personal and individual Subscribers are ranked here after relevance admission. Agent Native is selected by the active Agent host; its position is sent as a routing preference without inventing host candidates or scores.</p></section>
     ${skillRouterRoutingPathsHtml(data)}
     <section class="sr-section"><div class="sr-section-head"><div><h3>Routing path performance</h3><p>Synthetic labeled corpus, 1K documents. Each query has one judged relevant item; Precision@5 therefore caps at 20%. Not a live-corpus quality score.</p></div><button class="tbtn" onclick="ask('runSkillRouterBenchmark',{})" ${benchmark.running ? 'disabled' : ''}>${benchmark.running ? 'Measuring…' : 'Run benchmark'}</button></div>${benchmark.error ? `<p class="sr-runtime-error">Benchmark failed: ${esc(benchmark.error)}</p>` : ''}<div class="sr-table-wrap"><table class="sr-table"><thead><tr><th>Measured path</th><th>Success@5</th><th>Precision@5</th><th>NDCG@5</th><th>Latency p50 / p95</th></tr></thead><tbody>${measuredRow}</tbody></table></div>${benchmark.generatedAt ? `<p class="sr-source-note">Measured ${esc(benchmark.generatedAt)} · synthetic corpus · engine-matched report</p>` : ''}</section>
@@ -590,21 +760,14 @@ function renderSkillRouterPane(data) {
       <section class="sr-section"><div class="sr-section-head"><div><h3>Privacy boundary</h3><p>Current retrieval behavior.</p></div>${skillRouterStatusBadge('Local index', 'good')}</div><ul class="sr-boundary"><li><b>Index</b><span>PKM builds a local Exact + BM25 index over configured knowledge, plus a local model index only when enabled.</span></li><li><b>Collector</b><span>Task identity is hashed; only aggregate retrieval and outcome fields are emitted.</span></li><li><b>Training</b><span>Explicit relevance judgments train local scalar calibration and a score-gap threshold. Embedding-model weights remain frozen.</span></li></ul></section></div>
   </div>`;
   const root = document.querySelector('[data-settings-owner="router"]');
-  const readinessSection = root.querySelector('#sr-model-readiness').closest('section');
-  const readinessDetails = document.createElement('details');
-  readinessDetails.className = 'sr-section';
-  readinessDetails.dataset.settingsPanel = 'performance';
-  readinessDetails.innerHTML = '<summary>Connection & serving diagnostics</summary>';
-  readinessSection.replaceWith(readinessDetails);
-  readinessDetails.appendChild(readinessSection);
-  root.querySelector('.sr-contract').dataset.settingsPanel = 'sources performance';
+  root.querySelector('.sr-contract').dataset.settingsPanel = 'sources';
   root.querySelector('.sr-source-list').closest('section').dataset.settingsPanel = 'sources';
-  root.querySelector('.sr-solution-state').closest('section').dataset.settingsPanel = 'sources performance';
-  for (const table of root.querySelectorAll('.sr-table')) if (table.querySelector('th')?.textContent === 'Measured path') table.closest('section').dataset.settingsPanel = 'performance';
+  root.querySelector('.sr-solution-state').closest('section').dataset.settingsPanel = 'sources';
+  for (const table of root.querySelectorAll('.sr-table')) if (table.querySelector('th')?.textContent === 'Measured path') table.closest('section').dataset.settingsPanel = 'sources';
   root.querySelector('.sr-privacy-declaration').dataset.settingsPanel = 'privacy';
   root.querySelector('.sr-boundary').closest('section').dataset.settingsPanel = 'privacy';
-  root.querySelector('.sr-lower-grid').dataset.settingsPanel = 'performance privacy';
-  root.querySelector('.sr-lower-grid .sr-section:first-child').dataset.settingsPanel = 'performance';
+  root.querySelector('.sr-lower-grid').dataset.settingsPanel = 'privacy';
+  root.querySelector('.sr-lower-grid .sr-section:first-child').dataset.settingsPanel = 'privacy';
   root.querySelector('.sr-lower-grid .sr-section:last-child').dataset.settingsPanel = 'privacy';
   skillRouterCompactView(root);
   applySettingsSubtab('router');

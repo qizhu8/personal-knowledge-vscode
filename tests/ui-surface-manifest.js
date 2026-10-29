@@ -65,6 +65,13 @@ const surfaces = {
     error: ["test-server-proxy.js", "test-context-menu-actions.js"],
     fallback: ["test-resource-polling.js", "test-loading-progress.js"],
   }),
+  userProfile: surface("automation", "src/webview/panel/54-persona-profiles.js", "showUserProfileTab", ["detail", "card"], {
+    functionality: ["test-persona-profile-browser.js", "test-persona-profiles.js"],
+    ui: ["test-persona-profile-browser.js", "test-persona-profile-ui.js"],
+    refresh: ["test-persona-profile-browser.js", "test-profile-sync.js"],
+    error: ["test-persona-profile-browser.js", "test-persona-profiles.js"],
+    fallback: ["test-persona-profile-ui.js", "test-profile-sync.js"],
+  }),
   agentSessions: surface("automation", "src/webview/panel/15-projects.js", "renderAgentSessions", ["cattree", "card", "table"], {
     functionality: ["test-agent-session-lifecycle.js", "test-four-workspace-ui.js"],
     ui: ["test-four-workspace-ui.js", "test-context-menus.js"],
@@ -78,6 +85,13 @@ const surfaces = {
     refresh: ["test-tab-cache-ui.js", "test-refresh-actions.js"],
     error: ["test-agent-snapshots.js", "test-context-menu-actions.js"],
     fallback: ["test-four-workspace-ui.js", "test-loading-progress.js"],
+  }),
+  actionLibrary: surface("automation", "src/webview/panel/53-panel-instances.js", "showEmbeddedActions", ["embedded-library", "cattree"], {
+    functionality: ["test-action-library-entry.js", "test-action-browser.js"],
+    ui: ["test-action-library-entry.js", "test-panel-instances.js"],
+    refresh: ["test-panel-instances.js"],
+    error: ["test-action-browser.js"],
+    fallback: ["test-action-library-entry.js", "test-panel-instances.js"],
   }),
   actions: surface("automation", "src/webview/panel/53-panel-instances.js", "showEmbeddedActions", ["embedded-workbench"], {
     functionality: ["test-panel-instances.js", "test-action-browser.js"],

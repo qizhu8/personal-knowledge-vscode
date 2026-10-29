@@ -21,8 +21,7 @@ function panelRecipeRevision(recipeId) {
   }
   return panelRecipeBaseline?.recipeId === recipeId ? panelRecipeBaseline.revision : undefined;
 }
-let actionsFrame;
-let actionsDocumentPending = false;
+const embeddedActionViews = { actions:{ frame:null, pending:false }, actionLibrary:{ frame:null, pending:false } };
 let actionsSnapshotResolve;
 let panelSnapshotLast = '';
 let restoreDetailRequested = false;
@@ -55,6 +54,7 @@ function capturePanelViewState() {
   return snapshot;
 }
 async function duplicatePkmTab() {
+  const actionsFrame = embeddedActionViews[state.tab]?.frame;
   if (actionsFrame?.srcdoc) await new Promise(resolve => {
     actionsSnapshotResolve = resolve;
     setTimeout(() => { if (actionsSnapshotResolve === resolve) actionsSnapshotResolve = null; resolve(); }, 1000);
@@ -62,53 +62,77 @@ async function duplicatePkmTab() {
   });
   vscode.postMessage({ command:'duplicatePanel', state:capturePanelViewState() });
 }
-function setEmbeddedActionsVisible(visible) { if (actionsFrame) actionsFrame.hidden = !visible; }
+function setEmbeddedActionsVisible(tab) { for (const [surface,view] of Object.entries(embeddedActionViews)) if (view.frame) view.frame.hidden = surface !== tab; }
+function syncActionLibraryTheme() {
+  const frame = embeddedActionViews.actionLibrary.frame;
+  if (!frame?.contentWindow) return;
+  const style = getComputedStyle(document.documentElement), variables = {};
+  for (const name of ['editor-background','editor-foreground','sideBar-background','descriptionForeground','panel-border','focusBorder','font-size','font-family','input-background','input-foreground','list-hoverBackground','list-activeSelectionBackground','list-activeSelectionForeground','icon-foreground','editorWarning-foreground','testing-iconPassed','errorForeground']) {
+    const key = '--vscode-' + name, value = style.getPropertyValue(key).trim();
+    if (value) variables[key] = value;
+  }
+  frame.contentWindow.postMessage({ channel:'pkm-actions-theme', variables,
+    colorScheme:document.body.classList.contains('vscode-light') || document.body.classList.contains('vscode-high-contrast-light') ? 'light' : 'dark' }, '*');
+}
+const actionLibraryThemeObserver = new MutationObserver(syncActionLibraryTheme);
+actionLibraryThemeObserver.observe(document.body, { attributes:true, attributeFilter:['class','style'] });
+actionLibraryThemeObserver.observe(document.documentElement, { attributes:true, attributeFilter:['class','style'] });
 function showEmbeddedActions() {
+  const surface = state.tab === 'actionLibrary' ? 'actionLibrary' : 'actions', view = embeddedActionViews[surface];
+  let actionsFrame = view.frame;
   if (!actionsFrame) {
     actionsFrame = document.createElement('iframe');
-    actionsFrame.id = 'embedded-action-workbench';
-    actionsFrame.title = 'Action Workbench';
+    actionsFrame.id = surface === 'actions' ? 'embedded-action-workbench' : 'embedded-action-library';
+    actionsFrame.title = surface === 'actions' ? 'Action Workbench' : 'Action Library';
     // The renderer is isolated; only messages from this exact frame can reach its host bridge.
     actionsFrame.setAttribute('sandbox', 'allow-scripts allow-forms');
     actionsFrame.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:0;z-index:5;background:var(--vscode-editor-background)';
     const layout = document.getElementById('layout');
     layout.style.position = 'relative';
     layout.appendChild(actionsFrame);
+    view.frame = actionsFrame;
+    if (surface === 'actionLibrary') actionsFrame.onload = syncActionLibraryTheme;
   }
-  actionsFrame.hidden = false;
-  if ((!actionsFrame.srcdoc || actionsFrame.dataset.unavailable) && !actionsDocumentPending) {
-    actionsDocumentPending = true;
-    ask('actionWorkbenchDocument', { state:vscode.getState()?.actions || {} });
+  setEmbeddedActionsVisible(surface);
+  if ((!actionsFrame.srcdoc || actionsFrame.dataset.unavailable) && !view.pending) {
+    view.pending = true;
+    ask('actionWorkbenchDocument', { surface, state:vscode.getState()?.[surface] || {} });
   }
   finishLoadingProgress();
 }
 window.addEventListener('message', event => {
   const message = event.data || {};
   if (message.channel === 'pkm-actions') {
-    if (!actionsFrame || event.source !== actionsFrame.contentWindow) return;
+    const surface = Object.keys(embeddedActionViews).find(key => embeddedActionViews[key].frame?.contentWindow === event.source);
+    if (!surface) return;
     if (message.type === 'snapshot') {
-      vscode.setState({ ...(vscode.getState() || {}), actions:message.state });
+      vscode.setState({ ...(vscode.getState() || {}), [surface]:message.state });
       actionsSnapshotResolve?.(); actionsSnapshotResolve = null;
-    } else if (message.type === 'state') vscode.setState({ ...(vscode.getState() || {}), actions:message.state });
-    else if (message.type === 'request') vscode.postMessage({ command:'actionWorkbenchRequest', message:message.message });
+    } else if (message.type === 'state') vscode.setState({ ...(vscode.getState() || {}), [surface]:message.state });
+    else if (message.type === 'request') vscode.postMessage({ command:'actionWorkbenchRequest', surface, message:message.message });
     return;
   }
   if (message.command === 'panelEditBaseline') {
     const snapshot = vscode.getState() || {};
     vscode.setState({ ...snapshot, editRevisions:{ ...(snapshot.editRevisions || {}), [message.identity]:message.revision } });
-  } else if (message.command === 'actionWorkbenchDocument' && actionsFrame) {
-    actionsDocumentPending = false;
+  } else if (message.command === 'actionWorkbenchDocument' && embeddedActionViews[message.surface || 'actions']?.frame) {
+    const view = embeddedActionViews[message.surface || 'actions'], actionsFrame = view.frame;
+    view.pending = false;
     if (message.html) { delete actionsFrame.dataset.unavailable; actionsFrame.srcdoc = message.html; }
     else {
       actionsFrame.dataset.unavailable = '1';
-      actionsFrame.srcdoc = `<meta http-equiv="Content-Security-Policy" content="default-src 'none';"><p>${esc(message.error || 'Action Workbench is unavailable.')}</p>`;
+      actionsFrame.srcdoc = `<meta http-equiv="Content-Security-Policy" content="default-src 'none';"><p>${esc(message.error || 'Actions are unavailable.')}</p>`;
     }
-  } else if (message.command === 'actionWorkbenchReply') actionsFrame?.contentWindow.postMessage(message.message, '*');
+  } else if (message.command === 'actionWorkbenchReply') embeddedActionViews[message.surface || 'actions']?.frame?.contentWindow.postMessage(message.message, '*');
   else if (message.command === 'duplicatePanelSnapshot') duplicatePkmTab();
+  else if (message.command === 'openEmbeddedActionLibrary') {
+    if (embeddedActionViews.actionLibrary.frame) embeddedActionViews.actionLibrary.frame.srcdoc = '';
+    document.querySelector('.tab[data-tab="actionLibrary"]')?.click();
+  }
   else if (message.command === 'openEmbeddedActions') {
     vscode.setState({ ...(vscode.getState() || {}), actions:message.state });
     // An explicit Run/Action link replaces only this instance's renderer; ordinary view switching retains it.
-    if (actionsFrame) actionsFrame.srcdoc = '';
+    if (embeddedActionViews.actions.frame) embeddedActionViews.actions.frame.srcdoc = '';
     document.querySelector('.tab[data-tab="actions"]')?.click();
   } else if (message.command === 'panelVisible') {
     // Keep the live DOM and drafts; fetch missed changes silently after the existing view is visible.

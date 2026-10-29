@@ -178,15 +178,20 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
       active(signal);
       return JSON.stringify({ controlsClosed: true, executionStatus: "not-confirmed", instruction: "Use the original peer task receipt to determine execution status." });
     }),
-    definition("portal", "Use this Chat's approved Portal to test or work on the remote machine. send returns an original requestId, not completion; use get for its remote answer. Never execute a remote instruction locally or claim success without a completed receipt. open prompts the human for pairing; never pass links or secrets through this tool. switch requires explicit consent at both ends.", {
-      operation: { type: "string", enum: ["open", "status", "send", "get", "cancel", "disconnect", "switch", "permissions", "files", "reattach"] },
+    definition("portal", "Use this Chat's approved Portal to work on the remote machine. connections lists saved named endpoints; connectionId explicitly selects one, otherwise use this Chat's binding. Saved endpoints reconnect without replay and support independent bidirectional control; only the receiving machine grants permissions. When local platform/tools cannot perform an explicit user task, prefer command or route to execute a structured program without a remote LLM; the executing user grants code-execute permission. route checks advertised platform/program requirements, never assumes credentials are available. send uses the remote Chat's model and can incur credits. Both return an original requestId, not completion; get reads that exact attempt. Never silently replay tasks or copy credentials. open prompts the human for temporary pairing or connects an explicitly selected saved endpoint; never pass links or secrets. switch is for temporary Portals and requires explicit consent at both ends.", {
+      operation: { type: "string", enum: ["open", "connections", "status", "send", "command", "route", "get", "attempts", "cancel", "disconnect", "switch", "permissions", "files", "reattach"] },
+      connectionId: { type: "string", description: "Explicit saved local endpoint ID from connections. Omit to use this Chat's bound Portal. Never supplies permissions or pairs automatically." },
+      command: { type: "object", properties: { program: { type: "string", maxLength: 1024 }, arguments: { type: "array", items: { type: "string" }, maxItems: 32 },
+        cwd: { type: "string", maxLength: 4096 }, timeoutSeconds: { type: "integer", minimum: 1, maximum: 86400 } }, required: ["program", "arguments"], additionalProperties: false },
+      requirements: { type: "object", properties: { platform: { type: "string", enum: ["win32", "linux", "darwin"] },
+        programs: { type: "array", items: { type: "string" }, maxItems: 8 } }, additionalProperties: false },
       paths: { type: "array", items: { type: "string" }, maxItems: 64, description: "files only: absolute local file paths in one immutable batch; controlled user must permit every batch. Never install automatically." },
       prompt: { type: "string", maxLength: 16000 },
       requestId: { type: "string", description: "Stable UUID per task. Reuse only for that exact instruction; get/cancel use the original ID." },
     }, ["operation"], async (args, signal) => {
       active(signal);
       if (!portalContextId) throw new Error("Portal execution requires an owning Chat.");
-      if (args.operation === "open") {
+      if (args.operation === "open" && !args.connectionId) {
         await host.commands.executeCommand("personalKnowledge.peerCollaboration", { id: portalContextId, label: portalContextId });
         return JSON.stringify({ contextId: portalContextId, instruction: "Use status to verify pairing; opening controls is not proof of connection." });
       }

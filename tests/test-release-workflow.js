@@ -7,15 +7,29 @@ const workflow = fs.readFileSync(path.join(__dirname, "..", ".github", "workflow
 const scripts = require("../package.json").scripts;
 
 assert(workflow.includes("run: npm run test:release"), "Marketplace must execute the release lifecycle, including its prerequisite gate");
-for (const name of ["pretest:release", "package"]) {
-  const steps = scripts[name].split(" && ");
+{
+  const steps = scripts["pretest:release"].split(" && ");
   const accounting = steps.indexOf("npm run test:chat-accounting:run");
   assert(accounting > steps.indexOf("npm run build") && accounting >= 0,
-    `${name} must run accounting against a complete build`);
+    "pretest:release must run accounting against a complete build");
   const boundary = steps.findIndex(step => /verify-version-bump|package-extension/.test(step));
-  assert(accounting < boundary, `${name} must fail closed on accounting before version/publication or packaging`);
+  assert(accounting < boundary, "pretest:release must fail closed on accounting before version/publication or packaging");
   const retrieval = steps.indexOf("npm run test:chat-retrieval:run");
-  assert(retrieval > accounting && retrieval < boundary, `${name} must require retrieval and checkpoint regressions after accounting and before packaging`);
+  assert(retrieval > accounting && retrieval < boundary, "pretest:release must require retrieval and checkpoint regressions after accounting and before packaging");
+}
+{
+  // `npm run package` builds once, runs test groups in parallel, and packages only when every group passed.
+  assert.equal(scripts.package, "node scripts/run-package-gate.js");
+  const gate = fs.readFileSync(path.join(__dirname, "..", "scripts", "run-package-gate.js"), "utf8");
+  const build = gate.indexOf('run(npm, ["run", "build"]');
+  const failClosed = gate.indexOf("if (failed.length)");
+  const packaging = gate.indexOf("package-extension.js");
+  assert(build >= 0 && build < failClosed && failClosed < packaging,
+    "package must build, then fail closed on any test group before packaging");
+  for (const file of ["test-chat-budget-ledger.js", "scripts/run-memory-engine-tests.js", "test-chat-retrieval-integration.js",
+    "test-chat-context-contracts.js", "test-chat-work-goal.js", "test-chat-harness-records.js", "test-api-chat.js", "test-chat-activity-browser.js"]) {
+    assert(gate.includes(file), `package gate must run mandatory accounting/retrieval evidence ${file}`);
+  }
 }
 for (const file of ["test-chat-retrieval-integration.js", "test-chat-context-contracts.js", "test-chat-work-goal.js",
   "test-chat-harness-records.js", "test-api-chat.js", "test-chat-activity-browser.js"]) {

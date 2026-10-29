@@ -35,7 +35,8 @@ test("native transport is prepared before dispatch and confirmed only after prov
 
 test("native automatic-reference cap uses actual token counts and rejects 8001 before dispatch", async () => {
   for (const referenceTokens of [7936, 7937]) {
-    const reference = { role:"system", content:"Automatic reference" };
+    // 12 KB of UTF-8 exceeds the byte upper bound, so the model tokenizer decides the cap.
+    const reference = { role:"system", content:`Automatic reference ${"\u4e2d".repeat(4000)}` };
     let dispatches = 0, receipt;
     const model = { id:"fixture", name:"Fixture", vendor:"copilot", family:"fixture", version:"1", maxInputTokens:32768,
       countTokens:async value => typeof value === "object" && value.content.includes("Automatic reference") ? referenceTokens : 1,
@@ -55,6 +56,21 @@ test("native automatic-reference cap uses actual token counts and rejects 8001 b
       assert.equal(receipt, undefined);
     }
   }
+});
+
+test("native requests skip tokenizer calls when the UTF-8 byte bound already fits", async () => {
+  const reference = { role:"system", content:"Automatic reference" };
+  let counts = 0, receipt;
+  const model = { id:"fixture", name:"Fixture", vendor:"copilot", family:"fixture", version:"1", maxInputTokens:32768,
+    countTokens:async () => { counts++; return 1; },
+    sendRequest:async () => ({ text:(async function* () { yield "done"; })() }) };
+  await streamVscodeChat(model, { messages:[reference, { role:"user", content:"question" }], signal:new AbortController().signal,
+    contextWindow:32768, maxOutputTokens:1024, automaticKnowledge:{ inputBudget:8000, includes:message => message === reference },
+    onTransportPrepared:value => { receipt = value; } }, () => {}, host);
+  assert.equal(counts, 0);
+  assert.equal(receipt.countingMethod, "utf8-byte-upper-bound");
+  assert.equal(receipt.automaticKnowledge.countingMethod, "utf8-byte-upper-bound");
+  assert(receipt.automaticKnowledge.inputTokens <= 8000);
 });
 
 test("HTTP automatic-reference cap is independent of required input and enforced before fetch", async () => {

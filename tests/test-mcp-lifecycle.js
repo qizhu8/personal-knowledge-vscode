@@ -60,7 +60,7 @@ test("immutable runtime survives extension removal and launcher follows only com
   assert.equal(lifecycle.readManagedMcpManifest(managed), undefined);
   fs.writeFileSync(path.join(managed, "server.py"), lifecycle.managedMcpLauncher(first));
   lifecycle.publishManagedMcpGeneration(managed, first);
-  const python = path.resolve(__dirname, "../.venv/bin/python");
+  const python = require("./dev-paths").testPython;
   const launch = () => JSON.parse(execFileSync(python, [path.join(managed, "server.py")], { encoding: "utf8" }));
   assert.equal(launch().generation, first.generation);
   fs.writeFileSync(path.join(managed, "runtime-maintenance.json"), "{}");
@@ -189,7 +189,7 @@ test("actual generated unified FastMCP performs Skill writes from owned runtime 
   fs.cpSync(path.join(repository, "resources"), path.join(extension, "resources"), { recursive: true });
   const store = path.join(root, "store");
   fs.mkdirSync(store);
-  const configuration = { mcpServerPath: managed, mcpRuntimePath: path.join(repository, ".venv") };
+  const configuration = { mcpServerPath: managed, mcpRuntimePath: require("./dev-paths").testVenv };
   const mcp = sourceModule("src/mcp/mcp.ts", {
     vscode: { workspace: { getConfiguration: () => ({ get: (name, fallback) => configuration[name] ?? fallback }) } },
     "../knowledge/filestore": { getStorePath: () => store },
@@ -217,7 +217,7 @@ async def main():
         print(json.dumps({"version":version,"runtime":runtime,"tools":tools}))
 asyncio.run(main())
 `;
-  const result = JSON.parse(execFileSync(path.join(repository, ".venv/bin/python"), ["-c", script, generated.serverPath], {
+  const result = JSON.parse(execFileSync(require("./dev-paths").testPython, ["-c", script, generated.serverPath], {
     encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
   }));
@@ -231,7 +231,7 @@ asyncio.run(main())
     ({ connectManagedChatMcp } = require("../dist/chat/api-chat-mcp"));
   } finally { Module._load = originalLoad; }
   const connection = await connectManagedChatMcp({
-    command: path.join(repository, ".venv/bin/python"), args: [generated.serverPath],
+    command: require("./dev-paths").testPython, args: [generated.serverPath],
     cwd: path.dirname(generated.serverPath), env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
   }, new AbortController().signal, path.dirname(generated.serverPath));
   try {

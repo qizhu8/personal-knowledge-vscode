@@ -184,7 +184,7 @@ test("scripted agent receives a real worker's final result and human alias on th
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-native-actions-"));
   const store = path.join(temporary, "store");
   const root = path.resolve(__dirname, "..");
-  const python = process.env.PKM_TEST_PYTHON || path.join(root, ".venv/bin/python");
+  const python = require("./dev-paths").testPython;
   const execute = (args, input) => new Promise((resolve, reject) => {
     const process = execFile(python, [path.join(root, "resources/action_modules.py"), ...args],
       { timeout: 30000, maxBuffer: 2 * 1024 * 1024 }, (error, stdout, stderr) => {

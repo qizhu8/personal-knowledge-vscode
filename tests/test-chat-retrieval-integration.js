@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { createChatKnowledgeRetriever } = require("../dist/chat/chat-knowledge-retriever");
 const { RetrievalWorkerManager } = require("../dist/retrieval/retrieval-worker");
+const { retrievalDocumentContentHash } = require("../dist/retrieval/retrieval-snapshot");
 const { validChatRetrievalReceipt } = require("../dist/chat/chat-retrieval");
 
 test("feedback manager validates explicit labels and requires positive worker acknowledgement",async()=>{
@@ -13,7 +14,7 @@ test("feedback manager validates explicit labels and requires positive worker ac
   let response={ok:false,error:"Feedback rejected."};
   manager.request=async(_endpoint,route,method,body)=>{
     assert.equal(route,"/retrieval-feedback");assert.equal(method,"POST");
-    assert.deepEqual(body,{retrieval_id:"receipt",relevant_source_ids:[],complete:true});
+    assert.deepEqual(body,{retrieval_id:"receipt",relevant_source_ids:[],complete:true,provenance:"user"});
     return response;
   };
   await assert.rejects(manager.submitFeedback("",[]),/Invalid explicit/);
@@ -24,18 +25,29 @@ test("feedback manager validates explicit labels and requires positive worker ac
 });
 
 test("Chat dual requests do not enable a model; off/invalid/cancelled status stays explicit", async()=>{
-  const snapshot={corpus_revision:"off",documents:[]};
-  let response={requestId:"off-query",hits:[],semantic_status:"off",model_invoked:false,readyGeneration:0,corpusRevision:"off"};
+  const documents=Array.from({length:20},(_,index)=>({
+    skill_id:`skill:source-${index}`,source_id:`source-${index}`,source_revision:"1",title:`Source ${index}`,
+    description:"",body:"guidance",content_type:"skill",source_uri:`pkm://skills/source-${index}`,
+    metadata:{},provenance:{},read_only:false,visibility:"available",links:[],
+  }));
+  const snapshot={corpus_revision:"off",documents};
+  let response={requestId:"off-query",hits:Array.from({length:20},(_,index)=>({
+    sourceId:`source-${index}`,sourceRevision:"1",contentHash:retrievalDocumentContentHash(documents[index]),contentType:"skill",
+    sourceUri:`pkm://skills/source-${index}`,title:`Source ${index}`,description:"",score:20-index,
+    scoreComponents:{lexical:20-index,semantic:0,graph:0,priority:0},route:"lexical",metadata:{},provenance:{},
+  })),semantic_status:"off",model_invoked:false,readyGeneration:0,corpusRevision:"off"};
   const adapter=createChatKnowledgeRetriever(()=>({
     query:async(query,signal)=>{
       assert.equal(query.route,"dual");assert.equal(query.scope.capabilityId,"pkm-chat-context");
-      assert.equal(query.generation.mode,"latest-ready");assert.equal(query.deadlineMs,5000);
+      assert.equal(query.generation.mode,"latest-ready");assert.equal(query.deadlineMs,5000);assert.equal(query.topK,8);
       return response;
     },submitFeedback:async()=>{throw new Error("Feedback must not be called automatically");},
   }),()=>snapshot);
   const result=await adapter("query",new AbortController().signal);
   assert.equal(result.invocation.modelInvoked,false);assert.equal(result.invocation.semanticStatus,"off");
   assert.equal(result.invocation.servedRoute,"lexical");assert.equal(result.invocation.retrievalId,undefined);
+  assert.equal(result.candidates.length,8,"Chat keeps only the eight highest-ranked retrieval candidates");
+  assert.deepEqual(result.candidates.map(item=>item.sourceId),Array.from({length:8},(_,index)=>`source-${index}`));
   response={...response,semantic_status:undefined};
   await assert.rejects(adapter("query",new AbortController().signal),/omitted.*status/);
   const cancellation=new AbortController();cancellation.abort();
@@ -95,10 +107,19 @@ test("production Chat adapter uses real worker dual routing, retains feedback id
   assert(validChatRetrievalReceipt({schema:"pkm.chat.retrieval/v1",chatId:"chat",model:"fixture",query:"guidance",
     selectedCount:0,candidates:result.candidates.map(({content,...item})=>item),invocation:result.invocation},"chat"));
   assert((await manager.observeLearning()).calls.every(call=>call.recall == null),"selection is not a relevance judgment");
+  const selfEvaluation = await retrieve.feedback(result.invocation.retrievalId,["source-7"],"model");
+  assert(selfEvaluation.ranker_revision > 0 && selfEvaluation.calibrator_revision > 0);
+  assert.equal(selfEvaluation.provenance,"model");
   const feedback = await retrieve.feedback(result.invocation.retrievalId,["source-0","source-9","missed-relevant-source"]);
   assert.equal(feedback.ok,true);
+  assert.equal(feedback.superseded,true, "explicit user correction replaces the model label for the same query");
+  assert(feedback.revision > selfEvaluation.revision);
   assert((await manager.observeLearning()).calls.some(call=>call.recall !== null));
   const negative=await retrieve("guidance",new AbortController().signal);
+  assert.equal(negative.invocation.onlineLearning.ranker_revision,feedback.ranker_revision);
+  assert.equal(negative.invocation.onlineLearning.calibrator_revision,feedback.calibrator_revision);
+  assert.equal(negative.invocation.onlineLearning.applied,true);
+  assert.equal(negative.invocation.onlineLearning.embedding_updated,false);
   const negativeFeedback=await retrieve.feedback(negative.invocation.retrievalId,[]);
   assert.equal(negativeFeedback.ok,true,
     "explicit complete all-negative judgments are valid and not inferred from an empty selection");

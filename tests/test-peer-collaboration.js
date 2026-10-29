@@ -38,7 +38,7 @@ async function fixture(t, options = {}) {
     execute: async (prompt, signal, id) => { runs++; return options.execute ? options.execute(prompt, signal, id) : { content: prompt, effects: 1 }; },
   };
   a = new PeerSession({ ...common, ...(options.autoReview !== undefined ? { autoReview: () => options.autoReview } : {}), reviewNeeded: review => reviews.push(review), chatId: randomUUID(), chatName: "Controller fixture", machine: "controller-host", endpoint: "wss://controller-host:443", send: send("controller", () => b) });
-  b = new PeerSession({ ...common, chatId: randomUUID(), chatName: "Controlled fixture", machine: "controlled-host", endpoint: "wss://controlled-host:443", send: send("controlled", () => a) });
+  b = new PeerSession({ ...common, taskAttempts: options.taskAttempts, chatId: randomUUID(), chatName: "Controlled fixture", machine: "controlled-host", endpoint: "wss://controlled-host:443", send: send("controlled", () => a) });
   if (options.offer) a.accept("controlled", b.offer());
   else a.pair("controlled", b.invite());
   await until(() => a.binding && b.binding);
@@ -57,6 +57,33 @@ test("peer transport rejects unencrypted remote endpoints and malformed or overs
     { ...value, requestId: "../escape" }, { ...value, payload: [] }, { ...value, payload: { prompt: "x".repeat(50 * 1024) } }]) {
     assert.throws(() => parsePeerPacket(invalid));
   }
+});
+
+test("pairing rejections reach only the matching pending request and terminate it immediately", async t => {
+  const outgoing = [], errors = [];
+  const options = {
+    roomId:"fixture", connected:() => true, changed() {}, error:error => errors.push(error.message),
+    approvePair:async () => false, approveSwap:async () => true, approveTask:async () => true, execute:async () => assert.fail("no task may run"),
+  };
+  const controller = new PeerSession({...options, send:(_to, value) => outgoing.push(value)});
+  const controlled = new PeerSession({...options, send:(_to, value) => outgoing.push(value)});
+  t.after(() => { controller.dispose(); controlled.dispose(); });
+  controller.pair("executor", controlled.invite());
+  const request = outgoing.shift();
+  await controller.receive({from:"intruder", fromName:"intruder", packet:packet("pair-rejected", request.pairId, request.requestId, {error:"forged"})});
+  await controller.receive({from:"executor", fromName:"executor", packet:packet("pair-rejected", request.pairId, randomUUID(), {error:"stale"})});
+  assert.equal(controller.pairingFailure, undefined, "wrong sender and request cannot erase the pending pairing");
+  await controlled.receive({from:"controller", fromName:"controller", packet:request});
+  const rejection = outgoing.shift();
+  assert.equal(rejection.operation, "pair-rejected");
+  assert.equal(rejection.requestId, request.requestId);
+  assert.doesNotThrow(() => parsePeerPacket(rejection));
+  assert(!JSON.stringify(rejection).includes(request.payload.secret), "private pairing secret is never echoed");
+  await controller.receive({from:"executor", fromName:"executor", packet:rejection});
+  assert.match(controller.pairingFailure, /declined by the executing user/);
+  assert.equal(controller.binding, undefined);
+  assert.equal(controlled.binding, undefined);
+  assert.doesNotThrow(() => controller.pair("executor", controlled.invite()), "a rejected pending pairing is cleared for an explicitly initiated new attempt");
 });
 
 test("pairing, per-task approval, original receipts and in-memory duplicate suppression", async t => {
@@ -96,6 +123,51 @@ test("remote failures trigger one controller review without replaying the task",
   await until(() => f.a.receipts.get(id)?.state === "failed");
   assert.equal(f.reviews.filter(review => review.state === "failed").length, 1);
   assert.equal(f.reviews.find(review => review.state === "failed").requestId, id);
+  assert.equal(f.runs, 1);
+});
+
+test("manual retry inspection is separate from original immutable failure and never replays execution", async t => {
+  let inspected;
+  const f = await fixture(t, { execute: async () => { throw new Error("Original attempt failed"); },
+    taskAttempts: async requestId => { inspected = requestId; return { requestId, original: { status: "failed" }, latestResult: { status: "complete", replyId: randomUUID(), content: "Manual retry succeeded" } }; } });
+  const id = f.a.submit("An original instruction");
+  await until(() => f.a.receipts.get(id)?.state === "failed");
+  const original = JSON.stringify(f.a.receipts.get(id));
+  const attempts = await f.a.inspectAttempts(id);
+  assert.equal(inspected, id);
+  assert.equal(attempts.latestResult.content, "Manual retry succeeded");
+  assert.equal(JSON.stringify(f.a.receipts.get(id)), original);
+  assert.equal(f.runs, 1);
+  await assert.rejects(f.a.inspectAttempts(randomUUID()), /original model task/);
+});
+
+test("task inspection rejects mismatched results and fails closed for legacy Hosts", async t => {
+  const f = await fixture(t, { taskAttempts: async () => ({ requestId: randomUUID(), latestResult: { content: "Unrelated task" } }) });
+  const id = f.a.submit("One instruction");
+  await until(() => f.a.receipts.get(id)?.state === "completed");
+  await assert.rejects(f.a.inspectAttempts(id), /do not match/);
+  f.a.binding.peerCapabilities = [];
+  await assert.rejects(f.a.inspectAttempts(id), /Upgrade both Hosts/);
+  assert.equal(f.runs, 1);
+});
+
+test("task inspection cannot return absent lineage, stack local approvals, flip direction or outlive revocation", async t => {
+  const missing = await fixture(t, { taskAttempts: async () => undefined });
+  const original = missing.a.submit("An untagged legacy attempt");
+  await until(() => missing.a.receipts.get(original)?.state === "completed");
+  await assert.rejects(missing.a.inspectAttempts(original), /lineage is unavailable/);
+  let release, inspecting = false;
+  const f = await fixture(t, { taskAttempts: () => { inspecting = true; return new Promise(resolve => { release = resolve; }); } });
+  const id = f.a.submit("One instruction");
+  await until(() => f.a.receipts.get(id)?.state === "completed");
+  const pending = f.a.inspectAttempts(id);
+  await until(() => inspecting);
+  await assert.rejects(f.a.inspectAttempts(id), /Another task attempt inspection/);
+  assert.throws(() => f.a.requestSwap(), /result inspection/);
+  const revoked = assert.rejects(pending, /Portal disconnected before attempt inspection completed/);
+  f.b.revoke();
+  await revoked;
+  release({ requestId:id });
   assert.equal(f.runs, 1);
 });
 

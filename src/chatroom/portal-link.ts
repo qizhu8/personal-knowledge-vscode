@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { WebSocket } from "ws";
 import { assertPeerEndpoint, PORTAL_TRANSPORT_PATH } from "./peer-protocol";
 
 /** Peer transport credentials and a one-time pairing code. Room fields remain for v1 link compatibility. */
@@ -15,6 +16,28 @@ export interface PortalLink {
 }
 
 const PREFIX = "pkmportal:v1:";
+
+/** Tests the transport without sending the private link or joining a channel. */
+export function preflightPortalEndpoint(endpoint: string, timeoutMs = 8000): Promise<void> {
+  assertPeerEndpoint(endpoint);
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(endpoint, { handshakeTimeout: timeoutMs, followRedirects: false });
+    let settled = false;
+    const deadline = setTimeout(() => {
+      finish(new Error("Portal endpoint did not respond before the connection deadline. Check port forwarding and keep the initiator's window open."));
+    }, timeoutMs);
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      if (error) reject(error); else resolve();
+      socket.terminate();
+    };
+    socket.once("open", () => finish());
+    socket.once("error", error => finish(new Error(`Portal endpoint is unreachable: ${error.message}. Check port forwarding and the initiator's window.`)));
+    socket.once("close", () => finish(new Error("Portal endpoint closed before the connection could be verified.")));
+  });
+}
 
 export function createPortalLink(link: PortalLink): string {
   const value = validate(link);

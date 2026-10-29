@@ -644,6 +644,42 @@ async function scenario(name, action) {
     }
   });
 
+  await scenario("local authority upgrades a legacy GitHub publication without staging", async () => {
+    const fixture = createFixture("local-authority-upgrade");
+    try {
+      await initialize(fixture);
+      const verify = cloneRemote(fixture);
+      const manifestPath = path.join(verify, ".pkm-github-sync.json");
+      const canonicalManifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      fs.writeFileSync(manifestPath, JSON.stringify({ schema: 2, files: canonicalManifest.files.map(({ member, ...file }) => file) }, null, 2) + "\n");
+      run(verify, ["add", ".pkm-github-sync.json"]);
+      run(verify, ["commit", "-m", "legacy publication"]);
+      run(verify, ["push"]);
+      fixture.target.lastSync.commit = run(verify, ["rev-parse", "HEAD"]);
+      // Mirrors a stale cutover whose recorded source no longer matches GitHub.
+      fixture.target.publication = { requiredCapability: "stable-entity-identity", sourceCommit: "0".repeat(40),
+        sourceDigest: "1".repeat(64), manualVerificationCompleted: false };
+      await assert.rejects(() => syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store),
+        /GitHub changed after migration cutover/);
+
+      const result = await syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store,
+        undefined, { mode: "force-local-authority", comment: "One-time GitHub publication upgrade from this machine" });
+      run(verify, ["pull", "--ff-only"]);
+      const upgraded = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      assert.strictEqual(upgraded.schema, 3, "a local-authority publish must leave GitHub in the current manifest schema");
+      assert.strictEqual(run(verify, ["rev-parse", "HEAD"]), result.commit);
+      assert.strictEqual(fs.readFileSync(path.join(fixture.skills, "One.md"), "utf8"), skill("One", "one v1"));
+
+      fixture.target.lastSync.commit = result.commit;
+      fixture.target.publication = { requiredCapability: "stable-entity-identity", sourceCommit: result.commit,
+        sourceDigest: "2".repeat(64), manualVerificationCompleted: true };
+      const followUp = await syncGitHubTarget(fixture.target, fixture.catalog, fixture.checkoutRoot, undefined, fixture.store);
+      assert.strictEqual(followUp.changed, false, "normal Sync must work after the local-authority upgrade");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   await scenario("managed files on disk survive temporary catalog omission", async () => {
     const fixture = createFixture("catalog-omission");
     try {

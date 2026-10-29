@@ -285,7 +285,7 @@ test("Retrieval pool samples 125 pieces, retains all six selected connections an
   }
 });
 
-test("Shared Memory pyramid uses stored levels and edges, lazily inspects pieces, and does not confuse prepared references with sent", {timeout:30000},async t=>{
+test("Shared Memory pyramid shows Cache / Memory / Disk with stored levels inside Memory and lazy evidence inspection", {timeout:30000},async t=>{
   const browser=await chromium.launch({headless:true});t.after(()=>browser.close());
   const data=fixture(),attempt=data.harness.attempts[1];data.memoryStoreReader=true;
   attempt.memory={blocks:[{kind:"focus-topic",piece:"topic:one"},{kind:"earlier-message",piece:"message:one"}]};
@@ -311,7 +311,15 @@ test("Shared Memory pyramid uses stored levels and edges, lazily inspects pieces
     await thumbnail.locator("svg.pkm-harness-memory-graph").waitFor();
     assert.deepEqual(await page.evaluate(()=>window.reads),["memoryOverview"],"the thumbnail fetches one scoped overview without a mouse click");
     await page.getByRole("tab",{name:"Memory / Profiles",exact:true}).click();
-    const detail=page.getByRole("tabpanel"),graph=detail.getByRole("group",{name:"Stored Memory pyramid",exact:true});
+    const detail=page.getByRole("tabpanel"),tiers=detail.getByRole("group",{name:"Cache / Memory / Disk tiers",exact:true});
+    await tiers.waitFor();
+    assert.equal(await tiers.locator("[data-memory-tier]").count(),3);
+    assert(await tiers.locator('[data-memory-tier] > span').evaluateAll(nodes=>nodes.every(node=>parseFloat(getComputedStyle(node).fontSize)>=12)),"narrow diagrams retain readable, unscaled tier text");
+    assert.match(await tiers.locator('[data-memory-tier=cache]').getAttribute("aria-label"),/1 recorded messages/);
+    assert.match(await tiers.locator('[data-memory-tier=memory]').getAttribute("aria-label"),/2 displayed pieces/);
+    assert.match(await tiers.locator('[data-memory-tier=disk]').getAttribute("aria-label"),/not a Knowledge Root inventory/);
+    await detail.getByText("Inside Memory: stored abstraction levels and evidence",{exact:true}).click();
+    const graph=detail.getByRole("group",{name:"Stored Memory Piece abstraction graph",exact:true});
     await graph.waitFor();
     assert.equal(await graph.locator(".pkm-harness-memory-layer").count(),2);
     assert.equal(await graph.locator(".pkm-harness-memory-edge").count(),1);

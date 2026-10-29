@@ -1,7 +1,7 @@
 import type { ApiConversation } from "./api-chat-store";
 import { chatMemorySegments, chatMemoryQuery, memoryMatchScore, memoryTerms, retrieveChatMemory, recentChatDialogue } from "./chat-memory";
 import type { RetrievalCandidateV1, RetrievalResultV1 } from "../retrieval/retrieval-contracts";
-import { validRetrievalServingIdentity } from "../retrieval/retrieval-contracts";
+import { validOnlineRetrievalLearning, validRetrievalServingIdentity } from "../retrieval/retrieval-contracts";
 import { memoryExclusionReason } from "./chat-memory-policy";
 import type { RetrievalSnapshot } from "../retrieval/retrieval-snapshot";
 
@@ -33,6 +33,7 @@ export interface ChatRetrievalInvocation {
   retrievalId?: string;
   reason?: string;
   adaptive?: RetrievalResultV1["adaptive"];
+  onlineLearning?: RetrievalResultV1["online_learning"];
 }
 
 export function validChatRetrievalInvocation(value: unknown): value is ChatRetrievalInvocation {
@@ -44,6 +45,7 @@ export function validChatRetrievalInvocation(value: unknown): value is ChatRetri
     && Number.isSafeInteger(item.readyGeneration) && item.readyGeneration >= 0 && bounded(item.corpusRevision, 512)
     && (item.retrievalId === undefined || bounded(item.retrievalId, 200))
     && (item.reason === undefined || bounded(item.reason, 1024))
+    && (item.onlineLearning === undefined || validOnlineRetrievalLearning(item.onlineLearning))
     && (item.adaptive === undefined || !!item.adaptive && typeof item.adaptive.enabled === "boolean"
       && typeof item.adaptive.applied === "boolean"
       && ["insufficient-feedback", "disabled", "protected-or-unavailable", "no-reliable-gap", "calibrated-score-gap"].includes(item.adaptive.reason)
@@ -59,7 +61,7 @@ export type ChatKnowledgeRetriever = ((query: string, signal: AbortSignal) => Pr
   sourceIsCurrent?: (candidate:ChatRetrievalCandidate) => boolean;
   refreshSourceValidation?: () => void;
   readSnapshot?: () => RetrievalSnapshot;
-  feedback?: (retrievalId: string, relevantSourceIds: string[]) => Promise<unknown>;
+  feedback?: (retrievalId: string, relevantSourceIds: string[], provenance?: "user" | "model") => Promise<unknown>;
 };
 
 export interface ChatRetrievalActivity {

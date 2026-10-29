@@ -37,12 +37,27 @@
   let renderedChatId;
   let jumpToLatest = false;
   let followPaused = false;
+  let upwardScrollPending = false;
+  let observedScrollTop = 0;
+  let followFrame;
+  const messageResizeObserver = new ResizeObserver(() => {
+    if (followFrame || followPaused || screen !== "chat") return;
+    followFrame = requestAnimationFrame(() => {
+      followFrame = undefined;
+      if (followPaused || screen !== "chat" || document.visibilityState !== "visible") return;
+      const messages = element("messages");
+      messages.scrollTop = messages.scrollHeight;
+      observedScrollTop = messages.scrollTop;
+      markResultRead();
+    });
+  });
   let library;
   const drafts = saved.drafts || {};
   const queuedDrafts = saved.queuedDrafts || {};
   const queuedEditorNodes = new Map();
   const workflowSelection = new Map();
   const workflowExpanded = new Map();
+  const finishedExpanded = new Map();
   const activityFilters = new Map();
   const messageExpanded = new Set(saved.expandedMessageDetails || []);
   let state;
@@ -172,7 +187,7 @@
     const active = state.busy && (run.attemptId ? state.chat.progress?.attemptId === run.attemptId : run === state.chat.progress);
     run = { ...run, steps: run.steps.filter(step => step.operation !== "token-count" && !/^Counting (input|output) tokens with VS Code model$/.test(step.label)) };
     const statusOf = (step, index) => step.status || (index < run.steps.length - 1 ? "complete" : active ? "running" : run.status === "running" ? "failed" : run.status);
-    const section = document.createElement("details"); section.className = "workflow activity"; section.dataset.attempt = key; section.open = workflowExpanded.get(key) ?? active;
+    const section = document.createElement("details"); section.className = "workflow activity"; section.dataset.attempt = key; const expandedState = active ? workflowExpanded : finishedExpanded; section.open = expandedState.get(key) ?? active;
     const summary = document.createElement("summary"); summary.className = "workflow-summary";
     summary.dataset.status = active && run.steps.length ? statusOf(run.steps[run.steps.length - 1], run.steps.length - 1) : run.status;
     const icon = active ? globalThis.PkmChatWorkingIcon(chatRole()) : document.createElement("span");
@@ -185,7 +200,7 @@
       if (!step || step.kind !== "model" || !Number.isSafeInteger(step.round) || step.round < 0) return step?.label;
       const round = t("Model round {round}", { round:step.round + 1 });
       const phase = status === "complete" ? t("Model response received")
-        : step.label === "Waiting for first output" ? t("Waiting for model response")
+        : step.label === "Waiting for first output" ? status === "running" ? `${t("Waiting for model response")} (${t("the model may be reasoning")})` : t("Waiting for model response")
         : ["Requesting VS Code model", "Connecting to model API"].includes(step.label) ? t("Requesting model")
         : step.label === "Generating response" ? t("Receiving model response") : step.label;
       return `${round}: ${phase}`;
@@ -228,6 +243,12 @@
       tokens.textContent = usage ? `${usage.inputTokens.toLocaleString()} in / ${usage.outputTokens.toLocaleString()} out${reasoning === undefined ? "" : ` · ${t("{tokens} reasoning", { tokens:reasoning.toLocaleString() })}`}`
         : category === "llm" && operation === "token-count" ? "Token count · not inference" : "";
       tokens.title = usage ? t("Provider-reported usage for this model round; reasoning tokens are included in output, not added again. Not a token charge for each tool.") : "No independent provider token usage is reported for this operation.";
+      if (usage && category === "llm" && operation !== "token-count") {
+        const cached = usage.cachedInputTokens;
+        const cacheReported = Number.isSafeInteger(cached) && cached >= 0 && cached <= usage.inputTokens;
+        tokens.textContent += ` · ${cacheReported ? t("{tokens} cached input", { tokens:cached.toLocaleString() }) : t("Cache usage not reported")}`;
+        tokens.title += " " + t("Cached tokens are included in input. Cache hits do not independently establish a credit discount.");
+      }
       if (category === "llm" && operation !== "token-count") tokens.textContent = [tokens.textContent, globalThis.PkmAgentHarness.creditLabel(credits, t)].filter(Boolean).join(" · ");
       tokens.hidden = !tokens.textContent;
       const timer = document.createElement("span"); timer.className = "elapsed";
@@ -245,6 +266,12 @@
       } else row.append(line);
       list.append(row);
     };
+    if (run.tools) {
+      // Static request context, listed first so the newest (running) event stays last.
+      const body = document.createElement("pre"); body.textContent = run.tools.join("\n") || "No tools advertised";
+      appendRow("advertised-tools", t("Tools available to the model ({count})", { count:run.tools.length }), "context", undefined, undefined, body);
+      list.lastElementChild.title = t("Tool definitions sent with every model round of this run; they count toward input tokens. Not an executed step.");
+    }
     for (const [id, step] of rows) {
       const tool = tools.get(step.toolCallId);
       if (tool) tools.delete(tool.id);
@@ -255,7 +282,7 @@
         body = document.createElement("div"); body.className = "activity-event-detail";
         if (tool) { const pre = document.createElement("pre"); pre.textContent = `${tool.name}\n${tool.arguments}\n\n${tool.result || ""}`; body.append(pre); }
         for (const summary of summaries || []) {
-          const heading = document.createElement("strong"); heading.textContent = "Public reasoning summary (provider)";
+          const heading = document.createElement("strong"); heading.textContent = "Reasoning / thinking reported by the provider";
           const pre = document.createElement("pre"); pre.textContent = summary.text; body.append(heading, pre);
         }
         if (receipt) { const pre = document.createElement("pre"); pre.textContent = JSON.stringify(receipt, null, 2); body.append(pre); }
@@ -267,15 +294,17 @@
       const operation = step.operation || (category === "llm" ? "inference" : category === "cmd" ? "command" : "display");
       appendRow(id, `${tool ? globalThis.PkmAgentHarness.describeToolCall(tool, t) : modelStageLabel(step, step.status)} · ${step.status}`, step.status, tool?.startedAt ?? step.firstAt,
         tool?.finishedAt ?? step.finishedAt ?? (["complete", "failed", "cancelled"].includes(step.status) ? run.steps[step.index + 1]?.at ?? run.finishedAt : undefined), body, reported, category, operation, tool, receipt?.ledger?.credits);
+      const thinking = active && step.status === "running" && summaries?.map(item => item.text).join("").trim();
+      if (thinking) {
+        const live = document.createElement("div"); live.className = "activity-thinking";
+        live.textContent = `${t("Thinking")}: …${thinking.slice(-240)}`; live.title = t("Readable thinking reported by the model provider; expand the row for the full text.");
+        list.lastElementChild.append(live);
+      }
     }
     for (const tool of tools.values()) {
       const body = document.createElement("pre"); body.textContent = `${tool.name}\n${tool.arguments}\n\n${tool.result || ""}`;
       const content = document.createElement("div"); content.className = "activity-event-detail"; content.append(body);
       appendRow(`tool:${tool.id}`, `${globalThis.PkmAgentHarness.describeToolCall(tool, t)} · ${tool.status}`, tool.status, tool.startedAt, tool.finishedAt, content, undefined, "cmd", "command", tool);
-    }
-    if (run.tools) {
-      const body = document.createElement("pre"); body.textContent = run.tools.join("\n") || "No tools advertised";
-      appendRow("advertised-tools", `Advertised tools (${run.tools.length})`, "complete", undefined, undefined, body);
     }
     const latest = state.chat.messages.filter(item => item.role === "assistant").at(-1);
     const taskPlan = !message.id || message.id === latest?.id && message.taskId === state.chat.sessionId ? state.taskPlan : undefined;
@@ -290,7 +319,7 @@
     }
     if (!message.reasoningSummaries?.length) {
       const note = document.createElement("li"); note.className = "activity-availability";
-      note.textContent = "Public reasoning summary not reported. Hidden reasoning is not available."; list.append(note);
+      note.textContent = "The model did not report readable reasoning; some models keep reasoning hidden or encrypted."; list.append(note);
     }
     section.append(list);
     const applyFilter = () => {
@@ -300,7 +329,7 @@
     applyFilter();
     if (run.droppedSteps) { const omitted = document.createElement("div"); omitted.className = "workflow-tools"; omitted.textContent = `${run.droppedSteps} earlier activity events omitted; tool results retained below.`; section.append(omitted); }
     if (debug) section.append(debug);
-    section.ontoggle = () => { if (section.isConnected) workflowExpanded.set(key, section.open); };
+    section.ontoggle = () => { if (section.isConnected) expandedState.set(key, section.open); };
     return section;
   }
   function error(text) { element("error").textContent = text; element("error").hidden = !text; }
@@ -440,14 +469,103 @@
     historyPending = beforeId;
     post("historyPage", { chatId: state.chat.id, id: beforeId }); renderMessages();
   }
+  function portalCommandLine(command) {
+    const quote = value => /^[\w@%+=:,./\\-]+$/.test(value) ? value : JSON.stringify(String(value));
+    return [command.program, ...(Array.isArray(command.arguments) ? command.arguments : [])].map(quote).join(" ");
+  }
+  function portalCommandStatus(command) {
+    const exit = command.exitCode === undefined ? "" : ` · exit ${command.exitCode === null ? "?" : command.exitCode}`;
+    return ({ "awaiting-approval": t("Awaiting approval"), running: t("Running"), completed: t("Completed"), failed: t("Failed"),
+      denied: t("Declined"), cancelled: t("Cancelled"), unknown: t("Outcome unknown") }[command.state] || command.state) + exit;
+  }
+  function portalCommandCard(command) {
+    const article = document.createElement("article");
+    article.className = `message portal-command portal-command-${command.state}`;
+    article.dataset.portalCommand = command.requestId;
+    const stateLabel = ({ "awaiting-approval": t("Awaiting approval"), running: t("Running"), completed: t("Completed"),
+      failed: t("Failed"), denied: t("Declined"), cancelled: t("Cancelled"), unknown: t("Outcome unknown") }[command.state] || t("Outcome unknown"));
+    const header = document.createElement("div"); header.className = "message-header";
+    const role = document.createElement("strong");
+    const roleLabel = command.role === "controller" ? `${t("Portal command")} → ${command.peerName}` : `${t("Portal command")} ← ${command.peerName}`;
+    role.textContent = roleLabel;
+    article.setAttribute("aria-label", `${roleLabel} · ${stateLabel}`);
+    const status = document.createElement("span"); status.className = "model-name portal-command-status"; status.textContent = portalCommandStatus(command);
+    status.setAttribute("aria-label", `${t("Status")}: ${stateLabel}${command.exitCode !== undefined ? ` · exit ${command.exitCode === null ? "?" : command.exitCode}` : ""}`);
+    status.title = `${command.requestId}\n${command.startedAt}`;
+    header.append(role, status);
+    const line = document.createElement("pre"); line.className = "portal-command-line"; line.setAttribute("aria-label", t("Command"));
+    const prompt = document.createElement("span"); prompt.className = "portal-command-prompt"; prompt.setAttribute("aria-hidden", "true"); prompt.textContent = "$";
+    const code = document.createElement("code"); code.textContent = portalCommandLine(command);
+    line.append(prompt, code);
+    article.append(header, line);
+    const meta = document.createElement("div"); meta.className = "portal-command-meta";
+    if (command.cwd) {
+      const cwd = document.createElement("span"); cwd.className = "portal-command-cwd";
+      cwd.textContent = `cwd ${command.cwd}`; cwd.setAttribute("aria-label", `${t("Working directory")}: ${command.cwd}`); meta.append(cwd);
+    }
+    const timeout = document.createElement("span"); timeout.textContent = `${t("Timeout")} ${command.timeoutSeconds}s`; meta.append(timeout);
+    const execution = document.createElement("span"); execution.textContent = t("No model was invoked"); meta.append(execution);
+    article.append(meta);
+    const sections = [["stdout", command.stdout], ["stderr", command.stderr], ["detail", command.detail]].filter(([, text]) => text);
+    if (sections.length) {
+      const output = document.createElement("section"); output.className = "portal-command-output";
+      const title = document.createElement("div"); title.className = "portal-command-output-title";
+      title.textContent = `${t("Output")}${command.truncated ? ` · ${t("tail only")}` : ""}`;
+      const terminal = document.createElement("div"); terminal.className = "portal-command-terminal";
+      terminal.tabIndex = 0; terminal.setAttribute("role", "region"); terminal.setAttribute("aria-label", t("Output"));
+      for (const [label, text] of sections) {
+        const heading = document.createElement("small"); heading.className = `portal-command-stream-label portal-command-stream-${label}`;
+        heading.textContent = label; heading.id = `portal-command-${command.requestId}-${label}`;
+        const body = document.createElement("pre"); body.className = `portal-command-stream portal-command-stream-${label}`;
+        body.setAttribute("aria-labelledby", heading.id); body.textContent = text;
+        terminal.append(heading, body);
+      }
+      output.append(title, terminal); article.append(output);
+    }
+    return article;
+  }
+  function portalTransferCard(transfer) {
+    const article = document.createElement("article");
+    article.className = `message portal-transfer portal-command-${transfer.state}`;
+    article.dataset.portalTransfer = transfer.transferId;
+    const incoming = transfer.direction === "incoming";
+    const header = document.createElement("div"); header.className = "message-header";
+    const role = document.createElement("strong");
+    role.textContent = `${t("Portal files")} ${incoming ? "←" : "→"} ${transfer.peerName}`;
+    const status = document.createElement("span"); status.className = "model-name";
+    status.textContent = ({
+      "awaiting-approval": incoming ? t("Choose a destination folder, then approve this batch") : t("Awaiting local batch approval"),
+      offered: t("Waiting for receiver to choose a folder and approve"),
+      transferring: t("Transferring"), completed: t("Completed · receipt verified"),
+      cancelled: t("Cancelled"), failed: t("Failed"),
+    })[transfer.state] || transfer.state;
+    header.append(role, status); article.append(header);
+    const names = document.createElement("pre"); names.className = "portal-command-line";
+    names.textContent = transfer.files.map(file => `${file.name} · ${file.size.toLocaleString()} bytes`).join("\n");
+    article.append(names);
+    const progress = document.createElement("progress");
+    progress.max = Math.max(1, transfer.totalBytes);
+    progress.value = transfer.totalBytes === 0 && transfer.state === "completed" ? 1 : transfer.bytes;
+    progress.setAttribute("aria-label", t("File transfer progress"));
+    const amount = document.createElement("div"); amount.className = "message-tokens";
+    amount.textContent = `${transfer.bytes.toLocaleString()} / ${transfer.totalBytes.toLocaleString()} bytes · ${t("No automatic installation or execution")}`;
+    article.append(progress, amount);
+    if (transfer.reason || transfer.savedPaths?.length) {
+      const detail = document.createElement("pre"); detail.className = "portal-command-line";
+      detail.textContent = [transfer.reason, ...(transfer.savedPaths || [])].filter(Boolean).join("\n");
+      article.append(detail);
+    }
+    return article;
+  }
   function renderMessages() {
     if (!state || screen !== "chat" || document.visibilityState !== "visible") return;
     const target = element("messages");
     renderAppliedEdits();
     const previousScrollTop = target.scrollTop;
     const previousScrollHeight = target.scrollHeight;
-    if (jumpToLatest || renderedChatId !== state.chat.id) followPaused = false;
-    const follow = !followPaused && (jumpToLatest || renderedChatId !== state.chat.id || target.scrollHeight - target.scrollTop - target.clientHeight < 90);
+    if (jumpToLatest || renderedChatId !== state.chat.id) { followPaused = false; upwardScrollPending = false; }
+    // Layout growth can move the bottom before rendering; only reader intent pauses following.
+    const follow = !followPaused;
     renderedChatId = state.chat.id;
     jumpToLatest = false;
     if (messageNodesChatId !== state.chat.id) { messageNodes.clear(); messageNodesChatId = state.chat.id; }
@@ -461,9 +579,27 @@
       children.push(older);
     }
     const retained = new Set();
+    const firstLoaded = state.chat.messages[0]?.recordedAt;
+    const commands = [
+      ...(state.chat.portalCommands || []).map(command => ({ record: command, key: `portal-command:${command.requestId}`, render: portalCommandCard })),
+      ...(state.chat.portalTransfers || []).map(transfer => ({ record: transfer, key: `portal-transfer:${transfer.transferId}`, render: portalTransferCard })),
+    ].filter(item => historyStart <= 0 || !firstLoaded || item.record.startedAt >= firstLoaded)
+      .sort((a, b) => a.record.startedAt.localeCompare(b.record.startedAt));
+    const flushCommands = before => {
+      while (commands.length && (before === undefined || commands[0].record.startedAt < before)) {
+        const { record: command, key, render } = commands.shift();
+        const fingerprint = JSON.stringify([command, document.documentElement.lang]);
+        retained.add(key);
+        const cached = messageNodes.get(key);
+        const article = cached?.fingerprint === fingerprint ? cached.article : render(command);
+        messageNodes.set(key, { fingerprint, article });
+        children.push(article);
+      }
+    };
     const latestUser = [...state.chat.messages].reverse().find(message => message.role === "user");
     const pendingUserId = state.busy && state.chat.messages.at(-1)?.status === "streaming" ? latestUser?.id : undefined;
     for (const message of state.chat.messages) {
+      if (message.recordedAt) flushCommands(message.recordedAt);
       const sleeping = message.id === state.chat.messages.at(-1)?.id && state.chat.workerState?.sleeping;
       const fingerprint = JSON.stringify([message, state.taskPlan, state.busy, state.chat.paused, pendingUserId, sleeping, chatRole(), document.documentElement.lang]);
       retained.add(message.id);
@@ -581,16 +717,20 @@
       const tokens = document.createElement("div"); tokens.className = "message-tokens";
       tokens.textContent = messageTokenLabel(message);
       tokens.title = message.role === "user" ? "Independent user-message token usage is unavailable unless the provider reports it; request input includes history/context/tools." : "Provider-reported tokens for reported rounds only; other rounds may omit usage. Input includes history/context/tools, not just the latest user message.";
-      if (tokens.textContent) article.append(tokens);
       if (message.role === "assistant") {
-        const credits = document.createElement("div"); credits.className = "message-tokens message-credits";
+        const credits = document.createElement("span"); credits.className = "message-tokens message-credits";
         credits.textContent = globalThis.PkmAgentHarness.creditLabel(message.creditUsage, t);
         credits.title = t("Provider-reported Copilot credits for Chat rounds and quota clarification. Memory and workers are accounted separately. Missing reports are not zero.");
-        if (credits.textContent) article.append(credits);
+        if (credits.textContent) {
+          if (tokens.textContent) tokens.append(" · ");
+          tokens.append(credits);
+        }
       }
+      if (tokens.textContent) article.append(tokens);
       messageNodes.set(message.id, { fingerprint, article });
       children.push(article);
     }
+    flushCommands();
     for (const id of messageNodes.keys()) if (!retained.has(id)) messageNodes.delete(id);
     for (const submission of submissions.values()) {
       if (submission.id !== state.chat.id) continue;
@@ -728,9 +868,17 @@
     for (const id of approvalNodes.keys()) if (!confirmations.some(approval => approval.id === id)) { approvalNodes.delete(id); approvalDrafts.delete(id); formDrafts.delete(id); }
     for (const [index, child] of children.entries()) if (target.children[index] !== child) target.insertBefore(child, target.children[index] || null);
     while (target.children.length > children.length) target.lastElementChild.remove();
+    for (const terminal of target.querySelectorAll(".portal-command-terminal:not([data-initialized])")) {
+      terminal.scrollTop = terminal.scrollHeight;
+      terminal.dataset.initialized = "true";
+    }
     updateClock();
     target.setAttribute("aria-busy", String(state.busy || !!historyPending));
     target.scrollTop = historyPrepend ? previousScrollTop + target.scrollHeight - previousScrollHeight : follow ? target.scrollHeight : previousScrollTop;
+    observedScrollTop = target.scrollTop;
+    messageResizeObserver.disconnect();
+    messageResizeObserver.observe(target);
+    for (const child of target.children) messageResizeObserver.observe(child);
     historyPrepend = false;
   }
   function imagePreviews(images, action, icon, label) {
@@ -849,7 +997,7 @@
       return preview ? { ...candidate, label: preview } : candidate;
     }) };
     const budget = step.budget || (step.id === "latest" ? budgets.at(-1) : undefined);
-    const fingerprint = JSON.stringify([state.chat.id, state.chat.sessionId, state.chat.includeHistory, state.busy, state.localization?.locale, state.chat.taskContextCheckpoints, activity?.id, activity?.progress?.attemptId, step.id, receipt, budget, state.memoryTree, policy, element("retrieval-kind").value, element("retrieval-top").value, element("retrieval-flow").clientWidth]);
+    const fingerprint = JSON.stringify([state.chat.id, state.chat.sessionId, state.chat.includeHistory, state.busy, state.localization?.locale, state.chat.taskContextCheckpoints, activity?.id, activity?.retrievalLearning, activity?.progress?.attemptId, step.id, receipt, budget, state.memoryTree, policy, element("retrieval-kind").value, element("retrieval-top").value, element("retrieval-flow").clientWidth]);
     if (fingerprint === memoryFingerprint) return;
     memoryFingerprint = fingerprint;
     const type = element("retrieval-kind"); const previousType = type.value;
@@ -883,12 +1031,23 @@
     };
     line("Chat / attempt", `${state.chat.id} / ${activity?.progress?.attemptId || t("Not recorded")}`);
     line("Query", receipt?.query);
+    if (activity?.retrievalLearning) {
+      const learning = activity.retrievalLearning;
+      line("Online learning", `${learning.status} · ${learning.provenance} · ${learning.judgedSources} sources`);
+      if (learning.status !== "user-protected" && learning.relevantSourceIds) line("Learning update", learning.relevantSourceIds.join("\n") || "No relevant sources");
+      if (learning.error) line("Learning error", learning.error);
+      if (learning.acknowledgment) line("Learning update", JSON.stringify(learning.acknowledgment));
+    }
     line("Recorded scope", receipt ? `${receipt.chatId}${receipt.sessionId ? " / " + receipt.sessionId : ""}` : undefined);
     line("Retrieval methods", receipt ? [...new Set(receipt.candidates.map(candidate => candidate.method))].join(", ") || t("Not recorded") : undefined);
     if (receipt?.invocation) {
       const invocation = receipt.invocation;
       line("Requested / served retrieval", `${invocation.requestedRoute} / ${invocation.servedRoute} · semantic ${invocation.semanticStatus}`);
       line("Model invoked", invocation.modelInvoked ? "Yes" : "No");
+      if (invocation.onlineLearning) {
+        const learning = invocation.onlineLearning;
+        line("Online learning", `${learning.enabled ? "enabled" : "disabled"} · ${learning.applied ? "applied" : "baseline"} · ranker ${learning.ranker_revision} · calibrator ${learning.calibrator_revision} · embedding unchanged`);
+      }
       line("Retrieval invocation", `${invocation.requestId} · generation ${invocation.readyGeneration} · ${invocation.retrievalId || t("Not recorded")}`);
       if (invocation.reason) line("Retrieval reason", invocation.reason);
       if (invocation.adaptive) line("Adaptive result count", `${invocation.adaptive.reason} · ${invocation.adaptive.returned_count}/${invocation.adaptive.original_count}`);
@@ -908,6 +1067,10 @@
       line("Reserved output", budget.effective?.outputTokens);
       line("Actual transport", budget.transport ? `${budget.transport.provider} / ${budget.transport.inputTokens} (${budget.transport.countingMethod})` : undefined);
       const plan = budget.contextPlan, transport = budget.transport;
+      if (transport?.automaticKnowledge) line("Automatic PKM reference input / cap",
+        `${transport.automaticKnowledge.inputTokens} / ${transport.automaticKnowledge.inputBudget} (${transport.automaticKnowledge.countingMethod})`);
+      else if (plan?.automaticKnowledge) line("Automatic PKM reference estimate / cap",
+        `${plan.automaticKnowledge.estimatedAfter} / ${plan.automaticKnowledge.inputBudget} (${plan.automaticKnowledge.countingMethod})`);
       line("Plan stop reason", plan?.stopReason);
       line("Selected reference IDs", budget.selectedReferenceIds?.join(", ") || t("None"));
       line("Omitted reference IDs", plan?.omittedIds?.join(", ") || (plan ? t("None") : undefined));
@@ -1012,8 +1175,12 @@
     const role = portal?.binding?.role;
     if (role) {
       const label = document.createElement("span"); label.textContent = portalHeadline(portal); label.className = "portal-headline";
-      const scene = globalThis.PkmChatPortalIcon(connected, role);
-      scene.setAttribute("role", "img"); scene.setAttribute("aria-label", `${role === "controller" ? "Controller" : "Controlled"} · Portal ${connected ? "open" : "closed"}`);
+      const chatStatus = state.chat.paused ? "paused" : state.chats.find(chat => chat.id === state.chat.id)?.status;
+      const resting = chatStatus === "paused" || chatStatus === "stopped";
+      const scene = resting ? globalThis.PkmChatStatusIndicator(chatStatus, role) : globalThis.PkmChatPortalIcon(connected, role);
+      if (!resting) {
+        scene.setAttribute("role", "img"); scene.setAttribute("aria-label", `${role === "controller" ? "Controller" : "Controlled"} · Portal ${connected ? "open" : "closed"}`);
+      }
       element("chat-status").replaceChildren(scene, label);
     }
     host.hidden = !portal?.binding && !portal?.pending;
@@ -1455,10 +1622,13 @@
   element("messages").addEventListener("scroll", markResultRead);
   element("messages").addEventListener("scroll", () => {
     const messages = element("messages");
-    followPaused = messages.scrollHeight - messages.scrollTop - messages.clientHeight > 1;
+    if (!upwardScrollPending && messages.scrollHeight - messages.scrollTop - messages.clientHeight <= 1) followPaused = false;
+    else if (messages.scrollTop < observedScrollTop - 1) { followPaused = true; upwardScrollPending = false; }
+    observedScrollTop = messages.scrollTop;
     if (screen === "chat" && messages.scrollTop < 120) loadOlderMessages();
   }, { passive: true });
   element("messages").addEventListener("wheel", event => {
+    upwardScrollPending = event.deltaY < 0;
     if (event.deltaY >= 0) return;
     followPaused = true;
     if (screen === "chat" && element("messages").scrollTop < 120) loadOlderMessages();

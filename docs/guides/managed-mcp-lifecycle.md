@@ -2,7 +2,7 @@
 
 Run `npm run test:mcp-lifecycle` to build coherent bundles and execute the
 generated-runtime/Chat connector Node tests plus real FastMCP concurrency tests.
-The fixtures use the existing repository `.venv` and a `python` on PATH with
+The fixtures use the shared dev venv `~/pkm-envs/personal-knowledge-vscode-dev` (see `tests/dev-paths.js`) and a `python` on PATH with
 FastMCP available. All server instances and generations belong to isolated test
 directories; this command does not upgrade or reconnect production clients.
 
@@ -190,7 +190,7 @@ client has completed its own handshake.
 ```sh
 node --test tests/test-mcp-lifecycle.js
 node --test tests/test-chat-managed-mcp.js
-PYTHONDONTWRITEBYTECODE=1 .venv/bin/python tests/test-mcp-lifecycle.py -v
+PYTHONDONTWRITEBYTECODE=1 ~/pkm-envs/personal-knowledge-vscode-dev/bin/python tests/test-mcp-lifecycle.py -v
 node_modules/.bin/tsc --noEmit
 ```
 

@@ -9,7 +9,8 @@ module.exports = async function reviewController(ApiChatView, context, nativeCli
     semanticStatus:"ready", modelInvoked:true, readyGeneration:1, corpusRevision:"fixture", retrievalId:"controller-retrieval",
     adaptive:{enabled:true,applied:false,reason:"insufficient-feedback",original_count:0,returned_count:0,invocation:1} };
   const retrieval = Object.assign(async()=>({candidates:[],invocation}), {
-    feedback:async(id, relevant)=>{calls.push({id,relevant});return {ok:true,trained:true};},
+    feedback:async(id, relevant)=>{calls.push({id,relevant});return {ok:true,trained:true,provenance:"user",
+      revision:1,ranker_revision:1,calibrator_revision:1,model_labels:0,user_labels:1};},
   });
   const provider = new ApiChatView(context,retrieval);
   const originalActive=context.workspaceState.get("apiChat.active");

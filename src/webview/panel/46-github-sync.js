@@ -587,7 +587,9 @@ function githubSyncCards() {
       : status === 'syncing' ? 'Wait for the current synchronization to finish'
       : autoEnabled ? 'Turn off automatic synchronization' : 'Turn on automatic synchronization';
     const autoToggle = `<button class="github-sync-auto-toggle ${autoEnabled ? 'on' : ''}" role="switch" aria-checked="${autoEnabled}" aria-busy="${!!automationPending}" aria-label="Auto Sync for ${esc(target.name)}" title="${esc(autoTitle)}" onclick="event.stopPropagation();githubSyncAutomationToggle('${esc(target.id)}',${autoEnabled ? 'false' : 'true'},this)" ${autoDisabled ? 'disabled' : ''}><span></span><em>${automationPending ? 'Saving…' : 'Auto'}</em></button>`;
-    const migrationCompleted = !!target.publication?.manualVerificationCompleted && (!migration || migration.phase === 'cutover');
+    const migrationCompleted = !!target.publication?.manualVerificationCompleted && (!migration || ['cutover','rolled-back'].includes(migration.phase));
+    const upgradeDisabled = autoEnabled || status === 'syncing' || forcePending;
+    const upgradeFromLocal = `<button class="pk-button primary" title="${esc(autoEnabled ? 'Turn off Auto Sync first' : 'Publish this machine\'s selected content to GitHub in the new format')}" data-pending-label="Preparing upgrade…" onclick="event.stopPropagation();githubSyncUpgradeFromLocal('${esc(target.id)}',this)" ${upgradeDisabled ? 'disabled' : ''}>Upgrade from this machine</button>`;
     const migrationActions = !migration || migration.phase === 'rolled-back'
       ? `<button class="pk-button" data-pending-label="Checking…" onclick="event.stopPropagation();githubSyncMigration('${esc(target.id)}','preview',this)">Start read-only check</button>`
       : migration.phase === 'previewed'
@@ -595,11 +597,12 @@ function githubSyncCards() {
         : migration.phase === 'staged'
           ? `<button class="pk-button" data-pending-label="Verifying…" onclick="event.stopPropagation();githubSyncMigration('${esc(target.id)}','verify',this)">Verify staged data</button><button class="pk-button" data-pending-label="Rolling back…" onclick="event.stopPropagation();githubSyncMigration('${esc(target.id)}','rollback',this)">Rollback</button>`
           : migration.phase === 'verified'
-            ? `<button class="pk-button primary" data-pending-label="Cutting over…" onclick="event.stopPropagation();githubSyncMigration('${esc(target.id)}','cutover',this)">Cut over</button><button class="pk-button" data-pending-label="Rolling back…" onclick="event.stopPropagation();githubSyncMigration('${esc(target.id)}','rollback',this)">Rollback</button>`
+            ? `<button class="pk-button" data-pending-label="Cutting over…" onclick="event.stopPropagation();githubSyncMigration('${esc(target.id)}','cutover',this)">Cut over</button><button class="pk-button" data-pending-label="Rolling back…" onclick="event.stopPropagation();githubSyncMigration('${esc(target.id)}','rollback',this)">Rollback</button>`
             : migration.phase === 'cutover' && !target.publication?.manualVerificationCompleted
               ? `<small>Cutover complete · run one manual Fetch/Pull → resolve → Commit → Push → inventory/retrieval refresh. Auto Sync remains off. If GitHub changed, restart the preview; this preserves the previous migration backup and does not push.</small><button class="pk-button" data-pending-label="Checking…" onclick="event.stopPropagation();githubSyncMigration('${esc(target.id)}','restart-preview',this)">Restart migration preview</button>`
               : `<small>${migration.phase === 'cutover' ? 'Manual publication verification complete · Auto Sync may now be enabled manually.' : 'Migration rolled back.'}</small>`;
-    const migrationPanel = migrationCompleted ? '' : `<div class="github-sync-migration" onclick="event.stopPropagation()"><span><strong>One-time GitHub publication upgrade</strong><small>${migration ? `${migration.phase} · ${migration.activeCount} managed · ${migration.folderCount} folders · ${migration.idCount} IDs · ${migration.collisions.length} collisions` : 'Required once for targets created before PKM 3.2.1. The read-only check finds stable-ID collisions; it does not change local files or GitHub. Follow Stage, Verify, and Cut over, then run one manual Sync. This panel disappears after that successful sync.'}</small></span><span class="sub-broker-actions">${migrationActions}</span></div>`;
+    const migrationProgress = migration ? `<small>Step-by-step progress: ${esc(migration.phase)} · ${migration.activeCount} managed · ${migration.folderCount} folders · ${migration.idCount} IDs · ${migration.collisions.length} collisions</small>` : '';
+    const migrationPanel = migrationCompleted ? '' : `<div class="github-sync-migration" onclick="event.stopPropagation()"><span><strong>One-time GitHub publication upgrade</strong><small>This GitHub repository still uses the PKM format from before 3.2.1, so normal Sync is paused. If this machine is your source of truth, choose <b>Upgrade from this machine</b>: it publishes your selected local content in the new format in one step and overwrites differing GitHub copies. To keep edits that exist only on GitHub, use the step-by-step path instead: Check → Stage → Verify → Cut over (switch to the new format) → one manual Sync. Rollback discards the staged copy; neither path changes your local files.</small>${migrationProgress}</span><span class="sub-broker-actions">${upgradeFromLocal}${migrationActions}</span></div>`;
     const migrationBusy = !!migration && !['cutover','rolled-back'].includes(migration.phase);
     const manualTitle = autoEnabled && !retryWithPause ? 'Turn off Auto Sync before using manual synchronization actions' : '';
     const syncDisabled = !!automationPending || (autoEnabled && !retryWithPause) || status === 'syncing' || forcePending || migrationBusy;
@@ -777,6 +780,20 @@ function githubSyncForceUpdate(targetId, button) {
     onOk:()=>{
       githubSyncForcePending.add(targetId);
       ask('githubSyncForceUpdate', { targetId }, button);
+    }
+  });
+}
+function githubSyncUpgradeFromLocal(targetId, button) {
+  if (githubSyncForcePending.has(targetId)) return;
+  const target = githubSyncData.targets.find(item => item.id === targetId);
+  pkModal({
+    title:'Upgrade GitHub from this machine?',
+    message:`${target?.name || targetId}\n\nThis machine becomes the source of truth. PKM publishes your selected local content to GitHub in the new format and finishes the one-time upgrade — no Stage, Verify, or Cut over needed.\n\nSelected GitHub files missing locally will be deleted, and GitHub copies that differ from this machine will be overwritten. Unselected GitHub content is kept, and earlier versions remain in Git history. Your local files are not changed.`,
+    okLabel:'Continue to final confirmation',
+    danger:true,
+    onOk:()=>{
+      githubSyncForcePending.add(targetId);
+      ask('githubSyncForceUpdate', { targetId, publicationUpgrade:true }, button);
     }
   });
 }

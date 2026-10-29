@@ -57,12 +57,20 @@ function processDirectory(root: string, handle: string): string {
   return directory;
 }
 
-function writeRecord(directory: string, record: ChatProcessRecord): void {
+export function writeChatProcessRecord(directory: string, record: ChatProcessRecord): void {
   const temporary = path.join(directory, `${randomUUID()}.tmp`);
   try {
     const fd = fs.openSync(temporary, "wx", 0o600);
     try { fs.writeFileSync(fd, JSON.stringify(record)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-    fs.renameSync(temporary, path.join(directory, "record.json"));
+    // Windows briefly denies replacing a file that a reader, indexer or antivirus has open.
+    const waitArray = new Int32Array(new SharedArrayBuffer(4));
+    for (let attempt = 0; ; attempt++) {
+      try { fs.renameSync(temporary, path.join(directory, "record.json")); break; }
+      catch (error) {
+        if (!["EPERM", "EBUSY", "EACCES"].includes((error as NodeJS.ErrnoException).code || "") || attempt >= 9) throw error;
+        Atomics.wait(waitArray, 0, 0, 20 * (attempt + 1));
+      }
+    }
   } finally { fs.rmSync(temporary, { force: true }); }
 }
 
@@ -102,7 +110,7 @@ export async function launchChatProcess(root: string, key: string, spec: ChatPro
       return false;
     }
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-    writeRecord(directory, { schema: "pkm.chat.process/v1", handle, spec, state: "launching",
+    writeChatProcessRecord(directory, { schema: "pkm.chat.process/v1", handle, spec, state: "launching",
       createdAt: Date.now(), updatedAt: Date.now(), stdoutBytes: 0, stderrBytes: 0 });
     return true;
   });
@@ -188,11 +196,11 @@ async function supervise(directory: string): Promise<void> {
     const current = loadRecord(directory);
     if (current.state !== "launching" || current.runnerPid !== undefined) throw new Error("The original supervisor already claimed this process. Refusing duplicate launch.");
     const claimed = { ...current, runnerPid: process.pid, updatedAt: Date.now() };
-    writeRecord(directory, claimed);
+    writeChatProcessRecord(directory, claimed);
     return claimed;
   });
   if (fs.existsSync(path.join(directory, "cancel"))) {
-    writeRecord(directory, { ...record, state: "cancelled", updatedAt: Date.now(), detail: "Cancelled before program launch; no program was started." });
+    writeChatProcessRecord(directory, { ...record, state: "cancelled", updatedAt: Date.now(), detail: "Cancelled before program launch; no program was started." });
     return;
   }
   const stdout = fs.openSync(path.join(directory, "stdout.log"), "wx", 0o600);
@@ -206,7 +214,7 @@ async function supervise(directory: string): Promise<void> {
       let stopping: ChatProcessRecord["state"] | undefined;
       let termination: Promise<void> | undefined;
       let completed = false;
-      const persist = () => { record.updatedAt = Date.now(); writeRecord(directory, record); };
+      const persist = () => { record.updatedAt = Date.now(); writeChatProcessRecord(directory, record); };
       const stop = (state: ChatProcessRecord["state"], detail: string) => {
         if (stopping || completed) return;
         stopping = state;
@@ -233,12 +241,16 @@ async function supervise(directory: string): Promise<void> {
         }
       };
       const started = Date.now();
+      let heartbeatFailures = 0;
       const heartbeat = setInterval(() => {
         try {
           persist();
+          heartbeatFailures = 0;
           if (fs.existsSync(path.join(directory, "cancel"))) stop("cancelled", "Explicit process cancellation requested.");
           else if (Date.now() - started >= record.spec.timeoutSeconds * 1000) stop("timed-out", "Approved process deadline reached.");
-        } catch (error) { stop("unknown", `Supervisor evidence failed: ${error instanceof Error ? error.message : String(error)}`); }
+        } catch (error) {
+          if (++heartbeatFailures >= 5) stop("unknown", `Supervisor evidence failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }, 200);
       const append = (chunk: Buffer, error: boolean) => {
         try {
@@ -274,7 +286,7 @@ if (require.main === module && process.argv[2] === "--pkm-process-worker") {
   void supervise(directory).catch(error => {
     try {
       const record = loadRecord(directory);
-      if (record.runnerPid === process.pid) writeRecord(directory, { ...record, state: "unknown", updatedAt: Date.now(),
+      if (record.runnerPid === process.pid) writeChatProcessRecord(directory, { ...record, state: "unknown", updatedAt: Date.now(),
         detail: `Supervisor failed; execution may have effects. ${error instanceof Error ? error.message : String(error)}` });
     } finally { process.exitCode = 1; }
   });

@@ -41,12 +41,15 @@ async function run() {
   assert.ok(commands.includes("personalKnowledge.reloadAllHosts"), "Coordinated reload command was not registered");
   assert.ok(commands.includes("personalKnowledge.openActions"), "Action Workbench command was not registered");
   assert.ok(commands.includes("personalKnowledge.openActionsInBrowser"), "Browser Action Workbench command was not registered");
-  assert.ok(commands.includes("personalKnowledge.answerActionChoice"), "Action Chat answer command was not registered");
-  assert(extension.packageJSON.contributes.chatParticipants.some(participant => participant.id === "personalKnowledge.actions"),
-    "Packaged extension did not declare the Action Chat participant");
-  for (const resource of ["action_modules.py", "action_run_store.py", "action_components.py", "action-workbench.html"]) {
+  assert.ok(commands.includes("personalKnowledge.answerActionChoice"), "Action answer compatibility command was not registered");
+  assert.strictEqual(extension.packageJSON.contributes.chatParticipants, undefined,
+    "Packaged extension must not declare deprecated Chat Participants");
+  assert(extension.packageJSON.contributes.mcpServerDefinitionProviders.some(provider => provider.id === "personalKnowledge.pkm"),
+    "Packaged extension did not declare the PKM MCP provider");
+  for (const resource of ["action_modules.py", "action_run_store.py", "action_components.py", "action_components.js", "action-workbench.html"]) {
     assert(fs.existsSync(path.join(extension.extensionPath, "resources", resource)), `Missing packaged Action resource: ${resource}`);
   }
+  assert(fs.existsSync(path.join(extension.extensionPath, "dist", "components", "action-components.js")), "Missing packaged TypeScript component implementation");
   assert(fs.existsSync(path.join(extension.extensionPath, "dist", "runtime", "action-workbench-server.js")), "Missing packaged browser Action server");
   const navigation = await vscode.commands.executeCommand(
     "_personalKnowledge.testNavigationPath",

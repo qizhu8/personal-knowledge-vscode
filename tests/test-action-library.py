@@ -18,6 +18,164 @@ from action_modules import ModuleRuntime, object_schema
 
 
 class LibraryTests(unittest.TestCase):
+    def test_library_category_tree_search_keyboard_resize_and_restore(self):
+        actions = [
+            {"action_id": "core.files.copy", "display_name": "Copy artifact", "category": "core/filesystem",
+             "description": "Copy managed artifacts", "availability": {"state": "ready"}},
+            {"action_id": "core.ask", "category": "core/interaction",
+             "description": "Ask a question", "availability": {"state": "stale"}},
+            {"action_id": "pipeline.watch", "display_name": "Watch <pipeline>", "category": "Cloud/pipelines",
+             "description": "Observe status transitions", "availability": {"state": "blocked"}},
+        ]
+        restored = {}
+        bootstrap = """
+window.__calls=[];window.__state=INITIAL;window.__actions=ACTIONS;
+window.acquireVsCodeApi=()=>({getState:()=>__state,setState:value=>{__state=value},postMessage:message=>{
+ __calls.push(message);const action=__actions.find(item=>item.action_id===message.params.action_id);
+ const result=message.method==='catalog'?{ok:true,actions:__actions}:{ok:true,action:{...action,effects:['pure'],input_schema:{properties:{}},output_schema:{properties:{}}}};
+ queueMicrotask(()=>window.dispatchEvent(new MessageEvent('message',{data:{requestId:message.requestId,result}})));
+}});
+"""
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(viewport={"width": 1200, "height": 800})
+                errors = []
+                page.on("pageerror", lambda failure: errors.append(str(failure)))
+                page.route("https://action.test/**", lambda route: route.fulfill(content_type="text/html",
+                    body=(ROOT / "resources/action-library.html").read_text().replace("<script>", "<script>" +
+                        bootstrap.replace("INITIAL", json.dumps(restored)).replace("ACTIONS", json.dumps(actions)))))
+                page.goto("https://action.test/")
+                tree = page.get_by_role("tree", name="Admitted Actions")
+                expect(page.locator("#action-count")).to_have_text("ACTIONS · 3")
+                expect(tree.locator("[data-action]")).to_have_count(3)
+                self.assertEqual(tree.locator("article").count(), 0)
+                first = tree.locator("summary").first
+                first.focus()
+                expect(first).to_have_text("core2")
+                page.keyboard.press("ArrowRight")
+                expect(tree.locator("summary").nth(1)).to_be_focused()
+                page.keyboard.press("ArrowLeft")
+                expect(tree.locator("summary").nth(1)).to_have_attribute("aria-expanded", "false")
+                page.keyboard.press("ArrowLeft")
+                expect(first).to_be_focused()
+                page.locator("#collapse-all").click()
+                expect(tree.locator("[data-action]").first).not_to_be_visible()
+                page.locator("#search").fill("transitions")
+                expect(tree.locator('[data-action="pipeline.watch"]')).to_be_visible()
+                expect(tree.locator("[data-action]")).to_have_count(1)
+                expect(tree.locator(".action-name")).to_have_text("Watch <pipeline>")
+                self.assertEqual(tree.locator("pipeline").count(), 0)
+                page.locator("#search").fill("")
+                expect(tree.locator("[data-action]").first).not_to_be_visible()
+                page.locator("#expand-all").click()
+                row = tree.locator('[data-action="core.files.copy"]')
+                row.click()
+                expect(row).to_have_attribute("aria-selected", "true")
+                expect(page.locator("#detail h2")).to_have_text("Copy artifact")
+                expect(row.locator(".readiness")).to_have_text("ready")
+                divider = page.get_by_role("separator", name="Action tree width")
+                width = page.locator("aside").bounding_box()["width"]
+                divider.focus()
+                page.keyboard.press("ArrowRight")
+                self.assertGreater(page.locator("aside").bounding_box()["width"], width)
+                box = divider.bounding_box()
+                page.mouse.move(box["x"] + 2, box["y"] + 80)
+                page.mouse.down()
+                page.mouse.move(box["x"] + 72, box["y"] + 80)
+                page.mouse.up()
+                self.assertGreater(page.evaluate("__state.treeWidth"), width + 60)
+                page.locator("#search").fill("managed")
+                restored = page.evaluate("__state")
+                page.reload()
+                expect(page.locator("#search")).to_have_value("managed")
+                expect(page.locator("#detail h2")).to_have_text("Copy artifact")
+                expect(tree.locator('[data-action="core.files.copy"]')).to_have_attribute("aria-selected", "true")
+                self.assertAlmostEqual(page.locator("aside").bounding_box()["width"], restored["treeWidth"], delta=1)
+                self.assertFalse(page.evaluate("__calls.some(item=>['call','validate','open_workbench'].includes(item.method))"))
+                for width in [800, 420]:
+                    page.set_viewport_size({"width": width, "height": 800})
+                    self.assertFalse(page.evaluate("document.documentElement.scrollWidth>innerWidth"))
+                    expect(tree.locator('[data-action="core.files.copy"]')).to_be_visible()
+                self.assertEqual(errors, [])
+            finally:
+                browser.close()
+
+    def test_library_embedded_bridge_keeps_workbench_state_theme_and_snapshot_separate(self):
+        renderer = r"""
+const Module=require('module'),load=Module._load;
+Module._load=function(name,...args){
+ if(name==='vscode')return {workspace:{isTrusted:true}};
+ if(name==='../knowledge/filestore')return {getStorePath:()=>'/fixture'};
+ if(name==='../mcp/mcp')return {configuredMcpFeatureDomains:()=>['automation']};
+ return load.call(this,name,...args);
+};
+const {renderEmbeddedActionLibrary}=require('./dist/ui/action-browser');
+process.stdout.write(renderEmbeddedActionLibrary({extensionPath:process.cwd()},{}));
+"""
+        library_html = subprocess.check_output(["node", "-e", renderer], cwd=ROOT, text=True)
+        source = (ROOT / "src/webview/panel/53-panel-instances.js").read_text()
+        bridge = source[source.index("const embeddedActionViews"):source.index("function restorePanelViewState")]
+        bootstrap = """
+const state={tab:'actionLibrary'},panelRestoreActive=false,panelSnapshotRestoring=true;
+let __state={actions:{graph:{name:'unsaved Workbench'}}};window.__calls=[];
+const vscode={getState:()=>__state,setState:value=>__state=value,postMessage:message=>{
+ __calls.push(message);if(message.command!=='actionWorkbenchRequest')return;
+ const {surface,message:request}=message;
+ const result=request.method==='catalog'?{ok:true,actions:[{action_id:'test.echo',category:'Tests/local',availability:{state:'ready'}}]}:{ok:true};
+ queueMicrotask(()=>window.dispatchEvent(new MessageEvent('message',{data:{command:'actionWorkbenchReply',surface,message:{requestId:request.requestId,result}}})));
+}};
+const esc=value=>String(value),finishLoadingProgress=()=>{};
+const libraryHtml=LIBRARY;
+function ask(command,{surface}){
+ __calls.push({command,surface});
+ const html=surface==='actionLibrary'?libraryHtml:'<h1>Workbench fixture</h1><input value="unsaved Workbench">';
+ queueMicrotask(()=>window.dispatchEvent(new MessageEvent('message',{data:{command,surface,html}})));
+}
+window.switchView=surface=>{state.tab=surface;showEmbeddedActions()};
+""".replace("LIBRARY", json.dumps(library_html).replace("<", "\\u003c"))
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(viewport={"width": 1200, "height": 800})
+                errors = []
+                page.on("pageerror", lambda failure: errors.append(str(failure)))
+                page.route("https://action.test/**", lambda route: route.fulfill(content_type="text/html",
+                    body='<html style="--vscode-editor-background:#fafafa;--vscode-editor-foreground:#222;--vscode-sideBar-background:#eee;--vscode-list-hoverBackground:#ddd"><body class="vscode-light"><div id="layout" style="height:760px"></div><script>'
+                    + bootstrap + bridge + ";showEmbeddedActions();</script></body></html>"))
+                page.goto("https://action.test/")
+                library = page.frame_locator("#embedded-action-library")
+                expect(library.locator('[data-action="test.echo"]')).to_be_visible()
+                self.assertEqual(library.locator("body").evaluate("node=>getComputedStyle(node).backgroundColor"), "rgb(250, 250, 250)")
+                library.locator("#search").fill("echo")
+                page.evaluate("switchView('actions')")
+                workbench = page.frame_locator("#embedded-action-workbench")
+                expect(workbench.locator("input")).to_have_value("unsaved Workbench")
+                workbench.locator("input").fill("edited Workbench")
+                expect(page.locator("#embedded-action-library")).to_be_hidden()
+                page.evaluate("switchView('actionLibrary')")
+                expect(library.locator("#search")).to_have_value("echo")
+                expect(page.locator("#embedded-action-workbench")).to_be_hidden()
+                page.evaluate("duplicatePkmTab()")
+                page.wait_for_function("__calls.some(item=>item.command==='duplicatePanel')")
+                snapshot = page.evaluate("__calls.find(item=>item.command==='duplicatePanel').state")
+                self.assertEqual(snapshot["actionLibrary"]["query"], "echo")
+                self.assertEqual(snapshot["actions"]["graph"]["name"], "unsaved Workbench")
+                page.evaluate("switchView('actions')")
+                expect(workbench.locator("input")).to_have_value("edited Workbench")
+                self.assertEqual(page.locator("iframe").count(), 2)
+                self.assertEqual(len(page.context.pages), 1)
+                self.assertTrue(page.evaluate("__calls.filter(item=>item.command==='actionWorkbenchRequest').every(item=>item.surface==='actionLibrary'&&item.message.knowledgeRoot==='/fixture')"))
+                before = page.evaluate("__calls.length")
+                page.evaluate("window.dispatchEvent(new MessageEvent('message',{source:window,data:{channel:'pkm-actions',type:'request',message:{method:'call'}}}))")
+                self.assertEqual(page.evaluate("__calls.length"), before, "foreign frames cannot use the library bridge")
+                page.evaluate("document.documentElement.style.setProperty('--vscode-editor-background','#181818');document.body.className='vscode-dark';switchView('actionLibrary')")
+                page.wait_for_function("document.querySelector('#embedded-action-library')!==null")
+                expect(library.locator("body")).to_have_css("background-color", "rgb(24, 24, 24)")
+                self.assertEqual(errors, [])
+            finally:
+                browser.close()
+
     def test_pending_actions_are_visible_in_tree_with_validation_guidance_and_exact_proposal(self):
         with tempfile.TemporaryDirectory() as directory:
             runtime, _ = self.create_runtime(directory)
@@ -73,10 +231,23 @@ window.acquireVsCodeApi=()=>({getState:()=>({libraryOpen:true}),setState:value=>
                     page.locator("#show-validation-actions").click()
                     first = page.locator(f'[data-qualify="{names[0]}"]')
                     first.click()
+                    expect(page.locator("#validation-choice-dialog")).to_be_visible()
+                    self.assertEqual(page.locator("#validation-choice-dialog button").all_text_contents(),
+                                     ["Cancel", "Validate this action", "Validate all possible actions"])
+                    page.locator("#validation-choice-cancel").click()
+                    expect(page.locator("#validation-choice-dialog")).not_to_be_visible()
+                    self.assertFalse(page.evaluate("__calls.some(item=>['validate','validate_batch'].includes(item.method))"))
+                    first.click()
+                    page.keyboard.press("Escape")
+                    expect(page.locator("#validation-choice-dialog")).not_to_be_visible()
+                    self.assertFalse(page.evaluate("__calls.some(item=>['validate','validate_batch'].includes(item.method))"))
+                    first.click()
+                    page.locator("#validation-choice-this").click()
                     expect(page.locator("#validation-message")).to_contain_text("remote-write")
                     page.locator("#validation-dismiss").click()
                     self.assertFalse(page.evaluate("__calls.some(item=>item.method==='validate')"))
                     first.click()
+                    page.locator("#validation-choice-this").click()
                     page.locator("#validation-accept").click()
                     expect(page.locator("#validation-feedback")).to_contain_text("cancelled")
                     request = page.evaluate("__calls.find(item=>item.method==='validate').params")
@@ -110,7 +281,8 @@ window.acquireVsCodeApi=()=>({getState:()=>({libraryOpen:true}),setState:value=>
                     expect(page.locator("#validation-message")).to_contain_text("remote-write")
                     page.locator("#validation-dismiss").click()
                     self.assertFalse(page.evaluate("__calls.some(item=>item.method==='validate_batch')"))
-                    page.locator("#validate-all-actions").click()
+                    page.locator(f'[data-qualify="{names[1]}"]').click()
+                    page.locator("#validation-choice-all").click()
                     page.locator("#validation-accept").click()
                     expect(page.locator("#batch-validation-progress")).to_be_visible()
                     expect(page.locator("#batch-validation-stage")).to_contain_text("1/3")
@@ -303,11 +475,13 @@ window.acquireVsCodeApi=()=>({getState:()=>null,setState:()=>{},postMessage:mess
                     page.locator("#validation-accept").click()
                     self.assertFalse(page.evaluate("__calls.some(item=>item.method==='validate')"))
                     page.locator("[data-qualify]").click()
+                    page.locator("#validation-choice-this").click()
                     expect(page.locator("#validation-dialog")).to_be_visible()
                     expect(page.locator("#validation-message")).to_contain_text("remote-read")
                     page.locator("#validation-dismiss").click()
                     self.assertFalse(page.evaluate("__calls.some(item=>item.method==='validate')"))
                     page.locator("[data-qualify]").click()
+                    page.locator("#validation-choice-this").click()
                     page.locator("#validation-accept").click()
                     expect(page.locator("#validation-feedback")).to_contain_text("queued")
                     self.assertTrue(page.evaluate("__calls.find(item=>item.method==='validate').params.allow_effects"))
@@ -318,6 +492,7 @@ window.acquireVsCodeApi=()=>({getState:()=>null,setState:()=>{},postMessage:mess
                     expect(page.locator("#validation-feedback")).to_contain_text("Ready:")
                     page.evaluate("__fail=true")
                     page.locator("[data-qualify]").click()
+                    page.locator("#validation-choice-this").click()
                     page.locator("#validation-accept").click()
                     expect(page.locator("#validation-feedback")).to_contain_text("Fixture permission denied")
                     self.assertEqual(errors, [])
@@ -359,7 +534,7 @@ window.acquireVsCodeApi=()=>({getState:()=>null,setState:()=>{},postMessage:mess
                         params = request["params"]
                         review = runtime.qualification_review(params["action_id"], params["content_hash"], params.get("proposal_id"))
                         result = runtime.qualification_execute(params["action_id"], params["content_hash"], review["snapshot_hash"],
-                            {"approved": True, "issues": [], "summary": "Fixture review passed", "model": "fixture"},
+                            {"user_confirmed": True, "issues": [], "summary": "Fixture review passed", "model": "fixture"},
                             params.get("proposal_id"), params.get("allow_effects", False))
                         result = runtime.qualification_admit(result["attempt_id"])
                         granted[0] = True
@@ -416,7 +591,8 @@ window.acquireVsCodeApi=()=>({getState:()=>null,setState:()=>{},postMessage:mess
                     self.assertFalse(granted[0], "cancelled native review must not grant")
                     cancel[0] = False
                     page.locator("#admission-confirm").click()
-                    expect(page.locator("#validation-feedback")).to_contain_text("admitted and ready")
+                    expect(page.locator("#validation-feedback")).to_contain_text("Environment tests passed")
+                    expect(page.locator("#validation-feedback")).to_contain_text("not a safety certification")
                     page.locator("#open-library").click()
                     page.locator("#workbench-review-details").evaluate("node=>node.open=true")
                     page.locator(f'[data-inspect-library="{action["action_id"]}"]').click()
@@ -443,7 +619,7 @@ window.acquireVsCodeApi=()=>({getState:()=>null,setState:()=>{},postMessage:mess
                     self.assertFalse((runtime.registry / "example.pending.json").exists())
                     cancel[0] = False
                     page.locator("#admission-confirm").click()
-                    expect(page.locator("#validation-feedback")).to_contain_text("admitted and ready")
+                    expect(page.locator("#validation-feedback")).to_contain_text("Environment tests passed")
                     page.locator("#open-library").click()
                     page.locator("#workbench-review-details").evaluate("node=>node.open=true")
                     expect(page.locator('[data-inspect-library="example.pending"]')).to_be_visible()

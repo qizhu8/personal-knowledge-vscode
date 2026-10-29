@@ -63,6 +63,10 @@ test("real local knowledge handles fetch exact tail ranges and reject stale revi
     const full = noteGet("range-test").content;
     const initial = JSON.parse(readChatKnowledge("pkm_read", "note", "range-test"));
     assert.equal(initial.truncated, true);
+    assert.deepEqual(JSON.parse(readChatKnowledge("pkm_read", "note", initial.sourceId)), initial,
+      "an injected canonical source ID can be read directly, without a second search");
+    assert.deepEqual(JSON.parse(readChatKnowledge("pkm_read", "note", initial.sourceId.split("/").at(-1))), initial,
+      "the stable knowledge ID remains usable when a model omits the canonical URI prefix");
     const start = full.indexOf("\ud83d\udc26"), end = full.length;
     assert(start > 160000);
     const handle = { sourceRevision:initial.sourceRevision, contentHash:initial.contentHash };
@@ -83,6 +87,21 @@ test("real local knowledge handles fetch exact tail ranges and reject stale revi
     setStorePath(previous);
     fs.rmSync(directory, { recursive:true, force:true });
   }
+});
+
+test("knowledge keyword queries retain explicit title matches with additional terms and punctuation variants", () => {
+  const previous = getStorePath(), directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-title-search-"));
+  try {
+    setStorePath(directory);
+    noteUpsert({slug:"weekly-target", title:"Weekly-Labeling-Overview", content:"Sampling", type:"observation", tags:[]});
+    noteUpsert({slug:"cache-other", title:"Cache Reference Performance Report", content:"Other", type:"observation", tags:[]});
+    for (const query of ["Weekly-Labeling-Overview source-sliced campaign-linked", "Weekly Labeling Overview labeling source sliced campaign linked"]) {
+      const result = JSON.parse(readChatKnowledge("pkm_search", "note", query));
+      assert.equal(result.items[0].title, "Weekly-Labeling-Overview");
+      assert(!result.items.some(item => item.title === "Cache Reference Performance Report"));
+    }
+    assert.deepEqual(JSON.parse(readChatKnowledge("pkm_search", "note", "never-matched-synthetic-term")).items, []);
+  } finally {setStorePath(previous);fs.rmSync(directory, {recursive:true, force:true});}
 });
 
 test("Research exact ranges include structured conclusions, implementation and assumptions in retrieval order", () => {

@@ -44,7 +44,8 @@ select { min-width: 0; max-width: 100%; padding: 4px; border: 1px solid transpar
 .chat-status-indicator::before { content: ""; width: 8px; height: 8px; border: 1px solid #9da3a8; border-radius: 50%; background: transparent; }
 .chat-status-indicator[data-state="running"]::before { display: none; }
 .chat-status-indicator[data-state="completed"]::before { border-color: #52bb80; background: #52bb80; }
-.chat-status-indicator[data-state="stopped"]::before { border: 0; border-radius: 0; background: linear-gradient(to right, #9da3a8 0 35%, transparent 35% 65%, #9da3a8 65% 100%); }
+.chat-status-indicator[data-state="stopped"]::before { border-color: #9da3a8; background: #9da3a8; }
+.chat-status-indicator[data-state="paused"]::before { border-color: #e3b341; background: #e3b341; }
 .chat-status-indicator[data-state="waiting-input"]::before { border: 2px solid #e3b341; }
 .chat-status-indicator[data-state="waiting-result"]::before { border-color: #e3b341; background: #e3b341; }
 .chat-status-indicator[data-state="failed"]::before { border-color: #ef6c6c; background: #ef6c6c; border-radius: 1px; transform: rotate(45deg); }
@@ -66,8 +67,12 @@ select { min-width: 0; max-width: 100%; padding: 4px; border: 1px solid transpar
 .chat-terminal-wizard.wizard-sooty::before { border-radius:50%; transform:none; box-shadow:0 0 3px #ef6c6c; }
 .wizard-eye { transform-box:fill-box; transform-origin:center; animation:wizard-blink 5s infinite; }
 @keyframes wizard-blink { 0%,88%,94%,100% { transform:scaleY(1); } 90%,92% { transform:scaleY(.12); } }
-.chat-backgrounded .wizard-eye,.chat-backgrounded .wizard-snore { animation-play-state:paused; }
-@media (prefers-reduced-motion:reduce) { .wizard-eye,.wizard-snore { animation:none; } }
+.wizard-break-breathe { animation:wizard-break-breathe 3s ease-in-out infinite; }
+.wizard-break-steam { animation:wizard-break-steam 2.4s ease-in-out infinite; }
+@keyframes wizard-break-breathe { 0%,100% { transform:translateY(0); } 50% { transform:translateY(.6px); } }
+@keyframes wizard-break-steam { 0%,100% { opacity:.3; transform:translateY(0); } 50% { opacity:1; transform:translateY(-2px); } }
+.chat-backgrounded .wizard-eye,.chat-backgrounded .wizard-snore,.chat-backgrounded .wizard-break-breathe,.chat-backgrounded .wizard-break-steam { animation-play-state:paused; }
+@media (prefers-reduced-motion:reduce) { .wizard-eye,.wizard-snore,.wizard-break-breathe,.wizard-break-steam { animation:none; } }
 @media (prefers-reduced-motion: reduce) {
   .pixel-wizard-frame { animation: none; }
   .pixel-wizard-frame[data-frame="0"] { opacity: 1; }
@@ -100,6 +105,38 @@ select { min-width: 0; max-width: 100%; padding: 4px; border: 1px solid transpar
 #persona-dialog>header { display:flex; align-items:center; justify-content:space-between; gap:12px; }
 #portal-state pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:240px; overflow:auto; }
 .portal-message { border-left:3px solid var(--vscode-focusBorder); }
+.portal-command, .portal-transfer { border-left:3px solid var(--vscode-terminal-ansiBlue, var(--vscode-focusBorder)); }
+.portal-transfer progress { width:100%; accent-color:var(--vscode-progressBar-background); }
+.portal-command { width:min(100%, 900px); padding:0; overflow:hidden; border:1px solid var(--vscode-panel-border, #ffffff25); border-left:3px solid var(--vscode-terminal-ansiBlue, var(--vscode-focusBorder)); border-radius:5px; background:var(--vscode-terminal-background, var(--vscode-editor-background, #151515)); }
+.portal-command .message-header { min-width:0; padding:7px 10px; background:var(--vscode-editorWidget-background, #292929); }
+.portal-command .message-header strong { min-width:0; overflow-wrap:anywhere; }
+.portal-command-status { display:inline-flex; align-items:center; justify-content:flex-end; gap:5px; text-align:right; font-size:11px; font-weight:600; }
+.portal-command-status::before { content:""; width:7px; height:7px; flex:0 0 7px; border-radius:50%; background:currentColor; }
+.portal-command-awaiting-approval { border-left-color:var(--vscode-editorWarning-foreground, #e3b341); }
+.portal-command-awaiting-approval .portal-command-status { color:var(--vscode-editorWarning-foreground, #e3b341); }
+.portal-command-running { border-left-color:var(--vscode-progressBar-background, #3794ff); }
+.portal-command-running .portal-command-status { color:var(--vscode-progressBar-background, #3794ff); }
+.portal-command-completed { border-left-color:var(--vscode-testing-iconPassed, #52bb80); }
+.portal-command-completed .portal-command-status { color:var(--vscode-testing-iconPassed, #52bb80); }
+.portal-command-failed { border-left-color:var(--vscode-errorForeground, #ef6c6c); }
+.portal-command-failed .portal-command-status { color:var(--vscode-errorForeground, #ef6c6c); }
+.portal-command-denied { border-left-color:var(--vscode-terminal-ansiYellow, #e3b341); }
+.portal-command-denied .portal-command-status { color:var(--vscode-terminal-ansiYellow, #e3b341); }
+.portal-command-cancelled { border-left-color:var(--vscode-descriptionForeground, #9da3a8); }
+.portal-command-cancelled .portal-command-status { color:var(--vscode-descriptionForeground, #9da3a8); }
+.portal-command-unknown { border-left-color:var(--vscode-terminal-ansiMagenta, #b180d7); }
+.portal-command-unknown .portal-command-status { color:var(--vscode-terminal-ansiMagenta, #b180d7); }
+.portal-command-line { display:flex; gap:9px; min-width:0; max-height:12em; margin:0; padding:10px; overflow:auto; color:var(--vscode-terminal-ansiGreen, var(--vscode-terminal-foreground, var(--vscode-foreground, #ddd))); white-space:pre-wrap; overflow-wrap:anywhere; font-family:var(--vscode-editor-font-family, monospace); font-size:12px; line-height:1.5; }
+.portal-command-line code { min-width:0; color:inherit; font:inherit; white-space:inherit; overflow-wrap:inherit; }
+.portal-command-prompt { flex:0 0 auto; color:var(--vscode-terminal-ansiBlue, var(--vscode-focusBorder, #3794ff)); user-select:none; }
+.portal-command-meta { display:flex; flex-wrap:wrap; gap:4px 12px; min-width:0; padding:0 10px 8px; color:var(--vscode-descriptionForeground, #aaa); font-size:10px; overflow-wrap:anywhere; }
+.portal-command-cwd { min-width:0; max-width:100%; overflow-wrap:anywhere; font-family:var(--vscode-editor-font-family, monospace); }
+.portal-command-output { margin:0 10px 8px; padding:5px 8px; border-top:1px solid var(--vscode-panel-border, #ffffff25); }
+.portal-command-output-title { padding:4px 0; color:var(--vscode-descriptionForeground, #aaa); }
+.portal-command-terminal { box-sizing:border-box; height:20vh; overflow:auto; overscroll-behavior:contain; }
+.portal-command-stream-label { display:block; margin-top:7px; color:var(--vscode-descriptionForeground, #aaa); font-family:var(--vscode-editor-font-family, monospace); font-size:10px; }
+.portal-command-stream { margin:3px 0 0; white-space:pre-wrap; overflow-wrap:anywhere; font-family:var(--vscode-editor-font-family, monospace); font-size:12px; }
+@media (max-width:480px) { .portal-command .message-header { align-items:flex-start; flex-wrap:wrap; gap:4px 8px; } .portal-command-status { flex:0 0 100%; justify-content:flex-start; text-align:left; } }
 .portal-scene { display:inline-flex; position:relative; width:24px; height:16px; flex:0 0 24px; }
 .portal-scene-svg { display:block; width:24px; height:16px; overflow:visible; }
 .portal-scene rect { shape-rendering:crispEdges; }
@@ -285,7 +322,10 @@ textarea { resize: vertical; min-height: 72px; max-height: 230px; width: 100%; p
 .workflow-rail button { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; color: inherit; }
 .workflow-rail button[aria-pressed="true"] { outline: 1px solid var(--vscode-focusBorder, #3794ff); outline-offset: 0; }
 .workflow [data-status="complete"] { color: var(--vscode-testing-iconPassed, #73c991); }
-.workflow [data-status="running"] { color: var(--vscode-progressBar-background, #3794ff); }
+.workflow [data-status="running"] { color: var(--vscode-charts-blue, #3794ff); }
+.workflow-events li[data-status="running"] > .workflow-event-line .workflow-dot, .workflow-events li[data-status="running"] > details > .workflow-event-line .workflow-dot { animation: workflow-pulse 1.4s ease-in-out infinite; }
+.activity-thinking { margin:2px 0 2px 18px; font-size:11px; font-style:italic; color:var(--vscode-descriptionForeground,#aaa); white-space:pre-wrap; overflow-wrap:anywhere; max-height:4.5em; overflow:hidden; }
+.workflow [data-status="context"] { color: var(--vscode-descriptionForeground, #aaa); }
 .workflow [data-status="waiting"] { color: var(--vscode-editorWarning-foreground, #cca700); }
 .workflow [data-status="failed"] { color: var(--vscode-errorForeground, #f48771); }
 .workflow [data-status="cancelled"] { color: var(--vscode-descriptionForeground, #aaa); }

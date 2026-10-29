@@ -2,15 +2,18 @@
 
 import ast
 import builtins
+import hashlib
 import json
 import math
+import os
 import re
+import subprocess
 import time
 import uuid
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
-from recipe_runtime import _atomic_write
+from recipe_runtime import _atomic_write, _hidden_process_options
 from action_recovery import ActionSuspended
 from action_monitoring import ActionFailure, monitor_schema, observation as monitor_observation
 
@@ -24,6 +27,92 @@ MATH_FUNCTIONS.update({name: getattr(builtins, name) for name in ["abs", "min", 
 MATH_SOURCES = {name: ("builtins." if name in {"abs", "min", "max", "round"} else "math.") + name
                 for name in MATH_FUNCTIONS}
 MATH_EXAMPLE = "{0} x {1} + {2} * log {3}"
+STATELESS_COMPONENTS = {"core.constant", "core.cast", "core.lookup", "core.file-path", "core.math-expression"}
+COMPONENT_LANGUAGES = {"python": "Python", "javascript": "JavaScript", "typescript": "TypeScript"}
+JS_SAFE_INTEGER = 2 ** 53 - 1
+
+
+def component_scripts():
+    """Node entry points; installed MCP copies sit beside this file, checkouts use dist/."""
+    here = Path(__file__).resolve().parent
+    typescript = here / "action_components_ts.js"
+    if not typescript.is_file():
+        typescript = here.parent / "dist" / "components" / "action-components.js"
+    return {"javascript": here / "action_components.js", "typescript": typescript}
+
+
+def component_engine_hash():
+    parts = {"python": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+    for language, path in component_scripts().items():
+        parts[language] = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+    return hashlib.sha256(json.dumps(parts, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def step_languages(steps, depth=0):
+    languages = set()
+    if not isinstance(steps, list) or depth > 12:
+        return languages
+    for step in steps:
+        if not isinstance(step, dict) or "component" not in step:
+            continue
+        languages.add(COMPONENT_LANGUAGES.get(step.get("implementation", "python"), "Unknown"))
+        inputs = step.get("inputs", {}) if isinstance(step.get("inputs"), dict) else {}
+        for field in ["then_steps", "else_steps", "default_steps", "body"]:
+            languages.update(step_languages(inputs.get(field), depth + 1))
+        for case in inputs.get("cases", []) if isinstance(inputs.get("cases"), list) else []:
+            if isinstance(case, dict):
+                languages.update(step_languages(case.get("steps"), depth + 1))
+    return languages
+
+
+def component_node(runtime):
+    try:
+        return runtime.resolve_program("node")
+    except PermissionError as missing:
+        config = Path(__file__).resolve().with_name("recipe_compiler_config.json")
+        executable = json.loads(config.read_text(encoding="utf-8")).get("executable") if config.is_file() else None
+        if executable and Path(executable).is_file():
+            return executable
+        raise PermissionError("JavaScript/TypeScript component implementations need Node.js on the execution host. " + str(missing)) from missing
+
+
+def run_component_implementation(runtime, name, values, language, resolved_path=None, workspace=None):
+    script = component_scripts().get(language)
+    if name not in STATELESS_COMPONENTS or script is None:
+        raise ValueError("Component has no " + COMPONENT_LANGUAGES.get(language, language) + " implementation: " + name)
+    if not script.is_file():
+        raise PermissionError("The " + COMPONENT_LANGUAGES[language] + " component implementation is missing from this installation: " + str(script))
+
+    def check(value, depth=0):
+        if depth > 64:
+            raise ValueError("Component input nesting is too deep.")
+        if type(value) is int and abs(value) > JS_SAFE_INTEGER:
+            raise ValueError("JavaScript/TypeScript component implementations require integers within ±9007199254740991.")
+        for item in value.values() if isinstance(value, dict) else value if isinstance(value, list) else []:
+            check(item, depth + 1)
+
+    check(values)
+    request = {"component": name, "inputs": values,
+               "context": {"workspace": str(workspace) if workspace else None, "resolved_path": resolved_path,
+                           "float_inputs": sorted(key for key, value in values.items() if type(value) is float)}}
+    try:
+        result = subprocess.run([component_node(runtime), str(script)], input=json.dumps(request, allow_nan=False),
+                                capture_output=True, text=True, encoding="utf-8", timeout=30,
+                                env={**os.environ, "ELECTRON_RUN_AS_NODE": "1"}, **_hidden_process_options())
+    except subprocess.TimeoutExpired as error:
+        raise TimeoutError(COMPONENT_LANGUAGES[language] + " component implementation timed out.") from error
+    try:
+        response = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise RuntimeError(COMPONENT_LANGUAGES[language] + " component implementation failed: " + (result.stderr.strip() or "no output")[:2000]) from None
+    if not response.get("ok"):
+        error = response.get("error") or {}
+        kind = {"PermissionError": PermissionError, "KeyError": KeyError}.get(error.get("type"), ValueError)
+        raise kind(str(error.get("message", "Component implementation failed.")))
+    output = response["output"]
+    for field in response.get("float_fields", []):
+        output[field] = float(output[field])
+    return output
 
 
 def math_expression(expression, inputs):
@@ -131,6 +220,40 @@ def cast_value(value, target_type, trim=False):
     return source
 
 
+def file_path_value(runtime, record, key, values):
+    reference = values["path"]
+    path = (runtime.resource_path(record["definition"], reference, "steps." + key + ".path")
+            if reference.startswith(("pkm://", "${module_assets}/")) else Path(reference).expanduser())
+    path = (runtime.workspace() / path).resolve() if not path.is_absolute() else path.resolve()
+    if not path.is_relative_to(runtime.workspace()) or values.get("must_exist", False) and not path.exists():
+        raise PermissionError("File path is outside the Action workspace or does not exist.")
+    return str(path)
+
+
+def run_stateless_component(runtime, record, key, name, values, language="python"):
+    """Run one stateless component with the selected language implementation; all share one contract."""
+    if language != "python":
+        resolved_path = None
+        if name == "core.file-path" and values["path"].startswith(("pkm://", "${module_assets}/")):
+            resolved_path = str(runtime.resource_path(record["definition"], values["path"], "steps." + key + ".path"))
+        return run_component_implementation(runtime, name, values, language, resolved_path,
+                                            runtime.workspace() if name == "core.file-path" else None)
+    if name == "core.constant":
+        return {"value": values["value"]}
+    if name == "core.math-expression":
+        return {"value": math_expression(values["expression"], values)}
+    if name == "core.cast":
+        return {"value": cast_value(values["value"], values["target_type"], values.get("trim", False))}
+    if name == "core.lookup":
+        dictionary, field = values["dictionary"], values["key"]
+        if field not in dictionary and "default" not in values:
+            raise KeyError("Dictionary key is missing: " + field)
+        return {"value": dictionary[field] if field in dictionary else values["default"]}
+    if name == "core.file-path":
+        return {"path": file_path_value(runtime, record, key, values)}
+    raise ValueError("Not a stateless component: " + name)
+
+
 def component_definitions():
     steps = {"type": "array", "items": {"type": "object"}, "maxItems": 100, "default": []}
     limit = {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100}
@@ -180,6 +303,8 @@ def component_definitions():
                 "timing" if name in {"sleep", "wait", "poll", "monitor"} else
                 "filesystem" if name == "file-path" else "values"),
             "component": True, "version": 1, "effects": effects,
+            "component_implementations": [{"id": language, "language": COMPONENT_LANGUAGES[language], "default": language == "python"}
+                                          for language in (COMPONENT_LANGUAGES if "core." + name in STATELESS_COMPONENTS else ["python"])],
             **({"math_functions": MATH_SOURCES, "examples": [{"inputs": {"expression": MATH_EXAMPLE, "input_0": 2, "input_1": 3, "input_2": 4, "input_3": math.e}, "output": {"value": 10.0}}]} if name == "math-expression" else {}),
             "input_schema": {"type": "object", "properties": properties, "required": required, "additionalProperties": False},
             "output_schema": {"type": "object", "properties": outputs, "required": list(outputs), "additionalProperties": False}}
@@ -220,7 +345,7 @@ def validate_steps(steps, dependencies, depth=0, budget=None):
     effects = set()
     for step in steps:
         budget[0] += 1
-        if budget[0] > 500 or not isinstance(step, dict) or set(step) - {"id", "action_id", "content_hash", "component", "inputs", "output_schema"}:
+        if budget[0] > 500 or not isinstance(step, dict) or set(step) - {"id", "action_id", "content_hash", "component", "implementation", "inputs", "output_schema"}:
             raise ValueError("Invalid component step or structural budget exceeded.")
         identifier = step.get("id")
         if not isinstance(identifier, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", identifier) or identifier in identifiers:
@@ -237,6 +362,9 @@ def validate_steps(steps, dependencies, depth=0, budget=None):
         definition = component_definitions().get(step["component"])
         if not definition:
             raise ValueError("Unknown basic component.")
+        if "implementation" in step and step["implementation"] not in {item["id"] for item in definition["component_implementations"]}:
+            raise ValueError("Unsupported implementation for " + step["component"] + ": " + str(step["implementation"])
+                             + ". Python, JavaScript and TypeScript are available for stateless components; control-flow components run in the host.")
         inputs = step["inputs"]
         if set(inputs) - set(definition["input_schema"]["properties"]) or set(definition["input_schema"]["required"]) - set(inputs):
             raise ValueError("Missing or unknown basic component inputs: " + identifier)
@@ -571,25 +699,10 @@ def execute_steps(runtime, record, context, implementation):
             else:
                 values = resolve(values)
                 Draft202012Validator(spec["input_schema"]).validate(values)
-                if name == "core.constant":
-                    output = {"value": values["value"]}
-                elif name == "core.math-expression":
-                    output = {"value": math_expression(values["expression"], values)}
-                elif name == "core.cast":
-                    output = {"value": cast_value(values["value"], values["target_type"], values.get("trim", False))}
-                elif name == "core.lookup":
-                    dictionary, field = values["dictionary"], values["key"]
-                    if field not in dictionary and "default" not in values:
-                        raise KeyError("Dictionary key is missing: " + field)
-                    output = {"value": dictionary[field] if field in dictionary else values["default"]}
-                elif name == "core.file-path":
-                    reference = values["path"]
-                    path = (runtime.resource_path(record["definition"], reference, "steps." + key + ".path")
-                            if reference.startswith(("pkm://", "${module_assets}/")) else Path(reference).expanduser())
-                    path = (runtime.workspace() / path).resolve() if not path.is_absolute() else path.resolve()
-                    if not path.is_relative_to(runtime.workspace()) or values["must_exist"] and not path.exists():
-                        raise PermissionError("File path is outside the Action workspace or does not exist.")
-                    output = {"path": str(path)}
+                language = step.get("implementation", "python")
+                if name in STATELESS_COMPONENTS:
+                    output = run_stateless_component(runtime, record, key, name, values, language)
+                    Draft202012Validator(spec["output_schema"]).validate(output)
                 elif name == "core.sleep":
                     seconds = values["seconds"]
                     if type(seconds) not in {int, float} or not 0 <= seconds <= 300:

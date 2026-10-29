@@ -41,6 +41,12 @@ try {
 
 assert.strictEqual(validateUiArtifacts(root), REQUIRED_UI_ARTIFACTS.length + 1,
   "the current build must contain every required UI artifact");
+const mediaZoom = fs.readFileSync(path.join(root, "src/webview/components/media-zoom.js"), "utf8");
+const standaloneMermaid = fs.readFileSync(path.join(root, "src/webview/standalone-mermaid.js"), "utf8");
+assert.strictEqual(fs.readFileSync(path.join(root, "dist/webview/standalone-mermaid.js"), "utf8"),
+  mediaZoom + "\n" + standaloneMermaid, "browser renderer must bundle its shared zoom dependency");
+assert(fs.readFileSync(path.join(root, "dist/webview/panel.js"), "utf8").startsWith(mediaZoom),
+  "panel must initialize shared media zoom before Markdown rendering");
 
 const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-ui-artifacts-"));
 try {
@@ -67,8 +73,11 @@ try {
 }
 
 const manifest = require(path.join(root, "package.json"));
-assert(manifest.scripts["vscode:prepublish"].includes("test-ui-build-artifacts.js"),
+assert.strictEqual(manifest.scripts["vscode:prepublish"], "node scripts/vscode-prepublish.js");
+assert(fs.readFileSync(path.join(root, "scripts", "vscode-prepublish.js"), "utf8").includes("test-ui-build-artifacts.js"),
   "VS Code packaging must run the UI artifact regression test");
+assert(fs.readFileSync(path.join(root, "scripts", "run-package-gate.js"), "utf8").includes("tests/test-ui-build-artifacts.js"),
+  "the prebuilt package gate must run the UI artifact regression test before skipping prepublish");
 
 console.log("UI build artifact tests passed");
 

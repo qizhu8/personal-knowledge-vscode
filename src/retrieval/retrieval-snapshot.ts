@@ -93,7 +93,7 @@ export function materializeRetrievalCandidates(parents: RetrievalCandidateV1[], 
       continue;
     }
     candidates[index] = { ...parent, label:document.title, ...materializeRetrievalSource(document) };
-    if (document.body.length <= 160_000) continue;
+    if (document.body.length <= 4_000) continue;
     const refined = refineRuleCandidates([{ ...candidates[index], content:document.body }], query);
     const [metadata, ...passages] = refined.candidates;
     if (candidates.length + passages.length > 100) {

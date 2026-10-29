@@ -9,6 +9,7 @@ import {
   GitHubSyncRuntimeState,
   GitHubSyncScheduler,
   MAX_GITHUB_SYNC_FAILURE_ATTEMPTS,
+  isGitHubSyncAuthenticationFailure,
 } from "./github-sync-scheduler";
 import { compareVersionOrder } from "../runtime/version-order";
 
@@ -227,7 +228,8 @@ export class GitHubSyncCoordinator {
       for (const targetId of Object.keys(state.intents)) if (!activeIds.has(targetId)) delete state.intents[targetId];
       for (const targetId of Object.keys(state.claims)) if (!activeIds.has(targetId)) delete state.claims[targetId];
       for (const target of targets) {
-        if (target.enabled && !target.needsAttention && (!target.lastFailure || (target.lastFailure.attempts || 1) < MAX_GITHUB_SYNC_FAILURE_ATTEMPTS)) continue;
+        if (target.enabled && !target.needsAttention && (!target.lastFailure || isGitHubSyncAuthenticationFailure(target.lastFailure)
+          || (target.lastFailure.attempts || 1) < MAX_GITHUB_SYNC_FAILURE_ATTEMPTS)) continue;
         if (state.intents[target.id]?.reason !== "manual" && state.intents[target.id]?.reason !== "force-local-authority") delete state.intents[target.id];
       }
       for (const targetId of Object.keys(state.blocked)) if (!activeIds.has(targetId)) delete state.blocked[targetId];
@@ -242,7 +244,8 @@ export class GitHubSyncCoordinator {
     if (this.disposed || !target || (!target.enabled && reason !== "manual" && reason !== "force-local-authority")) return false;
     if (target.needsAttention && reason !== "manual" && reason !== "force-local-authority") return false;
     if (reason !== "manual" && reason !== "force-local-authority" && target.lastFailure
-      && (reason === "change" || reason === "configuration" || (target.lastFailure.attempts || 1) >= MAX_GITHUB_SYNC_FAILURE_ATTEMPTS)) return false;
+      && (reason === "change" || reason === "configuration"
+        || !isGitHubSyncAuthenticationFailure(target.lastFailure) && (target.lastFailure.attempts || 1) >= MAX_GITHUB_SYNC_FAILURE_ATTEMPTS)) return false;
     return this.mutateSync(state => {
       const current = state.intents[targetId];
       if (current && PRIORITY[current.reason] >= PRIORITY[reason]) return false;
@@ -429,8 +432,20 @@ export class GitHubSyncCoordinator {
           if (this.dispatchedIntentSequences.get(targetId) === this.executingIntentSequences.get(targetId)) this.dispatchedIntentSequences.delete(targetId);
           if (outcome === "succeeded") {
             const target = this.targets.get(targetId);
-            if (target) target.needsAttention = false;
-            this.mutateSync(state => { if (state.targets[targetId]) state.targets[targetId].needsAttention = false; });
+            const succeededAt = new Date(this.now()).toISOString();
+            if (target) {
+              target.needsAttention = false;
+              target.lastFailure = undefined;
+              target.lastSuccessAt = succeededAt;
+            }
+            this.mutateSync(state => {
+              const current = state.targets[targetId];
+              if (current) {
+                current.needsAttention = false;
+                current.lastFailure = undefined;
+                current.lastSuccessAt = succeededAt;
+              }
+            });
             this.resolveOwnedClaim(targetId, reason);
             this.resolvePendingIntent(targetId, reason);
           }
@@ -451,9 +466,10 @@ export class GitHubSyncCoordinator {
             const target = this.targets.get(targetId);
             if (target && runtime?.lastAttemptAt && runtime.lastError) {
               target.lastFailure = {
-                at: runtime.lastAttemptAt, error: runtime.lastError, reason,
+                at: target.lastFailure?.at || runtime.lastAttemptAt, error: runtime.lastError, reason,
                 attempts: target.lastFailure?.attempts || 1,
                 errorCode: runtime.lastErrorCode, phase: runtime.lastErrorPhase,
+                ...(target.lastFailure?.retryable === false ? { retryable: false } : {}),
               };
               this.mutateSync(state => { if (state.targets[targetId]) state.targets[targetId].lastFailure = target.lastFailure; });
             }

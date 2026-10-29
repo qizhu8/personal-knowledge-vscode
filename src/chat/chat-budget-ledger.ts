@@ -172,6 +172,9 @@ export function recordChatBudgetTransport(receipt: HarnessBudgetReceipt): void {
   if (!receipt.ledger || !receipt.transport) return;
   consume(receipt.ledger, "transport-input", receipt.transport.inputTokens, `transport.${receipt.transport.countingMethod}`,
     receipt.transport.countingMethod === "utf8-byte-estimate" ? "estimated" : "local-measured");
+  if (receipt.transport.payloadScope === "sdk-managed-context") {
+    entry(receipt.ledger, "transport-input").note = "SDK-managed continuation: this is a local shadow estimate, not the exact provider wire payload.";
+  }
   if (receipt.contextPlan?.automaticKnowledge && receipt.transport.automaticKnowledge) {
     const knowledge = receipt.transport.automaticKnowledge;
     consume(receipt.ledger, "automatic-knowledge", knowledge.inputTokens, `transport.${knowledge.countingMethod}`,

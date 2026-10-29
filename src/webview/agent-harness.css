@@ -52,6 +52,22 @@
 .pkm-harness-memory-graph { display:block; width:100%; max-height:440px; margin:12px 0; color:var(--vscode-foreground,#dce5ee); }
 .pkm-harness-memory-layer { fill:var(--vscode-editorWidget-background,#223241); stroke:var(--vscode-panel-border,#556779); opacity:.8; }
 .pkm-harness-memory-graph text { fill:currentColor; font:12px system-ui,sans-serif; }
+.pkm-harness-memory-tiers { display:grid; grid-template-rows:repeat(3,minmax(94px,auto)); position:relative; width:100%; max-width:600px; margin:12px auto; color:var(--vscode-foreground,#dce5ee); }
+.pkm-harness-memory-tiers > svg.pkm-harness-memory-graph { position:absolute; inset:0; width:100%; height:100%; max-height:none; margin:0; pointer-events:none; }
+.pkm-harness-memory-tier { position:relative; display:flex; flex-direction:column; justify-content:center; align-items:center; gap:5px; box-sizing:border-box; width:86%; justify-self:center; padding:14px 0 10px; text-align:center; font-size:12px; line-height:1.35; overflow-wrap:anywhere; }
+.pkm-harness-memory-tier > strong { font-size:14px; font-weight:600; }
+.pkm-harness-memory-tier[data-memory-tier=cache] { width:56%; }
+.pkm-harness-memory-tier[data-memory-tier=memory] { width:70%; }
+.pkm-harness-memory-tiers [data-tier-background=cache] { stroke:var(--vscode-charts-blue,#4fa8df); }
+.pkm-harness-memory-tiers [data-tier-background=memory] { stroke:var(--vscode-charts-orange,#d8a657); }
+.pkm-harness-memory-tiers [data-tier-background=disk] { stroke:var(--vscode-charts-green,#89b86b); }
+.pkm-harness-memory-tiers [role=button] { cursor:pointer; }
+.pkm-harness-memory-tiers [role=button]:focus-visible { outline:2px solid var(--vscode-focusBorder,#70c2ff); outline-offset:-4px; }
+.pkm-harness-memory-abstraction-detail > summary { cursor:pointer; color:var(--vscode-textLink-foreground,#70c2ff); }
+.pkm-harness-diagram-thumbnail .pkm-harness-memory-tiers { grid-template-rows:repeat(3,minmax(40px,auto)); margin:4px auto; }
+.pkm-harness-diagram-thumbnail .pkm-harness-memory-tier { padding:8px 0; gap:0; }
+.pkm-harness-diagram-thumbnail .pkm-harness-memory-tier > span { display:none; }
+.pkm-harness-diagram-thumbnail .pkm-harness-memory-tier > strong { font-size:12px; }
 .pkm-harness-memory-edge { fill:none; stroke:var(--vscode-focusBorder,#70c2ff); opacity:.5; stroke-width:1.5; }
 .pkm-harness-memory-piece rect { fill:var(--vscode-editor-background,#17212b); stroke:var(--vscode-panel-border,#556779); }
 .pkm-harness-memory-piece[data-memory-state=prepared] rect { stroke:var(--vscode-focusBorder,#70c2ff); stroke-width:2; }

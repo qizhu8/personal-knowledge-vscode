@@ -456,12 +456,15 @@
   function renderStoredMemory(detail, attempt) {
     detail.append(el('h3', '1. Stored Memory — live Chat scope'));
     if (!view.session.memoryStoreReader) {
+      detail.append(globalThis.PkmAgentHarness.memoryPyramid(undefined,attempt));
       detail.append(el('p', 'This Host does not provide scoped stored-Memory inspection. Load a compatible Host to inspect it.', 'pkm-vis-muted')); return;
     }
     const refresh = button('Refresh stored Memory', () => { memoryObservations.clear(); renderDetail(); });
     detail.append(refresh);
     const state = memoryObservation('memoryOverview');
-    if (!memoryReadState(detail, state)) return;
+    if (!memoryReadState(detail, state)) {
+      detail.append(globalThis.PkmAgentHarness.memoryPyramid(undefined,attempt)); return;
+    }
     const data = state.data, pieces = list(data.pieces);
     detail.append(el('p', `${data.usage?.pieces ?? 'unknown'} live piece(s), ${data.usage?.bytes ?? 'unknown'} logical bytes. Observed ${new Date(data.observedAt).toLocaleString()}.`));
     detail.append(el('p', data.note, 'pkm-vis-muted'));

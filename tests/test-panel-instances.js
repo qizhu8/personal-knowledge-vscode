@@ -106,6 +106,23 @@ function target() {
   assert.equal(two.received.at(-1).state.targetAction,'test.action');assert.equal(two.received.at(-1).state.currentRun,null);
   assert.equal(two.received.at(-1).state.graph.name,'draft');
 
+  let libraryCallback;
+  function findLibrary(node) {
+    if (ts.isCallExpression(node) && node.expression.getText(ast).endsWith('registerCommand')
+      && node.arguments[0]?.getText(ast) === '"personalKnowledge.openEmbeddedActionLibrary"') libraryCallback=node.arguments[1].getText(ast);
+    ts.forEachChild(node,findLibrary);
+  }
+  findLibrary(ast);assert(libraryCallback);
+  vm.runInContext(ts.transpileModule('const libraryCommand = '+libraryCallback,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText+';this.libraryCommand=libraryCommand;',sandbox);
+  routed.snapshot.actionLibrary={selection:'test.action',query:'test'};
+  routed.ready=false;sandbox.libraryCommand();
+  assert.equal(routed.pendingTab,'actionLibrary');
+  assert.equal(routed.snapshot.tab,'actionLibrary');assert.equal(routed.snapshot.workspace,'automation');
+  assert.equal(routed.snapshot.actions.graph.name,'draft','opening Library must not replace the Workbench draft');
+  routed.ready=true;sandbox.libraryCommand();
+  assert.equal(two.received.at(-1).command,'openEmbeddedActionLibrary');
+  assert.equal(routed.snapshot.actionLibrary.query,'test');
+
   // Optimistic revisions reject a stale draft without writing or replaying anything.
   let document={name:'fixture',content:'original'};
   sandbox.skillGet=()=>document;sandbox.noteGet=()=>undefined;sandbox.paperGet=()=>undefined;sandbox.scriptGet=()=>undefined;

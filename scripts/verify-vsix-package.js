@@ -46,6 +46,9 @@ for (const [filename, digest] of Object.entries(buildInfo.files)) {
 for (const artifact of REQUIRED_UI_ARTIFACTS) {
   assert(entries.includes(`extension/${artifact}`), `VSIX must include required UI artifact: ${artifact}`);
 }
+for (const artifact of ["dist/retrieval/retrieval-model-environment.js", "resources/retrieval-model-requirements.txt"]) {
+  assert(entries.includes(`extension/${artifact}`), `VSIX must include automatic embedding environment setup: ${artifact}`);
+}
 for (const artifact of [
   "dist/memory/memory-engine-client.js",
   "dist/memory/chat-memory-service.js",
@@ -63,7 +66,7 @@ assert.deepStrictEqual(entries.filter(entry =>
 assert(entries.some(entry => /^extension\/dist\/webview\/fonts\/[^/]+\.woff2$/.test(entry)),
   "VSIX must include the KaTeX fonts used by the UI");
 
-const forbidden = entries.filter(entry => /^(extension\/(tests|docs|\.vscode|coverage|artifacts)\/|extension\/(?:bug|planning)\.md$|extension\/(?:[^/]+\/)*\.pytest_cache\/|extension\/scripts\/(?:verify-vsix-package|package-extension)\.js$)/.test(entry));
+const forbidden = entries.filter(entry => /^(extension\/(tests|docs|\.vscode|coverage|artifacts)\/|extension\/(?:bug|planning)\.md$|extension\/(?:[^/]+\/)*\.pytest_cache\/|extension\/scripts\/(?:verify-vsix-package|package-extension|run-package-gate|vscode-prepublish)\.js$)/.test(entry));
 assert.deepStrictEqual(forbidden, [], `VSIX contains forbidden development files: ${forbidden.join(", ")}`);
 assert.deepStrictEqual(entries.filter(entry => /^extension\/chat-e2e-[^/]+\//.test(entry)), [],
   "VSIX must exclude local Chat E2E reports and fixtures");
@@ -110,11 +113,13 @@ for (const artifact of ["knowledge_mutations.py", "knowledge_mutations.js", "kno
 }
 assert(entries.includes("extension/scripts/protected-agent.py"),
   "VSIX must include the opt-in protected Agent launcher");
-for (const artifact of ["resources/action_runtime.py", "resources/action_modules.py", "resources/action_authoring.py", "resources/action_monitoring.py", "resources/action_azuredevops.py", "resources/action_resource_migration.py", "resources/action_run_store.py", "resources/action_recovery.py", "resources/action_components.py", "resources/action-workbench.html", "resources/action-library.html", "dist/ui/action-browser.js", "dist/runtime/action-background-tasks.js", "dist/runtime/action-workbench-server.js"]) {
+for (const artifact of ["resources/action_runtime.py", "resources/action_modules.py", "resources/action_authoring.py", "resources/action_monitoring.py", "resources/action_azuredevops.py", "resources/action_resource_migration.py", "resources/action_run_store.py", "resources/action_recovery.py", "resources/action_components.py", "resources/action_components.js", "dist/components/action-components.js", "resources/action-workbench.html", "resources/action-library.html", "dist/ui/action-browser.js", "dist/runtime/action-background-tasks.js", "dist/runtime/action-workbench-server.js"]) {
   assert(entries.includes(`extension/${artifact}`), `VSIX must include Action runtime and native UI: ${artifact}`);
 }
-assert(packageJson.contributes.chatParticipants.some(participant => participant.id === "personalKnowledge.actions"),
-  "VSIX must register the native Action chat participant");
+assert.strictEqual(packageJson.contributes.chatParticipants, undefined,
+  "VSIX must not register deprecated Chat Participants");
+assert(packageJson.contributes.mcpServerDefinitionProviders.some(provider => provider.id === "personalKnowledge.pkm"),
+  "VSIX must register the PKM MCP provider");
 assert(packageJson.contributes.commands.some(command => command.command === "personalKnowledge.openActionsInBrowser"),
   "VSIX must register the browser Action Workbench command");
 assert(entries.includes("extension/dist/chat/agent-control.js"),
