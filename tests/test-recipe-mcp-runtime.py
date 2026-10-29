@@ -18,6 +18,12 @@ SPEC.loader.exec_module(MODULE)
 register_recipe_tools = MODULE.register_recipe_tools
 related_recipes = MODULE.related_recipes
 
+script_argument_inputs = {"path": "folder with spaces/quote'$(printf injected);file.txt"}
+script_argument_spec = MODULE._script_command_spec(
+    {"runtime": "bash", "args": ["${inputs.path}", ""]},
+    script_argument_inputs, None, pathlib.Path("fixture.sh"))
+assert script_argument_spec["args"] == ["fixture.sh", script_argument_inputs["path"], ""]
+
 original_runtime_os = MODULE.os
 MODULE.os = types.SimpleNamespace(name="nt")
 windows_background_flags = MODULE._background_process_options()["creationflags"]
@@ -233,7 +239,7 @@ with tempfile.TemporaryDirectory(prefix="pkm-recipe-runtime-") as temporary:
     assert capabilities["execution"]["autonomous_run_scheduler"] is True
     assert capabilities["execution"]["autonomous_execution"]["strategy"] == "serial-worker-completion-driven"
     assert capabilities["execution"]["automatic_model_escalation"] is False
-    assert capabilities["version"] == "1.8.0"
+    assert capabilities["version"] == MODULE.RECIPE_SCHEMA_VERSION
     assert "recipe_usage_summary" in capabilities["tools"]
     assert capabilities["usage_accounting"]["measured_and_estimated_are_separate"] is True
     assert capabilities["usage_accounting"]["host_tokens"].startswith("unknown")
@@ -874,18 +880,27 @@ with tempfile.TemporaryDirectory(prefix="pkm-recipe-runtime-") as temporary:
         assert terminal_wait["automation"]["status"] == boundary, terminal_wait
         assert terminal_wait["nodes"]["verify"]["state"] == "pending"
 
-    def run_script(runtime, script, command_prefix, environment_id=None):
+    def run_script(runtime, script, command_prefix, environment_id=None, args=None, inputs=None, autonomous=False, pipeline=False):
+        inputs = inputs or {}
         config = {"runtime": runtime, "script": script, "timeoutSeconds": 10, "maxOutputBytes": 4096}
+        if pipeline:
+            config["executor"] = "script"
+        if args is not None:
+            config["args"] = args
         if environment_id is not None:
             config["environmentId"] = environment_id
         script_definition = {
             "schema": "pkm.workflow.definition/v1",
-            "spec": {"inputs": {}, "nodes": [{
-                "nodeId": "execute", "kind": "pkm.step.script/v1", "config": config, "dependsOn": [],
+            "spec": {"inputs": {name: {"type": "string", "required": True} for name in inputs}, "nodes": [{
+                "nodeId": "execute", "kind": "pkm.step.pipeline/v1" if pipeline else "pkm.step.script/v1", "config": config, "dependsOn": [],
             }], "outputs": {}, "completion": {"requiredNodes": ["execute"]}},
         }
         started_script = response_value(tools["recipe_run_start_adhoc"](
-            command_prefix, json.dumps(script_definition), command_prefix + "-start", '{}'))
+            command_prefix, json.dumps(script_definition), command_prefix + "-start", json.dumps(inputs),
+            autonomous=autonomous))
+        if autonomous:
+            wait_for_autonomous(started_script)
+            return response_value(tools["recipe_run_get"](started_script["run_id"]))
         claimed_script = response_value(tools["recipe_run_next"](
             started_script["run_id"], command_prefix + "-claim"))
         assert claimed_script["next_action"]["kind"] == "wait_for_background", claimed_script
@@ -903,6 +918,54 @@ with tempfile.TemporaryDirectory(prefix="pkm-recipe-runtime-") as temporary:
     assert python_result["argv"][0] == sys.executable, python_result
     assert python_result["stdout"] == "selected-pkm-environment\n", python_result
     assert not pathlib.Path(python_result["argv"][-1]).exists(), python_result
+
+    parameterized_script = run_script(
+        "python", "import json,sys; print(json.dumps(sys.argv[1:]))", "parameterized-script", "runtime-test",
+        args=["${inputs.path}", "", "${inputs.option}"],
+        inputs={**script_argument_inputs, "option": "--overwrite=false"}, autonomous=True)
+    assert parameterized_script["status"] == "completed", parameterized_script
+    parameterized_result = parameterized_script["current_result"]["completed_nodes"][-1]["result"]
+    assert json.loads(parameterized_result["stdout"]) == [script_argument_inputs["path"], "", "--overwrite=false"]
+    assert not pathlib.Path(parameterized_result["argv"][1]).exists(), parameterized_result
+    pipeline_script = run_script(
+        "python", "import json,sys; print(json.dumps(sys.argv[1:]))", "pipeline-script", "runtime-test",
+        args=["${inputs.path}", "", "${inputs.option}"],
+        inputs={**script_argument_inputs, "option": "--overwrite=false"}, autonomous=True, pipeline=True)
+    assert pipeline_script["status"] == "completed", pipeline_script
+    pipeline_result = pipeline_script["current_result"]["completed_nodes"][-1]["result"]
+    assert json.loads(pipeline_result["stdout"]) == [script_argument_inputs["path"], "", "--overwrite=false"]
+    assert not pathlib.Path(pipeline_result["argv"][1]).exists(), pipeline_result
+    pipeline_command_definition = {
+        "schema": "pkm.workflow.definition/v1",
+        "spec": {"inputs": {}, "nodes": [{"nodeId": "execute", "kind": "pkm.step.pipeline/v1",
+            "config": {"executor": "command", "program": sys.executable,
+                "args": ["-c", "print('pipeline-command-receipt')"], "timeoutSeconds": 10, "maxOutputBytes": 4096},
+            "dependsOn": []}], "outputs": {}, "completion": {"requiredNodes": ["execute"]}},
+    }
+    pipeline_command = response_value(tools["recipe_run_start_adhoc"](
+        "Pipeline command", json.dumps(pipeline_command_definition), "pipeline-command-start", autonomous=True))
+    wait_for_autonomous(pipeline_command)
+    pipeline_command_result = response_value(tools["recipe_run_get"](pipeline_command["run_id"]))
+    assert pipeline_command_result["status"] == "completed", pipeline_command_result
+    assert pipeline_command_result["current_result"]["completed_nodes"][-1]["result"]["stdout"] == "pipeline-command-receipt\n"
+    for executor in [None, "agent", ["script"]]:
+        invalid_pipeline = json.loads(json.dumps(pipeline_command_definition))
+        invalid_pipeline["spec"]["nodes"][0]["config"]["executor"] = executor
+        rejected_pipeline = response_value(tools["recipe_run_start_adhoc"](
+            "Invalid Pipeline", json.dumps(invalid_pipeline), "invalid-pipeline-" + str(executor)))
+        assert rejected_pipeline["ok"] is False, rejected_pipeline
+    for invalid_args in ["one string", [None], ["embedded\0null"]]:
+        invalid_argument_definition = {
+            "schema": "pkm.workflow.definition/v1",
+            "spec": {"inputs": {}, "nodes": [{"nodeId": "execute", "kind": "pkm.step.script/v1",
+                "config": {"runtime": "bash", "script": "printf 'must not execute'", "args": invalid_args},
+                "dependsOn": []}], "outputs": {}, "completion": {"requiredNodes": ["execute"]}},
+        }
+        invalid_arguments = response_value(tools["recipe_run_start_adhoc"](
+            "Invalid Script arguments", json.dumps(invalid_argument_definition),
+            "invalid-script-args-" + str(invalid_args)))
+        assert invalid_arguments["ok"] is False, invalid_arguments
+        assert "argv string list" in invalid_arguments["error"]["message"], invalid_arguments
 
     missing_environment = run_script("python", "print('must not run')", "missing-environment", "deleted-env")
     assert missing_environment["status"] == "failed", missing_environment

@@ -1,8 +1,11 @@
 // ── Python Environments dashboard ───────────────────────────────────────────
 let envCache = [];
+let envListLoading = false;
 let envFocusId = '';
 const ENV_MGR_COLOR = { conda: '#3fb950', venv: '#4daafc', uv: '#a371f7', other: '#8b949e' };
-function renderEnvDashboard(envs) {
+function renderEnvDashboard(envs, loading = false) {
+  const preservedOutput = [...(document.getElementById('env-out')?.childNodes || [])];
+  envListLoading = loading;
   envCache = envs || [];
   if (envFocusId) {
     const environment = envCache.find(item => item.id === envFocusId);
@@ -24,6 +27,7 @@ function renderEnvDashboard(envs) {
       <div id="env-out"></div>
     </div>`;
   renderEnvTree();
+  document.getElementById('env-out')?.replaceChildren(...preservedOutput);
   if (envFocusId) {
     const focused = document.querySelector(`.env-card[data-env-id="${CSS.escape(encodeURIComponent(envFocusId))}"]`);
     if (focused) {
@@ -56,7 +60,7 @@ function refreshEnvDashboard() {
 function renderEnvTree() {
   const el = document.getElementById('env-tree'); if (!el) return;
   if (!envCache.length) {
-    el.innerHTML = '<div class="empty">No environments yet — register a conda env or a venv/uv folder.</div>';
+    el.innerHTML = envListLoading ? '<div class="empty" role="status">Checking registered environments...</div>' : '<div class="empty">No environments yet — register a conda env or a venv/uv folder.</div>';
     return;
   }
   // Group into a collapsible tree by manager (conda/venv/uv) then root folder.

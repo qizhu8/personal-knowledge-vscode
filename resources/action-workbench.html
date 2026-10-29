@@ -1,0 +1,1178 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Action Workbench</title>
+<style>
+:root{color-scheme:light dark;--bg:var(--vscode-editor-background,#171717);--panel:var(--vscode-sideBar-background,#202020);--text:var(--vscode-editor-foreground,#eee);--line:var(--vscode-panel-border,#454545);--muted:var(--vscode-descriptionForeground,#aaa);--accent:var(--vscode-focusBorder,#75a7ff);--good:#3fb950;--bad:#ef6666}*{box-sizing:border-box}body{margin:0;font:13px/1.5 "IBM Plex Sans","Segoe UI",sans-serif;color:var(--text);background:var(--bg)}button,input,select{font:inherit;color:inherit}button{cursor:pointer;border:1px solid var(--line);border-radius:3px;padding:5px 9px;background:var(--panel)}button:hover,button:focus-visible{border-color:var(--accent)}button:disabled{opacity:.45;cursor:not-allowed}input,select{min-width:0;max-width:100%;padding:5px;border:1px solid var(--line);background:var(--bg)}header.top{min-height:58px;display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line)}h1{font-size:18px;margin:0 auto 0 0}h2{font-size:13px;margin:0}h3{font-size:12px;margin:0;overflow-wrap:anywhere}.toolbar{display:flex;flex-wrap:wrap;gap:6px}.icon{width:30px;height:30px;padding:0}.layout{display:grid;grid-template-columns:270px minmax(0,1fr);height:calc(100vh - 60px)}aside{overflow:auto;padding:12px;background:var(--panel);border-right:1px solid var(--line)}aside section{padding-bottom:18px}aside h2{margin-bottom:8px}.search{width:100%;margin-bottom:8px}.palette-row{display:grid;grid-template-columns:20px minmax(0,1fr) 28px;align-items:center;gap:6px;border-bottom:1px solid var(--line);padding:8px 0}.palette-row input{width:15px}.palette-row small,.set small{display:block;color:var(--muted);overflow-wrap:anywhere}.set{border-bottom:1px solid var(--line);padding:7px 0}.set label{display:flex;align-items:center;gap:6px}.set .tools{margin-top:6px}.tools{display:flex;flex-wrap:wrap;gap:5px}.workspace{display:flex;min-width:0;min-height:0;flex-direction:column}.graph-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:10px;border-bottom:1px solid var(--line)}.graph-toolbar input{width:190px}.viewport{flex:1;min-height:280px;overflow:auto;background-image:radial-gradient(var(--line) .7px,transparent .7px);background-size:20px 20px}.canvas{position:relative;width:1200px;height:800px;transform-origin:0 0}.connections{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.connections path{stroke:var(--good);stroke-width:2;fill:none;pointer-events:stroke;cursor:pointer}.connections path:hover{stroke:var(--bad);stroke-width:5}.block{position:absolute;width:280px;border:1px solid var(--line);border-top:3px solid var(--accent);border-radius:4px;background:var(--panel)}.block header{display:flex;gap:8px;align-items:center;padding:10px;cursor:grab;touch-action:none;border-bottom:1px solid var(--line)}.block header h3{flex:1}.block small{color:var(--muted)}.block .state{padding:4px 10px;font-size:10px;color:var(--muted)}.ports{padding:7px 10px}.port-row{position:relative;display:grid;gap:3px;padding:5px 9px}.port-row label{font-size:11px;overflow-wrap:anywhere}.port-row input,.port-row select{width:100%}.pin{position:absolute;width:14px;height:14px;border:2px solid var(--accent);border-radius:50%;padding:0;background:var(--bg);top:10px}.pin.input{left:-18px}.pin.output{right:-18px;border-color:var(--good)}.pin.selected{background:var(--good)}.output-row{min-height:29px;text-align:right;border-top:1px solid var(--line)}.bottom{max-height:220px;overflow:auto;border-top:1px solid var(--line);padding:10px}.bottom header{display:flex;gap:8px;align-items:center;justify-content:space-between}.queue{width:100%;border-collapse:collapse;font-size:11px}.queue td,.queue th{text-align:left;padding:5px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}#status{padding:5px 10px;min-height:28px;overflow-wrap:anywhere;border-bottom:1px solid var(--line)}.bad{color:var(--bad)}.good{color:var(--good)}#result{white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.5 "IBM Plex Mono",monospace}dialog{max-width:min(460px,92vw);color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:4px}dialog form{display:grid;gap:10px}dialog label{display:grid;gap:4px}dialog::backdrop{background:#0008}@media(max-width:760px){.layout{grid-template-columns:1fr;height:auto}aside{max-height:300px;border-right:0;border-bottom:1px solid var(--line)}.workspace{height:700px}.top h1{width:100%}.queue th:nth-child(3),.queue td:nth-child(3){display:none}} 
+.port-row.required{border:1px solid var(--accent);border-radius:3px;margin-bottom:6px}.port-row.optional{border:1px solid var(--muted);border-radius:3px;margin-bottom:6px}.port-row.required input:not([type=checkbox]),.port-row.required select{border-color:var(--accent)}.port-row.optional input:not([type=checkbox]),.port-row.optional select,.pin.optional{border-color:var(--muted)}.field-label{display:flex;align-items:center;gap:5px;flex-wrap:wrap}.field-label input[type=checkbox]{width:14px;margin:0;accent-color:var(--muted)}.pin.compatible{outline:2px solid var(--good);outline-offset:3px}.pin.pending{background:var(--accent)}.connections path.selected{stroke:var(--accent);stroke-width:4}.connections path.ghost{stroke:var(--accent);stroke-dasharray:5 4;pointer-events:none}.connection-tools{display:flex;align-items:center;gap:5px}.connection-label{font-size:11px;max-width:220px;overflow-wrap:anywhere}.block header{flex-wrap:wrap}.block header h3{min-width:0}.compact-port{display:grid;grid-template-columns:1fr;gap:4px;padding:6px 9px;position:relative}.compact-port select{width:100%}.compact-port.output select{text-align:right}.block.collapsed .ports{padding-top:2px}.block.collapsed .state{font-size:10px}.pin{touch-action:none}.connections path:hover{stroke:var(--accent)}
+.tree-cat-hdr{display:flex;align-items:center;gap:6px;padding:5px 10px;cursor:pointer;font-size:11px;font-weight:600;color:var(--accent);border-bottom:1px solid var(--line);user-select:none}.tree-cat-hdr:hover,.li:hover{background:var(--vscode-list-hoverBackground,#333)}.tree-cat-arrow{width:10px;flex-shrink:0;color:var(--muted)}.tree-cat-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tree-cat-count{font-size:10px;color:var(--muted);background:var(--line);border-radius:8px;padding:1px 6px;flex-shrink:0}.li{padding:6px 12px;display:flex;flex-direction:column;gap:2px;border-left:2px solid transparent}.palette-row{grid-template-columns:18px minmax(0,1fr) 28px 28px;border:0;padding:0;min-height:38px}.palette-row strong{font-size:12px}.palette-row small{font-size:10px}.tree-cat-body{min-width:0}.tree-cat .icon{width:26px;height:26px}.tree-cat .li:focus-within{border-left-color:var(--accent)}aside{padding:10px 0}aside .search{width:calc(100% - 20px);margin:0 10px 8px}aside section>h2,aside #sets{margin-left:10px;margin-right:10px}textarea{font:12px/1.5 var(--vscode-editor-font-family,monospace);width:100%;min-height:72px;resize:vertical;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:3px;padding:5px}.port-row.required textarea{border-color:var(--accent)}.component-type{display:flex;align-items:center;gap:8px;padding:6px 9px;font-size:11px}.component-type select{flex:1}.chat-message{padding:8px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.chat-options{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}.chat-options button{white-space:normal;text-align:left;max-width:100%}#action-chat{padding:10px 0}.chat-answer{color:var(--muted);margin-top:6px}.layout>aside>section:first-child{padding-bottom:10px}
+[hidden]{display:none!important}
+.chat-options{display:grid;min-width:0;border:0;padding:0;margin:8px 0}.chat-options legend{padding:0;margin-bottom:8px}.chat-options label{display:flex;align-items:flex-start;gap:8px;padding:4px 0;cursor:pointer}.chat-options input{flex:0 0 auto;accent-color:var(--accent);margin:4px 0 0}.chat-message>button{margin-right:6px}
+.palette-heading{display:flex;align-items:center;justify-content:space-between;padding:0 10px 8px}
+.palette-title{display:flex;align-items:center;gap:5px;min-width:0;flex-wrap:wrap}
+.palette-title strong{min-width:0;overflow-wrap:anywhere}
+.language{font-size:10px;line-height:1.4;color:var(--muted);border-left:2px solid var(--good);padding-left:5px;white-space:nowrap}
+.cattree-item[draggable=true]{cursor:grab}
+#catalog-menu{position:fixed;z-index:100;width:174px;max-width:calc(100vw - 8px);padding:4px;background:var(--panel);border:1px solid var(--line);border-radius:4px;box-shadow:0 4px 16px #0006}
+#catalog-menu button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;border:0;padding:6px 8px}
+#catalog-menu button:focus-visible{outline:1px solid var(--accent)}
+.definition-editor{display:flex;flex:1;min-height:240px;min-width:0;flex-direction:column;padding:12px;gap:10px}
+.definition-editor header{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.definition-editor h2{flex:1;overflow-wrap:anywhere}
+.definition-editor select{max-width:min(320px,100%)}
+.definition-editor textarea{flex:1;min-height:220px;resize:none;tab-size:4;white-space:pre;overflow:auto}
+#catalog-message{max-width:360px;overflow-wrap:anywhere}
+.port-row.required,.port-row.optional{border:0}
+.palette-row{grid-template-columns:18px minmax(0,1fr) 28px 28px 28px}
+.raw-string{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:4px;align-items:start}
+.literal-delimiter{font:11px/1.5 var(--vscode-editor-font-family,monospace);padding-top:6px;color:var(--muted)}
+.raw-string-body{position:relative;min-width:0}
+.raw-string-body pre{position:absolute;inset:0;margin:0;padding:5px;border:1px solid transparent;font:12px/1.5 var(--vscode-editor-font-family,monospace);white-space:pre-wrap;overflow-wrap:anywhere;overflow:hidden;pointer-events:none;background:none;color:var(--text)}
+.raw-string-body textarea{position:relative;display:block;color:transparent;caret-color:var(--text);background:transparent;white-space:pre-wrap;overflow-wrap:anywhere;min-height:90px}
+.raw-string-body mark{color:var(--text);background:var(--vscode-editor-findMatchHighlightBackground,#755c284d);border-bottom:1px solid var(--vscode-editorWarning-foreground,#d6ae56)}
+.math-expression .raw-string-body textarea{min-height:64px}.math-expression mark{color:var(--vscode-symbolIcon-functionForeground,#dcdcaa);background:transparent;border-bottom:1px dotted currentColor}.math-expression .math-input-token{color:var(--vscode-symbolIcon-numberForeground,#b5cea8)}.math-provenance,.math-functions div{display:flex;gap:8px;flex-wrap:wrap;overflow-wrap:anywhere}.math-provenance{padding-top:4px;color:var(--muted);font-size:11px}.math-functions{margin:6px 0}.math-functions summary{cursor:pointer}.math-functions div{justify-content:space-between;padding:2px 0}.math-functions small{color:var(--muted)}.math-example{display:flex;align-items:center;gap:6px;padding:6px 9px}.math-example code{min-width:0;overflow-wrap:anywhere;font-size:11px}.math-example button{flex-shrink:0}
+body{display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:hidden}
+header.top{flex-shrink:0}
+.layout{flex:1;min-height:0;height:auto;grid-template-columns:270px 6px minmax(0,1fr)}
+.layout>aside{max-height:none;border-right:1px solid var(--line);border-bottom:0;min-width:0}
+.layout.tree-collapsed{grid-template-columns:0 6px minmax(0,1fr)}
+.layout.tree-collapsed>aside{visibility:hidden}
+.workspace-cattree-divider{position:relative;z-index:4;width:6px;min-width:6px;background:transparent;transition:background .12s}
+.workspace-cattree-divider:hover{background:var(--accent)}
+.panel-collapse-toggle{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:14px;height:72px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--muted);cursor:pointer;padding:0;font-size:8px;box-shadow:0 2px 7px rgba(0,0,0,.2);z-index:7}
+.panel-collapse-toggle:hover,.panel-collapse-toggle:focus-visible{color:var(--accent);background:var(--vscode-list-hoverBackground,#333);border-color:var(--accent);outline:none}
+.panel-collapse-toggle .codicon{font-size:12px}
+.tree-collapsed>.workspace-cattree-divider .panel-collapse-toggle{left:7px;color:var(--accent);background:var(--vscode-list-activeSelectionBackground,#04395e)}
+.layout>aside>section:first-child{padding:0 10px 10px}
+.module-set-tools{margin:0 10px 8px}
+#action-find{position:fixed;z-index:110;top:8px;right:8px;width:min(320px,calc(100vw - 16px));display:flex;gap:5px;padding:6px;background:var(--panel);border:1px solid var(--line);border-radius:4px;box-shadow:0 4px 16px #0006}
+#action-find .search{flex:1;width:auto;margin:0}
+@media(max-width:760px){.layout{grid-template-columns:145px 6px minmax(0,1fr);height:auto}.layout.tree-collapsed{grid-template-columns:0 6px minmax(0,1fr)}.layout>aside{max-height:none}.workspace{min-width:0}.graph-toolbar{gap:4px}}
+@media(max-width:760px){
+	.tree-cat-hdr,.cattree-item{padding-left:8px!important}
+	.tree-cat .tree-cat-hdr,.tree-cat .cattree-item{padding-left:14px!important}
+	.tree-cat .tree-cat .tree-cat-hdr,.tree-cat .tree-cat .cattree-item{padding-left:20px!important}
+	.palette-row{grid-template-columns:18px minmax(0,1fr) 28px 28px;row-gap:4px}
+	.palette-row>div{grid-column:1 / -1;grid-row:1}
+	.palette-row>:first-child{grid-column:1;grid-row:2}
+	.palette-row>:nth-child(3){grid-column:2;grid-row:2;justify-self:end}
+	.palette-row>:nth-child(4){grid-column:3;grid-row:2}
+	.palette-row>[data-add]{grid-column:4;grid-row:2}
+}
+</style></head><body>
+<header class="top"><h1>Action Workbench</h1><div class="toolbar"><button id="workspace" title="Select working directory" class="icon" aria-label="Select working directory"><span class="codicon codicon-folder-opened" aria-hidden="true"></span></button><button id="open-browser" title="Open in browser" class="icon" aria-label="Open in browser"><span class="codicon codicon-link-external" aria-hidden="true"></span></button><button id="refresh" title="Refresh catalog and validation queue" class="icon" aria-label="Refresh catalog and validation queue"><span class="codicon codicon-refresh"></span></button></div></header>
+<div id="action-find" role="search" hidden><input id="search" class="search" aria-label="Search Actions and Basic Components" placeholder="Search Actions"><button id="close-find" class="icon" title="Close search" aria-label="Close search"><span class="codicon codicon-close"></span></button></div>
+<dialog id="poll-template-dialog"><form id="poll-template-form"><h2>Read-only polling Action</h2>
+<p>A pinned query repeats until its output matches or a limit expires. Creation does not execute the query.</p>
+<label>New Action ID<input id="poll-template-id" required pattern="[a-z][a-z0-9_.-]{2,100}" value="local.poll"></label>
+<label>Ready read-only query<select id="poll-template-query" required></select></label>
+<label>Query inputs (JSON object)<textarea id="poll-template-inputs" required>{}</textarea></label>
+<label>Output field<select id="poll-template-field" required></select></label>
+<label>Expected value (JSON)<input id="poll-template-expected" required value="&quot;succeeded&quot;"></label>
+<label>Interval (seconds)<input id="poll-template-interval" type="number" min="0.01" max="300" step="any" required value="30"></label>
+<label>Total timeout (seconds)<input id="poll-template-timeout" type="number" min="0.01" max="604800" step="any" required value="3600"></label>
+<label>Maximum attempts<input id="poll-template-limit" type="number" min="1" max="1000" required value="120"></label>
+<p id="poll-template-error" role="alert"></p><div class="tools"><button type="button" id="close-poll-template">Cancel</button><button>Create without running</button></div></form></dialog>
+<main class="layout"><aside id="action-tree"><section aria-label="Preinstalled Action templates"><small>Preinstalled: core.delay (30s / 300s), core.ask-user, core.chatroom-alias</small><button id="create-poll-template">Create polling Action</button></section><section><div class="palette-heading"><h2>Components</h2><button id="add-group" class="icon" title="Add group" aria-label="Add group"><i class="codicon codicon-new-folder"></i></button></div><div id="palette" role="tree" aria-label="Actions and Basic Components"></div></section><section><h2>ModuleSets</h2><div class="tools module-set-tools"><button id="import" class="icon" title="Import ModuleSet" aria-label="Import ModuleSet"><span class="codicon codicon-cloud-download"></span></button><button id="export" class="icon" title="Export selected ModuleSet" aria-label="Export selected ModuleSet"><span class="codicon codicon-cloud-upload"></span></button></div><div id="sets"></div></section></aside>
+<div class="workspace-cattree-divider"><button id="toggle-tree" class="panel-collapse-toggle" aria-expanded="true" aria-controls="action-tree" title="Minimize category tree" aria-label="Minimize category tree"><span class="codicon codicon-chevron-left" aria-hidden="true"></span></button></div>
+<section class="workspace"><div class="graph-toolbar"><input id="name" aria-label="Graph name" placeholder="Composition name" value="New composition"><button id="undo" title="Undo" class="icon" aria-label="Undo">&#8630;</button><button id="toggle-parameters" title="Collapse all parameter lists" class="icon" aria-label="Collapse all parameter lists">&#9662;</button><button id="arrange">Arrange</button><button id="check">Check</button><button id="save">Save</button><button id="validate">Validate</button><button id="run" title="Run" class="icon" aria-label="Run">&#9654;</button><label>Output <select id="output" aria-label="Output block"></select></label><div class="connection-tools"><span id="wire-state" class="connection-label" role="status"></span><button id="cancel-wire" class="icon" title="Cancel connection" aria-label="Cancel connection" hidden>&times;</button><button id="delete-wire" class="icon" title="Remove selected connection" aria-label="Remove selected connection" disabled>&times;</button></div></div><div id="status" role="status">Connecting</div><div class="viewport"><div id="canvas" class="canvas"><svg id="connections" class="connections"></svg><div id="blocks"></div></div></div><section class="bottom"><header><h2>Action Validation</h2><div class="tools"><button id="background-tasks">Background Tasks</button><button id="resume">Resume queued</button></div></header><table class="queue"><thead><tr><th>Action</th><th>Stage / State</th><th>Priority</th><th></th></tr></thead><tbody id="queue"></tbody></table><pre id="result"></pre></section></section></main>
+<dialog id="package-dialog"><form id="package-form"><h2>Export ModuleSet</h2><label>Package ID<input id="package-id" required pattern="[a-z][a-z0-9_.-]{2,100}" value="local.selected"></label><label>Version<input id="package-version" type="number" min="1" value="1" required></label><label id="destination-label">Destination<input id="package-path" placeholder="New .pkm-actions file path"></label><div class="tools"><button type="button" id="close-package">Cancel</button><button>Export</button></div></form></dialog>
+<dialog id="private-action-dialog"><form id="private-action-form"><h2 id="private-action-title"></h2><p>Private local adapter. Not exportable. Execution still requires operator path grants and current qualification. No operation runs when opening this dialog.</p><p id="private-action-state" role="status"></p><p>Use action_validate through MCP with an explicitly approved fixture to qualify this adapter. Account bindings alone do not authorize transfers.</p><details><summary>Contract and input schema</summary><pre id="private-action-contract"></pre></details><fieldset id="private-action-parameters"><legend>Parameters</legend></fieldset><details id="private-action-advanced"><summary>Advanced: inputs JSON</summary><label>Inputs (JSON object)<textarea id="private-action-inputs" required spellcheck="false" rows="8"></textarea></label></details><label><input id="private-action-approve" type="checkbox" required> I approve this exact operation. Remote effects may not be rolled back.</label><p id="private-action-error" role="alert"></p><div class="tools"><button type="button" id="close-private-action">Close</button><button id="private-action-run">Run private Action</button></div></form></dialog>
+<dialog id="import-dialog"><form id="import-form"><h2>Import ModuleSet</h2><label>Package file<input id="import-path" required placeholder=".pkm-actions file path"></label><div class="tools"><button type="button" id="close-import">Cancel</button><button>Import</button></div></form></dialog>
+<dialog id="workspace-dialog"><form id="workspace-form"><h2>Action Working Directory</h2><label>Execution host directory<input id="workspace-path" required placeholder="Absolute directory path"></label><div class="tools"><button type="button" id="close-workspace">Cancel</button><button>Apply</button></div></form></dialog>
+<div id="catalog-menu" role="menu" tabindex="-1" hidden></div>
+<dialog id="catalog-dialog"><form id="catalog-form"><h2 id="catalog-title"></h2><p id="catalog-parent" hidden></p><p id="catalog-message" hidden></p><label id="catalog-name-label">Name<input id="catalog-name" maxlength="80"></label><label id="catalog-group-label" hidden>Destination folder<select id="catalog-group"></select></label><p id="catalog-error" role="alert" class="bad"></p><div class="tools"><button type="button" id="close-catalog">Cancel</button><button id="catalog-submit">Apply</button></div></form></dialog>
+<template id="definition-editor-template"><section id="definition-editor" class="definition-editor" hidden><header><h2 id="editor-title"></h2><span id="editor-language" class="language"></span><select id="editor-file" aria-label="Definition or implementation file"></select><button id="save-definition" class="icon" title="Save definition or source" aria-label="Save definition or source"><i class="codicon codicon-save"></i></button><button id="close-definition" class="icon" title="Close definition editor" aria-label="Close definition editor"><i class="codicon codicon-close"></i></button></header><textarea id="editor-content" spellcheck="false" aria-label="Action definition or implementation source"></textarea></section></template>
+<script>
+const byId=id=>document.getElementById(id),esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+const vscode=typeof acquireVsCodeApi==='function'?acquireVsCodeApi():null,pending=new Map();let requestSequence=0;
+const launchParams=new URLSearchParams(location.hash.slice(1));
+window.addEventListener('hashchange',()=>{if(new URLSearchParams(location.hash.slice(1)).has('token'))location.reload()});
+let browserToken=launchParams.get('token')||'',initialView=vscode?.getState()||null;
+if(!vscode){try{const previous=sessionStorage.getItem('pkm-action-token'),launch=launchParams.get('launch');if(browserToken){if(previous!==browserToken||(launch&&launch!==sessionStorage.getItem('pkm-action-launch')))sessionStorage.removeItem('pkm-action-state');sessionStorage.setItem('pkm-action-token',browserToken);if(launch)sessionStorage.setItem('pkm-action-launch',launch)}else browserToken=previous||'';initialView=JSON.parse(sessionStorage.getItem('pkm-action-state')||'null')}catch{}if(location.hash)window.history.replaceState(null,'',location.pathname+location.search)}
+const chat=document.createElement('section');chat.id='action-chat';chat.hidden=true;chat.innerHTML='<header><h2>Action Chat</h2></header><div id="chat-messages" role="log" aria-live="polite"></div>';byId('result').before(chat);const seenChoices=new Set(),catExpanded=Object.assign(Object.create(null),initialView?.catExpanded||{});
+byId('open-browser').hidden=!vscode;byId('open-browser').onclick=()=>perform('open_browser',{draft:{graph,saved,currentRun,pendingLaunch,lastRun,editorState,privateLaunch,libraryDraft:initialView?.libraryDraft,nestedDraft:initialView?.nestedDraft,treeCollapsed:document.querySelector('.layout').classList.contains('tree-collapsed'),catExpanded}});
+byId('background-tasks').hidden=!vscode&&!browserToken;byId('background-tasks').onclick=async()=>{const result=await perform('background_tasks');if(!vscode&&result){queue=result;renderQueue();byId('queue').scrollIntoView({block:'nearest'})}};
+function request(method,params={}){const timeout=method==='validate_batch'?Math.min(2147483647,1200000*Math.max(1,params.items?.length||0)):method==='validate'?1200000:35000;if(!vscode)return fetch('api',{method:'POST',headers:{'Content-Type':'application/json',...(browserToken?{Authorization:'Bearer '+browserToken}:{})},body:JSON.stringify({method,params}),signal:AbortSignal.timeout(timeout)}).then(response=>response.json()).then(result=>{if(result.ok===false)throw Error(result.error);return result}).catch(error=>{if(['AbortError','TimeoutError'].includes(error.name))throw Error('Request timed out; reconcile before retrying.');throw error});return new Promise((resolve,reject)=>{const requestId=String(++requestSequence),timer=setTimeout(()=>{pending.delete(requestId);reject(Error('Request timed out; reconcile before retrying.'))},timeout);pending.set(requestId,{resolve,reject,timer});vscode.postMessage({requestId,method,params})})}
+window.addEventListener('message',event=>{const item=pending.get(event.data.requestId);if(!item)return;if(event.data.progress){if(event.data.progress.confirmation)window.pkmRiskReview?.show(event.data.progress.confirmation,event.data.requestId);updateBatchProgress(event.data.progress);return}clearTimeout(item.timer);pending.delete(event.data.requestId);window.pkmRiskReview?.hide(event.data.requestId);event.data.result?.ok===false?item.reject(Error(event.data.result.error)):item.resolve(event.data.result)});
+let actions=[],groups=[],moduleSets=[],queue={jobs:[]},graph=initialView?.graph||{action_id:'local.graph.'+crypto.randomUUID().replaceAll('-',''),name:'New composition',nodes:[],edges:[]},saved=initialView?.saved||null,source=null,pendingInput=null,selectedEdge=null,wireGesture=null,history=[],selectedExports=new Set(),refreshing=false,currentRun=initialView?.currentRun||null,previewWorkspace='',hostWorkspace='',editorState=initialView?.editorState||null,catalogOperation=null;
+let startingRun=false,cancellingRun=null,pendingLaunch=initialView?.pendingLaunch||null,lastRun=initialView?.lastRun||null,refreshQueued=false;
+const runHistory=document.createElement('section');runHistory.id='run-history';runHistory.innerHTML='<h2>Durable Runs</h2><label>Recent Runs <select id="recent-runs"><option value="">Select a Run</option></select></label> <button id="recover-runs">Recover interrupted Runs</button><p>Recovery inspects the original Run. It never automatically replays effects.</p>';byId('result').before(runHistory);
+const runSummary=document.createElement('section');runSummary.id='run-summary';runSummary.setAttribute('aria-live','polite');byId('result').before(runSummary);
+const checkpointInbox=document.createElement('section');checkpointInbox.id='checkpoint-inbox';byId('result').before(checkpointInbox);
+const recoveryStyle=document.createElement('style');recoveryStyle.textContent='#run-summary,#checkpoint-inbox article{padding:14px;margin:12px 0;border:1px solid var(--vscode-panel-border,#555);border-radius:8px;overflow-wrap:anywhere}#run-summary[data-state="Waiting"]{border-left:4px solid var(--vscode-editorWarning-foreground,#cca700)}#run-summary[data-state="Reconciling"],#run-summary[data-state="Failed"]{border-left:4px solid var(--vscode-errorForeground,#f48771)}#run-summary[data-state="Completed"]{border-left:4px solid var(--vscode-testing-iconPassed,#73c991)}#checkpoint-inbox pre{white-space:pre-wrap;max-height:220px;overflow:auto}#checkpoint-inbox textarea{display:block;box-sizing:border-box;width:100%;min-height:88px;margin:8px 0}#checkpoint-inbox button{margin:4px 8px 4px 0}#run-summary h3{margin:0 0 8px}#recent-runs{max-width:100%}';document.head.append(recoveryStyle);
+let checkpointRenderKey='';
+async function renderRunStatus(result){
+ const userState=result.userState||result.state,checkpoint=result.checkpoint;
+ runSummary.dataset.state=userState;
+ runSummary.innerHTML='<h3>'+esc(userState)+' · '+esc(result.run_id)+'</h3><p>Next: <strong>'+esc(result.nextOwner||'none')+'</strong> · '+esc(result.reasonCode||'')+'</p><p>'+esc(result.resumeCondition||result.execution?.resumeCondition||'')+'</p><button id="run-open-project">Open in Project</button>';
+ if(result.monitor){
+  const monitor=result.monitor,summary=document.createElement('p');
+  summary.dataset.monitor='status';
+  summary.textContent='Observation: '+monitor.stop_reason+' · Remote: '+(monitor.last_observation?.status||'not yet observed')+(monitor.remote_result?' / '+monitor.remote_result:'')+(monitor.next_check_at?' · Next Check: '+new Date(monitor.next_check_at*1000).toLocaleTimeString():'');
+  summary.title=JSON.stringify(monitor,null,2);runSummary.append(summary);
+  const remote=monitor.last_observation?.url;
+  if(typeof remote==='string'&&/^https:\/\//i.test(remote)){const link=document.createElement('a');link.href=remote;link.textContent='Open Remote Run';link.target='_blank';link.rel='noopener noreferrer';runSummary.append(link)}
+ }
+ if(byId('cancel-run'))byId('cancel-run').setAttribute('aria-label',result.monitor&&result.run_id===currentRun?'Stop Monitoring':'Cancel Run');
+ byId('run-open-project').onclick=()=>perform('open_project',{run_id:result.run_id});
+ let requests=[];
+ if(['running','waiting'].includes(result.state))requests=(await request('checkpoints',{run_id:result.run_id})).checkpoints||[];
+ const human=requests.filter(item=>item.state==='waiting'&&item.trigger?.kind==='human'&&item.presentation!=='choice');
+ const renderKey=JSON.stringify({run:result.run_id,state:result.state,version:result.state==='outcome_unknown'?result.execution?.version:undefined,checkpoints:human.map(item=>item.checkpoint_id)});
+ if(renderKey===checkpointRenderKey)return;
+ checkpointRenderKey=renderKey;checkpointInbox.replaceChildren();
+ for(const item of human){
+  const article=document.createElement('article');article.dataset.checkpoint=item.checkpoint_id;
+  article.innerHTML='<h3>'+esc(item.kind)+' · Your response is needed</h3><p>Owner: '+esc(item.owner)+(item.deadline?' · Deadline: '+esc(new Date(item.deadline*1000).toLocaleString()):' · No deadline')+'</p><pre>'+esc(JSON.stringify(item.proposal,null,2))+'</pre><details><summary>Evidence, expected response and exact proposal revision</summary><pre>'+esc(JSON.stringify({answer_schema:item.answer_schema,evidence:item.evidence,proposal_digest:item.proposal_digest},null,2))+'</pre></details><label>Response (JSON)<textarea aria-label="Checkpoint response" spellcheck="false">{}</textarea></label><button data-respond>Submit response for this proposal</button><button data-cancel>Cancel waiting Run</button><p role="status"></p>';
+  const submit=article.querySelector('[data-respond]'),notice=article.querySelector('[role="status"]');
+  submit.onclick=async()=>{submit.disabled=true;try{const answer=JSON.parse(article.querySelector('textarea').value);await request('respond_checkpoint',{run_id:item.run_id,checkpoint_id:item.checkpoint_id,resume_token:item.resume_token,proposal_digest:item.proposal_digest,answer,event_key:'workbench:'+item.checkpoint_id});notice.textContent='Response saved. Continuing the original Run.';await refresh()}catch(error){notice.textContent=error.message;status(error.message,true);submit.disabled=false}};
+  article.querySelector('[data-cancel]').onclick=()=>perform('cancel_run',{run_id:item.run_id});
+  checkpointInbox.append(article);
+ }
+ if(result.state==='waiting'&&checkpoint?.trigger?.kind!=='human'){
+  const article=document.createElement('article');
+  const trigger=checkpoint.trigger||{};
+  article.innerHTML='<h3>Waiting without an active worker</h3><p>'+esc(trigger.kind==='timer'?'Scheduled for '+new Date(trigger.at*1000).toLocaleString():trigger.kind==='dependency'?'Awaiting dependency '+trigger.run_id:'Awaiting event '+(trigger.name||''))+'</p><p>The safety scan resumes this Run once its trigger is satisfied. No effect is automatically retried.</p>';
+  checkpointInbox.append(article);
+ }
+ if(result.state==='outcome_unknown'){
+  const article=document.createElement('article');article.dataset.reconciliation=result.run_id;
+  article.innerHTML='<h3>Reconcile before continuing</h3><p>Inspect the existing effect and receipts. This records an outcome; it does not rerun the Action or undo remote changes.</p><label>Verified outcome <select aria-label="Reconciliation outcome"><option value="review">Keep under review</option><option value="succeeded">Verified completed</option><option value="failed">Verified failed</option><option value="cancelled">Verified cancelled</option></select></label><label>Evidence and reason<textarea aria-label="Reconciliation reason"></textarea></label><label>Validated output if completed (JSON)<textarea aria-label="Reconciliation output">{}</textarea></label><button data-reconcile>Record verified outcome</button><p role="status"></p>';
+  const button=article.querySelector('[data-reconcile]'),notice=article.querySelector('[role="status"]');
+  button.onclick=async()=>{button.disabled=true;try{const reason=article.querySelector('[aria-label="Reconciliation reason"]').value.trim();if(!reason)throw Error('Describe the evidence used to verify this outcome.');const outcome=article.querySelector('select').value,evidence={reason};if(outcome==='succeeded')evidence.output=JSON.parse(article.querySelector('[aria-label="Reconciliation output"]').value);await request('reconcile_run',{run_id:result.run_id,expected_version:result.execution.version,kind:'manual',outcome,evidence});await refresh()}catch(error){notice.textContent=error.message;status(error.message,true);button.disabled=false}};
+  const kind=result.execution?.contract?.reconciler?.kind;
+  if(kind&&kind!=='manual'){const verify=document.createElement('button');verify.textContent='Verify with pinned '+kind+' reconciler';verify.onclick=async()=>{verify.disabled=true;try{await request('reconcile_run',{run_id:result.run_id,expected_version:result.execution.version,kind});await refresh()}catch(error){notice.textContent=error.message;verify.disabled=false}};article.append(verify)}
+  checkpointInbox.append(article);
+ }
+}
+byId('recent-runs').onchange=()=>{lastRun=byId('recent-runs').value||lastRun;saveView();refresh()};
+byId('recover-runs').onclick=()=>perform('recover_runs');
+const cancelRunButton=document.createElement('button');cancelRunButton.id='cancel-run';cancelRunButton.className='icon';cancelRunButton.title='Cancel local run; completed effects are not undone';cancelRunButton.setAttribute('aria-label','Cancel Run');cancelRunButton.disabled=true;cancelRunButton.innerHTML='<i class="codicon codicon-debug-stop" aria-hidden="true"></i>';byId('run').after(cancelRunButton);
+function updateRunControls(){const qualified=saved&&actions.find(item=>item.action_id===saved.action_id&&item.content_hash===saved.content_hash);byId('run').disabled=startingRun||!!currentRun||(!pendingLaunch&&qualified?.availability.state!=='ready');byId('run').title=pendingLaunch?'Retry the original submission with the same launch key':'Start a new durable Run';cancelRunButton.disabled=!currentRun||cancellingRun===currentRun;cancelRunButton.title=cancellingRun===currentRun?'Cancellation requested; waiting for execution to stop':'Cancel local run; completed effects are not undone'}
+cancelRunButton.onclick=async()=>{const runId=currentRun;if(!runId||cancellingRun===runId)return;cancellingRun=runId;updateRunControls();try{const result=await request('cancel_run',{run_id:runId});if(result.cancel_requested)status('Cancellation requested for '+runId);else cancellingRun=null;await refresh()}catch(error){cancellingRun=null;status(error.message,true)}finally{updateRunControls()}};
+let pendingGraphProposal=initialView?.pendingGraphProposal||null;
+function status(text,bad=false){byId('status').textContent=text;byId('status').className=bad?'bad':''}function persist(){saved=null;pendingGraphProposal=null;saveView();byId('run').disabled=true}function remember(){history.push(structuredClone(graph));if(history.length>50)history.shift()}
+let privateAction=null,privateLaunch=initialView?.privateLaunch||null,privateSubmitting=false;
+function renderPrivateParameters(values){
+ const panel=byId('private-action-parameters');panel.querySelectorAll('label').forEach(label=>label.remove());
+ for(const [field,schema]of Object.entries(privateAction.input_schema.properties||{})){
+  const label=document.createElement('label');label.append(document.createTextNode((schema.title||field)+((privateAction.input_schema.required||[]).includes(field)?' *':'')));
+  const input=document.createElement(schema.enum?'select':'input');input.dataset.privateField=field;input.setAttribute('aria-label',schema.title||field);
+  if(schema.enum){if(!(privateAction.input_schema.required||[]).includes(field))input.add(new Option('Not specified',''));for(const value of schema.enum)input.add(new Option(String(value),String(value)));input.value=String(values[field]??schema.default??'')}
+  else if(schema.type==='boolean'){input.type='checkbox';input.checked=values[field]??schema.default??false}
+  else{input.type=['integer','number'].includes(schema.type)?'number':'text';input.value=values[field]??schema.default??'';if(schema.minimum!==undefined)input.min=schema.minimum;if(schema.maximum!==undefined)input.max=schema.maximum;if(schema.type==='integer')input.step='1';if((privateAction.input_schema.required||[]).includes(field))input.required=true}
+  if(schema.description)input.title=schema.description;
+  input.oninput=()=>{
+   try{
+    const next=JSON.parse(byId('private-action-inputs').value);
+    if(schema.type==='boolean')next[field]=input.checked;
+    else if(input.value==='')delete next[field];
+    else next[field]=['integer','number'].includes(schema.type)?Number(input.value):input.value;
+    byId('private-action-inputs').value=JSON.stringify(next,null,2);byId('private-action-approve').checked=false;byId('private-action-error').textContent='';
+   }catch(error){byId('private-action-error').textContent='Correct the advanced JSON before editing parameters: '+error.message}
+  };
+  label.append(input);panel.append(label);
+ }
+}
+byId('private-action-inputs').oninput=()=>{
+ byId('private-action-approve').checked=false;
+ try{const values=JSON.parse(byId('private-action-inputs').value);if(!values||typeof values!=='object'||Array.isArray(values))throw Error('Expected an object.');renderPrivateParameters(values);byId('private-action-error').textContent=''}
+ catch(error){byId('private-action-error').textContent='Invalid inputs JSON: '+error.message}
+};
+function openPrivateAction(action){
+ privateAction=action;
+ byId('private-action-title').textContent=action.action_id;
+ byId('private-action-state').textContent=action.availability.state+' · '+(action.availability.reason||'Current grants and qualification are required and checked again at submission.');
+ byId('private-action-contract').textContent=JSON.stringify({input_schema:action.input_schema,effect:action.effect,revision:action.content_hash},null,2);
+ byId('private-action-inputs').value=JSON.stringify(privateLaunch?.action_id===action.action_id?privateLaunch.inputs:Object.fromEntries((action.input_schema.required||[]).map(field=>[field,''])),null,2);
+ renderPrivateParameters(JSON.parse(byId('private-action-inputs').value));byId('private-action-advanced').open=false;
+ byId('private-action-approve').checked=false;byId('private-action-error').textContent='';
+ byId('private-action-run').disabled=action.availability.state!=='ready'||privateSubmitting||!!currentRun||!!privateLaunch&&privateLaunch.action_id!==action.action_id;
+ byId('private-action-dialog').showModal();
+}
+byId('close-private-action').onclick=()=>byId('private-action-dialog').close();
+byId('private-action-form').onsubmit=async event=>{
+ event.preventDefault();if(!privateAction||privateSubmitting||currentRun||privateAction.availability.state!=='ready')return;
+ privateSubmitting=true;byId('private-action-run').disabled=true;
+ try{
+  const inputs=JSON.parse(byId('private-action-inputs').value);
+  if(!inputs||typeof inputs!=='object'||Array.isArray(inputs))throw new Error('Provide a JSON object matching the input schema.');
+  if(!byId('private-action-approve').checked)throw new Error('Approve this exact operation first.');
+  if(privateLaunch&&(privateLaunch.action_id!==privateAction.action_id||JSON.stringify(privateLaunch.inputs)!==JSON.stringify(inputs)))throw new Error('The original submission is unresolved. Inspect its launch key before changing inputs: '+privateLaunch.idempotency_key);
+  if(!privateLaunch)privateLaunch={action_id:privateAction.action_id,content_hash:privateAction.content_hash,inputs,idempotency_key:'workbench-private:'+crypto.randomUUID()};
+  saveView();
+  const result=await request('platform_call',privateLaunch);
+  if(!/^action_run_[0-9a-f]{32}$/.test(result.run_id||''))throw new Error('No durable Run identity was returned. Reconcile the original launch key.');
+  currentRun=lastRun=result.run_id;privateLaunch=null;saveView();byId('private-action-dialog').close();await refresh();
+ }catch(error){byId('private-action-error').textContent=error.message+(privateLaunch?' Original launch key retained: '+privateLaunch.idempotency_key:'')}
+ finally{privateSubmitting=false;byId('private-action-run').disabled=privateAction.availability.state!=='ready'||!!currentRun}
+};
+function properties(definition,direction){return definition[direction+'_schema']?.properties||{}}
+function mathInputs(expression){return [...new Set([...String(expression||'').matchAll(/\{([0-9]+)\}/g)].map(match=>Number(match[1])).filter(index=>index<32))].sort((left,right)=>left-right)}
+function definition(node){
+ const original=actions.find(action=>action.action_id===node.action_id);
+ if(node.action_id==='core.math-expression'&&original){
+  const value=structuredClone(original),indices=new Set(mathInputs(node.parameters.expression));
+  for(const field of Object.keys(node.parameters))if(/^input_\d+$/.test(field))indices.add(Number(field.slice(6)));
+  for(const edge of graph.edges)if(edge.target===node.id&&/^input_\d+$/.test(edge.input))indices.add(Number(edge.input.slice(6)));
+  value.input_schema.properties={expression:original.input_schema.properties.expression,...Object.fromEntries([...indices].sort((left,right)=>left-right).map(index=>['input_'+index,original.input_schema.properties['input_'+index]]))};
+  value.input_schema.required=['expression',...mathInputs(node.parameters.expression).map(index=>'input_'+index)];
+  return value;
+ }
+ if(!original?.component||!node.value_type)return original;
+ const value=structuredClone(original),schema={type:node.value_type};if(node.value_type==='integer')Object.assign(schema,{minimum:-9223372036854775808,maximum:9223372036854775807});if(value.output_schema.properties.value)value.output_schema.properties.value=schema;if(value.output_schema.properties.values)value.output_schema.properties.values.items=schema;if(node.action_id==='core.constant')value.input_schema.properties.value=schema;return value;
+}
+function buildCatTree(items,getCat,fallback,emptyGroups=[]){const root={folders:Object.create(null),items:[]};const folder=category=>{let node=root;for(const segment of String(category||fallback).split('/').map(value=>value.trim()).filter(Boolean)){node.folders[segment]??={folders:Object.create(null),items:[]};node=node.folders[segment]}return node};for(const category of emptyGroups)folder(category);for(const item of items)folder(getCat(item)).items.push(item);return root}
+function countTreeLeaves(node){return node.items.length+Object.values(node.folders).reduce((count,child)=>count+countTreeLeaves(child),0)}
+function renderCatTree(node,path,depth,renderLeaf,query){let html='';for(const name of Object.keys(node.folders).sort((left,right)=>left==='core'?-1:right==='core'?1:left.localeCompare(right))){const child=node.folders[name],key=JSON.stringify([...path,name]),open=!!query||catExpanded[key]===true;html+='<div class="tree-cat"><div class="tree-cat-hdr" role="treeitem" tabindex="0" data-category="'+esc(key)+'" aria-expanded="'+open+'" style="padding-left:'+(8+depth*12)+'px"><span class="tree-cat-arrow"><i class="codicon codicon-chevron-'+(open?'down':'right')+'"></i></span><i class="codicon codicon-folder"></i><span class="tree-cat-label">'+esc(name)+'</span><span class="tree-cat-count">'+countTreeLeaves(child)+'</span></div><div class="tree-cat-body" role="group" '+(open?'':'hidden')+'>'+renderCatTree(child,[...path,name],depth+1,renderLeaf,query)+'</div></div>'}for(const item of node.items)html+=renderLeaf(item,depth);return html}
+function renderPalette(){
+	const filter=byId('search').value.toLowerCase();
+	const paletteActions=workbenchActions();
+	const category=action=>action.category||'Actions';
+	const rows=paletteActions.filter(action=>!action.palette_hidden&&[action.display_name,action.action_id,category(action),action.language].some(value=>String(value||'').toLowerCase().includes(filter)));
+	const visibleGroups=groups.filter(group=>!filter||group.toLowerCase().includes(filter)||rows.some(action=>category(action)===group||category(action).startsWith(group+'/')));
+	const tree=buildCatTree(rows,category,'Actions',visibleGroups);
+	byId('palette').innerHTML=renderCatTree(tree,[],0,(action,depth)=>{
+		const ready=action.availability.state==='ready',editable=!action.read_only&&action.editable!==false,needsValidation=!action.component&&!ready;
+        if(action.visibility==='private')return '<div class="li cattree-item" role="treeitem" tabindex="0" data-action="'+esc(action.action_id)+'" draggable="false" style="padding-left:'+(8+depth*12)+'px"><div class="palette-title"><strong>'+esc(action.action_id)+'</strong><span class="language">Private</span></div><small>'+esc(action.availability.state)+' · '+esc(action.availability.reason||'Operator grants and qualification verified')+'</small><button data-private="'+esc(action.action_id)+'">Inspect / Run</button></div>';
+		return '<div class="li cattree-item" role="treeitem" tabindex="0" data-action="'+esc(action.action_id)+'" draggable="'+ready+'" style="padding-left:'+(8+depth*12)+'px"><div class="palette-row">'+(action.component?'<i class="codicon codicon-symbol-misc" title="System Basic Component"></i>':action.pending_review?'<i class="codicon codicon-git-pull-request" title="Pending review"></i>':'<input type="checkbox" aria-label="Select '+esc(action.action_id)+' for export" data-export="'+esc(action.action_id)+'" '+(selectedExports.has(action.action_id)?'checked':'')+'>')+'<div><div class="palette-title"><strong>'+esc(action.display_name||action.action_id)+'</strong><span class="language" title="'+esc((action.languages||[action.language||'Unknown']).join(' + '))+'">'+esc(action.language||'Unknown')+'</span></div><small class="'+(needsValidation?'needs-validation-label':'')+'">'+(needsValidation?'Need Validation':esc((action.read_only?'System / ':'')+(action.component?'Basic Component':action.availability.state)))+'</small></div>'+(editable?'<button class="icon" data-edit="'+esc(action.action_id)+'" aria-label="Edit '+esc(action.action_id)+'" title="Edit Action definition"><i class="codicon codicon-edit"></i></button>':'<span></span>')+(action.component?'<span></span>':'<button class="icon'+(needsValidation?' validation-needed':'')+'" data-qualify="'+esc(action.action_id)+'" aria-label="Validate '+esc(action.action_id)+'" title="Validate Action: Agent review, then smoke tests"><i class="codicon codicon-beaker"></i></button>')+'<button class="icon" data-add="'+esc(action.action_id)+'" aria-label="Add '+esc(action.action_id)+'" title="'+(ready?'Add block':'Complete validation before nesting')+'" '+(ready?'':'disabled')+'><i class="codicon codicon-add"></i></button></div></div>';
+	},filter);
+	document.querySelectorAll('[data-category]').forEach(row=>{
+		const group=JSON.parse(row.dataset.category).join('/');
+		const toggle=()=>{catExpanded[row.dataset.category]=row.getAttribute('aria-expanded')!=='true';saveView();renderPalette()};
+		row.onclick=toggle;
+		row.oncontextmenu=event=>{event.preventDefault();event.stopPropagation();showCatalogMenu(event,[{label:'Add subgroup',icon:'new-folder',disabled:group.split('/')[0].toLowerCase()==='core',run:()=>openCatalogDialog('group',null,group)}])};
+		row.onkeydown=event=>{if(event.key==='ContextMenu'||(event.shiftKey&&event.key==='F10')){event.preventDefault();row.oncontextmenu(keyboardMenuEvent(row))}else if(['Enter',' '].includes(event.key)){event.preventDefault();toggle()}};
+	});
+	document.querySelectorAll('[data-action]').forEach(row=>{
+		const action=paletteActions.find(item=>item.action_id===row.dataset.action);
+		const open=()=>action.pending_review?openAdmissionReview(action.proposal_id?{proposal_id:action.proposal_id}:{action_id:action.action_id,content_hash:action.content_hash}):action.visibility==='private'?openPrivateAction(action):editAction(action);
+		row.ondblclick=event=>{if(!event.target.closest('button,input'))open()};
+		row.draggable=!action.direct_only;
+		row.ondragstart=event=>{if(action.direct_only||action.availability.state!=='ready'){event.preventDefault();if(!action.direct_only)explainValidation(action);return}event.dataTransfer.setData('application/x-pkm-action',action.action_id);event.dataTransfer.effectAllowed='copy'};
+		row.oncontextmenu=event=>{event.preventDefault();event.stopPropagation();const protectedAction=!!action.read_only;showCatalogMenu(event,[
+			{label:'Copy Path',icon:'copy',run:()=>copyActionPath(action)},
+			{label:'Rename',icon:'edit',disabled:protectedAction,run:()=>openCatalogDialog('rename',action)},
+			{label:'Edit',icon:'go-to-file',disabled:protectedAction||action.editable===false,run:()=>editAction(action)},
+			{label:'Delete',icon:'trash',disabled:protectedAction||action.editable===false,run:()=>openCatalogDialog('delete',action)},
+			{label:'Move to',icon:'move',disabled:protectedAction,run:()=>openCatalogDialog('move',action)}])};
+		row.onkeydown=event=>{if(event.key==='ContextMenu'||(event.shiftKey&&event.key==='F10')){event.preventDefault();row.oncontextmenu(keyboardMenuEvent(row))}else if(event.key==='Enter'&&event.target===row)open()};
+	});
+	document.querySelectorAll('[data-qualify]').forEach(button=>button.onclick=()=>chooseActionValidation(paletteActions.find(item=>item.action_id===button.dataset.qualify)));
+    document.querySelectorAll('[data-private]').forEach(button=>button.onclick=()=>openPrivateAction(actions.find(action=>action.action_id===button.dataset.private)));
+	document.querySelectorAll('[data-add]').forEach(button=>button.onclick=()=>addBlock(button.dataset.add));
+	document.querySelectorAll('[data-export]').forEach(input=>input.onchange=()=>input.checked?selectedExports.add(input.dataset.export):selectedExports.delete(input.dataset.export));
+	document.querySelectorAll('[data-edit]').forEach(button=>button.onclick=()=>editAction(actions.find(item=>item.action_id===button.dataset.edit)));
+}
+async function copyActionPath(action){const reference=action.source_id||(action.component?'pkm://components/':'pkm://actions/')+action.action_id;try{if(vscode)await request('copy_path',{reference});else await navigator.clipboard.writeText(reference);status('Copied '+reference)}catch(error){status(error.message,true)}}
+function keyboardMenuEvent(row){const bounds=row.getBoundingClientRect();return {clientX:bounds.left+20,clientY:bounds.top+20,preventDefault(){},stopPropagation(){}}}
+function showCatalogMenu(event,items){
+	const menu=byId('catalog-menu');menu.replaceChildren();
+	for(const item of items){const button=document.createElement('button');button.type='button';button.setAttribute('role','menuitem');button.setAttribute('aria-label',item.label);button.disabled=item.disabled;button.innerHTML='<i class="codicon codicon-'+item.icon+'" aria-hidden="true"></i><span>'+esc(item.label)+'</span>';if(item.disabled)button.title='Read-only component or group';button.onclick=()=>{menu.hidden=true;item.run()};menu.append(button)}
+	menu.hidden=false;menu.style.left=Math.max(4,Math.min(event.clientX,innerWidth-menu.offsetWidth-4))+'px';menu.style.top=Math.max(4,Math.min(event.clientY,innerHeight-menu.offsetHeight-4))+'px';(menu.querySelector('button:not(:disabled)')||menu).focus();
+}
+document.addEventListener('pointerdown',event=>{if(!byId('catalog-menu').contains(event.target))byId('catalog-menu').hidden=true});
+byId('catalog-menu').onkeydown=event=>{if(event.key==='Escape'){byId('catalog-menu').hidden=true;return}if(!['ArrowDown','ArrowUp','Home','End'].includes(event.key))return;event.preventDefault();const buttons=[...byId('catalog-menu').querySelectorAll('button:not(:disabled)')];if(!buttons.length)return;const index=buttons.indexOf(document.activeElement);buttons[event.key==='Home'?0:event.key==='End'?buttons.length-1:(index+(event.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length].focus()};
+window.addEventListener('resize',()=>byId('catalog-menu').hidden=true);
+function openCatalogDialog(kind,action=null,parent=''){
+	catalogOperation={kind,action,parent};const names={group:parent?'Add subgroup':'Add group',rename:'Rename Action',move:'Move Action',delete:'Delete Action',open:'Open Action',close:'Close editor'};
+	byId('catalog-error').textContent='';byId('catalog-parent').hidden=kind!=='group';byId('catalog-parent').textContent='Create in: '+(parent||'Root');
+	byId('catalog-title').textContent=names[kind];byId('catalog-name-label').hidden=!['group','rename'].includes(kind);byId('catalog-name').required=['group','rename'].includes(kind);byId('catalog-name').value=kind==='rename'?(action.display_name||action.action_id):'';
+	byId('catalog-name').disabled=!['group','rename'].includes(kind);
+	byId('catalog-group-label').hidden=kind!=='move';byId('catalog-group').disabled=kind!=='move';byId('catalog-group').innerHTML=groups.filter(group=>group.split('/')[0].toLowerCase()!=='core').map(group=>'<option value="'+esc(group)+'">'+esc(group.split('/').join(' / '))+'</option>').join('');if(action)byId('catalog-group').value=action.category||'Actions';
+	byId('catalog-message').hidden=!['delete','open','close'].includes(kind);byId('catalog-message').textContent=kind==='delete'?'Delete '+(action.display_name||action.action_id)+'? Source files and run history will be kept.':'Discard unsaved changes?';byId('catalog-submit').textContent=kind==='delete'?'Delete':kind==='open'?'Open':kind==='close'?'Discard':'Apply';byId('catalog-dialog').showModal();(kind==='move'?byId('catalog-group'):byId('catalog-name')).focus();
+}
+byId('add-group').onclick=()=>openCatalogDialog('group');byId('close-catalog').onclick=()=>byId('catalog-dialog').close();
+byId('catalog-form').onsubmit=async event=>{
+	event.preventDefault();const operation=catalogOperation,action=operation.action;let result;
+	const submit=byId('catalog-submit');submit.disabled=true;byId('catalog-error').textContent='';
+	try{
+	const mutate=async(method,params)=>{const value=await request(method,params);await refresh();return value};
+	if(operation.kind==='open'){byId('catalog-dialog').close();await openActionEditor(action);return}
+	if(operation.kind==='close'){byId('catalog-dialog').close();closeDefinitionEditor();return}
+	if(operation.kind==='group'){result=await mutate('group_create',{name:byId('catalog-name').value.trim(),parent:operation.parent})}
+	if(operation.kind==='rename')result=await mutate('action_rename',{action_id:action.action_id,name:byId('catalog-name').value.trim()});
+	if(operation.kind==='move')result=await mutate('action_move',{action_id:action.action_id,category:byId('catalog-group').value});
+	if(operation.kind==='delete')result=await mutate('action_delete',{action_id:action.action_id,content_hash:action.content_hash});
+	if(result?.category){const path=result.category.split('/');for(let index=1;index<=path.length;index++)catExpanded[JSON.stringify(path.slice(0,index))]=true;byId('search').value='';setTreeCollapsed(false);saveView();renderPalette();status(operation.kind==='group'?'Created folder: '+result.category:'Moved Action to '+result.category)}
+	if(!result)return;if(operation.kind==='delete'){selectedExports.delete(action.action_id);if(saved?.action_id===action.action_id){saved=null;saveView();byId('run').disabled=true}}if(operation.kind==='rename'&&graph.action_id===action.action_id){graph.name=result.display_name;saveView();renderGraph()}byId('catalog-dialog').close();
+	}catch(error){byId('catalog-error').textContent=error.message||String(error)}finally{submit.disabled=false}
+};
+document.querySelector('.workspace .viewport').after(byId('definition-editor-template').content.cloneNode(true));
+const migrationButton=document.createElement('button');migrationButton.id='preview-path-migration';migrationButton.textContent='Preview path migration';migrationButton.title='Verify typed resource references without saving';byId('save-definition').before(migrationButton);
+const migrationDialog=document.createElement('dialog');migrationDialog.innerHTML='<h2>Verified path migration preview</h2><p>No files have been saved. Review field evidence and local-binding diagnostics before using the candidate.</p><pre id="migration-evidence" style="white-space:pre-wrap;max-height:60vh;overflow:auto"></pre><button id="use-migration">Use candidate in editor</button><button id="close-migration">Close</button>';document.body.append(migrationDialog);
+let migrationPreview=null;
+migrationButton.onclick=async()=>{try{if(!editorState||editorState.filename||editorState.read_only)return;const result=await request('migration_preview',{document:JSON.parse(editorState.content),kind:'action'});migrationPreview=result;byId('migration-evidence').textContent=JSON.stringify({name:result.name,id:result.id,original_sha256:result.original_sha256,changes:result.changes,diagnostics:result.diagnostics},null,2);byId('use-migration').disabled=!result.changes.length;migrationDialog.showModal()}catch(error){status(error.message,true)}};
+byId('close-migration').onclick=()=>migrationDialog.close();
+byId('use-migration').onclick=()=>{if(!editorState||!migrationPreview)return;editorState.migrationEvidence=migrationPreview;editorState.content=JSON.stringify(migrationPreview.candidate,null,2);editorState.dirty=true;showDefinitionEditor();saveView();migrationDialog.close();status('Candidate is only in the editor; review and explicitly Save to persist. Original document and field evidence are retained in local editor state.')};
+async function editAction(action){
+	if(!action||action.read_only||action.editable===false)return status('This component definition is read-only.',true);
+	if(editorState?.dirty||(!saved&&graph.nodes.length))return openCatalogDialog('open',action);
+	await openActionEditor(action);
+}
+async function openActionEditor(action){
+	if(action.graph){closeDefinitionEditor();remember();graph=structuredClone(action.graph);graph.name=action.display_name||graph.name;graph.action_id=action.action_id;graph.version=action.version;saved=action;clearSelection();saveView();renderGraph();byId('run').disabled=action.availability.state!=='ready';return}
+	try{const document=await request('definition_read',{action_id:action.action_id});document.definition.version=action.version+1;editorState={action_id:action.action_id,name:action.display_name||action.action_id,language:action.language,definition:document.definition,content_hash:document.content_hash,files:document.files,filename:'',content:JSON.stringify(document.definition,null,2),dirty:false};showDefinitionEditor();saveView()}catch(error){status(error.message,true)}
+}
+function showDefinitionEditor(){
+	if(!editorState)return;byId('definition-editor').hidden=false;document.querySelector('.graph-toolbar').hidden=true;document.querySelector('.workspace .viewport').hidden=true;byId('editor-title').textContent=editorState.name;byId('editor-language').textContent=editorState.language;byId('editor-file').innerHTML='<option value="">Action definition</option>'+editorState.files.map(file=>'<option value="'+esc(file)+'">'+esc(file.split(/[\\/]/).at(-1))+'</option>').join('');byId('editor-file').value=editorState.filename;byId('editor-content').value=editorState.content;
+	byId('editor-content').readOnly=!!editorState.read_only;byId('save-definition').disabled=!!editorState.read_only;migrationButton.disabled=!!editorState.read_only||!!editorState.filename;
+}
+function closeDefinitionEditor(){editorState=null;byId('definition-editor').hidden=true;document.querySelector('.graph-toolbar').hidden=false;document.querySelector('.workspace .viewport').hidden=false;saveView()}
+byId('close-definition').onclick=()=>editorState?.dirty?openCatalogDialog('close'):closeDefinitionEditor();
+byId('editor-content').oninput=()=>{editorState.content=byId('editor-content').value;editorState.dirty=true;saveView()};
+byId('editor-file').onchange=async()=>{
+	const filename=byId('editor-file').value;if(editorState.dirty){byId('editor-file').value=editorState.filename;return status('Save changes or close the editor before switching files.',true)}
+	try{if(filename){const result=await request('source_read',{action_id:editorState.action_id,filename});editorState.content=result.content;editorState.source_hash=result.source_hash}else editorState.content=JSON.stringify(editorState.definition,null,2);editorState.filename=filename;showDefinitionEditor();saveView()}catch(error){byId('editor-file').value=editorState.filename;status(error.message,true)}
+};
+byId('save-definition').onclick=async()=>{
+	if(editorState?.read_only)return status('This contract is read-only.',true);
+	try{if(editorState.filename){const result=await request('source_save',{action_id:editorState.action_id,filename:editorState.filename,content:editorState.content,source_hash:editorState.source_hash});editorState.source_hash=result.source_hash}else{const definition=JSON.parse(editorState.content);const result=await request('definition_save',{action_id:editorState.action_id,definition,content_hash:editorState.content_hash});if(result.definition.state==='pending_operator_approval'){editorState.proposal={...result.definition,definition};editorState.dirty=false;saveView();await refresh();status('Proposal submitted. Use Review / test Actions to review and validate it; the existing approved version is unchanged.');return}editorState.content_hash=result.definition.content_hash;editorState.definition={...definition,version:result.definition.version+1};editorState.content=JSON.stringify(editorState.definition,null,2)}editorState.dirty=false;showDefinitionEditor();saveView();await refresh();status('Saved; validation is required before running.')}catch(error){status(error.message,true)}
+};
+byId('canvas').ondragover=event=>{if([...event.dataTransfer.types].includes('application/x-pkm-action')){event.preventDefault();event.dataTransfer.dropEffect='copy'}};
+byId('canvas').ondrop=event=>{event.preventDefault();const identifier=event.dataTransfer.getData('application/x-pkm-action');if(!identifier)return;const origin=byId('canvas').getBoundingClientRect();addBlock(identifier,{x:Math.max(20,event.clientX-origin.left),y:Math.max(20,event.clientY-origin.top)})};
+function renderSets(){byId('sets').innerHTML=moduleSets.length?moduleSets.map(set=>'<div class="set"><label><input type="checkbox" data-set="'+esc(set.module_set_id)+'" data-version="'+set.version+'" '+(set.enabled?'checked':'')+'>'+esc(set.name)+'</label><small>v'+set.version+' / '+set.actions.length+' Actions</small><div class="tools"><button data-remove="'+esc(set.module_set_id)+'" data-version="'+set.version+'" '+(set.enabled?'disabled':'')+'>Remove</button></div></div>').join(''):'<small>No optional sets installed.</small>';document.querySelectorAll('[data-set]').forEach(input=>input.onchange=()=>perform('load',{module_set_id:input.dataset.set,version:+input.dataset.version,enabled:input.checked}));document.querySelectorAll('[data-remove]').forEach(button=>button.onclick=()=>{if(confirm('Remove this installed package version?'))perform('remove',{module_set_id:button.dataset.remove,version:+button.dataset.version})})}
+function initialValue(schema){if('default'in schema)return structuredClone(schema.default);if(schema.enum)return schema.enum[0];if(schema.type==='integer'||schema.type==='number')return 0;if(schema.type==='boolean')return false;if(schema.type==='array')return [];if(schema.type==='object')return {};if(!schema.type||schema.type==='null')return null;return ''}
+byId('create-poll-template').onclick=()=>{
+ const queries=actions.filter(action=>!action.component&&action.availability.state==='ready'&&(action.effects||[]).every(effect=>['pure','read','local-read','remote-read'].includes(effect)));
+ byId('poll-template-query').innerHTML=queries.map(action=>'<option value="'+esc(action.action_id)+'">'+esc(action.display_name||action.action_id)+'</option>').join('');
+ byId('poll-template-error').textContent=queries.length?'':'First register and validate a read-only query Action.';
+ byId('poll-template-query').onchange=()=>{
+  const query=actions.find(action=>action.action_id===byId('poll-template-query').value);
+  byId('poll-template-field').innerHTML=Object.keys(query?.output_schema?.properties||{}).map(field=>'<option>'+esc(field)+'</option>').join('');
+  byId('poll-template-inputs').value=JSON.stringify(query?.examples?.[0]?.inputs||{},null,2);
+ };
+ byId('poll-template-query').onchange();byId('poll-template-dialog').showModal();
+};
+byId('close-poll-template').onclick=()=>byId('poll-template-dialog').close();
+byId('poll-template-form').onsubmit=async event=>{
+ event.preventDefault();const button=event.submitter;button.disabled=true;
+ try{
+  const query=actions.find(action=>action.action_id===byId('poll-template-query').value);
+  if(!query)throw new Error('Choose a ready read-only query.');
+  await request('template_create',{action_id:byId('poll-template-id').value,parameters:{
+   query_action_id:query.action_id,query_revision:query.content_hash,query_inputs:JSON.parse(byId('poll-template-inputs').value),
+   field:byId('poll-template-field').value,expected:JSON.parse(byId('poll-template-expected').value),
+   interval_seconds:Number(byId('poll-template-interval').value),timeout_seconds:Number(byId('poll-template-timeout').value),
+   max_iterations:Number(byId('poll-template-limit').value)}});
+  byId('poll-template-dialog').close();await refresh();status('Polling Action created. Validate explicitly before running.');
+ }catch(error){byId('poll-template-error').textContent=error.message}
+ finally{button.disabled=false}
+};
+function addBlock(actionId,position=null){
+	const action=actions.find(item=>item.action_id===actionId);
+	if(!action||action.direct_only||action.availability.state!=='ready')return status('Only qualified composable Actions can be nested. Private platform adapters run through Inspect / Run.',true);
+	remember();const node={id:'block_'+crypto.randomUUID().replaceAll('-','').slice(0,12),action_id:actionId,content_hash:action.content_hash,parameters:{},x:position?.x??(40+(graph.nodes.length%3)*340),y:position?.y??(graph.nodes.length<3?40:Math.max(...graph.nodes.map(item=>item.y+(document.querySelector('[data-block="'+item.id+'"]')?.offsetHeight||300)))+40)};
+	 if(action.component&&actionId!=='core.math-expression'&&(action.output_schema.properties.value||action.output_schema.properties.values))node.value_type='string';
+	for(const field of action.input_schema.required||[])node.parameters[field]=initialValue(properties(definition(node),'input')[field]);
+	if(actionId==='core.user-action')node.parameters.options=[{label:'Continue',value:'continue'},{label:'Cancel',value:'cancel'}];
+	 if(actionId==='core.math-expression')node.parameters=structuredClone(action.examples[0].inputs);
+	if(actionId==='core.cast'){node.parameters.value='';node.parameters.target_type=node.value_type}
+	if(['core.if-else','core.while'].includes(actionId))node.parameters.condition=false;
+	if(actionId==='core.for'){node.parameters.value={$var:'item'};node.value_type='string'}
+	graph.nodes.push(node);graph.output_node=node.id;persist();renderGraph();
+}
+function literalHighlights(value){const pattern=/\\(?:[abfnrtv\\'"]|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8})/g;let html='',offset=0;for(const match of String(value).matchAll(pattern)){html+=esc(String(value).slice(offset,match.index))+'<mark>'+esc(match[0])+'</mark>';offset=match.index+match[0].length}return html+esc(String(value).slice(offset))+'\n'}
+function mathHighlights(value,sources){let html='',offset=0;for(const match of String(value).matchAll(/\{[0-9]+\}|\b[a-zA-Z_][a-zA-Z_0-9]*\b/g)){html+=esc(String(value).slice(offset,match.index));const source=sources[match[0]];html+=source?'<mark title="'+esc(source)+'">'+esc(match[0])+'</mark>':/^\{/.test(match[0])?'<span class="math-input-token">'+esc(match[0])+'</span>':esc(match[0]);offset=match.index+match[0].length}return html+esc(String(value).slice(offset))+'\n'}
+function mathProvenance(value,sources){return [...new Set(String(value).match(/\b[a-zA-Z_][a-zA-Z_0-9]*\b/g)||[])].filter(name=>sources[name]).map(name=>'<code>'+esc(name)+' : '+esc(sources[name])+'</code>').join('')}
+function control(node,field,schema){
+	const value=node.parameters[field],attributes='data-node="'+node.id+'" data-field="'+esc(field)+'" aria-label="'+esc(field)+' for '+node.id+'"';
+	if(schema.enum)return '<select '+attributes+'>'+schema.enum.map(item=>'<option value="'+esc(JSON.stringify(item))+'" '+(item===value?'selected':'')+'>'+esc(item)+'</option>').join('')+'</select>';
+	if(schema.type==='boolean')return '<input type="checkbox" '+attributes+' '+(value?'checked':'')+'>';
+	 if(node.action_id==='core.math-expression'&&field==='expression'){const sources=definition(node).math_functions;return '<div class="math-expression"><div class="raw-string-body"><pre aria-hidden="true">'+mathHighlights(value,sources)+'</pre><textarea '+attributes+' data-math-expression spellcheck="false">'+esc(value)+'</textarea></div><div class="math-provenance">'+mathProvenance(value,sources)+'</div><details class="math-functions"><summary>Functions</summary>'+Object.entries(sources).map(([name,source])=>'<div><code>'+esc(name)+'</code><small>'+esc(source)+'</small></div>').join('')+'<div><code>pi / e / tau</code><small>math.pi / math.e / math.tau</small></div></details></div>'}
+	if(!schema.type||['object','array','null'].includes(schema.type))return (schema.type==='array'&&['body','then_steps','else_steps','default_steps','cases'].includes(field)?'<button type="button" data-edit-body="'+esc(field)+'" data-node="'+node.id+'">Open '+esc(field)+' subgraph</button>':'')+'<textarea '+attributes+' spellcheck="false">'+esc(JSON.stringify(value??null,null,2))+'</textarea>';
+	if(node.action_id==='core.constant'&&schema.type==='string')return '<div class="raw-string"><span class="literal-delimiter" aria-hidden="true">r"""</span><div class="raw-string-body"><pre aria-hidden="true">'+literalHighlights(value??'')+'</pre><textarea '+attributes+' data-raw-string spellcheck="false" wrap="soft">'+esc(value??'')+'</textarea></div><span class="literal-delimiter" aria-hidden="true">"""</span></div>';
+	return '<input '+attributes+' type="'+(schema.format==='date'?'date':'text')+'" value="'+esc(value??'')+'" '+(['integer','number'].includes(schema.type)?'inputmode="decimal"':'')+'>';
+}
+function canonical(value){if(Array.isArray(value))return value.map(canonical);if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])]));return value}
+function compatible(outputNode,outputField,inputNode,inputField){const target=properties(definition(inputNode)||{},'input')[inputField],source=properties(definition(outputNode)||{},'output')[outputField];return outputNode!==inputNode&&source!==undefined&&target!==undefined&&(Object.keys(target).length===0||JSON.stringify(canonical(source))===JSON.stringify(canonical(target)))}
+function pin(node,field,schema,direction,optional=false,compact=false){return '<button class="pin '+direction+(optional?' optional':'')+'" data-'+direction+'="'+esc(field)+'" data-block-id="'+node.id+'" '+(compact?'data-compact-pin="'+direction+'"':'')+' title="'+esc(field)+' / '+esc(schema.format||schema.type)+(direction==='input'?(optional?' / optional':' / required'):'')+'" aria-label="'+(direction==='input'?'Input ':'Output ')+node.id+'.'+esc(field)+'"></button>'}
+function compactPorts(node,action,direction){const fields=Object.entries(properties(action,direction));if(!fields.length)return '';const field=fields.some(([name])=>name===node['compact_'+direction])?node['compact_'+direction]:fields[0][0],schema=properties(action,direction)[field],optional=direction==='input'&&!(action.input_schema.required||[]).includes(field);return '<div class="compact-port '+direction+'">'+pin(node,field,schema,direction,optional,true)+'<select class="compact-port-select" data-compact="'+direction+'" data-node="'+node.id+'" aria-label="'+direction+' port for '+node.id+'">'+fields.map(([name,type])=>'<option value="'+esc(name)+'" '+(name===field?'selected':'')+'>'+esc(name)+' / '+esc(type.format||type.type)+(direction==='input'&&!(action.input_schema.required||[]).includes(name)?' / optional':'')+'</option>').join('')+'</select></div>'}
+function parameterRow(node,action,field,schema){if(node.action_id==='core.cast'&&field==='target_type')return '';const optional=!(action.input_schema.required||[]).includes(field),wired=graph.edges.some(edge=>edge.target===node.id&&edge.input===field),enabled=Object.hasOwn(node.parameters,field);return '<div class="port-row '+(optional?'optional':'required')+'" data-parameter="'+esc(field)+'">'+pin(node,field,schema,'input',optional)+'<label class="field-label">'+(optional?'<input type="checkbox" data-enable-field="'+esc(field)+'" data-node="'+node.id+'" aria-label="Set '+esc(field)+' for '+node.id+'" '+(enabled||wired?'checked':'')+' '+(wired?'disabled':'')+'>':'')+esc(field)+' <small>'+esc(schema.format||schema.type)+' / '+(optional?'optional':'required')+'</small></label>'+(wired?'<small>Connected</small>':optional&&!enabled?'<small>'+(Object.hasOwn(schema,'default')?'Default: '+esc(JSON.stringify(schema.default)):'Not supplied')+'</small>':control(node,field,schema))+'</div>'}
+function saveView(){const state={graph,saved,pendingGraphProposal,currentRun,pendingLaunch,lastRun,editorState,privateLaunch,libraryDraft:initialView?.libraryDraft,nestedDraft:initialView?.nestedDraft,treeCollapsed:document.querySelector('.layout').classList.contains('tree-collapsed'),catExpanded};if(vscode)vscode.setState(state);else sessionStorage.setItem('pkm-action-state',JSON.stringify(state))}
+function renderGraph(){
+	byId('name').value=graph.name;
+	byId('blocks').innerHTML=graph.nodes.map(node=>{const action=definition(node)||{},collapsed=!!node.collapsed;return '<article class="block '+(collapsed?'collapsed':'')+'" data-block="'+node.id+'" style="left:'+node.x+'px;top:'+node.y+'px"><header><button class="icon" data-fold="'+node.id+'" title="'+(collapsed?'Expand parameters':'Collapse parameters')+'" aria-label="'+(collapsed?'Expand':'Collapse')+' parameters for '+node.id+'" aria-expanded="'+!collapsed+'">'+(collapsed?'&#9656;':'&#9662;')+'</button><h3>'+esc(action.display_name||node.action_id)+'</h3><button class="icon" data-delete="'+node.id+'" title="Delete block" aria-label="Delete '+node.id+'">&times;</button></header><div class="state">'+esc(action.availability?.state||'module_not_loaded')+(collapsed?' / '+Object.keys(properties(action,'input')).length+' inputs / '+Object.keys(properties(action,'output')).length+' outputs':'')+'</div><div class="ports">'+(collapsed?compactPorts(node,action,'input')+compactPorts(node,action,'output'):Object.entries(properties(action,'input')).map(([field,schema])=>parameterRow(node,action,field,schema)).join('')+Object.entries(properties(action,'output')).map(([field,schema])=>'<div class="port-row output-row">'+pin(node,field,schema,'output')+esc(field)+' <small>'+esc(schema.format||schema.type)+'</small></div>').join(''))+'</div></article>'}).join('');
+	byId('output').innerHTML=graph.nodes.map(node=>'<option value="'+node.id+'" '+(graph.output_node===node.id?'selected':'')+'>'+esc(definition(node)?.display_name||node.action_id)+' / '+node.id.slice(-4)+'</option>').join('');
+	 for(const node of graph.nodes.filter(item=>item.action_id==='core.math-expression')){
+	  const example=definition(node).examples[0],row=document.createElement('div');row.className='math-example';
+	  row.innerHTML='<code>'+esc(example.inputs.expression)+' = '+esc(example.output.value)+'</code><button class="icon" type="button" title="Apply math example" aria-label="Apply math example"><i class="codicon codicon-lightbulb" aria-hidden="true"></i></button>';
+	  document.querySelector('[data-block="'+node.id+'"] .ports').before(row);
+	  row.querySelector('button').onclick=()=>{if(graph.edges.some(edge=>edge.target===node.id))return status('Disconnect math inputs before applying the example.',true);remember();node.parameters=structuredClone(example.inputs);persist();renderGraph()};
+	 }
+	for(const node of graph.nodes){if(!node.value_type)continue;const row=document.createElement('label');row.className='component-type';const label=node.action_id==='core.cast'?'Target type':'Value type';row.innerHTML=label+' <select data-value-type="'+node.id+'" aria-label="'+label+' for '+node.id+'">'+['string','integer','number','boolean','object','array','null'].map(type=>'<option '+(type===node.value_type?'selected':'')+'>'+type+'</option>').join('')+'</select>';document.querySelector('[data-block="'+node.id+'"] .ports').before(row);row.querySelector('select').onchange=event=>{remember();node.value_type=event.target.value;if(node.action_id==='core.constant')node.parameters.value=initialValue(properties(definition(node),'input').value);if(node.action_id==='core.cast')node.parameters.target_type=node.value_type;persist();renderGraph()}}
+	for(const node of graph.nodes){const choices=definition(node)?.component_implementations||[];if(choices.length<2)continue;const row=document.createElement('label');row.className='component-type';const current=node.implementation||'python';row.innerHTML='Implementation <select data-implementation="'+esc(node.id)+'" aria-label="Implementation for '+esc(node.id)+'">'+choices.map(choice=>'<option value="'+esc(choice.id)+'" '+(choice.id===current?'selected':'')+'>'+esc(choice.language)+'</option>').join('')+'</select>';document.querySelector('[data-block="'+node.id+'"] .ports').before(row);row.querySelector('select').onchange=event=>{remember();if(event.target.value==='python')delete node.implementation;else node.implementation=event.target.value;persist();renderGraph()}}
+	document.querySelectorAll('[data-fold]').forEach(button=>{button.innerHTML='<i class="codicon codicon-chevron-'+(button.getAttribute('aria-expanded')==='true'?'down':'right')+'" aria-hidden="true"></i>';button.onclick=()=>{const node=graph.nodes.find(item=>item.id===button.dataset.fold);node.collapsed=!node.collapsed;saveView();renderGraph()}});
+	document.querySelectorAll('[data-compact]').forEach(select=>select.onchange=()=>{graph.nodes.find(node=>node.id===select.dataset.node)['compact_'+select.dataset.compact]=select.value;saveView();renderGraph()});
+	document.querySelectorAll('[data-delete]').forEach(button=>button.onclick=()=>{remember();graph.nodes=graph.nodes.filter(node=>node.id!==button.dataset.delete);graph.edges=graph.edges.filter(edge=>edge.source!==button.dataset.delete&&edge.target!==button.dataset.delete);clearSelection();if(graph.output_node===button.dataset.delete)graph.output_node=graph.nodes.at(-1)?.id;persist();renderGraph()});
+	document.querySelectorAll('[data-output]').forEach(button=>{button.onclick=()=>pickOutput(button.dataset.blockId,button.dataset.output);button.onpointerdown=event=>{if(event.button!==0)return;wireGesture={node:button.dataset.blockId,field:button.dataset.output,x:event.clientX,y:event.clientY,moved:false};source={node:wireGesture.node,field:wireGesture.field};selectedEdge=null;updatePortState()}});
+	document.querySelectorAll('[data-input]').forEach(button=>button.onclick=()=>pickInput(button.dataset.blockId,button.dataset.input));
+	document.querySelectorAll('[data-edit-body]').forEach(button=>button.onclick=()=>openNestedEditor(button.dataset.node,button.dataset.editBody));
+	document.querySelectorAll('[data-enable-field]').forEach(input=>input.onchange=()=>{remember();const node=graph.nodes.find(item=>item.id===input.dataset.node);if(input.checked)node.parameters[input.dataset.enableField]=initialValue(properties(definition(node),'input')[input.dataset.enableField]);else delete node.parameters[input.dataset.enableField];persist();renderGraph()});
+	document.querySelectorAll('[data-field]').forEach(input=>{
+		const change=()=>{const node=graph.nodes.find(item=>item.id===input.dataset.node),schema=properties(definition(node),'input')[input.dataset.field];let value=input.value;try{if(schema.enum||(input.tagName==='TEXTAREA'&&schema.type!=='string'))value=JSON.parse(value);else if(schema.type==='boolean')value=input.checked;else if(schema.type==='integer'||schema.type==='number'){value=Number(value);if(input.value.trim()===''||!Number.isFinite(value)||(schema.type==='integer'&&!Number.isSafeInteger(value)))throw Error('Use a finite, exactly representable value.')}}catch(error){input.setCustomValidity(error.message);input.reportValidity();return}remember();node.parameters[input.dataset.field]=value;input.setCustomValidity('');if(input.hasAttribute('data-raw-string'))input.previousElementSibling.innerHTML=literalHighlights(value);persist();draw()};
+		input.onchange=()=>{change();if(input.hasAttribute('data-math-expression')&&!input.validationMessage)renderGraph()};
+		if(input.hasAttribute('data-math-expression')){input.oninput=()=>{change();const sources=definition(graph.nodes.find(item=>item.id===input.dataset.node)).math_functions;input.previousElementSibling.innerHTML=mathHighlights(input.value,sources);input.parentElement.nextElementSibling.innerHTML=mathProvenance(input.value,sources)};input.onscroll=()=>{input.previousElementSibling.scrollTop=input.scrollTop;input.previousElementSibling.scrollLeft=input.scrollLeft}};
+		if(input.hasAttribute('data-raw-string')){input.oninput=change;input.onscroll=()=>{input.previousElementSibling.scrollTop=input.scrollTop;input.previousElementSibling.scrollLeft=input.scrollLeft}};
+	});
+	document.querySelectorAll('.block header').forEach(header=>header.onpointerdown=event=>{if(event.target.closest('button,select,input'))return;remember();const node=graph.nodes.find(item=>item.id===header.parentElement.dataset.block),start={x:event.clientX,y:event.clientY,left:node.x,top:node.y};header.setPointerCapture(event.pointerId);header.onpointermove=move=>{node.x=Math.max(20,start.left+move.clientX-start.x);node.y=Math.max(20,start.top+move.clientY-start.y);header.parentElement.style.left=node.x+'px';header.parentElement.style.top=node.y+'px';draw()};header.onpointerup=()=>{header.onpointermove=null;saveView()}});
+	updatePortState();byId('toggle-parameters').innerHTML='<i class="codicon codicon-'+(graph.nodes.length&&graph.nodes.every(node=>node.collapsed)?'expand-all':'collapse-all')+'" aria-hidden="true"></i>';draw();updateRunControls();
+}
+function clearSelection(){source=null;pendingInput=null;selectedEdge=null;wireGesture=null}
+function pickOutput(node,field){source={node,field};selectedEdge=null;if(pendingInput)return connect(pendingInput.node,pendingInput.field);updatePortState();draw()}
+function pickInput(node,field){if(source)return connect(node,field);pendingInput={node,field};selectedEdge=null;updatePortState();draw()}
+function updatePortState(){const outputNode=source&&graph.nodes.find(node=>node.id===source.node),inputNode=pendingInput&&graph.nodes.find(node=>node.id===pendingInput.node);document.querySelectorAll('.pin').forEach(button=>{const node=graph.nodes.find(item=>item.id===button.dataset.blockId),isInput=button.hasAttribute('data-input'),field=button.dataset[isInput?'input':'output'];button.classList.toggle('compatible',!!(isInput&&outputNode&&compatible(outputNode,source.field,node,field)||!isInput&&inputNode&&compatible(node,field,inputNode,pendingInput.field)));button.classList.toggle('pending',!!(isInput&&pendingInput?.node===node.id&&pendingInput.field===field||!isInput&&source?.node===node.id&&source.field===field))});byId('wire-state').textContent=source?source.field+' -> ...':pendingInput?'... -> '+pendingInput.field:selectedEdge?selectedEdge.output+' -> '+selectedEdge.input:'';byId('cancel-wire').hidden=!source&&!pendingInput;byId('delete-wire').disabled=!selectedEdge;const collapsed=graph.nodes.length&&graph.nodes.every(node=>node.collapsed);byId('toggle-parameters').title=collapsed?'Expand all parameter lists':'Collapse all parameter lists';byId('toggle-parameters').setAttribute('aria-label',byId('toggle-parameters').title)}
+function connect(target,input){if(!source)return;const from=graph.nodes.find(node=>node.id===source.node),to=graph.nodes.find(node=>node.id===target);if(!from||!to||!compatible(from,source.field,to,input))return status('Incompatible ports; select a conversion block.',true);remember();graph.edges=graph.edges.filter(edge=>edge.target!==target||edge.input!==input);graph.edges.push({source:source.node,output:source.field,target,input});clearSelection();persist();renderGraph()}
+function removeSelectedEdge(){if(!selectedEdge)return;remember();graph.edges=graph.edges.filter(edge=>edge!==selectedEdge);clearSelection();persist();renderGraph()}
+function portElement(node,field,direction){return document.querySelector('[data-'+direction+'="'+CSS.escape(field)+'"][data-block-id="'+node+'"]')||document.querySelector('[data-compact-pin="'+direction+'"][data-block-id="'+node+'"]')}
+function draw(){
+	const canvas=byId('canvas'),origin=canvas.getBoundingClientRect();canvas.style.width=Math.max(1000,...graph.nodes.map(node=>node.x+320))+'px';canvas.style.height=Math.max(700,...graph.nodes.map(node=>node.y+(document.querySelector('[data-block="'+node.id+'"]')?.offsetHeight||200)+60))+'px';
+	const curve=(sourceX,sourceY,targetX,targetY)=>'M '+sourceX+' '+sourceY+' C '+(sourceX+80)+' '+sourceY+','+(targetX-80)+' '+targetY+','+targetX+' '+targetY;
+	byId('connections').innerHTML=graph.edges.map((edge,index)=>{const from=portElement(edge.source,edge.output,'output'),to=portElement(edge.target,edge.input,'input');if(!from||!to)return '';const sourceBounds=from.getBoundingClientRect(),targetBounds=to.getBoundingClientRect(),label=edge.source+'.'+edge.output+' to '+edge.target+'.'+edge.input;return '<path class="'+(edge===selectedEdge?'selected':'')+'" data-edge="'+index+'" tabindex="0" role="button" aria-label="'+esc(label)+'" d="'+curve(sourceBounds.left-origin.left+7,sourceBounds.top-origin.top+7,targetBounds.left-origin.left+7,targetBounds.top-origin.top+7)+'"><title>'+esc(label)+'</title></path>'}).join('');
+	if(wireGesture?.moved){const from=portElement(wireGesture.node,wireGesture.field,'output');if(from){const bounds=from.getBoundingClientRect();byId('connections').innerHTML+='<path class="ghost" d="'+curve(bounds.left-origin.left+7,bounds.top-origin.top+7,wireGesture.pointerX-origin.left,wireGesture.pointerY-origin.top)+'"/>'}}
+	document.querySelectorAll('[data-edge]').forEach(path=>{const select=()=>{clearSelection();selectedEdge=graph.edges[+path.dataset.edge];updatePortState();draw()};path.onclick=select;path.onkeydown=event=>{if(['Enter',' '].includes(event.key)){event.preventDefault();select()}}});
+}
+window.addEventListener('pointermove',event=>{if(!wireGesture)return;wireGesture.moved=wireGesture.moved||Math.hypot(event.clientX-wireGesture.x,event.clientY-wireGesture.y)>5;wireGesture.pointerX=event.clientX;wireGesture.pointerY=event.clientY;draw()});
+window.addEventListener('pointerup',event=>{if(!wireGesture)return;const dragged=wireGesture.moved;wireGesture=null;if(dragged){const input=document.elementFromPoint(event.clientX,event.clientY)?.closest('[data-input]');if(input)connect(input.dataset.blockId,input.dataset.input);draw()}});
+window.addEventListener('pointercancel',()=>{wireGesture=null;draw()});
+window.addEventListener('keydown',event=>{if(event.target.closest('input,select,textarea,[contenteditable]'))return;if(event.key==='Escape'){clearSelection();updatePortState();draw()}else if(event.key==='Delete'||event.key==='Backspace'){if(selectedEdge){event.preventDefault();removeSelectedEdge()}}});
+byId('cancel-wire').onclick=()=>{clearSelection();updatePortState();draw()};byId('delete-wire').onclick=removeSelectedEdge;byId('toggle-parameters').onclick=()=>{const collapse=!graph.nodes.every(node=>node.collapsed);graph.nodes.forEach(node=>node.collapsed=collapse);saveView();renderGraph()};
+byId('cancel-wire').innerHTML='<i class="codicon codicon-close" aria-hidden="true"></i>';byId('delete-wire').innerHTML='<i class="codicon codicon-debug-disconnect" aria-hidden="true"></i>';
+byId('undo').addEventListener('click',()=>{clearSelection();updatePortState();draw()});
+byId('palette').addEventListener('click',event=>{if(event.target.closest('[data-edit]')){saveView();clearSelection();updatePortState();draw()}});
+function renderQueue(){byId('queue').innerHTML=(queue.jobs||[]).slice(0,30).map(job=>'<tr><td>'+esc(job.action_id)+'</td><td title="'+esc(job.error||'')+'">'+esc(job.stage)+' / '+esc(job.state)+'</td><td>'+['Demand','Graph','ModuleSet','Idle'][job.priority]+'</td><td>'+(['queued','running'].includes(job.state)?'<button data-cancel="'+job.job_id+'">Cancel</button>':'')+'</td></tr>').join('');document.querySelectorAll('[data-cancel]').forEach(button=>button.onclick=()=>perform('cancel_validation',{job_id:button.dataset.cancel}))}
+async function renderChoices(runId){
+ const data=await request('choices',{run_id:runId});
+ for(const choice of data.requests){
+  if(seenChoices.has(choice.request_id))continue;
+  seenChoices.add(choice.request_id);chat.hidden=false;
+  const message=document.createElement('form');message.className='chat-message';
+  const options=document.createElement('fieldset');options.className='chat-options';
+  const prompt=document.createElement('legend');prompt.textContent=choice.prompt;options.append(prompt);
+  choice.options.forEach((option,index)=>{
+   const label=document.createElement('label'),input=document.createElement('input');
+   input.type='radio';input.name=choice.request_id;input.value=index;input.required=true;input.dataset.choice=choice.request_id;
+   label.append(input,document.createTextNode(option.label));options.append(label);
+  });
+  const submit=document.createElement('button');submit.type='submit';submit.textContent='Submit';submit.dataset.choice=choice.request_id;
+  const cancel=document.createElement('button');cancel.type='button';cancel.textContent='Cancel run';cancel.dataset.choice=choice.request_id;
+  const reply=document.createElement('div');reply.className='chat-answer';reply.setAttribute('role','status');
+  const lock=disabled=>message.querySelectorAll('input,button').forEach(item=>item.disabled=disabled);
+  message.onsubmit=async event=>{
+   event.preventDefault();const selected=options.querySelector('input:checked');if(!selected)return;
+   lock(true);
+   try{await request('answer_choice',{run_id:choice.run_id,request_id:choice.request_id,index:Number(selected.value)});reply.textContent=choice.options[Number(selected.value)].label;await refresh()}
+   catch(error){lock(false);status(error.message,true)}
+  };
+  cancel.onclick=async()=>{
+   lock(true);
+   try{await request('cancel_run',{run_id:runId});reply.textContent='Run cancellation requested';await refresh()}
+   catch(error){lock(false);status(error.message,true)}
+  };
+  message.append(options,submit,cancel,reply);byId('chat-messages').append(message);
+ }
+}
+async function refresh(){
+ if(refreshing)return;
+ refreshing=true;
+ try{
+  const data=await request('catalog');
+  actions=data.actions;groups=data.groups||[...new Set(['Actions','core',...actions.map(action=>action.category||'Actions')])];
+  if(pendingGraphProposal&&JSON.stringify(graph)===JSON.stringify(pendingGraphProposal.graph)){
+   const admitted=actions.find(item=>item.action_id===pendingGraphProposal.action_id&&item.content_hash===pendingGraphProposal.content_hash);
+   if(admitted){saved=admitted;graph.version=admitted.version;pendingGraphProposal=null;saveView();status('Approved v'+admitted.version+'; qualification is still required.')}
+  }
+  if(editorState?.proposal&&!editorState.dirty){
+   const admitted=actions.find(item=>item.action_id===editorState.action_id&&item.content_hash===editorState.proposal.content_hash);
+   if(admitted){editorState.content_hash=admitted.content_hash;editorState.definition={...editorState.proposal.definition,version:admitted.version+1};if(!editorState.filename)editorState.content=JSON.stringify(editorState.definition,null,2);delete editorState.proposal;showDefinitionEditor();saveView()}
+  }
+  moduleSets=data.module_sets;actionProposals=data.proposals||[];pendingAdmissions=data.pending_admissions||[];queue=data.queue;previewWorkspace=data.preview_workspace||'';
+  if(previewWorkspace){byId('workspace').disabled=true;byId('workspace').title=previewWorkspace}
+  const unseen=workbenchActions().filter(action=>action.pending_review&&!seenPendingActions.has(action.proposal_id||action.action_id));
+  for(const action of unseen)seenPendingActions.add(action.proposal_id||action.action_id);
+  if(unseen.length){catExpanded[JSON.stringify(['Actions'])]=true;setTreeCollapsed(false)}
+  renderPalette();renderSets();updateWorkbenchTasks();if(document.getElementById('action-library')?.open)libraryRows();
+  if(!byId('blocks').contains(document.activeElement)&&document.activeElement!==byId('name')&&!wireGesture)renderGraph();
+  renderQueue();updateValidationFeedback();updateRunControls();
+  const history=await request('runs');
+  byId('recent-runs').innerHTML='<option value="">Select a Run</option>'+(history.runs||[]).map(run=>'<option value="'+esc(run.run_id)+'">'+esc(run.action_id+' · '+(run.userState||run.state)+' · '+run.run_id)+'</option>').join('');
+  byId('recent-runs').value=lastRun||currentRun||'';
+  const selected=lastRun||currentRun;
+  if(selected){
+   if(currentRun)await request('safety_scan',{limit:8});
+   const result=await request('run',{run_id:selected});
+   const started=Date.parse(result.started_at),finished=result.completed_at?Date.parse(result.completed_at):Date.now();
+   byId('result').textContent=JSON.stringify({
+    run_id:result.run_id,state:result.userState||result.state,owner:result.nextOwner,reason:result.reasonCode,
+    current_step:result.current_step||result.execution?.phase,resume_condition:result.resumeCondition||result.execution?.resumeCondition,
+    elapsed_seconds:Number.isFinite(started)&&Number.isFinite(finished)?Math.max(0,Math.round((finished-started)/1000)):undefined,
+    started_at:result.started_at,completed_at:result.completed_at,definition_revision:result.content_hash,
+    permissions:result.execution?.contract?.requiredCapabilities,checkpoint:result.lastCheckpoint,
+    receipts:result.execution?.receipts,monitor:result.monitor,notification_sequence:result.event_sequence,output:result.output,error:result.error,gc_state:result.gc_state
+   },null,2);
+   if(['running','waiting'].includes(result.state))await renderChoices(selected);
+   await renderRunStatus(result);
+   const active=currentRun&&currentRun!==selected?await request('run',{run_id:currentRun}):result;
+   if(currentRun&&!['running','waiting','outcome_unknown'].includes(active.state)){
+    currentRun=null;cancellingRun=null;saveView();
+    document.querySelectorAll('[data-choice]').forEach(control=>control.disabled=true);
+   }
+   if(result.state==='outcome_unknown')status('Needs reconciliation: '+selected+'. Inspect the original Run; effects will not be replayed.',true);
+  }
+  updateRunControls();
+  if(byId('status').textContent==='Connecting')status('Loaded '+actions.length+' blocks');
+ }catch(error){status(error.message,true)}
+ finally{refreshing=false;if(refreshQueued){refreshQueued=false;queueMicrotask(refresh)}}
+}
+async function perform(method,params={}){try{const result=await request(method,params);if(refreshing)refreshQueued=true;else await refresh();return result}catch(error){status(error.message,true)}}
+byId('search').oninput=renderPalette;
+let findReturnFocus=null;
+function closeFind(){byId('action-find').hidden=true;byId('search').value='';renderPalette();findReturnFocus?.focus();findReturnFocus=null}
+byId('close-find').onclick=closeFind;
+window.addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='f'){event.preventDefault();setTreeCollapsed(false);if(byId('action-find').hidden)findReturnFocus=document.activeElement;byId('action-find').hidden=false;byId('search').focus();byId('search').select()}else if(event.key==='Escape'&&!byId('action-find').hidden){event.preventDefault();closeFind()}});
+function setTreeCollapsed(collapsed){document.querySelector('.layout').classList.toggle('tree-collapsed',collapsed);const button=byId('toggle-tree');button.setAttribute('aria-expanded',String(!collapsed));button.title=button.ariaLabel=collapsed?'Restore category tree':'Minimize category tree';button.firstElementChild.className='codicon codicon-chevron-'+(collapsed?'right':'left');saveView();requestAnimationFrame(draw)}
+byId('toggle-tree').onclick=()=>setTreeCollapsed(!document.querySelector('.layout').classList.contains('tree-collapsed'));
+setTreeCollapsed(initialView?.treeCollapsed!==false);
+byId('refresh').onclick=refresh;
+byId('workspace').onclick=async()=>{if(vscode)return perform('workspace');const data=await perform('catalog');if(data){hostWorkspace=data.workspace_root||'';byId('workspace-path').value=hostWorkspace;byId('workspace-dialog').showModal()}};
+byId('close-workspace').onclick=()=>byId('workspace-dialog').close();
+byId('workspace-form').onsubmit=async event=>{event.preventDefault();if(await perform('workspace',{root:byId('workspace-path').value}))byId('workspace-dialog').close()};
+byId('import').onclick=()=>vscode?perform('import'):byId('import-dialog').showModal();
+byId('close-import').onclick=()=>byId('import-dialog').close();
+byId('import-form').onsubmit=async event=>{event.preventDefault();if(await perform('import',{local_path:byId('import-path').value}))byId('import-dialog').close()};
+byId('resume').onclick=()=>perform('resume_validation');
+byId('undo').onclick=()=>{if(history.length){graph=history.pop();persist();renderGraph()}};
+byId('arrange').onclick=()=>{remember();let top=40;graph.nodes.forEach((node,index)=>{if(index&&index%3===0)top+=Math.max(...graph.nodes.slice(index-3,index).map(item=>document.querySelector('[data-block="'+item.id+'"]')?.offsetHeight||300))+40;node.x=40+(index%3)*340;node.y=top});persist();renderGraph()};
+byId('name').onchange=()=>{graph.name=byId('name').value;persist()};
+byId('output').onchange=()=>{graph.output_node=byId('output').value;persist()};
+byId('check').onclick=async()=>{const result=await perform('check_graph',{graph});if(result)status('Graph contract is valid')};
+byId('save').onclick=async()=>{const result=await perform('save_graph',{graph:{...graph,version:(actions.find(action=>action.action_id===graph.action_id)?.version||0)+1}});if(result){if(result.state==='pending_operator_approval'){pendingGraphProposal={...result,graph:structuredClone(graph)};saved=null;saveView();updateRunControls();status('Proposal submitted. Use Review / test Actions to run Agent review and validation before admission or invocation.');return}saved=result;graph.version=result.version;saveView();status('Saved v'+result.version)}};
+byId('validate').onclick=()=>saved?startActionValidation(saved,'graph'):status('Save and approve the current graph first.',true);
+byId('run').onclick=async()=>{if((!saved&&!pendingLaunch)||currentRun||startingRun)return;startingRun=true;updateRunControls();try{if(!pendingLaunch)pendingLaunch={action_id:saved.action_id,inputs:{},key:crypto.randomUUID(),content_hash:saved.content_hash};saveView();const result=await request('call',pendingLaunch);currentRun=lastRun=result.run_id;pendingLaunch=null;saveView();status((result.userState||result.state)+' '+currentRun);await refresh()}catch(error){status(error.message+' The original launch key is retained; retry reconciles the same submission.',true)}finally{startingRun=false;updateRunControls()}};
+byId('destination-label').hidden=!!vscode;
+byId('export').onclick=()=>{if(!selectedExports.size)return status('Select Actions to export.',true);if(!byId('package-path').value&&previewWorkspace)byId('package-path').value=previewWorkspace+'/'+byId('package-id').value+'.pkm-actions';byId('package-dialog').showModal()};
+byId('close-package').onclick=()=>byId('package-dialog').close();
+byId('package-form').onsubmit=async event=>{event.preventDefault();const params={module_set_id:byId('package-id').value,version:+byId('package-version').value,action_ids:[...selectedExports]};if(!vscode&&byId('package-path').value)params.destination=byId('package-path').value;const result=await perform('export',params);if(result)byId('package-dialog').close()};
+async function initialize(){
+ if(browserToken){
+  try{
+   const session=await request('session');
+   if(!initialView&&session.draft){
+    graph=session.draft.graph||graph;saved=session.draft.saved||null;currentRun=session.draft.currentRun||null;
+    pendingLaunch=session.draft.pendingLaunch||null;lastRun=session.draft.lastRun||null;editorState=session.draft.editorState||null;
+    privateLaunch=session.draft.privateLaunch||null;Object.assign(catExpanded,session.draft.catExpanded||{});
+    initialView??={};initialView.libraryDraft=session.draft.libraryDraft;initialView.nestedDraft=session.draft.nestedDraft;nestedDraft=session.draft.nestedDraft||null;
+    setTreeCollapsed(session.draft.treeCollapsed!==false);saveView();
+   }
+  }catch(error){return status(error.message,true)}
+ }
+ if(editorState)showDefinitionEditor();await refresh();
+ if(initialView?.targetAction){
+  const action=workbenchActions().find(item=>item.action_id===initialView.targetAction);
+  if(!action)return status('Action not found: '+initialView.targetAction,true);
+  if(action.pending_review)return openAdmissionReview(action.proposal_id?{proposal_id:action.proposal_id}:{action_id:action.action_id,content_hash:action.content_hash});
+  if(action.visibility==='private')return openPrivateAction(action);
+  if(!action.read_only&&action.editable!==false)await editAction(action);
+  else{editorState={action_id:action.action_id,name:(action.display_name||action.action_id)+' ('+action.action_id+')',language:action.language||'Contract',definition:action,files:[],filename:'',content:JSON.stringify(action,null,2),dirty:false,read_only:true};showDefinitionEditor();saveView()}
+ }
+}
+window.addEventListener('resize',draw);updateRunControls();document.addEventListener('DOMContentLoaded',()=>initialize(),{once:true});setInterval(()=>{if(refreshQueued&&!refreshing){refreshQueued=false;refresh()}else if(currentRun||(queue.jobs||[]).some(job=>['queued','running'].includes(job.state)))refresh()},2000);
+</script>
+<script>
+const libraryStyle=document.createElement('style');
+libraryStyle.textContent='#action-library{width:min(1100px,calc(100vw - 24px));max-height:calc(100dvh - 24px);box-sizing:border-box;overflow:auto}#action-library header,#library-results article,#library-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}#action-library h2,#library-results article strong{flex:1;min-width:100px;overflow-wrap:anywhere}#library-search{width:100%;box-sizing:border-box}#library-results article{border-bottom:1px solid var(--line);padding:10px 0}#library-results article small{flex-basis:100%;overflow-wrap:anywhere}#library-detail pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:280px;overflow:auto}#library-detail label{display:block;margin:8px 0}#library-detail input:not([type=checkbox]),#library-detail select,#library-detail textarea{box-sizing:border-box;width:100%;max-width:100%}#library-detail dl{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr);gap:8px}#library-detail dd{margin:0;overflow-wrap:anywhere}#library-error{color:var(--bad);white-space:pre-wrap}#library-runs button{max-width:100%;overflow-wrap:anywhere;white-space:normal;margin:4px}';
+document.head.append(libraryStyle);
+const library=document.createElement('dialog');library.id='action-library';
+library.innerHTML='<header><h2>Workbench: Review and test Actions</h2><button id="library-new">New composition</button><button id="library-close">Close review / test list</button></header><p>Proposals, code review and validation are managed here. Opening an item never runs or qualifies it. Browse admitted Actions separately in Action Library.</p><label>Search by name, identity, description or capability<input id="library-search" type="search"></label><p id="library-error" role="alert"></p><section id="library-results" aria-label="Available Actions"></section><section id="library-detail" aria-live="polite"></section><details><summary>Installed ModuleSets: installed is not enabled or qualified</summary><div id="library-packages"></div></details>';
+document.body.append(library);
+const taskSummary=document.createElement('p');taskSummary.id='library-next-step';
+const taskDetails=document.createElement('details');taskDetails.id='workbench-review-details';taskDetails.innerHTML='<summary>Advanced: browse definitions and review history</summary>';
+for(const child of [...library.children].slice(1))taskDetails.append(child);
+library.append(taskSummary,taskDetails);
+const showPending=document.createElement('button');showPending.id='show-validation-actions';showPending.textContent='Show Actions needing validation';
+showPending.onclick=()=>{library.close();showValidationActions()};
+taskSummary.after(showPending);
+const libraryButton=document.createElement('button');libraryButton.id='open-library';libraryButton.textContent='Review / test Actions';
+document.querySelector('header.top .toolbar').prepend(libraryButton);
+const admittedLibraryButton=document.createElement('button');admittedLibraryButton.id='open-action-library';admittedLibraryButton.textContent='Action Library';
+admittedLibraryButton.hidden=!vscode;
+admittedLibraryButton.onclick=()=>request('open_library').catch(error=>status(error.message,true));
+libraryButton.before(admittedLibraryButton);
+let librarySequence=0,librarySelection,librarySubmitting=false,actionProposals=[],pendingAdmissions=[];
+const seenPendingActions=new Set();
+function workbenchActions(){
+ const candidates=new Map(actions.map(action=>[action.action_id,action]));
+ for(const action of pendingAdmissions)candidates.set(action.action_id,{...action,category:'Actions',pending_review:true,read_only:true,availability:{state:'unverified'}});
+ for(const proposal of actionProposals){
+  const existing=candidates.get(proposal.action_id);
+  if(existing?.proposal_id&&existing.version>=proposal.definition.version)continue;
+  candidates.set(proposal.action_id,{...proposal.definition,action_id:proposal.action_id,content_hash:proposal.content_hash,proposal_id:proposal.proposal_id,category:'Actions',pending_review:true,read_only:true,editable:false,component:false,palette_hidden:false,availability:{state:'unverified'}});
+ }
+ return [...candidates.values()];
+}
+const workbenchTasks=document.createElement('section');workbenchTasks.id='workbench-tasks';workbenchTasks.setAttribute('role','status');
+byId('status').after(workbenchTasks);
+const batchValidateButton=document.createElement('button');batchValidateButton.id='validate-all-actions';batchValidateButton.textContent='Validate all needed';
+workbenchTasks.after(batchValidateButton);
+let batchValidating=false;
+function actionsNeedingValidation(){return workbenchActions().filter(action=>!action.component&&action.visibility!=='private'&&action.availability.state!=='ready')}
+function updateWorkbenchTasks(){
+ const count=actionsNeedingValidation().length;
+ workbenchTasks.textContent=count?count+' Actions need validation. Click a highlighted flask on the left to test the environment.':'No Actions need validation. Drag a ready Action from the left to compose.';
+ byId('library-next-step').textContent=workbenchTasks.textContent;
+ batchValidateButton.disabled=!count||batchValidating;
+}
+function showValidationActions(){
+ setTreeCollapsed(false);
+ for(const action of workbenchActions().filter(action=>!action.component&&action.availability.state!=='ready')){
+  const parts=(action.category||'Actions').split('/');
+  for(let index=1;index<=parts.length;index++)catExpanded[JSON.stringify(parts.slice(0,index))]=true;
+ }
+ byId('search').value='';saveView();renderPalette();
+ document.querySelector('[data-qualify].validation-needed')?.focus();
+}
+const proposalSection=document.createElement('section');proposalSection.id='library-proposals';proposalSection.setAttribute('aria-label','Pending operator review');byId('library-results').before(proposalSection);
+const reviewStyle=document.createElement('style');
+reviewStyle.textContent='.workspace.admission-reviewing>.graph-toolbar,.workspace.admission-reviewing>.viewport,.workspace.admission-reviewing>.definition-editor,.workspace.admission-reviewing>.bottom{display:none!important}#admission-review{flex:1;overflow:auto;padding:24px;min-width:0}#admission-review header{display:flex;gap:12px;align-items:center;flex-wrap:wrap}#admission-review h2{font-size:22px;flex:1}#admission-review h3{font-size:15px;margin:0 0 10px}#admission-review p,#admission-review code,#admission-review dd{overflow-wrap:anywhere;white-space:pre-wrap}#admission-review dl{display:grid;grid-template-columns:minmax(80px,1fr) minmax(0,3fr);gap:8px}#admission-review dd{margin:0}#admission-review pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto}.review-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:16px;margin:20px 0}.review-card{padding:18px;border:1px solid var(--line);border-radius:8px;background:var(--panel);min-width:0}.review-flow{display:flex;gap:12px;align-items:stretch;flex-wrap:wrap}.review-flow>.review-card{flex:1;min-width:0}.review-risk{border-left:4px solid var(--bad)}.review-actions{display:flex;flex-wrap:wrap;gap:10px;padding:16px 0}.review-actions button:first-child{border-color:var(--accent)}#admission-review li{overflow-wrap:anywhere;margin:6px 0}#admission-review-error{color:var(--bad);white-space:pre-wrap}@media(max-width:600px){#admission-review{padding:12px}.review-flow{flex-direction:column}}';
+document.head.append(reviewStyle);
+const reviewCanvas=document.createElement('section');reviewCanvas.id='admission-review';reviewCanvas.hidden=true;reviewCanvas.setAttribute('aria-label','Action approval canvas');
+document.querySelector('.workspace').append(reviewCanvas);
+let admissionSequence=0;
+const validationStyle=document.createElement('style');
+validationStyle.textContent='[data-qualify].validation-needed{border:2px solid var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 30%,transparent);background:var(--vscode-button-background,var(--panel))}.needs-validation-label{display:inline-block;color:var(--accent);font-weight:600;border:1px solid var(--accent);border-radius:3px;padding:1px 4px}#workbench-tasks{padding:8px 12px;border-bottom:1px solid var(--line)}#validation-dialog p{white-space:pre-wrap;overflow-wrap:anywhere}#validation-dialog .tools{justify-content:flex-end}#validation-feedback{padding:10px;border-bottom:1px solid var(--line);white-space:pre-wrap;overflow-wrap:anywhere}#validation-feedback[data-failed=true]{color:var(--bad)}';
+document.head.append(validationStyle);
+validationStyle.textContent+='@media(max-width:600px){.layout.review-open{grid-template-columns:0 6px minmax(0,1fr)}.layout.review-open>aside{visibility:hidden;overflow:hidden;padding:0}}';
+const validationDialog=document.createElement('dialog');validationDialog.id='validation-dialog';
+validationDialog.innerHTML='<h2 id="validation-title"></h2><p id="validation-message"></p><details id="validation-input-details" hidden><summary>Smoke test inputs</summary><pre id="validation-inputs"></pre></details><div class="tools"><button id="validation-dismiss">Cancel</button><button id="validation-accept"></button></div>';
+document.body.append(validationDialog);
+const validationChoiceDialog=document.createElement('dialog');validationChoiceDialog.id='validation-choice-dialog';
+validationChoiceDialog.setAttribute('aria-labelledby','validation-choice-title');
+validationChoiceDialog.innerHTML='<h2 id="validation-choice-title">Validation</h2><div class="tools"><button id="validation-choice-cancel">Cancel</button><button id="validation-choice-this">Validate this action</button><button id="validation-choice-all">Validate all possible actions</button></div>';
+document.body.append(validationChoiceDialog);
+let validationChoiceAction=null;
+function chooseActionValidation(action){
+ if(!action)return status('Select an Action to validate.',true);
+ if(batchValidating||validationDialog.open||validationChoiceDialog.open)return;
+ validationChoiceAction=structuredClone(action);
+ byId('validation-choice-all').disabled=!actionsNeedingValidation().length;
+ validationChoiceDialog.showModal();
+ byId('validation-choice-cancel').focus();
+}
+byId('validation-choice-cancel').onclick=()=>validationChoiceDialog.close();
+byId('validation-choice-this').onclick=()=>{
+ const action=validationChoiceAction;validationChoiceDialog.close();
+ if(action)startActionValidation(action);
+};
+byId('validation-choice-all').onclick=()=>{validationChoiceDialog.close();batchValidateButton.click()};
+validationChoiceDialog.addEventListener('close',()=>{validationChoiceAction=null});
+const validationFeedback=document.createElement('section');validationFeedback.id='validation-feedback';validationFeedback.hidden=true;validationFeedback.setAttribute('role','status');byId('status').after(validationFeedback);
+const batchProgress=document.createElement('section');batchProgress.id='batch-validation-progress';batchProgress.hidden=true;
+batchProgress.innerHTML='<progress id="batch-validation-bar" max="1" value="0" aria-label="Batch validation progress"></progress><span id="batch-validation-stage"></span><details id="batch-validation-details"><summary>Results</summary><ul id="batch-validation-results"></ul></details>';
+validationStyle.textContent+='#batch-validation-progress{padding:8px 12px}#batch-validation-results{max-height:240px;overflow:auto;padding-left:20px}#batch-validation-results pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0}';
+validationFeedback.after(batchProgress);
+const riskReview=document.createElement('section');riskReview.id='risk-review';riskReview.hidden=true;riskReview.setAttribute('role','alertdialog');riskReview.setAttribute('aria-labelledby','risk-review-title');
+validationStyle.textContent+='#risk-review{margin:10px 12px;border:1px solid var(--line);border-left:3px solid var(--vscode-editorWarning-foreground,#cca700);border-radius:6px;background:var(--panel);max-height:min(70vh,640px);display:flex;flex-direction:column}'
+ +'#risk-review>header{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line)}#risk-review>header .codicon{color:var(--vscode-editorWarning-foreground,#cca700)}#risk-review>header small{color:var(--muted);margin-left:auto}'
+ +'#risk-review-items{overflow:auto;padding:4px 12px}.risk-item{padding:10px 0;border-bottom:1px solid var(--line)}.risk-item:last-child{border-bottom:0}'
+ +'.risk-head{display:flex;align-items:center;flex-wrap:wrap;gap:6px}.risk-head strong{overflow-wrap:anywhere}.risk-head code{color:var(--muted);font-size:11px}'
+ +'.risk-chip{font-size:11px;padding:0 6px;border-radius:9px;border:1px solid var(--line);color:var(--muted)}.risk-chip[data-effect]:not([data-effect="pure"]){color:var(--vscode-editorWarning-foreground,#cca700);border-color:currentColor}'
+ +'.risk-summary{margin:6px 0}.risk-incomplete{color:var(--vscode-editorWarning-foreground,#cca700)}.risk-issues{margin:4px 0;padding-left:18px}.risk-issues li{margin:2px 0;overflow-wrap:anywhere}'
+ +'.risk-item details{margin-top:4px}.risk-item summary{cursor:pointer;color:var(--muted);font-size:12px}.risk-item pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0;padding:6px;background:var(--bg);border-radius:3px;font-size:12px}'
+ +'.risk-meta{color:var(--muted);font-size:11px}#risk-review>footer{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:10px 12px;border-top:1px solid var(--line)}#risk-review>footer small{color:var(--muted);margin-right:auto}'
+ +'#risk-review-run{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);border-color:transparent}#risk-review-run:hover{background:var(--vscode-button-hoverBackground,#1177bb)}';
+riskReview.innerHTML='<header><span class="codicon codicon-shield" aria-hidden="true"></span><strong id="risk-review-title"></strong><small id="risk-review-scope"></small></header><div id="risk-review-items"></div>'
+ +'<footer><small>Tests run with this host account\'s permissions. Passing tests do not certify safety.</small><button type="button" id="risk-review-cancel">Cancel</button><button type="button" id="risk-review-run"></button></footer>';
+batchProgress.before(riskReview);
+let riskReviewState=null;
+function riskReviewItem(item){
+ const article=document.createElement('article');article.className='risk-item';
+ const head=document.createElement('div');head.className='risk-head';
+ const icon=document.createElement('span');icon.className='codicon codicon-'+(item.incomplete?'warning risk-incomplete':item.issues.length?'info':'pass');icon.setAttribute('aria-hidden','true');
+ const name=document.createElement('strong');name.textContent=item.action_id;
+ const version=document.createElement('code');version.textContent=item.content_hash.slice(0,12);version.title=item.content_hash;
+ head.append(icon,name,version,...item.effects.map(effect=>{const chip=document.createElement('span');chip.className='risk-chip';chip.dataset.effect=effect;chip.textContent=effect;return chip}));
+ const summary=document.createElement('p');summary.className='risk-summary'+(item.incomplete?' risk-incomplete':'');summary.textContent=item.summary;
+ article.append(head,summary);
+ if(item.issues.length){
+  const list=document.createElement('ul');list.className='risk-issues';
+  const shown=item.issues.length>4?item.issues.slice(0,3):item.issues;
+  for(const issue of shown){const row=document.createElement('li');row.textContent=issue;list.append(row)}
+  article.append(list);
+  if(shown.length<item.issues.length){
+   const more=document.createElement('details'),label=document.createElement('summary'),rest=document.createElement('ul');rest.className='risk-issues';
+   label.textContent=(item.issues.length-shown.length)+' more';
+   for(const issue of item.issues.slice(shown.length)){const row=document.createElement('li');row.textContent=issue;rest.append(row)}
+   more.append(label,rest);article.append(more);
+  }
+ }
+ const examples=Array.isArray(item.examples)?item.examples:[];
+ if(examples.length){
+  const inputs=document.createElement('details'),inputsLabel=document.createElement('summary'),inputsBody=document.createElement('pre');
+  inputsLabel.textContent='Test inputs ('+examples.length+')';
+  inputsBody.textContent=JSON.stringify(examples.map(example=>example?.inputs??example),null,2);
+  inputs.append(inputsLabel,inputsBody);article.append(inputs);
+ }
+ const meta=document.createElement('div');meta.className='risk-meta';meta.textContent=item.model==='unavailable'?'No model assessed this Action':'Assessed by '+item.model;
+ article.append(meta);
+ return article;
+}
+function showRiskReview(confirmation,requestId){
+ riskReviewState={id:confirmation.id,requestId};
+ const count=confirmation.items.length;
+ byId('risk-review-title').textContent=count===1?'Run smoke tests for '+confirmation.items[0].action_id+'?':'Run smoke tests for '+count+' Actions?';
+ const incomplete=confirmation.items.filter(item=>item.incomplete).length;
+ byId('risk-review-scope').textContent=[incomplete?incomplete+' with incomplete risk information':'',confirmation.self_tests?confirmation.self_tests+' core self-test'+(confirmation.self_tests===1?'':'s')+' also run':''].filter(Boolean).join(' · ');
+ byId('risk-review-items').replaceChildren(...confirmation.items.map(riskReviewItem));
+ byId('risk-review-run').textContent=count===1?'Run tests':'Run all '+count;
+ riskReview.hidden=false;riskReview.scrollIntoView({block:'nearest'});byId('risk-review-run').focus();
+}
+function hideRiskReview(requestId){
+ if(!riskReviewState||(requestId!==undefined&&riskReviewState.requestId!==requestId))return;
+ riskReviewState=null;riskReview.hidden=true;byId('risk-review-items').replaceChildren();
+}
+async function decideRiskReview(run){
+ const state=riskReviewState;if(!state)return;
+ hideRiskReview();
+ try{await request('review_decision',{decision_id:state.id,run})}
+ catch(error){validationNotice(error.message||String(error),true)}
+}
+byId('risk-review-run').onclick=()=>decideRiskReview(true);
+byId('risk-review-cancel').onclick=()=>decideRiskReview(false);
+riskReview.addEventListener('keydown',event=>{if(event.key==='Escape')decideRiskReview(false)});
+window.pkmRiskReview={show:showRiskReview,hide:hideRiskReview};
+let batchProgressState=null;
+function updateBatchProgress(progress){
+ if(!batchValidating)return;
+ batchProgress.hidden=false;
+ batchProgressState={...progress,started:Date.now()};
+ byId('batch-validation-bar').max=progress.total;
+ byId('batch-validation-bar').value=progress.completed;
+ renderBatchStage();
+ if(progress.result)appendBatchResult(progress.result);
+}
+function appendBatchResult(result){
+ const row=document.createElement('li'),details=document.createElement('details'),summary=document.createElement('summary'),reason=document.createElement('pre');
+ summary.textContent=result.action_id+' · '+(result.state==='succeeded'?'Passed':'Failed');
+ reason.textContent=result.error||result.state;
+ details.append(summary,reason);row.append(details);byId('batch-validation-results').append(row);
+}
+function renderBatchStage(){
+ if(!batchProgressState)return;
+ const p=batchProgressState;
+ const stage=p.stage.startsWith('Agent ')?'Review':p.stage.startsWith('Smoke tests')?'Testing':p.stage.startsWith('Admitting')?'Admitting':p.stage;
+ byId('batch-validation-stage').textContent=' '+p.completed+'/'+p.total+(p.action_id?' · '+p.action_id:'')+' · '+stage+(batchValidating?' · '+Math.floor((Date.now()-p.started)/1000)+'s':'');
+}
+let validationTarget=null,validationJob=null;
+batchValidateButton.onclick=()=>{
+ if(batchValidating||validationDialog.open)return;
+ const items=actionsNeedingValidation().map(action=>structuredClone(action));if(!items.length)return;
+ validationTarget={items};
+ byId('validation-title').textContent='Validate all '+items.length+' Actions';
+ byId('validation-message').textContent='Core Actions run environment self-tests. Other Actions show Agent risk information for your confirmation before testing. Failures do not stop the others. Passing tests do not certify safety.\n\n'+items.map(action=>action.action_id+' · v'+action.version+'\nEffects: '+(action.effects||[]).join(', ')).join('\n\n')+'\n\nApprove only if the declared smoke tests are authorized. Expand Smoke test inputs to inspect the exact examples.';
+ showValidationInputs(items);
+ byId('validation-accept').textContent='Review and validate this batch';
+ validationDialog.showModal();
+};
+async function validateActionBatch(items){
+ batchValidating=true;updateWorkbenchTasks();validationFeedback.hidden=true;
+ byId('batch-validation-results').replaceChildren();
+ byId('batch-validation-details').open=false;
+ updateBatchProgress({total:items.length,completed:0,stage:'Choose review model'});
+ const heartbeat=setInterval(renderBatchStage,1000);
+ try{
+  const result=await request('validate_batch',{items:items.map(action=>({action_id:action.action_id,content_hash:action.content_hash,...(action.proposal_id?{proposal_id:action.proposal_id}:{})})),allow_effects:true});
+  if(result.cancelled){batchProgressState.stage='Cancelled';return}
+  const failed=result.results.filter(item=>item.state!=='succeeded');
+  byId('batch-validation-results').replaceChildren();result.results.forEach(appendBatchResult);
+  updateBatchProgress({total:items.length,completed:result.results.length,stage:(result.results.length-failed.length)+' passed · '+failed.length+' failed'});
+  await refresh();
+ }catch(error){if(batchProgressState)batchProgressState.stage='Interrupted; check results before retrying';appendBatchResult({action_id:'Batch',state:'failed',error:error.message||String(error)})}
+ finally{clearInterval(heartbeat);batchValidating=false;renderBatchStage();updateWorkbenchTasks()}
+}
+function validationNotice(message,failed=false){
+ validationFeedback.hidden=false;validationFeedback.textContent=message;validationFeedback.dataset.failed=String(failed);
+}
+function showValidationInputs(items){
+ byId('validation-input-details').hidden=false;byId('validation-input-details').open=false;
+ byId('validation-inputs').textContent=items.map(action=>action.action_id+'\n'+JSON.stringify((action.examples||[]).map(example=>example.inputs),null,2)).join('\n\n');
+}
+function focusValidation(action){
+ document.querySelectorAll('[data-qualify]').forEach(button=>{
+  const selected=button.dataset.qualify===action.action_id;button.classList.toggle('validation-needed',workbenchActions().some(item=>item.action_id===button.dataset.qualify&&item.availability.state!=='ready'));
+  if(selected){button.scrollIntoView({block:'nearest'});button.focus()}
+ });
+}
+function explainValidation(action){
+ focusValidation(action);
+ byId('validation-title').textContent='Validate before adding to canvas';
+ byId('validation-input-details').hidden=true;
+ byId('validation-message').textContent=action.action_id+' is '+action.availability.state+'.\nFirst click the highlighted flask button (Validate) beside this Action. After validation succeeds and the state becomes ready, you can drag it onto the canvas.\nThis prompt does not execute anything.';
+ byId('validation-accept').textContent='Show flask button';validationTarget={action,explain:true};
+ if(!validationDialog.open)validationDialog.showModal();
+}
+function startActionValidation(action,priority='demand'){
+ if(!action)return status('Select an Action to validate.',true);
+ if(validationDialog.open)return;
+ const effects=(action.effects||[]).some(effect=>effect!=='pure');
+ if(!effects)return enqueueActionValidation(action,priority,false);
+ validationTarget={action,priority,explain:false};
+ byId('validation-title').textContent='Validate Action: confirm real execution';
+ byId('validation-message').textContent=action.action_id+'\nCore Actions run environment self-tests. Other Actions show Agent risk information; you decide whether to run the tests.\nDeclared effects: '+action.effects.join(', ')+'\n\nTests use the host account. Passing tests do not certify safety. Expand Smoke test inputs to inspect the exact examples.';
+ showValidationInputs([action]);
+ byId('validation-accept').textContent='Validate these examples';
+ validationDialog.showModal();
+}
+byId('validation-dismiss').onclick=()=>validationDialog.close();
+validationDialog.addEventListener('close',()=>{const target=validationTarget;validationTarget=null;if(target?.explain)focusValidation(target.action)});
+byId('validation-accept').onclick=()=>{
+ const target=validationTarget;validationDialog.close();
+ if(!target)return;
+ if(target.items)validateActionBatch(target.items);
+ else if(target.explain)focusValidation(target.action);
+ else enqueueActionValidation(target.action,target.priority,true);
+};
+async function enqueueActionValidation(action,priority,allowEffects){
+ validationJob=null;validationNotice('Validating environment for '+action.action_id+'… Non-core Actions ask for risk confirmation before testing.');
+ try{
+  const result=await request('validate',{action_id:action.action_id,content_hash:action.content_hash,priority,allow_effects:allowEffects,...(action.proposal_id?{proposal_id:action.proposal_id}:{})});
+  if(result.cancelled){validationNotice('Validation cancelled. No smoke tests or admission were performed.');return}
+  if(result.state==='succeeded'){
+   validationNotice('Environment tests passed for '+action.action_id+'. This version is ready to use; this is not a safety certification.\n'+(result.report?.summary||''));
+   closeAdmissionReview();await refresh();return;
+  }
+  validationJob={job_id:result.job_id,action_id:action.action_id};
+  validationNotice('Validation submitted for '+action.action_id+'. Waiting for the validation worker.');
+  await refresh();
+ }catch(error){validationNotice('Validation could not start for '+action.action_id+': '+(error.message||String(error)),true)}
+}
+function updateValidationFeedback(){
+ if(!validationJob)return;
+ const job=(queue.jobs||[]).find(item=>item.job_id===validationJob.job_id);
+ if(!job)return;
+ const failed=['failed','blocked','cancelled','interrupted'].includes(job.state);
+ validationNotice(validationJob.action_id+': validation '+job.state+' ('+(job.stage||job.state)+').'+(job.error?'\n'+job.error:'')+(job.state==='succeeded'?'\nReady: you can now drag this Action onto the canvas.':''),failed);
+}
+function closeAdmissionReview(){
+ admissionSequence++;reviewCanvas.hidden=true;document.querySelector('.workspace').classList.remove('admission-reviewing');
+ document.querySelector('.layout').classList.remove('review-open');
+ byId('open-library').focus();
+}
+function reviewFields(schema){
+ const entries=Object.entries(schema?.properties||{});
+ return entries.length?'<dl>'+entries.map(([name,field])=>'<dt>'+esc(field.title||name)+'</dt><dd>'+esc(field.description||name)+' · '+esc(field.type||'value')+((schema.required||[]).includes(name)?' · required':' · optional')+(field.enum?' · choices: '+esc(field.enum.join(', ')):'')+'</dd>').join('')+'</dl>':'<p>'+esc(schema?.description||'No named fields declared; inspect the full schema in Advanced details.')+'</p>';
+}
+function reviewSteps(steps){
+ return '<ol>'+(steps||[]).map(step=>'<li><strong>'+esc(step.id||'Step')+'</strong> — '+esc(step.action_id||step.component||step.kind||'Operation')+(step.implementation?' ('+esc({javascript:'JavaScript',typescript:'TypeScript'}[step.implementation]||step.implementation)+')':'')+(step.steps?reviewSteps(step.steps):'')+'</li>').join('')+'</ol>';
+}
+function reviewCommand(command){
+ return '<dl><dt>Executable</dt><dd><code>'+esc(command.program||'Not specified')+'</code></dd><dt>Fixed arguments</dt><dd><code>'+esc((command.args||[]).join('\n')||'None')+'</code></dd></dl>';
+}
+async function openAdmissionReview(params,grant=true){
+ const sequence=++admissionSequence;
+ document.querySelector('.layout').classList.add('review-open');
+ library.close();reviewCanvas.hidden=false;document.querySelector('.workspace').classList.add('admission-reviewing');
+ reviewCanvas.innerHTML='<header><h2 tabindex="-1">Review Action</h2><button id="close-admission-review">Back to canvas</button></header><p role="status">Loading exact implementation for review. Nothing is being executed.</p>';
+ byId('close-admission-review').onclick=closeAdmissionReview;reviewCanvas.querySelector('h2').focus();
+ try{
+  const review=await request('inspect_admission',{...params,...(params.proposal_id&&!grant?{reject:true}:{})});
+  if(sequence!==admissionSequence)return;
+  const action=review.definition,implementation=review.implementation,previous=actions.find(item=>item.action_id===action.action_id);
+  const effects={pure:'Local computation; no external effects declared.',read:'Reads data.', 'remote-read':'Reads from a remote service using this host’s available access.',write:'Writes or changes data.', 'remote-write':'Changes data in a remote service.'};
+  const changeNames={description:'Purpose',input_schema:'Input fields',output_schema:'Output fields',effects:'Declared effects',implementations:'Execution program or steps',dependencies:'Pinned dependencies',examples:'Smoke tests'};
+  const changed=previous?Object.keys(changeNames).filter(key=>JSON.stringify(previous[key])!==JSON.stringify(action[key])):[];
+  const execution=!implementation?'<p>Rejecting this proposal does not execute or install its implementation.</p>':implementation.kind==='pipeline'
+   ?'<p>Composition: executes the following declared steps in order.</p>'+reviewSteps(implementation.steps)
+   :'<p>'+esc(implementation.kind==='mcp'?'MCP tool: '+implementation.tool:'Program: receives inputs as JSON and returns outputs as JSON.')+'</p>'+reviewCommand(implementation.server||implementation)+(implementation.build?'<h3>Build before execution</h3>'+reviewCommand(implementation.build)+'<p class="bad">Build commands also execute with host permissions.</p>':'');
+  reviewCanvas.innerHTML='<header><h2 tabindex="-1">'+esc(action.display_name||action.action_id)+'</h2><button id="close-admission-review">Back to canvas</button></header><p>'+esc(action.description||'No description supplied. Ask the author to explain the purpose before approval.')+'</p><p>'+esc(action.action_id)+' · version '+esc(action.version)+' · '+(params.proposal_id?'Pending proposal':'Existing definition awaiting authorization')+'</p>'
+   +'<div class="review-flow"><section class="review-card"><h3>1. Inputs</h3>'+reviewFields(action.input_schema)+'</section><section class="review-card"><h3>2. Execution</h3>'+execution+'</section><section class="review-card"><h3>3. Outputs</h3>'+reviewFields(action.output_schema)+'</section></div>'
+   +'<div class="review-grid"><section class="review-card review-risk"><h3>Access and risks</h3><ul>'+(action.effects||[]).map(effect=>'<li>'+esc(effects[effect]||effect)+'</li>').join('')+'</ul><p>Declared effects describe intent, not enforced restrictions. This is NOT a sandbox: programs, builds and MCP servers use the host account and its credentials.</p><p>Host: '+esc(review.host)+' · '+esc(review.platform)+'</p></section>'
+   +'<section class="review-card"><h3>Version and changes</h3><p>'+(previous?'Approved v'+esc(previous.version)+' → proposed v'+esc(action.version)+'. The old version stays usable until tests pass.':'No approved version is currently visible in this library.')+'</p><p>'+(changed.length?'Changed: '+esc(changed.map(key=>changeNames[key]).join(', ')):'No previous-version changes to compare.')+'</p>'+(previous&&changed.includes('effects')?'<p>Previous effects: '+esc(previous.effects.join(', '))+'<br>Proposed effects: '+esc(action.effects.join(', '))+'</p>':'')+'<p>Click Validate for Agent risk information and environment tests. You decide whether to run the tests; passing tests admit this version but do not certify safety.</p></section>'
+   +'<section class="review-card"><h3>Implementation files</h3><ul>'+Object.keys(review.files||{}).map(file=>'<li><code>'+esc(file)+'</code></li>').join('')+'</ul><p>Review source before approving. File fingerprints detect changes; they do not prove safety.</p></section>'
+   +'<section class="review-card"><h3>Dependencies and checks</h3><ul>'+Object.keys(action.dependencies||{}).map(id=>'<li>'+esc(id)+'</li>').join('')+'</ul><p>'+esc((action.examples||[]).length)+' declared smoke test(s). Approval does not run these tests.</p></section></div>'
+   +'<p id="admission-review-error" role="alert"></p><div class="review-actions"><button id="admission-confirm">'+(grant?'Validate: risks and environment tests':'Reject this proposal')+'</button><button id="admission-cancel">Cancel review</button></div><details><summary>Advanced details: exact revision, source fingerprints and full definition (JSON)</summary><pre>'+esc(JSON.stringify(review,null,2))+'</pre></details>';
+  byId('close-admission-review').onclick=closeAdmissionReview;byId('admission-cancel').onclick=closeAdmissionReview;reviewCanvas.querySelector('h2').focus();
+  byId('admission-confirm').onclick=async()=>{
+   if(grant)return startActionValidation({...action,...(params.proposal_id?{proposal_id:params.proposal_id}:{})});
+   const button=byId('admission-confirm');button.disabled=true;
+   try{
+    const result=await request(params.proposal_id?'review_proposal':'review_host_trust',{...params,grant,review_hash:review.review_hash});
+    if(sequence!==admissionSequence)return;
+    if(result.cancelled){byId('admission-review-error').textContent='Confirmation cancelled. No approval was saved.';return}
+    closeAdmissionReview();await refresh();status(grant?'Action approved. Qualification is still required; nothing was executed.':'Proposal rejected. The approved version is unchanged.');await openLibrary();if(!params.proposal_id)await inspectLibrary(params.action_id);
+   }catch(error){if(sequence===admissionSequence)byId('admission-review-error').textContent=error.message||String(error)}
+   finally{button.disabled=false}
+  };
+ }catch(error){
+  if(sequence!==admissionSequence)return;
+  const message=document.createElement('p');message.setAttribute('role','alert');message.textContent=error.message||String(error);reviewCanvas.append(message);
+ }
+}
+library.addEventListener('close',()=>{librarySequence++;librarySelection=undefined});
+function libraryError(error){byId('library-error').textContent=error.message||String(error)}
+function libraryDraft(value){initialView??={};initialView.libraryDraft=value;saveView()}
+function libraryRows(){
+ const query=byId('library-search').value.trim().toLowerCase();
+ byId('library-proposals').innerHTML='<h3>Pending operator review (not callable)</h3>'+actionProposals.filter(item=>JSON.stringify(item).toLowerCase().includes(query)).map(item=>'<article><strong>'+esc(item.definition.display_name||item.action_id)+' · proposed v'+esc(item.definition.version)+'</strong><p>'+esc(item.definition.description||'No description supplied')+'</p><button data-proposal="'+esc(item.proposal_id)+'" data-approve="true">Review in canvas</button><button data-proposal="'+esc(item.proposal_id)+'" data-approve="false">Reject proposal</button></article>').join('')+pendingAdmissions.filter(item=>JSON.stringify(item).toLowerCase().includes(query)).map(item=>'<article>'+esc(item.display_name||item.action_id)+' · existing/imported definition awaiting approval <button data-admission="'+esc(item.action_id)+'" data-hash="'+esc(item.content_hash)+'">Review in canvas</button></article>').join('');
+ byId('library-proposals').querySelectorAll('[data-proposal],[data-admission]').forEach(button=>button.onclick=async()=>{
+  button.disabled=true;
+  try{
+   await openAdmissionReview(button.dataset.proposal?{proposal_id:button.dataset.proposal}
+    :{action_id:button.dataset.admission,content_hash:button.dataset.hash},!button.dataset.proposal||button.dataset.approve==='true');
+  }catch(error){libraryError(error)}finally{button.disabled=false}
+ });
+ const rows=actions.filter(action=>!action.palette_hidden&&JSON.stringify([action.action_id,action.display_name,action.description,action.effects,action.execution_contract?.requiredCapabilities]).toLowerCase().includes(query));
+ byId('library-results').innerHTML=rows.map(action=>'<article><strong>'+esc(action.display_name||action.action_id)+'</strong><span>'+esc(action.availability.state)+'</span><button data-inspect-library="'+esc(action.action_id)+'">Inspect / Run</button><small>'+esc(action.action_id)+' · v'+esc(action.version||'system')+' · '+esc(action.description||action.availability.reason||'')+'</small></article>').join('')||'<p>No enabled Actions match. Disabled packages remain listed below.</p>';
+ byId('library-results').querySelectorAll('[data-inspect-library]').forEach(button=>button.onclick=()=>inspectLibrary(button.dataset.inspectLibrary));
+ byId('library-packages').innerHTML=moduleSets.map((item,index)=>'<p>'+esc(item.name)+' v'+esc(item.version)+' · installed · '+(item.enabled?'enabled':'disabled')+' <button data-library-package="'+index+'">'+(item.enabled?'Disable':'Enable')+' package</button></p>').join('')||'<p>No optional packages installed.</p>';
+ byId('library-packages').querySelectorAll('[data-library-package]').forEach(button=>button.onclick=async()=>{
+  const item=moduleSets[Number(button.dataset.libraryPackage)];button.disabled=true;
+  try{await request('load',{module_set_id:item.module_set_id,version:item.version,enabled:!item.enabled});await openLibrary()}catch(error){libraryError(error)}finally{button.disabled=false}
+ });
+}
+async function openLibrary(){
+ byId('library-error').textContent='';
+ if(!library.open)library.showModal();
+ try{const data=await request('catalog');actions=data.actions;moduleSets=data.module_sets;actionProposals=data.proposals||[];pendingAdmissions=data.pending_admissions||[];renderPalette();updateWorkbenchTasks();libraryRows();byId('show-validation-actions').focus()}catch(error){libraryError(error)}
+}
+libraryButton.onclick=openLibrary;
+byId('library-search').oninput=libraryRows;
+byId('library-close').onclick=()=>library.close();
+byId('library-new').onclick=()=>{
+ if(editorState?.dirty||(!saved&&graph.nodes.length))return libraryError(Error('Save or close the current draft before creating another composition.'));
+ closeDefinitionEditor();graph={action_id:'local.graph.'+crypto.randomUUID().replaceAll('-',''),name:'New composition',nodes:[],edges:[]};history=[];saved=null;clearSelection();persist();renderGraph();library.close();byId('name').focus();
+};
+function libraryInputs(action,values){
+ const panel=byId('library-fields');panel.replaceChildren();
+ for(const [field,schema]of Object.entries(action.input_schema?.properties||{})){
+  const required=(action.input_schema.required||[]).includes(field),label=document.createElement('label');
+  label.append(document.createTextNode((schema.title||field)+(required?' *':'')));
+  const complex=['object','array'].includes(schema.type)||!schema.type;
+  const input=document.createElement(schema.enum?'select':complex?'textarea':'input');
+  input.setAttribute('aria-label',schema.title||field);
+  if(schema.enum){input.add(new Option('Not specified',''));schema.enum.forEach((item,index)=>input.add(new Option(String(item),String(index))));input.value=field in values?String(schema.enum.findIndex(item=>JSON.stringify(item)===JSON.stringify(values[field]))):''}
+  else if(schema.type==='boolean'){input.type='checkbox';input.checked=values[field]===true}
+  else if(complex)input.value=field in values?JSON.stringify(values[field]):'';
+  else{input.type=['integer','number'].includes(schema.type)?'number':'text';input.value=values[field]??'';if(schema.minimum!==undefined)input.min=schema.minimum;if(schema.maximum!==undefined)input.max=schema.maximum;input.step=schema.type==='integer'?'1':'any'}
+  if(required&&schema.type!=='boolean')input.required=true;
+  if(schema.description)input.title=schema.description;
+  input.oninput=()=>{
+   byId('library-approve').checked=false;
+   try{
+    const next=JSON.parse(byId('library-input-json').value);
+    if(schema.enum){if(input.value==='')delete next[field];else next[field]=schema.enum[Number(input.value)]}
+    else if(schema.type==='boolean')next[field]=input.checked;
+    else if(input.value==='')delete next[field];
+    else next[field]=complex?JSON.parse(input.value):['integer','number'].includes(schema.type)?Number(input.value):input.value;
+    byId('library-input-json').value=JSON.stringify(next,null,2);libraryDraft({action_id:action.action_id,inputs:next});
+    byId('library-error').textContent='';
+   }catch(error){libraryError(error)}
+  };
+  label.append(input);panel.append(label);
+ }
+}
+async function inspectLibrary(id){
+ if(librarySubmitting)return libraryError(Error('Wait for the original submission to return before changing the inspected Action.'));
+ const sequence=++librarySequence;byId('library-error').textContent='';
+ try{
+  const result=await request('library_get',{action_id:id});
+  if(sequence!==librarySequence||!library.open)return;
+  const action=result.action;librarySelection=action;
+  const prior=initialView?.libraryDraft;
+  const values=pendingLaunch?.action_id===id?pendingLaunch.inputs:prior?.action_id===id?prior.inputs:
+   Object.fromEntries(Object.entries(action.input_schema?.properties||{}).filter(([,schema])=>'default'in schema).map(([key,schema])=>[key,schema.default]));
+  byId('library-detail').innerHTML='<h3>'+esc(action.display_name||id)+'</h3><dl>'+Object.entries({Identity:id,Version:action.version||'system',Revision:action.content_hash||'system',Installation:result.installation,Enabled:String(result.enabled),Grant:result.grant.state,Qualification:result.qualification.state,Readiness:action.availability.state,Reason:action.availability.reason||result.grant.reason||result.qualification.reason||'None',Environment:JSON.stringify(result.environment)}).map(([key,value])=>'<dt>'+esc(key)+'</dt><dd>'+esc(value)+'</dd>').join('')+'</dl><div id="library-tools"><button id="library-edit">Open definition / graph</button><button id="library-validate">Validate declared examples</button></div><details><summary>Definition, schemas, implementations and effects</summary><pre>'+esc(JSON.stringify(action,null,2))+'</pre></details><form id="library-run-form"><fieldset id="library-fields"><legend>Run inputs</legend></fieldset><details><summary>Advanced inputs JSON</summary><label>Run inputs JSON<textarea id="library-input-json" spellcheck="false"></textarea></label></details><label><input id="library-approve" type="checkbox" required> I approve this exact invocation and its declared effects.</label><button id="library-run">Run selected Action</button></form><section id="library-runs"><h4>Recent Runs of this Action</h4></section>';
+  byId('library-input-json').value=JSON.stringify(values,null,2);libraryInputs(action,values);
+  const implementations=(action.implementations||[]).filter(item=>item.id);
+  if(!action.component&&action.visibility!=='private'&&!action.action_id.startsWith('core.')){
+   const trust=document.createElement('button');trust.textContent=result.grant.state==='granted'?'Revoke host execution for this revision':'Review implementation before validation';
+   trust.onclick=async()=>{
+    if(result.grant.state!=='granted')return openAdmissionReview({action_id:id,content_hash:action.content_hash});
+    trust.disabled=true;
+    try{
+     const outcome=await request('review_host_trust',{action_id:id,content_hash:action.content_hash,grant:result.grant.state!=='granted'});
+     if(!outcome.cancelled){await refresh();libraryRows();await inspectLibrary(id)}
+    }catch(error){libraryError(error)}finally{trust.disabled=false}
+   };
+   byId('library-tools').append(trust);
+  }
+  if(implementations.length){
+   const select=document.createElement('select');select.setAttribute('aria-label','Execution implementation');
+   implementations.forEach(item=>select.add(new Option(item.id+' · '+item.kind+' · '+item.platforms.join('/'),item.id)));
+   select.value=result.environment.implementation_id||'';
+   const label=document.createElement('label');label.textContent='Execution implementation';label.append(select);
+   const apply=document.createElement('button');apply.textContent='Select implementation';
+   apply.onclick=async()=>{try{await request('select_implementation',{action_id:id,implementation_id:select.value});await inspectLibrary(id)}catch(error){libraryError(error)}};
+   byId('library-tools').append(label,apply);
+  }
+  byId('library-input-json').oninput=()=>{byId('library-approve').checked=false;try{const inputs=JSON.parse(byId('library-input-json').value);if(!inputs||typeof inputs!=='object'||Array.isArray(inputs))throw Error('Run inputs must be an object.');libraryInputs(action,inputs);libraryDraft({action_id:id,inputs});byId('library-error').textContent=''}catch(error){libraryError(error)}};
+  byId('library-edit').onclick=async()=>{
+   if(action.visibility==='private'){library.close();return openPrivateAction(action)}
+   if(action.read_only||action.editable===false){library.close();editorState={action_id:id,name:id,language:action.language||'Contract',definition:action,files:[],filename:'',content:JSON.stringify(action,null,2),dirty:false,read_only:true};showDefinitionEditor();saveView();return}
+   library.close();await editAction(action);
+  };
+  byId('library-validate').disabled=!!action.component||action.visibility==='private';
+  byId('library-validate').onclick=async()=>{
+   library.close();startActionValidation(action);
+  };
+  byId('library-run').disabled=action.availability.state!=='ready'||!!action.component||!!currentRun||librarySubmitting||!!pendingLaunch&&pendingLaunch.action_id!==id;
+  byId('library-run-form').onsubmit=async event=>{
+   event.preventDefault();if(librarySubmitting||currentRun||action.component||action.availability.state!=='ready')return;
+   librarySubmitting=true;byId('library-run').disabled=true;
+   try{
+    const inputs=JSON.parse(byId('library-input-json').value);
+    if(!inputs||typeof inputs!=='object'||Array.isArray(inputs))throw Error('Run inputs must be an object.');
+    if(!byId('library-approve').checked)throw Error('Approve this exact invocation first.');
+    if(action.visibility==='private'){library.close();return openPrivateAction(action)}
+    if(pendingLaunch&&(pendingLaunch.action_id!==id||JSON.stringify(pendingLaunch.inputs)!==JSON.stringify(inputs)))throw Error('The original submission is unresolved. Inspect it before changing inputs: '+pendingLaunch.key);
+    pendingLaunch??={action_id:id,content_hash:action.content_hash,inputs,key:crypto.randomUUID()};saveView();
+    const run=await request('call',pendingLaunch);
+    if(!/^action_run_[0-9a-f]{32}$/.test(run.run_id||''))throw Error('No durable Run identity returned; original launch key retained.');
+    currentRun=lastRun=run.run_id;pendingLaunch=null;saveView();library.close();await refresh();byId('run-history').scrollIntoView({block:'start'});
+   }catch(error){libraryError(Error(error.message+(pendingLaunch?' Original launch key retained: '+pendingLaunch.key:'')))}
+   finally{librarySubmitting=false;if(byId('library-run'))byId('library-run').disabled=action.availability.state!=='ready'||!!action.component||!!currentRun}
+  };
+  const runs=await request('runs');
+  if(sequence!==librarySequence||!library.open)return;
+  for(const run of (runs.runs||[]).filter(run=>run.action_id===id)){
+   const button=document.createElement('button');button.textContent=(run.userState||run.state)+' · '+run.run_id;
+   button.onclick=async()=>{lastRun=run.run_id;saveView();library.close();await refresh();byId('run-history').scrollIntoView({block:'start'})};
+   byId('library-runs').append(button);
+  }
+  byId('library-detail').scrollIntoView({block:'start'});
+ }catch(error){if(sequence===librarySequence)libraryError(error)}
+}
+</script>
+<script>
+const nestedStyle=document.createElement('style');
+nestedStyle.textContent='#nested-editor{width:min(1000px,calc(100vw - 24px));max-height:calc(100dvh - 24px);box-sizing:border-box;overflow:auto}#nested-editor header,#nested-route,#nested-editor .nested-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap}#nested-editor h2{flex:1;min-width:0;overflow-wrap:anywhere}#nested-editor input,#nested-editor select,#nested-editor textarea{box-sizing:border-box;max-width:100%}#nested-editor textarea{width:100%}#nested-editor article{padding:12px;border:1px solid var(--line);border-radius:8px;margin:10px 0;overflow-wrap:anywhere}#nested-editor article+article:before{content:"↓";display:block;color:var(--accent)}#nested-editor label{display:block;margin:8px 0}#nested-editor [data-step-id]{width:100%}#nested-editor [role=alert]{color:var(--bad);white-space:pre-wrap}#nested-json{min-height:200px}';
+nestedStyle.textContent+='#nested-editor h2{flex:1 1 220px}#nested-success{color:var(--good);white-space:pre-wrap}';
+document.head.append(nestedStyle);
+const nestedDialog=document.createElement('dialog');nestedDialog.id='nested-editor';
+nestedDialog.innerHTML='<header><h2>Nested Action editor</h2><button id="nested-close">Close draft</button></header><p>Ordered nodes use the existing pipeline executor. References such as {"$step":"node.value"} and {"$var":"item"} stay exact JSON; opening or editing never executes a node.</p><nav id="nested-route" aria-label="Nested graph ancestors"></nav><p id="nested-error" role="alert"></p><p id="nested-success" role="status"></p><div class="nested-tools"><label>Component or ready Action<select id="nested-kind"></select></label><button id="nested-add">Add node</button><button id="nested-undo">Undo nested edit</button><button id="nested-check">Check whole draft</button><button id="nested-apply">Apply to composition</button></div><section id="nested-nodes" aria-label="Ordered nested graph"></section><details><summary>Exact subgraph JSON</summary><label>Subgraph JSON<textarea id="nested-json" spellcheck="false"></textarea></label><button id="nested-use-json">Use JSON in draft</button></details>';
+document.body.append(nestedDialog);
+let nestedDraft=initialView?.nestedDraft||null,nestedUndo=[],nestedReturnFocus;
+const bodyFields=['then_steps','else_steps','default_steps','body','cases'];
+function nestedAt(path=nestedDraft.path){return path.reduce((value,key)=>value[key],nestedDraft.value)}
+function persistNested(){initialView??={};initialView.nestedDraft=structuredClone(nestedDraft);saveView();if(document.getElementById('resume-nested'))byId('resume-nested').hidden=!nestedDraft}
+function nestedError(error){byId('nested-success').textContent='';byId('nested-error').textContent=(nestedDraft?`${nestedDraft.nodeId}.${nestedDraft.field}/${nestedDraft.path.join('/')}: `:'')+(error.message||String(error))}
+function invalidNested(key,value,error){nestedDraft.invalid??={};nestedDraft.invalid[key]=value;persistNested();nestedError(error)}
+function editNested(change,repair=false){
+ if(!repair&&nestedDraft.rawJson)return nestedError(Error('Use the pending Exact subgraph JSON or Undo before editing nodes.'));
+ if(!repair&&Object.keys(nestedDraft.invalid||{}).length)return nestedError(Error('Correct invalid fields or Undo before changing the graph structure.'));
+ nestedUndo.push(structuredClone(nestedDraft));if(nestedUndo.length>50)nestedUndo.shift();
+ change();persistNested();renderNested();
+}
+function openNestedEditor(nodeId,field){
+ const node=graph.nodes.find(item=>item.id===nodeId);
+ if(!node||!bodyFields.includes(field))return status('The selected nested field is unavailable.',true);
+ if(nestedDraft&&(nestedDraft.nodeId!==nodeId||nestedDraft.field!==field))return status('Apply the existing nested draft before editing another field, or discard it explicitly.',true);
+ const value=node.parameters[field]??[];
+ if(!Array.isArray(value))return status('Correct this field to a JSON array before opening its subgraph.',true);
+ nestedReturnFocus=document.activeElement;
+ nestedDraft??={nodeId,field,value:structuredClone(value),original:JSON.stringify(value),path:[]};
+ persistNested();renderNested();if(!nestedDialog.open)nestedDialog.showModal();
+}
+function renderNested(){
+ const list=nestedAt(),cases=nestedDraft.path.at(-1)==='cases'||!nestedDraft.path.length&&nestedDraft.field==='cases';
+ byId('nested-error').textContent='';
+ byId('nested-success').textContent='';
+ byId('nested-route').replaceChildren();
+ for(let depth=0;depth<=nestedDraft.path.length;depth++){
+  if(!Array.isArray(nestedAt(nestedDraft.path.slice(0,depth))))continue;
+  const button=document.createElement('button');button.textContent=depth?nestedDraft.path.slice(0,depth).join(' / '):nestedDraft.nodeId+' / '+nestedDraft.field;
+  button.onclick=()=>{if(nestedDraft.rawJson)return nestedError(Error('Use the pending Exact subgraph JSON or Undo before navigating.'));nestedDraft.path=nestedDraft.path.slice(0,depth);persistNested();renderNested()};
+  byId('nested-route').append(button);
+ }
+ byId('nested-kind').hidden=cases;
+ byId('nested-kind').innerHTML=actions.filter(action=>!action.palette_hidden&&!action.direct_only&&action.availability.state==='ready').map(action=>'<option value="'+esc(action.action_id)+'">'+esc(action.display_name||action.action_id)+'</option>').join('');
+ byId('nested-add').textContent=cases?'Add case':'Add node';
+ byId('nested-undo').disabled=!nestedUndo.length;
+ byId('nested-json').value=nestedDraft.rawJson?.text??JSON.stringify(list,null,2);
+ if(nestedDraft.rawJson)byId('nested-json').closest('details').open=true;
+ byId('nested-nodes').replaceChildren();
+ if(!list.length)byId('nested-nodes').textContent='Empty subgraph: no internal nodes will execute.';
+ list.forEach((step,index)=>{
+  const article=document.createElement('article');article.dataset.nestedIndex=index;
+  const action=actions.find(action=>action.action_id===(step.component||step.action_id));
+  article.innerHTML='<h3>'+esc(cases?'Case '+(index+1):(step.component||step.action_id||'Unknown node'))+'</h3><div class="nested-tools"><button data-nested-up '+(index?'':'disabled')+'>Move up</button><button data-nested-down '+(index<list.length-1?'':'disabled')+'>Move down</button><button data-nested-delete>Delete node</button></div>';
+  if(!cases){
+   const label=document.createElement('label');label.textContent='Stable step ID';
+   const input=document.createElement('input');input.value=step.id||'';input.dataset.stepId='';input.setAttribute('aria-label','Step ID '+(index+1));
+   const key=JSON.stringify([...nestedDraft.path,index,'id']);input.value=nestedDraft.invalid?.[key]??input.value;
+   input.onchange=()=>{if(!/^[a-z][a-z0-9_-]{0,63}$/.test(input.value)||list.some((item,i)=>i!==index&&item.id===input.value)){invalidNested(key,input.value,Error('Use a unique step ID: '+input.value));return}editNested(()=>{delete nestedDraft.invalid?.[key];step.id=input.value},true)};
+   label.append(input);article.append(label);
+  }
+  const inputs=cases?step:step.inputs;
+  if(!inputs||typeof inputs!=='object'||Array.isArray(inputs)){article.append(document.createTextNode('Invalid inputs object; correct Exact subgraph JSON.'));byId('nested-nodes').append(article);return}
+  const schemas=cases?{match:{},value:{},steps:{type:'array'}}:action?.input_schema?.properties||{};
+  const keys=new Set([...Object.keys(inputs),...Object.keys(schemas).filter(key=>bodyFields.includes(key))]);
+  for(const field of keys){
+   const isBody=(cases&&field==='steps')||bodyFields.includes(field);
+   if(isBody){
+    const button=document.createElement('button');button.textContent='Open '+field+' subgraph';button.dataset.nestedField=field;
+    button.onclick=()=>{if(nestedDraft.rawJson)return nestedError(Error('Use the pending Exact subgraph JSON or Undo before navigating.'));if(inputs[field]!==undefined&&!Array.isArray(inputs[field]))return nestedError(Error(field+' must be an array.'));if(inputs[field]===undefined){nestedUndo.push(structuredClone(nestedDraft));inputs[field]=[]}nestedDraft.path=[...nestedDraft.path,index,...(cases?[]:['inputs']),field];persistNested();renderNested()};
+    article.append(button);
+   }else{
+    const label=document.createElement('label');label.textContent=field+' (JSON literal or expression)';
+    const input=document.createElement('textarea'),key=JSON.stringify([...nestedDraft.path,index,field]);input.value=nestedDraft.invalid?.[key]??JSON.stringify(inputs[field],null,2);input.setAttribute('aria-label',field+' for nested '+(step.id||index));
+    input.onchange=()=>{try{const value=JSON.parse(input.value);editNested(()=>{delete nestedDraft.invalid?.[key];inputs[field]=value},true)}catch(error){invalidNested(key,input.value,error)}};
+    label.append(input);article.append(label);
+   }
+  }
+  article.querySelector('[data-nested-up]').onclick=()=>editNested(()=>{[list[index-1],list[index]]=[list[index],list[index-1]]});
+  article.querySelector('[data-nested-down]').onclick=()=>editNested(()=>{[list[index+1],list[index]]=[list[index],list[index+1]]});
+  article.querySelector('[data-nested-delete]').onclick=()=>editNested(()=>list.splice(index,1));
+  byId('nested-nodes').append(article);
+ });
+ if(nestedDraft.rawJson)byId('nested-nodes').querySelectorAll('input,textarea').forEach(input=>input.disabled=true);
+}
+byId('nested-add').onclick=()=>{
+ const list=nestedAt(),cases=nestedDraft.path.at(-1)==='cases'||!nestedDraft.path.length&&nestedDraft.field==='cases';
+ if(list.length>=100)return nestedError(Error('A subgraph supports at most 100 nodes.'));
+ if(cases)return editNested(()=>list.push({match:null,steps:[],value:null}));
+ const action=actions.find(action=>action.action_id===byId('nested-kind').value);
+ if(!action)return nestedError(Error('Select an available component or qualified Action.'));
+ const inputs=Object.fromEntries((action.input_schema.required||[]).map(field=>[field,initialValue(action.input_schema.properties[field])]));
+ if(action.action_id==='core.if-else'||action.action_id==='core.while')inputs.condition=false;
+ const node={id:'step_'+crypto.randomUUID().replaceAll('-','').slice(0,12),[action.component?'component':'action_id']:action.action_id,inputs,...(action.component?{}:{content_hash:action.content_hash})};
+ editNested(()=>list.push(node));
+};
+byId('nested-undo').onclick=()=>{if(nestedUndo.length){nestedDraft=nestedUndo.pop();persistNested();renderNested()}};
+byId('nested-json').oninput=()=>{
+ if(!nestedDraft.rawJson){nestedUndo.push(structuredClone(nestedDraft));if(nestedUndo.length>50)nestedUndo.shift()}
+ nestedDraft.rawJson={text:byId('nested-json').value};persistNested();
+ byId('nested-nodes').querySelectorAll('input,textarea').forEach(input=>input.disabled=true);
+};
+byId('nested-use-json').onclick=()=>{
+ try{
+  const value=JSON.parse(byId('nested-json').value);
+  if(!Array.isArray(value)||value.length>100||value.some(item=>!item||typeof item!=='object'||Array.isArray(item)))throw Error('Use an array of at most 100 node/case objects.');
+  editNested(()=>{
+   for(const key of Object.keys(nestedDraft.invalid||{})){const location=JSON.parse(key);if(nestedDraft.path.every((part,index)=>location[index]===part))delete nestedDraft.invalid[key]}
+   delete nestedDraft.rawJson;
+   if(!nestedDraft.path.length)nestedDraft.value=value;else{const parent=nestedAt(nestedDraft.path.slice(0,-1));parent[nestedDraft.path.at(-1)]=value}
+  },true);
+ }catch(error){nestedError(error)}
+};
+function nestedCandidate(){
+ if(nestedDraft.rawJson)throw Error('Use the pending Exact subgraph JSON or Undo before checking or applying.');
+ if(Object.keys(nestedDraft.invalid||{}).length)throw Error('Correct invalid draft fields before checking or applying: '+Object.keys(nestedDraft.invalid).join(', '));
+ const candidate=structuredClone(graph),node=candidate.nodes.find(item=>item.id===nestedDraft.nodeId);
+ if(!node)throw Error('The parent block was removed. The nested draft is retained.');
+ if(JSON.stringify(node.parameters[nestedDraft.field]??[])!==nestedDraft.original)throw Error('The parent field changed since this draft opened. Original and draft are retained; do not overwrite a newer edit.');
+ node.parameters[nestedDraft.field]=structuredClone(nestedDraft.value);return candidate;
+}
+byId('nested-check').onclick=async()=>{try{await request('check_graph',{graph:nestedCandidate()});byId('nested-error').textContent='';byId('nested-success').textContent='Whole draft contract is valid; nothing was saved or executed.'}catch(error){nestedError(error)}};
+byId('nested-apply').onclick=()=>{
+ try{
+  const candidate=nestedCandidate();remember();graph=candidate;persist();
+  nestedDraft=null;nestedUndo=[];persistNested();nestedDialog.close();renderGraph();status('Nested draft applied. Check, save and qualify explicitly before running.');
+ }catch(error){nestedError(error)}
+};
+byId('nested-close').onclick=()=>{persistNested();nestedDialog.close();nestedReturnFocus?.focus()};
+nestedDialog.addEventListener('cancel',persistNested);
+const discardNested=document.createElement('button');discardNested.id='nested-discard';discardNested.textContent='Discard nested draft';
+discardNested.onclick=()=>{if(confirm('Discard this unsaved nested draft?')){nestedDraft=null;nestedUndo=[];persistNested();nestedDialog.close()}};
+byId('nested-close').before(discardNested);
+const resumeNested=document.createElement('button');resumeNested.id='resume-nested';resumeNested.textContent='Resume nested draft';resumeNested.hidden=!nestedDraft;
+resumeNested.onclick=()=>{renderNested();nestedDialog.showModal()};document.querySelector('header.top .toolbar').append(resumeNested);
+</script></body></html>

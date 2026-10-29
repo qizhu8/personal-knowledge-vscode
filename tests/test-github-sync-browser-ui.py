@@ -63,6 +63,49 @@ with sync_playwright() as playwright:
         "status": "scheduled", "phase": "scheduled", "lastAttemptAt": new_attempt,
         "activityAt": "2026-09-30T21:00:04Z"}})
     assert "Git lock" not in card.locator('.github-sync-phase-current').inner_text()
+    # Report-specific historical 244 + 101 fixture. Candidates are not approvals;
+    # 171 Remote-only members must never be described as two-sided edits.
+    members = []
+    for index in range(122):
+        identity = f"Missing-{index}"
+        common = {"type": "scripts", "itemId": identity, "hasLocal": False,
+                  "hasRemote": True, "reason": "unrecorded-local-absence"}
+        members.append({**common, "path": f"scripts/Review/{identity}.script",
+                        "hasBase": True, "candidateSource": "unresolved"})
+        members.append({**common, "path": f"scripts/Review/{identity}.metadata.json",
+                        "member": "metadata", "hasBase": False, "candidateSource": "remote"})
+    for index in range(101):
+        members.append({
+            "path": f"notes/Review/Pending-{index}.md", "type": "notes", "itemId": f"Pending-{index}",
+            "hasBase": index < 7 or index >= 56, "hasLocal": index < 7 or index >= 56,
+            "hasRemote": index >= 7, "reason": "pending-apply",
+            "candidateSource": "unresolved" if index < 7 else "remote" if index < 79 else "local",
+        })
+    record = {"id": "synthetic-windows-review", "files": members,
+              "resolutionReport": {"totalFiles": 1633, "assessedEntities": 904,
+                                   "pendingApplyMembers": 101, "generatedAt": "2026-10-14T02:00:00Z",
+                                   "rules": {"human-required": 244}}}
+    send(page, "githubSyncState", {
+        "conflicts": {"demo-github": record},
+        "runtime": {"demo-github": {"status": "conflicts", "phase": "resolve-conflicts",
+                                  "lastAttemptAt": "2026-10-14T02:00:00Z"}}})
+    for width in [1440, 390]:
+        page.set_viewport_size({"width": width, "height": 1000})
+        panel = card.locator(".github-sync-conflict-actions")
+        text = panel.inner_text()
+        assert "345 workspace members · 129 choice required · 216 candidates awaiting approval" in text
+        assert "122 missing entities requiring intent review" in text
+        assert "101 pending apply" in text
+        assert "changed on both sides" not in text
+        assert "1734" not in text
+        assert panel.locator(".github-sync-entity-review").count() == 122
+        assert panel.get_by_role("button", name="Apply resolutions & Sync", exact=True).is_disabled()
+        print(f"{width}px: Windows report counts and 122 entity intent groups passed")
+    record["appliedAt"] = "2026-10-14T02:01:00Z"
+    record["applyState"] = "sync-pending"
+    send(page, "githubSyncState", {"conflicts": {"demo-github": record}})
+    assert "not confirmation of a successful push" in card.locator(".github-sync-conflict-actions").inner_text()
+    send(page, "githubSyncState", {"conflicts": {}})
     page.evaluate("ask = () => {}")
     page.locator('[data-workspace="knowledge"]').click()
     page.locator('.tab[data-tab="notes"]').click()

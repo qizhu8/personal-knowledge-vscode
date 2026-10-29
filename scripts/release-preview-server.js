@@ -4,10 +4,11 @@ const fs = require("fs");
 const path = require("path");
 
 const root = path.join(__dirname, "..");
+const { version: releaseVersion } = require("../package.json");
 const webview = path.join(root, "dist", "webview");
 const port = Number(process.env.PORT || 4178);
 const { initializeProjectModel } = require(path.join(root, "dist", "workflows", "project-model.js"));
-const { FEATURE_TOUR_MODULES } = require(path.join(root, "dist", "onboarding-experience.js"));
+const { FEATURE_TOUR_MODULES } = require(path.join(root, "dist", "ui/onboarding-experience.js"));
 const configurableTestingRecipe = initializeProjectModel(undefined, () => "release-preview")
   .recipes.find(recipe => recipe.name === "Configurable Validation and Testing");
 const { systemKind: _configurableSystemKind, ...editableConfigurableTestingRecipe } = configurableTestingRecipe;
@@ -15,6 +16,7 @@ editableConfigurableTestingRecipe.recipeId = "recipe_demo_configurable_testing";
 editableConfigurableTestingRecipe.name = "Configurable Validation and Testing (Editable Demo)";
 
 const demoMcp = {
+  extensionVersion: releaseVersion,
   installed: true,
   current: true,
   installedVersion: "2.13.4",
@@ -29,6 +31,7 @@ const demoMcp = {
   installedAgentSessionVersion: "1.7.2",
   serverPath: "/home/demo/pkm/mcp-server/server.py",
   nativeMcpProvider: true,
+  accountBinding: { registrationOwner: "native-provider" },
   mcpProcess: { running: true, pid: "24501", available: true, detail: "Generated server process detected." },
   store: { path: "/home/demo/pkm", configured: true, valid: true },
   paths: {
@@ -41,18 +44,6 @@ const demoMcp = {
   mcpPython: { path: "/usr/bin/python3", version: "3.12.3", valid: true, source: "PATH", error: "" },
   mcpRuntime: { path: "/home/demo/pkm-envs/pkm-mcp", python: "/home/demo/pkm-envs/pkm-mcp/bin/python", exists: true, healthy: true, registered: true, version: "3.12.3", error: "" },
   combinedRegistry: '{\n  "servers": {\n    "pkm": { "type": "stdio", "command": "/home/demo/pkm-envs/pkm-mcp/bin/python", "args": ["/home/demo/pkm/mcp-server/server.py"] }\n  }\n}',
-  agencyInstallInstruction: "Register the demo unified local stdio MCP server named pkm.\nUse /home/demo/pkm-envs/pkm-mcp/bin/python and /home/demo/pkm/mcp-server/server.py.",
-  pkmSkill: {
-    routerVersion: "1.1.6",
-    minimumMcpSchema: "2.8.0",
-    sourcePath: "/home/demo/pkm/skills/System/PKM/PKM Skills.md",
-    sourceExists: true,
-    targets: [
-      { id: "copilot", kind: "copilot", label: "GitHub Copilot", skillPath: "/home/demo/.copilot/skills/pkm-skills/SKILL.md", state: "current", installedVersion: "1.1.6", expectedVersion: "1.1.6", managed: true, detail: "Injected Skill is current." },
-      { id: "agents", kind: "agents", label: "Agent Skills", skillPath: "/home/demo/.agents/skills/pkm-skills/SKILL.md", state: "current", installedVersion: "1.1.6", expectedVersion: "1.1.6", managed: true, detail: "Injected Skill is current." },
-    ],
-  },
-  skillProposals: [],
 };
 
 const demoChat = {
@@ -71,7 +62,7 @@ const demoChat = {
       { user: "Build Monitor", participantId: "demo-build", present: false, kind: "agent", runtimeState: "idle" },
     ],
     messages: [
-      { id: "d1", from: "Release Host", kind: "human", ts: 1787010000000, text: '@"Docs Reviewer" @"QA Agent" Please review the 3.1.0 release notes and regression matrix.', recipients: ["Docs Reviewer", "QA Agent"], replyPolicy: "required", mode: "ask", receipt: { read: 2, total: 2 } },
+      { id: "d1", from: "Release Host", kind: "human", ts: 1787010000000, text: `@"Docs Reviewer" @"QA Agent" Please review the ${releaseVersion} release notes and regression matrix.`, recipients: ["Docs Reviewer", "QA Agent"], replyPolicy: "required", mode: "ask", receipt: { read: 2, total: 2 } },
       { id: "d2", from: "Docs Reviewer", kind: "agent", ts: 1787010060000, text: "Documentation review is complete. The setup guide now separates server, schema, and Skill Router versions.", recipients: ["Release Host"], replyPolicy: "none" },
       { id: "d3", from: "QA Agent", kind: "agent", ts: 1787010120000, text: "Search navigation, quoted mentions, offline roster routing, and standby wake tests are passing.", recipients: ["Release Host"], replyPolicy: "none" },
       { id: "d4", from: "Release Host", kind: "human", ts: 1787010180000, text: '@all Final check: verify the package and publish workflow.', recipients: ["all"], replyPolicy: "required", mode: "announce", receipt: { read: 2, total: 2 } },
@@ -326,8 +317,10 @@ function bootstrap(view) {
     postMessage: message => setTimeout(() => {
       window.__previewMessages.push(message);
       const send = (command, data) => window.dispatchEvent(new MessageEvent('message', { data: { command, data } }));
-      if (message.command === 'ready') {
-        send('tourCatalog', { version:'3.2.0', modules:${JSON.stringify(FEATURE_TOUR_MODULES)} });
+      if (message.command === 'hostHealth') {
+        window.dispatchEvent(new MessageEvent('message', { data: { command: 'hostHealth', id: message.id } }));
+      } else if (message.command === 'ready') {
+        send('tourCatalog', { version:${JSON.stringify(releaseVersion)}, modules:${JSON.stringify(FEATURE_TOUR_MODULES)} });
         send('subscriptionState', ${JSON.stringify(demoSubscriptions)});
         send('githubSyncState', ${JSON.stringify(demoGitHubSync)});
         window.dispatchEvent(new MessageEvent('message', { data: { command: 'openTab', tab: __state.tab } }));
@@ -338,6 +331,7 @@ function bootstrap(view) {
         Object.entries(${JSON.stringify(sizes)}).forEach(([key, bytes]) => send('mcpPathSize', { key, bytes }));
       } else if (message.command === 'chatState') { send('chatState', __chat); send('chatRecents', { recents: ${JSON.stringify(demoChatRecents)} }); }
       else if (message.command === 'projectState') send('projectState', ${JSON.stringify(demoProjects)});
+      else if (message.command === 'skillRouterStatus') send('skillRouterStatus', {activeProfile:'l1_online', sources:[], sourcePriority:[], runtime:{ready:true,engineVersion:'isolated-preview'}, collector:{collectedTools:[]}, solutions:{l1_online:{externallyServed:true}}});
       else if (message.command === 'recipeOpenBrowser') window.dispatchEvent(new CustomEvent('releaseRecipeOpenBrowser', { detail:message }));
       else if (message.command === 'recipeUpdate') window.dispatchEvent(new CustomEvent('releaseRecipeUpdate', { detail:message }));
       else if (message.command === 'subscriptionState') send('subscriptionState', ${JSON.stringify(demoSubscriptions)});
@@ -433,7 +427,8 @@ function panelHtml(view) {
     "%%NOTES_BASE%%": "/demo/notes", "%%CODICON_CSS%%": "/codicon.css", "%%HLJS_CSS%%": "/hljs.css", "%%KATEX_CSS%%": "/katex.css",
     "%%MARKED_SRC%%": "/marked.umd.js", "%%HLJS_SRC%%": "/hljs.js", "%%KATEX_SRC%%": "/katex.js",
     "%%CYTOSCAPE_SRC%%": "/cytoscape.js", "%%MERMAID_SRC%%": "/mermaid.js", "%%FORCEGRAPH3D_SRC%%": "/forcegraph3d.js",
-    "%%PANEL_CSS%%": "/panel.css", "%%PANEL_JS%%": "/panel.js", "%%PKM_VERSION%%": "3.2.0",
+    "%%PANEL_CSS%%": "/panel.css", "%%PANEL_JS%%": "/panel.js", "%%PKM_VERSION%%": releaseVersion,
+    "%%HOST_HEALTH_CSS%%": "/host-health.css", "%%HOST_HEALTH_JS%%": "/host-health.js",
     "%%I18N_PAYLOAD_B64%%": Buffer.from(JSON.stringify({ setting: "en", resolved: "en", locales: localeManifest.locales, catalogs }), "utf8").toString("base64"),
   };
   for (const [token, value] of Object.entries(replacements)) html = html.split(token).join(value);

@@ -6,7 +6,7 @@ const os = require("os");
 const path = require("path");
 const vm = require("vm");
 
-const { createAgentSnapshot, deleteAgentSnapshot, listAgentSnapshots, renameAgentSnapshot, readAgentSnapshotContents } = require("../dist/agent-snapshots");
+const { createAgentSnapshot, deleteAgentSnapshot, listAgentSnapshots, renameAgentSnapshot, readAgentSnapshotContents } = require("../dist/agent-sessions/agent-snapshots");
 
 function encryptPayload(payload, snapshotId, magicCode, keyText = "uone") {
   const iv = crypto.randomBytes(12);
@@ -72,7 +72,7 @@ try {
   assert.match(created.snapshot.magicCode, /^PKM-SNAP-(?:[A-F0-9]{4}-){3}[A-F0-9]{4}$/);
   assert.strictEqual(
     created.recoveryPrompt,
-    `Call the PKM MCP function agent_session_snapshot_recover with {"magic_code":"${created.snapshot.magicCode}"}.`,
+    `Read the PKM Agent Snapshot state first: call the PKM MCP function agent_session_snapshot_read with {"magic_code":"${created.snapshot.magicCode}"}. It is read-only and does not create an Agent Session; continue from its task, todos, checkpoints and Recipe run states.`,
   );
 
   const snapshotPath = path.join(state, "agent-snapshots", `${created.snapshot.snapshotId}.json`);
@@ -102,6 +102,23 @@ try {
   assert.strictEqual(captured.recipeRuns[0].receipts, undefined);
   assert.strictEqual(captured.recipeRuns[0].nodes.work.state, "running");
   assert.strictEqual(fs.readFileSync(snapshotPath, "utf8"), snapshotText, "inspection must not rewrite the Snapshot");
+  const sessionPath = path.join(sessions, `${sessionId}.json`);
+  const trashDirectory = path.join(state, "agent-sessions-trash");
+  const trashedSessionPath = path.join(trashDirectory, `${sessionId}.json`);
+  fs.mkdirSync(trashDirectory, { recursive: true });
+  fs.renameSync(sessionPath, trashedSessionPath);
+  const trashedSessionText = fs.readFileSync(trashedSessionPath, "utf8");
+  const archived = createAgentSnapshot(store, sessionId, "blocked source chat");
+  assert.strictEqual(archived.snapshot.sourceSessionId, sessionId);
+  assert.strictEqual(archived.snapshot.sourceHostSessionId, "copilot-source");
+  const archivedContents = readAgentSnapshotContents(store, archived.snapshot.snapshotId);
+  assert.deepStrictEqual(archivedContents.session, captured.session);
+  assert.deepStrictEqual(archivedContents.recipeRuns, captured.recipeRuns);
+  assert.strictEqual(fs.existsSync(sessionPath), false, "capture must not restore a trashed Session");
+  assert.strictEqual(fs.readFileSync(trashedSessionPath, "utf8"), trashedSessionText,
+    "capture must not mutate the source Session or adopt its transport");
+  fs.unlinkSync(path.join(state, "agent-snapshots", `${archived.snapshot.snapshotId}.json`));
+  fs.renameSync(trashedSessionPath, sessionPath);
   fs.writeFileSync(path.join(sessions, `${sessionId}.json`), JSON.stringify({ task: "Changed live Session", todos: [] }));
   assert.deepStrictEqual(readAgentSnapshotContents(store, snapshot.snapshotId), captured, "inspection reads the capture, not live state");
   assert.throws(() => readAgentSnapshotContents(store, "../snapshot"), /identity is invalid/);
@@ -207,12 +224,13 @@ try {
 const projectsSource = fs.readFileSync(path.join(__dirname, "../src/webview/panel/15-projects.js"), "utf8");
 const extensionSource = fs.readFileSync(path.join(__dirname, "../src/extension.ts"), "utf8");
 const knowledgeSource = fs.readFileSync(path.join(__dirname, "../src/webview/panel/20-knowledge.js"), "utf8");
+const coreSource = fs.readFileSync(path.join(__dirname, "../src/webview/panel/00-core.js"), "utf8");
 const snapshotFixture = { snapshotId: "agent_snapshot_ui_test", magicCode: "PKM-SNAP-1111-2222-3333-4444", task: "Original captured task", name: "Short <name>" };
 let modal;
 let menu;
 const requests = [];
 const clipboardMessages = [];
-const detail = { innerHTML: "" };
+const detail = { innerHTML: "", dataset: {}, scrollTop: 80, scrollLeft: 12, querySelectorAll: () => [] };
 const ui = {
   projectSnapshot: { agentSnapshots: [snapshotFixture], agentSessions: [] },
   selectedAgentSnapshotId: snapshotFixture.snapshotId, selectedAgentSessionId: "",
@@ -230,6 +248,8 @@ const ui = {
   showPaperMenu: (left, top, items) => { menu = items; },
 };
 vm.createContext(ui);
+vm.runInContext(coreSource.slice(coreSource.indexOf("function captureRefreshView("),
+  coreSource.indexOf("function captureRefreshInputs(")), ui);
 vm.runInContext(knowledgeSource.slice(knowledgeSource.indexOf("function buildCatTree("),
   knowledgeSource.indexOf("function openCatFolderAddMenu(")), ui);
 vm.runInContext(projectsSource.slice(projectsSource.indexOf("function recipeCopyPathMenu("),
@@ -241,10 +261,11 @@ vm.runInContext(projectsSource.slice(projectsSource.indexOf("function renderAgen
 ui.agentSnapshotContextMenu({ preventDefault() {}, stopPropagation() {}, clientX: 0, clientY: 0 }, snapshotFixture.snapshotId);
 assert.strictEqual(menu[0].label, snapshotFixture.name);
 assert.ok(!menu.some(item => item.label === "Copy Magic Code"));
-const recoveryItem = menu.find(item => item.label === "Copy Recovery Prompt");
+assert.ok(menu.some(item => item.label === "Recover into New PKM Chat"));
+const recoveryItem = menu.find(item => item.label === "Copy Read Prompt");
 recoveryItem.onClick();
 assert.strictEqual(clipboardMessages[0].command, "copyText");
-assert.strictEqual(clipboardMessages[0].text, `Call the PKM MCP function agent_session_snapshot_recover with {"magic_code":"${snapshotFixture.magicCode}"}.`);
+assert.strictEqual(clipboardMessages[0].text, `Read the PKM Agent Snapshot state first: call the PKM MCP function agent_session_snapshot_read with {"magic_code":"${snapshotFixture.magicCode}"}. It is read-only and does not create an Agent Session; continue from its task, todos, checkpoints and Recipe run states.`);
 menu.find(item => item.label === "Rename…").onClick();
 assert.strictEqual(modal.defaultValue, snapshotFixture.name);
 assert.strictEqual(modal.validate("Tiny"), "");
@@ -271,6 +292,8 @@ assert.match(detail.innerHTML, /aria-busy="true"/);
 const requestsAfterLoad = requests.length;
 ui.renderAgentSnapshots();
 assert.strictEqual(requests.length, requestsAfterLoad, "rerendering does not duplicate contents requests");
+assert.strictEqual(detail.scrollTop, 80, "rerendering the same Snapshot preserves vertical scroll");
+assert.strictEqual(detail.scrollLeft, 12, "rerendering the same Snapshot preserves horizontal scroll");
 ui.agentSnapshotOnContents({ snapshotId: "agent_snapshot_stale", session: { task: "Wrong capture" }, recipeRuns: [] });
 assert.match(detail.innerHTML, /aria-busy="true"/, "stale response cannot replace the selected capture");
 ui.agentSnapshotOnContents({ snapshotId: snapshotFixture.snapshotId, session: {

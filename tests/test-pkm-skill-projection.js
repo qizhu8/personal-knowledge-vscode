@@ -20,49 +20,38 @@ const context = {
 };
 
 try {
-  const filestore = require("../dist/filestore");
+  const filestore = require("../dist/knowledge/filestore");
   filestore.setStorePath(path.join(root, "store"));
-  const projection = require("../dist/pkm-skill-projection");
+  const projection = require("../dist/skills/pkm-skill-projection");
   const bundledSource = fs.readFileSync(path.join(__dirname, "..", "resources", "pkm-skills-router.md"), "utf8");
-  assert.match(bundledSource, /^router_version:\s*1\.7\.2$/m);
+  const router172Source = fs.readFileSync(path.join(__dirname, "fixtures", "pkm-skills-router-1.7.2.md"), "utf8");
+  assert.strictEqual(crypto.createHash("sha256").update(router172Source, "utf8").digest("hex"), "167f0a7f109cad290d352779e138ddafaeb15579fba57b2d465d45978e0e80d2");
+  assert.match(bundledSource, /^router_version:\s*2\.0\.0$/m);
   const routerDescription = bundledSource.match(/^description: "(.+)"$/m)[1];
   assert.match(routerDescription, /Use at the start of every multi-step agent task/);
   for (const trigger of ["coding", "implementation", "bug fixes", "refactoring", "research", "analysis", "diagnosis", "code review"]) {
     assert(routerDescription.includes(trigger), `discovery must include ${trigger}`);
   }
-  assert.match(routerDescription, /even for read-only work/);
+  assert.match(routerDescription, /reads PKM Agent Snapshots/);
   assert.match(routerDescription, /skip quick answers, trivial commands, and casual conversation/);
-  assert.match(bundledSource, /Agent Snapshot Creation Fast Path/);
-  assert.match(bundledSource, /`Create Agent Snapshot` Recipe/);
-  assert.match(bundledSource, /No\s+recovery password exists/);
-  assert.match(bundledSource, /fixed local\s+`uone` obfuscation key/);
-  assert.match(bundledSource, /Do not replace a missing built-in with an ad hoc Recipe/);
-  assert.match(bundledSource, /Agent Snapshot Recovery Fast Path/);
-  assert.match(bundledSource, /call\s+`pkm\.agent_session_snapshot_recover` immediately/);
-  assert.match(bundledSource, /do not call\s+`agent_session_start` first/);
-  assert.match(bundledSource, /does not contain the locally\s+obfuscated payload/);
-  assert.match(bundledSource, /agent_session_todo_append/);
-  assert.match(bundledSource, /start of every later user turn/);
-  assert.match(bundledSource, /agent_session_todo_replan/);
-  assert.match(bundledSource, /`report_status` action/);
-  assert.match(bundledSource, /do not abandon, reorder, or preempt/);
+  assert.match(bundledSource, /Agent Snapshots \(read-only\)/);
+  assert.match(bundledSource, /agent_session_snapshot_read/);
+  assert.match(bundledSource, /there are no `agent_session_start`,\s*`agent_session_todo_\*`, or `agent_session_snapshot_recover` tools/);
+  for (const retired of ["agent_session_todo_append", "agent_session_todo_replan", "Create Agent Snapshot", "host_session_id"]) {
+    assert(!bundledSource.includes(retired), `Router 2.0.0 must not route external agents to ${retired}`);
+  }
   assert.match(bundledSource, /A mature linear Recipe is a valid match/);
-  assert.match(bundledSource, /validated reusable solution, reliable Script automation/);
-  assert.match(bundledSource, /Checkpoint or save an Agent Snapshot only for an explicit/);
   assert.match(bundledSource, /A failed attempt is a valid result/);
   assert.match(bundledSource, /never create a one-node noop Recipe/);
-  assert.match(bundledSource, /before the first\s+substantive investigation, edit, or operational mutation/);
-  assert.match(bundledSource, /do not wait for an explicit tracking request or\s+the first code edit/);
-  assert.match(bundledSource, /read-only work alone does not/);
-  assert.doesNotMatch(bundledSource, /Do not start an Agent Session for assessment/);
-  const projectionSource = fs.readFileSync(path.join(__dirname, "..", "src", "pkm-skill-projection.ts"), "utf8");
+  const router172Description = router172Source.match(/^description: "(.+)"$/m)[1];
+  const projectionSource = fs.readFileSync(path.join(__dirname, "..", "src", "skills/pkm-skill-projection.ts"), "utf8");
   assert.match(projectionSource, /c60be52f524bae0d853ac98785a3be39f038c0d2c9d9629da6c6901211695c8b.*Router 1\.5\.0 canonical/);
   assert.match(projectionSource, /b6dbcf44509a2c4c240d99a2e6573b83b21b3bc6e546c2d0a1ef707657be1325.*Router 1\.5\.1 bundled canonical/);
   assert.match(projectionSource, /46d9c22107cfc09eaec54fdfbe98af4c2ad9ace5bb5c05fd8ec492de3f146d1a.*Router 1\.6\.0 bundled canonical/);
   assert.match(projectionSource, /f8f28f95af02e8f15dbcd632452af46b020267dac89e7b036e383ef171e8cf49.*Router 1\.6\.1 canonical/);
-  const legacySource = bundledSource
+  const legacySource = router172Source
     .replace("router_version: 1.7.2", "router_version: 1.1.6")
-    .replace(routerDescription, "Use when: starting substantial coding, research, debugging, or workflow tasks that may benefit from personal conventions or domain knowledge; also use when reusable knowledge should be added to or updated in PKM.")
+    .replace(router172Description, "Use when: starting substantial coding, research, debugging, or workflow tasks that may benefit from personal conventions or domain knowledge; also use when reusable knowledge should be added to or updated in PKM.")
     .replace(/\n## Agent Snapshot Creation Fast Path[\s\S]*?(?=\n## Agent Snapshot Recovery Fast Path)/, "")
     .replace(/\n## Agent Snapshot Recovery Fast Path[\s\S]*?(?=\n## Managed Task Routing)/, "")
     .replace(/\n## Managed Task Routing[\s\S]*?(?=\n## Before Substantial Work)/, "")
@@ -94,21 +83,21 @@ try {
   );
 
   let status = projection.pkmSkillProjectionStatus(context);
-  assert.strictEqual(status.routerVersion, "1.7.2");
+  assert.strictEqual(status.routerVersion, "2.0.0");
   assert.strictEqual(status.minimumMcpSchema, "2.8.0");
   assert.strictEqual(status.targets.find(target => target.id === "copilot").state, "missing");
 
   const injected = projection.injectPkmSkill(context, "copilot");
   assert.strictEqual(injected.state, "current");
   assert(fs.existsSync(injected.skillPath));
-  assert.match(fs.readFileSync(canonicalSource, "utf8"), /^router_version:\s*1\.7\.2$/m);
+  assert.match(fs.readFileSync(canonicalSource, "utf8"), /^router_version:\s*2\.0\.0$/m);
   const generated = fs.readFileSync(injected.skillPath, "utf8");
   assert.match(generated, /^---\nname: pkm-skills/m);
   assert.match(generated, /<!-- pkm-managed /);
   assert(generated.includes(routerDescription), "native discovery must retain the multi-step task triggers");
   assert(fs.existsSync(status.sourcePath), "inject must create the canonical PKM source");
 
-  const newerGenerated = generated.replace('"routerVersion":"1.7.2"', '"routerVersion":"1.7.3"');
+  const newerGenerated = generated.replace('"routerVersion":"2.0.0"', '"routerVersion":"2.0.1"');
   fs.writeFileSync(injected.skillPath, newerGenerated, "utf8");
   status = projection.pkmSkillProjectionStatus(context);
   assert.strictEqual(status.targets.find(target => target.id === "copilot").state, "newer");
@@ -116,7 +105,7 @@ try {
   assert.strictEqual(fs.readFileSync(injected.skillPath, "utf8"), newerGenerated, "older PKM must not rewrite a newer Router");
   fs.writeFileSync(injected.skillPath, generated, "utf8");
 
-  const previousRouterSource = bundledSource
+  const previousRouterSource = router172Source
     .replace("router_version: 1.7.2", "router_version: 1.7.1")
     .replace("graph when they add a reusable solution, automation, or useful task structure.", "graph only when they add control value.")
     .replace(/Checkpoint or save an Agent Snapshot[\s\S]*?(?=outcomes already contain the evidence)/,
@@ -134,7 +123,7 @@ try {
     .replace(/\nA failed attempt is a valid result,[\s\S]*?(?=\nAfter execution, record concrete friction)/, "");
   const previousBundledSource = previousRouterSource
     .replace("router_version: 1.7.1", "router_version: 1.7.0")
-    .replace(routerDescription, "Route substantial work into PKM guardrails without adding orchestration that does not change execution.")
+    .replace(router172Description, "Route substantial work into PKM guardrails without adding orchestration that does not change execution.")
     .replace(/For every multi-step task,[\s\S]*?(?=At the start of every later user turn)/, `For a substantial mutating task, call \`pkm.agent_session_start\` before the first
 substantive edit or operational mutation. Call \`agent_session_capabilities\`
 only when the tool contract is not already available in the current
@@ -152,6 +141,7 @@ the host chat/session ID is available, pass it as \`host_session_id\`.
   const previousCanonicalSource = previousBundledSource
     .replace(/\nFor a qualified recurring Recipe,[\s\S]*?(?=\nRecipe action tools)/, "");
   for (const [previousSource, expectedHash] of [
+    [router172Source, "167f0a7f109cad290d352779e138ddafaeb15579fba57b2d465d45978e0e80d2"],
     [previousRouterSource, "0cd7549ee9b7ee3c5d8da25d38056dc1772354db64b2adc83a7b88a13356738a"],
     [previousBundledSource, "269e06b053f5d48b31bac2823068c3a55a8681801c68222352116c65209ae193"],
     [previousCanonicalSource, "a819465ccec50d589891fe12a86d1bfd003eeee0bcf1e725048c4338208b2d67"],
@@ -214,7 +204,28 @@ the host chat/session ID is available, pass it as \`host_session_id\`.
     const custom = path.join(root, "custom-skills");
     const target = await projection.addPkmSkillCustomTarget(context, custom, "Custom Test");
     assert.strictEqual(target.root, custom);
-    console.log("PKM Skill projection: connect, automatic reconcile, conflict protection, disconnect, and custom target OK");
+    const legacy = await projection.connectPkmSkill(context, "agents");
+    fs.appendFileSync(legacy.skillPath, "\nkeep this modification in the backup\n");
+    const legacyContent = fs.readFileSync(legacy.skillPath, "utf8");
+    const canonicalContent = fs.readFileSync(canonicalSource, "utf8");
+    const userSkill = projection.pkmSkillProjectionStatus(context).targets.find(item => item.id === "copilot").skillPath;
+    const userContent = fs.readFileSync(userSkill, "utf8");
+    const backupDirectory = path.join(root, "retired");
+    const retired = await projection.retirePkmSkillProjections(context, backupDirectory);
+    assert.deepStrictEqual(retired.removed, [legacy.skillPath]);
+    assert(retired.preserved.includes(userSkill));
+    assert.strictEqual(fs.readFileSync(userSkill, "utf8"), userContent, "user-authored Skills must remain unchanged");
+    assert.strictEqual(fs.readFileSync(canonicalSource, "utf8"), canonicalContent, "retirement must not change canonical Skills");
+    assert(!fs.existsSync(legacy.skillPath));
+    const backups = fs.readdirSync(backupDirectory);
+    assert.strictEqual(backups.length, 1);
+    assert.strictEqual(fs.readFileSync(path.join(backupDirectory, backups[0]), "utf8"), legacyContent);
+    assert.deepStrictEqual(states.get("pkm.skillProjection.connectedTargets.v1"), []);
+    const secondRetirement = await projection.retirePkmSkillProjections(context, backupDirectory);
+    assert.strictEqual(secondRetirement.removed.length, 0, "retirement must be idempotent");
+    await projection.reconcilePkmSkillProjections(context);
+    assert(!fs.existsSync(legacy.skillPath), "cleared legacy connections must not re-inject");
+    console.log("PKM Skill projection: legacy fixtures, backed-up retirement, canonical/user file preservation, and idempotence OK");
   }).catch(error => {
     console.error(error);
     process.exitCode = 1;

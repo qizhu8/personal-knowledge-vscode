@@ -178,6 +178,9 @@ function prepareServerFocusGroups() {
   }
 }
 function renderServerDashboard(servers) {
+  const detail = document.getElementById('detail');
+  const view = captureRefreshView(detail);
+  const outputs = [...detail.querySelectorAll('.srv-card-output[id]')].map(output => ({ output, view:captureRefreshView(output, ['.srv-log']) }));
   const searchInput = document.getElementById('server-search');
   const restoreSearchFocus = document.activeElement === searchInput;
   const restoreSearchCaret = searchInput?.selectionStart ?? serverSearchQuery.length;
@@ -219,6 +222,7 @@ function renderServerDashboard(servers) {
           <span class="srv-management-actions"><button class="tbtn" onclick="ask('serverOpenFolder',{slug:'${esc(s.slug)}'})" title="Open the server folder (code + any data it writes)">${uiIcon('folder-opened', 'Folder')}</button>
           <button class="tbtn" onclick="editServer('${esc(s.slug)}')" title="Edit server settings: command, port, and Python">${uiIcon('settings-gear', 'Settings')}</button>
           <button class="tbtn" onclick="serverLogView('${esc(s.slug)}')" title="Open the latest managed process log">${uiIcon('output', 'Log')}</button>
+          ${s.git ? `<button class="tbtn" data-pending-label="Fetching..." onclick="ask('serverUpdateGit',{slug:'${esc(s.slug)}'},this)" title="Fetch ${esc(s.git.branch)} and fast-forward. Stop the server and resolve local changes first.">${uiIcon('repo-sync', 'Update branch')}</button>` : ''}
           <button class="tbtn srv-danger" onclick="deleteServer('${esc(s.slug)}',${JSON.stringify(s.name).replace(/"/g,'&quot;')})" title="Permanently delete this managed server folder and settings">${uiIcon('trash', 'Delete')}</button></span>
       </div>
       <div class="ec-path"><code>${esc(s.command)}</code> · env: ${esc(s.python || 'python3')}</div>
@@ -249,6 +253,7 @@ function renderServerDashboard(servers) {
         <span style="flex:1"></span>
         <button class="tbtn srv-new-group" onclick="createServerGroup()" title="Create an empty subgroup, then drag or right-click a Server to move it">${uiIcon('new-folder', 'New subgroup')}</button>
         <button class="tbtn" onclick="importServer()" title="Move an existing server folder into the PKM store">${uiIcon('folder-opened', 'Import folder')}</button>
+        <button class="tbtn" onclick="ask('serverImportGit',{})" title="Checkout an explicit Git branch; never installs or starts code">${uiIcon('repo', 'Import Git')}</button>
         <button class="tbtn" onclick="createServer()" title="Create a new managed server package">${uiIcon('add', 'New')}</button>
         <button class="tbtn" data-pending-label="Refreshing…" onclick="ask('serverList',{},this)" title="Force-refresh server process, port, and link status">${uiIcon('refresh', 'Refresh')}</button>
       </div>
@@ -271,6 +276,14 @@ function renderServerDashboard(servers) {
     }
   }
   filterServerDashboard(serverSearchQuery);
+  for (const { output, view:outputView } of outputs) {
+    const replacement = document.getElementById(output.id);
+    if (replacement) {
+      replacement.replaceWith(output);
+      restoreRefreshView(output, outputView);
+    }
+  }
+  restoreRefreshView(detail, view);
   if (serverFocusSlug) {
     const focused = document.querySelector(`.srv-card[data-server-slug="${CSS.escape(serverFocusSlug)}"]`);
     if (focused) {

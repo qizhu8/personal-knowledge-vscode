@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { canonicalJson } from "../workflow-contracts";
+import { canonicalJson } from "./workflow-contracts";
 
 export type Scalar = null | boolean | string | Int64Value | DecimalValue;
 export type ControlValue = Scalar | readonly ControlValue[] | Readonly<{ [key: string]: ControlValue }>;

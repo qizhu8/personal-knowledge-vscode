@@ -3,7 +3,7 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const store = require("../dist/filestore");
+const store = require("../dist/knowledge/filestore");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-skill-trash-"));
 try {

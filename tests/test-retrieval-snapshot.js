@@ -3,8 +3,8 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { createRetrievalSnapshot } = require("../dist/retrieval-snapshot.js");
-const storage = require("../dist/storage.js");
+const { createRetrievalSnapshot } = require("../dist/retrieval/retrieval-snapshot.js");
+const storage = require("../dist/knowledge/storage.js");
 const extension = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
 
 const groups = ["Broker A", "Broker B", "Broker C"].map((alias, index) => ({

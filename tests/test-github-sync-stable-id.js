@@ -4,13 +4,13 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
-const { canonicalJson } = require("../dist/workflow-contracts.js");
+const { canonicalJson } = require("../dist/workflows/workflow-contracts.js");
 const {
   GITHUB_SYNC_CONTENT_TYPES,
   GitHubSyncConflictError,
   normalizeGitHubSyncTarget,
   syncGitHubTarget,
-} = require("../dist/github-sync.js");
+} = require("../dist/sync/github-sync.js");
 
 const run = (cwd, args) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 const skill = (name, body) => `---\nname: ${JSON.stringify(name)}\ndescription: "test"\n---\n# ${name}\n\n${body}\n`;
@@ -165,7 +165,7 @@ async function sync(machine, checkouts) {
       assert.deepStrictEqual(pulled.recipeDeletes, [], "a Recipe move is one stable-identity update, not pull then delete");
       const manifest = JSON.parse(run(test.root, ["--git-dir", test.remote, "show", "main:.pkm-github-sync.json"]));
       assert.strictEqual(manifest.schema, 3);
-      assert.deepStrictEqual(manifest.capabilities.required, ["explicit-deletions", "stable-entity-identity"]);
+      assert.deepStrictEqual(manifest.capabilities.required, ["explicit-deletions", "stable-entity-identity", "entity-partial-progress"]);
       assert(manifest.files.some(file => file.itemId === "knowledge_shared" && file.member === ""));
       assert.deepStrictEqual(manifest.files.filter(file => file.itemId === "package_shared").map(file => file.member), ["a.txt", "b.txt"]);
     } finally {

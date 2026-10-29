@@ -1,0 +1,10 @@
+{
+  "evidence": "synthetic",
+  "scenarios": [
+    {"persona":"student","source":"chat-worker","events":[{"kind":"chat-created"},{"kind":"start-request"},{"kind":"start-success"},{"kind":"completed","durationMs":1500},{"kind":"next-step-found","durationMs":30000},{"kind":"promotion-knowledge"}]},
+    {"persona":"researcher","source":"recipe-runtime","events":[{"kind":"start-request"},{"kind":"start-success"},{"kind":"wait"},{"kind":"restart-observed"},{"kind":"resume","durationMs":2000},{"kind":"completed","durationMs":5000}]},
+    {"persona":"pm","source":"collaboration","events":[{"kind":"start-request"},{"kind":"start-success"},{"kind":"approval","count":2},{"kind":"approval-repeat"},{"kind":"next-step-found","durationMs":12000}]},
+    {"persona":"designer","source":"chat-worker","events":[{"kind":"chat-created"},{"kind":"start-request"},{"kind":"start-success"},{"kind":"promotion-project"},{"kind":"next-step-found","durationMs":22000}]},
+    {"persona":"developer","source":"action-runtime","events":[{"kind":"start-request","count":2},{"kind":"start-success","count":2},{"kind":"unknown-effect"},{"kind":"restart-observed"},{"kind":"cancel"},{"kind":"completed","durationMs":9000}]}
+  ]
+}

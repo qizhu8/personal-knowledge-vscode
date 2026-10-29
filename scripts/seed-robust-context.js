@@ -3,7 +3,7 @@
 // Usage: node scripts/seed-robust-context.js [storePath]
 const os = require("os");
 const path = require("path");
-const store = require(path.join(__dirname, "..", "dist", "filestore.js"));
+const store = require(path.join(__dirname, "..", "dist", "knowledge/filestore.js"));
 store.setStorePath(process.argv[2] || path.join(os.homedir(), "uone-knowledge"));
 
 const CAT = "Robust Context Verification";

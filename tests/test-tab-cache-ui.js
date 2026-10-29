@@ -36,7 +36,7 @@ assert.strictEqual(freshnessContext.isFresh(0, 120000), false);
 assert.strictEqual(freshnessContext.isFresh(1, 120000), true);
 assert.strictEqual(freshnessContext.isFresh(1, 120001), false);
 
-function verifyCachedTab(source, functionName, cacheName, updatedAtName, renderName, loadingName, command) {
+function verifyCachedTab(source, functionName, cacheName, updatedAtName, renderName, loadingName, command, liveRequests = []) {
   const calls = [];
   const context = {
     [cacheName]: { cached: true },
@@ -49,24 +49,25 @@ function verifyCachedTab(source, functionName, cacheName, updatedAtName, renderN
   vm.createContext(context);
   vm.runInContext(`${functionSource(source, functionName)};this.show=${functionName}`, context);
   context.show();
-  assert.deepStrictEqual(plain(calls), [["render", { cached: true }]], `${functionName} must reuse a fresh cache without requesting`);
+  assert.deepStrictEqual(plain(calls), [["render", { cached: true }], ...liveRequests], `${functionName} must reuse a fresh metadata cache while refreshing live state separately`);
 
   calls.length = 0;
   context[updatedAtName] = 50;
   context.show();
-  assert.deepStrictEqual(plain(calls), [["render", { cached: true }], ["ask", command, {}, null, true]],
+  assert.deepStrictEqual(plain(calls), [["render", { cached: true }], ["ask", command, {}, null, true], ...liveRequests],
     `${functionName} must render stale cache before silent revalidation`);
 
   calls.length = 0;
   context[cacheName] = null;
   context[updatedAtName] = 0;
   context.show();
-  assert.deepStrictEqual(plain(calls), [["loading"], ["ask", command, {}, null, false]],
+  assert.deepStrictEqual(plain(calls), [["loading"], ["ask", command, {}, null, true], ...liveRequests],
     `${functionName} must show loading only when no cached data exists`);
 }
 
 verifyCachedTab(mcp, "showMcpTab", "mcpStatusCache", "mcpStatusUpdatedAt", "renderMcpPane", "renderMcpLoading", "checkMcp");
-verifyCachedTab(skillRouter, "showSkillRouterTab", "skillRouterStatusCache", "skillRouterStatusUpdatedAt", "renderSkillRouterPane", "renderSkillRouterLoading", "skillRouterStatus");
+verifyCachedTab(skillRouter, "showSkillRouterTab", "skillRouterStatusCache", "skillRouterStatusUpdatedAt", "renderSkillRouterPane", "renderSkillRouterLoading", "skillRouterStatus",
+  [["ask", "retrievalSolutions", {}, null, true]]);
 
 const githubCalls = [];
 const githubRuntimeRequest = ["ask", "githubSyncRuntimeSnapshot", {}, null, true];
@@ -80,21 +81,25 @@ const githubContext = {
 };
 vm.createContext(githubContext);
 vm.runInContext(`${functionSource(github, "ensureGitHubSyncStatus")};${functionSource(github, "showGitHubSyncTab")};this.show=showGitHubSyncTab`, githubContext);
+// Reopening GitHub Sync always re-reads current metadata so obsolete cached failures never paint (see test-github-sync-feedback).
+const githubStateRequest = ["ask", "githubSyncState", {}, null, true];
 githubContext.show();
-assert.deepStrictEqual(plain(githubCalls), [["render"], githubRuntimeRequest],
-  "fresh GitHub Sync cache must render immediately and refresh only lightweight runtime state");
+assert.deepStrictEqual(plain(githubCalls), [["render"], githubRuntimeRequest, githubStateRequest],
+  "cached GitHub Sync renders immediately while runtime and full state refresh in the background");
 githubCalls.length = 0;
-githubContext.githubSyncUpdatedAt = 50;
-githubContext.show();
-assert.deepStrictEqual(plain(githubCalls), [["render"], githubRuntimeRequest, ["ask", "githubSyncState", {}, null, true]]);
-githubCalls.length = 0;
-githubContext.show();
-assert.deepStrictEqual(plain(githubCalls), [["render"], githubRuntimeRequest], "pending full GitHub Sync state requests must be deduplicated");
-githubCalls.length = 0;
-githubContext.githubSyncStatusRequested = false;
 githubContext.githubSyncUpdatedAt = 0;
 githubContext.show();
-assert.deepStrictEqual(plain(githubCalls), [["loading"], githubRuntimeRequest, ["ask", "githubSyncState", {}, null, false]]);
+assert.deepStrictEqual(plain(githubCalls), [["loading"], githubRuntimeRequest, githubStateRequest],
+  "without cached data GitHub Sync shows loading before requesting state");
+githubCalls.length = 0;
+githubContext.githubSyncStatusRequested = true;
+githubContext.githubSyncUpdatedAt = 100;
+vm.runInContext("ensureGitHubSyncStatus()", githubContext);
+assert.deepStrictEqual(plain(githubCalls), [], "pending full GitHub Sync state requests are deduplicated");
+githubContext.githubSyncStatusRequested = false;
+githubContext.githubSyncUpdatedAt = 50;
+vm.runInContext("ensureGitHubSyncStatus()", githubContext);
+assert.deepStrictEqual(plain(githubCalls), [["ask", "githubSyncState", {}, null, true]], "stale cache refreshes in the background");
 
 assert.match(knowledge, /state\.tab === 'mcp'[\s\S]{0,220}showMcpTab\(\)/);
 assert.match(knowledge, /state\.tab === 'skillRouter'[\s\S]{0,220}showSkillRouterTab\(\)/);

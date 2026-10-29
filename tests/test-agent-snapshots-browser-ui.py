@@ -47,11 +47,13 @@ def main():
         row.locator(".cattree-item-menu").click()
         menu = page.locator("#paper-ctx")
         assert "Copy Magic Code" not in menu.inner_text()
-        menu.get_by_text("Copy Recovery Prompt", exact=True).click()
+        assert "Recover into New PKM Chat" in menu.inner_text()
+        menu.get_by_text("Copy Read Prompt", exact=True).click()
         page.wait_for_function("window.__previewMessages.some(item => item.command === 'copyText')")
         copied = page.evaluate("window.__previewMessages.filter(item => item.command === 'copyText').at(-1).text")
-        assert copied == ('Call the PKM MCP function agent_session_snapshot_recover with '
-                          '{"magic_code":"' + snapshot["magicCode"] + '"}.')
+        assert copied == ('Read the PKM Agent Snapshot state first: call the PKM MCP function agent_session_snapshot_read with '
+                          '{"magic_code":"' + snapshot["magicCode"] + '"}. It is read-only and does not create an Agent Session; '
+                          'continue from its task, todos, checkpoints and Recipe run states.')
         row.click(button="right")
         menu.get_by_text("Rename…", exact=True).click()
         field = page.locator("#pk-modal-input")
@@ -127,6 +129,12 @@ def main():
         assert "No captured Checkpoints" in contents.inner_text()
         assert "No captured Recipe runs" in contents.inner_text()
         page.evaluate("state.tab='agentSessions'; projectSnapshot.agentSessions[0].task='Long Session title '.repeat(30); renderAgentSessions()")
+        workspace = page.locator(".agent-sessions-workspace")
+        assert "cattree-collapsed" in workspace.get_attribute("class")
+        workspace.get_by_role("button", name="Restore category tree", exact=True).click()
+        group = workspace.locator(".agent-session-tree .tree-cat-hdr").first
+        assert group.get_attribute("aria-expanded") == "false"
+        group.press("Enter")
         for width, height in [(1280, 900), (390, 844)]:
             page.set_viewport_size({"width": width, "height": height})
             page.locator(".agent-session-row").first.click(button="right")

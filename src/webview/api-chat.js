@@ -1,0 +1,1899 @@
+(() => {
+  const vscode = globalThis.PkmWebviewApi || acquireVsCodeApi();
+  const element = id => document.getElementById(id);
+  let uiStrings = {};
+  globalThis.PkmChatText = (text, params = {}) => {
+    let value = uiStrings[text] || text;
+    for (const [key, replacement] of Object.entries(params)) value = value.split(`{${key}}`).join(String(replacement));
+    return value;
+  };
+  const t = (...args) => globalThis.PkmChatText(...args);
+  const staticLabels = [];
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    if (node.textContent.trim() && !node.parentElement.closest("script, style, #tokens, #cost, #provider")) staticLabels.push({ node, text: node.textContent.trim() });
+  }
+  const staticAttributes = Array.from(document.querySelectorAll("[title], [aria-label], [placeholder]")).flatMap(node =>
+    ["title", "aria-label", "placeholder"].filter(name => node.hasAttribute(name)).map(name => ({ node, name, text: node.getAttribute(name) })));
+  function applyLocale(localization) {
+    if (!localization) return;
+    uiStrings = Object.fromEntries(Object.entries(localization.english || {}).map(([key, text]) => [text, localization.strings?.[key] || text]));
+    document.documentElement.lang = localization.locale || "en";
+    document.documentElement.dir = localization.direction === "rtl" ? "rtl" : "ltr";
+    for (const { node, text } of staticLabels) if (node.isConnected) node.textContent = t(text);
+    for (const { node, name, text } of staticAttributes) if (node.isConnected) node.setAttribute(name, t(text));
+  }
+  const saved = vscode.getState() || {};
+  const workerPanelChats = new Set(saved.workerPanelChats || []);
+  const workerNodes = new Map();
+  const workerCounts = new Map();
+  const approvalDrafts = new Map();
+  const formDrafts = new Map();
+  const approvalNodes = new Map();
+  let workerNodesChatId;
+  let revealDispatch;
+  let screen = "library";
+  let renderedChatId;
+  let jumpToLatest = false;
+  let followPaused = false;
+  let upwardScrollPending = false;
+  let observedScrollTop = 0;
+  let followFrame;
+  const messageResizeObserver = new ResizeObserver(() => {
+    if (followFrame || followPaused || screen !== "chat") return;
+    followFrame = requestAnimationFrame(() => {
+      followFrame = undefined;
+      if (followPaused || screen !== "chat" || document.visibilityState !== "visible") return;
+      const messages = element("messages");
+      messages.scrollTop = messages.scrollHeight;
+      observedScrollTop = messages.scrollTop;
+      markResultRead();
+    });
+  });
+  let library;
+  const drafts = saved.drafts || {};
+  const queuedDrafts = saved.queuedDrafts || {};
+  const queuedEditorNodes = new Map();
+  const workflowSelection = new Map();
+  const workflowExpanded = new Map();
+  const finishedExpanded = new Map();
+  const activityFilters = new Map();
+  const messageExpanded = new Set(saved.expandedMessageDetails || []);
+  let state;
+  let historyStart = 0;
+  let historyPending;
+  let historyLoaded = false;
+  let historyPrepend = false;
+  let pending;
+  const submissions = new Map();
+  let inputMode = saved.inputMode === "task" ? "task" : "steer";
+  let frame;
+  let clock;
+  let budgetOwner;
+  let presets = [];
+  let advancedBudget = saved.advancedBudget === true;
+  let acknowledgedResult;
+  let renderedToolGroups;
+  const expandedToolGroups = new Set();
+  const post = (type, extra = {}) => vscode.postMessage({ type, ...extra });
+  const visualization = globalThis.PkmChatVisualization({ post });
+  window.addEventListener("pagehide", () => visualization.dispose());
+  function markResultRead() {
+    if (!state || screen === "library" || document.visibilityState !== "visible" || !state.chat.lastResultId || state.chat.lastResultId === state.chat.readResultId) return;
+    const messages = element("messages");
+    if (messages.scrollHeight - messages.scrollTop - messages.clientHeight > 1) return;
+    const key = `${state.chat.id}:${state.chat.lastResultId}`;
+    if (acknowledgedResult === key) return;
+    acknowledgedResult = key;
+    post("read", { id: state.chat.id, value: state.chat.lastResultId });
+  }
+  function contextPresets(maximum) {
+    return [...new Set([16, 8, 4, 2, 1].map(divisor => Math.max(256, Math.floor(maximum / divisor))))];
+  }
+  function contextLengthLabel(value) {
+    return new Intl.NumberFormat("en-US", { notation: "compact", compactDisplay: "short", maximumFractionDigits: value >= 1e6 ? 1 : 0 }).format(value);
+  }
+  function syncContextSlider() {
+    const current = Number(element("window").value);
+    const slider = element("window-slider");
+    slider.value = presets.reduce((best, value, index) => Math.abs(value - current) < Math.abs(presets[best] - current) ? index : best, 0);
+    element("window-label").textContent = contextLengthLabel(current);
+    slider.setAttribute("aria-valuetext", `${presets.includes(current) ? "" : "Custom: "}${contextLengthLabel(current)} tokens`);
+  }
+  function commitContext() {
+    if (!element("window").checkValidity()) { tokenEstimate(); element("window").reportValidity(); return; }
+    const current = Number(element("window").value);
+    element("output").value = Math.min(Number(element("output").value) || state.settings.maxOutputTokens, Math.floor(current / 4));
+    element("output").max = Math.min(state.settings.selectedProfile?.maxOutputTokens || 1024, current - 1);
+    syncContextSlider(); tokenEstimate();
+    post("budget", { contextWindow: current, maxOutputTokens: Number(element("output").value) });
+  }
+  const saveDraft = () => {
+    if (state) drafts[state.chat.id] = element("prompt").value;
+    vscode.setState({ drafts, queuedDrafts, inputMode, advancedBudget, screen, workerPanelChats: [...workerPanelChats].slice(-500), chatListOrder: library?.order || saved.chatListOrder || [], expandedWorkerChats: library ? [...library.expandedWorkers].slice(-500) : saved.expandedWorkerChats || [], expandedMessageDetails: Array.from(messageExpanded).slice(-500), collapsedChatGroups: library ? Array.from(library.collapsed) : saved.collapsedChatGroups || [] });
+    tokenEstimate();
+  };
+  function tokenEstimate() {
+    if (!state) return;
+    const input = (state.settings.inputBaseTokens || 0) + new TextEncoder().encode(element("prompt").value).length;
+    const output = Number(element("output").value) || state.settings.maxOutputTokens || 1024;
+    const window = Number(element("window").value) || state.settings.contextWindow || 4096;
+    const hasImages = state.chat.images?.length || state.chat.includeHistory && state.chat.messages.slice(-20).some(message => message.status === "complete" && message.images?.length);
+    element("tokens").textContent = `~${input.toLocaleString()} ${hasImages ? "text input · image preflight pending" : "input"}`;
+    element("tokens").title = "Conservative UTF-8 text estimate including context/skills, builtin schemas and history. Image messages require provider token counting before each call. This estimate is not billed usage.";
+    const profile = state.settings.selectedProfile;
+    const retired = profile?.status === "deprecated" || (profile?.deprecatedAt && Date.parse(profile.deprecatedAt) <= Date.now());
+    element("send").disabled = !!pending || !!state.remoteBusy && !!state.chat.paused || (state.busy ? !element("prompt").value.trim() || !!state.chat.images?.length : !state.chat.paused && (!element("prompt").value.trim() || !element("window").checkValidity() || !element("output").checkValidity() || input + output > window || retired || state.settings.needsModelConnection || (state.settings.provider !== "vscode" && !state.settings.endpoint)));
+    const budgetWarning = element("composer-budget-warning");
+    budgetWarning.hidden = state.busy || state.chat.paused || input + output <= window;
+    budgetWarning.textContent = budgetWarning.hidden ? "" : t("Estimated input plus reserved output exceeds this context budget. Increase the budget, reduce context/tools, or choose a larger model.");
+    if (profile?.inputPricePerMillion !== undefined && profile?.outputPricePerMillion !== undefined) {
+      const price = (input * profile.inputPricePerMillion + output * profile.outputPricePerMillion) / 1e6;
+      element("cost").textContent = `First-call estimate: ${profile.currency} ${price.toFixed(6)}`;
+      element("cost").title = "Input estimate plus reserved output for the first model call only, not a turn spending cap. Tool loops resend growing context and add input costs each round. Cache rates, pricing tiers and surcharges are excluded.";
+    } else {
+      const copilot = state.settings.provider === "vscode" && profile?.id?.startsWith("vscode:copilot:");
+      element("cost").textContent = copilot ? t("Credits reported after the call") : state.settings.provider === "vscode" ? "Billing unavailable" : "Price unavailable";
+      element("cost").title = copilot ? t("Actual Copilot credits come from provider billing metadata after each call, not from token estimates. Account plan and remaining quota are not reported here.") : state.settings.provider === "vscode" ? "Reported token usage is shown on assistant replies when supplied. This public API does not expose account billing or remaining quota." : "Configure verified model prices in API Chat model profiles.";
+    }
+  }
+  const elapsed = milliseconds => `${Math.floor(milliseconds / 60000)}:${String(Math.floor(milliseconds / 1000) % 60).padStart(2, "0")}`;
+  function updateClock() {
+    for (const timer of document.querySelectorAll("[data-started]")) timer.textContent = elapsed(Math.max(0, Number(timer.dataset.finished || Date.now()) - Number(timer.dataset.started)));
+  }
+  function messageTokenLabel(message) {
+    const usage = message.usage;
+    if (!usage || ![usage.inputTokens, usage.outputTokens].every(value => Number.isSafeInteger(value) && value >= 0)) return "";
+    return `${usage.inputTokens.toLocaleString()} in / ${usage.outputTokens.toLocaleString()} out tokens`;
+  }
+  function chatRole(chat = state.chat) {
+    if (chat?.portal?.binding?.role) return chat.portal.binding.role;
+    const role = globalThis.PkmChatRole(chat);
+    const overviewRole = globalThis.PkmChatRole(state.workerOverview?.nodes.find(node => node.chatId === chat.id));
+    return role === "manager" || overviewRole === "manager" ? "manager" : role || overviewRole;
+  }
+  function toolActivityPresentation(line, body, tool) {
+    const info = globalThis.PkmAgentHarness.toolActivityDetails(tool);
+    if (!info) return;
+    const targets = document.createElement("span"); targets.className = "activity-targets";
+    if (info.paths) {
+      for (const path of info.paths) {
+        const chip = document.createElement("span"); chip.className = "activity-file";
+        chip.title = path;
+        chip.setAttribute("aria-label", `${info.operation}: ${path}`);
+        const icon = document.createElement("span"); icon.className = "codicon codicon-file-code"; icon.setAttribute("aria-hidden", "true");
+        const name = document.createElement("span"); name.textContent = path.split(/[\\/]/).pop() || path;
+        chip.append(icon, name); targets.append(chip);
+      }
+      if (info.added !== undefined) {
+        for (const [kind, value, prefix] of [["added", info.added, "+"], ["removed", info.removed, "-"]]) {
+          const count = document.createElement("span"); count.className = `activity-lines-${kind}`; count.textContent = `${prefix}${value}`; targets.append(count);
+        }
+      }
+    } else {
+      const preview = document.createElement("code"); preview.className = "activity-command-preview";
+      preview.textContent = info.command.replace(/\s+/g, " ").trim(); preview.title = info.command; targets.append(preview);
+      const command = document.createElement("pre"); command.className = "activity-command";
+      command.textContent = `${info.cwd ? `Working directory: ${info.cwd}\n` : ""}${info.argv ? "Program and arguments (display only; no automatic shell):\n" : ""}${info.command}`;
+      body.prepend(command);
+    }
+    targets.setAttribute("aria-label", info.operation);
+    line.querySelector(".activity-label").after(targets);
+  }
+  function activity(run = state.chat.progress, messageId = "", debug, message = {}) {
+    if (!run) return null;
+    const key = run.attemptId || messageId || String(run.startedAt);
+    const active = state.busy && (run.attemptId ? state.chat.progress?.attemptId === run.attemptId : run === state.chat.progress);
+    run = { ...run, steps: run.steps.filter(step => step.operation !== "token-count" && !/^Counting (input|output) tokens with VS Code model$/.test(step.label)) };
+    const statusOf = (step, index) => step.status || (index < run.steps.length - 1 ? "complete" : active ? "running" : run.status === "running" ? "failed" : run.status);
+    const section = document.createElement("details"); section.className = "workflow activity"; section.dataset.attempt = key; const expandedState = active ? workflowExpanded : finishedExpanded; section.open = expandedState.get(key) ?? active;
+    const summary = document.createElement("summary"); summary.className = "workflow-summary";
+    summary.dataset.status = active && run.steps.length ? statusOf(run.steps[run.steps.length - 1], run.steps.length - 1) : run.status;
+    const icon = active ? globalThis.PkmChatWorkingIcon(chatRole()) : document.createElement("span");
+    if (active) icon.setAttribute("aria-hidden", "true");
+    if (!active) { icon.className = "workflow-dot"; icon.setAttribute("aria-hidden", "true"); }
+    const label = document.createElement("span"); label.className = "activity-label";
+    const completed = (run.completedDroppedSteps || 0) + run.steps.filter((step, index) => statusOf(step, index) === "complete").length;
+    // Presentation only: retain recorded stages and round identities, including older Chats.
+    const modelStageLabel = (step, status) => {
+      if (!step || step.kind !== "model" || !Number.isSafeInteger(step.round) || step.round < 0) return step?.label;
+      const round = t("Model round {round}", { round:step.round + 1 });
+      const phase = status === "complete" ? t("Model response received")
+        : step.label === "Waiting for first output" ? status === "running" ? `${t("Waiting for model response")} (${t("the model may be reasoning")})` : t("Waiting for model response")
+        : ["Requesting VS Code model", "Connecting to model API"].includes(step.label) ? t("Requesting model")
+        : step.label === "Generating response" ? t("Receiving model response") : step.label;
+      return `${round}: ${phase}`;
+    };
+    const latestStep = run.steps[run.steps.length - 1], latestTool = latestStep?.toolCallId && message.toolCalls?.find(tool => tool.id === latestStep.toolCallId);
+    label.textContent = `Activity [${completed} / ${(run.droppedSteps || 0) + run.steps.length}] ${active ? latestTool ? globalThis.PkmAgentHarness.describeToolCall(latestTool, t) : modelStageLabel(latestStep, statusOf(latestStep || {}, run.steps.length - 1)) || "Preparing request" : { complete: "Completed", cancelled: "Cancelled", failed: "Failed or interrupted" }[run.status] || run.status}`;
+    label.title = `${run.model || ""} · Completed / recorded events; future work is shown only from recorded plans`;
+    const currentStep = run.steps[run.steps.length - 1];
+    const timer = document.createElement("span"); timer.className = "elapsed"; timer.dataset.started = currentStep?.at ?? run.startedAt;
+    if (!active) timer.dataset.finished = run.finishedAt ?? currentStep?.at ?? run.startedAt;
+    timer.setAttribute("aria-hidden", "true"); timer.title = "Elapsed current step time";
+    summary.append(icon, label, timer); section.append(summary);
+    const filterLabel = document.createElement("label"); filterLabel.className = "activity-filter";
+    filterLabel.append(document.createTextNode("Type "));
+    const filter = document.createElement("select"); filter.setAttribute("aria-label", "Activity type filter");
+    for (const [value, text] of [["all", "All"], ["llm", "LLM"], ["cmd", "CMD"], ["info", "INFO"]]) {
+      const option = document.createElement("option"); option.value = value; option.textContent = text; filter.append(option);
+    }
+    filter.value = activityFilters.get(key) || "all"; filterLabel.append(filter); section.append(filterLabel);
+    const list = document.createElement("ol"); list.className = "workflow-events";
+    const tools = new Map((message.toolCalls || []).map(tool => [tool.id, tool]));
+    const rows = new Map();
+    run.steps.forEach((step, index) => {
+      const identity = step.toolCallId ? `tool:${step.toolCallId}` : step.kind === "model" && step.round !== undefined ? `model:${step.round}` : `step:${index}`;
+      const previous = rows.get(identity);
+      rows.set(identity, { ...step, firstAt: previous?.firstAt ?? step.at, status: statusOf(step, index), index });
+    });
+    const appendRow = (id, label, status, at, finishedAt, body, usage, category = "info", operation = "display", tool, credits) => {
+      const row = document.createElement("li"); row.dataset.status = status; row.dataset.category = category; row.dataset.operation = operation;
+      const line = body ? document.createElement("summary") : document.createElement("div");
+      line.className = "workflow-event-line";
+      const glyph = document.createElement("span"); glyph.className = "workflow-dot"; glyph.setAttribute("aria-hidden", "true");
+      const badge = document.createElement("span"); badge.className = "activity-category"; badge.textContent = category.toUpperCase();
+      badge.title = category === "llm" ? operation === "token-count" ? "Model API token counting; not an inference or a reported token charge." : "Model inference; token usage is shown only when reported."
+        : category === "cmd" ? "Tool / command execution. Output may consume input tokens in a later model request; tools may also call models internally."
+        : "Local preparation, retrieval or display; not a model inference. Displayed data may also be included in later model input.";
+      const text = document.createElement("span"); text.className = "activity-label"; text.textContent = label;
+      const tokens = document.createElement("span"); tokens.className = "activity-usage";
+      const reasoning = usage && Number.isSafeInteger(usage.reasoningTokens) && usage.reasoningTokens >= 0 && usage.reasoningTokens <= usage.outputTokens ? usage.reasoningTokens : undefined;
+      tokens.textContent = usage ? `${usage.inputTokens.toLocaleString()} in / ${usage.outputTokens.toLocaleString()} out${reasoning === undefined ? "" : ` · ${t("{tokens} reasoning", { tokens:reasoning.toLocaleString() })}`}`
+        : category === "llm" && operation === "token-count" ? "Token count · not inference" : "";
+      tokens.title = usage ? t("Provider-reported usage for this model round; reasoning tokens are included in output, not added again. Not a token charge for each tool.") : "No independent provider token usage is reported for this operation.";
+      if (usage && category === "llm" && operation !== "token-count") {
+        const cached = usage.cachedInputTokens;
+        const cacheReported = Number.isSafeInteger(cached) && cached >= 0 && cached <= usage.inputTokens;
+        tokens.textContent += ` · ${cacheReported ? t("{tokens} cached input", { tokens:cached.toLocaleString() }) : t("Cache usage not reported")}`;
+        tokens.title += " " + t("Cached tokens are included in input. Cache hits do not independently establish a credit discount.");
+      }
+      if (category === "llm" && operation !== "token-count") tokens.textContent = [tokens.textContent, globalThis.PkmAgentHarness.creditLabel(credits, t)].filter(Boolean).join(" · ");
+      tokens.hidden = !tokens.textContent;
+      const timer = document.createElement("span"); timer.className = "elapsed";
+      timer.title = t("Elapsed dispatch/result time, including waits; not CPU time or proof of remote-job completion.");
+      if (Number.isFinite(at)) {
+        timer.dataset.started = at;
+        if (Number.isFinite(finishedAt)) timer.dataset.finished = finishedAt;
+        else if (!active) timer.dataset.finished = run.finishedAt ?? at;
+      } else timer.textContent = "-";
+      line.append(glyph, badge, text, tokens, timer);
+      if (tool) toolActivityPresentation(line, body, tool);
+      if (body) {
+        const detail = messageDisclosure(messageId || key, id, "", "activity-event");
+        detail.firstElementChild.replaceWith(line); detail.append(body); row.append(detail);
+      } else row.append(line);
+      list.append(row);
+    };
+    if (run.tools) {
+      // Static request context, listed first so the newest (running) event stays last.
+      const body = document.createElement("pre"); body.textContent = run.tools.join("\n") || "No tools advertised";
+      appendRow("advertised-tools", t("Tools available to the model ({count})", { count:run.tools.length }), "context", undefined, undefined, body);
+      list.lastElementChild.title = t("Tool definitions sent with every model round of this run; they count toward input tokens. Not an executed step.");
+    }
+    for (const [id, step] of rows) {
+      const tool = tools.get(step.toolCallId);
+      if (tool) tools.delete(tool.id);
+      const receipt = step.kind === "model" ? message.budgetReceipts?.find(item => item.round === step.round) : undefined;
+      const summaries = step.kind === "model" ? message.reasoningSummaries?.filter(item => item.round === step.round) : [];
+      let body;
+      if (tool || receipt || summaries?.length) {
+        body = document.createElement("div"); body.className = "activity-event-detail";
+        if (tool) { const pre = document.createElement("pre"); pre.textContent = `${tool.name}\n${tool.arguments}\n\n${tool.result || ""}`; body.append(pre); }
+        for (const summary of summaries || []) {
+          const heading = document.createElement("strong"); heading.textContent = "Reasoning / thinking reported by the provider";
+          const pre = document.createElement("pre"); pre.textContent = summary.text; body.append(heading, pre);
+        }
+        if (receipt) { const pre = document.createElement("pre"); pre.textContent = JSON.stringify(receipt, null, 2); body.append(pre); }
+      }
+      const usage = receipt?.ledger?.providerUsage;
+      const reported = usage && [usage.inputTokens, usage.outputTokens].every(value => Number.isSafeInteger(value) && value >= 0) ? usage : undefined;
+      const category = step.category || (step.kind === "tool" || step.toolCallId || /^(Running|Completed|Failed) tool:/.test(step.label) ? "cmd"
+        : step.kind === "model" || /^Memory: (understanding the question|summarizing topic)$/.test(step.label) ? "llm" : "info");
+      const operation = step.operation || (category === "llm" ? "inference" : category === "cmd" ? "command" : "display");
+      appendRow(id, `${tool ? globalThis.PkmAgentHarness.describeToolCall(tool, t) : modelStageLabel(step, step.status)} · ${step.status}`, step.status, tool?.startedAt ?? step.firstAt,
+        tool?.finishedAt ?? step.finishedAt ?? (["complete", "failed", "cancelled"].includes(step.status) ? run.steps[step.index + 1]?.at ?? run.finishedAt : undefined), body, reported, category, operation, tool, receipt?.ledger?.credits);
+      const thinking = active && step.status === "running" && summaries?.map(item => item.text).join("").trim();
+      if (thinking) {
+        const live = document.createElement("div"); live.className = "activity-thinking";
+        live.textContent = `${t("Thinking")}: …${thinking.slice(-240)}`; live.title = t("Readable thinking reported by the model provider; expand the row for the full text.");
+        list.lastElementChild.append(live);
+      }
+    }
+    for (const tool of tools.values()) {
+      const body = document.createElement("pre"); body.textContent = `${tool.name}\n${tool.arguments}\n\n${tool.result || ""}`;
+      const content = document.createElement("div"); content.className = "activity-event-detail"; content.append(body);
+      appendRow(`tool:${tool.id}`, `${globalThis.PkmAgentHarness.describeToolCall(tool, t)} · ${tool.status}`, tool.status, tool.startedAt, tool.finishedAt, content, undefined, "cmd", "command", tool);
+    }
+    const latest = state.chat.messages.filter(item => item.role === "assistant").at(-1);
+    const taskPlan = !message.id || message.id === latest?.id && message.taskId === state.chat.sessionId ? state.taskPlan : undefined;
+    const plan = taskPlan?.items?.length ? taskPlan.items.map(item => ({ label:item.title, status:item.status }))
+      : message.planning?.possibilities?.filter(item => item.status !== "rejected") || [];
+    for (const item of plan) {
+      const row = document.createElement("li"); row.className = "activity-planned"; row.dataset.status = "planned";
+      row.textContent = `TODO · ${item.label} · ${item.status}`; row.title = "Agent-reported plan, not a guaranteed future execution order."; list.append(row);
+    }
+    if (taskPlan?.unavailable) {
+      const note = document.createElement("li"); note.className = "activity-availability"; note.textContent = taskPlan.unavailable; list.append(note);
+    }
+    if (!message.reasoningSummaries?.length) {
+      const note = document.createElement("li"); note.className = "activity-availability";
+      note.textContent = "The model did not report readable reasoning; some models keep reasoning hidden or encrypted."; list.append(note);
+    }
+    section.append(list);
+    const applyFilter = () => {
+      for (const row of list.children) row.hidden = filter.value !== "all" && (row.dataset.category || "info") !== filter.value;
+    };
+    filter.onchange = () => { activityFilters.set(key, filter.value); applyFilter(); };
+    applyFilter();
+    if (run.droppedSteps) { const omitted = document.createElement("div"); omitted.className = "workflow-tools"; omitted.textContent = `${run.droppedSteps} earlier activity events omitted; tool results retained below.`; section.append(omitted); }
+    if (debug) section.append(debug);
+    section.ontoggle = () => { if (section.isConnected) expandedState.set(key, section.open); };
+    return section;
+  }
+  function error(text) { element("error").textContent = text; element("error").hidden = !text; }
+  function iconButton(icon, label, action) {
+    const button = document.createElement("button"); button.type = "button";
+    button.title = t(label); button.setAttribute("aria-label", t(label));
+    const glyph = document.createElement("span"); glyph.className = `codicon codicon-${icon}`;
+    button.append(glyph); button.addEventListener("click", action); return button;
+  }
+  function messageDisclosure(messageId, suffix, title, className) {
+    const key = `${state.chat.id}:${messageId}:${suffix}`;
+    const node = document.createElement("details"); node.className = className; node.open = messageExpanded.has(key);
+    const summary = document.createElement("summary"); summary.textContent = title; node.append(summary);
+    node.ontoggle = () => {
+      if (!node.isConnected) return;
+      node.open ? messageExpanded.add(key) : messageExpanded.delete(key); saveDraft();
+    };
+    return node;
+  }
+  function renderAppliedEdits() {
+    const panel = element("applied-edits"); panel.replaceChildren();
+    const message = [...state.chat.messages].reverse().find(item => item.role === "assistant" && item.changes?.length);
+    panel.hidden = !message;
+    if (!message) return;
+    const known = message.changes.filter(change => change.attribution === "exact");
+    const label = `Applied edits: +${known.reduce((total, change) => total + change.added, 0)} -${known.reduce((total, change) => total + change.removed, 0)}${known.length !== message.changes.length ? " · some counts unknown" : ""}`;
+    const details = messageDisclosure(message.id, "edits", label, "activity applied-edits-summary");
+    details.firstElementChild.title = "Successful edit operations in this response, not a net Git diff. Edits are unsaved unless separately saved.";
+    for (const change of message.changes) {
+      const row = document.createElement("div"); row.textContent = `[${change.workspace}] ${change.path}: ${change.attribution === "exact" ? `+${change.added} -${change.removed}` : "count unknown"}`;
+      details.append(row);
+    }
+    panel.append(details);
+  }
+  const messageNodes = new Map();
+  let messageNodesChatId;
+  const richLibraries = new Map();
+  let diagramSequence = 0;
+  function richLibrary(name) {
+    if (!richLibraries.has(name)) {
+      richLibraries.set(name, new Promise((resolve, reject) => {
+        if (name === "katex") {
+          const style = document.createElement("link"); style.rel = "stylesheet";
+          style.href = document.querySelector('meta[name="pkm-katex-styles"]').content;
+          style.onerror = () => reject(new Error("KaTeX stylesheet could not be loaded."));
+          document.head.append(style);
+        }
+        const script = document.createElement("script");
+        script.src = document.querySelector(`meta[name="pkm-${name}-src"]`).content;
+        script.nonce = document.querySelector("script[nonce]").nonce;
+        script.onload = () => {
+          if (!globalThis[name]) { reject(new Error(`${name} library is unavailable.`)); return; }
+          try {
+            if (name === "mermaid") globalThis.mermaid.initialize({
+              startOnLoad: false, suppressErrorRendering: true, securityLevel: "strict",
+              theme: /vscode-light|vscode-high-contrast-light/.test(document.body.className) ? "default" : "dark",
+              flowchart: { htmlLabels: false }, maxTextSize: 50000,
+            });
+            resolve(globalThis[name]);
+          } catch (error) { reject(error); }
+        };
+        script.onerror = () => reject(new Error(`${name} library could not be loaded.`));
+        document.head.append(script);
+      }));
+    }
+    return richLibraries.get(name);
+  }
+  function renderRichContent(root, text) {
+    const math = [];
+    const escape = value => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const parser = new marked.Marked({
+      renderer: { html: token => escape(token.text) },
+      extensions: [
+        { name: "blockMath", level: "block",
+          start: source => { const index = source.search(/\$\$|\\\[/); return index < 0 ? undefined : index; },
+          tokenizer: source => {
+            const match = /^(?:\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\])/.exec(source);
+            if (match) return { type: "blockMath", raw: match[0], text: (match[1] || match[2]).trim() };
+          },
+          renderer: token => { math.push({ text: token.text, display: true }); return '<span class="chat-math"></span>'; } },
+        { name: "inlineMath", level: "inline",
+          start: source => { const index = source.search(/\$|\\\(/); return index < 0 ? undefined : index; },
+          tokenizer: source => {
+            const match = /^(?:\$(?!\$)((?:\\.|[^$\\\n])+?)\$(?!\d)|\\\(([\s\S]+?)\\\))/.exec(source);
+            if (match && (match[1] || match[2]).trim()) return { type: "inlineMath", raw: match[0], text: match[1] || match[2] };
+          },
+          renderer: token => { math.push({ text: token.text, display: false }); return '<span class="chat-math"></span>'; } },
+      ],
+    });
+    root.innerHTML = DOMPurify.sanitize(parser.parse(text || ""), {
+      ALLOWED_TAGS: ["p", "br", "strong", "em", "del", "code", "pre", "blockquote", "ul", "ol", "li", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "table", "thead", "tbody", "tr", "th", "td", "a", "span"],
+      ALLOWED_ATTR: ["href", "title", "start", "colspan", "rowspan", "class"],
+      ALLOW_DATA_ATTR: false, ALLOWED_URI_REGEXP: /^(?:https?|pkm):\/\//i,
+    });
+    for (const link of root.querySelectorAll("a")) {
+      const href = link.getAttribute("href") || "";
+      if (!/^(?:https?|pkm):\/\//i.test(href)) link.removeAttribute("href");
+      else link.addEventListener("click", event => { event.preventDefault(); post("openLink", { value: href }); });
+    }
+    const failed = (holder, error) => {
+      holder.className = "rich-render-error";
+      holder.textContent = `Render error: ${String(error.message || error).slice(0, 500)}`;
+    };
+    for (const [index, holder] of [...root.querySelectorAll(".chat-math")].entries()) {
+      const token = math[index];
+      holder.textContent = token.text;
+      void richLibrary("katex").then(library => {
+        if (!holder.isConnected) return;
+        holder.innerHTML = DOMPurify.sanitize(library.renderToString(token.text, {
+          displayMode: token.display, throwOnError: true, trust: false, strict: "warn",
+          maxExpand: 1000, maxSize: 20,
+        }), { USE_PROFILES: { html: true, mathMl: true } });
+      }).catch(error => failed(holder, error));
+    }
+    for (const code of root.querySelectorAll("code.language-mermaid")) {
+      const source = code.textContent;
+      const holder = document.createElement("div"); holder.className = "mermaid-diagram";
+      holder.textContent = source; code.closest("pre").replaceWith(holder);
+      void richLibrary("mermaid").then(async library => {
+        if (!holder.isConnected) return;
+        const id = `chat-diagram-${++diagramSequence}`;
+        try {
+          const result = await library.render(id, source);
+          if (!holder.isConnected) return;
+          holder.innerHTML = DOMPurify.sanitize(result.svg, {
+            USE_PROFILES: { svg: true, svgFilters: true }, FORBID_TAGS: ["foreignObject", "a", "image"],
+          });
+        } finally {
+          document.getElementById(`d${id}`)?.remove();
+        }
+      }).catch(error => failed(holder, error));
+    }
+  }
+  function loadOlderMessages() {
+    const beforeId = state?.chat.messages[0]?.id;
+    if (!beforeId || historyPending || historyStart <= 0 || screen !== "chat" || document.visibilityState !== "visible") return;
+    historyPending = beforeId;
+    post("historyPage", { chatId: state.chat.id, id: beforeId }); renderMessages();
+  }
+  function portalCommandLine(command) {
+    const quote = value => /^[\w@%+=:,./\\-]+$/.test(value) ? value : JSON.stringify(String(value));
+    return [command.program, ...(Array.isArray(command.arguments) ? command.arguments : [])].map(quote).join(" ");
+  }
+  function portalCommandStatus(command) {
+    const exit = command.exitCode === undefined ? "" : ` · exit ${command.exitCode === null ? "?" : command.exitCode}`;
+    return ({ "awaiting-approval": t("Awaiting approval"), running: t("Running"), completed: t("Completed"), failed: t("Failed"),
+      denied: t("Declined"), cancelled: t("Cancelled"), unknown: t("Outcome unknown") }[command.state] || command.state) + exit;
+  }
+  function portalCommandCard(command) {
+    const article = document.createElement("article");
+    article.className = `message portal-command portal-command-${command.state}`;
+    article.dataset.portalCommand = command.requestId;
+    const stateLabel = ({ "awaiting-approval": t("Awaiting approval"), running: t("Running"), completed: t("Completed"),
+      failed: t("Failed"), denied: t("Declined"), cancelled: t("Cancelled"), unknown: t("Outcome unknown") }[command.state] || t("Outcome unknown"));
+    const header = document.createElement("div"); header.className = "message-header";
+    const role = document.createElement("strong");
+    const roleLabel = command.role === "controller" ? `${t("Portal command")} → ${command.peerName}` : `${t("Portal command")} ← ${command.peerName}`;
+    role.textContent = roleLabel;
+    article.setAttribute("aria-label", `${roleLabel} · ${stateLabel}`);
+    const status = document.createElement("span"); status.className = "model-name portal-command-status"; status.textContent = portalCommandStatus(command);
+    status.setAttribute("aria-label", `${t("Status")}: ${stateLabel}${command.exitCode !== undefined ? ` · exit ${command.exitCode === null ? "?" : command.exitCode}` : ""}`);
+    status.title = `${command.requestId}\n${command.startedAt}`;
+    header.append(role, status);
+    const line = document.createElement("pre"); line.className = "portal-command-line"; line.setAttribute("aria-label", t("Command"));
+    const prompt = document.createElement("span"); prompt.className = "portal-command-prompt"; prompt.setAttribute("aria-hidden", "true"); prompt.textContent = "$";
+    const code = document.createElement("code"); code.textContent = portalCommandLine(command);
+    line.append(prompt, code);
+    article.append(header, line);
+    const meta = document.createElement("div"); meta.className = "portal-command-meta";
+    if (command.cwd) {
+      const cwd = document.createElement("span"); cwd.className = "portal-command-cwd";
+      cwd.textContent = `cwd ${command.cwd}`; cwd.setAttribute("aria-label", `${t("Working directory")}: ${command.cwd}`); meta.append(cwd);
+    }
+    const timeout = document.createElement("span"); timeout.textContent = `${t("Timeout")} ${command.timeoutSeconds}s`; meta.append(timeout);
+    const execution = document.createElement("span"); execution.textContent = t("No model was invoked"); meta.append(execution);
+    article.append(meta);
+    const sections = [["stdout", command.stdout], ["stderr", command.stderr], ["detail", command.detail]].filter(([, text]) => text);
+    if (sections.length) {
+      const output = document.createElement("section"); output.className = "portal-command-output";
+      const title = document.createElement("div"); title.className = "portal-command-output-title";
+      title.textContent = `${t("Output")}${command.truncated ? ` · ${t("tail only")}` : ""}`;
+      const terminal = document.createElement("div"); terminal.className = "portal-command-terminal";
+      terminal.tabIndex = 0; terminal.setAttribute("role", "region"); terminal.setAttribute("aria-label", t("Output"));
+      for (const [label, text] of sections) {
+        const heading = document.createElement("small"); heading.className = `portal-command-stream-label portal-command-stream-${label}`;
+        heading.textContent = label; heading.id = `portal-command-${command.requestId}-${label}`;
+        const body = document.createElement("pre"); body.className = `portal-command-stream portal-command-stream-${label}`;
+        body.setAttribute("aria-labelledby", heading.id); body.textContent = text;
+        terminal.append(heading, body);
+      }
+      output.append(title, terminal); article.append(output);
+    }
+    return article;
+  }
+  function portalTransferCard(transfer) {
+    const article = document.createElement("article");
+    article.className = `message portal-transfer portal-command-${transfer.state}`;
+    article.dataset.portalTransfer = transfer.transferId;
+    const incoming = transfer.direction === "incoming";
+    const header = document.createElement("div"); header.className = "message-header";
+    const role = document.createElement("strong");
+    role.textContent = `${t("Portal files")} ${incoming ? "←" : "→"} ${transfer.peerName}`;
+    const status = document.createElement("span"); status.className = "model-name";
+    status.textContent = ({
+      "awaiting-approval": incoming ? t("Choose a destination folder, then approve this batch") : t("Awaiting local batch approval"),
+      offered: t("Waiting for receiver to choose a folder and approve"),
+      transferring: t("Transferring"), completed: t("Completed · receipt verified"),
+      cancelled: t("Cancelled"), failed: t("Failed"),
+    })[transfer.state] || transfer.state;
+    header.append(role, status); article.append(header);
+    const names = document.createElement("pre"); names.className = "portal-command-line";
+    names.textContent = transfer.files.map(file => `${file.name} · ${file.size.toLocaleString()} bytes`).join("\n");
+    article.append(names);
+    const progress = document.createElement("progress");
+    progress.max = Math.max(1, transfer.totalBytes);
+    progress.value = transfer.totalBytes === 0 && transfer.state === "completed" ? 1 : transfer.bytes;
+    progress.setAttribute("aria-label", t("File transfer progress"));
+    const amount = document.createElement("div"); amount.className = "message-tokens";
+    amount.textContent = `${transfer.bytes.toLocaleString()} / ${transfer.totalBytes.toLocaleString()} bytes · ${t("No automatic installation or execution")}`;
+    article.append(progress, amount);
+    if (transfer.reason || transfer.savedPaths?.length) {
+      const detail = document.createElement("pre"); detail.className = "portal-command-line";
+      detail.textContent = [transfer.reason, ...(transfer.savedPaths || [])].filter(Boolean).join("\n");
+      article.append(detail);
+    }
+    return article;
+  }
+  function renderMessages() {
+    if (!state || screen !== "chat" || document.visibilityState !== "visible") return;
+    const target = element("messages");
+    renderAppliedEdits();
+    const previousScrollTop = target.scrollTop;
+    const previousScrollHeight = target.scrollHeight;
+    if (jumpToLatest || renderedChatId !== state.chat.id) { followPaused = false; upwardScrollPending = false; }
+    // Layout growth can move the bottom before rendering; only reader intent pauses following.
+    const follow = !followPaused;
+    renderedChatId = state.chat.id;
+    jumpToLatest = false;
+    if (messageNodesChatId !== state.chat.id) { messageNodes.clear(); messageNodesChatId = state.chat.id; }
+    const children = [];
+    if (historyStart > 0) {
+      const older = document.createElement("button");
+      older.type = "button"; older.className = "history-load";
+      older.textContent = historyPending ? t("Loading older messages...") : `${t("Load older messages")} (${historyStart})`;
+      older.disabled = !!historyPending;
+      older.onclick = loadOlderMessages;
+      children.push(older);
+    }
+    const retained = new Set();
+    const firstLoaded = state.chat.messages[0]?.recordedAt;
+    const commands = [
+      ...(state.chat.portalCommands || []).map(command => ({ record: command, key: `portal-command:${command.requestId}`, render: portalCommandCard })),
+      ...(state.chat.portalTransfers || []).map(transfer => ({ record: transfer, key: `portal-transfer:${transfer.transferId}`, render: portalTransferCard })),
+    ].filter(item => historyStart <= 0 || !firstLoaded || item.record.startedAt >= firstLoaded)
+      .sort((a, b) => a.record.startedAt.localeCompare(b.record.startedAt));
+    const flushCommands = before => {
+      while (commands.length && (before === undefined || commands[0].record.startedAt < before)) {
+        const { record: command, key, render } = commands.shift();
+        const fingerprint = JSON.stringify([command, document.documentElement.lang]);
+        retained.add(key);
+        const cached = messageNodes.get(key);
+        const article = cached?.fingerprint === fingerprint ? cached.article : render(command);
+        messageNodes.set(key, { fingerprint, article });
+        children.push(article);
+      }
+    };
+    const latestUser = [...state.chat.messages].reverse().find(message => message.role === "user");
+    const pendingUserId = state.busy && state.chat.messages.at(-1)?.status === "streaming" ? latestUser?.id : undefined;
+    for (const message of state.chat.messages) {
+      if (message.recordedAt) flushCommands(message.recordedAt);
+      const sleeping = message.id === state.chat.messages.at(-1)?.id && state.chat.workerState?.sleeping;
+      const fingerprint = JSON.stringify([message, state.taskPlan, state.busy, state.chat.paused, pendingUserId, sleeping, chatRole(), document.documentElement.lang]);
+      retained.add(message.id);
+      const cached = messageNodes.get(message.id);
+      if (cached?.fingerprint === fingerprint) { children.push(cached.article); continue; }
+      const article = document.createElement("article"); article.className = `message ${message.role}`;
+      article.dataset.messageId = message.id;
+      const header = document.createElement("div"); header.className = "message-header";
+      const role = document.createElement("strong");
+      role.textContent = message.portalReview ? "PKM · Portal status event" : message.portalSource
+        ? `Controller · ${message.portalSource.hostname} · ${message.portalSource.endpoint} · ${message.portalSource.chatName}`
+        : message.role === "user" ? t("You") : "PKM";
+      if (message.portalSource) article.classList.add("portal-message");
+      const model = document.createElement("span"); model.className = "model-name"; model.textContent = message.model || (message.contextLabels || []).join(", "); model.title = model.textContent;
+      header.append(role, model, iconButton("copy", "Copy message", () => post("copy", { id: message.id })));
+      if (message.retrievalActivity || message.retrieval || message.budgetReceipts?.length) {
+        header.append(iconButton("references", "Memory", () => {
+          memoryActivityId = message.id; memoryStepId = "latest"; togglePopover("memory", true);
+        }));
+      }
+      if (message.role === "assistant" && message.id === state.chat.messages[state.chat.messages.length - 1]?.id && ["failed", "cancelled", "interrupted"].includes(message.status)) {
+        const retry = iconButton("refresh", "Retry response in place (new request; earlier tools may have run)", () => post("retry", { id: message.id }));
+        retry.disabled = state.busy || state.chat.paused; header.append(retry);
+      }
+      const content = document.createElement("div"); content.className = "content";
+      if (message.role === "user") content.textContent = message.content;
+      else renderRichContent(content, message.content);
+      article.append(header, content);
+      if (message.role === "assistant" && message.profileContext) {
+        const snapshot = message.profileContext;
+        const card = messageDisclosure(message.id, "profiles",
+          `Attempt Profiles · User ${snapshot.user ? `r${snapshot.user.revision}` : "not configured"} · Agent ${snapshot.agent ? `${snapshot.agent.name} r${snapshot.agent.revision}` : "not assigned"}`,
+          "profile-snapshot");
+        const body = document.createElement("pre");
+        body.textContent = JSON.stringify({
+          ...snapshot,
+          evidence: (message.budgetReceipts || []).map(round => ({
+            round: round.round, status: round.status, accounting: round.countingMethod,
+            messageInPlan: !!round.contextPlan?.manifest.some(item => item.hash === snapshot.messageHash),
+            transportPrepared: !!round.transport,
+          })),
+          retention: "Historical snapshot retained after Profile edits/deletion; current revision may differ.",
+        }, null, 2);
+        card.append(body); article.append(card);
+      }
+      if (message.fromChatId) {
+        const source = document.createElement("div"); source.className = "worker-provenance";
+        const manager = iconButton("history", "Source manager", () => { saveDraft(); post("select", { id: message.fromChatId }); });
+        manager.append(document.createTextNode(`${t("Source manager")}: ${message.fromChatId}`));
+        source.append(manager);
+        if (message.delegationId) source.append(document.createTextNode(` · ${t("Activity receipt")}: ${message.delegationId}`));
+        const dispatchedAt = state.chat.messages[state.chat.messages.indexOf(message) + 1]?.progress?.startedAt;
+        if (dispatchedAt !== undefined) source.append(document.createTextNode(` · ${t("Dispatched")}: ${workerTime(dispatchedAt)}`));
+        article.append(source);
+      }
+      if (sleeping) {
+        const sleep = document.createElement("div"); sleep.className = "message-status manager-sleep";
+        sleep.textContent = t("Manager sleeping · wakes on worker events · no model polling");
+        article.append(sleep);
+      }
+      for (const record of message.delegations || []) {
+        const result = document.createElement("section"); result.className = "delegation-result";
+        const heading = document.createElement("div"); heading.className = "message-header";
+        const role = globalThis.PkmChatRole(state.workerOverview?.nodes.find(node => node.chatId === record.chatId)) || "worker";
+        heading.append(window.PkmChatStatusIndicator(record.phase === "sleeping" ? "awaiting-result" : record.phase === "awaiting-input" ? "awaiting-input" : record.status === "complete" ? "completed" : record.status === "cancelled" ? "stopped" : record.status, role));
+        const link = document.createElement("a"); link.href = record.archived ? "#" : record.chatUrl; link.textContent = t(record.archived ? "Archived result" : "Delegated Chat");
+        link.addEventListener("click", event => { event.preventDefault(); record.archived ? post("workerArchive", { id: record.id }) : post("openLink", { value: record.chatUrl }); });
+        heading.append(link); result.append(heading);
+        if (record.title || record.dispatchedAt !== undefined) {
+          const dispatch = document.createElement("div"); dispatch.className = "worker-dispatch-stamp";
+          dispatch.textContent = [record.title, record.dispatchedAt !== undefined ? `${t("Dispatched")}: ${workerTime(record.dispatchedAt)}` : ""].filter(Boolean).join(" · ");
+          result.append(dispatch);
+        }
+        if (record.answer) { const answer = document.createElement("div"); answer.className = "content delegation-answer"; renderRichContent(answer, record.answer); result.append(answer); }
+        if (record.error) { const failure = document.createElement("div"); failure.className = "message-error"; failure.textContent = record.error; result.append(failure); }
+        article.append(result);
+      }
+      if (message.images?.length) article.append(imagePreviews(message.images, (index) => post("saveImage", { id: message.id, value: index }), "save", "Save image"));
+      const debug = document.createElement("div"); debug.className = "debug-information";
+      if (message.unattributedFileChanges) {
+        const warning = document.createElement("div"); warning.className = "message-status"; warning.textContent = "Program/MCP file changes are not attributed."; debug.append(warning);
+      }
+      const run = message.progress || (message.role === "assistant" && message.id === state.chat.messages[state.chat.messages.length - 1]?.id ? state.chat.progress : undefined);
+      for (const tool of run ? [] : message.toolCalls || []) {
+        const detail = messageDisclosure(message.id, tool.id, "", "activity tool-call");
+        const summary = document.createElement("summary");
+        const glyph = document.createElement("span"); glyph.className = tool.status === "running" && state.busy ? "codicon codicon-loading codicon-modifier-spin" : `codicon codicon-${tool.status === "complete" ? "check" : "error"}`;
+        const name = document.createElement("span"); name.className = "activity-label"; name.textContent = `${globalThis.PkmAgentHarness.describeToolCall(tool, t)} · ${tool.status === "running" && !state.busy ? "interrupted" : tool.status}`;
+        summary.append(glyph, name);
+        const result = document.createElement("pre"); result.textContent = `${tool.name}\n${tool.arguments}\n\n${tool.result || ""}`;
+        const body = document.createElement("div"); body.className = "activity-event-detail"; body.append(result);
+        toolActivityPresentation(summary, body, tool);
+        detail.firstElementChild.replaceWith(summary); detail.append(body); debug.append(detail);
+      }
+      if (run) article.insertBefore(activity(run, message.id, debug, message), content);
+      else if (message.unattributedFileChanges || message.toolCalls?.length) { const log = messageDisclosure(message.id, "activity", "Activity", "activity"); log.append(debug); article.insertBefore(log, content); }
+      if (message.elapsedMs !== undefined || message.estimatedCost !== undefined) {
+        const metadata = document.createElement("div"); metadata.className = "message-status";
+        metadata.textContent = [message.elapsedMs !== undefined ? elapsed(message.elapsedMs) : "", message.estimatedCost !== undefined ? `Estimated ${message.currency} ${message.estimatedCost.toFixed(6)}` : ""].filter(Boolean).join(" · ");
+        metadata.title = "Elapsed request time; cost uses configured rates, not provider billing.";
+        article.append(metadata);
+      }
+      if (message.status !== "complete") {
+        const status = document.createElement("div"); status.className = "message-error";
+        status.textContent = message.status === "streaming" ? ""
+          : message.status === "cancelled" && message.error === "Request cancelled. In-flight tool execution may already have occurred."
+            ? t("Response stopped. Earlier tool actions may already have taken effect; stopping does not undo them. Review the tool results before retrying.")
+            : t(message.error || message.status);
+        if (["streaming", "cancelled"].includes(message.status)) status.className = "message-status";
+        article.append(status);
+      }
+      if (message.outputBudgetWarning) {
+        const warning = document.createElement("p"); warning.className = "message-status"; warning.textContent = message.outputBudgetWarning; article.append(warning);
+      }
+      const tokens = document.createElement("div"); tokens.className = "message-tokens";
+      tokens.textContent = messageTokenLabel(message);
+      tokens.title = message.role === "user" ? "Independent user-message token usage is unavailable unless the provider reports it; request input includes history/context/tools." : "Provider-reported tokens for reported rounds only; other rounds may omit usage. Input includes history/context/tools, not just the latest user message.";
+      if (message.role === "assistant") {
+        const credits = document.createElement("span"); credits.className = "message-tokens message-credits";
+        credits.textContent = globalThis.PkmAgentHarness.creditLabel(message.creditUsage, t);
+        credits.title = t("Provider-reported Copilot credits for Chat rounds and quota clarification. Memory and workers are accounted separately. Missing reports are not zero.");
+        if (credits.textContent) {
+          if (tokens.textContent) tokens.append(" · ");
+          tokens.append(credits);
+        }
+      }
+      if (tokens.textContent) article.append(tokens);
+      messageNodes.set(message.id, { fingerprint, article });
+      children.push(article);
+    }
+    flushCommands();
+    for (const id of messageNodes.keys()) if (!retained.has(id)) messageNodes.delete(id);
+    for (const submission of submissions.values()) {
+      if (submission.id !== state.chat.id) continue;
+      if (!submission.article) {
+        const article = document.createElement("article"); article.className = "message user optimistic-message";
+        article.dataset.submissionId = submission.submissionId;
+        const role = document.createElement("strong"); role.textContent = t("You");
+        const content = document.createElement("div"); content.className = "content"; content.textContent = submission.text;
+        const status = document.createElement("div"); status.className = "message-status"; status.setAttribute("role", "status");
+        article.append(role, content, status); submission.article = article;
+      }
+      submission.article.lastElementChild.textContent = t(submission.accepted ? "Accepted · awaiting sync" : "Sending");
+      children.push(submission.article);
+    }
+    const latest = state.chat.messages[state.chat.messages.length - 1];
+    if (state.chat.progress && (latest?.role !== "assistant" || latest.progress && latest.progress.attemptId !== state.chat.progress.attemptId)) children.push(activity());
+    const confirmations = [...(state.approvals || []), ...(state.decisions || []).map(decision => ({ ...decision, decision: true, scope: "Chat decision" }))];
+    for (const approval of confirmations) {
+      const fingerprint = JSON.stringify([approval, document.documentElement.lang]);
+      const cached = approvalNodes.get(approval.id);
+      if (cached?.fingerprint === fingerprint) { children.push(cached.section); continue; }
+      const section = document.createElement("section"); section.className = "approval"; section.setAttribute("aria-label", t(approval.decision ? "Chat decision" : "Tool approval"));
+      section.dataset.confirmationId = approval.id;
+      const title = document.createElement("strong"); title.textContent = approval.title;
+      const details = document.createElement("details"); details.open = !!approval.decision;
+      const summary = document.createElement("summary"); summary.textContent = t(approval.scope);
+      const input = document.createElement("pre"); input.textContent = approval.detail; details.append(summary, input);
+      const actions = document.createElement("div"); actions.className = "approval-actions";
+      section.append(title, details);
+      let readForm;
+      if (approval.form) {
+        const form = document.createElement("form"); form.className = "chat-question-form";
+        const draft = formDrafts.get(approval.id) || Object.create(null);
+        const fields = [];
+        const updateVisibility = () => {
+          if (!approval.localOnly || !approval.fieldVisibility) return;
+          for (const field of fields) {
+            const condition = approval.fieldVisibility[field.name];
+            const dependency = condition && fields.find(item => item.name === condition.field);
+            field.label.hidden = !!dependency && !condition.values.includes(dependency.read());
+          }
+        };
+        for (const [name, field] of Object.entries(approval.form.properties)) {
+          const choices = field.enum || field.items?.enum;
+          const label = document.createElement(choices ? "fieldset" : "label"); label.className = "chat-question-field";
+          const title = document.createElement(choices ? "legend" : "span"); title.textContent = field.title || name;
+          const required = approval.form.required?.includes(name);
+          if (required) title.textContent += " *";
+          let control;
+          let readChoices;
+          if (choices) {
+            control = document.createElement("div"); control.className = "chat-question-choices";
+            const multiple = field.type === "array", inputs = [];
+            const previous = Object.prototype.hasOwnProperty.call(draft,name) ? draft[name] : field.default;
+            choices.forEach((choice, index) => {
+              const row = document.createElement("label"); row.className = "chat-question-choice";
+              const option = document.createElement("input"); option.type = multiple ? "checkbox" : "radio";
+              option.name = `${approval.id}:${name}`; option.value = String(index);
+              option.checked = multiple ? Array.isArray(previous) && previous.includes(choice) : previous === choice;
+              option.required = !multiple && !!required;
+              const text = document.createElement("span"); text.textContent = String(choice);
+              row.append(option, text); control.append(row); inputs.push(option);
+            });
+            readChoices = () => multiple ? inputs.filter(option => option.checked).map(option => choices[Number(option.value)])
+              : inputs.some(option => option.checked) ? choices[Number(inputs.find(option => option.checked).value)] : undefined;
+            if (!multiple && !required) {
+              const clear = document.createElement("button"); clear.type = "button"; clear.textContent = t("Clear answer");
+              clear.onclick = () => { inputs.forEach(option => { option.checked = false; }); draft[name] = undefined; formDrafts.set(approval.id,draft); };
+              control.append(clear);
+            }
+          } else {
+            control = document.createElement(approval.localOnly && approval.secretFields?.includes(name) ? "input"
+              : field.type === "array" || field.type === "string" && field.maxLength >= 2000 ? "textarea" : "input");
+            if (control.tagName === "INPUT") control.type = approval.localOnly && approval.secretFields?.includes(name) ? "password" : field.type === "boolean" ? "checkbox" : ["integer", "number"].includes(field.type) ? "number" : "text";
+            if (approval.localOnly && approval.secretFields?.includes(name)) control.autocomplete = "off";
+            if (field.type === "boolean") control.checked = draft[name] ?? field.default ?? false;
+            else { const previous = draft[name] ?? field.default ?? ""; control.value = Array.isArray(previous) ? previous.join("\n") : String(previous); }
+            if (field.type === "integer") control.step = "1";
+            else if (field.type === "number") control.step = "any";
+            if (field.minimum !== undefined) control.min = String(field.minimum);
+            if (field.maximum !== undefined) control.max = String(field.maximum);
+            if (field.minLength !== undefined) control.minLength = field.minLength;
+            control.maxLength = Math.min(field.maxLength ?? 4000, 4000);
+          }
+          control.name = name; control.required = !!required && field.type !== "boolean";
+          const read = () => choices ? readChoices()
+            : field.type === "boolean" ? control.checked : control.value === "" ? undefined
+            : ["integer", "number"].includes(field.type) ? Number(control.value)
+            : field.type === "array" ? control.value.split("\n").filter(Boolean) : control.value;
+          control.oninput = control.onchange = () => { draft[name] = read(); formDrafts.set(approval.id, draft); updateVisibility(); };
+          label.append(title, control);
+          if (field.description) { const description = document.createElement("small"); description.textContent = field.description; label.append(description); }
+          form.append(label); fields.push({ name, control, read, label });
+        }
+        const feedback = document.createElement("p"); feedback.className = "message-error"; feedback.setAttribute("role", "alert"); form.append(feedback);
+        updateVisibility();
+        readForm = () => {
+          if (!form.reportValidity()) return undefined;
+          const answer = Object.create(null);
+          for (const field of fields) { const value = field.read(); if (value !== undefined) answer[field.name] = value; }
+          return answer;
+        };
+        form.onsubmit = event => { event.preventDefault(); actions.querySelector("button")?.click(); };
+        section.append(form);
+      }
+      const choices = approval.decision ? approval.choices.map(choice => [choice.value, choice.value === "cancel" ? "close" : "check", choice.label])
+        : [...(!approval.once ? [["approve-once", "check", "Allow once"]] : []), ["approve", "check", approval.quota ? "Yes" : approval.once ? "Approve" : "Approve & remember"], ["deny", "close", approval.quota ? "No" : "Deny"], ...(approval.portal ? [["portal-permissions", "clock", "Timed Portal permissions"]] : []), ...(!approval.once ? [["allow-all", "shield", "Allow All"]] : [])];
+      for (const [value, icon, label] of choices) {
+        const button = iconButton(icon, label, () => {
+          const answer = value === "submit" && readForm ? readForm() : undefined;
+          if (value === "submit" && readForm && answer === undefined) return;
+          for (const action of actions.children) action.disabled = true;
+          post(approval.localOnly ? "portalDecision" : approval.decision ? "decision" : "approval", { id: approval.id, value, ...(answer ? { answer } : {}) });
+        });
+        const text = document.createElement("span"); text.textContent = t(label); button.disabled = !!approval.questioning; button.append(text); actions.append(button);
+      }
+      section.append(actions);
+      if (approval.quota) {
+        const question = document.createElement("textarea"); question.maxLength = 2000; question.rows = 2; question.placeholder = t("Question about this quota"); question.value = approvalDrafts.get(approval.id) || ""; question.disabled = !!approval.questioning;
+        question.oninput = () => approvalDrafts.set(approval.id, question.value);
+        const ask = iconButton("question", "Let me ask a question", () => { if (!question.value.trim()) { question.focus(); return; } ask.disabled = true; post("approvalQuestion", { id: approval.id, text: question.value }); });
+        ask.append(document.createTextNode(t("Let me ask a question"))); ask.disabled = !!approval.questioning; actions.append(ask);
+        const billing = document.createElement("p"); billing.textContent = t("Questions do not approve or change quota. Model clarification may incur charges.");
+        section.append(question, billing);
+        for (const item of approval.questions || []) {
+          const entry = document.createElement("div"); const prompt = document.createElement("strong"); prompt.textContent = item.question;
+          const answer = document.createElement("div"); answer.className = "content"; renderRichContent(answer, item.answer);
+          entry.append(prompt, answer);
+          if (item.error) { const error = document.createElement("p"); error.className = "message-error"; error.textContent = item.error; entry.append(error); }
+          section.append(entry);
+        }
+      }
+      approvalNodes.set(approval.id, { fingerprint, section }); children.push(section);
+    }
+    for (const id of approvalNodes.keys()) if (!confirmations.some(approval => approval.id === id)) { approvalNodes.delete(id); approvalDrafts.delete(id); formDrafts.delete(id); }
+    for (const [index, child] of children.entries()) if (target.children[index] !== child) target.insertBefore(child, target.children[index] || null);
+    while (target.children.length > children.length) target.lastElementChild.remove();
+    for (const terminal of target.querySelectorAll(".portal-command-terminal:not([data-initialized])")) {
+      terminal.scrollTop = terminal.scrollHeight;
+      terminal.dataset.initialized = "true";
+    }
+    updateClock();
+    target.setAttribute("aria-busy", String(state.busy || !!historyPending));
+    target.scrollTop = historyPrepend ? previousScrollTop + target.scrollHeight - previousScrollHeight : follow ? target.scrollHeight : previousScrollTop;
+    observedScrollTop = target.scrollTop;
+    messageResizeObserver.disconnect();
+    messageResizeObserver.observe(target);
+    for (const child of target.children) messageResizeObserver.observe(child);
+    historyPrepend = false;
+  }
+  function imagePreviews(images, action, icon, label) {
+    const list = document.createElement("div"); list.className = "chat-images";
+    images.forEach((image, index) => {
+      if (!["image/png", "image/jpeg"].includes(image.mimeType) || typeof image.dataBase64 !== "string" || image.dataBase64.length > 700000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(image.dataBase64)) return;
+      const item = document.createElement("figure");
+      const preview = document.createElement("img"); preview.alt = image.label; preview.src = `data:${image.mimeType};base64,${image.dataBase64}`;
+      const caption = document.createElement("figcaption"); caption.textContent = image.label; caption.title = image.label;
+      item.append(preview, caption, iconButton(icon, `${label}: ${image.label}`, () => action(index))); list.append(item);
+    });
+    return list;
+  }
+  function renderTools(force = false) {
+    const groups = state.toolGroups || [];
+    const fingerprint = JSON.stringify([groups, state.chat.id, state.remoteBusy]);
+    if (!force && renderedToolGroups === fingerprint) return;
+    renderedToolGroups = fingerprint;
+    const query = element("tool-search").value.toLowerCase().trim();
+    const tree = element("tool-tree"); tree.replaceChildren();
+    for (const group of groups) {
+      const matches = group.tools.filter(tool => `${group.label} ${tool.label} ${tool.description}`.toLowerCase().includes(query));
+      if (query && !matches.length) continue;
+      const details = document.createElement("details"); details.className = "tool-source"; details.open = !!query || expandedToolGroups.has(group.id);
+      const summary = document.createElement("summary"); summary.title = group.description;
+      const arrow = document.createElement("span"); arrow.className = `codicon codicon-chevron-${details.open ? "down" : "right"}`;
+      const label = document.createElement("label"); const checkbox = document.createElement("input"); checkbox.type = "checkbox";
+      checkbox.setAttribute("aria-label", `Enable ${group.label}`); checkbox.disabled = !!state.remoteBusy || !group.tools.length;
+      const count = group.tools.filter(tool => tool.enabled).length;
+      checkbox.checked = count > 0 && count === group.tools.length; checkbox.indeterminate = count > 0 && count < group.tools.length;
+      checkbox.onclick = event => event.stopPropagation(); checkbox.onchange = () => post("toolSelection", { id: group.id, value: checkbox.checked });
+      const name = document.createElement("span"); name.textContent = group.label; label.append(checkbox, name); label.onclick = event => event.stopPropagation();
+      const counts = document.createElement("span"); counts.className = "tool-source-count"; counts.textContent = `${count}/${group.tools.length}`;
+      const only = iconButton("filter", `Enable only ${group.label}`, () => post("toolSelection", { id: group.id, value: true, only: true }));
+      only.disabled = !!state.remoteBusy || !group.tools.length; only.addEventListener("click", event => event.stopPropagation());
+      summary.append(arrow, label, counts, only); details.append(summary);
+      details.ontoggle = () => { arrow.className = `codicon codicon-chevron-${details.open ? "down" : "right"}`; if (!query) { if (details.open) expandedToolGroups.add(group.id); else expandedToolGroups.delete(group.id); } };
+      for (const tool of matches) {
+        const leaf = document.createElement("label"); leaf.className = "tool-leaf"; leaf.title = tool.description;
+        const check = document.createElement("input"); check.type = "checkbox"; check.checked = tool.enabled; check.disabled = !!state.remoteBusy;
+        check.setAttribute("aria-label", `Enable ${tool.label}`); check.onchange = () => post("toolSelection", { id: tool.id, value: check.checked });
+        const text = document.createElement("span"); text.textContent = tool.label; leaf.append(check, text); details.append(leaf);
+      }
+      tree.append(details);
+    }
+  }
+  let memoryActivityId;
+  let memoryStepId = "latest";
+  let memoryFingerprint;
+  const memorySegments = new Map();
+  const expandedMemorySegments = new Set();
+  const requestedMemorySegments = new Set();
+  const memoryGroupOpen = new Map();
+  function memoryEntry(segment, metadata = "") {
+    const details = document.createElement("details"); details.className = "memory-segment";
+    details.dataset.memoryId = segment.id;
+    const summary = document.createElement("summary");
+    summary.textContent = Array.from(segment.preview || memorySegments.get(segment.id)?.content || t("Preview unavailable")).slice(0, 30).join("");
+    const info = document.createElement("div"); info.className = "memory-metadata";
+    info.textContent = `${metadata}\n${segment.id}`;
+    const content = document.createElement("pre");
+    content.textContent = memorySegments.get(segment.id)?.content || t("Expand to read this memory");
+    details.append(summary, info, content);
+    details.open = expandedMemorySegments.has(segment.id);
+    details.ontoggle = () => {
+      if (!details.isConnected) return;
+      if (details.open) {
+        expandedMemorySegments.add(segment.id);
+        if (!memorySegments.has(segment.id) && !requestedMemorySegments.has(segment.id)) {
+          requestedMemorySegments.add(segment.id);
+          content.textContent = t("Loading...");
+          post("memorySegment", { id: segment.id });
+        }
+      } else expandedMemorySegments.delete(segment.id);
+    };
+    return details;
+  }
+  function renderMemory() {
+    if (!state || document.visibilityState !== "visible" || element("memory-panel").hidden) return;
+    const policy = state.chat.memoryPolicy || { recallDays:30, includeWorkers:true, grants:[] };
+    element("memory-policy-status").textContent = `${policy.recallDays === null ? "All time" : `Last ${policy.recallDays} days`} · Current Chat${policy.includeWorkers ? " + descendant workers" : ""} · ${policy.grants.length} explicit grants`;
+    if (!element("retrieval-activity")) {
+      const row = document.createElement("div"); row.className = "settings-row retrieval-timeline";
+      for (const [id, label] of [["retrieval-activity", "Activity"], ["retrieval-step", "Memory"]]) {
+        const select = document.createElement("select"); select.id = id; select.setAttribute("aria-label", t(label)); row.append(select);
+        select.onchange = () => { if (id === "retrieval-activity") { memoryActivityId = select.value; memoryStepId = "latest"; } else memoryStepId = select.value; memoryFingerprint = undefined; renderMemory(); };
+      }
+      element("retrieval-status").before(row);
+    }
+    const activities = state.chat.messages.filter(message => message.role === "assistant"
+      && (message.retrieval || message.retrievalActivity || message.budgetReceipts?.length));
+    const activity = activities.find(message => message.id === memoryActivityId) || activities.at(-1);
+    const selector = element("retrieval-activity");
+    selector.replaceChildren(...activities.map((message, index) => new Option(`${t("Activity")} ${index + 1} · ${(state.chat.messages[state.chat.messages.indexOf(message) - 1]?.content || "").slice(0, 60)}`, message.id)));
+    selector.value = activity?.id || ""; selector.disabled = !activities.length;
+    const timeline = activity?.retrievalActivity;
+    const budgets = activity?.budgetReceipts || [];
+    const rounds = new Map((timeline?.rounds || []).map(round => [round.index, round]));
+    for (const budget of budgets) if (!rounds.has(budget.round)) rounds.set(budget.round, { index:budget.round });
+    const steps = [
+      { id: "latest", label: t("Memory"), receipt: activity?.retrieval },
+      ...(timeline?.attempts || []).map((attempt, index) => ({ id: `attempt-${index}`, label: `${t("Memory")} ${index + 1} · ${attempt.kind} · ${attempt.durationMs} ms`, receipt: attempt.receipt })),
+      ...[...rounds.values()].sort((a, b) => a.index - b.index).map(round => {
+        const budget = budgets.find(item => item.round === round.index);
+        return { id:`round-${round.index}`, label:`${t(budget?.status === "sent" || round.receipt?.phase === "sent" ? "Sent" : "Prepared")} ${round.index + 1} · ${budget?.consumed?.estimatedInputTokens ?? round.inputTokens ?? "?"}/${budget?.effective?.inputBudget ?? round.inputBudget ?? "?"}`,
+          receipt:round.receipt, budget };
+      }),
+    ];
+    const step = steps.find(item => item.id === memoryStepId) || steps[0];
+    element("retrieval-step").replaceChildren(...steps.map(item => new Option(item.label, item.id)));
+    element("retrieval-step").value = step.id;
+    const receipt = step.receipt;
+    const segmentMetadata = new Map((state.memoryTree?.tasks || []).flatMap(task => task.segments).map(segment => [segment.id, segment]));
+    const displayReceipt = receipt && { ...receipt, candidates: receipt.candidates.map(candidate => {
+      const preview = segmentMetadata.get(candidate.id)?.preview;
+      return preview ? { ...candidate, label: preview } : candidate;
+    }) };
+    const budget = step.budget || (step.id === "latest" ? budgets.at(-1) : undefined);
+    const fingerprint = JSON.stringify([state.chat.id, state.chat.sessionId, state.chat.includeHistory, state.busy, state.localization?.locale, state.chat.taskContextCheckpoints, activity?.id, activity?.retrievalLearning, activity?.progress?.attemptId, step.id, receipt, budget, state.memoryTree, policy, element("retrieval-kind").value, element("retrieval-top").value, element("retrieval-flow").clientWidth]);
+    if (fingerprint === memoryFingerprint) return;
+    memoryFingerprint = fingerprint;
+    const type = element("retrieval-kind"); const previousType = type.value;
+    type.replaceChildren(new Option(t("All types"), "all"));
+    for (const kind of [...new Set((receipt?.candidates || []).map(candidate => candidate.kind))].sort()) type.add(new Option(kind, kind));
+    type.value = [...type.options].some(option => option.value === previousType) ? previousType : "all";
+    element("retrieval-status").textContent = receipt ? (receipt.warning || t("{selected} selected overall · {count} candidates · per-method ranking", { selected: receipt.selectedCount, count: receipt.candidates.length }))
+      + " · " + t(step.id.startsWith("attempt-") ? "Recall shortlist, not sent context" : step.id.startsWith("round-")
+        ? receipt.phase === "sent" ? "Accepted transport; not proof of model completion" : "Prepared context; not confirmed sent" : "Latest budget selection")
+      + (timeline?.droppedRounds ? " · " + t("{count} earlier sends omitted", { count: timeline.droppedRounds }) : "") : t("No retrieval receipt");
+    const evidence = element("retrieval-evidence"); evidence.replaceChildren();
+    if (state.chat.sessionId && state.chat.includeHistory) {
+      const checkpoint = [...state.chat.taskContextCheckpoints || []].reverse().find(item => item.taskId === state.chat.sessionId);
+      const review = document.createElement("button");
+      review.type = "button"; review.textContent = t("Review Task checkpoint"); review.disabled = state.busy;
+      review.onclick = () => post("taskCheckpoint", { chatId: state.chat.id });
+      evidence.append(review);
+      if (checkpoint && !checkpoint.revokedAt) {
+        const details = document.createElement("details"), summary = document.createElement("summary"), text = document.createElement("pre");
+        summary.textContent = t("Approved Task checkpoint") + ` · ${checkpoint.sourceInputIds.length}`;
+        text.textContent = checkpoint.summary;
+        const revoke = document.createElement("button");
+        revoke.type = "button"; revoke.textContent = t("Revoke checkpoint"); revoke.disabled = state.busy;
+        revoke.onclick = () => post("revokeTaskCheckpoint", { chatId: state.chat.id });
+        details.append(summary, text, revoke); evidence.append(details);
+      }
+    }
+    const line = (label, value) => {
+      const row = document.createElement("p"), title = document.createElement("strong");
+      title.textContent = t(label) + ": "; row.append(title, document.createTextNode(t(String(value ?? "Not recorded")))); evidence.append(row);
+    };
+    line("Chat / attempt", `${state.chat.id} / ${activity?.progress?.attemptId || t("Not recorded")}`);
+    line("Query", receipt?.query);
+    if (activity?.retrievalLearning) {
+      const learning = activity.retrievalLearning;
+      line("Online learning", `${learning.status} · ${learning.provenance} · ${learning.judgedSources} sources`);
+      if (learning.status !== "user-protected" && learning.relevantSourceIds) line("Learning update", learning.relevantSourceIds.join("\n") || "No relevant sources");
+      if (learning.error) line("Learning error", learning.error);
+      if (learning.acknowledgment) line("Learning update", JSON.stringify(learning.acknowledgment));
+    }
+    line("Recorded scope", receipt ? `${receipt.chatId}${receipt.sessionId ? " / " + receipt.sessionId : ""}` : undefined);
+    line("Retrieval methods", receipt ? [...new Set(receipt.candidates.map(candidate => candidate.method))].join(", ") || t("Not recorded") : undefined);
+    if (receipt?.invocation) {
+      const invocation = receipt.invocation;
+      line("Requested / served retrieval", `${invocation.requestedRoute} / ${invocation.servedRoute} · semantic ${invocation.semanticStatus}`);
+      line("Model invoked", invocation.modelInvoked ? "Yes" : "No");
+      if (invocation.onlineLearning) {
+        const learning = invocation.onlineLearning;
+        line("Online learning", `${learning.enabled ? "enabled" : "disabled"} · ${learning.applied ? "applied" : "baseline"} · ranker ${learning.ranker_revision} · calibrator ${learning.calibrator_revision} · embedding unchanged`);
+      }
+      line("Retrieval invocation", `${invocation.requestId} · generation ${invocation.readyGeneration} · ${invocation.retrievalId || t("Not recorded")}`);
+      if (invocation.reason) line("Retrieval reason", invocation.reason);
+      if (invocation.adaptive) line("Adaptive result count", `${invocation.adaptive.reason} · ${invocation.adaptive.returned_count}/${invocation.adaptive.original_count}`);
+      if (invocation.retrievalId && invocation.modelInvoked && invocation.semanticStatus === "ready") {
+        const review = document.createElement("button");
+        review.type = "button"; review.textContent = t("Review relevance");
+        review.disabled = state.busy;
+        review.onclick = () => post("reviewRetrieval", { chatId: state.chat.id, id: activity.id });
+        evidence.append(review);
+      }
+    }
+    if (budget) {
+      line("Model / round", `${budget.modelId} / ${budget.round + 1}`);
+      line("Dispatch evidence", budget.status === "sent" ? "Accepted transport; not proof of model completion"
+        : budget.transport ? "Transport prepared; not confirmed sent" : "Plan prepared; not confirmed sent");
+      line("Input estimate / budget", `${budget.consumed?.estimatedInputTokens ?? "?"} / ${budget.effective?.inputBudget ?? "?"} (${budget.countingMethod})`);
+      line("Reserved output", budget.effective?.outputTokens);
+      line("Actual transport", budget.transport ? `${budget.transport.provider} / ${budget.transport.inputTokens} (${budget.transport.countingMethod})` : undefined);
+      const plan = budget.contextPlan, transport = budget.transport;
+      if (transport?.automaticKnowledge) line("Automatic PKM reference input / cap",
+        `${transport.automaticKnowledge.inputTokens} / ${transport.automaticKnowledge.inputBudget} (${transport.automaticKnowledge.countingMethod})`);
+      else if (plan?.automaticKnowledge) line("Automatic PKM reference estimate / cap",
+        `${plan.automaticKnowledge.estimatedAfter} / ${plan.automaticKnowledge.inputBudget} (${plan.automaticKnowledge.countingMethod})`);
+      line("Plan stop reason", plan?.stopReason);
+      line("Selected reference IDs", budget.selectedReferenceIds?.join(", ") || t("None"));
+      line("Omitted reference IDs", plan?.omittedIds?.join(", ") || (plan ? t("None") : undefined));
+      line("Unresolved reference IDs", plan?.unresolved?.join(", ") || (plan ? t("None") : undefined));
+      const hashes = plan?.manifest?.map(item => item.hash);
+      line("HTTP message hash comparison", transport?.provider === "http" && hashes
+        ? JSON.stringify(hashes) === JSON.stringify(transport.messageHashes) ? "Match" : "Mismatch"
+        : transport?.provider === "vscode" ? "Native message conversion; raw plan hashes are not comparable" : undefined);
+      const recorded = document.createElement("details"), summary = document.createElement("summary"), data = document.createElement("pre");
+      summary.textContent = t("Recorded plan and transport");
+      data.textContent = JSON.stringify({ contextPlan:plan, transport, ledger:budget.ledger }, null, 2);
+      recorded.append(summary, data); evidence.append(recorded);
+    }
+    globalThis.PkmRetrievalFlow(element("retrieval-flow"), displayReceipt, Number(element("retrieval-top").value), type.value, candidate => {
+      element("memory-preview").textContent = JSON.stringify(candidate, null, 2); element("memory-preview").hidden = false;
+      const entry = [...element("retrieval-candidates").querySelectorAll(".memory-segment")].find(entry => entry.dataset.memoryId === candidate.id);
+      if (entry) { entry.open = true; entry.scrollIntoView({ block: "nearest" }); }
+    });
+    const candidates = element("retrieval-candidates"); candidates.replaceChildren();
+    const groups = new Map();
+    for (const candidate of (receipt?.candidates || []).filter(candidate => type.value === "all" || candidate.kind === type.value).slice(0, Number(element("retrieval-top").value))) {
+      const segment = segmentMetadata.get(candidate.id);
+      const kind = candidate.kind === "memory" ? segment?.sourceKind === "tool" || candidate.id.includes(":tool:") ? "Tool receipts" : "Chat history" : candidate.kind;
+      if (!groups.has(kind)) {
+        const group = document.createElement("details"); group.className = "memory-source-group"; group.open = memoryGroupOpen.get(kind) ?? true;
+        group.ontoggle = () => { if (group.isConnected) memoryGroupOpen.set(kind, group.open); };
+        const heading = document.createElement("summary"); heading.textContent = t(kind);
+        group.append(heading); candidates.append(group); groups.set(kind, group);
+      }
+      const metadata = `${t(candidate.selected ? "Selected" : "Not selected")} · ${candidate.evidenceState || t("Not recorded")} · ${candidate.method}\n${candidate.reason}\n${candidate.sourceUri}`
+        + `\n${t("Source revision")}: ${candidate.sourceRevision || t("Not recorded")}`
+        + (candidate.range ? `\n[${candidate.range.start}, ${candidate.range.end}) ${candidate.range.unit} · ${candidate.offsetEncoding || t("Not recorded")}` : "")
+        + (candidate.contentHash ? `\nSHA256: ${candidate.contentHash}` : "")
+        + (candidate.serving ? `\n${JSON.stringify(candidate.serving)}` : "");
+      if (candidate.kind === "memory") groups.get(kind).append(memoryEntry(segment || { id: candidate.id }, metadata));
+      else {
+        const entry = document.createElement("details"); entry.className = "memory-segment";
+        const title = document.createElement("summary"); title.textContent = Array.from(candidate.label).slice(0, 30).join("");
+        const detail = document.createElement("pre"); detail.className = "memory-metadata";
+        detail.textContent = `${metadata}\n${candidate.id}\n${t("This receipt contains source metadata, not the full resource.")}`;
+        entry.append(title, detail); groups.get(kind).append(entry);
+      }
+    }
+    const tree = element("memory-tree"); tree.replaceChildren();
+    if (!state.memoryTree) return;
+    const root = document.createElement("details"); root.open = true;
+    const summary = document.createElement("summary"); summary.textContent = state.memoryTree.title; root.append(summary);
+    for (const task of state.memoryTree.tasks) {
+      const branch = document.createElement("details"); branch.open = task.id === state.chat.sessionId;
+      const title = document.createElement("summary"); title.textContent = `${task.title} · ${task.segments.length} segments`; branch.append(title);
+      for (const [index, segment] of task.segments.entries()) {
+        branch.append(memoryEntry(segment, `${segment.role === "user" ? "User" : "Assistant"} · ${index + 1} · ${segment.characters} chars`));
+      }
+      root.append(branch);
+    }
+    tree.append(root);
+  }
+  const PORTAL_ENDPOINT_SCOPES = {
+    "forwarded-localhost": "forwarded localhost: reachable only on the computer running the VS Code UI",
+    lan: "local network address",
+    remote: "remote address",
+  };
+  function portalEndpointText(endpoint, scope) {
+    return endpoint ? `${endpoint}${PORTAL_ENDPOINT_SCOPES[scope] ? ` (${PORTAL_ENDPOINT_SCOPES[scope]})` : ""}` : "";
+  }
+  function portalPendingMinutes(pending) {
+    return Math.max(0, Math.ceil((pending.expiresAt - Date.now()) / 60000));
+  }
+  function portalHeadline(portal) {
+    const binding = portal?.binding;
+    if (!binding && portal?.pending) return `Portal link sent · waiting for the other side to accept (expires in ${portalPendingMinutes(portal.pending)} min)`;
+    if (!binding) return "Portal open · waiting for a peer to pair";
+    const peer = [binding.peerMachine || binding.peerName, binding.peerChatName].filter(Boolean).join(" · ") || "peer";
+    const review = binding.role === "controlled"
+      ? { auto: "progress auto-sent to controller", manual: "controller checks status manually" }[portal.reviewMode]
+      : { auto: "auto-review on remote progress", manual: "check remote status manually" }[portal.reviewMode];
+    return [`${binding.role === "controller" ? "Controlling" : "Controlled by"} ${peer}`, portal.connected ? review : "reconnecting…"].filter(Boolean).join(" · ");
+  }
+  function portalPermissionLabel(permissions) {
+    if (!permissions?.active) return "No active reusable authorization";
+    return `Permissions: ${permissions.mode} · ${permissions.expiresAt == null ? "Until disconnected"
+      : `${Math.max(0, Math.ceil((permissions.expiresAt - Date.now()) / 1000))}s remaining · expires ${new Date(permissions.expiresAt).toLocaleTimeString()}`}`;
+  }
+  function portalCompactLabel(portal) {
+    if (!portal.binding && portal.pending) return `Portal Pairing - expires in ${portalPendingMinutes(portal.pending)} min`;
+    const permission = portal.permissions?.active ? portal.permissions.mode : "Ask";
+    return `Portal ${portal.connected ? "Connected" : "Reconnecting"} - Permission ${permission}${portal.permissions?.active && portal.permissions.expiresAt == null ? " · Until disconnected" : ""}`;
+  }
+  let portalFingerprint;
+  function renderPortal() {
+    const container = element("portal-state");
+    let host = container;
+    const portal = state?.portal;
+    const connected = !!portal?.connected && !!portal.binding;
+    const button = element("chat-portal");
+    if (button.dataset.connection !== (connected ? "connected" : "disconnected")) button.replaceChildren(globalThis.PkmChatPortalIcon(connected, undefined, false));
+    button.dataset.connection = connected ? "connected" : "disconnected";
+    button.setAttribute("aria-pressed", String(connected));
+    button.title = connected ? `Chat Portal: connected (open) · ${portal.binding.role} · ${portal.binding.peerMachine || portal.binding.peerName || ""} · ${portal.binding.peerChatName || ""}`
+      : "Chat Portal: disconnected / awaiting pairing (closed)";
+    element("chat-status").classList.toggle("portal-role-active", !!portal?.binding);
+    const role = portal?.binding?.role;
+    if (role) {
+      const label = document.createElement("span"); label.textContent = portalHeadline(portal); label.className = "portal-headline";
+      const chatStatus = state.chat.paused ? "paused" : state.chats.find(chat => chat.id === state.chat.id)?.status;
+      const resting = chatStatus === "paused" || chatStatus === "stopped";
+      const scene = resting ? globalThis.PkmChatStatusIndicator(chatStatus, role) : globalThis.PkmChatPortalIcon(connected, role);
+      if (!resting) {
+        scene.setAttribute("role", "img"); scene.setAttribute("aria-label", `${role === "controller" ? "Controller" : "Controlled"} · Portal ${connected ? "open" : "closed"}`);
+      }
+      element("chat-status").replaceChildren(scene, label);
+    }
+    host.hidden = !portal?.binding && !portal?.pending;
+    const fingerprint = JSON.stringify([state?.chat?.id, portal && { ...portal,
+      permissions: portal.permissions && { ...portal.permissions, now: undefined } }]);
+    if (fingerprint === portalFingerprint) return;
+    portalFingerprint = fingerprint;
+    const expanded = new Map([...host.querySelectorAll("details[data-portal-detail]")].map(node => [node.dataset.portalDetail, node.open]));
+    host.replaceChildren();
+    if (host.hidden) return;
+    const compact = document.createElement("button");
+    compact.className = "portal-compact";
+    compact.dataset.portalCompact = "true";
+    compact.textContent = portalCompactLabel(portal);
+    compact.setAttribute("aria-describedby", "portal-details");
+    compact.onclick = () => post("peerCollaboration", { chatId: state.chat.id });
+    host.append(compact);
+    host = document.createElement("section");
+    host.id = "portal-details";
+    host.className = "portal-details";
+    host.setAttribute("aria-label", "Portal connection details");
+    container.append(host);
+    const title = document.createElement("strong");
+    title.dataset.portalHeadline = "true";
+    title.textContent = portalHeadline(portal);
+    const wizard = globalThis.PkmChatPortalIcon(true, role || "controller");
+    wizard.classList.add("portal-wizard", role === "controlled" ? "portal-controlled" : "portal-controller");
+    wizard.setAttribute("aria-label", role === "controlled" ? "Controlled wizard beside the open Portal" : "Controller wizard beside the open Portal");
+    wizard.setAttribute("role", "img");
+    if (connected) host.append(wizard);
+    host.append(title);
+    const target = document.createElement("div");
+    target.textContent = [portalEndpointText(portal.endpoint, portal.endpointScope),
+      portal.peerEndpoint && `peer endpoint ${portalEndpointText(portal.peerEndpoint, portal.peerEndpointScope)}`].filter(Boolean).join(" · ");
+    host.append(target);
+    if (portal.pending && !portal.binding) {
+      const pending = document.createElement("div");
+      pending.className = "portal-pending";
+      pending.dataset.portalPending = "true";
+      const copy = document.createElement("button");
+      copy.textContent = "Copy link again";
+      copy.disabled = !portal.pending.linkAvailable;
+      copy.title = portal.pending.linkAvailable ? "Copy the unredeemed one-time link to the clipboard" : "The link is only kept in memory while this window is open";
+      copy.onclick = () => post("portalPendingLink", { chatId: state.chat.id, value: "copy" });
+      const revoke = document.createElement("button");
+      revoke.textContent = "Void link";
+      revoke.title = "Invalidate the unredeemed link and close this pending Portal";
+      revoke.onclick = () => post("portalPendingLink", { chatId: state.chat.id, value: "void" });
+      const note = document.createElement("span");
+      note.textContent = `${portal.pending.role === "controller" ? "This Chat will control the peer" : "The peer will control this Chat"} · link via ${portalEndpointText(portal.pending.endpoint || portal.endpoint, portal.pending.endpointScope || portal.endpointScope)}`;
+      pending.append(note, copy, revoke);
+      host.append(pending);
+    }
+    if (portal.externalAuthorization) {
+      const external = document.createElement("div");
+      external.textContent = `External MCP access: ${portal.externalAuthorization.expiresAt == null ? "until disconnected" : `until ${new Date(portal.externalAuthorization.expiresAt).toLocaleTimeString()}`}`;
+      host.append(external);
+    }
+    const permissions = document.createElement("button");
+    permissions.textContent = "Permissions / transfers";
+    permissions.onclick = () => post("peerCollaboration", { chatId: state.chat.id });
+    host.append(permissions);
+    const lease = document.createElement("div");
+    lease.dataset.portalClock = "true";
+    lease.textContent = portalPermissionLabel(portal.permissions);
+    host.append(lease);
+    const matrix = document.createElement("details");
+    matrix.dataset.portalDetail = "permissions";
+    matrix.open = expanded.get("permissions") ?? false;
+    const heading = document.createElement("summary"); heading.textContent = "Permission matrix (this Chat / Portal only)"; matrix.append(heading);
+    const table = document.createElement("table");
+    for (const [dimension, allowed] of Object.entries(portal.permissions?.effective || {})) {
+      const row = document.createElement("tr");
+      const scopes = [...new Set((portal.permissions?.grants || []).flatMap(grant => grant.scopes?.[dimension] || []))];
+      for (const value of [dimension, allowed ? scopes.length ? `Allowed only in: ${scopes.join(", ")}` : "Allowed" : "Ask / not granted"]) {
+        const cell = document.createElement("td"); cell.textContent = value; row.append(cell);
+      }
+      table.append(row);
+    }
+    const fileRow = document.createElement("tr");
+    for (const value of ["file-transfer", "Controlled user must permit EACH batch"]) {
+      const cell = document.createElement("td"); cell.textContent = value; fileRow.append(cell);
+    }
+    table.append(fileRow); matrix.append(table); host.append(matrix);
+    const evidence = document.createElement("div");
+    evidence.textContent = portal.binding && !portal.binding.peerCapabilities?.includes("observations-v1")
+      ? "Remote Host does not advertise live snapshots; receipts alone do not reveal its visible Chat state."
+      : "Public task snapshots only; not screen sharing. Hidden reasoning and unrelated history are not exported. Bounded tool output is mirrored only while progress-read and that tool's dimension are granted without folder limits.";
+    host.append(evidence);
+    for (const receipt of portal.receipts || []) {
+      const observed = (portal.observations || []).find(item => item.requestId === receipt.requestId);
+      if (observed && (!["completed", "failed", "cancelled", "denied", "unknown"].includes(receipt.state) || observed.state === receipt.state)) continue;
+      const row = document.createElement("div");
+      row.textContent = `Remote task · ${receipt.state}${receipt.error ? ` · ${receipt.error}` : ""}${observed ? " · Final receipt supersedes the previous task snapshot" : " · No task snapshot received yet"}`;
+      host.append(row);
+    }
+    for (const observation of portal.observations || []) {
+      const row = document.createElement("details");
+      row.dataset.portalDetail = `observation:${observation.requestId}`;
+      row.open = expanded.get(row.dataset.portalDetail) ?? true;
+      const summary = document.createElement("summary");
+      const stale = !portal.connected || Date.now() - (observation.receivedAt || observation.at) > 15000;
+      summary.dataset.observedAt = String(observation.receivedAt || observation.at);
+      summary.textContent = `Remote · ${observation.state} · ${observation.stage || ""} · ${new Date(observation.at).toLocaleTimeString()}${stale ? " · last observation (not live evidence)" : ""}`;
+      row.append(summary);
+      const body = document.createElement("pre");
+      body.textContent = observation.visibility === "restricted" ? "Not authorized to share remote progress."
+        : [observation.answer, observation.error, ...(observation.approvals || []).map(item => `Waiting for remote authorization: ${item.title}`),
+          ...(observation.tools || []).map(item => `${item.name}: ${item.status}${item.output ? `\n  ${item.output.replace(/\n/g, "\n  ")}` : item.outputWithheld ? " · output withheld (not authorized)" : ""}`)].filter(Boolean).join("\n");
+      row.append(body); host.append(row);
+    }
+    for (const transfer of portal.transfers || []) {
+      const row = document.createElement("p"); row.textContent = `File transfer · ${transfer.state || "Status not reported"}`; host.append(row);
+    }
+  }
+
+  function render() {
+    if (document.visibilityState !== "visible") return;
+    element("copy-chat-id").disabled = !state.chat?.id;
+    element("promote-project").disabled = !state.chat?.id;
+    document.body.classList.toggle("chat-backgrounded", document.visibilityState === "hidden");
+    renderMessages();
+    renderWorkers();
+    revealWorkerDispatch();
+    renderTools();
+    renderMemory();
+    element("permission-mode").value = state.chat.permissionMode || "protective";
+    element("permission-mode").disabled = !!state.remoteBusy;
+    const grants = state.chat.permissionGrants?.length || 0;
+    element("permission-grants").textContent = t("{count} remembered approvals", { count: grants });
+    element("reset-permissions").disabled = !grants || !!state.remoteBusy;
+    library?.render(state.library);
+    const chats = element("chats"); chats.replaceChildren();
+    const rank = new Map((library?.order || []).map((id, index) => [id, index]));
+    const active = item => ["running", "awaiting-input", "awaiting-result"].includes(item.status);
+    for (const item of [...state.chats].sort((left, right) => Number(active(right)) - Number(active(left)) || (rank.get(left.id) ?? 0) - (rank.get(right.id) ?? 0))) {
+      const status = globalThis.PkmChatStatusIndicator(item.status, chatRole(item));
+      const option = new Option(item.title, item.id); option.title = `${status.title}: ${item.title}`;
+      option.selected = item.id === state.chat.id; chats.add(option);
+      if (option.selected) { chats.title = option.title; element("chat-status").replaceChildren(status); }
+    }
+    if (state.chat.projection && !state.portal?.binding) {
+      const projection = state.chat.projection;
+      const status = element("chat-status");
+      status.append(document.createTextNode(` ${projection.objectKind} · ${projection.state}`));
+      status.title = `${projection.state} · Next: ${projection.nextOwner} · ${projection.reason} ${projection.resume}`;
+      status.setAttribute("aria-label", status.title);
+    }
+    renderPortal();
+    post("chatVisibility", { chatId: state.chat.id, value: screen === "chat" && document.visibilityState === "visible" });
+    const native = state.settings.provider === "vscode";
+    const disconnected = state.settings.needsModelConnection || (!native && !state.settings.endpoint);
+    const modelLabel = disconnected ? t("Choose model") : state.settings.selectedProfile?.label || state.settings.model;
+    element("model-label").textContent = modelLabel;
+    element("model").title = `Choose model: ${modelLabel} (${native ? "VS Code" : state.settings.provider}). ${state.busy ? "Applies to the next request; current response keeps its model." : ""}`;
+    element("model").setAttribute("aria-label", `Choose model: ${modelLabel}`);
+    const window = element("window");
+    const maximum = state.settings.selectedProfile?.contextWindow || 4096;
+    const current = Math.min(state.settings.contextWindow || maximum, maximum);
+    const editing = budgetOwner === state.chat.id;
+    if (!editing || document.activeElement !== window && document.activeElement !== element("window-slider")) window.value = current;
+    window.max = maximum;
+    presets = contextPresets(maximum);
+    const slider = element("window-slider"); slider.max = presets.length - 1; slider.disabled = presets.length < 2;
+    element("window-presets").replaceChildren(...presets.map((value, index) => new Option(contextLengthLabel(value), index)));
+    slider.title = `Context presets: ${presets.map(contextLengthLabel).join(" / ")}`;
+    syncContextSlider();
+    window.title = state.settings.selectedProfile?.status === "unknown" ? "Unverified model: conservative 4K-token local budget. Configure the provider's verified maximum." : "Total input + output token budget; applies to the next request.";
+    if (!editing || document.activeElement !== element("output")) element("output").value = state.settings.maxOutputTokens || 1024;
+    element("output").max = Math.min(state.settings.selectedProfile?.maxOutputTokens || 1024, Number(window.value) - 1);
+    if (document.activeElement !== element("tool-rounds")) element("tool-rounds").value = state.settings.maxToolRounds || 30;
+    element("tool-rounds").title = "Tool rounds before asking to continue; applies to the next request";
+    element("output").title = native ? "Local per-response token guard using the model tokenizer when available (otherwise conservative UTF-8 bytes); not a provider-enforced billing or reasoning-token limit. Applies to the next request." : "Maximum output tokens sent to the API; applies to the next request.";
+    budgetOwner = state.chat.id;
+    element("contexts").replaceChildren();
+    element("images").replaceChildren(imagePreviews(state.chat.images || [], index => post("removeImage", { value: index }), "close", "Remove image"));
+    element("images").hidden = !state.chat.images?.length;
+    element("image").disabled = !native || state.settings.selectedProfile?.imageInput !== true || disconnected;
+    element("image").title = element("image").disabled ? "Choose a vision-capable VS Code model to attach images" : "Attach PNG/JPEG image (up to two, 512 KB each)";
+    for (const item of state.chat.context) {
+      const chip = document.createElement("div"); chip.className = "context-item";
+      const label = document.createElement("span"); label.textContent = item.label; label.title = `${item.label} (${item.characters.toLocaleString()} characters)`;
+      chip.append(label, iconButton("close", `Remove ${item.label}`, () => post("removeContext", { id: item.id })));
+      element("contexts").append(chip);
+    }
+    element("history").checked = state.chat.includeHistory;
+    element("context").title = `Add context${state.chat.context.length ? ` (${state.chat.context.length} attached)` : ""}`;
+    element("options").title = state.chat.context.length ? `Model settings (${state.chat.context.length} attached)` : "Model settings";
+    element("send").hidden = false; element("stop").hidden = !state.busy && !state.chat.workerState?.sleeping;
+    if (state.remoteBusy) inputMode = "task";
+    element("input-mode").hidden = !state.busy;
+    element("steer-mode").disabled = !!state.remoteBusy;
+    element("steer-mode").setAttribute("aria-checked", String(inputMode === "steer"));
+    element("task-mode").setAttribute("aria-checked", String(inputMode === "task"));
+    const sendLabel = state.chat.paused ? "Resume Chat" : state.busy ? inputMode === "steer" ? "Steer" : "Queue new task" : "Send";
+    element("send").title = t(sendLabel); element("send").setAttribute("aria-label", t(sendLabel));
+    element("send").firstElementChild.className = `codicon codicon-${state.chat.paused ? "debug-start" : "send"}`;
+    element("stop").disabled = !!state.remoteBusy;
+    const queued = state.chat.queuedInputs || [];
+    for (const key of Object.keys(queuedDrafts)) if (key.startsWith(`${state.chat.id}:`) && !queued.some(input => key === `${state.chat.id}:${input.id}`)) {
+      delete queuedDrafts[key]; queuedEditorNodes.delete(key); saveDraft();
+    }
+    const focusedEditor = document.activeElement?.dataset.queuedEditor;
+    const editorSelection = focusedEditor ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : undefined;
+    element("queued-inputs").hidden = !queued.length; element("queued-inputs").replaceChildren();
+    if (queued.length) {
+      const heading = document.createElement("div"); heading.className = "queued-input-row";
+      const count = document.createElement("strong"); count.textContent = t("{count} queued", { count: queued.length }); heading.append(count);
+      const run = iconButton("play", "Run queued inputs", () => post("runQueued")); run.disabled = state.busy || state.chat.paused || queued.some(input => input.editToken); heading.append(run);
+      element("queued-inputs").append(heading);
+      for (const input of queued) {
+        const row = document.createElement("div"); row.className = "queued-input-row";
+        const key = `${state.chat.id}:${input.id}`;
+        let draft = queuedDrafts[key];
+        if (draft?.pending && !input.editToken && (draft.pending === "cancel" || input.text === draft.text)) {
+          delete queuedDrafts[key]; queuedEditorNodes.delete(key); draft = undefined; saveDraft();
+        }
+        if (draft) {
+          let editor = queuedEditorNodes.get(key);
+          if (!editor) {
+            editor = document.createElement("textarea"); editor.dataset.queuedEditor = key;
+            editor.setAttribute("aria-label", t("Edit queued message")); editor.maxLength = 16000;
+            editor.value = draft.text; editor.style.cssText = "width:100%;min-height:72px;box-sizing:border-box";
+            editor.oninput = () => { queuedDrafts[key].text = editor.value; saveDraft(); };
+            queuedEditorNodes.set(key, editor);
+          }
+          row.style.flexWrap = "wrap"; row.append(editor);
+          const ready = input.editToken === draft.token;
+          const save = iconButton("check", "Save queued message", () => {
+            queuedDrafts[key].pending = "save"; saveDraft();
+            post("saveQueuedEdit", { chatId:state.chat.id, id:input.id, editToken:draft.token, text:editor.value });
+          });
+          save.disabled = !ready; row.append(save);
+          const cancel = iconButton("close", "Cancel queued edit", () => {
+            queuedDrafts[key].pending = "cancel"; saveDraft();
+            if (ready) post("cancelQueuedEdit", { chatId:state.chat.id, id:input.id, editToken:draft.token });
+            render();
+          });
+          cancel.disabled = !ready; row.append(cancel);
+          element("queued-inputs").append(row);
+          if (focusedEditor === key) { editor.focus(); editor.setSelectionRange(...editorSelection); }
+          continue;
+        }
+        const label = document.createElement("span"); label.textContent = `${t(input.mode === "steer" ? "Steer" : "New task")}: ${input.text}`; label.title = input.text; row.append(label);
+        const edit = iconButton("edit", "Edit queued message", () => {
+          queuedDrafts[key] = { token:crypto.randomUUID(), text:input.text };
+          saveDraft(); post("beginQueuedEdit", { chatId:state.chat.id, id:input.id, editToken:queuedDrafts[key].token });
+          render(); queuedEditorNodes.get(key)?.focus();
+        });
+        edit.disabled = !!input.editToken || !!input.portalReview; row.append(edit);
+        const remove = iconButton("close", "Remove queued input", () => post("removeQueuedInput", { id: input.id })); remove.disabled = !!state.remoteBusy || !!input.editToken; row.append(remove);
+        element("queued-inputs").append(row);
+      }
+    }
+    const taskLabel = state.chat.sessionId ? "Complete Task" : "Start Task";
+    element("task").title = t(taskLabel); element("task").setAttribute("aria-label", t(taskLabel));
+    element("task").disabled = state.busy;
+    element("task").firstElementChild.className = `codicon codicon-${state.chat.sessionId ? "check" : "checklist"}`;
+    const harnessSummary = element("harness-summary");
+    harnessSummary.hidden = !state.chat.sessionId;
+    if (!harnessSummary.hidden) {
+      const reports = state.chat.messages.filter(message => message.taskId === state.chat.sessionId)
+        .flatMap(message => (message.harnessReports || []).filter(report => report.taskId === state.chat.sessionId));
+      const task = [...reports].reverse().find(report => report.kind === "task");
+      const validation = [...reports].reverse().find(report => report.kind === "validation");
+      element("harness-summary-text").textContent = [
+        task ? t("Agent-reported goal: {goal}", { goal:task.goal }) : t("No explicit task-state report yet"),
+        validation ? t("Recorded validation: {status}", { status:validation.status }) : t("Task validation not recorded"),
+        state.chat.progress?.status ? t("Response: {status}", { status:state.chat.progress.status }) : ""
+      ].filter(Boolean).join(" · ");
+    }
+    const permissionModes = { protective: "Protective", ask: "Ask before changes", "read-only": "Read only", "allow-all": "Allow All (PKM)" };
+    const permissionMode = Object.hasOwn(permissionModes, state.chat.permissionMode) ? state.chat.permissionMode : "protective";
+    const permissionLabel = permissionModes[permissionMode];
+    element("permissions").dataset.permissionMode = permissionMode;
+    element("permissions").title = `${t("Permissions")}: ${t(permissionLabel)} · next request`;
+    element("permissions").setAttribute("aria-label", element("permissions").title);
+    const selected = (state.toolGroups || []).flatMap(group => group.tools.filter(tool => tool.enabled));
+    const builtinCount = selected.filter(tool => tool.id.startsWith("builtin:") && (tool.name !== "record_harness" || state.chat.sessionId) && (state.chat.permissionMode !== "read-only" || ["read_file", "find_files", "search_text", "list_directory", "ask_user", "pkm_search", "pkm_read", "session_info", "list_chats", "record_harness"].includes(tool.name))).length;
+    const mcpCount = state.chat.permissionMode === "read-only" ? 0 : selected.filter(tool => tool.id.startsWith("mcp:")).length;
+    const hostCount = state.chat.permissionMode === "read-only" ? 0 : selected.filter(tool => tool.id.startsWith("vscode:")).length;
+    element("tools-label").textContent = t("{count} tools", { count: builtinCount + mcpCount + hostCount });
+    element("tools").title = `Tools: ${builtinCount} builtin / ${mcpCount} HTTP MCP / ${hostCount} VS Code · next request`;
+    element("tools").setAttribute("aria-label", element("tools").title);
+    element("send").disabled = !element("prompt").value.trim();
+    element("provider").textContent = disconnected ? "Not connected" : native ? "VS Code" : "API";
+    element("provider").title = native ? "VS Code Language Model API · access and quota controlled by the model provider" : `${state.settings.provider} · ${state.settings.endpoint || "Not configured"}`;
+    tokenEstimate();
+    clearInterval(clock); clock = state.busy ? setInterval(updateClock, 250) : undefined;
+  }
+  window.addEventListener("message", event => {
+    const message = event.data;
+    if (message.type === "queuedEditRejected") {
+      const key = `${message.chatId}:${message.id}`;
+      if (message.operation === "beginQueuedEdit") { delete queuedDrafts[key]; queuedEditorNodes.delete(key); }
+      else if (queuedDrafts[key]) delete queuedDrafts[key].pending;
+      saveDraft(); render(); return;
+    }
+    if (message.type === "historyPage") {
+      if (message.chatId !== state?.chat.id || message.beforeId !== historyPending) return;
+      historyPending = undefined;
+      const current = new Set(state.chat.messages.map(item => item.id));
+      const older = message.messages.filter(item => !current.has(item.id));
+      state.chat.messages = [...older, ...state.chat.messages];
+      historyStart = message.start; historyLoaded = true; historyPrepend = older.length > 0;
+      render(); return;
+    }
+    if (message.type === "sendAccepted") {
+      const submission = submissions.get(message.submissionId);
+      if (submission?.id !== message.chatId) return;
+      submission.accepted = true;
+      if (pending === submission) pending = undefined;
+      saveDraft(); renderMessages(); error(""); return;
+    }
+    if (message.type === "modelPickerClosed") { element("model").removeAttribute("aria-busy"); return; }
+    if (message.type === "showChat") { showScreen("chat"); return; }
+    if (message.type === "showTools") { togglePopover("tools", true); element("tool-search").focus(); return; }
+    if (message.type === "showMemory") { togglePopover("memory", true); return; }
+    if (message.type === "workerArchive" && message.chatId === state?.chat.id) {
+      const dialog = document.createElement("dialog"); dialog.className = "worker-archive";
+      const heading = document.createElement("h2"); heading.textContent = message.title;
+      const content = document.createElement("div"); content.className = "content"; renderRichContent(content, message.answer);
+      const close = iconButton("close", "Close", () => dialog.close()); dialog.append(close, heading, content);
+      if (message.error) { const failure = document.createElement("p"); failure.className = "message-error"; failure.textContent = message.error; dialog.append(failure); }
+      if (message.truncated) { const more = document.createElement("p"); more.textContent = t("Preview limited to 12,000 characters; read_chat_result supports paging."); dialog.append(more); }
+      const evidence = document.createElement("pre"); evidence.textContent = message.tools.map(tool => `${tool.name}: ${tool.status}`).join("\n"); dialog.append(evidence);
+      dialog.onclose = () => dialog.remove(); document.body.append(dialog); dialog.showModal(); return;
+    }
+    if (message.type === "memorySegment" && message.chatId === state?.chat.id) {
+      requestedMemorySegments.delete(message.segment.id); memorySegments.set(message.segment.id, message.segment);
+      for (const entry of document.querySelectorAll(".memory-segment")) {
+        if (entry.dataset.memoryId === message.segment.id) entry.querySelector("pre").textContent = message.segment.content;
+      }
+      element("memory-preview").textContent = message.segment.content; element("memory-preview").hidden = false; return;
+    }
+    if (message.type === "memorySegmentUnavailable" && message.chatId === state?.chat.id) {
+      requestedMemorySegments.delete(message.id);
+      memorySegments.set(message.id, { id: message.id, content: message.error, unavailable: true });
+      for (const entry of document.querySelectorAll(".memory-segment")) {
+        if (entry.dataset.memoryId === message.id) entry.querySelector("pre").textContent = message.error;
+      }
+      return;
+    }
+    if (message.type === "error") {
+      if (message.profileError) {
+        const dialog = element("persona-dialog");
+        if (dialog.open && message.chatId === state?.chat?.id && dialog.dataset.chatId === message.chatId) {
+          const content = element("persona-content");
+          content.textContent = message.message;
+          const retry = document.createElement("button"); retry.textContent = "Retry";
+          retry.onclick = () => { content.textContent = "Loading current Profiles..."; element("persona-edit").disabled = true; post("personaProfiles"); };
+          content.append(retry);
+        }
+        return;
+      }
+      if (message.confirmationId) {
+        const card = approvalNodes.get(message.confirmationId)?.section;
+        if (card) {
+          for (const button of card.querySelectorAll(".approval-actions button")) button.disabled = false;
+          const feedback = card.querySelector(".chat-question-form .message-error");
+          if (feedback) feedback.textContent = message.message;
+        }
+      }
+      if (!message.chatId || message.chatId === state?.chat.id) historyPending = undefined;
+      const restoreSubmission = submission => {
+        if (!submission || submission.accepted) return;
+        const current = state?.chat.id === submission.id ? element("prompt").value : drafts[submission.id] || "";
+        const restored = [submission.text, current].filter(Boolean).join("\n\n");
+        drafts[submission.id] = restored;
+        if (state?.chat.id === submission.id) element("prompt").value = restored;
+      };
+      if (message.submissionId) {
+        const submission = submissions.get(message.submissionId);
+        if (submission && (!message.chatId || submission.id === message.chatId)) {
+          restoreSubmission(submission);
+          submissions.delete(message.submissionId);
+          if (pending === submission) pending = undefined;
+        }
+      } else if (pending && (!message.chatId || pending.id === message.chatId)) {
+        restoreSubmission(pending);
+        submissions.delete(pending.submissionId); pending = undefined;
+      }
+      if (!message.chatId || message.chatId === state?.chat.id) error(message.message);
+      saveDraft(); renderMessages(); return;
+    }
+    if (message.type === "personaProfiles") {
+      const dialog = element("persona-dialog");
+      if (!dialog.open || message.chatId !== state?.chat?.id || dialog.dataset.chatId !== message.chatId) return;
+      element("persona-content").replaceChildren(globalThis.PkmAgentHarness.profileCards(message.data));
+      element("persona-edit").disabled = false;
+      return;
+    }
+    if (message.type === "state") {
+      if (element("persona-dialog").open && element("persona-dialog").dataset.chatId !== message.chat?.id) element("persona-dialog").close();
+      globalThis.PkmHostHealth?.ready();
+      applyLocale(message.localization);
+      const previous = state?.chat.id;
+      if (state) drafts[state.chat.id] = element("prompt").value;
+      const retained = new Set((message.library?.chats || message.chats || []).map(chat => chat.id));
+      for (const id of Object.keys(drafts)) if (!retained.has(id)) delete drafts[id];
+      if (!message.chat) {
+        visualization.setChat(undefined);
+        state = undefined; pending = undefined; submissions.clear(); budgetOwner = undefined;
+        historyStart = 0; historyPending = undefined; historyLoaded = false;
+        clearInterval(clock); element("messages").replaceChildren(); element("chats").replaceChildren();
+        element("prompt").value = ""; element("applied-edits").hidden = true;
+        library?.render(message.library); showScreen("library"); return;
+      }
+      if (previous === message.chat.id && historyLoaded) {
+        const latest = new Set(message.chat.messages.map(item => item.id));
+        const boundary = state.chat.messages.findIndex(item => latest.has(item.id));
+        if (boundary >= 0) {
+          message.chat.messages = [...state.chat.messages.slice(0, boundary), ...message.chat.messages];
+        } else {
+          historyStart = message.history?.start || 0; historyPending = undefined; historyLoaded = false;
+        }
+      } else {
+        historyStart = message.history?.start || 0; historyPending = undefined; historyLoaded = false;
+      }
+      state = message;
+      visualization.setChat(state.chat.id);
+      if (previous !== state.chat.id) {
+        memorySegments.clear(); expandedMemorySegments.clear(); requestedMemorySegments.clear(); memoryGroupOpen.clear(); memoryFingerprint = undefined;
+        element("prompt").value = drafts[state.chat.id] || ""; element("memory-preview").textContent = ""; element("memory-preview").hidden = true;
+      }
+      for (const [id, submission] of submissions) {
+        if (!retained.has(submission.id)) { submissions.delete(id); if (pending === submission) pending = undefined; continue; }
+        if (submission.id !== state.chat.id || !state.chat.messages.some(item => item.role === "user" && item.submissionId === id) && !state.chat.queuedInputs?.some(item => item.id === id)) continue;
+        submissions.delete(id); if (pending === submission) pending = undefined; error("");
+      }
+      saveDraft(); render(); markResultRead(); return;
+    }
+    if (message.type === "delta" && message.chatId === state?.chat.id) {
+      const reply = state.chat.messages.find(item => item.id === message.id);
+      if (reply) reply.content += message.text;
+      if (!frame) frame = requestAnimationFrame(() => { frame = undefined; renderMessages(); });
+    }
+  });
+  element("messages").addEventListener("scroll", markResultRead);
+  element("messages").addEventListener("scroll", () => {
+    const messages = element("messages");
+    if (!upwardScrollPending && messages.scrollHeight - messages.scrollTop - messages.clientHeight <= 1) followPaused = false;
+    else if (messages.scrollTop < observedScrollTop - 1) { followPaused = true; upwardScrollPending = false; }
+    observedScrollTop = messages.scrollTop;
+    if (screen === "chat" && messages.scrollTop < 120) loadOlderMessages();
+  }, { passive: true });
+  element("messages").addEventListener("wheel", event => {
+    upwardScrollPending = event.deltaY < 0;
+    if (event.deltaY >= 0) return;
+    followPaused = true;
+    if (screen === "chat" && element("messages").scrollTop < 120) loadOlderMessages();
+  }, { passive: true });
+  element("rename").onclick = () => post("rename");
+  element("copy-chat-id").onclick = () => { if (state?.chat?.id) post("copyChatId", { id: state.chat.id }); };
+  element("promote-project").onclick = () => { if (state?.chat?.id) post("promoteProject"); };
+  element("chat-portal").onclick = () => post("peerCollaboration", { chatId: state?.chat.id });
+  const showScreen = next => {
+    if (next === "chat" && screen !== "chat") jumpToLatest = true;
+    screen = next; document.body.classList.toggle("chat-library-visible", screen === "library");
+    post("chatVisibility", { chatId: state?.chat?.id, value: screen === "chat" && document.visibilityState === "visible" });
+    element("library-view").hidden = screen !== "library"; saveDraft();
+    if (next === "chat" && state) { renderMessages(); markResultRead(); }
+  };
+  function workerTime(at) {
+    return new Intl.DateTimeFormat(document.documentElement.lang || "en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(at));
+  }
+  function revealWorkerDispatch() {
+    if (!revealDispatch || revealDispatch.chatId !== state?.chat.id) return;
+    const article = [...element("messages").querySelectorAll("[data-message-id]")].find(node => node.dataset.messageId === revealDispatch.messageId);
+    if (!article) { error(t("Dispatch message is unavailable")); revealDispatch = undefined; return; }
+    article.scrollIntoView({ block: "center", behavior: "instant" }); article.classList.add("dispatch-highlight");
+    setTimeout(() => article.classList.remove("dispatch-highlight"), 2000); revealDispatch = undefined;
+  }
+  function renderWorkers() {
+    if (!state) return;
+    const overview = state.workerOverview || { rootChatId: state.chat.id, nodes: [] };
+    const children = overview.nodes.filter(node => node.chatId !== overview.rootChatId);
+    const counts = new Map();
+    const labels = { running: "Running", starting: "Starting", "awaiting-input": "Waiting for Input", "awaiting-result": "Sleeping", completed: "Completed", "new-result": "Completed", failed: "Failed", stopped: "Stopped", paused: "Paused", idle: "Idle", unavailable: "Unavailable" };
+    for (const node of children) {
+      const key = node.status === "new-result" ? "completed" : node.status;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    const summary = [...counts].map(([status, count]) => `${count} ${t(labels[status] || "Unavailable")}`).join(" · ");
+    element("workers-count").textContent = String(children.length);
+    element("workers-summary").textContent = [overview.quota === undefined ? "" : `${t("Capacity")}: ${overview.activeWorkers}/${overview.quota} (${t("Maximum")}: ${overview.maximum})`, summary || t("No workers dispatched")].filter(Boolean).join(" · ");
+    const live = element("workers-announcement");
+    const announcement = `${t("Workers")}: ${children.length}. ${summary}`;
+    if (live.textContent !== announcement) live.textContent = announcement;
+    if (workerCounts.get(state.chat.id) === 0 && children.length) workerPanelChats.add(state.chat.id);
+    workerCounts.set(state.chat.id, children.length);
+    const opened = workerPanelChats.has(state.chat.id);
+    element("workers-toggle").setAttribute("aria-expanded", String(opened));
+    element("workers-panel").hidden = !opened;
+    if (!opened) return;
+    const dispatching = state.chat.messages.at(-1)?.toolCalls?.some(tool => tool.name === "spawn_workers" && tool.status === "running");
+    const batchApproval = state.approvals?.some(approval => approval.once);
+    element("workers-notice").textContent = overview.warning || (batchApproval ? t("Worker batch awaiting approval") : dispatching ? t("Dispatching workers") : !children.length ? t("No workers dispatched") : "");
+    if (workerNodesChatId !== state.chat.id) { workerNodes.clear(); workerNodesChatId = state.chat.id; }
+    const ordered = [];
+    const pendingNodes = [...overview.nodes];
+    const visited = new Set();
+    const append = (id, depth) => {
+      if (visited.has(id)) return;
+      visited.add(id);
+      const node = pendingNodes.find(node => node.chatId === id);
+      if (!node) return;
+      ordered.push({ node, depth });
+      for (const child of pendingNodes.filter(node => node.parentChatId === id)) append(child.chatId, depth + 1);
+    };
+    append(overview.rootChatId, 0);
+    for (const node of pendingNodes) if (!visited.has(node.chatId)) append(node.chatId, 0);
+    const rendered = [];
+    for (const { node, depth } of ordered) {
+      const fingerprint = JSON.stringify([node, depth, document.documentElement.lang]);
+      const cached = workerNodes.get(node.chatId);
+      if (cached?.fingerprint === fingerprint) { rendered.push(cached.article); continue; }
+      const article = document.createElement("details"); article.className = "worker-node"; article.dataset.chatId = node.chatId; article.setAttribute("role", "listitem");
+      article.style.marginInlineStart = `${Math.min(depth, 4) * 10}px`;
+      article.open = cached ? cached.article.open : node.status === "failed" || node.status === "unavailable";
+      const heading = document.createElement("summary"); heading.className = "worker-node-heading";
+      const indicatorRole = node.chatId === overview.rootChatId || node.manager ? "manager" : "worker";
+      const indicator = window.PkmChatStatusIndicator(node.status === "starting" ? "running" : node.status === "unavailable" ? "failed" : node.status, indicatorRole);
+      const title = document.createElement("strong"); title.textContent = node.title || t("Unavailable");
+      const phase = document.createElement("span"); phase.className = "worker-phase"; phase.textContent = `${t(labels[node.status] || "Unavailable")}${node.archived ? ` · ${t("Archived result")}` : ""}`;
+      const titleBox = document.createElement("div"); titleBox.className = "worker-node-title";
+      titleBox.append(title); heading.append(indicator, titleBox, phase); article.append(heading);
+      const meta = document.createElement("div"); meta.className = "worker-node-meta";
+      const role = node.chatId === overview.rootChatId ? t("Manager") : node.manager ? t("Worker / Manager") : `${t("Worker")} · ${t("Level")} ${depth}`;
+      meta.textContent = `${role}${node.chatId === state.chat.id ? ` · ${t("Current Chat")}` : ""}`;
+      const dispatched = document.createElement("div"); dispatched.className = "worker-dispatch-stamp";
+      dispatched.textContent = node.chatId === overview.rootChatId ? "" : `${t("Dispatched")}: ${node.dispatchedAt === undefined ? t("Time not recorded") : workerTime(node.dispatchedAt)}`;
+      const recent = document.createElement("div"); recent.className = "worker-recent";
+      recent.textContent = node.activity ? `${t(node.activity.label)} · ${workerTime(node.activity.at)}` : "";
+      if (node.status === "awaiting-result") recent.textContent = t("Sleeping · wakes on worker events · no model polling");
+      if (node.reason) recent.textContent = `${t("Needs decision")}: ${t({ clarification: "Clarification", suggestion: "Suggestion", permission: "Permission", "runtime-limit": "Runtime limit", "suspected-loop": "Suspected loop" }[node.reason])}`;
+      titleBox.append(meta, dispatched, recent);
+      if (node.error) { const failure = document.createElement("p"); failure.className = "message-error worker-failure"; failure.textContent = node.error; titleBox.append(failure); }
+      const detail = document.createElement("div"); detail.className = "worker-node-detail";
+      if (node.question) { const question = document.createElement("p"); question.textContent = node.question; detail.append(question); }
+      if (node.outputBudgetWarning) { const warning = document.createElement("p"); warning.className = "message-status"; warning.textContent = node.outputBudgetWarning; detail.append(warning); }
+      const actions = document.createElement("div"); actions.className = "worker-actions";
+      if (node.canResume) {
+        const resume = iconButton("debug-continue", "Resume worker", () => { resume.disabled = true; post("workerResume", { id: node.receiptId, value: node.attemptId, chatId: state.chat.id }); });
+        resume.append(document.createTextNode(t("Resume worker"))); actions.append(resume);
+        const notice = document.createElement("p"); notice.textContent = t("Resume retains execution evidence and starts a continuation. It may incur charges; verify uncertain tool effects before repeating them."); detail.append(notice);
+      }
+      const open = iconButton("go-to-file", node.archived ? "Archived result" : "Open Chat", () => { saveDraft(); node.archived ? post("workerArchive", { id: node.receiptId }) : post("select", { id: node.chatId }); });
+      open.append(document.createTextNode(t(node.archived ? "Archived result" : "Open Chat"))); open.disabled = node.status === "unavailable" || node.chatId === state.chat.id; actions.append(open);
+      if (node.parentChatId && node.sourceMessageId) {
+        const source = iconButton("history", "Show dispatch message", () => {
+          revealDispatch = { chatId: node.parentChatId, messageId: node.sourceMessageId };
+          if (node.parentChatId === state.chat.id) revealWorkerDispatch();
+          else { saveDraft(); post("select", { id: node.parentChatId }); }
+        });
+        source.append(document.createTextNode(t("Show dispatch message"))); actions.append(source);
+      }
+      detail.append(actions); article.append(detail);
+      workerNodes.set(node.chatId, { fingerprint, article }); rendered.push(article);
+    }
+    for (const id of workerNodes.keys()) if (!visited.has(id)) workerNodes.delete(id);
+    const tree = element("workers-tree");
+    for (const [index, child] of rendered.entries()) if (tree.children[index] !== child) tree.insertBefore(child, tree.children[index] || null);
+    while (tree.children.length > rendered.length) tree.lastElementChild.remove();
+    revealWorkerDispatch();
+  }
+  element("workers-toggle").onclick = () => {
+    if (!state) return;
+    workerPanelChats.has(state.chat.id) ? workerPanelChats.delete(state.chat.id) : workerPanelChats.add(state.chat.id);
+    renderWorkers(); saveDraft();
+  };
+  library = window.PkmChatLibrary({ post, showChat: () => showScreen("chat"), save: saveDraft, saved });
+  element("back").onclick = () => { showScreen("library"); post("libraryRefresh"); };
+  showScreen(screen);
+  element("task").onclick = () => post(state.chat.sessionId ? "completeTask" : "startTask");
+  element("open-harness").onclick = () => post("openHarness");
+  const popovers = { permissions: "permissions-panel", tools: "tools-panel", memory: "memory-panel", options: "advanced-budget", "agent-config": "agent-config-panel" };
+  function closePopovers() { for (const [button, panel] of Object.entries(popovers)) { element(panel).hidden = true; element(button).setAttribute("aria-expanded", "false"); } }
+  function positionPopover(panel) { const top = element("composer").getBoundingClientRect().top; panel.style.bottom = `${Math.max(8, Math.min(innerHeight - 90, innerHeight - top + 6))}px`; panel.style.maxHeight = `${Math.max(72, top - 16)}px`; }
+  element("retrieval-flow").parentElement.addEventListener("toggle", () => { memoryFingerprint = undefined; renderMemory(); });
+  function togglePopover(button, forceOpen = false) { const panel = element(popovers[button]); const open = forceOpen || panel.hidden; closePopovers(); if (open) { panel.hidden = false; positionPopover(panel); element(button).setAttribute("aria-expanded", "true"); if (button === "memory") renderMemory(); } }
+  for (const button of Object.keys(popovers)) element(button).onclick = () => togglePopover(button);
+  document.addEventListener("pointerdown", event => { if (!event.target.closest(".chat-settings") && !event.target.closest("[aria-controls]")) closePopovers(); });
+  document.addEventListener("keydown", event => { if (event.key === "Escape") { const button = Object.keys(popovers).find(id => element(id).getAttribute("aria-expanded") === "true"); closePopovers(); if (button) { element(button).focus(); event.preventDefault(); } } });
+  window.addEventListener("resize", () => { for (const panel of Object.values(popovers)) if (!element(panel).hidden) positionPopover(element(panel)); });
+  element("permission-mode").onchange = () => post("permissionMode", { value: element("permission-mode").value });
+  element("reset-permissions").onclick = () => post("resetPermissions");
+  element("diagnostics").onclick = () => post("diagnostics");
+  element("persona-profiles").onclick = () => {
+    element("persona-content").textContent = "Loading current Profiles...";
+    element("persona-dialog").dataset.chatId = state.chat.id;
+    element("persona-edit").disabled = true;
+    element("persona-dialog").showModal();
+    post("personaProfiles");
+  };
+  element("persona-close").onclick = () => element("persona-dialog").close();
+  element("persona-edit").onclick = () => {
+    element("persona-dialog").close();
+    post("agentConfig", { value: "profiles" });
+  };
+  for (const button of document.querySelectorAll("[data-agent-config]")) button.onclick = () => { closePopovers(); post("agentConfig", { value: button.dataset.agentConfig }); };
+  element("memory-close").onclick = closePopovers;
+  element("memory-policy").onclick = () => post("memoryPolicy");
+  element("retrieval-top").onchange = renderMemory;
+  element("retrieval-kind").onchange = renderMemory;
+  let retrievalWidth = 0;
+  new ResizeObserver(entries => {
+    const width = Math.round(entries[0].contentRect.width);
+    if (width === retrievalWidth) return;
+    retrievalWidth = width;
+    if (width > 0 && state) renderMemory();
+  }).observe(element("retrieval-flow"));
+  element("tool-search").oninput = () => renderTools(true);
+  element("tool-connections").onclick = () => post("agentConfig", { value: "mcps" });
+  element("context").onclick = () => post("context");
+  element("image").onclick = () => post("image");
+  element("prompt").addEventListener("paste", async event => {
+    const files = Array.from(event.clipboardData?.items || []).filter(item => item.kind === "file" && item.type.startsWith("image/"))
+      .map(item => item.getAsFile()).filter(Boolean);
+    if (!files.length) return;
+    event.preventDefault();
+    const chatId = state?.chat.id;
+    try {
+      if (!chatId || element("image").disabled) throw new Error("Choose a vision-capable VS Code model to paste images.");
+      if ((state.chat.images?.length || 0) + files.length > 2) throw new Error("Attach at most two images.");
+      const images = await Promise.all(files.map(async (file, index) => {
+        if (!["image/png", "image/jpeg"].includes(file.type)) throw new Error("Paste a PNG/JPEG image.");
+        if (!file.size || file.size > 512 * 1024) throw new Error("Pasted images must be at most 512 KB each.");
+        const dataBase64 = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result).split(",")[1]);
+          reader.onerror = () => reject(new Error("The clipboard image could not be read. Paste again."));
+          reader.onabort = () => reject(new Error("Reading the clipboard image was cancelled. Paste again."));
+          reader.readAsDataURL(file);
+        });
+        return { label:`Pasted image ${index + 1}.${file.type === "image/png" ? "png" : "jpg"}`, mimeType:file.type, dataBase64 };
+      }));
+      if (state?.chat.id !== chatId) throw new Error("The selected Chat changed while the clipboard was loading. Paste again in the intended Chat.");
+      post("pasteImages", { chatId, images });
+    } catch (cause) { error(cause instanceof Error ? cause.message : String(cause)); }
+  });
+  element("stop").onclick = () => post("cancel");
+  element("chats").onchange = event => { saveDraft(); error(""); post("select", { id: event.target.value }); };
+  element("model").onclick = () => { if (element("model").getAttribute("aria-busy") === "true") return; element("model").setAttribute("aria-busy", "true"); post("chooseModel"); };
+  document.addEventListener("visibilitychange", () => {
+    const visible = document.visibilityState === "visible";
+    post("chatVisibility", { chatId: state?.chat?.id, value: screen === "chat" && visible });
+    document.body.classList.toggle("chat-backgrounded", !visible);
+    if (visible && state) render();
+    else if (!visible) { clearInterval(clock); clock = undefined; }
+    markResultRead();
+  });
+  window.addEventListener("focus", markResultRead);
+  setInterval(() => {
+    if (state?.portal && document.visibilityState === "visible") {
+      if (state.portal.permissions?.active && state.portal.permissions.expiresAt != null && state.portal.permissions.expiresAt <= Date.now()) {
+        state.portal.permissions.active = false;
+        for (const key of Object.keys(state.portal.permissions.effective || {})) state.portal.permissions.effective[key] = false;
+        renderPortal();
+        return;
+      }
+      const lease = element("portal-state").querySelector("[data-portal-clock]");
+      if (lease) {
+        const label = portalPermissionLabel(state.portal.permissions);
+        if (lease.textContent !== label) lease.textContent = label;
+      }
+      const compact = element("portal-state").querySelector("[data-portal-compact]");
+      if (compact) {
+        const label = portalCompactLabel(state.portal);
+        if (compact.textContent !== label) compact.textContent = label;
+      }
+      if (state.portal.pending && !state.portal.binding) {
+        const title = element("portal-state").querySelector("[data-portal-headline]");
+        const label = portalHeadline(state.portal);
+        if (title && title.textContent !== label) title.textContent = label;
+      }
+      for (const summary of element("portal-state").querySelectorAll("[data-observed-at]")) {
+        if (Date.now() - Number(summary.dataset.observedAt) > 15000 && !summary.textContent.includes("not live evidence")) summary.textContent += " · last observation (not live evidence)";
+      }
+    }
+  }, 1000);
+  element("window-slider").oninput = event => { element("window").value = presets[Number(event.target.value)]; syncContextSlider(); tokenEstimate(); };
+  element("window-slider").onchange = commitContext;
+  element("window").oninput = () => { syncContextSlider(); tokenEstimate(); };
+  element("window").onchange = commitContext;
+  element("output").oninput = tokenEstimate;
+  element("output").onchange = event => { if (event.target.checkValidity()) post("budget", { maxOutputTokens: Number(event.target.value) }); else event.target.reportValidity(); tokenEstimate(); };
+  element("tool-rounds").onchange = event => { if (event.target.checkValidity()) post("toolRounds", { maxToolRounds: Number(event.target.value) }); else event.target.reportValidity(); };
+  element("history").onchange = event => post("history", { value: event.target.checked });
+  element("prompt").oninput = saveDraft;
+  for (const mode of ["steer", "task"]) element(`${mode}-mode`).onclick = () => {
+    inputMode = mode; saveDraft(); render();
+  };
+  element("input-mode").onkeydown = event => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const mode = event.key === "Home" || event.key === "ArrowLeft" ? "steer" : "task";
+    element(`${mode}-mode`).click(); element(`${mode}-mode`).focus();
+  };
+  element("composer").onsubmit = event => {
+    event.preventDefault(); if (globalThis.PkmHostHealth?.unavailable || !state || pending || element("send").disabled) return;
+    if (state.chat.paused) { post("resume"); return; }
+    if (!element("prompt").value.trim()) return;
+    const text = element("prompt").value; error("");
+    pending = { id: state.chat.id, submissionId: crypto.randomUUID(), text };
+    submissions.set(pending.submissionId, pending); jumpToLatest = true;
+    element("prompt").value = "";
+    saveDraft(); renderMessages();
+    const request = { text, chatId: pending.id, submissionId: pending.submissionId, ...(state.busy ? { mode: state.remoteBusy ? "task" : inputMode } : {}) };
+    requestAnimationFrame(() => setTimeout(() => post("send", request), 0));
+  };
+  element("prompt").onkeydown = event => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); element("composer").requestSubmit(); }
+  };
+  post("ready");
+})();

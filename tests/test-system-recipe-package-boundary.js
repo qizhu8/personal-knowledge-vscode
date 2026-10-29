@@ -14,7 +14,7 @@ assert.strictEqual(new Set(expected.map(recipe => recipe.key)).size, expected.le
 assert.strictEqual(new Set(expected.map(recipe => recipe.recipeId)).size, expected.length);
 assert(expected.every(recipe => recipe.systemKind === "built-in"));
 assert(expected.every(recipe => JSON.stringify(recipe.tags) === JSON.stringify(["System"])));
-assert(expected.some(recipe => recipe.key === "create-agent-snapshot"));
+assert(!expected.some(recipe => recipe.key === "create-agent-snapshot"), "Create Agent Snapshot is retired with external Agent Sessions");
 
 const verifier = fs.readFileSync(path.join(root, "scripts", "verify-vsix-package.js"), "utf8");
 assert.match(verifier, /Knowledge Root or personal Recipe payloads/);

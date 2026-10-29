@@ -3,9 +3,9 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 
-const { messageAddressesManagedAgent } = require('../dist/chat-managed-agent-routing');
+const { messageAddressesManagedAgent } = require("../dist/chatroom/chat-managed-agent-routing");
 const extensionSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'extension.ts'), 'utf8');
-const aiSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'ai.ts'), 'utf8');
+const aiSource = fs.readFileSync(path.join(__dirname, '..', 'src', "ai/ai.ts"), 'utf8');
 
 assert.strictEqual(messageAddressesManagedAgent({ text: 'please investigate', recipients: ['Agent With Spaces'] }, 'Agent With Spaces'), true,
   'recipient chips must activate a managed agent even when the body has no mention');

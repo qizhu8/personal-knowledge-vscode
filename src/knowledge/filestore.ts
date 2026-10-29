@@ -1,0 +1,1625 @@
+/**
+ * filestore.ts — file-backed markdown store for skills & notes (files-as-truth).
+ *
+ * Skills:  <store>/skills/<Category/Path>/<Name>.md
+ * Notes:   <store>/notes/<Category/Path>/<Title>.md
+ *
+ * Identity ("slug"/key) = the relative path without extension. Category = folder
+ * path. Name/title = filename (exact value preserved in YAML frontmatter).
+ * There is no database — the folder tree is the single source of truth. A caller
+ * scans on demand; a file watcher (in extension.ts) triggers UI refreshes.
+ */
+import { basename, join, resolve, sep } from "path";
+import {
+  existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, rmSync, renameSync, cpSync,
+} from "fs";
+import { createHash, randomBytes } from "crypto";
+import { compileKnowledgeLinksV1, nextKnowledgeIdentity, readKnowledgeIdentity } from "./knowledge-contracts";
+import { KnowledgeSyncDeletionRecord, knowledgeDeletionFile, readKnowledgeSyncDeletions, withKnowledgeDeletionJournal } from "./knowledge-deletion-journal";
+export type { KnowledgeSyncDeletionRecord } from "./knowledge-deletion-journal";
+import {
+  assertMarkdownAssetsUnshared, assertMarkdownResourceTreeUnshared, checkedMarkdownPath, isMarkdownAssetDirectory, markdownAssetDirectory,
+  rebaseMarkdownAssets, referencedMarkdownAssets, saveMarkdownAsset, MarkdownAssetArea, withMarkdownAssetMutation, ownedMarkdownAssetPaths,
+  migrateMarkdownAssetsForLifecycleUnlocked,
+  previewMarkdownAssetMigration,
+} from "./markdown-assets";
+
+let _store = "";
+
+export interface SearchOptions { regex?: boolean; caseSensitive?: boolean; }
+function searchMatches(query: string, options: SearchOptions, values: unknown[]): boolean {
+  const source = options.regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  try {
+    const pattern = new RegExp(source, options.caseSensitive ? "" : "i");
+    return values.some(value => pattern.test(String(value || "")));
+  } catch { return false; }
+}
+
+export function setStorePath(p: string): void {
+  _store = p?.trim() || "";
+}
+export function getStorePath(): string { return _store; }
+
+// ── Frontmatter (minimal, self-produced YAML subset) ───────────────────────
+export function parseStoreFrontmatter(text: string): { fm: Record<string, any>; body: string } {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);
+  if (!m) return { fm: {}, body: text };
+  const fm: Record<string, any> = {};
+  for (const line of m[1].split(/\r?\n/)) {
+    const i = line.indexOf(":");
+    if (i < 0) continue;
+    const key = line.slice(0, i).trim();
+    const raw = line.slice(i + 1).trim();
+    if (!key) continue;
+    if (raw.startsWith("[")) { try { fm[key] = JSON.parse(raw); } catch { fm[key] = []; } }
+    else { try { fm[key] = JSON.parse(raw); } catch { fm[key] = raw.replace(/^["']|["']$/g, ""); } }
+  }
+  return { fm, body: text.slice(m[0].length) };
+}
+
+export function serializeStoreFrontmatter(fm: Record<string, any>, body: string): string {
+  const lines = ["---"];
+  for (const [k, v] of Object.entries(fm)) {
+    if (v === undefined || v === null) continue;
+    if (Array.isArray(v) || typeof v === "string") lines.push(`${k}: ${JSON.stringify(v)}`);
+    else lines.push(`${k}: ${v}`);
+  }
+
+  lines.push("---", "");
+  return lines.join("\n") + (body ?? "");
+}
+
+const parseFrontmatter = parseStoreFrontmatter;
+const serializeFrontmatter = serializeStoreFrontmatter;
+
+// ── Path helpers ────────────────────────────────────────────────────────────
+function safeName(s: string): string {
+  return (s || "untitled").replace(/[/\\:*?"<>|\u0000-\u001f]/g, "").trim() || "untitled";
+}
+export function storeSafeName(value: string): string { return safeName(value); }
+function safeCategory(cat: string): string {
+  if (!cat || !cat.trim()) return "";
+  return cat.split("/").map(s => s.trim()).filter(Boolean).map(s => safeName(s)).filter(Boolean).join("/");
+}
+function asArray(v: any): string[] {
+  return Array.isArray(v) ? v : v ? [String(v)] : [];
+}
+
+interface MdFile { full: string; rel: string; mtime: number; size: number; }
+
+export type KnowledgeTrashArea = "notes" | "papers" | "prompts" | "scripts";
+export interface KnowledgeTrashEntry {
+  id: string;
+  kind: "item" | "folder";
+  name: string;
+  originalPath: string;
+  deletedAt: string;
+  assetsPath?: string;
+}
+
+interface RemoveOperations {
+  remove?: (target: string) => void;
+  sleep?: (milliseconds: number) => void;
+}
+
+export function knowledgeSyncDeletionRecords(root = getStorePath()): KnowledgeSyncDeletionRecord[] {
+  return readKnowledgeSyncDeletions(root);
+}
+
+function changeKnowledgeSyncDeletions<T>(
+  change: (records: KnowledgeSyncDeletionRecord[]) => KnowledgeSyncDeletionRecord[],
+  action: () => T,
+  succeeded: (result: T) => boolean,
+): T {
+  return withKnowledgeDeletionJournal(getStorePath(), change, action, succeeded);
+}
+
+function knowledgeDeletionPaths(area: KnowledgeTrashArea | "skills", source: string, relativePath: string): string[] {
+  const paths: string[] = [];
+  const collect = (full: string, relative: string): void => {
+    if (statSync(full).isDirectory()) {
+      for (const item of readdirSync(full, { withFileTypes: true })) {
+        if (!item.isSymbolicLink() && !item.name.startsWith(".")) collect(join(full, item.name), `${relative}/${item.name}`);
+      }
+    } else paths.push(`${area}/${relative}`);
+  };
+  collect(source, relativePath);
+  if (/\.md$/i.test(relativePath) && /\.md$/i.test(source) && statSync(source).isFile()) {
+    const assets = source.replace(/\.md$/i, ".assets");
+    if (existsSync(assets)) collect(assets, markdownAssetDirectory(relativePath));
+  }
+  return paths;
+}
+
+function moveMarkdownPair(source: string, destination: string, assetsSource: string, assetsDestination: string): void {
+  const hasAssets = existsSync(assetsSource);
+  if (existsSync(destination) || hasAssets && existsSync(assetsDestination)) throw new Error("The document or its resource destination already exists.");
+  mkdirSync(resolve(destination, ".."), { recursive: true });
+  if (hasAssets) renameSync(assetsSource, assetsDestination);
+  try { renameSync(source, destination); }
+  catch (error) {
+    if (hasAssets) {
+      try { renameSync(assetsDestination, assetsSource); }
+      catch (rollback) { throw new Error(`Document move failed: ${String(error)}. Resource rollback failed: ${String(rollback)}. Resources remain at ${assetsDestination}.`); }
+    }
+    throw error;
+  }
+}
+
+function recordKnowledgeTrashDeletion<T>(
+  area: KnowledgeTrashArea | "skills", entry: KnowledgeTrashEntry | SkillTrashEntry, source: string, action: () => T,
+): T {
+  const paths = knowledgeDeletionPaths(area, source, entry.originalPath);
+  return changeKnowledgeSyncDeletions(records => [
+    ...records.filter(record => !paths.includes(record.path)),
+    ...paths.map(path => ({ path, deletedAt: entry.deletedAt })),
+  ], action, result => !!result);
+}
+
+export function writeKnowledgeMarkdown(area: "notes" | "skills" | "papers", relativePath: string, previousPath: string | undefined, content: string): void {
+  return withMarkdownAssetMutation(getStorePath(), () => writeKnowledgeMarkdownUnlocked(area, relativePath, previousPath, content));
+}
+
+function writeKnowledgeMarkdownUnlocked(area: "notes" | "skills" | "papers", relativePath: string, previousPath: string | undefined, content: string): void {
+  const root = join(getStorePath(), area);
+  const full = checkedMarkdownPath(root, relativePath);
+  const moved = previousPath !== undefined && previousPath !== relativePath;
+  const oldFull = moved ? checkedMarkdownPath(root, previousPath) : undefined;
+  if (moved && existsSync(full)) throw new Error(`Move target already exists: ${area}/${relativePath}`);
+  const oldAssets = oldFull?.replace(/\.md$/i, ".assets");
+  const newAssets = full.replace(/\.md$/i, ".assets");
+  let movingAssets = !!oldAssets && existsSync(oldAssets);
+  if (moved) {
+    assertMarkdownAssetsUnshared(root, previousPath);
+    if (existsSync(newAssets)) throw new Error(`Resource destination already exists: ${newAssets}`);
+    content = migrateMarkdownAssetsForLifecycleUnlocked(getStorePath(), area, previousPath, content);
+    movingAssets = !!oldAssets && existsSync(oldAssets);
+    content = rebaseMarkdownAssets(root, previousPath, relativePath, content);
+  }
+  const removedPaths = oldFull && existsSync(oldFull) ? knowledgeDeletionPaths(area, oldFull, previousPath!) : [];
+  const write = (): void => {
+    mkdirSync(resolve(full, ".."), { recursive: true });
+    if (movingAssets) renameSync(oldAssets!, newAssets);
+    try {
+      writeFileSync(full, content);
+      if (oldFull) rmSync(oldFull);
+    } catch (error) {
+      if (moved) rmSync(full, { force: true });
+      if (movingAssets) {
+        try { renameSync(newAssets, oldAssets!); }
+        catch (rollback) { throw new Error(`Write failed: ${String(error)}. Resource rollback failed: ${String(rollback)}. Resources remain at ${newAssets}.`); }
+      }
+      throw error;
+    }
+  };
+  if (!moved && !existsSync(knowledgeDeletionFile(getStorePath()))) return write();
+  const restoredPath = `${area}/${relativePath}`;
+  const restoredPaths = new Set([restoredPath, ...(movingAssets
+    ? removedPaths.filter(path => path !== `${area}/${previousPath}`).map(path => `${area}/${markdownAssetDirectory(relativePath)}/` + path.slice(`${area}/${markdownAssetDirectory(previousPath!)}/`.length))
+    : ownedMarkdownAssetPaths(root, relativePath).map(path => `${area}/${path}`))]);
+  changeKnowledgeSyncDeletions(records => [
+    ...records.filter(record => !restoredPaths.has(record.path) && !removedPaths.includes(record.path)),
+    ...removedPaths.map(path => ({ path, deletedAt: now() })),
+  ], write, () => true);
+}
+
+function moveKnowledgePath(
+  area: FolderArea, sourcePath: string, destinationPath: string,
+  move: (source: string, destination: string) => void = renameSync,
+  container?: { from: string; to: string },
+): void {
+  return withMarkdownAssetMutation(getStorePath(), () => moveKnowledgePathUnlocked(area, sourcePath, destinationPath, move, container));
+}
+
+function moveKnowledgePathUnlocked(
+  area: FolderArea, sourcePath: string, destinationPath: string,
+  move: (source: string, destination: string) => void,
+  container?: { from: string; to: string },
+): void {
+  const source = join(getStorePath(), area, sourcePath);
+  const destination = join(getStorePath(), area, destinationPath);
+  const markdown = /\.md$/i.test(sourcePath) && ["skills", "notes", "papers"].includes(area) && statSync(source).isFile();
+  if (markdown) {
+    assertMarkdownAssetsUnshared(join(getStorePath(), area), sourcePath, container?.from);
+    if (existsSync(destination) || existsSync(destination.replace(/\.md$/i, ".assets"))) throw new Error("Document or resource move target already exists.");
+    migrateMarkdownAssetsForLifecycleUnlocked(getStorePath(), area as MarkdownAssetArea, sourcePath);
+  }
+  const sourceAssets = markdown ? source.replace(/\.md$/i, ".assets") : undefined;
+  const destinationAssets = markdown ? destination.replace(/\.md$/i, ".assets") : undefined;
+  const original = markdown ? readFileSync(source, "utf8") : undefined;
+  const documents: Array<{ source: string; destination: string; original: string; content: string }> = [];
+  if (["skills", "notes", "papers"].includes(area) && statSync(source).isDirectory()) {
+    const files: MdFile[] = [];
+    walkMd(source, sourcePath, files);
+    assertMarkdownResourceTreeUnshared(join(getStorePath(), area), sourcePath, "", container?.from || sourcePath);
+    for (const file of files) {
+      const nextPath = destinationPath + file.rel.slice(sourcePath.length);
+      const content = migrateMarkdownAssetsForLifecycleUnlocked(getStorePath(), area as MarkdownAssetArea, file.rel);
+      documents.push({ source: file.full, destination: join(getStorePath(), area, nextPath), original: content,
+        content: rebaseMarkdownAssets(join(getStorePath(), area), file.rel, nextPath, content, container || { from: sourcePath, to: destinationPath }) });
+    }
+  }
+  if (markdown) {
+    assertMarkdownAssetsUnshared(join(getStorePath(), area), sourcePath, container?.from);
+    if (sourceAssets && existsSync(sourceAssets) && existsSync(destinationAssets!)) throw new Error("Resource move target already exists.");
+  }
+  const removedPaths = knowledgeDeletionPaths(area, source, sourcePath);
+  const destinationPaths = new Set(removedPaths.map(relative => markdown && relative.startsWith(`${area}/${markdownAssetDirectory(sourcePath)}/`)
+    ? `${area}/${markdownAssetDirectory(destinationPath)}/` + relative.slice(`${area}/${markdownAssetDirectory(sourcePath)}/`.length)
+    : `${area}/${destinationPath}` + relative.slice(`${area}/${sourcePath}`.length)));
+  changeKnowledgeSyncDeletions(records => [
+    ...records.filter(record => !removedPaths.includes(record.path) && !destinationPaths.has(record.path)),
+    ...removedPaths.map(path => ({ path, deletedAt: now() })),
+  ], () => {
+    mkdirSync(resolve(destination, ".."), { recursive: true });
+    move(source, destination);
+    if (markdown) {
+      let movedAssets = false;
+      try {
+        if (sourceAssets && existsSync(sourceAssets)) { move(sourceAssets, destinationAssets!); movedAssets = true; }
+        writeFileSync(destination, rebaseMarkdownAssets(join(getStorePath(), area), sourcePath, destinationPath, original!, container));
+      } catch (error) {
+        try {
+          if (movedAssets) move(destinationAssets!, sourceAssets!);
+          move(destination, source);
+          writeFileSync(source, original!);
+        } catch (rollback) { throw new Error(`Move failed: ${String(error)}. Rollback was incomplete: ${String(rollback)}.`); }
+        throw error;
+      }
+    } else if (documents.length) {
+      try { for (const document of documents) writeFileSync(document.destination, document.content); }
+      catch (error) {
+        try {
+          move(destination, source);
+          for (const document of documents) writeFileSync(document.source, document.original);
+        } catch (rollback) { throw new Error(`Folder move failed: ${String(error)}. Rollback was incomplete: ${String(rollback)}.`); }
+        throw error;
+      }
+    }
+  }, () => true);
+}
+
+function deleteKnowledgeFile(area: "notes" | "skills" | "papers", relativePath: string): boolean {
+  return !!knowledgePathMoveToTrash(area, relativePath);
+}
+
+function knowledgeTrashRoot(area: KnowledgeTrashArea): string { return join(areaRoot(area), ".trash"); }
+function knowledgeTrashPath(area: KnowledgeTrashArea | "skills", relativePath: string): { rel: string; full: string } | undefined {
+  const rel = String(relativePath || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  if (!rel || rel === ".trash" || rel.startsWith(".trash/") || rel.split("/").some(part => !part || part === "." || part === "..")) return undefined;
+  const root = resolve(areaRoot(area));
+  const full = resolve(root, ...rel.split("/"));
+  return full.startsWith(root + sep) ? { rel, full } : undefined;
+}
+
+export function knowledgeMoveToTrash(area: KnowledgeTrashArea, relativePath: string, kind: KnowledgeTrashEntry["kind"], name: string): KnowledgeTrashEntry | undefined {
+  return withMarkdownAssetMutation(getStorePath(), () => knowledgeMoveToTrashUnlocked(area, relativePath, kind, name));
+}
+
+function knowledgeMoveToTrashUnlocked(area: KnowledgeTrashArea, relativePath: string, kind: KnowledgeTrashEntry["kind"], name: string): KnowledgeTrashEntry | undefined {
+  const source = knowledgeTrashPath(area, relativePath);
+  if (!source || !existsSync(source.full)) return undefined;
+  const stat = statSync(source.full);
+  if (kind === "folder" ? !stat.isDirectory() : !stat.isFile()) return undefined;
+  if (kind === "folder" && ["notes", "papers"].includes(area)) {
+    const files: MdFile[] = [];
+    walkMd(source.full, source.rel, files);
+    for (const file of files) migrateMarkdownAssetsForLifecycleUnlocked(getStorePath(), area as MarkdownAssetArea, file.rel);
+  }
+  if (kind === "folder" && ["notes", "papers"].includes(area)) assertMarkdownResourceTreeUnshared(areaRoot(area), source.rel, "", source.rel);
+  const id = `${Date.now()}-${randomBytes(5).toString("hex")}`;
+  const entryDir = join(knowledgeTrashRoot(area), id);
+  const entry: KnowledgeTrashEntry = { id, kind, name, originalPath: source.rel, deletedAt: now() };
+  if (kind === "item" && /\.md$/i.test(source.rel)) {
+    assertMarkdownAssetsUnshared(areaRoot(area), source.rel);
+    migrateMarkdownAssetsForLifecycleUnlocked(getStorePath(), area as MarkdownAssetArea, source.rel);
+    if (existsSync(source.full.replace(/\.md$/i, ".assets"))) entry.assetsPath = markdownAssetDirectory(source.rel);
+  }
+  const move = (): KnowledgeTrashEntry | undefined => {
+    try {
+      mkdirSync(entryDir, { recursive: true });
+      writeFileSync(join(entryDir, "metadata.json"), JSON.stringify(entry, null, 2) + "\n");
+      moveMarkdownPair(source.full, join(entryDir, "payload"), entry.assetsPath ? join(areaRoot(area), entry.assetsPath) : join(entryDir, "absent-assets"), join(entryDir, "assets"));
+      if (area !== "notes") {
+        try { pruneEmptyAncestors(resolve(source.full, ".."), resolve(areaRoot(area))); } catch {}
+      }
+      return entry;
+    } catch (error) {
+      if (!existsSync(join(entryDir, "payload")) && !existsSync(join(entryDir, "assets"))) rmSync(entryDir, { recursive: true, force: true });
+      throw error;
+    }
+  };
+  return recordKnowledgeTrashDeletion(area, entry, source.full, move);
+}
+
+export function knowledgeTrashList(area: KnowledgeTrashArea): KnowledgeTrashEntry[] {
+  const root = knowledgeTrashRoot(area);
+  if (!existsSync(root)) return [];
+  const entries: KnowledgeTrashEntry[] = [];
+  for (const id of readdirSync(root)) {
+    if (!/^[0-9]+-[a-f0-9]+$/.test(id)) continue;
+    try {
+      const entry = JSON.parse(readFileSync(join(root, id, "metadata.json"), "utf8")) as KnowledgeTrashEntry;
+          if (entry.id === id && (entry.kind === "item" || entry.kind === "folder") && entry.originalPath
+            && existsSync(join(root, id, "payload"))) entries.push(entry);
+    } catch { /* ignore incomplete entries */ }
+  }
+  return entries.sort((left, right) => right.deletedAt.localeCompare(left.deletedAt));
+}
+
+export function knowledgeTrashRestore(area: KnowledgeTrashArea, id: string): { ok: boolean; path?: string; error?: string } {
+  return withMarkdownAssetMutation(getStorePath(), () => knowledgeTrashRestoreUnlocked(area, id));
+}
+
+function knowledgeTrashRestoreUnlocked(area: KnowledgeTrashArea, id: string): { ok: boolean; path?: string; error?: string } {
+  const entry = knowledgeTrashList(area).find(item => item.id === id);
+  if (!entry) return { ok: false, error: "Trash item was not found." };
+  const destination = knowledgeTrashPath(area, entry.originalPath);
+  if (!destination) return { ok: false, error: "Trash restore path is invalid." };
+  if (existsSync(destination.full)) return { ok: false, error: `Restore target already exists: ${entry.originalPath}` };
+  const entryDir = join(knowledgeTrashRoot(area), id);
+  if (entry.assetsPath && (entry.kind !== "item" || entry.assetsPath !== markdownAssetDirectory(entry.originalPath))
+    || !!entry.assetsPath !== existsSync(join(entryDir, "assets"))) {
+    return { ok: false, error: "Trash resource metadata is missing or inconsistent. Preserve the entry for recovery." };
+  }
+  const restore = (): { ok: boolean; path?: string; error?: string } => {
+    try {
+      mkdirSync(resolve(destination.full, ".."), { recursive: true });
+      const assetsDestination = entry.assetsPath ? checkedMarkdownPath(areaRoot(area), entry.assetsPath) : destination.full + ".assets";
+      moveMarkdownPair(join(entryDir, "payload"), destination.full, join(entryDir, "assets"), assetsDestination);
+      try {
+        rmSync(entryDir, { recursive: true, force: true });
+        if (existsSync(knowledgeTrashRoot(area)) && readdirSync(knowledgeTrashRoot(area)).length === 0) rmSync(knowledgeTrashRoot(area), { recursive: true, force: true });
+      } catch {}
+      return { ok: true, path: entry.originalPath };
+    } catch (error: any) { return { ok: false, error: error?.message || String(error) }; }
+  };
+  const restoredPaths = new Set([
+    ...knowledgeDeletionPaths(area, join(entryDir, "payload"), entry.originalPath),
+    ...(entry.assetsPath ? knowledgeDeletionPaths(area, join(entryDir, "assets"), entry.assetsPath) : []),
+  ]);
+  return changeKnowledgeSyncDeletions(records => records.filter(record => !restoredPaths.has(record.path)), restore, result => result.ok);
+}
+
+export function knowledgeTrashDelete(area: KnowledgeTrashArea, id: string, operations: RemoveOperations = {}): { ok: boolean; name?: string; path?: string; kind?: KnowledgeTrashEntry["kind"]; error?: string } {
+  const entry = knowledgeTrashList(area).find(item => item.id === id);
+  if (!entry) return { ok: false, error: "Trash item was not found." };
+  try {
+    removePathWithRetry(join(knowledgeTrashRoot(area), id), operations);
+    return { ok: true, name: entry.name, path: entry.originalPath, kind: entry.kind };
+  } catch (error: any) { return { ok: false, error: error?.message || String(error) }; }
+}
+
+export function knowledgeTrashEmpty(area: KnowledgeTrashArea, operations: RemoveOperations = {}): { ok: boolean; count: number; error?: string } {
+  const count = knowledgeTrashList(area).length;
+  try {
+    removePathWithRetry(knowledgeTrashRoot(area), operations);
+    return { ok: true, count };
+  } catch (error: any) {
+    const remaining = knowledgeTrashList(area).length;
+    return { ok: false, count: Math.max(0, count - remaining), error: error?.message || String(error) };
+  }
+}
+
+function walkMd(dir: string, rel: string, out: MdFile[]): void {
+  if (!existsSync(dir)) return;
+  for (const name of readdirSync(dir)) {
+    if (name.startsWith(".") || isMarkdownAssetDirectory(name)) continue;
+    const full = join(dir, name);
+    let st;
+    try { st = statSync(full); } catch { continue; }
+    const childRel = rel ? `${rel}/${name}` : name;
+    if (st.isDirectory()) walkMd(full, childRel, out);
+    else if (name.toLowerCase().endsWith(".md")) out.push({ full, rel: childRel, mtime: st.mtimeMs, size: st.size });
+  }
+}
+
+const now = () => new Date().toISOString();
+function validatedKnowledgeLinks(value: unknown): unknown[] | undefined {
+  if (value === undefined) return undefined;
+  const compiled = compileKnowledgeLinksV1(value);
+  if (!compiled.ok) throw new Error(`Invalid Knowledge links: ${compiled.diagnostics.map(item => `${item.pointer} ${item.message}`).join("; ")}`);
+  return compiled.links;
+}
+function relNoExt(rel: string): string { return rel.replace(/\.md$/i, ""); }
+function catOf(keyPath: string): string {
+  return keyPath.includes("/") ? keyPath.slice(0, keyPath.lastIndexOf("/")) : "";
+}
+function nameOf(keyPath: string): string {
+  return keyPath.includes("/") ? keyPath.slice(keyPath.lastIndexOf("/") + 1) : keyPath;
+}
+
+// ── Notes ───────────────────────────────────────────────────────────────────
+function notesRoot(): string { return join(_store, "notes"); }
+const noteMetadataCache = new Map<string, { fingerprint: string; row: any }>();
+
+function noteFromFile(f: MdFile, includeContent = true): any {
+  const fingerprint = `${f.mtime}:${f.size}`;
+  if (!includeContent) {
+    const cached = noteMetadataCache.get(f.full);
+    if (cached?.fingerprint === fingerprint) return { ...cached.row };
+  }
+  const { fm, body } = parseFrontmatter(readFileSync(f.full, "utf-8"));
+  const key = relNoExt(f.rel);
+  const row = {
+    slug: key,
+    ...readKnowledgeIdentity(fm, "note", key),
+    title: fm.title || nameOf(key),
+    description: fm.description || "",
+    type: fm.type || "general",
+    tags: JSON.stringify(asArray(fm.tags)),
+    pinned: fm.pinned === true,
+    links: Array.isArray(fm.links) ? fm.links : [],
+    category: catOf(key),
+    ...(includeContent ? { content: body } : {}),
+    created_at: fm.created || new Date(f.mtime).toISOString(),
+    updated_at: new Date(f.mtime).toISOString(),
+  };
+  if (!includeContent) noteMetadataCache.set(f.full, { fingerprint, row });
+  return row;
+}
+
+function allNoteFiles(): MdFile[] { const out: MdFile[] = []; walkMd(notesRoot(), "", out); return out; }
+
+export function noteList(type?: string, limit = 50, includeContent = false): any[] {
+  let rows = allNoteFiles().map(file => noteFromFile(file, includeContent));
+  if (type && type !== "all") rows = rows.filter(r => r.type === type);
+  rows.sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""));
+  const limited = rows.slice(0, limit);
+  return limited;
+}
+
+export function noteSearch(q: string, options: SearchOptions = {}): any[] {
+  return allNoteFiles().map(file => ({ file, note: noteFromFile(file) }))
+    .filter(({ file, note }) => searchMatches(q, options, [
+      note.title, note.description, note.content, note.slug, note.category, note.type,
+      file.rel, join("notes", file.rel), file.full, ...JSON.parse(note.tags || "[]"),
+    ]))
+    .sort((a, b) => (b.note.updated_at || "").localeCompare(a.note.updated_at || ""))
+    .slice(0, 100)
+    .map(({ note: { content, ...meta } }) => meta);
+}
+
+export function noteGet(slug: string): any {
+  const full = join(notesRoot(), slug + ".md");
+  if (!existsSync(full)) return null;
+  const st = statSync(full);
+  return noteFromFile({ full, rel: slug + ".md", mtime: st.mtimeMs, size: st.size });
+}
+
+export function noteUpsert(row: {
+  slug: string; title: string; content: string; type: string; tags: string[]; category?: string; pinned?: boolean; description?: string; links?: unknown[];
+}): boolean {
+  const existing = noteGet(row.slug);
+  const category = safeCategory(row.category ?? existing?.category ?? "");
+  const filename = safeName(row.title || nameOf(row.slug)) + ".md";
+  const newRel = category ? `${category}/${filename}` : filename;
+  const created = existing?.created_at ?? now();
+  const identity = nextKnowledgeIdentity(existing, "note", existing?.slug || row.slug || newRel, relNoExt(newRel));
+
+  const pinned = (row.pinned ?? existing?.pinned) ? true : undefined;
+  const fm: any = {
+    schema: identity.schema, knowledgeId: identity.knowledgeId, revision: identity.revision, aliases: identity.aliases,
+    title: row.title, description: row.description ?? existing?.description ?? "", type: row.type, tags: row.tags ?? [], created,
+    links: validatedKnowledgeLinks(row.links ?? existing?.links),
+  };
+  if (pinned) fm.pinned = true;
+  writeKnowledgeMarkdown("notes", newRel, existing ? row.slug + ".md" : undefined, serializeFrontmatter(fm, row.content ?? ""));
+  return !existing;
+}
+
+/** Toggle a single note's pinned flag (sorts it to the top of its own folder). */
+export function noteSetPinned(slug: string, pinned: boolean): boolean {
+  const n = noteGet(slug);
+  if (!n) return false;
+  noteUpsert({
+    slug: n.slug, title: n.title, content: n.content, type: n.type,
+    tags: JSON.parse(n.tags || "[]"), category: n.category, pinned: !!pinned,
+  });
+  return true;
+}
+
+// ── Pinned folders (ordering only; a pinned folder sorts before its siblings) ──
+// Stored in a git-tracked dotfile so it travels with the store and syncs.
+function notesMetaPath(): string { return join(notesRoot(), ".pk-meta.json"); }
+function readNotesMeta(): { pinnedFolders: string[] } {
+  try {
+    const p = notesMetaPath();
+    if (existsSync(p)) {
+      const j = JSON.parse(readFileSync(p, "utf-8"));
+      return { pinnedFolders: Array.isArray(j.pinnedFolders) ? j.pinnedFolders : [] };
+    }
+  } catch { /* ignore */ }
+  return { pinnedFolders: [] };
+}
+function writeNotesMeta(m: { pinnedFolders: string[] }): void {
+  try {
+    mkdirSync(notesRoot(), { recursive: true });
+    writeFileSync(notesMetaPath(), JSON.stringify(m, null, 2) + "\n");
+  } catch { /* ignore */ }
+}
+
+// ── Empty folders (create / list) ─────────────────────────────────────────────
+// Folders exist only because items live in them. To let users pre-create an
+// (empty) folder, drop a git-tracked `.gitkeep` so the directory persists across
+// commit/sync, and list all directories so the tree can render empty folders too.
+function areaRoot(area: string): string { return join(_store, area); }
+
+export function folderCreate(area: string, relPath: string): boolean {
+  if (!["skills", "notes", "papers", "prompts", "scripts"].includes(area)) return false;
+  const rel = safeCategory(relPath || "");
+  if (!rel) return false;
+  const full = join(areaRoot(area), ...rel.split("/"));
+  try {
+    mkdirSync(full, { recursive: true });
+    const keep = join(full, ".gitkeep");
+    if (!existsSync(keep)) writeFileSync(keep, "");
+    return true;
+  } catch { return false; }
+}
+
+/** All content subdirectories, excluding resource folders. */
+export function folderList(area: string): string[] {
+  if (!["skills", "notes", "papers", "prompts", "scripts"].includes(area)) return [];
+  const out: string[] = [];
+  if (area === "papers") {
+    const walkMeaningful = (dir: string, rel: string): boolean => {
+      let ents: any[];
+      try { ents = readdirSync(dir, { withFileTypes: true }); } catch { return false; }
+      let meaningful = ents.some(entry => entry.isFile() && (entry.name === ".gitkeep" || (!entry.name.startsWith(".") && entry.name.toLowerCase().endsWith(".md"))));
+      for (const entry of ents) {
+        if (!entry.isDirectory() || entry.name.startsWith(".") || isMarkdownAssetDirectory(entry.name)) continue;
+        const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+        if (walkMeaningful(join(dir, entry.name), childRel)) meaningful = true;
+      }
+      if (rel && meaningful) out.push(rel);
+      return meaningful;
+    };
+    walkMeaningful(areaRoot(area), "");
+    return out.sort((left, right) => left.localeCompare(right));
+  }
+  const walk = (dir: string, rel: string): void => {
+    let ents: any[];
+    try { ents = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (!e.isDirectory() || e.name.startsWith(".") || isMarkdownAssetDirectory(e.name)) continue;
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      out.push(r);
+      walk(join(dir, e.name), r);
+    }
+  };
+  walk(areaRoot(area), "");
+  return out;
+}
+
+type FolderArea = "skills" | "notes" | "papers" | "prompts" | "scripts";
+
+function safeFolderOperationPath(area: FolderArea, relPath: string): { root: string; rel: string; full: string } | undefined {
+  const rel = safeCategory(relPath || "");
+  if (!rel || rel.split("/").some(part => part === "." || part === "..")) return undefined;
+  const root = resolve(areaRoot(area));
+  const full = resolve(root, ...rel.split("/"));
+  if (!full.startsWith(root + sep)) return undefined;
+  return { root, rel, full };
+}
+
+/** Rename/move a folder to an explicit relative path after collision checks. */
+export function folderRename(area: FolderArea, oldRelPath: string, newRelPath: string): { ok: boolean; error?: string } {
+  const source = safeFolderOperationPath(area, oldRelPath);
+  const destination = safeFolderOperationPath(area, newRelPath);
+  if (!source || !destination) return { ok: false, error: "Invalid folder path." };
+  if (!existsSync(source.full) || !statSync(source.full).isDirectory()) return { ok: false, error: `Folder not found: ${source.rel}` };
+  if (source.full === destination.full) return { ok: false, error: "Folder name is unchanged." };
+  if (destination.full.startsWith(source.full + sep)) return { ok: false, error: "A folder cannot be moved into itself." };
+  if (existsSync(destination.full)) return { ok: false, error: `Folder already exists: ${destination.rel}` };
+  try {
+    moveKnowledgePath(area, source.rel, destination.rel);
+    if (area === "notes") repathFolderPins(source.rel, destination.rel);
+    return { ok: true };
+  } catch (error: any) { return { ok: false, error: error?.message || String(error) }; }
+}
+
+/** Delete only the folder container, moving children to its parent or a same-level fallback group. */
+interface FolderDeleteOperations {
+  rename?: (source: string, destination: string) => void;
+  remove?: (folder: string) => void;
+  sleep?: (milliseconds: number) => void;
+}
+
+const FOLDER_DELETE_RETRY_DELAYS_MS = [0, 50, 100, 200, 400, 800, 800, 800];
+const RETRYABLE_FOLDER_DELETE_ERRORS = new Set(["EACCES", "EBUSY", "EMFILE", "ENFILE", "ENOTEMPTY", "EPERM"]);
+
+function sleepSync(milliseconds: number): void {
+  if (milliseconds <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+function removePathWithRetry(target: string, operations: RemoveOperations): void {
+  if (!existsSync(target)) return;
+  const remove = operations.remove || ((target: string) => rmSync(target, { recursive: true, force: true }));
+  const sleep = operations.sleep || sleepSync;
+  let lastError: any;
+  for (const delay of FOLDER_DELETE_RETRY_DELAYS_MS) {
+    if (delay) sleep(delay);
+    try {
+      remove(target);
+      return;
+    } catch (error: any) {
+      if (!existsSync(target)) return;
+      lastError = error;
+      if (!RETRYABLE_FOLDER_DELETE_ERRORS.has(String(error?.code || ""))) throw error;
+    }
+  }
+  throw lastError;
+}
+
+function pruneEmptyAncestors(start: string, boundary: string): void {
+  const root = resolve(boundary);
+  let current = resolve(start);
+  while (current !== root && current.startsWith(root + sep)) {
+    let entries: string[];
+    try { entries = readdirSync(current); } catch { return; }
+    if (entries.length) return;
+    try { rmSync(current, { recursive: true, force: true }); } catch { return; }
+    current = resolve(current, "..");
+  }
+}
+
+export function folderDeletePromote(
+  area: FolderArea,
+  relPath: string,
+  fallbackGroup = "",
+  operations: FolderDeleteOperations = {},
+): { ok: boolean; moved: number; error?: string } {
+  const source = safeFolderOperationPath(area, relPath);
+  if (!source || !existsSync(source.full) || !statSync(source.full).isDirectory()) return { ok: false, moved: 0, error: "Folder not found." };
+  const parentRel = source.rel.includes("/") ? source.rel.slice(0, source.rel.lastIndexOf("/")) : "";
+  const destinationRel = [parentRel, fallbackGroup].filter(Boolean).join("/");
+  const destinationFull = destinationRel ? resolve(source.root, ...destinationRel.split("/")) : source.root;
+  const entries = readdirSync(source.full).filter(name => name !== ".gitkeep"
+    && !(name.toLowerCase().endsWith(".assets") && existsSync(join(source.full, name.slice(0, -7) + ".md"))));
+  const collision = entries.find(name => existsSync(join(destinationFull, name)));
+  if (collision) return { ok: false, moved: 0, error: `Cannot delete group: "${collision}" already exists in ${destinationRel || "Root"}.` };
+  const rename = operations.rename || renameSync;
+  const moved: string[] = [];
+  let removingContainer = false;
+  try {
+    if (entries.length) mkdirSync(destinationFull, { recursive: true });
+    for (const name of entries) {
+      moveKnowledgePath(area, `${source.rel}/${name}`, [destinationRel, name].filter(Boolean).join("/"), rename, { from: source.rel, to: destinationRel });
+      moved.push(name);
+    }
+    removingContainer = true;
+    removePathWithRetry(source.full, operations);
+    if (area === "notes") repathFolderPins(source.rel, destinationRel);
+    return { ok: true, moved: entries.length };
+  } catch (error: any) {
+    if (!existsSync(source.full)) {
+      if (area === "notes") repathFolderPins(source.rel, destinationRel);
+      return { ok: true, moved: entries.length };
+    }
+    const rollbackFailures: string[] = [];
+    for (const name of moved.slice().reverse()) {
+      try {
+        moveKnowledgePath(area, [destinationRel, name].filter(Boolean).join("/"), `${source.rel}/${name}`, rename, { from: destinationRel, to: source.rel });
+      } catch {
+        rollbackFailures.push(name);
+      }
+    }
+    const detail = error?.message || String(error);
+    const failure = removingContainer
+      ? `Could not delete folder after ${FOLDER_DELETE_RETRY_DELAYS_MS.length} attempts`
+      : "Could not move all folder contents to their destination";
+    if (rollbackFailures.length) {
+      return {
+        ok: false,
+        moved: rollbackFailures.length,
+        error: `${failure}: ${detail}. Rollback was incomplete for: ${rollbackFailures.join(", ")}.`,
+      };
+    }
+    return {
+      ok: false,
+      moved: 0,
+      error: `${failure}: ${detail}. Its contents were restored; OneDrive or another application may still be holding the folder.`,
+    };
+  }
+}
+
+export function storeEntryMove(
+  area: "skills" | "notes" | "papers" | "prompts" | "scripts",
+  relPath: string,
+  targetFolder: string,
+): { ok: boolean; newPath?: string; error?: string } {
+  const clean = (value: string) => value.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  const sourceRel = clean(relPath);
+  const targetRel = clean(targetFolder);
+  if (!sourceRel || [...sourceRel.split("/"), ...targetRel.split("/")].some(part => part === ".." || part === ".")) {
+    return { ok: false, error: "Invalid path." };
+  }
+  const root = resolve(_store, area);
+  const source = resolve(root, sourceRel);
+  const destinationFolder = targetRel ? resolve(root, targetRel) : root;
+  const destination = resolve(destinationFolder, basename(source));
+  if (!source.startsWith(root + sep) || (destinationFolder !== root && !destinationFolder.startsWith(root + sep))) {
+    return { ok: false, error: "Path escapes the knowledge store." };
+  }
+  if (!existsSync(source)) return { ok: false, error: `Source not found: ${sourceRel}` };
+  if (source === destination) return { ok: false, error: "Item is already in that folder." };
+  if (destination.startsWith(source + sep)) return { ok: false, error: "A folder cannot be moved into itself." };
+  if (existsSync(destination)) return { ok: false, error: `An item named "${basename(source)}" already exists there.` };
+  try {
+    const newPath = targetRel ? `${targetRel}/${basename(source)}` : basename(source);
+    moveKnowledgePath(area, sourceRel, newPath);
+    if (area === "notes" && statSync(destination).isDirectory()) repathFolderPins(sourceRel, newPath);
+    return { ok: true, newPath };
+  } catch (error: any) {
+    return { ok: false, error: error?.message || String(error) };
+  }
+}
+
+export function knowledgeMarkdownCopy(area: MarkdownAssetArea, sourcePath: string, destinationPath: string): void {
+  return withMarkdownAssetMutation(getStorePath(), () => knowledgeMarkdownCopyUnlocked(area, sourcePath, destinationPath));
+}
+
+function knowledgeMarkdownCopyUnlocked(area: MarkdownAssetArea, sourcePath: string, destinationPath: string): void {
+  const root = join(getStorePath(), area);
+  const source = checkedMarkdownPath(root, sourcePath);
+  const destination = checkedMarkdownPath(root, destinationPath);
+  const sourceAssets = checkedMarkdownPath(root, markdownAssetDirectory(sourcePath));
+  const destinationAssets = checkedMarkdownPath(root, markdownAssetDirectory(destinationPath));
+  if (existsSync(destination) || existsSync(destinationAssets)) throw new Error("The document copy target or its resources already exist.");
+  const migration = previewMarkdownAssetMigration(getStorePath(), area, sourcePath);
+  const original = migration.candidate;
+  referencedMarkdownAssets(getStorePath(), area, sourcePath, original);
+  const { fm, body } = parseFrontmatter(rebaseMarkdownAssets(root, sourcePath, destinationPath, original));
+  const type = area === "skills" ? "skill" : area === "notes" ? "note" : "research";
+  const identity = nextKnowledgeIdentity(undefined, type, relNoExt(destinationPath), relNoExt(destinationPath));
+  Object.assign(fm, { schema: identity.schema, knowledgeId: identity.knowledgeId, revision: identity.revision, aliases: identity.aliases });
+  fm[area === "skills" ? "name" : "title"] = basename(destinationPath, ".md");
+  let copiedAssets = false;
+  try {
+    mkdirSync(resolve(destination, ".."), { recursive: true });
+    if (existsSync(sourceAssets)) { copiedAssets = true; cpSync(sourceAssets, destinationAssets, { recursive: true, force: false, errorOnExist: true }); }
+    for (const copy of migration.copies) {
+      const target = checkedMarkdownPath(root, `${markdownAssetDirectory(destinationPath)}/${basename(copy.target)}`);
+      const content = readFileSync(checkedMarkdownPath(root, copy.source));
+      if (createHash("sha256").update(content).digest("hex") !== copy.digest) throw new Error("Legacy resource changed during the document copy; retry after the writer settles.");
+      if (existsSync(target)) {
+        if (!readFileSync(target).equals(content)) throw new Error(`Resource copy target differs: ${target}`);
+      } else {
+        mkdirSync(resolve(target, ".."), { recursive: true });
+        copiedAssets = true;
+        writeFileSync(target, content, { flag: "wx" });
+      }
+    }
+    writeKnowledgeMarkdownUnlocked(area, destinationPath, undefined, serializeFrontmatter(fm, body));
+  } catch (error) {
+    if (copiedAssets) rmSync(destinationAssets, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+/** All folder paths that actually contain notes (every ancestor segment). */
+function existingNoteFolders(): Set<string> {
+  const cats = new Set<string>();
+  for (const n of allNoteFiles().map(file => noteFromFile(file))) {
+    const c = n.category || "";
+    if (!c) continue;
+    const segs = c.split("/");
+    for (let i = 0; i < segs.length; i++) cats.add(segs.slice(0, i + 1).join("/"));
+  }
+  return cats;
+}
+
+/** Pinned folder paths, filtered to those that still exist. */
+export function noteFolderPins(): string[] {
+  const live = existingNoteFolders();
+  return readNotesMeta().pinnedFolders.filter(p => live.has(p));
+}
+
+/** Pin/unpin a single folder (ordering only). Returns true if it changed. */
+export function noteSetFolderPinned(prefix: string, pinned: boolean): boolean {
+  const p = (prefix || "").replace(/^\/+|\/+$/g, "");
+  if (!p) return false;
+  const m = readNotesMeta();
+  const has = m.pinnedFolders.includes(p);
+  if (pinned && !has) m.pinnedFolders.push(p);
+  else if (!pinned && has) m.pinnedFolders = m.pinnedFolders.filter(x => x !== p);
+  else return false;
+  writeNotesMeta(m);
+  return true;
+}
+
+/** Re-path pinned-folder entries when a folder is renamed/moved. */
+function repathFolderPins(oldPrefix: string, newPrefix: string): void {
+  const op = (oldPrefix || "").replace(/^\/+|\/+$/g, "");
+  const np = (newPrefix || "").replace(/^\/+|\/+$/g, "");
+  if (!op || op === np) return;
+  const m = readNotesMeta();
+  let changed = false;
+  m.pinnedFolders = m.pinnedFolders.map(p => {
+    if (p === op) { changed = true; return np; }
+    if (p.startsWith(op + "/")) { changed = true; return np + p.slice(op.length); }
+    return p;
+  }).filter(Boolean);
+  if (changed) writeNotesMeta(m);
+}
+
+export function noteDelete(slug: string): boolean {
+  return deleteKnowledgeFile("notes", slug + ".md");
+}
+
+export function slugExists(slug: string): boolean {
+  return existsSync(join(notesRoot(), slug + ".md"));
+}
+
+export function noteExport(): any[] {
+  return allNoteFiles().map(file => noteFromFile(file));
+}
+
+export function noteImport(rows: any[]): number {
+  let count = 0;
+  for (const r of rows) {
+    try {
+      noteUpsert({
+        slug: r.slug || safeName(r.title || "note"),
+        title: r.title || r.slug || "note",
+        content: r.content ?? "",
+        type: r.type ?? "general",
+        tags: Array.isArray(r.tags) ? r.tags : (typeof r.tags === "string" ? JSON.parse(r.tags || "[]") : []),
+        category: r.category ?? "",
+        pinned: r.pinned === true,
+      });
+      count++;
+    } catch { /* skip invalid */ }
+  }
+  return count;
+}
+
+// ── Assets (pasted images) ───────────────────────────────────────────────────
+export function saveNoteAsset(base64: string, ext: string, category = "", title?: string): string {
+  const buf = Buffer.from(base64, "base64");
+  const hash = createHash("sha1").update(buf).digest("hex").slice(0, 16);
+  const safeExt = (ext || "png").replace(/[^a-zA-Z0-9]/g, "").toLowerCase() || "png";
+  const cat = safeCategory(category);
+  if (title?.trim()) return saveMarkdownAsset(_store, "notes", `${cat ? cat + "/" : ""}${safeName(title)}.md`, `${hash}.${safeExt}`, buf);
+  const dir = cat ? join(_store, "notes", ...cat.split("/"), "_assets") : join(_store, "notes", "_assets");
+  mkdirSync(dir, { recursive: true });
+  const rel = `_assets/${hash}.${safeExt}`;
+  const full = join(dir, `${hash}.${safeExt}`);
+  if (!existsSync(full)) writeFileSync(full, buf);
+  return rel;
+}
+
+// ── Skills ──────────────────────────────────────────────────────────────────
+function skillsRoot(): string { return join(_store, "skills"); }
+function skillTrashRoot(): string { return join(skillsRoot(), ".trash"); }
+
+export interface SkillTrashEntry {
+  id: string;
+  kind: "skill" | "folder";
+  name: string;
+  originalPath: string;
+  deletedAt: string;
+  assetsPath?: string;
+}
+
+function moveSkillPathToTrash(full: string, originalPath: string, kind: SkillTrashEntry["kind"], name: string): SkillTrashEntry | undefined {
+  return withMarkdownAssetMutation(getStorePath(), () => moveSkillPathToTrashUnlocked(full, originalPath, kind, name));
+}
+
+function moveSkillPathToTrashUnlocked(full: string, originalPath: string, kind: SkillTrashEntry["kind"], name: SkillTrashEntry["name"]): SkillTrashEntry | undefined {
+  if (!existsSync(full)) return undefined;
+  const id = `${Date.now()}-${randomBytes(5).toString("hex")}`;
+  const entryDir = join(skillTrashRoot(), id);
+  const entry: SkillTrashEntry = { id, kind, name, originalPath, deletedAt: now() };
+  if (kind === "folder") {
+    const files: MdFile[] = [];
+    walkMd(full, originalPath, files);
+    for (const file of files) migrateMarkdownAssetsForLifecycleUnlocked(getStorePath(), "skills", file.rel);
+    assertMarkdownResourceTreeUnshared(skillsRoot(), originalPath, "", originalPath);
+  }
+  if (kind === "skill") {
+    assertMarkdownAssetsUnshared(skillsRoot(), originalPath);
+    migrateMarkdownAssetsForLifecycleUnlocked(getStorePath(), "skills", originalPath);
+    if (existsSync(full.replace(/\.md$/i, ".assets"))) entry.assetsPath = markdownAssetDirectory(originalPath);
+  }
+  return recordKnowledgeTrashDeletion("skills", entry, full, () => {
+    try {
+      mkdirSync(entryDir, { recursive: true });
+      writeFileSync(join(entryDir, "metadata.json"), JSON.stringify(entry, null, 2) + "\n");
+      moveMarkdownPair(full, join(entryDir, "payload"), entry.assetsPath ? join(skillsRoot(), entry.assetsPath) : join(entryDir, "absent-assets"), join(entryDir, "assets"));
+      return entry;
+    } catch (error) {
+      if (!existsSync(join(entryDir, "payload")) && !existsSync(join(entryDir, "assets"))) rmSync(entryDir, { recursive: true, force: true });
+      throw error;
+    }
+  });
+}
+
+export function skillMoveToTrash(name: string): SkillTrashEntry | undefined {
+  const file = findSkillFile(name);
+  return file ? moveSkillPathToTrash(file.full, file.rel, "skill", name) : undefined;
+}
+
+export function knowledgePathMoveToTrash(area: FolderArea, relativePath: string): KnowledgeTrashEntry | SkillTrashEntry | undefined {
+  const source = knowledgeTrashPath(area, relativePath);
+  if (!source || !existsSync(source.full) || !statSync(source.full).isFile()) return undefined;
+  return area === "skills"
+    ? moveSkillPathToTrash(source.full, source.rel, "skill", basename(source.rel, ".md"))
+    : knowledgeMoveToTrash(area, source.rel, "item", basename(source.rel));
+}
+
+export function skillFolderMoveToTrash(relPath: string): SkillTrashEntry | undefined {
+  const source = safeFolderOperationPath("skills", relPath);
+  if (!source || source.rel === ".trash" || source.rel.startsWith(".trash/") || !existsSync(source.full) || !statSync(source.full).isDirectory()) return undefined;
+  return moveSkillPathToTrash(source.full, source.rel, "folder", basename(source.rel));
+}
+
+export function skillTrashList(): SkillTrashEntry[] {
+  if (!existsSync(skillTrashRoot())) return [];
+  const entries: SkillTrashEntry[] = [];
+  for (const id of readdirSync(skillTrashRoot())) {
+    if (!/^[0-9]+-[a-f0-9]+$/.test(id)) continue;
+    try {
+      const entry = JSON.parse(readFileSync(join(skillTrashRoot(), id, "metadata.json"), "utf8")) as SkillTrashEntry;
+      if (entry.id === id && (entry.kind === "skill" || entry.kind === "folder") && entry.originalPath) entries.push(entry);
+    } catch { /* ignore incomplete trash entries */ }
+  }
+  return entries.sort((left, right) => right.deletedAt.localeCompare(left.deletedAt));
+}
+
+export function skillTrashRestore(id: string): { ok: boolean; path?: string; error?: string } {
+  return withMarkdownAssetMutation(getStorePath(), () => skillTrashRestoreUnlocked(id));
+}
+
+function skillTrashRestoreUnlocked(id: string): { ok: boolean; path?: string; error?: string } {
+  const entry = skillTrashList().find(item => item.id === id);
+  if (!entry) return { ok: false, error: "Trash item was not found." };
+  const destination = resolve(skillsRoot(), ...entry.originalPath.split("/"));
+  const root = resolve(skillsRoot());
+  if (!destination.startsWith(root + sep)) return { ok: false, error: "Trash restore path is invalid." };
+  if (existsSync(destination)) return { ok: false, error: `Restore target already exists: ${entry.originalPath}` };
+  const entryDir = join(skillTrashRoot(), id);
+  if (entry.assetsPath && (entry.kind !== "skill" || entry.assetsPath !== markdownAssetDirectory(entry.originalPath))
+    || !!entry.assetsPath !== existsSync(join(entryDir, "assets"))) {
+    return { ok: false, error: "Trash resource metadata is missing or inconsistent. Preserve the entry for recovery." };
+  }
+  const restoredPaths = new Set([
+    ...knowledgeDeletionPaths("skills", join(entryDir, "payload"), entry.originalPath),
+    ...(entry.assetsPath ? knowledgeDeletionPaths("skills", join(entryDir, "assets"), entry.assetsPath) : []),
+  ]);
+  const result = changeKnowledgeSyncDeletions(records => records.filter(record => !restoredPaths.has(record.path)), () => {
+    try {
+      mkdirSync(resolve(destination, ".."), { recursive: true });
+      moveMarkdownPair(join(entryDir, "payload"), destination, join(entryDir, "assets"),
+        entry.assetsPath ? checkedMarkdownPath(skillsRoot(), entry.assetsPath) : destination + ".assets");
+    } catch (error: any) { return { ok: false, error: error?.message || String(error) }; }
+    return { ok: true, path: entry.originalPath };
+  }, result => result.ok);
+  if (result.ok) {
+    rmSync(entryDir, { recursive: true, force: true });
+    if (existsSync(skillTrashRoot()) && readdirSync(skillTrashRoot()).length === 0) rmSync(skillTrashRoot(), { recursive: true, force: true });
+  }
+  return result;
+}
+
+export function skillTrashEmpty(): number {
+  const count = skillTrashList().length;
+  rmSync(skillTrashRoot(), { recursive: true, force: true });
+  return count;
+}
+
+export function skillTrashDelete(id: string): { ok: boolean; name?: string; error?: string } {
+  const entry = skillTrashList().find(item => item.id === id);
+  if (!entry) return { ok: false, error: "Trash item was not found." };
+  try {
+    rmSync(join(skillTrashRoot(), id), { recursive: true, force: true });
+    if (existsSync(skillTrashRoot()) && readdirSync(skillTrashRoot()).length === 0) rmSync(skillTrashRoot(), { recursive: true, force: true });
+    return { ok: true, name: entry.name };
+  } catch (error: any) { return { ok: false, error: error?.message || String(error) }; }
+}
+
+function skillFromFile(f: MdFile): any {
+  const { fm, body } = parseFrontmatter(readFileSync(f.full, "utf-8"));
+  const key = relNoExt(f.rel);
+  return {
+    name: fm.name || nameOf(key),
+    _key: key,
+    ...readKnowledgeIdentity(fm, "skill", key),
+    description: fm.description ?? "",
+    category: catOf(key),
+    tags: JSON.stringify(asArray(fm.tags)),
+    source_project: fm.source_project ?? null,
+    recipe_required: fm.recipe_required === true,
+    recipe_hint: String(fm.recipe_hint || ""),
+    related_skills: asArray(fm.related_skills),
+    links: Array.isArray(fm.links) ? fm.links : [],
+    priority: skillPriority(fm.priority),
+    pinned: fm.pinned === true,
+    content: body,
+    created_at: fm.created || new Date(f.mtime).toISOString(),
+    updated_at: new Date(f.mtime).toISOString(),
+  };
+}
+
+function allSkillFiles(): MdFile[] { const out: MdFile[] = []; walkMd(skillsRoot(), "", out); return out; }
+
+export type SkillPriority = "normal" | "high" | "highest";
+
+function skillPriority(value: unknown): SkillPriority {
+  return value === "high" || value === "highest" ? value : "normal";
+}
+
+export function skillList(category?: string, tag?: string): any[] {
+  let rows = allSkillFiles().map(skillFromFile);
+  if (category) rows = rows.filter(r => r.category === category);
+  if (tag) rows = rows.filter(r => asArray(JSON.parse(r.tags || "[]")).includes(tag));
+  rows.sort((a, b) => (a.category || "").localeCompare(b.category || "") || a.name.localeCompare(b.name));
+  return rows.map(({ content, _key, ...meta }) => meta);
+}
+
+export function knowledgeFilePath(type: "skills" | "notes" | "papers", id: string): string | undefined {
+  if (type === "skills") return findSkillFile(id)?.full;
+  const root = type === "notes" ? notesRoot() : papersRoot();
+  const target = resolve(root, `${id}.md`);
+  if (!target.startsWith(resolve(root) + sep) || !existsSync(target) || statSync(target).isDirectory()) return undefined;
+  return target;
+}
+
+export function skillSearch(q: string, options: SearchOptions = {}): any[] {
+  return allSkillFiles().map(skillFromFile)
+    .filter(r => searchMatches(q, options, [r.name, r._key, r.description, r.content, r.category, r.source_project, ...JSON.parse(r.tags || "[]")]))
+    .slice(0, 100)
+    .map(({ content, _key, ...meta }) => meta);
+}
+
+/** Find a skill's file by its (unique) name. */
+function findSkillFile(name: string): MdFile | undefined {
+  return allSkillFiles().find(f => {
+    const { fm } = parseFrontmatter(readFileSync(f.full, "utf-8"));
+    return (fm.name || nameOf(relNoExt(f.rel))) === name;
+  });
+}
+
+export function skillGet(name: string): any {
+  const f = findSkillFile(name);
+  return f ? skillFromFile(f) : null;
+}
+
+export function skillUpsert(row: {
+  name: string; previousName?: string; content: string; description?: string; category?: string; tags?: string[]; source_project?: string; pinned?: boolean;
+  recipe_required?: boolean; recipe_hint?: string; related_skills?: string[]; priority?: SkillPriority; links?: unknown[];
+}): boolean {
+  const existingFile = findSkillFile(row.previousName || row.name);
+  const existing = existingFile ? skillFromFile(existingFile) : null;
+  const category = safeCategory(row.category ?? existing?.category ?? "");
+  const filename = safeName(row.name) + ".md";
+  const newRel = category ? `${category}/${filename}` : filename;
+  const created = existing?.created_at ?? now();
+  const identity = nextKnowledgeIdentity(existing, "skill", existing?._key || newRel, relNoExt(newRel));
+
+  const fm = {
+    schema: identity.schema,
+    knowledgeId: identity.knowledgeId,
+    revision: identity.revision,
+    aliases: identity.aliases,
+    name: row.name,
+    description: row.description ?? existing?.description ?? "",
+    tags: row.tags ?? (existing ? JSON.parse(existing.tags || "[]") : []),
+    source_project: row.source_project ?? existing?.source_project ?? undefined,
+    recipe_required: (row.recipe_required ?? existing?.recipe_required) ? true : undefined,
+    recipe_hint: row.recipe_hint ?? existing?.recipe_hint ?? undefined,
+    related_skills: row.related_skills ?? existing?.related_skills ?? undefined,
+    links: validatedKnowledgeLinks(row.links ?? existing?.links),
+    priority: skillPriority(row.priority ?? existing?.priority) === "normal" ? undefined : skillPriority(row.priority ?? existing?.priority),
+    pinned: (row.pinned ?? existing?.pinned) ? true : undefined,
+    created,
+  };
+  writeKnowledgeMarkdown("skills", newRel, existingFile?.rel, serializeFrontmatter(fm, row.content ?? ""));
+  return !existing;
+}
+
+export function skillDelete(name: string): boolean {
+  const f = findSkillFile(name);
+  if (!f) return false;
+  return deleteKnowledgeFile("skills", f.rel);
+}
+
+export function skillSetPinned(name: string, pinned: boolean): boolean {
+  const skill = skillGet(name);
+  if (!skill) return false;
+  skillUpsert({
+    name: skill.name, content: skill.content, description: skill.description,
+    category: skill.category, tags: JSON.parse(skill.tags || "[]"),
+    source_project: skill.source_project ?? undefined, pinned,
+  });
+  return true;
+}
+
+/** Rename a skill category folder: re-path every skill under `oldPrefix` to `newPrefix`. */
+export function skillMoveCategory(oldPrefix: string, newPrefix: string): number {
+  const op = (oldPrefix || "").replace(/^\/+|\/+$/g, "");
+  const np = safeCategory(newPrefix || "");
+  if (!op || !np || op === np) return 0;
+  let n = 0;
+  for (const meta of skillList() as any[]) {
+    const cat = meta.category || "";
+    if (cat === op || cat.startsWith(op + "/")) {
+      const full = skillGet(meta.name);
+      if (!full) continue;
+      const newCat = np + cat.slice(op.length);
+      skillUpsert({
+        name: full.name, content: full.content, description: full.description,
+        category: newCat, tags: JSON.parse(full.tags || "[]"),
+        source_project: full.source_project ?? undefined,
+      });
+      n++;
+    }
+  }
+  return n;
+}
+
+/** Move a single skill to a different category (folder path). */
+export function skillMove(name: string, newCategory: string): boolean {
+  const s = skillGet(name);
+  if (!s) return false;
+  skillUpsert({
+    name: s.name, content: s.content, description: s.description,
+    category: safeCategory(newCategory || ""), tags: JSON.parse(s.tags || "[]"),
+    source_project: s.source_project ?? undefined,
+  });
+  return true;
+}
+
+/** Move a single note to a different category (folder path). Parents are created. */
+export function noteMove(slug: string, newCategory: string): boolean {
+  const nt = noteGet(slug);
+  if (!nt) return false;
+  noteUpsert({
+    slug, title: nt.title, content: nt.content, type: nt.type,
+    tags: JSON.parse(nt.tags || "[]"), category: safeCategory(newCategory || ""),
+  });
+  return true;
+}
+
+/** Move a note category folder: re-path every note under `oldPrefix` to `newPrefix`. */
+export function noteMoveFolder(oldPrefix: string, newPrefix: string): number {
+  const op = (oldPrefix || "").replace(/^\/+|\/+$/g, "");
+  const np = safeCategory(newPrefix || "");
+  if (!op || !np || op === np) return 0;
+  let n = 0;
+  for (const meta of noteList(undefined, 100000) as any[]) {
+    const cat = meta.category || "";
+    if (cat === op || cat.startsWith(op + "/")) {
+      const full = noteGet(meta.slug);
+      if (!full) continue;
+      const newCat = np + cat.slice(op.length);
+      noteUpsert({
+        slug: full.slug, title: full.title, content: full.content, type: full.type,
+        tags: JSON.parse(full.tags || "[]"), category: newCat,
+      });
+      n++;
+    }
+  }
+  if (n) repathFolderPins(op, np);
+  return n;
+}
+
+// ── Papers ────────────────────────────────────────────────────────────────
+// Files: papers/<Category>/<Title>.md. Frontmatter carries bibliographic
+// metadata, a list of conclusions (shown in the graph), and a `cites` list where
+// each entry is { paper, note } — the note describes how THIS paper uses the
+// cited (parent) paper's conclusions. "A cites B" ⇒ A is a child of B.
+// A paper may also link to a remote `url` and/or a local `file` (uploaded under
+// the paper's own _assets/ folder). The markdown body is your free-text notes.
+function papersRoot(): string { return join(_store, "papers"); }
+
+export interface Cite { paper: string; note: string; }
+
+function normalizeCites(v: any): Cite[] {
+  if (!Array.isArray(v)) return [];
+  const out: Cite[] = [];
+  for (const e of v) {
+    if (typeof e === "string") { if (e.trim()) out.push({ paper: e.trim(), note: "" }); }
+    else if (e && typeof e === "object") {
+      const paper = String(e.paper ?? e.key ?? e.target ?? "").trim();
+      if (paper) out.push({ paper, note: String(e.note ?? e.comment ?? "") });
+    }
+  }
+  return out;
+}
+
+function toYear(v: any): number | null {
+  if (typeof v === "number") return v;
+  if (v == null || v === "") return null;
+  const n = parseInt(String(v), 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+function paperFromFile(f: MdFile): any {
+  const { fm, body } = parseFrontmatter(readFileSync(f.full, "utf-8"));
+  const key = relNoExt(f.rel);
+  return {
+    slug: key,
+    ...readKnowledgeIdentity(fm, "research", key),
+    title: fm.title || nameOf(key),
+    description: fm.description || "",
+    kind: fm.kind === "idea" ? "idea" : "paper",
+    group: (fm.group && String(fm.group).trim()) || "Papers",
+    pinned: fm.pinned === true,
+    authors: asArray(fm.authors),
+    year: toYear(fm.year),
+    topic: fm.topic || "",
+    publisher: fm.publisher || "",
+    tags: asArray(fm.tags),
+    url: fm.url || "",
+    file: fm.file || "",
+    conclusions: asArray(fm.conclusions),
+    implementation: asArray(fm.implementation),
+    assumptions: asArray(fm.assumptions),
+    links: Array.isArray(fm.links) ? fm.links : [],
+    cites: normalizeCites(fm.cites),
+    category: catOf(key),
+    content: body,
+    created_at: fm.created || new Date(f.mtime).toISOString(),
+    updated_at: new Date(f.mtime).toISOString(),
+  };
+}
+
+function allPaperFiles(): MdFile[] { const out: MdFile[] = []; walkMd(papersRoot(), "", out); return out; }
+
+/** Resolve a cite reference (a paper slug or a title) to a canonical slug. */
+function buildPaperResolver(all: any[]): (ref: string) => string | null {
+  const byKey = new Map<string, string>(), byTitle = new Map<string, string>();
+  for (const p of all) { byKey.set(p.slug.toLowerCase(), p.slug); byTitle.set(String(p.title).toLowerCase(), p.slug); }
+  return (ref: string) => {
+    const r = String(ref || "").toLowerCase().replace(/\.md$/i, "");
+    return byKey.get(r) || byTitle.get(r) || null;
+  };
+}
+
+/** citationCount(P) = number of library papers that cite P (P's children count). */
+function citationCounts(all: any[]): Map<string, number> {
+  const resolve = buildPaperResolver(all);
+  const counts = new Map<string, number>();
+  for (const p of all) for (const c of p.cites) {
+    const t = resolve(c.paper);
+    if (t) counts.set(t, (counts.get(t) || 0) + 1);
+  }
+  return counts;
+}
+
+export function paperList(): any[] {
+  const all = allPaperFiles().map(paperFromFile);
+  const counts = citationCounts(all);
+  return all
+    .map(({ content, ...meta }) => ({ ...meta, citationCount: counts.get(meta.slug) || 0 }))
+    .sort((a, b) => (b.citationCount - a.citationCount) || ((b.year || 0) - (a.year || 0)) || a.title.localeCompare(b.title));
+}
+
+export function paperSearch(q: string, options: SearchOptions = {}): any[] {
+  const matches = allPaperFiles().map(paperFromFile).filter(p => searchMatches(q, options,
+    [p.slug, p.title, p.description, p.content, p.topic, p.publisher, p.category, p.group,
+    p.url, p.file, p.year, ...p.authors, ...p.tags, ...p.conclusions, ...p.implementation, ...p.assumptions,
+    ...p.cites.flatMap((cite: Cite) => [cite.paper, cite.note])]));
+  const counts = citationCounts(allPaperFiles().map(paperFromFile));
+  return matches.map(({ content, ...paper }) => ({ ...paper, citationCount: counts.get(paper.slug) || 0 }))
+    .sort((a, b) => (b.citationCount - a.citationCount) || ((b.year || 0) - (a.year || 0)) || a.title.localeCompare(b.title));
+}
+
+export function paperGet(slug: string): any {
+  const full = join(papersRoot(), slug + ".md");
+  if (!existsSync(full)) return null;
+  const st = statSync(full);
+  return paperFromFile({ full, rel: slug + ".md", mtime: st.mtimeMs, size: st.size });
+}
+
+export function paperUpsert(row: {
+  slug: string; title: string; content?: string; authors?: string[]; year?: number | string | null;
+  topic?: string; publisher?: string; tags?: string[]; url?: string; file?: string;
+  conclusions?: string[]; implementation?: string[]; assumptions?: string[]; cites?: Cite[];
+  category?: string; kind?: string; group?: string; pinned?: boolean; description?: string; links?: unknown[];
+}): boolean {
+  const existing = paperGet(row.slug);
+  const category = safeCategory(row.category ?? existing?.category ?? "");
+  const filename = safeName(row.title || nameOf(row.slug)) + ".md";
+  const newRel = category ? `${category}/${filename}` : filename;
+  const created = existing?.created_at ?? now();
+  const identity = nextKnowledgeIdentity(existing, "research", existing?.slug || row.slug || newRel, relNoExt(newRel));
+  const resolvePaper = buildPaperResolver(allPaperFiles().map(paperFromFile));
+  const cites = normalizeCites(row.cites ?? existing?.cites ?? []).flatMap(cite => {
+    const target = resolvePaper(cite.paper);
+    return target && target !== row.slug ? [{ paper: target, note: cite.note }] : [];
+  });
+
+  const fm: Record<string, any> = {
+    schema: identity.schema,
+    knowledgeId: identity.knowledgeId,
+    revision: identity.revision,
+    aliases: identity.aliases,
+    title: row.title,
+    description: row.description ?? existing?.description ?? "",
+    kind: (row.kind ?? existing?.kind) === "idea" ? "idea" : undefined,
+    group: (() => { const g = (row.group ?? existing?.group ?? "").trim(); return g && g !== "Papers" ? g : undefined; })(),
+    pinned: (row.pinned ?? existing?.pinned) ? true : undefined,
+    authors: row.authors ?? existing?.authors ?? [],
+    year: toYear(row.year ?? existing?.year),
+    topic: row.topic ?? existing?.topic ?? "",
+    publisher: row.publisher ?? existing?.publisher ?? "",
+    tags: row.tags ?? existing?.tags ?? [],
+    url: row.url ?? existing?.url ?? "",
+    file: row.file ?? existing?.file ?? "",
+    conclusions: row.conclusions ?? existing?.conclusions ?? [],
+    implementation: row.implementation ?? existing?.implementation ?? [],
+    assumptions: row.assumptions ?? existing?.assumptions ?? [],
+    cites,
+    links: validatedKnowledgeLinks(row.links ?? existing?.links),
+    created,
+  };
+  writeKnowledgeMarkdown("papers", newRel, existing ? row.slug + ".md" : undefined, serializeFrontmatter(fm, row.content ?? existing?.content ?? ""));
+  if (existing && relNoExt(newRel) !== row.slug) pruneEmptyAncestors(resolve(papersRoot(), row.slug + ".md", ".."), resolve(papersRoot()));
+  return !existing;
+}
+
+export function paperDelete(slug: string): boolean {
+  const full = join(papersRoot(), slug + ".md");
+  if (!deleteKnowledgeFile("papers", slug + ".md")) return false;
+  pruneEmptyAncestors(resolve(full, ".."), resolve(papersRoot()));
+  return true;
+}
+
+export function paperMoveAllToTrash(): { ok: boolean; moved: number; error?: string } {
+  const papers = paperList();
+  const moved: KnowledgeTrashEntry[] = [];
+  for (const paper of papers) {
+    const entry = knowledgeMoveToTrash("papers", `${paper.slug}.md`, "item", paper.title || basename(paper.slug));
+    if (entry) {
+      moved.push(entry);
+      continue;
+    }
+    const restoreFailures = moved
+      .slice()
+      .reverse()
+      .map(item => knowledgeTrashRestore("papers", item.id))
+      .filter(result => !result.ok);
+    return {
+      ok: false,
+      moved: restoreFailures.length,
+      error: restoreFailures.length
+        ? `Could not move all Papers to Trash, and ${restoreFailures.length} rollback operation(s) failed.`
+        : `Could not move Paper to Trash: ${paper.slug}.md`,
+    };
+  }
+  return { ok: true, moved: moved.length };
+}
+
+function migrationComparablePaper(file: string): { metadata: string; body: string } {
+  const { fm, body } = parseFrontmatter(readFileSync(file, "utf8"));
+  const metadata = { ...fm };
+  for (const key of ["group", "schema", "knowledgeId", "revision", "aliases", "links", "created"]) delete metadata[key];
+  const normalize = (value: any): any => {
+    if (Array.isArray(value)) {
+      const normalized = value.map(normalize);
+      return normalized.length ? normalized : undefined;
+    }
+    if (value && typeof value === "object") {
+      const entries = Object.keys(value).sort()
+        .map(key => [key, normalize(value[key])] as const)
+        .filter(([, child]) => child !== undefined);
+      return entries.length ? Object.fromEntries(entries) : undefined;
+    }
+    return value;
+  };
+  return { metadata: JSON.stringify(normalize(metadata)), body: body.replace(/\r\n/g, "\n") };
+}
+
+function equivalentMyIdeasMigrationSource(source: string, destination: string): boolean {
+  const left = migrationComparablePaper(source);
+  const right = migrationComparablePaper(destination);
+  return left.metadata === right.metadata && left.body === right.body;
+}
+
+export function migrateLegacyMyIdeasFolder(): { moved: number; updatedReferences: number } {
+  const files = allPaperFiles();
+  const papers = files.map(paperFromFile);
+  const moves = papers
+    .filter(paper => (paper.kind === "idea" || paper.group === "MyIdeas") && paper.category.split("/")[0] !== "MyIdeas")
+    .map(paper => ({
+      oldSlug: paper.slug,
+      newSlug: `MyIdeas/${paper.slug}`,
+      source: join(papersRoot(), paper.slug + ".md"),
+      destination: join(papersRoot(), "MyIdeas", paper.slug + ".md"),
+      duplicate: false,
+      sourceContent: Buffer.alloc(0),
+    }));
+  for (const move of moves) {
+    if (!existsSync(move.destination)) continue;
+    if (!equivalentMyIdeasMigrationSource(move.source, move.destination)) {
+      throw new Error(`Cannot migrate MyIdeas because the destination contains different content: ${move.newSlug}.md`);
+    }
+    move.duplicate = true;
+    move.sourceContent = readFileSync(move.source);
+  }
+
+  const completed: typeof moves = [];
+  try {
+    for (const move of moves) {
+      if (move.duplicate) {
+        rmSync(move.source);
+      } else {
+        mkdirSync(join(move.destination, ".."), { recursive: true });
+        renameSync(move.source, move.destination);
+      }
+      completed.push(move);
+    }
+  } catch (error) {
+    for (const move of completed.reverse()) {
+      try {
+        mkdirSync(join(move.source, ".."), { recursive: true });
+        if (move.duplicate) writeFileSync(move.source, move.sourceContent);
+        else renameSync(move.destination, move.source);
+      } catch { /* preserve the original migration error */ }
+    }
+    throw error;
+  }
+
+  const slugMap = new Map(moves.map(move => [move.oldSlug, move.newSlug]));
+  let updatedReferences = 0;
+  for (const file of allPaperFiles()) {
+    const source = readFileSync(file.full, "utf8");
+    const { fm, body } = parseFrontmatter(source);
+    let changed = false;
+    if (String(fm.group || "") === "MyIdeas") {
+      delete fm.group;
+      changed = true;
+    }
+    const cites = normalizeCites(fm.cites);
+    const mappedCites = cites.map(cite => {
+      const mapped = slugMap.get(cite.paper);
+      if (!mapped) return cite;
+      changed = true;
+      updatedReferences += 1;
+      return { ...cite, paper: mapped };
+    });
+    if (changed) {
+      fm.cites = mappedCites.length ? mappedCites : undefined;
+      writeFileSync(file.full, serializeFrontmatter(fm, body));
+    }
+  }
+  return { moved: moves.length, updatedReferences };
+}
+
+/** Distinct topics / tags / year range for filter UIs (each with a count). */
+export function paperFacets(): { topics: { name: string; count: number }[]; tags: { name: string; count: number }[]; years: number[] } {
+  const all = allPaperFiles().map(paperFromFile);
+  const topics = new Map<string, number>(), tags = new Map<string, number>(), years = new Set<number>();
+  for (const p of all) {
+    if (p.topic) topics.set(p.topic, (topics.get(p.topic) || 0) + 1);
+    for (const t of p.tags) tags.set(t, (tags.get(t) || 0) + 1);
+    if (p.year) years.add(p.year);
+  }
+  const sortByCount = (m: Map<string, number>) => [...m.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  return { topics: sortByCount(topics), tags: sortByCount(tags), years: [...years].sort((a, b) => b - a) };
+}
+
+/** Build the citation graph (nodes + edges). Edge from = cited parent, to = citing child. */
+export function paperGraph(opts: {
+  topic?: string; tag?: string; minYear?: number; maxYear?: number; limit?: number; neighbors?: boolean; q?: string;
+} = {}): any {
+  const all = allPaperFiles().map(paperFromFile);
+  const resolve = buildPaperResolver(all);
+  const counts = citationCounts(all);
+  const bySlug = new Map<string, any>(all.map(p => [p.slug, p]));
+
+  const nlc = (opts.q || "").toLowerCase();
+  const filtered = all.filter(p => {
+    if (opts.topic && p.topic !== opts.topic) return false;
+    if (opts.tag && !p.tags.includes(opts.tag)) return false;
+    if (opts.minYear && (p.year || 0) < opts.minYear) return false;
+    if (opts.maxYear && (p.year || 9999) > opts.maxYear) return false;
+    if (nlc && !(p.title.toLowerCase().includes(nlc) || p.topic.toLowerCase().includes(nlc) ||
+                 (p.authors as string[]).join(" ").toLowerCase().includes(nlc))) return false;
+    return true;
+  });
+  filtered.sort((a, b) => (counts.get(b.slug)! || 0) - (counts.get(a.slug)! || 0) || ((b.year || 0) - (a.year || 0)));
+
+  const limit = opts.limit && opts.limit > 0 ? opts.limit : 10;
+  const nodeSet = new Set<string>(filtered.slice(0, limit).map(p => p.slug));
+
+  if (opts.neighbors) {
+    for (const s of [...nodeSet]) {
+      const p = bySlug.get(s);
+      if (!p) continue;
+      for (const c of p.cites) { const t = resolve(c.paper); if (t) nodeSet.add(t); }      // parents (cited)
+      for (const q of all) for (const c of q.cites) { if (resolve(c.paper) === s) nodeSet.add(q.slug); } // children (citing)
+    }
+  }
+
+  const nodes = [...nodeSet].map(s => bySlug.get(s)).filter(Boolean).map(p => ({
+    key: p.slug, title: p.title, year: p.year, topic: p.topic, authors: p.authors, tags: p.tags,
+    kind: p.kind, group: p.group, pinned: p.pinned, citationCount: counts.get(p.slug) || 0,
+    conclusions: p.conclusions, implementation: p.implementation, assumptions: p.assumptions,
+    cites: p.cites, url: p.url, file: p.file, category: p.category,
+  }));
+  const edges: any[] = [];
+  for (const p of all) {
+    if (!nodeSet.has(p.slug)) continue;
+    for (const c of p.cites) {
+      const t = resolve(c.paper);
+      if (t && nodeSet.has(t)) edges.push({ from: t, to: p.slug, note: c.note });
+    }
+  }
+  return { nodes, edges, total: filtered.length, shown: nodes.length };
+}
+
+/** Store an uploaded paper file (e.g. a PDF) under the paper's own _assets/ folder. */
+export function savePaperFile(base64: string, ext: string, category = "", title?: string): string {
+  const buf = Buffer.from(base64, "base64");
+  const hash = createHash("sha1").update(buf).digest("hex").slice(0, 16);
+  const safeExt = (ext || "pdf").replace(/[^a-zA-Z0-9]/g, "").toLowerCase() || "pdf";
+  const cat = safeCategory(category);
+  if (title?.trim()) return saveMarkdownAsset(_store, "papers", `${cat ? cat + "/" : ""}${safeName(title)}.md`, `${hash}.${safeExt}`, buf);
+  const dir = cat ? join(_store, "papers", ...cat.split("/"), "_assets") : join(_store, "papers", "_assets");
+  mkdirSync(dir, { recursive: true });
+  const rel = `_assets/${hash}.${safeExt}`;
+  const full = join(dir, `${hash}.${safeExt}`);
+  if (!existsSync(full)) writeFileSync(full, buf);
+  return rel;
+}
+
+// ── Paper groups (user-assigned, distinct from the derived topic) ────────────
+// A group is just a label on each paper; "Papers" is the default. Groups are
+// derived from the items (a group exists while ≥1 paper is in it).
+export function paperGroups(): { name: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const p of allPaperFiles().map(paperFromFile)) {
+    const g = p.group || "Papers";
+    counts.set(g, (counts.get(g) || 0) + 1);
+  }
+  counts.set("Papers", counts.get("Papers") || 0); // always present
+  const custom = [...counts.entries()].filter(([n]) => n !== "Papers")
+    .sort((a, b) => a[0].localeCompare(b[0]));
+  return [...custom, ["Papers", counts.get("Papers")!] as [string, number]]
+    .map(([name, count]) => ({ name, count }));
+}
+
+export function paperSetGroup(slug: string, group: string): boolean {
+  const p = paperGet(slug);
+  if (!p) return false;
+  paperUpsert({ ...p, group: (group || "Papers").trim() || "Papers" });
+  return true;
+}
+
+export function paperSetPinned(slug: string, pinned: boolean): boolean {
+  const p = paperGet(slug);
+  if (!p) return false;
+  paperUpsert({ ...p, pinned: !!pinned });
+  return true;
+}
+
+export function paperSetTopic(slug: string, topic: string): boolean {
+  const p = paperGet(slug);
+  if (!p) return false;
+  paperUpsert({ ...p, topic: (topic || "").trim() });
+  return true;
+}
+
+export function paperGroupRename(oldName: string, newName: string): number {
+  const to = (newName || "").trim();
+  if (!to || !oldName) return 0;
+  let n = 0;
+  for (const p of allPaperFiles().map(paperFromFile)) {
+    if ((p.group || "Papers") === oldName) { paperUpsert({ ...p, group: to }); n++; }
+  }
+  return n;
+}
+
+export function paperGroupDelete(name: string): number {
+  if (!name || name === "Papers") return 0; // can't delete the default
+  let n = 0;
+  for (const p of allPaperFiles().map(paperFromFile)) {
+    if ((p.group || "Papers") === name) { paperUpsert({ ...p, group: "Papers" }); n++; }
+  }
+  return n;
+}

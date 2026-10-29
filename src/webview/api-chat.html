@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src {{cspSource}} 'unsafe-inline'; font-src {{cspSource}}; script-src 'nonce-{{nonce}}';">
+  <meta name="pkm-katex-src" content="{{katex}}">
+  <meta name="pkm-katex-styles" content="{{katexStyles}}">
+  <meta name="pkm-mermaid-src" content="{{mermaid}}">
+  <link rel="stylesheet" href="{{icons}}">
+  <link rel="stylesheet" href="{{styles}}">
+  <link rel="stylesheet" href="{{hostHealthStyles}}">
+  <link rel="stylesheet" href="{{harnessStyles}}">
+  <title>PKM Chat</title>
+</head>
+<body>
+  <div id="pkm-chat-loading" class="pkm-chat-loading" role="progressbar" aria-label="Loading PKM Chat"></div>
+  <section id="library-view" hidden aria-label="Chat List">
+    <header class="toolbar"><strong class="chat-list-heading">Chats</strong><button id="group-new" title="New group" aria-label="New group"><span class="codicon codicon-new-folder"></span></button><button id="list-new" title="New Chat" aria-label="New Chat"><span class="codicon codicon-add"></span></button></header>
+    <div id="chat-list"></div>
+  </section>
+  <header class="toolbar">
+    <button id="back" title="Back to Chat List" aria-label="Back to Chat List"><span class="codicon codicon-arrow-left"></span></button>
+    <span id="chat-status"></span>
+    <select id="chats" aria-label="Chat history"><option>New chat</option></select>
+    <button id="persona-profiles" type="button" title="Inspect or edit User / Agent Profiles (current and historical)" aria-label="User / Agent Profiles">Profiles</button>
+    <button id="copy-chat-id" title="Copy PKM URL" aria-label="Copy PKM URL" disabled><span class="codicon codicon-copy"></span></button>
+    <button id="promote-project" title="Promote Chat to Project (optional)" aria-label="Promote Chat to Project"><span class="codicon codicon-project"></span></button>
+    <button id="rename" title="Rename chat" aria-label="Rename chat"><span class="codicon codicon-edit"></span></button>
+    <button id="task" title="Start Task" aria-label="Start Task"><span class="codicon codicon-checklist"></span></button>
+    <button id="chat-portal" title="Chat Portal: disconnected (closed)" aria-label="Chat Portal" aria-pressed="false"><svg class="portal-door" viewBox="0 0 24 24" aria-hidden="true"><path class="portal-frame" d="M5 21V10a7 7 0 0 1 14 0v11Z"/><path class="portal-leaf" d="M8 20V10a4 4 0 0 1 8 0v10Z"/><circle cx="14" cy="14" r="1"/></svg></button>
+  </header>
+  <section id="portal-state" aria-label="Portal connection" hidden></section>
+  <dialog id="persona-dialog" aria-label="Current User / Agent Profiles">
+    <header><strong>Current User / Agent Profiles</strong><button id="persona-close" type="button" aria-label="Close Profiles">Close</button></header>
+    <div id="persona-content"></div>
+    <button id="persona-edit" type="button">Edit / manage Profiles</button>
+  </dialog>
+  <div id="error" class="error" role="alert" hidden></div>
+  <section id="harness-summary" aria-label="Native Harness summary" hidden>
+    <span id="harness-summary-text"></span>
+    <button id="open-harness" type="button">Open execution subgraphs</button>
+  </section>
+  <section id="workers" aria-label="Workers">
+    <button id="workers-toggle" type="button" aria-expanded="false" aria-controls="workers-panel">
+      <span class="codicon codicon-type-hierarchy" aria-hidden="true"></span>
+      <strong>Workers</strong><span id="workers-count">0</span>
+      <span id="workers-summary"></span>
+      <span class="codicon codicon-chevron-down" aria-hidden="true"></span>
+    </button>
+    <div id="workers-announcement" class="visually-hidden" role="status" aria-live="polite"></div>
+    <section id="workers-panel" aria-label="Worker task tree" hidden>
+      <p id="workers-note">Read-only overview · viewing does not call models</p>
+      <div id="workers-notice"></div>
+      <div id="workers-tree" role="list"></div>
+    </section>
+  </section>
+  <main id="messages" aria-label="Messages" aria-busy="false" tabindex="0"></main>
+  <section id="applied-edits" aria-label="Applied edits" hidden></section>
+  <form id="composer">
+    <p id="composer-budget-warning" class="message-status" role="status" hidden></p>
+    <section id="queued-inputs" aria-label="Queued inputs" hidden></section>
+    <div id="input-mode" role="radiogroup" aria-label="Running input mode" hidden>
+      <button id="steer-mode" type="button" role="radio" aria-checked="true" title="Steer"><span class="codicon codicon-debug-step-over" aria-hidden="true"></span><span>Steer</span></button>
+      <button id="task-mode" type="button" role="radio" aria-checked="false" title="New task"><span class="codicon codicon-list-flat" aria-hidden="true"></span><span>New task</span></button>
+    </div>
+    <div id="images" class="chat-images draft-images" hidden></div>
+    <textarea id="prompt" rows="3" maxlength="16000" aria-label="Message" placeholder="Ask a question"></textarea>
+    <div class="compose-controls">
+      <button id="context" type="button" title="Add context" aria-label="Add context"><span class="codicon codicon-file-add"></span></button>
+      <button id="image" type="button" title="Attach image" aria-label="Attach image"><span class="codicon codicon-file-media"></span></button>
+      <button id="permissions" type="button" title="Chat permissions" aria-label="Chat permissions" aria-expanded="false" aria-controls="permissions-panel"><span class="codicon codicon-shield" aria-hidden="true"></span></button>
+      <button id="tools" type="button" title="Tools" aria-label="Tools" aria-expanded="false" aria-controls="tools-panel"><span class="codicon codicon-tools"></span></button>
+      <button id="agent-config" type="button" title="Agent configuration" aria-label="Agent configuration" aria-expanded="false" aria-controls="agent-config-panel"><span class="codicon codicon-settings-gear"></span></button>
+      <button id="memory" type="button" title="Retrieval and Chat memory" aria-label="Retrieval and Chat memory" aria-expanded="false" aria-controls="memory-panel"><span class="codicon codicon-database"></span></button>
+      <button id="visualization" type="button" title="Open PKM Visualization" aria-label="Visualization"><span class="codicon codicon-type-hierarchy"></span></button>
+      <div class="model-controls">
+        <button id="model" type="button" title="Choose model" aria-label="Choose model"><span class="codicon codicon-hubot"></span><span id="model-label">Choose model</span><span class="codicon codicon-chevron-down"></span></button>
+        <button id="options" type="button" title="Model settings" aria-label="Model settings" aria-expanded="false" aria-controls="advanced-budget"><span class="codicon codicon-settings"></span></button>
+      </div>
+      <button id="send" type="submit" title="Send" aria-label="Send"><span class="codicon codicon-send"></span></button>
+      <button id="stop" type="button" title="Stop response" aria-label="Stop response" hidden><span class="codicon codicon-debug-stop"></span></button>
+    </div>
+    <section id="advanced-budget" class="advanced-budget chat-settings" aria-label="Model settings" hidden>
+      <strong>Model settings</strong>
+      <button type="button" data-agent-config="profiles">User / Agent Profiles · inspect and edit</button>
+      <div id="contexts" class="contexts"></div>
+      <button id="diagnostics" type="button" title="Export Chat diagnostics" aria-label="Export Chat diagnostics"><span class="codicon codicon-output"></span></button>
+      <div class="budget-controls">
+        <label for="window-slider">Context budget</label>
+        <input id="window-slider" type="range" min="0" max="4" step="1" list="window-presets" aria-label="Context budget presets">
+        <datalist id="window-presets"></datalist>
+        <output id="window-label" for="window-slider" aria-label="Context token budget"></output>
+        <input id="window" type="number" min="256" step="1" required aria-label="Context token budget" hidden>
+      </div>
+      <p class="setting-help">Token budget for instructions, messages, retrieved context and model output.</p>
+      <label for="output">Output per inference <input id="output" type="number" min="1" step="1" required aria-label="Maximum output tokens per inference" aria-describedby="output-help"></label>
+      <p id="output-help" class="setting-help">Maximum generated tokens in one model call, not the whole task.</p>
+      <label for="tool-rounds">Tool rounds <input id="tool-rounds" type="number" min="1" max="1000" step="1" required aria-label="Tool rounds before asking to continue" aria-describedby="tool-rounds-help"></label>
+      <p id="tool-rounds-help" class="setting-help">Model/tool rounds before asking whether to continue.</p>
+      <label class="history-setting"><input id="history" type="checkbox" checked aria-describedby="history-help">Use earlier Chat context</label>
+      <p id="history-help" class="setting-help">Include earlier messages and Chat / authorized-source memory recall. Turning this off does not delete saved Chats. User / Agent Profiles are separate.</p>
+      <footer><span id="tokens"></span><span id="provider">PKM native</span></footer>
+      <div id="cost" class="cost"></div>
+    </section>
+    <section id="permissions-panel" class="chat-settings" aria-label="Chat permissions" hidden>
+      <div class="settings-row"><label for="permission-mode">Permissions</label><select id="permission-mode" aria-label="Permission mode"><option value="protective">Protective</option><option value="ask">Ask before changes</option><option value="read-only">Read only</option><option value="allow-all">Allow All (PKM)</option></select></div>
+      <p id="permission-boundary">Allow All skips PKM tool approvals only. VS Code tools may still require a separate native confirmation. Loop, retry and Task decisions remain in this Chat.</p>
+      <div class="settings-row"><span id="permission-grants"></span><button id="reset-permissions" type="button" title="Reset remembered approvals" aria-label="Reset remembered approvals"><span class="codicon codicon-discard"></span></button></div>
+    </section>
+    <section id="tools-panel" class="chat-settings" aria-label="Tool selection" hidden>
+      <div class="settings-row"><strong>Tools</strong><span id="tools-label" class="tool-count">0 tools</span></div>
+      <div class="tools-toolbar"><input id="tool-search" type="search" placeholder="Search tools" aria-label="Search tools"><button id="tool-connections" type="button" title="Configure HTTP MCP connections" aria-label="Configure HTTP MCP connections"><span class="codicon codicon-plug"></span></button></div>
+      <div id="tool-tree" role="group" aria-label="Tool sources"></div>
+    </section>
+    <section id="agent-config-panel" class="chat-settings agent-config-menu" aria-label="Agent configuration" hidden>
+      <button type="button" data-agent-config="profiles"><span class="codicon codicon-account" aria-hidden="true"></span>User / Agent Profiles</button>
+      <strong>Agent configuration</strong>
+      <button type="button" data-agent-config="pkmSkills"><span class="codicon codicon-book" aria-hidden="true"></span>PKM Skills</button>
+      <button type="button" data-agent-config="externalSkills"><span class="codicon codicon-file-text" aria-hidden="true"></span>External Skills</button>
+      <button type="button" data-agent-config="context"><span class="codicon codicon-file-add" aria-hidden="true"></span>Context</button>
+      <button type="button" data-agent-config="model"><span class="codicon codicon-settings-gear" aria-hidden="true"></span>Model and budget</button>
+    </section>
+    <section id="memory-panel" class="chat-settings" aria-label="Chat memory" hidden>
+      <div class="settings-row"><strong>Retrieval</strong><select id="retrieval-top" aria-label="Candidate count"><option value="10">Top 10</option><option value="20">Top 20</option></select><select id="retrieval-kind" aria-label="Candidate type"><option value="all">All types</option></select><button id="memory-close" type="button" title="Close retrieval" aria-label="Close retrieval"><span class="codicon codicon-close"></span></button></div>
+      <div class="settings-row"><span id="memory-policy-status"></span><button id="memory-policy" type="button">Memory settings</button></div>
+      <div id="retrieval-status" role="status"></div>
+      <section id="retrieval-evidence" aria-label="Context and transport evidence"></section>
+      <div id="retrieval-candidates" aria-label="Retrieved references"></div>
+      <details><summary>Retrieval flow</summary><div id="retrieval-flow" class="retrieval-flow"></div></details>
+      <details><summary>Task branches</summary><div id="memory-tree" aria-label="Chat memory tree"></div></details>
+      <pre id="memory-preview" hidden></pre>
+    </section>
+  </form>
+  <template id="working-cauldron-template">
+    <svg class="working-cauldron" viewBox="0 0 96 96" aria-hidden="true" focusable="false">
+      <g class="working-steam"><path d="M35 42c-6-5 3-8 0-13-2-4 1-7 4-9"/><path d="M49 41c6-6-3-9 1-15 3-4 0-7-2-10"/><path d="M63 42c-5-5 3-8 0-13-2-3 1-6 3-8"/></g>
+      <g class="working-wand"><path d="m15 17 23 17"/><path d="m16 17 23 17"/></g>
+      <path class="working-star" d="m76 12 3 8 8 3-8 3-3 8-3-8-8-3 8-3z"/>
+      <path class="working-pot" d="M18 55h60c-2 23-12 32-30 32s-28-9-30-32z"/>
+      <ellipse class="working-rim" cx="48" cy="55" rx="30" ry="9"/>
+      <ellipse class="working-potion" cx="48" cy="55" rx="24" ry="5.5"/>
+      <path class="working-frame" d="M19 63h-8M77 63h8M30 82l-4 9M66 82l4 9"/>
+      <g class="working-bubbles"><circle cx="39" cy="55" r="2.3"/><circle cx="57" cy="53" r="3"/></g>
+    </svg>
+  </template>
+  <script nonce="{{nonce}}" src="{{hostHealthScript}}"></script>
+  <script nonce="{{nonce}}" src="{{marked}}"></script>
+  <script nonce="{{nonce}}" src="{{purify}}"></script>
+  <script nonce="{{nonce}}" src="{{retrievalScript}}"></script>
+  <script nonce="{{nonce}}" src="{{libraryScript}}"></script>
+  <script nonce="{{nonce}}" src="{{harnessScript}}"></script>
+  <script nonce="{{nonce}}" src="{{visualizationScript}}"></script>
+  <script nonce="{{nonce}}" src="{{script}}"></script>
+</body>
+</html>

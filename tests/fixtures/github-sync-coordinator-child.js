@@ -1,4 +1,4 @@
-const { GitHubSyncCoordinator } = require("../../dist/github-sync-coordinator.js");
+const { GitHubSyncCoordinator } = require("../../dist/sync/github-sync-coordinator.js");
 
 const [stateDirectory, knowledgeRoot, extensionVersion] = process.argv.slice(2);
 let release;
@@ -36,6 +36,7 @@ process.on("message", message => {
     });
   } else if (message.type === "hold") {
     hold = true;
+    process.send?.({type:"held", pid:process.pid});
   } else if (message.type === "configure") {
     coordinator.configure([{
       id: "primary",

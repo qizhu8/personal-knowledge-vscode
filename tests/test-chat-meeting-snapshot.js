@@ -4,7 +4,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { WebSocket } = require("ws");
-const { ChatHub } = require("../dist/chatroom-hub");
+const { ChatHub } = require("../dist/chatroom/chatroom-hub");
 
 class MemorySecretStorage {
   constructor() { this.values = new Map(); }

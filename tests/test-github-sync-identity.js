@@ -6,7 +6,7 @@ const path = require("path");
 const {
   createGitHubSyncIdentity,
   probeGitHubSyncHttpsAuthentication
-} = require("../dist/github-sync.js");
+} = require("../dist/sync/github-sync.js");
 
 (async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-github-identity-"));

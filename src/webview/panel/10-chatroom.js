@@ -1641,6 +1641,7 @@ function chatPaintRoomCards() {
     return { name:room.room, status:'connected', selected:connection?.key === chat.activeKey, unread:connection?.unread || 0, meta:`Active · ${room.members} member${room.members === 1 ? '' : 's'}`,
       onclick:connection ? `ask('chatSetActive',{key:'${esc(connection.key)}'})` : '', actions:[
         ...(connection ? [{label:'Open',onclick:`ask('chatSetActive',{key:'${esc(connection.key)}'})`}] : []),
+        ...(room.hasKey ? [{label:'Copy magic link',onclick:`ask('chatCopyInvite',{roomId:'${esc(room.roomId)}'})`}] : []),
         {label:'Browser',onclick:`chatOpenRoomBrowser('${esc(room.room)}')`},
         ...(room.hasKey ? [{label:'Refresh Key',onclick:`ask('chatRotateSecret',{roomId:'${esc(room.roomId)}',roomName:'${esc(room.room)}'})`}] : []),
         {label:'Close',danger:true,onclick:`ask('chatAdminCloseRoom',{roomId:'${esc(room.roomId)}'})`},
@@ -1803,7 +1804,7 @@ function chatPaintMembers() {
     // Non-host viewers see a small greyed muted indicator; the host toggles it below.
     const mut  = (m.muted && !canModerate) ? '<span class="chat-muted-badge" title="muted by the host — can\'t speak">🔇</span>' : '';
     const proto = isHere ? chatProtoBadge((chat.proto && chat.proto[m.user] || {}).state) : '';
-    const tail = `<span class="chat-ago">${esc(isHere ? chatUpdatedAgo(m.stateChangedAt || m.lastSeen) : chatAgo(m.lastSeen))}</span>`;
+    const tail = `<span class="chat-ago" title="${isHere ? 'Time since last state update' : 'Time since last seen'}">${esc(chatElapsedSeconds(isHere ? m.stateChangedAt || m.lastSeen : m.lastSeen))}</span>`;
     const role = m.role ? `<span class="chat-role">${esc(m.role)}</span>` : '';
     const runtimeComment = runtimeState === 'standby' ? 'Standby: actively waiting for a directed message.'
       : runtimeState === 'thinking' || runtimeState === 'working' ? 'Working: processing a delivered message.'
@@ -1870,9 +1871,9 @@ function chatAgo(ts) {
   if (h < 24) return 'left ' + h + 'h ago';
   return 'left ' + Math.round(h / 24) + 'd ago';
 }
-function chatUpdatedAgo(ts) {
-  if (!ts) return 'updated unknown';
-  return chatAgo(ts).replace(/^left /, 'updated ');
+function chatElapsedSeconds(ts) {
+  if (!Number.isFinite(ts) || ts <= 0) return 'unknown';
+  return Math.max(0, Math.round((Date.now() - ts) / 1000)) + ' sec';
 }
 
 function chatPaintHub() {

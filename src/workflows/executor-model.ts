@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { canonicalJson } from "../workflow-contracts";
+import { canonicalJson } from "./workflow-contracts";
 
 export type AdapterTransport = "inline" | "local-isolated" | "remote";
 export type ProtocolPhase = "created" | "dispatched" | "acknowledged" | "started" | "collecting-evidence" | "checkpointed" | "completed" | "cancelled" | "reconciling";

@@ -1,393 +1,50 @@
 # Personal Knowledge Manager
 
-[Installation Guide](#installation-guide) · [Features](#features) · [Chatroom](#chatroom-is-great-for) · [MCP Integration](#mcp-integration) · [Changelog](CHANGELOG.md)
+**Your daily-work ecosystem, inside VS Code.**
 
-A VS Code extension for managing your personal knowledge base (PKM) — skills, notes, papers, prompts, packages, and scripts — with hierarchical navigation, full-text search, syntax highlighting, AI-assisted summaries, a built-in sync server, MCP integration so AI assistants can read *and write* your knowledge directly, and a real-time **Chatroom** where your team and their AI agents collaborate in shared rooms.
+Chat with AI, reuse your Knowledge, run repeatable work, and collaborate across
+machines without scattering everything across disconnected tools.
 
-> **A note from the developer**
->
-> This is a small extension born from a simple need: one unified place to manage skills, quick notes, large collections of prompts, and development scripts across multiple projects, vms, even colleagues. I don't want/need/should/feel happy to put everything to git, thus I have this extension. I'm a heavy user myself — and I'll keep improving it with regular updates. I hope it helps more people stay organized. Welcome aboard, and thanks for giving it a try!
->
-> — Uone
+[Explore Features & Screenshots](FEATURES.md) · [Installation](FEATURES.md#installation-guide) · [Changelog](CHANGELOG.md)
 
-## For Human
-This extension allows you (human) to add/update/delete items, but it is more preferrable for agents to update and we review. Let agents play with your knowledge, they are kids.
+## More Than One Solution
 
-## First-Aid Tip
-If you (usually me myself :) ) accidentally deleted/screwed up something, ask AI to fix. AI can read the Markdown files and mcp scripts to understand what to do.
+PKM brings **Chat, Harness, Skills, Actions, Chatroom, Projects, Research,
+utilities, Servers, and Sync** into one connected workflow.
 
-## Screenshots
+| For Your Daily Work | What You Get |
+|---|---|
+| **PKM Chat & Harness** | Models, tools, pasted images, persistent Tasks, and visible execution. |
+| **Knowledge & Research** | Reusable Skills, Notes, papers, links, and local search. |
+| **Retrieval & Router** | Keyword search, optional local embeddings, and observable retrieval behavior. |
+| **Actions & Projects** | Repeatable workflows, approvals, task context, and recovery evidence. |
+| **Chatroom & Portal** | Work with people and agents, including Chats on other machines. |
+| **Utilities & Servers** | Prompts, Scripts, Packages, Environments, MCP, and self-hosted services. |
 
-**Skills** — reusable know-how in an arbitrary-depth category tree, with syntax-highlighted detail.
+## Across Platforms and Machines
 
-![Skills](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/skills.png)
+Use PKM in VS Code on Windows, macOS, and Linux, including remote development
+hosts. Carry reusable Knowledge between machines and connect specific Chats
+through Portal with explicit permissions.
 
-**Notes** — split preview with Mermaid diagrams, KaTeX math, colour-coded task badges, and pinning.
+## Sync, Back Up, and Share on Your Terms
 
-![Notes](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/notes.png)
+Use **GitHub Sync + backup** for continuity across machines and small-team
+collaboration. Choose what to share and what stays private; manage repository
+and sharing access yourself.
 
-**Papers** — research papers with groups, pinning, citation counts, conclusions, and a citation graph.
+[Sync & Access Boundaries](FEATURES.md#github-sync-and-backup) · [Portal](FEATURES.md#portal)
 
-![Papers](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/papers.png)
+## Get Started
 
-**Papers — citation graph** — an interactive graph (Cytoscape.js): node size by citations, colour by topic, and your own **ideas** drawn distinctly (gold, dashed).
+1. Install **Personal Knowledge Manager** in VS Code.
+2. Choose your Knowledge Root and follow the setup guide.
+3. Open PKM Chat or add a Skill, Note, or Research item.
 
-![Papers citation graph](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/papers-graph.png)
+Local model retrieval is optional. Start with the built-in keyword search.
 
-**Papers — interactive 2D/3D graph** — explore synthetic demo papers in 2D, then switch to the full 3D renderer.
+[Detailed Setup](FEATURES.md#installation-guide) · [Chat Guide](docs/api-chat.md) · [Feature Guide](FEATURES.md)
 
-![Papers graph guide](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/papers-graph-guide.png)
+---
 
-![Papers 2D and 3D feature demo](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/papers-graph.gif)
-
-**Prompts** — versioned prompt files organised by project → task → version → file.
-
-![Prompts](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/prompts.png)
-
-**Chatroom** — a self-hosted, real-time room where teammates and their AI agents collaborate. Anyone can join from the extension, a browser, or an MCP agent; presence shows who's here (👑 host, 👤 extension, 🤖 agent, 🌐 browser) with a stable identity id.
-
-![Chatroom](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/chatroom.png)
-
-![Chatroom agent guide](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/chatroom-guide.png)
-
-![Chatroom Agent workflow feature demo](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/chatroom.gif)
-
-**Config dashboard** — separate Server, Knowledge schema, Chat schema, and Skill Router versions; process/runtime status, setup guidance, resolved paths, and manually refreshed disk usage.
-
-![Config dashboard](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/config-dashboard.png)
-
-**Chatroom — host controls** — the room host can **mute/unmute** (🔊/🔇), **rename** (✏️), or **remove/kick** (🚫) any member right from the presence list; muted members are greyed out, and people who've left stay under **Earlier**.
-
-![Chatroom host controls](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/chatroom-host.png)
-
-**Chatroom — autonomous multi-agent discussion** — agents enter standby, receive coordinated turns, show live thinking/sending status, and continue until the host stops the discussion.
-
-![Chatroom managed agents](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/chatroom-managed_agent.png)
-
-**Chatroom is great for:**
-
-- **Coordinating multiple AI agents — even across platforms and machines.** Put several agents (e.g. a Copilot agent here, a Claude/other agent on another box, each joined via its own MCP server) into one room with a human host. They see each other's messages and files in real time, so you can orchestrate a multi-agent workflow and step in whenever you want.
-- **Adversarial / "GAN-style" agent loops.** Run a *generator* agent that proposes solutions and a *discriminator/critic* agent that pushes back, iterating in the same room while you watch, judge, and steer — mute one side to let the other think, rename them to their roles, and kick a misbehaving agent.
-- **Human-in-the-loop agent runs.** An agent joins via MCP, reads the task from the room, posts intermediate results and questions, and waits for your approval or redirection — all with a persistent transcript.
-- **Team standups & handoffs.** Teammates and their agents drop status into a shared room; the archived history means latecomers (and reconnecting agents) catch up on exactly what they missed.
-- **Bring in non-VS-Code teammates.** Share the browser link and a room secret so anyone can join from a plain browser tab — no install required.
-
-### Chatroom Agent Join Guide
-
-1. Start the Hub and Host a Room.
-2. Click **📋 Invite** beside the active Room. This copies one complete `pkchat:v1` Magic Link message containing the Room URL, Room identity, and current guest key.
-3. Paste the complete invite into the Agent chat and assign an exact roster name. For example:
-
-  ```text
-  Join this PKM Chatroom as "Docs Reviewer":
-  <paste the complete copied Magic Link message>
-  ```
-
-4. The Agent calls:
-
-  ```text
-  pkm.chat_join(magic_link=<copied invite>, name="Docs Reviewer")
-  ```
-
-5. After Join succeeds, the Agent enters blocking `chat_standby` automatically. The roster shows `standby`.
-6. Address it anywhere in a message with `@"Docs Reviewer"`. It changes to `working`, responds, and returns to `standby`.
-7. Use `/stop @"Docs Reviewer"` to disconnect it without deleting its durable roster identity.
-
-Treat Magic Links like temporary passwords. **🔄 Refresh key** copies a replacement invite and invalidates the previous guest key without disconnecting current members.
-
-## Features
-
-- **Five focused workspaces** — use **Knowledge** for Skills, Notes, and Research; **Tools** for Prompts, Scripts, Packages, Environments, and Servers; **Automation** for Agent Sessions, Agent Snapshots, and Recipe Library; **Projects** for durable work and conversation threads; and **Settings** for MCP, Router, network sharing, GitHub Sync, and live background tasks. The workspace rail uses the same familiar library, tools, play, and folder icon language as Navigation, and each workspace remembers its last route without changing existing content identities.
-- **Live background task manager** — Settings shows only real queued or running extension work, including periodic Knowledge Root checks, inventory scans, retrieval indexing, Broker refreshes, and scheduled or active GitHub Sync. Completed and idle work disappears instead of leaving synthetic history rows.
-- **Recipe Library workbench** — design reusable Automation Recipes in a visual dependency graph or canonical JSON, organize them in persistent folders with right-click subfolder creation and safe folder deletion that preserves contained Recipes, configure typed boundaries and Script adapters, attach required Skills and Notes, validate immutable revisions, edit in a standalone Browser workspace, and follow durable branch, loop, subrecipe, background-command, or human-gate execution from Agent Sessions. Both Graph editors use the same **Recipe → Module → Connection → Input/Output** terminology and interactions: semantic Module colors/icons, transparent Repeat groups with `x1`/`xK`/`x1000` badges, terminal Output reflow, click/drag Connection creation, selectable/deletable Connections, branch-to-upstream while-if/if-while loops with hover explanations, and **Cancel** to restore the saved Recipe. The protected built-in **Evolve Recipes from Evidence** workflow searches the Library first, rejects one-off or speculative automation, prefers extending a close Recipe, and proposes a new design only when repeated evidence and stable inputs/outputs justify it.
-- **Todo-first Agent Session flow** — Automation shows one Session-level Start/End path with ordered Todo cards. Each Todo owns all of its Recipe runs, while Recipe and nested Recipe internals stay collapsed until expanded. Todo cards show privacy-safe MCP call and estimated protocol-token usage separately from measured, estimated, partial, or unknown Recipe model usage; unavailable host credits remain explicitly unknown. Reporting the final Todo keeps the Session open for validation or checkpointing and explicitly directs the Agent to call `agent_session_end`.
-- **Historical Session details and module usage** - Select an Agent Session in Trash to inspect its Todos, summaries, checkpoints, and real Recipe nodes without restoring it. Module graphs center single modules and uneven dependency ranks while retaining parallel execution. Each module shows measured, estimated, partial, or unknown model tokens and precisely attributed MCP calls separately from protocol-token estimates; missing historical usage is not zero, and unobserved host function calls are not inferred.
-- **Fast Settings and Recipe returns** — General & MCP, GitHub Sync, Router, and Recipe Library render their latest usable snapshot immediately when you switch back. Fresh snapshots avoid redundant host work; older snapshots remain visible while PKM silently revalidates, and explicit **Refresh** actions still force current data.
-- **Configurable Skill source priority** — Router keeps PKM Personal, Agent Native, and every active Subscriber in a draggable precedence list. Relevant PKM and Subscriber candidates follow this source order while exact and required Skills remain protected; Agent Native remains host-selected and its position is communicated as routing policy without fabricated candidates or scores.
-- **Agent Snapshot creation and recovery** — before closing a resource-heavy Agent conversation, open **Automation → Agent Snapshot**, choose its managed Agent Session, and create an immutable recovery point, or ask the Agent to run the protected **Create Agent Snapshot** System Recipe. The Recipe uses a pinned in-process native operation with zero model-step tokens and returns a reusable Magic Code recovery prompt. No recovery password exists and there is nothing to rotate. PKM explicitly routes recovery through `agent_session_snapshot_recover` before starting a new Session. Captured todos, checkpoints, and Recipe runs use AES-256-GCM with the fixed local password `uone` only to avoid plaintext on disk; this is obfuscation, not credential or attacker-resistant encryption. The Magic Code identifies the Snapshot but does not contain its payload, so the Snapshot record must remain in the current Knowledge Root or be restored from an explicitly selected GitHub Sync backup. Each successful recovery creates an independent successor Session. GitHub Sync backup is off by default; Broker publishing, subscriptions, and other Sync surfaces exclude Agent Snapshots.
-- **Protected System Recipes** — Recipes installed with PKM carry a visible **System** badge, are upgraded with the Extension, and cannot be renamed, moved, edited, trashed, or deleted as personal content. Release builds generate a deterministic System Recipe inventory and reject Knowledge Root or personal Recipe payloads in the VSIX, so only code-declared built-ins cross the Extension packaging boundary.
-- **Recoverable Agent Session archive retention** — Automation keeps the newest 50 completed Agent Sessions by default (configurable from 1–1000 with `personalKnowledge.agentSessionArchiveKeepLatestK`). Older completed Sessions move automatically to Agent Session Trash and can be restored; archived rows also provide a one-click move-to-Trash action. Only an explicit permanent delete from Trash destroys a Session record.
-- **Automatic GitHub Sync and Branch subscriptions** — publish selected public/private canonical Knowledge through a capability-gated schema 3 manifest keyed by stable entity identity, so compatible renames and moves converge without becoming delete/create operations. Windows sharing the same canonical Knowledge Root on one OS host elect one host-local scheduler in Extension global storage; follower windows durably coalesce requests, observe shared progress, and recover stale leaders with lease fencing, while remote authorities and other hosts remain independent. A Knowledge-Root-wide apply lock prevents overlapping Targets from mutating local Knowledge concurrently without weakening per-Target Git serialization, conflict checks, transaction receipts, atomic writes, or deletion evidence. Upgrade-blocked repositories remain visibly waiting and replay their original request immediately after a compatible extension activates. Existing schema 1/2 repositories remain readable and are upgraded only by an explicit or successful current-client publication, while unsupported required capabilities fail closed before Commit/Push. Repository format migration is an explicit preview → stage → verify → cutover transaction with source fencing, exact backup, rollback, and idempotent retry; it disables Auto Sync and requires one successful manual Fetch/Pull → resolve → Commit → Push → inventory/retrieval refresh before the user may re-enable automation. Each Target retains its validated 1–1440 minute interval, conflict workspace, durable authentication, restore flow, and exact-revision Branch subscriptions. Runtime Agent Session, Recipe Run, Chatroom, lease, prompt, and cache state is never published as canonical Knowledge.
-- **Unified retrieval priority** — assign Normal, High, or Highest priority to an individual local Skill or to an entire subscribed Broker/GitHub Branch source. Priority is applied only after relevance admission, so unrelated high-priority content is still excluded while relevant local and subscribed candidates compete on the same scale.
-- **Projects, Threads, Gantt, and structured collaboration** — organize ongoing work under Knowledge Root-local Projects; create, rename, and move Threads without losing their stable identity; and open a Thread directly in a durably owned Chatroom. The Project/Thread correlation is retained by the Room and each new message across reconnect, Rehost, and extension restart while legacy Rooms remain readable. Structured task contracts record objective, context/version, expected output and artifact type, acceptance criteria, decision requirement/result, evidence, blocking dependencies, completion claim, one primary Worker (or explicit owner partitions), Reviewers, expected responders, deadline, and current task version. The Chatroom composer offers validated receipts for Clarify Question, Assign Work, Review Request, Review Decision, Blocked/Escalation, Handoff, Progress Update, Decision/Synthesis, and Completion, including each receipt's deterministic response policy. Completion fails closed until the output, evidence, decision, responders, reviewer approvals, current version, and explicit claim satisfy the contract. Deterministic guards reject stale context, wrong authoritative recipients, conflicting duplicate requests, and no-reply acknowledgement chains; exact normalized-message loops, dependency cycles, explicit evidence mismatches, and overdue responders are delivered with persistent warnings/escalations rather than guessed semantic judgments. The lifecycle remains `assigned → working → review → synthesis → completed`, with explicit rejection/retry, blocked, timed-out, and resume paths; every transition and convergence record is retained in Thread history, replayed after reconnect/Rehost/restart, and projected to a linked Gantt task with optimistic version checks. Agent Session and Recipe run IDs are links only when supplied by real execution. Each Project also has an accessible Gantt timeline and table/card fallback with stable task IDs, optional Thread scope, strict dates, progress/status, owner roles, dependencies, cycle checks, optimistic atomic updates, and dependency-safe deletion. A permanent Default Project and protected General Thread provide a deterministic home for legacy and unassigned conversations.
-- **Versioned workflow foundation** — compile typed Workflow Definition v1 graphs into canonical, digest-addressed plans with durable runs, scheduling, evidence, catalogs, execution controls, migration, API contracts, and fail-closed natural-language compilation. Immutable receipts and compare-and-swap state protect retries and concurrent operators.
-- **Skills** — reusable know-how as searchable Markdown, organised into an arbitrary-depth category tree, with pinning, live browser preview, and standalone HTML download
-- **Notes** — quick-capture Markdown notes with a **split live-preview editor**, hierarchical categories, tags, and types; **pin** a note to the top of its folder or a folder to the top of its level; task lists render as colour-coded status badges (`[ ]` todo, `[x]` done, `[~]` in progress, `[!]` blocked) that stay legible under any theme
-- **Prompts** — browse versioned prompt files (project -> task -> version -> file)
-- **Packages** — browse local Python/Node packages
-- **Scripts** — organise Scope / C# / Python / PowerShell scripts in a recursive folder tree with:
-  - **Automatic language tags** (e.g. `Scope`, `C#`, `Python` — multiple tags per file)
-  - **Syntax highlighting** (bundled highlight.js + a custom **Scope** grammar)
-  - **AI Summary** button — Purpose / How it works / Inputs / Output / Issues, cached by content hash
-  - **In-place editing** with confirmation + automatic git commit
-- **Hierarchical navigation** — both the Activity Bar tree and the panel's left nav render arbitrary-depth folders (default collapsed). In Navigation, right-click Skills, Notes, Papers, Prompts, Scripts, or any subgroup for a consistent **New Subgroup… / Rename Subgroup… / Delete Subgroup…** workflow; New Subgroup accepts slash-separated multi-level paths. Every Navigation element also has **Copy Path**, producing a PKM-relative file/directory path or stable `pkm://` locator suitable for Agent instructions. Prompts retain their fixed Project → Task → Version group depth
-- **Go to PKM Path** — click the go-to-file button in the panel header or Navigation title, or run **Personal Knowledge Manager: Go to PKM Path…** from the Command Palette. Paste a stable Agent result such as `pkm://knowledge/knowledge_ee2a7651bc4adc35bbf81ef7`, a local Skill/Note/Research Copy Path, or a canonical subscribed-item path to jump directly to that item. A `pkm://` value already on the clipboard is prefilled; stale local inventory is refreshed once before a missing-item error is shown
-- **Top-level content privacy** — right-click a first-level Skill, Note, Paper, Prompt project, Package, Script, or Server group in Navigation or the panel CatTree and choose **Set as Private**. A `🔒` marks the Navigation folder, every inherited CatTree subfolder, local content row, detail title, and Server card; private content is independently excluded from both the Subscription picker and Broker snapshot generation. Subfolders cannot override the top-level decision
-- **Live navigation status** — individual Servers and Rooms include color and text indicators for running/connected, starting/reconnecting, and stopped/offline states; top-level category entries remain undecorated
-- **Organized managed servers** — create persistent multi-level subgroups with **New Subgroup**, assign searchable tags and slash-separated paths in Settings, drag Servers by the `⋮⋮` dashboard handle or directly between subgroups in Navigation, or right-click and use **Move to group**. The Servers Navigation root can create, rename, or safely delete a selected subgroup; rename/delete preserve nested contents and never delete Server files. The permanent **Hidden** subgroup excludes its complete branch from Navigation and always renders last. Clicking a Navigation Server focuses its exact dashboard card, while **Open Link** opens its current hostname/network URL directly. Card text remains selectable and copyable
-- **Multilingual UI** — switch the PKM panel and dynamic navigation across 11 languages from Config, or follow the VS Code display language automatically. Manifest-driven locale catalogs keep static and dynamically rendered webview text aligned; Arabic uses RTL layout, and VS Code command titles use official `package.nls` catalogs
-- **Right-click actions** — copy any element's PKM path, create/rename/delete subgroups, add a new item at a subgroup, or edit an item directly from Navigation. Deleting a subgroup preserves files: ordinary knowledge areas promote them to the parent, while Prompt contents move to a same-level Ungrouped fallback
-- **Consistent content paths** — Skill, Note, Paper, Prompt, and Script detail panes reserve the second header row exclusively for the full current-file PKM-relative path; tags, language, versions, features, and actions begin on the third row
-- **Full-text search** — instant title, path, metadata, and body search across **Notes, Skills, Papers, and Scripts**, with high-contrast match highlighting and category-tree pruning (CJK-friendly on the MCP side)
-- **Files are the source of truth** — every skill and note is a plain, git-tracked `.md` file; edit them here, in your editor, or from the MCP server and the panel refreshes automatically
-- **Paste images & cross-note links** — paste images straight into a note (stored in the note folder's `_assets/` directory), or use safe relative image paths such as `_assets/chart.png` and `../_assets/shared.png`. Relative assets remain portable through Broker subscriptions, forks, GitHub Sync backup/restore, browser previews, and standalone HTML downloads. `pkm://knowledge/...` remains a document identity/link—not an image byte URL. Link between notes with `[[Title]]` wiki links or relative/absolute `.md` links; click a link in the note view to jump to the target note
-- **Math & formulas** — LaTeX rendering via KaTeX: `$...$` inline and `$$...$$` display equations, bundled to work offline; also embedded into HTML exports
-- **Mermaid diagrams** — ` ```mermaid ` fenced blocks render as diagrams (flowcharts, sequence, class, state, …) in the note view, live preview, and HTML export; bundled locally and theme-aware
-- **Unified Markdown actions** — Notes, Skills, and Papers share Pin, **🌐 Browser**, **⬇ Download**, Edit Content, and Edit Metadata actions. Browser previews have reusable live URLs based on each Markdown file's relative path and re-read the source on every refresh; downloaded HTML keeps images, math, diagrams, and highlighting
-- **Papers** — track research papers and your own **ideas** with a citation graph:
-  - **List view** grouped into user-defined **groups** and topic folders, showing year, authors, topic, publisher, tags, and a citation-count badge; **pin/star** favourites to the top, and right-click to move a paper between groups or **change its topic**
-  - **Graph view** — an interactive, draggable citation graph (Cytoscape.js; force or hierarchical layout) sized/coloured by citation count and topic, with idea nodes drawn distinctly, that reveals each paper's conclusions on hover
-  - **Research sections** — collapsible Conclusions, Implementation, Assumptions, Cites, Cited by, and Markdown Content; non-empty sections open automatically while empty sections stay compact
-  - **Citation picker** — add/remove citations through an existing-Paper picker instead of free text; both Cites and Cited by lists link directly to the related Paper
-  - Papers are plain `papers/<Topic>/<Title>.md` files (with a remote URL and/or an uploaded local file), and are exposed via **MCP** and **sync**
-- **Python Environments** — a machine-local manager for your **conda / venv / uv** environments, grouped in both the dashboard and Navigation by manager → folder:
-  - Register existing envs (conda auto-detected) or **create** a new conda/venv/uv environment; each card shows the **Python version**, **on-disk size**, and an editable **description** (tags / crucial packages)
-  - **Compare** two envs in a unified, sortable table (package · v1 · v2 · Δ) with colour-coded upgrade/downgrade/added/deleted/same status
-  - **≈ Similar** finds near-duplicate environments (skipping different Python versions) with estimated space savings, and generates a **merge script**; **⚡ Open shell** activates an env in a terminal; **🚚 Migrate** moves an env into a central managed location
-  - Merge and delete scripts are generated for **you to review and run** — the extension never executes them
-- **Servers** — manage long-running local servers as store packages with card-local settings/log panels and fully described actions. A central port registry assigns unique ports, rejects conflicts, and distinguishes PKM-managed processes from external listeners already using a registered port. External listeners expose their PID/command and a confirmed, identity-revalidated **Force Stop** action. Each card shows directly clickable **Stable Link** and localhost **Server Link** URLs plus their Open/Copy actions; Stable Links can use either a concrete network-interface IPv4 address or the machine hostname when client DNS resolves it. On Remote SSH, a **Port Forward** toggle asks VS Code to forward Server Link on start/restart; disabling it prevents new requests, while existing tunnels remain user-managed in the Ports view. Navigation expands to show every non-Hidden server with its running/starting/external/stopped indicator
-- **Sync** — share an encrypted, checksum-verified **Magic Code** so another machine can pull exactly the selected knowledge
-- **Subscription / Shared Market** — publish mutable collections of Skills, Notes, Papers, Prompts, Scripts, Packages, and portable Server recipes from a long-lived machine node, then subscribe by signed Magic Link. Each Broker has a recursive content TreeView, a local alias, Subscriber usage statistics, and Casbin-enforced account/network access rules. Gateway startup uses a bounded grace period so an expected early connection delay remains **Starting** rather than immediately becoming an error. MQTT sends metadata-only revision/topic/tag signals; background Sync downloads verified content into a physically isolated machine-local cache. Subscription aliases appear as read-only virtual groups, while explicit MCP tools let Agents search subscribed caches without mixing them into local knowledge.
-- **Protected control and data planes** — Open Brokers share the stable Common Control Port for discovery, metadata, MQTT notifications, and authorization. Each Secret Protected Broker instead owns an independent Control Port that is carried only in its separate secret, not its Magic Link; the secret also gates metadata and can be manually rotated. After authorization, either mode creates a separate random or configured Data Broker port for the actual Sync. A single-use transfer endpoint closes after completion or expiry.
-- **Broker access controls** — standard Casbin ACLs combine account allow/block lists, exact IP/CIDR/wildcard network rules, and automatic blocks with deny-overrides and default-deny behavior. Three incorrect protected-secret proofs permanently block the source IP for that Broker until its owner manually unblocks it; a correct secret cannot bypass an automatic block.
-- **Chatroom** — a self-hosted, real-time collaboration hub where humans and their AI agents share named rooms:
-  - **Host a room** from the extension (a bundled WebSocket + HTTP hub); teammates join from the **extension**, a **browser** (no VS Code needed), or an **AI agent via MCP** — all in the same room
-  - **Presence & identity** — see who's here with role icons (👑 host, 👤 extension, 🤖 MCP agent, 🌐 browser) and a **stable identity id** so people with the same display name are distinguishable; departed members stay in Earlier until the host edits or permanently removes them
-  - **Per-room secrets** — each room has its own secret; rotate it manually when needed. Removing a member deletes that roster identity without silently invalidating every other participant's invitation
-  - **Owned-host recovery** — a Room shown as active in another VS Code window can be closed through its recorded endpoint using a short-lived Host proof, then Rehosted locally. This action appears only for Hosted Rooms whose Host credential is owned by the current installation; joined Rooms cannot invoke it
-  - **Stable Room identity** — immutable Room UUIDs control routing, ownership, close, Rehost, rename, and secrets. Room names remain display labels and preserve their original capitalization and Unicode/CJK spelling
-  - **Host moderation** — **mute/unmute**, edit names and roles, or permanently remove online/Earlier members. Permanent removal clears the roster entry, disconnects an online member, and rotates the guest key; the stable host identity is not blocked by guest-key rotation
-  - **Directed multi-agent collaboration** — online Agents stay in standby, wake only for `@name` or `@all`, post their response, and immediately return to standby. There is no separate conversation participant list or turn scheduler
-  - **Explicit reply intent** — only the Host can use `@all`. Posts default to `require_reply=true`; Agents use `require_reply=false` for pure acknowledgements, FYIs, and progress updates. Mixed batches identify exact events that need answers, preventing broadcast and mutual-confirmation storms
-  - **Built with its own Chatroom** — we actively dogfood this workflow to improve PKM itself: multiple Agents join a Room, propose test matrices, challenge protocol assumptions, reproduce edge cases, and turn the resulting feedback into implementation changes and regression tests
-  - **Simple Agent lifecycle** — the host can use `/stop @agent` or `/stop @all` to disconnect online Agents. Their durable identities remain in Earlier for later Reuse, and the Room secret is not rotated
-  - **Close, don't delete** — a Host closes an active Room and finds it under Stored Rooms for Rehost. Permanent deletion is a separate double-confirmed Stored Room action. Recents contain Joined Rooms only and ignore endpoint port changes when deduplicating legacy Rooms
-  - **Hosted Room navigation** — Activity Bar navigation lists both active and Stored Rooms owned by this installation independently of Recents. Right-click to Open/Rehost, Rename, Close, or double-confirm Delete depending on lifecycle state
-  - **Managed agents** — a room host can add named Copilot or configured AI-backend agents with distinct role prompts (for example, AML Pipeline and Docker Test). They remain in standby while connected and respond only to directed messages
-  - **MCP standby** — an existing MCP-backed agent calls `chat_standby` for the initial blocking wait. Progress posts return immediately; a final `chat_post` atomically posts and blocks for the next directed message, consuming heartbeat timeouts internally so the Agent cannot forget to resume waiting. Host `/stop`, leave, or Room close ends participation
-  - **Live agent state** — each agent reports lifecycle callbacks without polluting chat history: green means standby, animated dots mean it received a message and is thinking, blue pulse means sending, grey means idle. MCP agents reconnect automatically after transient socket drops and restore their prior state
-  - **One-paste MCP invites** — the host copies one `pkchat:v1` Magic Link message containing the room URL and key, then assigns the agent an alias. The fixed MCP config contains no meeting URL, key, or name; the agent joins with `chat_join(magic_link, name)`. Refreshing the room key copies a new invite and invalidates the old one
-  - **Browser Magic Message join** — browser users paste that same complete invitation message rather than entering a secret. The browser validates and extracts credentials locally, supports HTTP/LAN pages, and provides roster `@` completion plus browser-usable slash-command completion
-  - **Mention receipts and highlighting** — sent mentions show `✓ x/y` delivery counts; `@me`/`@all` use yellow highlighting and mentions of other people use a distinct cyan treatment. Receipts are transport-level and invisible to MCP agents
-  - **History on demand** — MCP agents ignore pre-join history by default. New messages arrive through `chat_read`/`chat_standby`; when the host asks for earlier context, the agent explicitly calls `chat_history(limit)`
-  - **Persistent history** — chat is archived to disk (size configurable via `personalKnowledge.chatHistoryLimitMB`, default 10 MB) so messages survive rejoining, closing a room, or restarting the hub; the browser view marks "new messages since you left" on rejoin
-  - **File sharing** — drop a file to share it peer-to-peer with the room (relayed live, never stored on the hub)
-  - **Slash commands** — type `/help` for the list; host-only `/stop @agent`, `/list_audiences`, `/whois <name>`, `/mute_all` · `/unmute_all`, `/rotate_secret`, and `/share_link`
-  - **CJK & Unicode** throughout; transcripts can be exported to Markdown/JSON
-- **Unified MCP server** — one extension-provided `pkm` server exposes both knowledge read/write tools and Chatroom `chat_*` tools. VS Code discovers it in every workspace without a project `.vscode/mcp.json`; `server.py` remains the entry point and imports the separate `chat_server.py` module
-- **One-time MCP setup** — install the extension and create the managed runtime once per VS Code profile/machine. Remove legacy workspace `pkm`, `pkm-chat`, and `pkm-chat-live` entries to prevent duplicate servers. Remote SSH uses the provider and runtime installed on the remote extension host
-- **MCP schema versions** — `pkm.check_version()` reports the unified version plus Knowledge and Chatroom component versions; legacy `pkm-chat` registrations are replaced by the single `pkm` definition
-- **Machine-specific MCP Python** — the Config tab detects Python 3.10+, validates the executable and version, and also lets users browse or enter an absolute interpreter path. The selection is machine-scoped, so Windows and Remote SSH Linux hosts configure their own runtime independently; PKM itself remains usable when Python is unavailable
-- **Python runtime picker** — progressively lists usable interpreters from configured settings, PKM Envs, active conda/venv, conda/miniconda base installs and named environments, VS Code Python settings, the Windows Python Launcher, and PATH. A live progress bar shows candidates as they are found and supports cancellation. Selecting a newer base Python recreates the isolated `pkm-mcp` environment; the extension's MCP provider preserves that managed interpreter path. User Profile config remains a fallback for older VS Code versions, while Agency instructions contain resolved current-machine paths
-- **Selectable AI backend** — Copilot (built-in), Azure OpenAI, or any OpenAI-compatible endpoint; keys stored in SecretStorage
-- **Cross-platform** — no native binaries
-
-## Installation Guide
-
-![Installation steps](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/installation-guide.png)
-
-![Config and installation feature tour](https://raw.githubusercontent.com/qizhu8/personal-knowledge-vscode/main/resources/screenshots/installation-guide.gif)
-
-Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=Uone.personal-knowledge) or download the `.vsix` from [Releases](https://github.com/qizhu8/personal-knowledge-vscode/releases) and run:
-
-```
-code --install-extension personal-knowledge-*.vsix
-```
-
-On first installation, PKM opens a guided tour that anchors explanatory bubbles and arrows to the real controls needed for setup. A minor upgrade shows only feature modules introduced since the last minor release; patch upgrades stay quiet. **Skip** dismisses the presented modules, while the sparkle and help buttons in the PKM title bar replay **What's New** or the complete tour at any time.
-
-### 1. Choose Your Knowledge Root
-
-On first activation, choose the directory that owns your Markdown knowledge. Use the default, browse to an existing store, or type a path. Existing files are retained. If settings disappear later, startup recovery offers the last successfully used path.
-
-The extension initializes the folder and git repository. If a legacy `knowledge.db` is found, Skills and Notes are migrated non-destructively.
-
-### 2. Open Config
-
-Open **Personal Knowledge Manager → Config**. The dashboard separates these independently versioned components:
-
-- Unified MCP Server
-- Knowledge schema
-- Chat schema
-- PKM Skill Router
-
-Green means current. Orange actions appear only when user action is needed.
-
-### 3. Configure Python and Runtime
-
-1. Select or browse to Python 3.10 or newer.
-2. Click **Validate & Save**.
-3. Click **Create Runtime** to create the isolated `pkm-mcp` virtual environment.
-
-The Paths table shows the resolved Root, environment root, runtime, Python executable, and generated server directory. Disk usage is cached for the session; click **Refresh sizes** to recalculate it.
-
-### 4. Generate Server Code
-
-Click **Generate Server Code**. It writes these files under the selected Root:
-
-- `mcp-server/server.py`
-- `mcp-server/chat_server.py`
-- `mcp-server/requirements.txt`
-
-Regeneration does not modify external Agency registries or workspace `.vscode/mcp.json` files.
-
-### 5. Register and Start `pkm`
-
-On supported VS Code versions, the extension publishes the `pkm` definition automatically. Run **MCP: List Servers**, select `pkm`, and start or restart it.
-
-For an external MCP Agency, copy **Agency installation instructions** from Config into Copilot or the Agency. The instructions contain resolved current-machine paths and preserve unrelated registrations.
-
-### 6. Verify
-
-- The Config process light shows **Running** when the generated `server.py` process is detected.
-- Call `pkm.check_version` and verify Unified `2.13.6`, Knowledge `1.5.1`, Chat `2.3.6`, Recipe `1.7.3`, and Agent Session `1.7.6`.
-- Call `pkm.chat_capabilities` and verify the Chatroom tools are present.
-
-Stdio MCP servers start on demand, so **Ready · starts on demand** means setup is complete and `pkm` will launch when an MCP client requests it.
-
-## Store directory
-
-```
-<your-store>/
-  skills/             <- skills (git-tracked .md files, the source of truth)
-  notes/              <- notes  (git-tracked .md files, the source of truth)
-    _assets/          <- images pasted into notes
-  papers/             <- papers (git-tracked .md files) + citation graph
-  prompts/            <- versioned prompt files
-  packages/           <- local Python/Node packages
-  scripts/            <- Scope / C# / Python / PowerShell scripts
-  mcp-server/         <- generated MCP server
-```
-
-Config displays the resolved store, environment, runtime, Python, and MCP server paths read-only. Runtime path switching is intentionally not exposed because changing Root or environment ownership requires coordinated watcher, Chat persistence, server, and MCP refreshes.
-
-## How to use
-
-1. **Open the panel** — click the Personal Knowledge icon in the Activity Bar, or press `Ctrl+Shift+K` / `Cmd+Shift+K`.
-2. **Browse** — the left navigation shows your Skills, Notes, Papers, Prompts, Packages, and Scripts as collapsible folder trees. Click any item to preview it.
-3. **Capture knowledge**:
-   - Select code in any editor -> right-click -> **Save Selection as Skill**.
-   - Press `Ctrl+Shift+N` / `Cmd+Shift+N` for a quick note (with live Markdown preview).
-   - Right-click a folder in the sidebar -> **New Skill / Note / Script Here**.
-4. **Edit** — right-click any item -> **Edit**, or use the ✏ button in the detail view. Script edits are confirmed and committed to git automatically.
-5. **Understand a script** — open any script and click **✨ AI Summary** for a purpose / inputs / output / issues breakdown.
-6. **Share** — use the **Sync** button to hand another machine a temporary authenticated link to pull selected content.
-7. **Connect an AI assistant** — generate an MCP server (see below).
-
-Everything is stored as plain Markdown files under your chosen folder and tracked in git — so you always own your data and have full history.
-
-## Browser test plans
-
-Browser validation is split by intent so local iteration does not accidentally run the complete release gate:
-
-- `npm run test:browser:smoke` runs the real panel Chromium flow plus the clean-install VS Code/Electron scenario.
-- `PKM_BROWSER_SUITES=panel,startup npm run test:browser:targeted` runs only named suites. Available suites are `plan`, `contract`, `standalone`, `panel`, and `startup`.
-- `npm run test:browser:full` preserves the complete browser and Extension Host release coverage.
-
-Set `PKM_BROWSER_SHARD_COUNT` and `PKM_BROWSER_SHARD_INDEX` to distribute suites across workers. Every plan reports heartbeats, per-suite budgets, a slowest-suite ranking, and a `pkm.browser-test-summary/v1` JSON record. `PKM_BROWSER_SUMMARY` writes that record to a file for CI history.
-
-## Why an MCP server?
-
-The extension is where **you** manage your knowledge. The **MCP server** is how your **AI assistant** uses it.
-
-Without it, you end up copy-pasting the same context into every chat, and anything the AI figures out is lost when the session ends. With the MCP server running, any MCP-aware assistant (Claude Desktop, GitHub Copilot, etc.) can:
-
-- **Search and read** your accumulated skills, notes, and scripts on demand — so it answers with *your* conventions, gotchas, and past solutions instead of generic guesses.
-- **Write back** new learnings — `add_note`, `update_skill`, and friends let the assistant persist what it discovers, turning your knowledge base into a durable, shared memory that grows across sessions.
-- **Stay in sync** — because the server reads the same store the extension writes, edits from either side show up in both, and every write is git-tracked.
-
-In short: the extension gives *you* a home for your knowledge; the MCP server gives your *AI* a key to that home, so it can both learn from and contribute to it.
-
-## MCP integration
-
-Follow the [Installation Guide](#installation-guide), then open **Config** to manage the single unified server named `pkm`. Supported VS Code versions receive the definition from the extension automatically; external Agencies use the copyable, machine-specific installation instructions. The server exposes:
-
-| Tool | Description |
-|------|-------------|
-| `list_skills` / `search_skills` / `get_skill` | Browse / search / read skills |
-| `list_notes` / `search_notes` / `get_note` | Browse / search / read notes |
-| `add_note` / `update_note` / `delete_note` | Create / edit / remove notes |
-| `add_skill` / `update_skill` / `delete_skill` | Create / edit / remove skills |
-| `list_papers` / `search_papers` / `get_paper` / `paper_graph` | Browse / search / read papers and their citation graph |
-| `add_paper` / `update_paper` / `delete_paper` | Create / edit / remove papers |
-| `search_knowledge` | Search the versioned Skill/Note/Research/Script/Recipe/subscription corpus with strict type, generation, capability-scope, and bounded graph controls |
-| `retrieval_status` | Report retrieval schemas, engine/configuration, ready/building generations, document/edge counts, routes, update mode, and limitations |
-| `check_version` | Report the MCP server name and schema version |
-
-Knowledge, Skill, and Recipe tools return typed MCP objects so clients do not
-receive a second escaped JSON copy. Agent Session status and todo mutation tools
-use compact responses by default; pass `detail=full` only when complete durable
-history is required. Recipe start/next/progress/report calls likewise return
-only control state by default; explicit `recipe_run_get(detail=full)` retrieves
-historical node results and usage. Automation does not require a Recipe for
-linear inspect/edit/validate work: Recipes are reserved for executable controls
-such as branches, bounded loops, gates, pinned subflows, and background/native
-operations. Todo cards separately display estimated MCP protocol usage
-and caller-reported Recipe model usage; PKM does not present either estimate as
-Copilot credits when the host does not provide that telemetry. Session and Recipe replay receipts are byte-bounded and
-avoid duplicating result data that can be reconstructed from canonical run state.
-
-The unified retrieval boundary uses `pkm.retrieval.query/v1`,
-`pkm.retrieval.result/v1`, and `pkm.retrieval.index-event/v1`. Its index and
-derived backlinks are replaceable projections; canonical content and forward
-links remain in Knowledge files. The current Python lexical worker atomically
-publishes only durable ready generations and reports that delta submissions
-still rebuild its in-memory state. Semantic/embedding routes are not advertised
-until an engine is installed and measured. The separate Note/Paper search tools
-continue to use the in-memory FTS5 **trigram** index (CJK-friendly, ranked)
-built from Markdown at call time, with a substring fallback for short queries.
-
-## AI backend
-
-The **AI Summary** feature uses the backend selected in **Settings -> Personal Knowledge: AI Backend**:
-
-- `copilot` — GitHub Copilot via the built-in VS Code Language Model API (no key needed)
-- `azure-openai` — set endpoint / deployment / API version, then run **Personal Knowledge: Set AI API Key**
-- `openai-compatible` — any OpenAI-compatible endpoint (OpenAI, vLLM, Ollama, ...)
-
-API keys are stored in VS Code SecretStorage, never in settings.
-
-## Keyboard shortcuts
-
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+Shift+K` / `Cmd+Shift+K` | Open panel |
-| `Ctrl+Shift+N` / `Cmd+Shift+N` | Quick note |
-
-The Command Palette also provides **Personal Knowledge Manager: Go to PKM Path…**. No default shortcut is assigned so it does not override VS Code's existing Go/Source Control bindings; users can assign their preferred shortcut through **Keyboard Shortcuts**.
-
-## Settings
-
-| Setting | Description |
-|---------|-------------|
-| `personalKnowledge.storePath` | Machine-local Knowledge Root pointer; excluded from VS Code Settings Sync |
-| `personalKnowledge.openOnStartup` | Open the panel automatically at startup |
-| `personalKnowledge.logLevel` | `debug` / `info` / `warn` / `error` |
-| `personalKnowledge.aiBackend` | `copilot` / `azure-openai` / `openai-compatible` |
-| `personalKnowledge.aiModel` / `aiEndpoint` / `aiAzureApiVersion` | AI backend configuration |
-
-### Machine roots and content sync
-
-The Knowledge Root path belongs to the machine running the VS Code Extension Host. In a local Windows window this is a Windows path; in Remote SSH or WSL it is a path on that remote Linux host. The setup dialog identifies that host and shows the full absolute destination before saving it. `storePath`, `environmentsPath`, and the internal active-root record are machine-local and never travel through VS Code Settings Sync.
-
-The pointer and the content are separate. You can clone the same Git repository to a different absolute path on each machine and select that local clone as each machine's Knowledge Root. PKM creates local commits, but it does not currently automate remote `pull`, `push`, merge, or conflict resolution. Magic Code Sync is an explicit one-time transfer; before writing, it confirms the exact receiving host and Knowledge Root.
-
-### Storage ownership
-
-The **Knowledge Root** is the user-owned, portable content root. Skills, Notes, Papers, Prompts, Scripts, Packages, managed Servers, and durable Chatroom Room databases live beneath it. Lightweight portable PKM metadata belongs under `<Knowledge Root>/.pkm/`. This directory can be backed up or managed with Git according to your own sharing policy.
-
-The extension installation directory is never a data root because upgrades and reinstalls replace it. Machine-only registries, process state, logs, and caches use VS Code `globalStorage`; credentials and Room secrets use VS Code `SecretStorage`. Secrets never belong in the Knowledge Root or Git.
-
-Subscription content is physically isolated under VS Code `globalStorage/subscriptions/cache/<nodeId>/<shareId>/`, never under the Knowledge Root. Every cached file has a `.pkm-source.json` provenance sidecar with its subscription alias, publisher, Share, revision, content hash, remote path, and synchronization time. Local Skills and default MCP searches do not include these files; use the read-only alias groups or explicit subscription MCP tools.
-
-## Building from source
-
-```bash
-npm install
-npm run build
-npx vsce package
-```
-
-## License
-
-MIT (c) Yu Wang
+[MIT License](LICENSE) · [Source & Issues](https://github.com/qizhu8/personal-knowledge-vscode)

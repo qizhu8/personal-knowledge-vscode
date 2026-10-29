@@ -30,6 +30,7 @@ def open_recipe(page):
     page.goto(BASE_URL, wait_until="networkidle")
     page.locator('[data-workspace="automation"]').click()
     page.locator('.tab[data-tab="recipes"]').click()
+    page.keyboard.press("Control+f")
     page.get_by_role("searchbox", name="Search Recipes").fill("PKM Tutorial (Editable Demo)")
     page.locator('.tree-cat-hdr[title="Examples"]').click()
     page.locator('.tree-cat-hdr[title="PKM"]').click()
@@ -38,7 +39,47 @@ def open_recipe(page):
     page.wait_for_function("recipeDraftBaselinePending === false")
 
 
+def assert_project_errors_in_viewport(browser):
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "src/webview/panel/15-projects.js").read_text(encoding="utf-8")
+    handler = source[source.index("function projectOnError(data) {"):]
+    styles = (root / "src/webview/panel.css").read_text(encoding="utf-8")
+    message = "Move this Group's Tasks to Trash before deleting the Group.\nBlocking Task: Chat E2E acceptance, status: paused. Running or paused Tasks must be explicitly stopped or completed first. " + "long-task-identity-" * 30
+    for width, height in [(1280, 900), (390, 844), (320, 568)]:
+      page = browser.new_page(viewport={"width": width, "height": height})
+      try:
+        page.route("**/codicon.ttf?*", lambda route: route.fulfill(path=str(root / "dist/webview/codicon.ttf"), content_type="font/ttf"))
+        page.set_content('<html style="--panel:#252526;--border:#454545;--text:#e0e0e0;--muted:#ababab;--input:#313131"><head><base href="http://pkm-fixture.invalid/"></head><body style="background:#181818;color:var(--text);font-family:sans-serif"><div id="detail" style="height:100vh;overflow:hidden"><div style="height:100vh">Agent Sessions</div></div><div class="agent-session-fullscreen">Full-screen graph</div><div id="pk-modal-bg"><div id="pk-modal">Overlapping modal</div></div></body></html>')
+        page.add_style_tag(content=styles)
+        page.add_style_tag(content=(root / "dist/webview/codicon.css").read_text(encoding="utf-8"))
+        page.add_script_tag(content="const state={tab:'agentSessions'}; function finishAction() {} function failAction() {}\n" + handler)
+        page.evaluate("message => projectOnError({action:'agentSessionGroupDelete',error:message})", message)
+        error = page.locator("#project-action-error")
+        assert error.get_attribute("role") == "alert"
+        assert error.locator(".project-action-error-message").inner_text() == message
+        geometry = error.evaluate("element => { const r=element.getBoundingClientRect(); const text=element.querySelector('.project-action-error-message'); return {x:r.x,y:r.y,right:r.right,bottom:r.bottom,width:innerWidth,height:innerHeight,textWidth:text.clientWidth,textScrollWidth:text.scrollWidth,front:!!document.elementFromPoint(r.x+4,r.y+4)?.closest('#project-action-error')}; }")
+        assert geometry["x"] >= 0 and geometry["y"] >= 0, geometry
+        assert geometry["right"] <= geometry["width"] and geometry["bottom"] <= geometry["height"], geometry
+        assert geometry["textScrollWidth"] <= geometry["textWidth"], geometry
+        assert geometry["front"], "Modal or graph obscures the error: " + str(geometry)
+        assert error.evaluate("element => getComputedStyle(element).backgroundColor") == "rgb(37, 37, 38)"
+        page.evaluate("document.fonts.ready")
+        screenshot_directory = os.environ.get("PKM_PROJECT_ERROR_SCREENSHOTS")
+        if screenshot_directory:
+          Path(screenshot_directory).mkdir(parents=True, exist_ok=True)
+          page.screenshot(path=str(Path(screenshot_directory) / f"project-error-{width}.png"))
+        page.locator(".project-action-error-message").evaluate("element => element.scrollTop=element.scrollHeight")
+        page.evaluate("projectOnError({action:'agentSessionGroupDelete',error:'<img src=x onerror=alert(1)> Replacement error'})")
+        assert error.count() == 1 and error.locator("img").count() == 0
+        assert "Replacement error" in error.inner_text()
+        page.get_by_role("button", name="Dismiss error").click()
+        assert error.count() == 0
+      finally:
+        page.close()
+
+
 def open_configurable_testing_recipe(page):
+    page.keyboard.press("Control+f")
     page.get_by_role("searchbox", name="Search Recipes").fill("Configurable Validation and Testing (Editable Demo)")
     for category in ["System", "PKM", "Fundamental"]:
         header = page.locator(f'.tree-cat-hdr[title="{category}"]')
@@ -78,6 +119,9 @@ def assert_single_module_and_trash(browser):
               {nodeId:'archived-module',state:'succeeded',instruction:'Historical node content',dependsOn:[],usage}]}]}];
           renderAgentSessions();
         }""", usage)
+        workspace = page.locator(".agent-sessions-workspace")
+        assert "cattree-collapsed" in workspace.get_attribute("class")
+        workspace.get_by_role("button", name="Restore category tree", exact=True).click()
         dock = page.locator('.cattree-trash-dock')
         dock.locator('.knowledge-trash-dock-row').press("Space")
         dock.locator('.agent-session-trash-row').press("Enter")
@@ -135,19 +179,33 @@ def assert_shared_trash_docks(browser):
         ("automation", "recipes", "recipeTrash"),
         ("automation", "agentSessions", "agentSessionTrash"),
       ]:
+        list_requests = page.evaluate("window.__previewMessages.filter(message => message.command === 'list' && message.tab === 'skills').length")
         page.locator(f'[data-workspace="{workspace}"]').click()
-        page.locator(f'.tab[data-tab="{area}"]').click()
+        tab = page.locator(f'.tab[data-tab="{area}"]')
+        if tab.get_attribute("aria-selected") != "true":
+          tab.click()
         if area == "skills":
+          page.wait_for_function("count => !skillsListLoading && window.__previewMessages.filter(message => message.command === 'list' && message.tab === 'skills').length > count", arg=list_requests)
           page.evaluate("""() => {
             state.knowledgeTrash = [{id:'trash_ui', name:'Trashed Skill', kind:'file', originalPath:'Testing/Skill'}];
             renderKnowledgeTrashDock('skills');
           }""")
         else:
+          page.evaluate("""() => {
+            projectSnapshot.agentSessionTrash = [{sessionId:'agent_session_trash_ui', task:'Trashed Session',
+              status:'completed', agent:{name:'Copilot'}, trashedAt:'2026-10-04T00:00:00Z'}];
+            projectSnapshot.recipeTrash = [{...projectSnapshot.recipes[0], scope:'global',
+              recipeId:'recipe_trash_ui', name:'Trashed Recipe'}];
+          }""")
           page.evaluate("renderGlobalRecipes()" if area == "recipes" else "renderAgentSessions()")
+        if area == "agentSessions":
+          restore_tree = page.get_by_role("button", name="Restore category tree", exact=True)
+          if restore_tree.count():
+            restore_tree.click()
         dock = page.locator('.cattree-trash-dock:visible')
         row = dock.locator('.knowledge-trash-dock-row')
         button = row.get_by_role("button", name="Delete All", exact=True)
-        assert button.is_visible() and button.is_enabled()
+        assert button.is_visible() and button.is_enabled(), f"{area} Trash Delete All unavailable at {width}px"
         assert row.get_attribute("aria-expanded") == "false"
         assert page.locator('.agent-session-archive').count() == 0
         styles = row.evaluate("""element => {
@@ -195,8 +253,160 @@ def assert_shared_trash_docks(browser):
     page.close()
 
 
+def assert_automatic_refresh_preserves_interaction(browser):
+    for width, height in [(1280, 900), (390, 844)]:
+        page = browser.new_page(viewport={"width": width, "height": height})
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        open_recipe(page)
+        page.evaluate(r"""async () => {
+          const check = (condition, message) => { if (!condition) throw new Error(message); };
+          window.__refreshMessages = [];
+          vscode.postMessage = message => window.__refreshMessages.push(message);
+          const send = (command, data, extra = {}) => window.dispatchEvent(new MessageEvent('message', {data:{command,data,...extra}}));
+          const frames = async () => { await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); };
+          const edit = (id, value, caret = 3) => {
+            const input = document.getElementById(id);
+            check(!!input, 'Missing fixture input: ' + id);
+            input.value = value; input.focus();
+            if (input.type !== 'number') input.setSelectionRange(caret, caret);
+            return input;
+          };
+          const position = element => [element.scrollLeft, element.scrollTop];
+          const samePosition = (element, before, label) => check(JSON.stringify(position(element)) === JSON.stringify(before), label);
+
+          recipeGraphZoomSet(3);
+          await frames();
+          const graph = document.querySelector('.recipe-graph-viewport');
+          graph.scrollLeft = 150; graph.scrollTop = 100;
+          const recipePosition = position(graph), recipeZoom = recipeGraphZoom;
+          check(recipePosition[0] > 0, 'Recipe fixture must have real horizontal overflow');
+          send('recipeSubscriptionGroups', {groups:[]});
+          await frames();
+          samePosition(document.querySelector('.recipe-graph-viewport'), recipePosition, 'Recipe subscription result resets graph');
+          check(recipeGraphZoom === recipeZoom, 'Recipe refresh resets zoom');
+          invalidateRecipeSubscriptionGroups();
+          await frames();
+          samePosition(document.querySelector('.recipe-graph-viewport'), recipePosition, 'Recipe invalidation resets graph');
+
+          state.tab = 'scripts';
+          const script = {type:'script',path:'fixture/script.py',name:'Refresh Script',content:'print("disk")'};
+          currentDetailRequest = {type:'script',key:script.path};
+          renderDetail(script); startEditScript();
+          const scriptInput = edit('se-script', 'print("unsaved draft")', 8);
+          send('reloaded', {changedPath:'/fixture/notes/unrelated.md'});
+          const detailRequest = window.__refreshMessages.filter(message => message.command === 'detail').at(-1);
+          check(!!detailRequest, 'Filesystem reload must request current Script');
+          send('detail', {...script,content:'print("new disk")'}, {detailRequestId:detailRequest.detailRequestId,detailTab:detailRequest.detailTab});
+          check(document.getElementById('se-script') === scriptInput && scriptInput.value.includes('unsaved draft'), 'Script refresh replaces draft DOM');
+          check(document.activeElement === scriptInput && scriptInput.selectionStart === 8, 'Script refresh loses focus or caret');
+          send('scriptSaved', {cancelled:true,path:script.path});
+          check(document.getElementById('se-script') === scriptInput, 'Cancelled Save discards Script draft');
+          cancelScriptEdit();
+          check(!document.getElementById('se-script'), 'Explicit Cancel must exit Script editor');
+          const cancelRequest = window.__refreshMessages.filter(message => message.command === 'detail').at(-1);
+          send('detail', script, {detailRequestId:cancelRequest.detailRequestId,detailTab:cancelRequest.detailTab});
+          startEditScript();
+          send('scriptSaved', {ok:true,path:script.path});
+          check(!document.getElementById('se-script'), 'Successful Save must exit Script editor');
+          const savedRequest = window.__refreshMessages.filter(message => message.command === 'detail').at(-1);
+          send('detail', script, {detailRequestId:savedRequest.detailRequestId,detailTab:savedRequest.detailTab});
+          ask('detail', {type:'script',key:'fixture/other.py'});
+          const latestRequest = window.__refreshMessages.filter(message => message.command === 'detail').at(-1);
+          send('detail', {...script,path:'fixture/other.py'}, {detailRequestId:latestRequest.detailRequestId,detailTab:latestRequest.detailTab});
+          send('detail', script, {detailRequestId:savedRequest.detailRequestId,detailTab:savedRequest.detailTab});
+          check(currentDetail.path === 'fixture/other.py', 'Late detail response replaces current entity');
+
+          state.tab = 'githubSync'; githubSyncNew();
+          edit('github-sync-name', 'Unsaved Target');
+          edit('github-sync-repository', 'https://github.com/fixture/only.git');
+          edit('github-sync-branch', 'draft-branch', 5);
+          const targetDetail = document.getElementById('detail'); targetDetail.scrollTop = 130;
+          const targetPosition = position(targetDetail);
+          send('githubSyncRuntimeState', {targetId:'unrelated-target',status:'idle'});
+          check(document.getElementById('github-sync-name').value === 'Unsaved Target', 'Runtime state discards new Target name');
+          check(document.getElementById('github-sync-repository').value.includes('/fixture/only.git'), 'Runtime state discards repository');
+          check(document.activeElement.id === 'github-sync-branch' && document.activeElement.selectionStart === 5, 'Target runtime refresh loses focus or caret');
+          samePosition(targetDetail, targetPosition, 'Target runtime refresh resets scroll');
+          send('githubSyncRunQueued', {targetId:'unrelated-target'});
+          check(document.getElementById('github-sync-branch').value === 'draft-branch', 'Queued run discards Target branch');
+
+          state.tab = 'subscriptions'; subscriptionEditingShare = 'broker-a'; subscriptionEditorTab = 'general';
+          const subscription = {displayName:'Saved Node',port:19877,host:'127.0.0.1',shares:[
+            {shareId:'broker-a',name:'Broker A',dataPort:0,subscribers:[{nodeId:'fixture-account',name:'Fixture Account'}]}, {shareId:'broker-b',name:'Broker B',dataPort:0}
+          ],subscriptions:[],catalog:{}};
+          subscriptionOnState(subscription);
+          edit('sub-display-name', 'Unsaved Node'); edit('sub-alias', 'Unsaved Alias');
+          edit('sub-magic-link', 'fixture-link-not-valid'); edit('sub-share-name', 'Unsaved Broker', 6);
+          const subscriptionDetail = document.getElementById('detail'); subscriptionDetail.scrollTop = 140;
+          const subscriptionPosition = position(subscriptionDetail);
+          send('subscriptionState', {...subscription,port:19888,shares:[{...subscription.shares[0],name:'Updated A',dataPort:42},subscription.shares[1]]});
+          check(document.getElementById('sub-display-name').value === 'Unsaved Node', 'Subscription refresh discards Node draft');
+          check(document.getElementById('sub-alias').value === 'Unsaved Alias' && document.getElementById('sub-magic-link').value === 'fixture-link-not-valid', 'Subscription refresh discards mount fields');
+          check(document.getElementById('sub-port').value === '19888' && document.getElementById('sub-share-data-port').value === '42', 'Untouched Subscription fields freeze old backend state');
+          check(document.getElementById('sub-share-name').value === 'Unsaved Broker', 'Subscription refresh discards Broker draft');
+          check(document.activeElement.id === 'sub-share-name' && document.activeElement.selectionStart === 6, 'Subscription refresh loses caret');
+          samePosition(subscriptionDetail, subscriptionPosition, 'Subscription refresh resets scroll');
+          subscriptionSetEditorTab('acl'); subscriptionSetEditorTab('general');
+          check(document.getElementById('sub-share-name').value === 'Unsaved Broker', 'Broker tab switch discards draft');
+          subscriptionSetEditorTab('subscribers');
+          const account = document.getElementById('sub-account-fixture-account'); account.checked = true; account.focus();
+          send('subscriptionState', {...subscriptionData,gatewayStatus:'running'});
+          check(document.getElementById(account.id).checked && document.activeElement.id === account.id, 'Subscriber refresh discards account selection or focus');
+          subscriptionEditingShare = 'broker-b'; renderSubscriptionPane();
+          check(document.getElementById('sub-share-name').value === 'Broker B', 'Broker A draft leaks into Broker B');
+
+          state.tab = 'servers';
+          const server = {slug:'refresh-server',name:'Refresh Server',command:'python server.py',port:8999,status:'starting',tags:[]};
+          renderServerDashboard([server]); editServer(server.slug);
+          const serverInput = edit('se-cmd-' + server.slug, 'python unsaved.py', 7);
+          send('serverList', [{...server,status:'running'}]);
+          check(document.getElementById('se-cmd-' + server.slug) === serverInput && serverInput.value === 'python unsaved.py', 'Server polling replaces settings DOM');
+          check(document.activeElement === serverInput && serverInput.selectionStart === 7, 'Server polling loses focus or caret');
+          onServerLog(server.slug, Array.from({length:150}, (_,index) => 'log ' + index).join('\n'));
+          const log = document.querySelector('.srv-log'); log.scrollTop = 70;
+          const logPosition = position(log);
+          send('serverList', [{...server,status:'stopped'}]);
+          check(document.querySelector('.srv-log') === log, 'Server refresh removes log DOM');
+          samePosition(log, logPosition, 'Server refresh resets log scroll');
+          send('serverList', []);
+          check(!document.getElementById('se-cmd-' + server.slug) && !document.querySelector('.srv-log'), 'Deleted Server output is resurrected');
+
+          state.tab = 'agentSessions';
+          const session = {...projectSnapshot.agentSessions[0],sessionId:'refresh-session-a',task:'Refresh Session A',runs:[],
+            todos:Array.from({length:12}, (_,index) => ({todoId:'refresh-todo-' + index,title:'Refresh module ' + index,status:'pending',recipeRunIds:[]}))};
+          projectSnapshot.agentSessions = [session,{...session,sessionId:'refresh-session-b',task:'Refresh Session B',todos:[session.todos[0]]}];
+          selectedAgentSessionId = session.sessionId; agentSessionGraphZoom = 1; renderAgentSessions();
+          const sessionGraph = document.querySelector('.agent-session-overview-graph');
+          sessionGraph.scrollLeft = 350;
+          const sessionPosition = position(sessionGraph);
+          check(sessionPosition[0] > 0, 'Session fixture must have real graph overflow');
+          const changed = structuredClone(projectSnapshot); changed.agentSessions[0].updatedAt = '2026-10-05T12:00:00Z';
+          send('projectState', changed); await frames();
+          samePosition(document.querySelector('.agent-session-overview-graph'), sessionPosition, 'Session automatic refresh resets inline graph');
+          selectedAgentSessionId = 'refresh-session-b'; renderAgentSessions();
+          check(document.querySelector('.agent-session-overview-graph').scrollLeft === 0, 'Session A viewport leaks into B');
+          state.tab = 'agentSnapshots'; selectedAgentSnapshotId = ''; renderAgentSnapshots();
+          document.getElementById('agent-snapshot-source').value = 'refresh-session-b';
+          const snapshotRefresh = structuredClone(projectSnapshot); snapshotRefresh.agentSessions[0].updatedAt = '2026-10-05T12:00:01Z';
+          send('projectState', snapshotRefresh);
+          check(document.getElementById('agent-snapshot-source').value === 'refresh-session-b', 'Snapshot source changes on refresh');
+          snapshotRefresh.agentSessions = [snapshotRefresh.agentSessions[0]];
+          send('projectState', snapshotRefresh);
+          check(document.getElementById('agent-snapshot-source').value === 'refresh-session-a', 'Removed Snapshot source does not fall back to valid Session');
+        }""")
+        assert not errors, f"Automatic refresh console errors at {width}px: {errors}"
+        page.close()
+
+
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(headless=True, executable_path=os.environ.get("PKM_CHROMIUM_EXECUTABLE") or None)
+    if os.environ.get("PKM_PROJECT_ERROR_UI_ONLY") == "1":
+        assert_project_errors_in_viewport(browser)
+        browser.close()
+        print("Project error browser checks passed: unclipped full text, narrow-screen wrapping, overlay hit testing, safe replacement and physical dismissal.")
+        raise SystemExit(0)
+    assert_project_errors_in_viewport(browser)
     isolated_startup = browser.new_page(viewport={"width": 1440, "height": 1000})
     isolated_startup.route("**/panel.css", lambda route: route.abort())
     isolated_startup.goto(BASE_URL, wait_until="domcontentloaded")
@@ -219,7 +429,7 @@ with sync_playwright() as playwright:
     page.locator("#start-tour-button").click()
     assert page.locator("#experience-layer").is_visible()
     assert page.locator("#coachmark-title").inner_text() == "Welcome to Personal Knowledge Manager"
-    assert page.locator("#coachmark-progress").inner_text() == "Step 1 of 9"
+    assert page.locator("#coachmark-progress").inner_text() == "Step 1 of 7"
     assert page.locator("#topbar strong").evaluate("element => element.classList.contains('coachmark-target')")
     page.locator("#coachmark-close").click()
     assert page.locator("#experience-layer").is_hidden()
@@ -229,7 +439,7 @@ with sync_playwright() as playwright:
     ), "manual replay must not change durable completion state"
 
     page.evaluate("""startOnboardingTour({
-      moduleIds: ['core-navigation', 'agent-workflows', 'runtime-and-sharing'],
+      moduleIds: ['pkm-chat', 'retrieval-system', 'router', 'github-sync', 'portal'],
       audience: 'update',
       automatic: true
     })""")
@@ -242,9 +452,7 @@ with sync_playwright() as playwright:
         if message.get("command") == "completeTourModules"
     ]
     assert completion_messages[-1]["moduleIds"] == [
-        "core-navigation",
-        "agent-workflows",
-        "runtime-and-sharing",
+        "pkm-chat", "retrieval-system", "router", "github-sync", "portal",
     ], "explicit skip must persist every presented module"
     assert completion_messages[-1]["audience"] == "update"
 
@@ -253,8 +461,10 @@ with sync_playwright() as playwright:
     page.locator("#coachmark-next").click()
     page.locator("#coachmark-next").click()
     page.locator("#coachmark-next").click()
-    page.locator("#coachmark-title").filter(has_text="Create your first reusable item").wait_for()
-    assert page.locator("#more-btn").evaluate("element => element.classList.contains('coachmark-target')")
+    page.locator("#coachmark-title").filter(has_text="Router").wait_for()
+    target = page.locator(".coachmark-target")
+    assert target.count() == 1 and target.is_visible()
+    assert target.evaluate("element => { const rect = element.getBoundingClientRect(); return rect.width > 0 && rect.left >= 0 && rect.right <= window.innerWidth; }")
     page.locator("#coachmark-close").click()
     page.set_viewport_size({"width": 1440, "height": 1000})
     open_recipe(page)
@@ -573,6 +783,12 @@ with sync_playwright() as playwright:
     assert page.locator('.recipe-graph-node[data-node-id="test-full-e2e"]').count() == 1
     assert page.locator('.recipe-graph-node[data-node-id="independent-acceptance"]').count() == 1
 
+    page.evaluate("""() => {
+        const node = projectSnapshot.agentSessions.flatMap(session => session.runs || [])
+            .find(run => run.runId === 'recipe_run_demo_observable').nodes
+            .find(node => node.nodeId === 'browser-validation');
+        node.lastHeartbeatAt = node.lastProgressAt = new Date().toISOString();
+    }""")
     page.locator('.tab[data-tab="agentSessions"]').click()
     session_run = page.locator('.agent-session-task', has_text="Validate recovery").locator('.agent-runtime-run')
     session_run.locator('summary').click()
@@ -844,6 +1060,7 @@ with sync_playwright() as playwright:
     assert not mobile_errors, f"Mobile page errors: {mobile_errors}"
     assert_single_module_and_trash(browser)
     assert_shared_trash_docks(browser)
+    assert_automatic_refresh_preserves_interaction(browser)
     browser.close()
 
 print("Recipe browser UI tests passed")

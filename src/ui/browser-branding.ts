@@ -1,0 +1,28 @@
+import * as fs from "fs";
+import * as path from "path";
+
+let icon: Buffer | undefined;
+let favicon = "";
+
+export function browserIconBuffer(): Buffer | undefined {
+  if (!icon) {
+    try { icon = fs.readFileSync(path.join(require("path").resolve(__dirname, ".."), "..", "resources", "icon.png")); }
+    catch { return undefined; }
+  }
+  return icon;
+}
+
+export function browserFaviconTag(href = ""): string {
+  if (href) return `<link rel="icon" type="image/png" href="${href}"><link rel="shortcut icon" href="${href}">`;
+  if (!favicon) {
+    const value = browserIconBuffer();
+    if (value) favicon = `<link rel="icon" type="image/png" href="data:image/png;base64,${value.toString("base64")}">`;
+  }
+  return favicon;
+}
+
+export function ensureBrowserFavicon(document: string, href = ""): string {
+  if (/<link\b[^>]*\brel=["'][^"']*\b(?:shortcut\s+)?icon\b/i.test(document)) return document;
+  const tag = browserFaviconTag(href);
+  return tag ? document.replace(/<head(\s[^>]*)?>/i, match => `${match}${tag}`) : document;
+}

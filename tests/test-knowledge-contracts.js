@@ -3,8 +3,8 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const contracts = require("../dist/knowledge-contracts.js");
-const store = require("../dist/filestore.js");
+const contracts = require("../dist/knowledge/knowledge-contracts.js");
+const store = require("../dist/knowledge/filestore.js");
 
 const first = contracts.nextKnowledgeIdentity(
   undefined,

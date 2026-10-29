@@ -12,12 +12,18 @@ const {
   githubSyncAuthenticationFailureGuidance,
   githubSyncAuthenticationSessionOptions,
   githubSyncGitArguments,
+  githubSyncIgnoredPath,
+  githubSyncGitDependencyGuidance,
+  githubSyncUnrecordedAbsenceNeedsReview,
+  githubSyncDurableEntityDeletion,
+  verifyGitHubStagedFiles,
   githubSyncFolderShields,
   githubSyncEntryShields,
   githubSyncIsSystemContent,
   githubSyncIsSystemItem,
   githubSyncTargetFingerprintState,
   githubSyncManifestFileFingerprints,
+  githubSyncManifestFolderFingerprints,
   manifestJson,
   githubSyncManagedContent,
   githubSyncRepositoryHttpsHost,
@@ -29,12 +35,107 @@ const {
   parseGitHubCredentialManagerAccounts,
   parseGitHubSshLogin,
   replaceGitHubSyncFilesAtomically
-} = require("../dist/github-sync.js");
+} = require("../dist/sync/github-sync.js");
 
 assert.deepStrictEqual(githubSyncAuthenticationSessionOptions(), { createIfNone: true },
   "normal GitHub reconnect must reuse the extension's global session preference across VS Code windows");
 assert.deepStrictEqual(githubSyncAuthenticationSessionOptions(true), { createIfNone: true, clearSessionPreference: true },
   "account selection must be cleared only after the preferred account does not match the target");
+
+for (const ignored of ["__pycache__/module.cpython-311.pyc", "nested/module.pyc", "nested/module.pyo", ".venv/bin/python", "node_modules/package/index.js", ".git/config", ".pytest_cache/data", ".DS_Store", "Thumbs.db"]) assert(githubSyncIgnoredPath(ignored), ignored);
+for (const retained of ["module.py", "native.pyd", "target/tool", "bin/tool", "objects/data.json", "cache-notes.md"]) assert(!githubSyncIgnoredPath(retained), retained);
+assert.match(githubSyncGitDependencyGuidance({ code: "ENOENT", path: "git" }), /remote machine.*does not install Git automatically/);
+assert.match(githubSyncGitDependencyGuidance({ code: "ENOENT", path: "git" }, false), /working directory is missing/);
+assert.strictEqual(githubSyncGitDependencyGuidance({ code: "EACCES", path: "git" }), undefined);
+assert.strictEqual(githubSyncUnrecordedAbsenceNeedsReview(true, false, true, false, false), true, "A previously synchronized file missing locally must not be silently resurrected from Remote");
+assert.strictEqual(githubSyncUnrecordedAbsenceNeedsReview(true, true, false, false, false), true, "A missing remote baseline entity must not be silently republished either");
+assert.strictEqual(githubSyncUnrecordedAbsenceNeedsReview(true, false, true, true, false), false, "Explicit local deletion proceeds through three-way deletion reconciliation");
+assert.strictEqual(githubSyncUnrecordedAbsenceNeedsReview(true, true, false, false, true), false, "Explicit remote deletion proceeds through three-way deletion reconciliation");
+assert.strictEqual(githubSyncUnrecordedAbsenceNeedsReview(false, false, true, false, false), false, "A genuine new remote entity may still be pulled on initial sync");
+assert.strictEqual(githubSyncUnrecordedAbsenceNeedsReview(true, true, true, false, false), false);
+assert.strictEqual(githubSyncUnrecordedAbsenceNeedsReview(true, false, false, false, false), false);
+const deletedAt = "2026-10-07T23:00:00Z";
+const deletionFile = (type, relative, member = "") => ({ path: `${type}/${relative}`, type, itemId: "Project/Deleted", category: "Project", privacy: "public", member, digest: "a".repeat(64) });
+for (const [type, filename] of [["notes", "Deleted.md"], ["papers", "Deleted.md"], ["scripts", "deleted.py"]]) {
+  const primary = deletionFile(type, `Project/${filename}`);
+  const evidence = new Map([[primary.path, { deletedAt }]]);
+  assert.deepStrictEqual(githubSyncDurableEntityDeletion([primary], false, evidence), {
+    type, itemId: primary.itemId, category: primary.category, privacy: "public", deletedAt,
+  }, `${type} must propagate durable explicit deletion`);
+  assert.strictEqual(githubSyncDurableEntityDeletion([primary], true, evidence), undefined, "A recreated local entity must not be deleted by stale journal evidence");
+  assert.strictEqual(githubSyncDurableEntityDeletion([primary], false, new Map()), undefined, "Absence without journal evidence must not become implicit remote deletion");
+}
+const promptMembers = [deletionFile("prompts", "Project/Deleted/v1/prompt.txt", "v1/prompt.txt"), deletionFile("prompts", "Project/Deleted/v2/prompt.txt", "v2/prompt.txt")];
+const promptDeletions = new Map(promptMembers.map(file => [file.path, { deletedAt }]));
+assert.strictEqual(githubSyncDurableEntityDeletion(promptMembers, false, promptDeletions).type, "prompts", "Whole-folder Prompt deletion is supported");
+assert.strictEqual(githubSyncDurableEntityDeletion(promptMembers, true, promptDeletions), undefined, "An existing Prompt is preserved even with stale member records");
+promptDeletions.delete(promptMembers[1].path);
+assert.strictEqual(githubSyncDurableEntityDeletion(promptMembers, false, promptDeletions), undefined, "Deleting one member cannot authorize deleting an entire multi-file entity");
+const protectedDeletedFile = deletionFile("notes", "System/Deleted.md");
+assert.strictEqual(githubSyncDurableEntityDeletion([protectedDeletedFile], false, new Map([[protectedDeletedFile.path, { deletedAt }]])), undefined, "System content remains protected");
+const transientRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-sync-cache-model-"));
+try {
+  fs.writeFileSync(path.join(transientRoot, "module.py"), "print('source')\n");
+  fs.mkdirSync(path.join(transientRoot, "__pycache__"));
+  fs.writeFileSync(path.join(transientRoot, "__pycache__", "module.pyc"), "ephemeral");
+  const transientCatalog = Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type => [type, []]));
+  transientCatalog.servers = [{ id: "fixture", cat: "", destination: "servers/fixture", source: transientRoot, isPrivate: false }];
+  const transientTarget = normalizeGitHubSyncTarget({ name: "Cache exclusion", repository: "fixture" }, () => "cache-exclusion");
+  transientTarget.selection.public.servers.folders.push("");
+  const beforeRemoval = githubSyncTargetFingerprintState(transientTarget, transientCatalog);
+  fs.utimesSync(path.join(transientRoot, "module.py"), new Date(), new Date());
+  assert.strictEqual(githubSyncTargetFingerprintState(transientTarget, transientCatalog).localChangeFingerprint,
+    beforeRemoval.localChangeFingerprint, "mtime-only rewrites cannot trigger content-change synchronization");
+  fs.writeFileSync(path.join(transientRoot, "__pycache__", "module.pyc"), "new ephemeral bytes");
+  assert.strictEqual(githubSyncTargetFingerprintState(transientTarget, transientCatalog).localChangeFingerprint,
+    beforeRemoval.localChangeFingerprint, "ignored content cannot trigger synchronization");
+  transientTarget.selection.private.servers.folders.push("");
+  transientCatalog.servers[0].isPrivate = true;
+  assert.notStrictEqual(githubSyncTargetFingerprintState(transientTarget, transientCatalog).localChangeFingerprint,
+    beforeRemoval.localChangeFingerprint, "privacy changes trigger synchronization even when file bytes are unchanged");
+  transientCatalog.servers[0].isPrivate = false;
+  transientCatalog.notes = [{ id: "outside", cat: "Excluded", source: path.join(transientRoot, "module.py"),
+    destination: "notes/Excluded/outside.md", isPrivate: false }];
+  const savedNoteSelection = transientTarget.selection.public.notes;
+  transientTarget.selection.public.notes = { items: [], folders: [] };
+  assert.strictEqual(githubSyncTargetFingerprintState(transientTarget, transientCatalog).localChangeFingerprint,
+    beforeRemoval.localChangeFingerprint, "unselected catalog entries cannot trigger synchronization");
+  transientCatalog.notes = [];
+  transientTarget.selection.public.notes = savedNoteSelection;
+  transientTarget.lastSync = { at: new Date().toISOString(), commit: "a".repeat(40), fingerprints: {},
+    localChangeFingerprint: beforeRemoval.localChangeFingerprint };
+  assert.strictEqual(normalizeGitHubSyncTarget(transientTarget).lastSync.localChangeFingerprint,
+    beforeRemoval.localChangeFingerprint, "local change baseline survives target state normalization and reload");
+  assert.deepStrictEqual(Object.keys(beforeRemoval.files.servers), ["servers/fixture/module.py"]);
+  const legacyCacheManifest = manifestJson([
+    { path: "servers/fixture/module.py", type: "servers", itemId: "fixture", member: "module.py", category: "", privacy: "public", digest: beforeRemoval.files.servers["servers/fixture/module.py"] },
+    { path: "servers/fixture/__pycache__/module.pyc", type: "servers", itemId: "fixture", member: "__pycache__/module.pyc", category: "", privacy: "public", digest: "a".repeat(64) },
+  ]);
+  assert.deepStrictEqual(githubSyncManifestFileFingerprints(transientTarget, legacyCacheManifest).servers, beforeRemoval.files.servers, "Old cache baselines must use the same ignore scope as the current snapshot");
+  fs.rmSync(path.join(transientRoot, "__pycache__"), { recursive: true });
+  assert.deepStrictEqual(githubSyncTargetFingerprintState(transientTarget, transientCatalog), beforeRemoval, "Cache disappearance must not affect synchronized bytes or fingerprints");
+  for (const [file, content] of [["one.md", "one"], ["two.md", "two"], ["shared.png", "shared asset"]]) fs.writeFileSync(path.join(transientRoot, file), content);
+  const sharedCatalog = Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type => [type, []]));
+  sharedCatalog.notes = ["one", "two"].map(name => ({
+    id: name, cat: "Project/Shared", isPrivate: false,
+    source: path.join(transientRoot, `${name}.md`), destination: `notes/Project/Shared/${name}.md`,
+    dependencies: [{ source: path.join(transientRoot, "shared.png"), destination: "notes/Project/Shared/shared.png" }],
+  }));
+  const sharedCurrent = githubSyncTargetFingerprintState(transientTarget, sharedCatalog);
+  const sharedManifest = manifestJson(Object.entries(sharedCurrent.files.notes).map(([file, digest]) => ({
+    path: file, digest, type: "notes", itemId: path.basename(file, ".md"),
+    member: file.endsWith("shared.png") ? file : "", category: "Project/Shared", privacy: "public",
+  })));
+  const sharedBase = githubSyncManifestFolderFingerprints(transientTarget, sharedManifest);
+  assert.deepStrictEqual(sharedCurrent.files.notes, githubSyncManifestFileFingerprints(transientTarget, sharedManifest).notes);
+  assert.strictEqual(sharedCurrent.fingerprints.notes, fingerprintGitHubSyncEntries(Object.entries(sharedCurrent.files.notes).map(([file, digest]) => ({ path: file, digest }))), "Shared assets must count once in the type fingerprint");
+  const sharedShields = githubSyncFolderShields([transientTarget], { "cache-exclusion": sharedCurrent.fingerprints }, { "cache-exclusion": sharedCurrent.folders }, { "cache-exclusion": sharedBase });
+  assert.strictEqual(sharedShields.notes.Project, "green", "Matching shared assets must not keep the parent directory yellow");
+  assert.strictEqual(sharedShields.notes["Project/Shared"], "green", "Matching individual files and directory fingerprints must agree");
+  fs.writeFileSync(path.join(transientRoot, "shared.png"), "changed shared asset");
+  const sharedChanged = githubSyncTargetFingerprintState(transientTarget, sharedCatalog);
+  assert.strictEqual(githubSyncFolderShields([transientTarget], { "cache-exclusion": sharedChanged.fingerprints }, { "cache-exclusion": sharedChanged.folders }, { "cache-exclusion": sharedBase }).notes.Project, "yellow", "A real shared-asset edit must still mark its directory pending");
+} finally { fs.rmSync(transientRoot, { recursive: true, force: true }); }
 
 const defaults = defaultGitHubSyncSelection();
 for (const type of ['notes','skills','prompts','recipes']) {
@@ -58,6 +159,29 @@ const protectedBaseline = githubSyncManifestFileFingerprints(protectedTarget, ma
   {path:'notes/System/PKM/read-only.md',type:'notes',itemId:'System/PKM/read-only',member:'',category:'System/PKM',privacy:'public',digest:'a'.repeat(64)}
 ]));
 assert.deepStrictEqual(protectedBaseline.notes, {}, 'old System baselines do not produce pending-sync markers');
+const builtInRecipeIds = new Set(["built-in-recipe"]);
+const historicalRecipeManifest = manifestJson([
+  {path:"recipes/Old/BuiltIn.json", type:"recipes", itemId:"built-in-recipe", member:"", category:"Old", privacy:"public", digest:"b".repeat(64)},
+  {path:"recipes/Work/User.json", type:"recipes", itemId:"user-recipe", member:"", category:"Work", privacy:"public", digest:"c".repeat(64)},
+  {path:"papers/MyIdeas/Idea.md", type:"papers", itemId:"MyIdeas/Idea", member:"", category:"MyIdeas", privacy:"public", digest:"d".repeat(64)},
+]);
+const filteredRecipeBaseline = githubSyncManifestFileFingerprints(protectedTarget, historicalRecipeManifest, new Set(), builtInRecipeIds);
+assert.deepStrictEqual(filteredRecipeBaseline.recipes, { "recipes/Work/User.json":"c".repeat(64) },
+  "built-in Recipe identities are excluded even when historical paths/categories differ");
+assert.deepStrictEqual(filteredRecipeBaseline.papers, { "papers/MyIdeas/Idea.md":"d".repeat(64) },
+  "retained historical public MyIdeas must not be hidden by built-in Recipe filtering");
+const filteredRecipeFolders = githubSyncManifestFolderFingerprints(protectedTarget, historicalRecipeManifest, new Set(), builtInRecipeIds);
+assert.equal(filteredRecipeFolders.recipes.Old, undefined);
+assert(filteredRecipeFolders.recipes.Work);
+assert(filteredRecipeFolders.papers.MyIdeas);
+assert(githubSyncManifestFileFingerprints(protectedTarget, historicalRecipeManifest).recipes["recipes/Old/BuiltIn.json"],
+  "callers without current built-in identities retain the original baseline behavior");
+const recipeMarkers = githubSyncEntryShields([protectedTarget], {}, {
+  protected:{recipes:{"recipes/Work/User.json":"c".repeat(64)}},
+}, {protected:filteredRecipeBaseline});
+assert.equal(recipeMarkers.recipes["recipes/Old/BuiltIn.json"], undefined, "built-ins use the existing not-included marker");
+assert.equal(recipeMarkers.recipes["recipes/Work/User.json"], "green");
+assert.equal(recipeMarkers.papers["papers/MyIdeas/Idea.md"], "yellow", "retained publication discrepancy remains visible");
 const legacySkillTarget = normalizeGitHubSyncTarget({name:'Legacy Skills',repository:'repo'}, () => 'legacy-skills');
 const secondSkillTarget = normalizeGitHubSyncTarget({name:'Second Skills',repository:'repo'}, () => 'second-skills');
 const legacySkillCatalog = Object.fromEntries(GITHUB_SYNC_CONTENT_TYPES.map(type => [type, []]));
@@ -95,7 +219,7 @@ assert.strictEqual(githubSyncShield([legacySkillTarget], 'skills', {
 assert.strictEqual(JSON.stringify(legacySkillTargets), legacyTargetSnapshot, 'status comparison never rewrites stored synchronization records');
 assert(GITHUB_SYNC_CONTENT_TYPES.includes("agentSnapshots"));
 for (const type of GITHUB_SYNC_CONTENT_TYPES) {
-  assert.deepStrictEqual(defaults.public[type], { items: [], folders: ["packages", "servers", "agentSnapshots"].includes(type) ? [] : [""] });
+  assert.deepStrictEqual(defaults.public[type], { items: [], folders: ["packages", "servers", "agentSnapshots", "actions", "action-module-sets", "profiles"].includes(type) ? [] : [""] });
   assert.deepStrictEqual(defaults.private[type], { items: [], folders: [] });
 }
 const extensionSource = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
@@ -362,4 +486,30 @@ assert.strictEqual(githubSyncFolderShields(
   {},
 ).skills.Work, "green", "legacy sync records fall back to their matching type fingerprint when the cached manifest is unavailable");
 
-console.log("github-sync model tests passed");
+async function testStagedVerificationWithoutCommits() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-staged-verification-"));
+  const stagedTarget = normalizeGitHubSyncTarget({ name:"Staged fixture", repository:"fixture" }, () => "staged");
+  const checkout = path.join(root, stagedTarget.id, "repository");
+  const run = args => require("child_process").execFileSync("git", args, { cwd:checkout, stdio:"pipe" });
+  try {
+    fs.mkdirSync(path.join(checkout, "scripts"), { recursive:true });
+    run(["init", "-q"]);
+    const contents = [Buffer.from("first\n"), Buffer.from([0, 10, 255, 13, 0]), Buffer.alloc(0)];
+    const files = contents.map((content, index) => {
+      const relative = `scripts/member-${index}.bin`;
+      fs.writeFileSync(path.join(checkout, relative), content);
+      return { path:relative, type:"scripts", itemId:`member-${index}`, member:"", category:"", privacy:"public", digest:"old" };
+    });
+    run(["-c", "core.autocrlf=false", "add", "--", "scripts"]);
+    const progress = [];
+    await verifyGitHubStagedFiles(stagedTarget, root, files, count => progress.push(count));
+    assert.deepStrictEqual(progress, [3]);
+    files.forEach((file, index) => {
+      assert(file.content.equals(contents[index]), "Batch verification preserves binary and empty staged bytes");
+      assert.strictEqual(file.digest, createHash("sha256").update(contents[index]).digest("hex"));
+    });
+    await assert.rejects(verifyGitHubStagedFiles(stagedTarget, root, [{ ...files[0], path:"scripts/missing.bin" }]), /missing file/);
+    assert.throws(() => run(["rev-parse", "--verify", "HEAD"]), "This fixture must never create a Git commit");
+  } finally { fs.rmSync(root, { recursive:true, force:true }); }
+}
+testStagedVerificationWithoutCommits().then(() => console.log("github-sync model tests passed (including batched index verification without commits)"), error => { console.error(error); process.exitCode = 1; });

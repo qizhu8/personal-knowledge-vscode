@@ -1,0 +1,194 @@
+# PKM singleton service
+
+## Boundary
+
+PKM has one independent background service for each OS account, global-storage
+location, and canonical Knowledge Root. Extension Hosts are clients, not
+background leaders. GitHub Sync is the first migrated workload; the existing
+Subscription Gateway, Chat Hub, and retrieval worker are not migrated by this
+change.
+
+The service owns the Sync coordinator, scheduling, durable queue, and Git
+reconciliation/commit/push execution. Windows provide authenticated credentials,
+the current catalog (including Project Store Recipes), and host-only UI,
+privacy, inventory, and retrieval refresh operations. These are explicit client
+callbacks, not a second coordinator. Credentials cross only account-private
+local IPC and are never written into the service registry or queue.
+
+The service identity does not include a workspace, window, or Extension Host
+PID. Symlink aliases of the same Knowledge Root resolve to the same identity.
+Persisted Sync bindings and the change-trigger baseline use that same canonical
+comparison: Windows case, separators, and trailing separators do not change the
+root identity; POSIX case and genuinely different physical roots remain distinct.
+Native/display paths are retained for filesystem operations and saved settings.
+Closing a window disconnects its client; it does not dispose the service.
+Without a compatible client, operations requiring host authorization cannot
+proceed and must report that condition rather than silently succeeding.
+
+## Lifecycle and upgrades
+
+A shared transition lock serializes service discovery, startup, and upgrades.
+Clients verify service identity, protocol, and version before sending work.
+Older clients cannot downgrade a newer service or supply stale execution
+callbacks. An upgrade drains outstanding work before replacing the service;
+it never kills a running commit or push to make a newer window appear ready.
+
+The singleton uses the existing Sync coordinator state as a migration bridge.
+It takes the legacy leader lease only after live legacy work drains. Its
+service PID then maintains that lease, so already-running legacy windows
+become followers instead of continuing to execute Sync. The fencing token
+advances during takeover. This is a compatibility boundary, not a second
+independent election domain.
+
+The old coordinator implementation remains for state compatibility and direct
+unit tests, but production Extension Hosts instantiate service clients rather
+than coordinators. It is not sufficient to check the installed extension
+version: runtime diagnostics must also identify the actual service executor.
+
+## Safety
+
+IPC uses an account-private local endpoint, not a public HTTP server. Startup
+and replacement validate endpoint ownership; unsafe directories, mismatched
+identities, malformed messages, and protocol/version mismatches produce
+explicit errors. Payloads and waits are bounded, and pending calls fail when
+their connection is lost.
+
+Completed Git results survive a client disconnect in private recovery receipts.
+A reconnecting client checks the original target, repository, branch and
+execution reason before applying host-only postprocessing. Success recovery
+also verifies the existing transaction receipt; conflict recovery persists the
+full conflict workspace before acknowledging the service receipt. Recovery
+does not perform another Git operation. Missing metadata or changed target
+endpoints leave the receipt intact and report a review requirement.
+Progress callbacks restore the original assigned execution context before
+reporting phases. A host that has durably recorded an ordinary raw Sync error
+acknowledges its error receipts before returning failure; only genuinely
+unhandled results produce the unfinished-postprocessing recovery warning.
+
+Recovery staging is created with an exclusive writable descriptor, written,
+flushed with that same descriptor, closed, then renamed. Write/flush/rename
+failures cannot replace the original Sync error: a typed
+`PkmServiceRecoveryPersistenceError` transports both redacted errors, including
+their stacks/codes, operation/target IDs, persistence stage, and transaction
+reference. Diagnostics explicitly state that no recovery result is available
+and disable automatic retry. A successful raw Sync with failed persistence is
+not a successful host transaction and must not be blindly replayed.
+Only successfully published result records can produce a recovery notice.
+An old transaction receipt is not evidence for a newly failed operation.
+
+All Sync Git commands already pass `-c core.longpaths=true`, including initial
+clone. Managed checkouts also persist `core.longpaths=true` locally before
+worktree inspection, so direct diagnostics use the same path handling.
+This does not change the user's global Git configuration or reset a dirty
+checkout. Windows path failures must not be interpreted as user deletion.
+
+The existing target lock and cross-target local-apply lock span the host
+transaction, including its service call and postprocessing. Conflict variants
+retain exact bytes over IPC; typed conflict and extension-compatibility errors
+are reconstructed for the existing resolution workflow. Saved human choices
+are not cleared merely because service ownership changes.
+
+## Automatic triggers and feedback
+
+The Auto switch updates immediately with a pending indicator. The host
+acknowledges persisted settings before expensive catalog and shield scans.
+Errors roll back the pending view and display the failure. Turning Auto off
+while a synchronization is active allows that transaction to finish, but
+cancels subsequent automatic work.
+
+Periodic fetch and sync-on-change are independent: the configured interval
+checks GitHub even when local content is unchanged; selected content changes
+use a two-second debounce. Watcher events are only hints. Before a change job
+enters Git execution, the host checks an ignore-aware snapshot of selected
+bytes, entity identity, privacy, and pending deletion records against the
+local input snapshot of the last successful attempt. Unselected files,
+mtime-only writes, and unrelated project/session state cannot repeatedly
+start Git. The local input baseline is separate from the remote manifest:
+preserved remote-only or built-in content must not look like a new local edit.
+Capturing input before Git execution keeps edits made during synchronization
+eligible for a follow-up. Existing targets bootstrap this local baseline on
+their next successful sync. Skipped change events do not delay periodic fetch.
+
+The content watcher batches paths and checks Git ignore before invalidating the
+catalog or scheduling library/retrieval refresh. Ignored runtime artifacts
+(including SQLite journals and transcript cursors) must not repeatedly rebuild
+the catalog. Privacy metadata bypasses this ignore check. Changes to unselected
+content types still refresh the library without notifying Sync; the selected
+byte snapshot remains the final safety gate. Results from disposed watchers are
+discarded. Filter errors are explicitly logged.
+
+Every scheduler transition carries an activity timestamp. UI snapshots compare
+activity, attempt, and success times, including older messages without activity
+timestamps. A queued or skipped retry does not erase a failure, and a late
+failure snapshot cannot override a newer successful outcome.
+
+The phase diagram retains its full main line and branches down from Fetch / Pull
+to No Change, aligned below Resolve conflicts in the same stage column. The
+branch connects Fetch / Pull's right edge to the No Change dot's left edge.
+This outcome requires no new remote commit, local file writes or
+deletions, Recipe updates, or privacy updates. A remote-only pull still follows
+the materialization/index-refresh path, even when it creates no remote commit.
+Unchanged checks retain Git validation and durable receipt/baseline finalization,
+but do not display Commit/Push or rebuild inventory/retrieval indexes.
+
+## Local content repair
+
+Residual markers in selected Local files are a preflight content blocker, not a
+three-way conflict. `GitHubSyncContentRepairError` carries the target, attempt ID,
+source identity/digest, marker line numbers, and all affected files over typed
+RPC. The Host persists a separate repair record before acknowledging the service
+receipt. Base and Remote are explicitly unavailable: preflight has not fetched
+Remote. Existing remote-marker reconciliation continues to use its real version
+snapshots and human-conflict workspace.
+
+GitHub Sync shows Needs attention, a file list and Open at marker. Complete,
+non-nested blocks with whitespace-only sides may offer a read-only diff and an
+explicitly approved cleanup. Malformed/nonempty/diff3 blocks and generated
+content do not offer unsafe replacement choices. A source must be a regular file
+inside the Knowledge Root. Cleanup checks its original content digest, rejects
+unsaved editor changes, regenerates the candidate from actual bytes, preserves
+line endings and unrelated bytes, and checks again before replacing the file.
+It does not silently start Sync.
+
+Revalidate & Sync invalidates catalog caches and submits a new normal manual
+attempt. Remaining markers update the pending list; success clears it. Local
+repairs do not pretend that Git has unmerged index entries and do not offer
+Choose GitHub when no remote version is available. The service retains an
+actionable needs-attention state across reconfiguration/restart, keeps Auto
+settings intact, and does not schedule interval/change retries or consume the
+network failure budget. Repeated unchanged blockers do not repeat notifications.
+
+## Validation commands
+
+```sh
+npx tsc -p tsconfig.json
+node tests/test-pkm-service.js
+node tests/test-pkm-service-integration.js
+node tests/test-github-sync-coordinator.js
+node tests/test-github-sync-resolution.js
+node tests/test-github-sync-file-safety.js
+node tests/test-github-sync-ui.js
+node tests/test-github-sync-watcher.js
+node tests/test-github-sync-content-repair.js
+node tests/test-github-sync-content-repair-host.js
+```
+
+The actual VSIX must also start the service outside repository `node_modules`.
+Tests must verify independent process execution, shared identity across two
+clients, rejecting old-client mutations, drained upgrades, legacy takeover,
+and binary/error preservation, not just source-code patterns.
+
+The service test records a native read-only/writable fsync probe and injects
+write, fsync and rename failures for both raw-success and raw-error outcomes.
+File-safety tests construct checkout paths of exactly 274, 294 and 300
+characters and cover a new clone, an existing checkout, a real edit and an
+unchanged repeated Sync. The existing CI matrix runs on Windows, Linux and
+macOS. Passing these tests on Linux is not Windows runtime acceptance.
+
+For the reported Windows machine, keep Auto off until manual acceptance:
+update the extension and reload the window, confirm the actual service
+version, retain its diagnostics and transaction receipts, then run normal
+manual Sync. Confirm that long files are no longer false deletions and that
+the resulting remote commit, new transaction ID, lastSync and cleared failure
+agree. Repeat without edits to verify no extra commit. Do not force-update or
+reset the checkout to bypass another error.

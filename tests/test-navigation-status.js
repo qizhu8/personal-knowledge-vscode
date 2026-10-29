@@ -2,7 +2,7 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
-const { summarizeServerNavigation, summarizeChatNavigation } = require("../dist/navigation-status.js");
+const { summarizeServerNavigation, summarizeChatNavigation } = require("../dist/ui/navigation-status.js");
 
 assert.deepStrictEqual(summarizeServerNavigation([]).kind, "offline");
 assert.deepStrictEqual(summarizeServerNavigation([{ status: "stopped", proxyRunning: true }]).description, "all stopped");
@@ -27,7 +27,7 @@ assert.match(extension, /new PkTreeItem\(this\.text\("tabs\.environments"\), "ro
 assert.match(extension, /personalKnowledge\.openEnvironments/);
 assert.match(extension, /function openEnvironmentPanel\(context: vscode\.ExtensionContext, environmentId = ""\)/);
 assert.match(extension, /postMessage\(\{ command: "focusEnvironment", environmentId \}\)/);
-assert.match(extension, /_pendingEnvironmentId = environmentId/);
+assert.match(extension, /panelSession\(\)\.pendingEnvironmentId = environmentId/);
 assert.match(extension, /respond\(\{ command: "focusEnvironment", environmentId \}\)/);
 assert.match(extension, /personalKnowledge\.openEnvironments", async \(environmentId\?: string\)/);
 assert.match(extension, /openEnvironmentPanel\(context, String\(environmentId \|\| ""\)\)/);

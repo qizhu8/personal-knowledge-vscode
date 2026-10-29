@@ -3,8 +3,8 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { ChatPersistence } = require("../dist/chat-persistence");
-const { ChatJoinApprovalManager } = require("../dist/chat-join-approval");
+const { ChatPersistence } = require("../dist/chatroom/chat-persistence");
+const { ChatJoinApprovalManager } = require("../dist/chatroom/chat-join-approval");
 
 async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-join-approval-test-"));

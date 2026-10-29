@@ -24,6 +24,7 @@
               { "$ref": "#/$defs/noopNode" },
               { "$ref": "#/$defs/commandNode" },
               { "$ref": "#/$defs/scriptNode" },
+              { "$ref": "#/$defs/pipelineNode" },
               { "$ref": "#/$defs/nativeNode" },
               { "$ref": "#/$defs/humanGateNode" },
               { "$ref": "#/$defs/subflowNode" }
@@ -165,6 +166,12 @@
           "properties": {
             "runtime": { "enum": ["bash", "powershell", "python"] },
             "script": { "type": "string", "minLength": 1, "pattern": "^[^\\u0000]+$" },
+            "args": {
+              "type": "array",
+              "x-pkm-order": "semantic",
+              "x-pkm-sort-key": ["$index"],
+              "items": { "type": "string", "pattern": "^[^\\u0000]*$" }
+            },
             "environmentId": { "$ref": "#/$defs/identifier" },
             "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 300 },
             "maxOutputBytes": { "type": "integer", "minimum": 1024, "maximum": 1048576, "default": 65536 },
@@ -188,6 +195,52 @@
           "x-pkm-sort-key": ["from", "accept"],
           "items": { "$ref": "#/$defs/dependency" }
         }
+      }
+    },
+    "pipelineNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeId", "kind", "config", "dependsOn"],
+      "properties": {
+        "nodeId": { "$ref": "#/$defs/identifier" },
+        "kind": { "const": "pkm.step.pipeline/v1" },
+        "config": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["executor", "program", "args"],
+              "properties": {
+                "executor": { "const": "command" },
+                "program": { "$ref": "#/$defs/commandNode/properties/config/properties/program" },
+                "args": { "$ref": "#/$defs/commandNode/properties/config/properties/args" },
+                "cwd": { "$ref": "#/$defs/commandNode/properties/config/properties/cwd" },
+                "timeoutSeconds": { "$ref": "#/$defs/commandNode/properties/config/properties/timeoutSeconds" },
+                "maxOutputBytes": { "$ref": "#/$defs/commandNode/properties/config/properties/maxOutputBytes" }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["executor", "runtime", "script"],
+              "properties": {
+                "executor": { "const": "script" },
+                "runtime": { "$ref": "#/$defs/scriptNode/properties/config/properties/runtime" },
+                "script": { "$ref": "#/$defs/scriptNode/properties/config/properties/script" },
+                "args": { "$ref": "#/$defs/scriptNode/properties/config/properties/args" },
+                "environmentId": { "$ref": "#/$defs/scriptNode/properties/config/properties/environmentId" },
+                "cwd": { "$ref": "#/$defs/scriptNode/properties/config/properties/cwd" },
+                "timeoutSeconds": { "$ref": "#/$defs/scriptNode/properties/config/properties/timeoutSeconds" },
+                "maxOutputBytes": { "$ref": "#/$defs/scriptNode/properties/config/properties/maxOutputBytes" }
+              },
+              "allOf": [{ "$ref": "#/$defs/scriptNode/properties/config/allOf/0" }]
+            }
+          ]
+        },
+        "generalInstruction": { "$ref": "#/$defs/scriptNode/properties/generalInstruction" },
+        "ports": { "$ref": "#/$defs/nodePorts" },
+        "control": { "$ref": "#/$defs/nodeControl" },
+        "dependsOn": { "$ref": "#/$defs/scriptNode/properties/dependsOn" }
       }
     },
     "nativeNode": {

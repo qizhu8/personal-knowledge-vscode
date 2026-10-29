@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 const assert = require("assert");
-const { DerivedLinkGraph } = require("../dist/link-graph.js");
+const { DerivedLinkGraph } = require("../dist/knowledge/link-graph.js");
 
 const ids = {
   a: "pkm://knowledge/knowledge_aaaaaaaaaaaaaaaaaaaaaaaa",

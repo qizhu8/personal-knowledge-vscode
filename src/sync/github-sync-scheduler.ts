@@ -1,0 +1,436 @@
+import { GitHubSyncContentRepairError } from "./github-sync-content-repair";
+
+export type GitHubSyncReason = "startup" | "interval" | "change" | "configuration" | "manual" | "force-local-authority";
+export type GitHubSyncPhase = "scheduled" | "waiting-for-lock" | "authenticating" | "fetch" | "resolve-conflicts" | "commit" | "push" | "refresh-index" | "no-change";
+
+export class GitHubSyncDeferredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GitHubSyncDeferredError";
+  }
+}
+
+export class GitHubSyncBlockedError extends Error {
+  constructor(
+    readonly requiredVersion: string,
+    readonly installedVersion: string,
+    readonly originalReason: GitHubSyncReason,
+  ) {
+    super(`Waiting for Personal Knowledge Manager ${requiredVersion} or newer (installed: ${installedVersion}).`);
+    this.name = "GitHubSyncBlockedError";
+  }
+}
+
+export interface AutomaticGitHubSyncTarget {
+  id: string;
+  enabled: boolean;
+  intervalMinutes: number;
+  syncOnChange: boolean;
+  lastSuccessAt?: string;
+  lastFailure?: { at: string; error: string; reason: string; attempts?: number; errorCode?: string; phase?: string; retryable?: boolean };
+  needsAttention?: boolean;
+}
+
+export const MAX_GITHUB_SYNC_FAILURE_ATTEMPTS = 3;
+export const GITHUB_SYNC_AUTHENTICATION_RETRY_MS = 15 * 60_000;
+
+export function isGitHubSyncAuthenticationFailure(failure: AutomaticGitHubSyncTarget["lastFailure"]): boolean {
+  return !!failure && failure.retryable !== false
+    && (failure.phase === "authenticating" || /^CREDENTIAL_/.test(failure.errorCode || "")
+      || /authentication (?:failed|expired|required|error)|bad credentials|invalid username or (?:password|token)|could not read (?:username|password)|permission denied \(publickey\)/i.test(failure.error));
+}
+
+export interface GitHubSyncRuntimeState {
+  status: "paused" | "scheduled" | "queued" | "syncing" | "blocked" | "error" | "needs-attention" | "partial";
+  phase?: GitHubSyncPhase;
+  detail?: string;
+  activityAt?: string;
+  reason?: GitHubSyncReason;
+  lastAttemptAt?: string;
+  lastSuccessAt?: string;
+  lastError?: string;
+  lastErrorCode?: string;
+  lastErrorPhase?: string;
+  nextSyncAt?: string;
+  blocked?: { requiredVersion: string; installedVersion: string };
+  service?: { pid: number; version: string; protocol: string };
+}
+
+export function githubSyncFailureDetails(error: unknown, phase?: string): { errorCode: string; phase?: string } {
+  return {
+    errorCode: error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : "SYNC_FAILED",
+    phase: error && typeof error === "object" && "phase" in error && typeof error.phase === "string" ? error.phase : phase,
+  };
+}
+
+export interface GitHubSyncSchedulerOptions {
+  shouldExecute?: (targetId: string, reason: GitHubSyncReason) => Promise<boolean>;
+  execute: (targetId: string, reason: GitHubSyncReason) => Promise<void>;
+  shouldRetryFailure?: (error: unknown) => boolean;
+  onAutoPaused?: (targetId: string) => void;
+  beforeExecute?: (targetId: string, reason: GitHubSyncReason) => Promise<boolean | void>;
+  onSettled?: (targetId: string, reason: GitHubSyncReason, outcome: "skipped" | "succeeded" | "blocked" | "failed" | "attention" | "deferred") => void;
+  onState?: (targetId: string, state: GitHubSyncRuntimeState) => void;
+  now?: () => number;
+  setTimeout?: (callback: () => void, delay: number) => NodeJS.Timeout;
+  clearTimeout?: (timer: NodeJS.Timeout) => void;
+  changeDebounceMs?: number;
+}
+
+export class GitHubSyncScheduler {
+  private readonly targets = new Map<string, AutomaticGitHubSyncTarget>();
+  private readonly states = new Map<string, GitHubSyncRuntimeState>();
+  private readonly scheduledTimers = new Map<string, NodeJS.Timeout>();
+  private readonly changeTimers = new Map<string, NodeJS.Timeout>();
+  private readonly pending = new Map<string, GitHubSyncReason>();
+  private readonly activeTargets = new Set<string>();
+  private draining = false;
+  private disposed = false;
+
+  constructor(private readonly options: GitHubSyncSchedulerOptions) {}
+
+  configure(targets: AutomaticGitHubSyncTarget[]): void {
+    if (this.disposed) return;
+    for (const timer of this.scheduledTimers.values()) this.clearTimer(timer);
+    for (const timer of this.changeTimers.values()) this.clearTimer(timer);
+    this.scheduledTimers.clear();
+    this.changeTimers.clear();
+    this.targets.clear();
+    const activeIds = new Set(targets.map(target => target.id));
+    for (const id of this.states.keys()) if (!activeIds.has(id)) this.states.delete(id);
+    for (const id of this.pending.keys()) if (!activeIds.has(id)) this.pending.delete(id);
+    for (const target of targets) {
+      this.targets.set(target.id, target);
+      if (!target.enabled && !["manual", "force-local-authority"].includes(this.pending.get(target.id) || "")) this.pending.delete(target.id);
+      if (this.activeTargets.has(target.id)) continue;
+      if (target.needsAttention) {
+        this.pending.delete(target.id);
+        this.updateState(target.id, { status: "needs-attention", detail: "Local content needs repair. Remote has not been fetched." });
+        continue;
+      }
+      const activeFailure = target.lastFailure
+        && (!target.lastSuccessAt || target.lastFailure.at > target.lastSuccessAt)
+        ? target.lastFailure
+        : undefined;
+      const previous = this.states.get(target.id);
+      const completedNoChange = !activeFailure && previous?.phase === "no-change" && previous.lastSuccessAt
+        && (!target.lastSuccessAt || target.lastSuccessAt <= previous.lastSuccessAt);
+      if (target.enabled && activeFailure && !isGitHubSyncAuthenticationFailure(activeFailure)
+        && (activeFailure.attempts || 1) >= MAX_GITHUB_SYNC_FAILURE_ATTEMPTS) {
+        target.enabled = false;
+        this.options.onAutoPaused?.(target.id);
+      }
+      if (!target.enabled) {
+        this.updateState(target.id, {
+          status: activeFailure ? "error" : "paused",
+          lastAttemptAt: activeFailure?.at || target.lastSuccessAt,
+          lastSuccessAt: target.lastSuccessAt,
+          lastError: activeFailure?.error,
+          lastErrorCode: activeFailure?.errorCode,
+          lastErrorPhase: activeFailure?.phase,
+          ...(completedNoChange ? { phase: "no-change" as const, detail: previous.detail } : {}),
+        });
+        continue;
+      }
+      this.updateState(target.id, {
+        status: activeFailure ? "error" : "scheduled",
+        lastAttemptAt: previous?.lastAttemptAt || activeFailure?.at || target.lastSuccessAt,
+        lastSuccessAt: target.lastSuccessAt,
+        lastError: activeFailure?.error,
+        lastErrorCode: activeFailure?.errorCode,
+        lastErrorPhase: activeFailure?.phase,
+        ...(completedNoChange ? { phase: "no-change" as const, detail: previous.detail } : {}),
+      });
+      if (!activeFailure || isGitHubSyncAuthenticationFailure(activeFailure)
+        || (activeFailure.attempts || 1) < MAX_GITHUB_SYNC_FAILURE_ATTEMPTS) this.enqueue(target.id, "startup");
+    }
+  }
+
+  request(targetId: string, reason: GitHubSyncReason): boolean {
+    const target = this.targets.get(targetId);
+    if (this.disposed || !target || (!target.enabled && reason !== "manual" && reason !== "force-local-authority")) return false;
+    if (target.needsAttention && reason !== "manual" && reason !== "force-local-authority") return false;
+    if (target.lastFailure && reason !== "manual" && reason !== "force-local-authority"
+      && (reason !== "startup" && reason !== "interval"
+        || !isGitHubSyncAuthenticationFailure(target.lastFailure) && (target.lastFailure.attempts || 1) >= MAX_GITHUB_SYNC_FAILURE_ATTEMPTS)) return false;
+    if ((reason === "manual" || reason === "force-local-authority") && (this.activeTargets.has(targetId) || ["manual", "force-local-authority"].includes(this.pending.get(targetId) || ""))) return false;
+    this.enqueue(targetId, reason);
+    return true;
+  }
+
+  report(targetId: string, phase: GitHubSyncPhase, detail?: string): void {
+    if (this.disposed || !this.targets.has(targetId)) return;
+    this.updateState(targetId, {
+      ...this.states.get(targetId),
+      status: "syncing",
+      phase,
+      detail,
+      activityAt: new Date(this.now()).toISOString(),
+    });
+  }
+
+  private enqueue(targetId: string, reason: GitHubSyncReason): void {
+    const target = this.targets.get(targetId);
+    if (this.disposed || !target || (!target.enabled && reason !== "manual" && reason !== "force-local-authority")) return;
+    const current = this.pending.get(targetId);
+    if (!current || this.reasonPriority(reason) > this.reasonPriority(current)) this.pending.set(targetId, reason);
+    if (reason === "configuration" || reason === "manual" || reason === "force-local-authority" || reason === "change") {
+      const timer = this.scheduledTimers.get(targetId);
+      if (timer) this.clearTimer(timer);
+      this.scheduledTimers.delete(targetId);
+      void this.drain();
+      return;
+    }
+    this.scheduleWhenEligible(target);
+  }
+
+  notifyContentChanged(excludedTargetId?: string): void {
+    if (this.disposed) return;
+    if (excludedTargetId) {
+      const excludedTimer = this.changeTimers.get(excludedTargetId);
+      if (excludedTimer) this.clearTimer(excludedTimer);
+      this.changeTimers.delete(excludedTargetId);
+    }
+    for (const target of this.targets.values()) {
+      if (target.id === excludedTargetId || !target.enabled || !target.syncOnChange || target.lastFailure || target.needsAttention) continue;
+      const existing = this.changeTimers.get(target.id);
+      if (existing) this.clearTimer(existing);
+      const timer = this.setTimer(() => {
+        this.changeTimers.delete(target.id);
+        this.request(target.id, "change");
+      }, this.options.changeDebounceMs ?? 2_000);
+      this.changeTimers.set(target.id, timer);
+    }
+  }
+
+  snapshot(): Record<string, GitHubSyncRuntimeState> {
+    return Object.fromEntries([...this.states].map(([id, state]) => [id, { ...state }]));
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    for (const timer of [...this.scheduledTimers.values(), ...this.changeTimers.values()]) this.clearTimer(timer);
+    this.scheduledTimers.clear();
+    this.changeTimers.clear();
+    this.pending.clear();
+    this.targets.clear();
+  }
+
+  private scheduleWhenEligible(target: AutomaticGitHubSyncTarget): void {
+    const previousTimer = this.scheduledTimers.get(target.id);
+    if (previousTimer) this.clearTimer(previousTimer);
+    const intervalMs = isGitHubSyncAuthenticationFailure(target.lastFailure)
+      ? GITHUB_SYNC_AUTHENTICATION_RETRY_MS : target.intervalMinutes * 60_000;
+    const lastSuccess = Date.parse(target.lastSuccessAt || "");
+    const lastFailure = Date.parse(target.lastFailure?.at || "");
+    const runtimeAttempt = Date.parse(this.states.get(target.id)?.lastAttemptAt || "");
+    const lastAttempt = Math.max(
+      Number.isFinite(lastSuccess) ? lastSuccess : 0,
+      Number.isFinite(lastFailure) ? lastFailure : 0,
+      Number.isFinite(runtimeAttempt) ? runtimeAttempt : 0,
+    );
+    const dueAt = lastAttempt ? lastAttempt + intervalMs : this.now();
+    const delay = Math.max(0, dueAt - this.now());
+    if (!delay) {
+      this.scheduledTimers.delete(target.id);
+      void this.drain();
+      return;
+    }
+    const nextSyncAt = new Date(dueAt).toISOString();
+    const status = this.states.get(target.id)?.status;
+    this.updateState(target.id, { ...this.states.get(target.id), status: status === "error" || status === "partial" ? status : "scheduled", nextSyncAt });
+    const timer = this.setTimer(() => {
+      this.scheduledTimers.delete(target.id);
+      void this.drain();
+    }, delay);
+    this.scheduledTimers.set(target.id, timer);
+  }
+
+  private async drain(): Promise<void> {
+    if (this.draining || this.disposed) return;
+    this.draining = true;
+    try {
+      while (!this.disposed && this.pending.size) {
+        const ready = [...this.pending.entries()].find(([targetId]) => !this.scheduledTimers.has(targetId));
+        if (!ready) break;
+        const [targetId, reason] = ready;
+        this.pending.delete(targetId);
+        const target = this.targets.get(targetId);
+        if (!target || (!target.enabled && reason !== "manual" && reason !== "force-local-authority")) continue;
+        const attemptedAt = new Date(this.now()).toISOString();
+        this.activeTargets.add(targetId);
+        const currentState = this.states.get(targetId);
+        if (currentState) this.states.set(targetId, { ...currentState, lastAttemptAt: attemptedAt, nextSyncAt: undefined });
+        try {
+          if (this.options.shouldExecute && !(await this.options.shouldExecute(targetId, reason))
+            || this.disposed
+            || this.options.beforeExecute && await this.options.beforeExecute(targetId, reason) === false
+            || this.disposed) {
+            this.updateState(targetId, {
+              status: currentState?.lastError ? "error" : "scheduled",
+              reason,
+              lastAttemptAt: reason === "change" ? currentState?.lastAttemptAt : attemptedAt,
+              lastSuccessAt: target.lastSuccessAt,
+              lastError: currentState?.lastError,
+            });
+            this.scheduleNextInterval(target);
+            this.options.onSettled?.(targetId, reason, "skipped");
+            continue;
+          }
+          this.updateState(targetId, { ...this.states.get(targetId), status: "syncing", phase: "waiting-for-lock", detail: "Waiting for Git lock", activityAt: attemptedAt, reason, lastAttemptAt: attemptedAt, lastError: undefined, lastErrorCode: undefined, lastErrorPhase: undefined, nextSyncAt: undefined });
+          await this.options.execute(targetId, reason);
+          this.options.onSettled?.(targetId, reason, "succeeded");
+          const succeededAt = new Date(this.now()).toISOString();
+          target.lastSuccessAt = succeededAt;
+          target.lastFailure = undefined;
+          const current = this.targets.get(targetId);
+          if (!current) {
+            this.states.delete(targetId);
+            this.pending.delete(targetId);
+            continue;
+          }
+          current.lastSuccessAt = succeededAt;
+          current.lastFailure = undefined;
+          current.needsAttention = false;
+          const noChange = this.states.get(targetId)?.phase === "no-change";
+          this.updateState(targetId, {
+            status: current.enabled ? "scheduled" : "paused",
+            phase: current.enabled ? "scheduled" : undefined,
+            detail: current.enabled ? "Next fetch scheduled" : "Automatic pull/push is off",
+            activityAt: succeededAt,
+            reason,
+            lastAttemptAt: attemptedAt,
+            lastSuccessAt: succeededAt,
+            ...(noChange ? { phase: "no-change", detail: "No changes on this machine or GitHub" } : {}),
+          });
+          this.scheduleNextInterval(current);
+        } catch (error) {
+          if (!this.targets.has(targetId)) {
+            this.states.delete(targetId);
+            this.pending.delete(targetId);
+            continue;
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          if (error instanceof GitHubSyncDeferredError) {
+            const current = this.targets.get(targetId)!;
+            this.pending.delete(targetId);
+            this.updateState(targetId, {
+              status: current.enabled ? "scheduled" : "paused",
+              phase: "scheduled", reason, detail: message,
+              lastAttemptAt: attemptedAt, lastSuccessAt: current.lastSuccessAt,
+              lastError: message,
+            });
+            this.options.onSettled?.(targetId, reason, "deferred");
+            this.scheduleNextInterval(current);
+            continue;
+          }
+          if (error instanceof Error && error.name === "GitHubSyncConflictError"
+            && "partialResult" in error && error.partialResult) {
+            const current = this.targets.get(targetId)!;
+            const succeededAt = new Date(this.now()).toISOString();
+            target.lastFailure = current.lastFailure = undefined;
+            target.lastSuccessAt = current.lastSuccessAt = succeededAt;
+            this.updateState(targetId, {
+              status: "partial", phase: "resolve-conflicts", reason, lastAttemptAt: attemptedAt,
+              lastSuccessAt: succeededAt, detail: message,
+            });
+            this.options.onSettled?.(targetId, reason, "succeeded");
+            this.scheduleNextInterval(current);
+            continue;
+          }
+          if (error instanceof GitHubSyncContentRepairError) {
+            target.needsAttention = true;
+            this.targets.get(targetId)!.needsAttention = true;
+            this.pending.delete(targetId);
+            const changeTimer = this.changeTimers.get(targetId);
+            if (changeTimer) this.clearTimer(changeTimer);
+            this.changeTimers.delete(targetId);
+            this.updateState(targetId, {
+              status: "needs-attention", reason, lastAttemptAt: attemptedAt,
+              lastSuccessAt: target.lastSuccessAt, detail: message,
+            });
+            this.options.onSettled?.(targetId, reason, "attention");
+            continue;
+          }
+          if (error instanceof GitHubSyncBlockedError) {
+            this.updateState(targetId, {
+              ...this.states.get(targetId),
+              status: "blocked",
+              reason: error.originalReason,
+              lastAttemptAt: attemptedAt,
+              lastError: undefined,
+              lastErrorCode: undefined,
+              lastErrorPhase: undefined,
+              nextSyncAt: undefined,
+              detail: message,
+              blocked: { requiredVersion: error.requiredVersion, installedVersion: error.installedVersion },
+            });
+            this.options.onSettled?.(targetId, reason, "blocked");
+            continue;
+          }
+          const failure = {
+            ...githubSyncFailureDetails(error, this.states.get(targetId)?.phase),
+            ...(this.options.shouldRetryFailure?.(error) === false ? { retryable: false } : {}),
+          };
+          const authenticationFailure = isGitHubSyncAuthenticationFailure({ at: attemptedAt, error: message, reason, ...failure });
+          const attempts = failure.retryable === false
+            ? MAX_GITHUB_SYNC_FAILURE_ATTEMPTS
+            : Math.min(MAX_GITHUB_SYNC_FAILURE_ATTEMPTS,
+              (isGitHubSyncAuthenticationFailure(target.lastFailure) && !authenticationFailure ? 0 : target.lastFailure?.attempts || 0) + 1);
+          target.lastFailure = { at: authenticationFailure ? new Date(this.now()).toISOString() : attemptedAt, error: message, reason, attempts, ...failure };
+          const current = this.targets.get(targetId)!;
+          current.lastFailure = target.lastFailure;
+          if (current.enabled && !authenticationFailure && attempts >= MAX_GITHUB_SYNC_FAILURE_ATTEMPTS && reason !== "manual" && reason !== "force-local-authority") {
+            current.enabled = false;
+            this.options.onAutoPaused?.(targetId);
+          }
+          this.pending.delete(targetId);
+          const changeTimer = this.changeTimers.get(targetId);
+          if (changeTimer) this.clearTimer(changeTimer);
+          this.changeTimers.delete(targetId);
+          this.updateState(targetId, { ...this.states.get(targetId), status: "error", reason, lastAttemptAt: attemptedAt, lastError: message, lastErrorCode: failure.errorCode, lastErrorPhase: failure.phase, nextSyncAt: undefined });
+          if (current.enabled && (authenticationFailure || attempts < MAX_GITHUB_SYNC_FAILURE_ATTEMPTS)) {
+            this.pending.set(targetId, "interval");
+            this.scheduleWhenEligible(current);
+          }
+          this.options.onSettled?.(targetId, reason, "failed");
+        } finally {
+          this.activeTargets.delete(targetId);
+        }
+      }
+    } finally {
+      this.draining = false;
+      if ([...this.pending.keys()].some(targetId => !this.scheduledTimers.has(targetId)) && !this.disposed) void this.drain();
+    }
+  }
+
+  private scheduleNextInterval(target: AutomaticGitHubSyncTarget): void {
+    if (this.disposed || !this.targets.has(target.id) || !target.enabled || this.pending.has(target.id)) return;
+    this.pending.set(target.id, "interval");
+    this.scheduleWhenEligible(target);
+  }
+
+  private updateState(targetId: string, state: GitHubSyncRuntimeState): void {
+    state = { ...state, activityAt: new Date(this.now()).toISOString() };
+    this.states.set(targetId, state);
+    this.options.onState?.(targetId, { ...state });
+  }
+
+  private reasonPriority(reason: GitHubSyncReason): number {
+    return reason === "force-local-authority" ? 6 : reason === "manual" ? 5 : reason === "configuration" ? 4 : reason === "change" ? 3 : reason === "interval" ? 2 : 1;
+  }
+
+  private now(): number {
+    return (this.options.now || Date.now)();
+  }
+
+  private setTimer(callback: () => void, delay: number): NodeJS.Timeout {
+    const timer = (this.options.setTimeout || setTimeout)(callback, delay);
+    timer.unref?.();
+    return timer;
+  }
+
+  private clearTimer(timer: NodeJS.Timeout): void {
+    (this.options.clearTimeout || clearTimeout)(timer);
+  }
+}

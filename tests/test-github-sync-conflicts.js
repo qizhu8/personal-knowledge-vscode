@@ -4,8 +4,8 @@ const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { canonicalJson } = require("../dist/workflow-contracts.js");
-const { GitHubSyncConflictError } = require("../dist/github-sync.js");
+const { canonicalJson } = require("../dist/workflows/workflow-contracts.js");
+const { GitHubSyncConflictError } = require("../dist/sync/github-sync.js");
 const {
   clearGitHubSyncConflict,
   listGitHubSyncConflicts,
@@ -22,7 +22,10 @@ const {
   updateGitHubSyncAgentCandidate,
   validateGitHubSyncConflictLocalState,
   validateGitHubSyncManualCandidate,
-} = require("../dist/github-sync-conflicts.js");
+  saveGitHubSyncManualCandidate,
+  validateGitHubSyncConflictVersion,
+  markGitHubSyncConflictApplied,
+} = require("../dist/sync/github-sync-conflicts.js");
 
 const skill = body => Buffer.from(`---\nname: "Shared"\ndescription: "test"\n---\n# Shared\n\n${body}\n`);
 const recipeDefinition = {
@@ -68,9 +71,24 @@ try {
   selectGitHubSyncConflictCandidate(root, "target-1", stored.files[0].path, "remote");
   assert(readGitHubSyncConflictCandidate(root, "target-1", stored.files[0].path).equals(skill("remote")));
   assert.strictEqual(readGitHubSyncConflict(root, "target-1").files[0].candidateSource, "remote");
+  const reviewed = readGitHubSyncConflict(root, "target-1");
+  const reviewedMetadata = fs.readFileSync(path.join(root, "conflicts", "target-1", "conflict.json"));
+  assert.throws(() => validateGitHubSyncConflictVersion(root, "target-1", {
+    conflictId: stored.id, revision: stored.revision,
+  }), /workspace changed/, "a choice made in another window invalidates the old revision");
+  assert.throws(() => validateGitHubSyncConflictVersion(root, "target-1", {
+    conflictId: "old-workspace", revision: reviewed.revision,
+  }), /workspace changed/, "an old workspace cannot apply against a newer workspace at the same revision");
+  assert.doesNotThrow(() => validateGitHubSyncConflictVersion(root, "target-1", {
+    conflictId: reviewed.id, revision: reviewed.revision,
+  }));
+  assert.deepStrictEqual(fs.readFileSync(path.join(root, "conflicts", "target-1", "conflict.json")), reviewedMetadata,
+    "rejected stale requests and successful version checks must not mutate the current choices");
   selectGitHubSyncConflictCandidate(root, "target-1", stored.files[0].path, "local");
   const batchRemote = selectAllGitHubSyncConflictCandidates(root, "target-1", "remote");
-  assert.deepStrictEqual(batchRemote, { selected: 1, unavailable: [] });
+  assert.deepStrictEqual(batchRemote, { selected: 0, unavailable: [] }, "bulk choices preserve previously selected candidates");
+  assert.strictEqual(readGitHubSyncConflict(root, "target-1").files[0].candidateSource, "local");
+  selectGitHubSyncConflictCandidate(root, "target-1", stored.files[0].path, "remote");
   assert.strictEqual(readGitHubSyncConflict(root, "target-1").files[0].candidateSource, "remote");
   assert.throws(
     () => updateGitHubSyncAgentCandidate(root, "target-1", stored.files[0].path, skill("<<<<<<< local").toString("utf8"), "bad"),
@@ -175,6 +193,9 @@ try {
     base: Buffer.from("# Previous\n"),
     remote: Buffer.from("# Remote\n"),
   }]));
+  assert.strictEqual(missingLocal.files[0].hasLocal, false);
+  assert.strictEqual(missingLocal.files[0].candidateSource, "unresolved", "A baseline file missing locally requires an explicit decision, never automatic Remote restoration");
+  assert.strictEqual(readGitHubSyncConflict(root, "target-delete").files[0].candidateSource, "unresolved", "The no-resurrection decision survives conflict-store reload");
   selectGitHubSyncConflictDeletion(root, "target-delete", missingLocal.files[0].path);
   assert.strictEqual(readGitHubSyncConflict(root, "target-delete").files[0].candidateSource, "delete");
   assert.match(readGitHubSyncConflict(root, "target-delete").files[0].rationale, /remove this file from GitHub/);

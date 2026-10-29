@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Capture privacy-safe release screenshots from the real built PKM webview."""
 import argparse
+import json
 import os
 import socket
 import subprocess
@@ -12,6 +13,7 @@ from urllib.request import urlopen
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
+RELEASE_VERSION = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"]
 SCREENSHOTS = ROOT / "resources" / "screenshots"
 PREVIEW_URL = "http://127.0.0.1:4178"
 
@@ -40,7 +42,11 @@ def wait_for_server(url: str, timeout: float = 10.0) -> None:
 
 
 def assert_private_demo(page, route: str, require_markers: bool = True) -> None:
+    if page.locator("#pkm-version").inner_text() != f"v{RELEASE_VERSION}":
+        raise RuntimeError("Release preview version does not match package.json")
     body = page.locator("body").inner_text()
+    if route == "subscriptions":
+        body = page.locator(".sub-dashboard").text_content()
     required = {
         "config": ["/home/demo/", "PKM Integration Status"],
         "chat": ["Release Planning", "Docs Reviewer"],
@@ -67,6 +73,8 @@ def capture_page(page, route: str, output: str) -> None:
     wait_until_ready(page)
     if route == "subscriptions":
         page.wait_for_selector(".sub-dashboard")
+        page.get_by_role("tab", name="Subscribing", exact=True).click()
+        page.get_by_text("CreativeGen", exact=True).wait_for(state="visible")
     assert_private_demo(page, route)
     target = SCREENSHOTS / output
     page.screenshot(path=str(target), full_page=False)
@@ -257,7 +265,7 @@ def capture_installation_gif(page) -> None:
         ("3 — Follow Setup guideline", "Complete each row from top to bottom. Green checks are already done.", ".mcp-setup-guide"),
         ("4 — Select Python 3.10+", "Validate a machine-local Python, then create or repair the isolated pkm-mcp runtime.", "#mcp-python-path"),
         ("5 — Generate server code", "Generate server.py, chat_server.py, and requirements.txt. Current code needs no highlighted action.", "#mcp-regenerate-server-code"),
-        ("6 — Register external Agency", "VS Code registers pkm automatically when supported. External Agencies use the copyable instructions.", "#mcp-agency-registration"),
+        ("6 — Verify account registration", "Use the native provider and verify a real check_version call. Do not add a duplicate registration.", "#mcp-account-registration"),
         ("7 — Verify Running", "Start pkm from MCP: List Servers. The dashboard process light turns green when server.py is detected.", ".mcp-running"),
     ]
     rail_steps = [[title.split('—',1)[-1].strip(), description] for title, description, _ in steps]
@@ -267,6 +275,8 @@ def capture_installation_gif(page) -> None:
     validate_image_metadata(static_guide)
     remove_lesson_rail(page)
     for step_index, (_title, _description, selector) in enumerate(steps):
+        tab = "MCP" if step_index in (3, 4, 5) else "General Setting"
+        page.get_by_role("tab", name=tab, exact=True).click()
         target = page.locator(selector)
         move_cursor(page, target)
         index = frame(page, frames_dir, index)

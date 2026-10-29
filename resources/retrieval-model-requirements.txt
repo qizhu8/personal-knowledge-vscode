@@ -1,0 +1,7 @@
+torch==2.6.0
+numpy>=1.26,<3
+scikit-learn>=1.5,<2
+sentence-transformers>=3,<6
+transformers>=4.36,<5
+sentencepiece>=0.2,<1
+PyYAML>=6,<7

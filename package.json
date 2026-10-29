@@ -2,7 +2,7 @@
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge Manager",
   "description": "%extension.description%",
-  "version": "3.2.13",
+  "version": "4.0.0",
   "publisher": "Uone",
   "author": {
     "name": "Yu Wang"
@@ -49,6 +49,71 @@
     ],
     "commands": [
       {
+        "command": "personalKnowledge.duplicatePanel",
+        "title": "Duplicate PKM tab"
+      },
+      {
+        "command": "personalKnowledge.classifyAssets",
+        "title": "PKM: Classify assets (dry-run)"
+      },
+      {
+        "command": "personalKnowledge.rollbackAssetClassification",
+        "title": "PKM: Roll back asset classification"
+      },
+      {
+        "command": "personalKnowledge.peerCollaboration",
+        "title": "PKM: Portal"
+      },
+      {
+        "command": "personalKnowledge.portalDiagnostics",
+        "title": "PKM: Portal Diagnostics"
+      },
+      {
+        "command": "personalKnowledge.manageMarkdownAssets",
+        "title": "PKM: Manage Markdown Resources"
+      },
+      {
+        "command": "personalKnowledge.openActions",
+        "title": "PKM: Open Action Workbench"
+      },
+      {
+        "command": "personalKnowledge.openActionLibrary",
+        "title": "PKM: Open Action Library"
+      },
+      {
+        "command": "personalKnowledge.openActionsInBrowser",
+        "title": "PKM: Open Action Workbench in Browser"
+      },
+      {
+        "command": "personalKnowledge.configureActionWorkspace",
+        "title": "PKM: Select Action Working Directory"
+      },
+      {
+        "command": "personalKnowledge.hostStatus",
+        "title": "Personal Knowledge Manager: Show Running Extension Hosts"
+      },
+      {
+        "command": "personalKnowledge.reloadAllHosts",
+        "title": "Personal Knowledge Manager: Reload All Registered Hosts to Installed Build"
+      },
+      {
+        "command": "personalKnowledge.openApiChat",
+        "title": "Personal Knowledge Manager: Open API Chat",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "personalKnowledge.testApiChatE2E",
+        "title": "Personal Knowledge Manager: Run Chat E2E Acceptance"
+      },
+      {
+        "command": "personalKnowledge.openVisualizationWindow",
+        "title": "Personal Knowledge Manager: Open Visualization Window"
+      },
+      {
+        "command": "personalKnowledge.exportMcpToolSets",
+        "title": "Personal Knowledge Manager: Export PKM MCP Tool Sets"
+      },
+      {
         "command": "personalKnowledge.open",
         "title": "%command.open%",
         "icon": "$(book)"
@@ -69,6 +134,22 @@
       {
         "command": "personalKnowledge.setupMcp",
         "title": "%command.openConfig%"
+      },
+      {
+        "command": "personalKnowledge.startPkmMcp",
+        "title": "PKM: Start PKM MCP"
+      },
+      {
+        "command": "personalKnowledge.configureNativeMcpDiscovery",
+        "title": "PKM: Configure VS Code MCP Discovery"
+      },
+      {
+        "command": "personalKnowledge.registerCopilotMcp",
+        "title": "PKM: Register Copilot CLI MCP (User)"
+      },
+      {
+        "command": "personalKnowledge.removeLegacyAgentInjection",
+        "title": "PKM: Remove Legacy Agent Injection"
       },
       {
         "command": "personalKnowledge.reconfigureKnowledgeRoot",
@@ -380,6 +461,13 @@
       }
     ],
     "menus": {
+      "editor/title/context": [
+        {
+          "command": "personalKnowledge.duplicatePanel",
+          "when": "activeWebviewPanelId == personalKnowledge",
+          "group": "1_open@2"
+        }
+      ],
       "editor/context": [
         {
           "command": "personalKnowledge.saveSkill",
@@ -405,6 +493,11 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "personalKnowledge.manageMarkdownAssets",
+          "when": "view == personalKnowledge.sidebarView && viewItem =~ /pk-(skill|note|paper)-item/",
+          "group": "3_edit"
+        },
         {
           "command": "personalKnowledge.openRecipe",
           "when": "view == personalKnowledge.sidebarView && viewItem == pk-recipe-item",
@@ -673,6 +766,13 @@
       ]
     },
     "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "personalKnowledgeChat",
+          "title": "PKM Chat",
+          "icon": "resources/sidebar-icon.svg"
+        }
+      ],
       "activitybar": [
         {
           "id": "personalKnowledgeBar",
@@ -682,6 +782,13 @@
       ]
     },
     "views": {
+      "personalKnowledgeChat": [
+        {
+          "type": "webview",
+          "id": "personalKnowledge.apiChat",
+          "name": "PKM Chat"
+        }
+      ],
       "personalKnowledgeBar": [
         {
           "id": "personalKnowledge.sidebarView",
@@ -692,6 +799,54 @@
     "configuration": {
       "title": "%configuration.title%",
       "properties": {
+        "personalKnowledge.actions.workspaceRoots": {
+          "type": "object",
+          "scope": "machine",
+          "default": {},
+          "additionalProperties": false,
+          "properties": {
+            "linux": {
+              "type": "string"
+            },
+            "windows": {
+              "type": "string"
+            },
+            "macos": {
+              "type": "string"
+            }
+          },
+          "description": "Machine-local Action staging roots for Linux, Windows and macOS. Missing or unavailable roots block execution; use PKM: Select Action Working Directory. Nested Actions inherit the selected root. User originals and exported outputs are never garbage-collected."
+        },
+        "personalKnowledge.actions.toolchains": {
+          "type": "object",
+          "scope": "machine",
+          "default": {},
+          "additionalProperties": false,
+          "properties": {
+            "linux": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "windows": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "macos": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "description": "Optional machine-local bindings from Action program/compiler names (for example dotnet, rustc, cargo or python) to absolute executable paths. Install and maintain SDKs yourself on the extension execution host; PKM neither bundles nor installs them. Unconfigured tools use the host PATH (python defaults to the PKM interpreter). Changed executables or paths require Action qualification again. These bindings are excluded from Settings Sync."
+        },
         "personalKnowledge.storePath": {
           "type": "string",
           "default": "",
@@ -845,6 +1000,179 @@
           "default": "copilot",
           "description": "Which AI backend to use for script summarization."
         },
+        "personalKnowledge.apiChatProvider": {
+          "type": "string",
+          "enum": [
+            "vscode",
+            "openai-compatible",
+            "azure-openai"
+          ],
+          "default": "openai-compatible",
+          "description": "Default native Chat model source. vscode uses the public Language Model API with user consent; HTTP providers use aiEndpoint, aiModel and SecretStorage. Each chat can choose its own source in Model connection."
+        },
+        "personalKnowledge.apiChatModels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional model IDs or Azure deployment names in the API Chat model picker."
+        },
+        "personalKnowledge.apiChatModelProfiles": {
+          "type": "array",
+          "default": [],
+          "description": "Verified API Chat model/deployment profiles, lifecycle status, context/output limits and optional prices. Profiles can share a model with different budgets/rates. Unlisted IDs use an unverified conservative 4096-token budget.",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "status",
+              "contextWindow"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "model": {
+                "type": "string",
+                "description": "API model or Azure deployment; defaults to id."
+              },
+              "label": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "deprecated"
+                ]
+              },
+              "deprecatedAt": {
+                "type": "string",
+                "description": "ISO date when this profile must stop being used."
+              },
+              "contextWindow": {
+                "type": "integer",
+                "minimum": 256
+              },
+              "maxOutputTokens": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "outputTokenParameter": {
+                "type": "string",
+                "enum": [
+                  "max_completion_tokens",
+                  "max_tokens"
+                ],
+                "default": "max_completion_tokens"
+              },
+              "includeUsage": {
+                "type": "boolean",
+                "default": false,
+                "description": "Request streaming usage only when the provider supports it."
+              },
+              "inputPricePerMillion": {
+                "type": "number",
+                "minimum": 0
+              },
+              "outputPricePerMillion": {
+                "type": "number",
+                "minimum": 0
+              },
+              "currency": {
+                "type": "string",
+                "default": "USD"
+              }
+            }
+          }
+        },
+        "personalKnowledge.apiChatTimeoutSeconds": {
+          "type": "number",
+          "default": 1800,
+          "minimum": 10,
+          "maximum": 86400,
+          "description": "Model inactivity timeout in seconds (default 30 minutes), not a task duration limit. Model response activity resets the timer, including hidden-thinking/metadata parts exposed by VS Code. Tool execution and waiting for user input do not consume it. Internal work without any provider activity signal cannot reset it. Applies to Chat, workers and background Memory. Existing explicit values are preserved."
+        },
+        "personalKnowledge.chatMemoryModel": {
+          "type": "string",
+          "default": "vscode:copilot:claude-haiku-5.5",
+          "description": "Lightweight model the PKM Chat Memory Engine uses to understand each question, summarize topics on demand and record notes after replies. Use a VS Code model ID (vscode:<vendor>:<model>) or an API model name; empty uses the Chat's own model. When the configured VS Code model is unavailable, the Chat's model is used and the reply's memory receipt shows which model ran."
+        },
+        "personalKnowledge.chatMemoryThinkingBudget": {
+          "type": "string",
+          "enum": [
+            "900",
+            "1500",
+            "2048",
+            "unlimited"
+          ],
+          "enumDescriptions": [
+            "Light: up to 900 hidden thinking tokens per memory step.",
+            "Medium: up to 1,500 hidden thinking tokens per memory step.",
+            "Thorough: up to 2,048 hidden thinking tokens per memory step.",
+            "Unlimited: accept as much thinking as the model performs, within the model's own output limit."
+          ],
+          "default": "2048",
+          "description": "How much hidden thinking (reasoning tokens) the Memory Engine model may use per background step. This is the model's work intensity and is budgeted separately from the visible memory output, which stays limited. A step whose reported thinking exceeds this budget is rejected and reported; the Chat reply is kept. VS Code models cannot be stopped mid-thought, so the check uses the provider's reported usage after the step; API models also receive the combined limit as their output token limit."
+        },
+        "personalKnowledge.chatMemoryCapacityMB": {
+          "type": "integer",
+          "default": 1024,
+          "minimum": 64,
+          "maximum": 65536,
+          "description": "Disk budget for organized PKM Chat memory on this machine. When exceeded, the least recently used low-level memory (earlier message copies) is evicted before topics. Original Chat history is never deleted by this limit."
+        },
+        "personalKnowledge.apiChatLoopReviewMinutes": {
+          "type": "integer",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 1440,
+          "description": "Active-minute review interval. PKM reports long worker activities to their manager even without loop evidence; execution continues until explicitly stopped. Repeated identical tools/results additionally trigger a suspected-loop decision. Human input, approval waits and manager sleep are excluded. Continuing renews the review interval. Root Chats retain the user loop-review dialog."
+        },
+        "personalKnowledge.apiChatMaxToolRounds": {
+          "type": "integer",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 1000,
+          "description": "Legacy SDK tool-round review limit. Native Chat uses the time-and-loop policy configured by apiChatLoopReviewMinutes instead."
+        },
+        "personalKnowledge.apiChatAutomaticWorkers": {
+          "type": "integer",
+          "default": 3,
+          "minimum": 0,
+          "maximum": 1000,
+          "description": "Automatically approved concurrent worker capacity per task tree. Must not exceed apiChatMaximumWorkers. Recursive managers share the same capacity. Increased approved capacity persists and can be reused."
+        },
+        "personalKnowledge.apiChatMaximumWorkers": {
+          "type": "integer",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 1000,
+          "description": "Hard concurrent worker capacity for the entire Chat task tree, including recursive workers and assignments to existing Chats. Only capacity increases need explicit approval, even with Allow All. Resolved activities release capacity; blockers and unresolved failures retain it."
+        },
+        "personalKnowledge.apiChatLoopExemptTools": {
+          "type": "array",
+          "default": [
+            "wait",
+            "sleep",
+            "poll",
+            "core.sleep",
+            "mcp_pkm_chat_standby",
+            "mcp_pkm_api_chat_request_get",
+            "mcp_pkm_recipe_run_progress"
+          ],
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "description": "Exact tool names or registered labels excluded from identical-call/result loop detection, for example waiting and polling tools. No substring matching; legacy SDK round limits still apply."
+        },
         "personalKnowledge.aiModel": {
           "type": "string",
           "default": "gpt-4o-mini",
@@ -927,15 +1255,44 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run build && node tests/test-ui-build-artifacts.js",
-    "build": "tsc -p tsconfig.json && npx esbuild src/subscription-gateway-entry.ts --bundle --platform=node --format=cjs --outfile=dist/subscription-gateway.js && cp -r src/webview dist/ && node scripts/build-panel.js && cp node_modules/sql.js/dist/sql-wasm.js dist/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/ && cp node_modules/marked/lib/marked.umd.js dist/webview/ && cp node_modules/@vscode/codicons/dist/codicon.css node_modules/@vscode/codicons/dist/codicon.ttf dist/webview/ && npx esbuild src/live-markdown-entry.js --bundle --platform=node --format=cjs --outfile=dist/live-markdown.js && npx esbuild src/webview/hljs-entry.js --bundle --minify --format=iife --outfile=dist/webview/hljs.js && cp node_modules/highlight.js/styles/github-dark.css dist/webview/hljs.css && cp node_modules/katex/dist/katex.min.js dist/webview/katex.js && cp node_modules/katex/dist/katex.min.css dist/webview/katex.css && mkdir -p dist/webview/fonts && cp node_modules/katex/dist/fonts/*.woff2 dist/webview/fonts/ && cp node_modules/cytoscape/dist/cytoscape.min.js dist/webview/cytoscape.js && cp node_modules/mermaid/dist/mermaid.min.js dist/webview/mermaid.js && cp node_modules/3d-force-graph/dist/3d-force-graph.min.js dist/webview/forcegraph3d.js && node scripts/postbuild.js",
+    "test:peer-collaboration": "npm run build && node --test tests/test-portal-transport.js tests/test-chat-portal.js tests/test-peer-collaboration.js tests/test-portal-resume.js tests/test-portal-permissions.js tests/test-portal-files.js tests/test-chat-context-contracts.js tests/test-chat-multi-recipient.js tests/test-chat-magic-link.js tests/test-chat-join-approval.js",
+    "test:portal-lifecycle:run": "node --test --test-concurrency=2 tests/test-peer-collaboration.js && python -B tests/test-api-chat-control.py",
+    "vscode:prepublish": "node scripts/vscode-prepublish.js",
+    "build": "tsc -p tsconfig.json && npx esbuild dist/chat/api-chat-tools.js dist/chat/api-chat-mcp.js --bundle --platform=node --format=cjs --define:navigator=undefined --external:vscode --external:./api-chat-tools --outdir=dist/chat --allow-overwrite && npx esbuild src/subscriptions/subscription-gateway-entry.ts --bundle --platform=node --format=cjs --outfile=dist/subscription-gateway.js && cp -r src/webview dist/ && node scripts/build-panel.js && cp node_modules/sql.js/dist/sql-wasm.js dist/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/ && cp node_modules/marked/lib/marked.umd.js dist/webview/ && cp node_modules/@vscode/codicons/dist/codicon.css node_modules/@vscode/codicons/dist/codicon.ttf dist/webview/ && npx esbuild src/live-markdown-entry.js --bundle --platform=node --format=cjs --outfile=dist/live-markdown.js && npx esbuild src/webview/hljs-entry.js --bundle --minify --format=iife --outfile=dist/webview/hljs.js && cp node_modules/highlight.js/styles/github-dark.css dist/webview/hljs.css && cp node_modules/katex/dist/katex.min.js dist/webview/katex.js && cp node_modules/katex/dist/katex.min.css dist/webview/katex.css && mkdir -p dist/webview/fonts && cp node_modules/katex/dist/fonts/*.woff2 dist/webview/fonts/ && cp node_modules/cytoscape/dist/cytoscape.min.js dist/webview/cytoscape.js && cp node_modules/mermaid/dist/mermaid.min.js dist/webview/mermaid.js && cp node_modules/3d-force-graph/dist/3d-force-graph.min.js dist/webview/forcegraph3d.js && node scripts/postbuild.js",
     "test:ui-build-artifacts": "npm run build && node tests/test-ui-build-artifacts.js",
+    "test:api-chat": "npm run build && node --test tests/test-api-chat.js tests/test-chat-managed-mcp.js tests/test-chat-library-actions.js tests/test-host-health-startup.js",
+    "test:pkm-chat:daily": "npm run build && npm run test:pkm-chat:daily:run",
+    "test:pkm-chat:daily:run": "node --test tests/test-api-chat.js tests/test-chat-managed-mcp.js tests/test-chat-library-actions.js tests/test-host-health-startup.js tests/test-chat-activity-browser.js tests/test-chat-history-storage.js tests/test-agent-session-tree-groups.js tests/test-agent-session-tree-browser.js tests/test-panel-instances-browser.js tests/test-portal-connections.js tests/test-portal-permissions.js tests/test-persona-profiles.js tests/test-persona-profile-ui.js tests/test-persona-profile-browser.js tests/test-chat-context-contracts.js tests/test-peer-collaboration.js tests/test-portal-profile-wiring.js tests/test-chat-workers.js tests/test-persona-installed-helper.js",
+    "test:persona-profiles": "npm run build && node --test tests/test-user-profile-fragments.js tests/test-profile-sync.js tests/test-persona-profiles.js tests/test-persona-profile-ui.js tests/test-persona-profile-browser.js tests/test-chat-context-contracts.js tests/test-peer-collaboration.js tests/test-portal-profile-wiring.js tests/test-persona-installed-helper.js",
+    "test:mcp-lifecycle": "npm run build && node --test tests/test-mcp-lifecycle.js tests/test-chat-managed-mcp.js && python -B tests/test-mcp-lifecycle.py",
+    "test:chat-report-ui": "npm run build && node --test tests/test-chat-library-actions.js tests/test-chat-activity-browser.js tests/test-agent-session-tree-groups.js tests/test-agent-session-tree-browser.js tests/test-native-harness-browser.js tests/test-visualization-window-browser.js tests/test-api-chat.js tests/test-chat-history-storage.js tests/test-chat-harness-records.js",
+    "test:library-git": "npm run build && node --test tests/test-git-source.js tests/test-action-sync.js tests/test-library-git-browser.js tests/test-github-sync-model.js tests/test-github-sync-ui.js && python tests/test-action-modules.py ModuleTests.test_javascript_and_typescript_programs_use_the_existing_qualified_runtime",
+    "test:chat-budget-ledger": "npm run build && node --test tests/test-chat-budget-ledger.js tests/test-task-progress.js tests/test-api-chat.js tests/test-native-harness-browser.js",
+    "test:chat-processes": "npm run build && node --test tests/test-chat-process-runtime.js tests/test-chat-process-tools.js tests/test-chat-context-contracts.js tests/test-chat-transport-receipts.js",
+    "test:chat-multi-window": "npm run build && node --test tests/test-chat-multi-window.js && node tests/test-server-proxy.js && node scripts/run-chat-multi-window-test.js",
+    "test:portable-references": "npm run build && python tests/test-action-portable-paths.py && python tests/test-action-path-ui.py && node --test tests/test-path-namespace-contracts.js tests/test-knowledge-quick-open.js",
+    "test:github-sync-partial": "npm run build && node --test tests/test-github-sync-partial.js tests/test-github-sync-recovery.js tests/test-github-sync-two-machine.js tests/test-github-sync-file-safety.js tests/test-github-sync-scheduler.js tests/test-github-sync-coordinator.js tests/test-pkm-service.js tests/test-sync-operation-journal.js",
+    "test:native-harness": "npm run build && node --test tests/test-native-harness.js tests/test-chat-harness-records.js tests/test-chat-budget-ledger.js tests/test-chat-context-mechanisms.js tests/test-visualization-window.js tests/test-ui-build-artifacts.js",
+    "test:chat-context": "npm run build && node --test tests/test-chat-context-contracts.js tests/test-chat-retrieval-integration.js tests/test-chat-work-goal.js tests/test-chat-context-mechanisms.js tests/test-chat-fixture-acceptance.js tests/test-chat-memory-recall.js tests/test-chat-memory-scope.js tests/test-chat-transport-receipts.js tests/test-chat-evidence-reader.js tests/test-chat-workers.js tests/test-retrieval-serving-identity.js tests/test-retrieval-passages.js tests/test-retrieval-materialization.js tests/test-knowledge-source-ranges.js tests/test-api-chat.js tests/test-chat-history-storage.js tests/test-chat-harness-records.js tests/test-retrieval-contracts.js tests/test-retrieval-snapshot.js",
+    "test:memory-engine": "tsc -p tsconfig.json && node scripts/run-memory-engine-tests.js",
+    "test:chat-accounting:run": "node --test tests/test-chat-budget-ledger.js && node scripts/run-memory-engine-tests.js",
+    "test:chat-retrieval:run": "node --test tests/test-chat-retrieval-integration.js tests/test-chat-context-contracts.js tests/test-chat-work-goal.js tests/test-chat-harness-records.js tests/test-api-chat.js tests/test-chat-activity-browser.js",
+    "test:chat-context:feedback": "npm run build && node --test tests/test-retrieval-feedback.js",
+    "test:chat-context:host": "node scripts/run-ctx-host-test.js",
+    "test:chat-context:acceptance": "npm run test:chat-context && node tests/test-retrieval-worker.js && node --test tests/test-retrieval-feedback.js tests/test-native-harness-browser.js tests/test-visualization-window-browser.js && node scripts/run-ctx-host-test.js",
+    "test:chat-workers": "npm run build && node --test tests/test-chat-workers.js",
+    "test:chat-history-storage": "npm run build && node --test tests/test-chat-history-storage.js",
     "test:sidebar-panel-opening": "npm run build && node tests/test-sidebar-panel-opening.js",
     "test:module-contracts": "npm run build && node tests/test-module-contracts.js",
     "test:knowledge-contracts": "npm run build && node tests/test-knowledge-contracts.js",
     "test:markdown-images": "npm run build && node tests/test-markdown-image-assets.js && node tests/test-subscriptions.js && node tests/test-subscription-fork.js && node tests/test-github-sync-git.js",
+    "test:markdown-assets": "npm run build && node --test tests/test-markdown-owned-assets.js tests/test-markdown-legacy-lifecycle.js tests/test-markdown-owned-assets-ui.js tests/test-github-sync-shield-reasons.js && python tests/test-markdown-owned-assets-ui.py && node tests/test-markdown-image-assets.js && node tests/test-knowledge-trash.js && node tests/test-navigation-groups.js && node tests/test-cattree-refresh.js && node tests/test-subscriptions.js && node tests/test-subscription-fork.js && node tests/test-github-sync-git.js",
+    "test:action-library": "npm run build && python tests/test-action-library.py && node tests/test-action-browser.js && node tests/test-action-library-entry.js",
+    "test:action-host-trust:run": "python -B tests/test-action-builtins.py && python -B tests/test-action-component-languages.py && python -B tests/test-action-authoring.py && python -B tests/test-action-monitoring.py && python -B tests/test-action-library.py LibraryTests.test_host_trust_buttons_request_native_review_without_automatic_execution LibraryTests.test_unverified_drag_highlights_flask_and_validation_reports_outcomes_without_browser_confirm LibraryTests.test_pending_actions_are_visible_in_tree_with_validation_guidance_and_exact_proposal && node tests/test-action-browser.js",
+    "test:action-authoring": "npm run build && python -B -m unittest tests/test-action-authoring.py tests/test-action-monitoring.py tests/test-action-builtins.py && node tests/test-pkm-skill-mcp.js && node tests/test-mcp-stdio-smoke.js",
     "test:knowledge-migration": "npm run build && node tests/test-knowledge-migration-command.js",
-    "test:retrieval-boundary": "npm run build && node tests/test-retrieval-contracts.js && node tests/test-link-graph.js && node tests/test-retrieval-snapshot.js && node tests/test-retrieval-worker.js",
+    "test:retrieval-boundary": "npm run build && node tests/test-retrieval-contracts.js && node --test tests/test-retrieval-boundary.js tests/test-retrieval-materialization.js tests/test-retrieval-passages.js tests/test-retrieval-rule-l2.js tests/test-knowledge-source-ranges.js tests/test-retrieval-serving-identity.js && node tests/test-link-graph.js && node tests/test-retrieval-snapshot.js && node tests/test-retrieval-worker.js && python tests/test-retrieval-serving-worker.py",
+    "test:integration-upgrade": "npm run build && node tests/test-integration-upgrade.js && node tests/test-diagnostic-log.js && node tests/test-mcp-version-ui.js",
     "benchmark:retrieval": "npm run build && node scripts/benchmark-retrieval.js --tiers=1000,10000 --repetitions=5",
     "test:workflow-contracts": "npm run build && node tests/test-workflow-contracts.js",
     "test:workflow-values:coverage": "npm run build && c8 --all --include=dist/workflows/value-contracts.js --check-coverage --branches 100 --functions 100 --lines 100 --statements 100 node tests/test-workflow-value-contracts.js",
@@ -947,10 +1304,19 @@
     "test:workflow-project-store:coverage": "npm run build && c8 --all --include=dist/workflows/project-store.js --check-coverage --branches 100 --functions 100 --lines 100 --statements 100 node tests/test-workflow-project-store.js",
     "test:four-workspace-ui": "npm run build && node tests/test-four-workspace-ui.js",
     "test:todo-usage": "npm run build && node tests/test-todo-usage.js",
+    "test:file-watchers": "npm run build && node --test tests/test-bounded-file-watcher.js tests/test-resource-polling.js tests/test-github-sync-watcher.js tests/test-refresh-actions.js tests/test-native-harness.js tests/test-retrieval-snapshot.js",
     "test:ui-surface-contracts": "npm run build && node tests/test-recipe-browser-editor.js && node tests/test-resource-polling.js && node tests/test-skill-router-ui.js && node tests/test-skill-trash-ui.js && node tests/test-workflow-project-model.js && node tests/test-workflow-project-store.js && node tests/test-ui-surface-contracts.js",
     "test:tab-cache-ui": "npm run build && node tests/test-tab-cache-ui.js",
-    "test:background-tasks": "npm run build && node tests/test-background-tasks.js",
+    "test:background-tasks": "npm run build && node tests/test-background-tasks.js && node --test tests/test-background-processes.js tests/test-background-processes-windows.js",
+    "test:knowledge-search": "npm run build && node tests/test-dual-path-search-ui.js && node --test tests/test-dual-path-search.js tests/test-knowledge-search-browser.js && node tests/test-skill-router-ui.js",
+    "test:retrieval-model-lifecycle": "npm run build && node tests/test-skill-router-ui.js && node --test tests/test-retrieval-model-lifecycle.js tests/test-retrieval-solutions-browser.js",
+    "test:retrieval-learning": "npm run build && node --test tests/test-retrieval-learning-browser.js tests/test-retrieval-boundary.js && node tests/test-mcp-stdio-smoke.js",
+    "test:execution-baseline": "npm run build && node tests/test-pkm-p0.js && node tests/test-action-browser.js",
+    "test:text-newlines": "npm run build && node tests/test-text-format.js && node tests/test-github-sync-newlines.js && node tests/test-github-sync-windows-review.js && node tests/test-github-sync-file-safety.js && node tests/test-github-sync-base-integrity.js && node tests/test-github-sync-acceptance-recovery.js",
+    "test:github-sync-authority": "npm run build && node tests/test-github-sync-remote-authority.js && node tests/test-github-sync-ui.js && node tests/test-github-sync-git.js && node tests/test-github-sync-file-safety.js && node tests/test-github-sync-base-integrity.js && node tests/test-github-sync-acceptance-recovery.js && node tests/test-github-sync-newlines.js && node tests/test-github-sync-windows-review.js",
+    "test:durable-execution": "npm run build && node tests/test-project-cockpit.js && node tests/test-project-cockpit-browser.js && node tests/test-project-cockpit-python.js && node tests/test-action-safety-scan.js && python tests/test-action-durable-runs.py && python tests/test-action-modules.py && python tests/test-action-runtime.py && python tests/test-action-recovery-e2e.py && python tests/test-action-workbench.py && node tests/test-chat-action-recovery-e2e.js",
     "test:agent-session-lifecycle": "npm run build && node tests/test-agent-session-lifecycle.js",
+    "test:agent-session-groups": "npm run build && node tests/test-agent-session-lifecycle.js && node tests/test-four-workspace-ui.js && node tests/test-agent-snapshots.js && node tests/test-agent-session-pkm-only.js && python tests/test-agent-session-mcp-runtime.py",
     "test:chatroom-project-simulation": "npm run build && npm run test:chatroom-project-simulation:run",
     "test:workflow-runtime:coverage": "npm run build && c8 --all --include=dist/workflows/runtime-model.js --check-coverage --branches 100 --functions 100 --lines 100 --statements 100 node tests/test-workflow-runtime-model.js",
     "test:workflow-migration:coverage": "npm run build && c8 --all --include=dist/workflows/migration-model.js --check-coverage --branches 100 --functions 100 --lines 100 --statements 100 node tests/test-workflow-migration-model.js",
@@ -964,7 +1330,7 @@
     "test:workflow-operations:coverage": "npm run build && c8 --all --include=dist/workflows/operations-model.js --check-coverage --branches 100 --functions 100 --lines 100 --statements 100 node tests/test-workflow-operations-model.js",
     "test:workflow-api:coverage": "npm run build && c8 --all --include=dist/workflows/api-model.js --check-coverage --branches 100 --functions 100 --lines 100 --statements 100 node tests/test-workflow-api-model.js",
     "test:workflow-redesign:run": "node tests/test-workflow-contracts.js && node tests/test-workflow-value-contracts.js && node tests/test-workflow-project-model.js && node tests/test-workflow-project-store.js && node tests/test-project-recipe-bundle.js && node tests/test-workflow-runtime-model.js && node tests/test-workflow-durable-store.js && node tests/test-workflow-scheduler-model.js && node tests/test-workflow-evidence-model.js && node tests/test-workflow-catalog-model.js && node tests/test-workflow-executor-model.js && node tests/test-workflow-control-model.js && node tests/test-workflow-operations-model.js && node tests/test-workflow-api-model.js && node tests/test-workflow-migration-model.js && node tests/test-workflow-nl-compiler-model.js && node tests/test-four-workspace-ui.js",
-    "test:workflow-redesign:coverage": "npm run build && c8 --all --include=dist/workflow-contracts.js --include=dist/workflows/value-contracts.js --include=dist/workflows/project-model.js --include=dist/workflows/project-store.js --include=dist/workflows/runtime-model.js --include=dist/workflows/durable-store.js --include=dist/workflows/scheduler-model.js --include=dist/workflows/evidence-model.js --include=dist/workflows/catalog-model.js --include=dist/workflows/executor-model.js --include=dist/workflows/control-model.js --include=dist/workflows/operations-model.js --include=dist/workflows/api-model.js --include=dist/workflows/migration-model.js --include=dist/workflows/nl-compiler-model.js --check-coverage --branches 100 --functions 100 --lines 100 --statements 100 npm run test:workflow-redesign:run",
+    "test:workflow-redesign:coverage": "npm run build && c8 --all --include=dist/workflows/workflow-contracts.js --include=dist/workflows/value-contracts.js --include=dist/workflows/project-model.js --include=dist/workflows/project-store.js --include=dist/workflows/runtime-model.js --include=dist/workflows/durable-store.js --include=dist/workflows/scheduler-model.js --include=dist/workflows/evidence-model.js --include=dist/workflows/catalog-model.js --include=dist/workflows/executor-model.js --include=dist/workflows/control-model.js --include=dist/workflows/operations-model.js --include=dist/workflows/api-model.js --include=dist/workflows/migration-model.js --include=dist/workflows/nl-compiler-model.js --check-coverage --branches 100 --functions 100 --lines 100 --statements 100 npm run test:workflow-redesign:run",
     "screenshots": "python scripts/capture-release-screenshots.py",
     "screenshots:gif": "python scripts/capture-release-screenshots.py --gif",
     "test:chat-persistence": "npm run build && node tests/test-chat-persistence.js",
@@ -1000,7 +1366,7 @@
     "test:chat-layout-scroll-ui": "npm run build && node tests/test-chat-layout-scroll-ui.js",
     "test:chat-core": "node tests/test-meeting-state.js && node tests/test-chat-meeting-snapshot.js && node tests/test-chat-managed-agent-routing.js && node tests/test-chat-meeting-lifecycle.js",
     "test:chat-coverage": "npm run build && npm run test:chat-coverage:run",
-    "test:chat-coverage:run": "c8 --all --include=dist/meeting-state.js --include=dist/chat-meeting-lifecycle.js --check-coverage --branches 72 --functions 90 --lines 90 --statements 90 npm run test:chat-core",
+    "test:chat-coverage:run": "c8 --all --include=dist/chatroom/meeting-state.js --include=dist/chatroom/chat-meeting-lifecycle.js --check-coverage --branches 72 --functions 90 --lines 90 --statements 90 npm run test:chat-core",
     "test:meeting-state": "npm run build && node tests/test-meeting-state.js",
     "test:chat-managed-agent-routing": "npm run build && node tests/test-chat-managed-agent-routing.js",
     "test:pkm-skill-projection": "npm run build && node tests/test-pkm-skill-projection.js",
@@ -1014,10 +1380,11 @@
     "test:navigation-status": "npm run build && node tests/test-navigation-status.js",
     "test:navigation-groups": "npm run build && node tests/test-navigation-groups.js",
     "test:navigation-copy-path": "npm run build && node tests/test-navigation-copy-path.js",
-    "test:knowledge-quick-open": "npm run build && node tests/test-knowledge-quick-open.js",
+    "test:knowledge-quick-open": "npm run build && node --test tests/test-knowledge-quick-open.js tests/test-script-url-lifecycle.js",
     "test:detail-path-ui": "npm run build && node tests/test-detail-path-ui.js",
     "test:machine-store-path": "npm run build && node tests/test-machine-store-path.js",
     "test:sync-progress": "npm run build && node tests/test-sync-progress.js",
+    "test:status-dashboard": "npm run build && node --test tests/test-status-dashboard.js tests/test-status-dashboard-browser.js tests/test-github-sync-ui.js",
     "test:chat-storage-boundaries": "npm run build && node tests/test-chat-storage-boundaries.js",
     "test:chat-no-manual-approval": "npm run build && node tests/test-chat-no-manual-approval.js",
     "test:chat-invite-host": "npm run build && node tests/test-chat-invite-host.js",
@@ -1044,32 +1411,42 @@
     "test:browser:full": "npm run build && npm run test:browser:full:run",
     "test:browser:full:run": "node scripts/run-browser-test-plan.js full",
     "test:knowledge-inventory": "npm run build && node tests/test-knowledge-inventory.js",
-    "test:knowledge-trash": "npm run build && node tests/test-knowledge-trash.js && node tests/test-knowledge-trash-ui.js",
+    "test:knowledge-trash": "npm run build && node --test tests/test-knowledge-trash.js tests/test-knowledge-trash-ui.js tests/test-knowledge-trash-feedback.js",
+    "test:sync-operation-journal": "npm run build && node --test tests/test-sync-operation-journal.js tests/test-knowledge-trash.js tests/test-skill-trash.js tests/test-knowledge-contracts.js tests/test-github-sync-two-machine.js",
     "test:performance-telemetry": "npm run build && node tests/test-performance-telemetry.js",
+    "test:resource-consumption": "npm run build && node tests/test-resource-polling.js && node tests/test-fixture-service-cleanup.js",
     "test:root-storage-policy": "npm run build && node tests/test-root-storage-policy.js",
-    "test:github-sync-controls": "npm run build && node tests/test-github-sync-model.js && node tests/test-github-sync-scheduler.js && node tests/test-github-sync-coordinator.js && node tests/test-cross-process-lock.js && node tests/test-github-sync-ui.js && node tests/test-github-sync-conflicts.js && node tests/test-github-sync-stable-id.js && node tests/test-github-sync-migration.js",
+    "test:github-sync-controls": "npm run build && node tests/test-github-sync-model.js && node tests/test-github-sync-scheduler.js && node tests/test-github-sync-coordinator.js && node tests/test-cross-process-lock.js && node tests/test-github-sync-concurrency.js && node tests/test-github-sync-ui.js && node tests/test-github-sync-conflicts.js && node tests/test-github-sync-stable-id.js && node tests/test-github-sync-migration.js",
     "build:github-sync-coordinator": "tsc -p tsconfig.json",
-    "test:github-sync-coordinator": "npm run build:github-sync-coordinator && node tests/test-github-sync-coordinator.js && node tests/test-cross-process-lock.js && node tests/test-github-sync-scheduler.js && node tests/test-github-sync-version-compatibility.js",
-    "pretest:release": "npm run build && node scripts/verify-version-bump.js && npm run test:browser:full:run && node tests/test-markdown-image-assets.js && node tests/test-knowledge-quick-open.js && node tests/test-resource-polling.js && node tests/test-skill-router-ui.js && node tests/test-skill-trash-ui.js && node tests/test-workflow-project-model.js && node tests/test-workflow-project-store.js && node tests/test-project-recipe-bundle.js && node tests/test-recipe-filesystem-store.js && node tests/test-recipe-migration-command.js && node tests/test-knowledge-migration-command.js && node tests/test-github-sync-version-compatibility.js && node tests/test-github-sync-coordinator.js && node tests/test-cross-process-lock.js && node tests/test-mcp-version-policy.js && python tests/test-mcp-call-guard.py && node tests/test-mcp-stdio-smoke.js && node tests/test-native-mcp-remote-location.js && node tests/test-webview-restoration.js && python tests/test-methodology-recipe-e2e.py && node tests/test-recipe-browser-editor.js && node tests/test-ui-surface-contracts.js && node tests/test-workflow-contracts.js && node tests/test-agent-snapshots.js && python tests/test-agent-session-mcp-runtime.py && node tests/test-release-dependencies.js && node tests/test-release-workflow.js && node tests/test-version-order.js && node tests/test-content-privacy.js && node tests/test-knowledge-groups.js && node tests/test-knowledge-groups-ui.js && node tests/test-knowledge-trash.js && node tests/test-knowledge-trash-ui.js && node tests/test-mcp-feature-domains.js && node tests/test-content-privacy-ui.js && node tests/test-cattree-refresh.js && node tests/test-loading-progress.js && node tests/test-cross-window-singletons.js && node tests/test-user-service-ports.js && node tests/test-knowledge-inventory.js && node tests/test-performance-telemetry.js && node tests/test-root-storage-policy.js && node tests/test-subscription-acl.js && node tests/test-subscriptions.js && node tests/test-subscription-fork.js && node tests/test-subscription-ui.js && node tests/test-subscription-actions.js && node tests/test-broker-share-markers.js && node tests/test-broker-share-marker-ui.js && node tests/test-navigation-subscriptions.js && node tests/test-retrieval-snapshot.js && node tests/test-retrieval-worker.js && node tests/test-mcp-windows-stdio.js",
-    "test:release": "npm run build && npm run test:chatroom-project-simulation:run && node tests/test-github-sync-model.js && node tests/test-github-sync-scheduler.js && node tests/test-github-sync-ui.js && node tests/test-github-sync-conflicts.js && node tests/test-github-sync-identity.js && node tests/test-github-sync-git.js && node tests/test-github-sync-two-machine.js && node tests/test-github-sync-file-safety.js && node tests/test-github-sync-stable-id.js && node tests/test-github-sync-migration.js && node tests/test-agent-session-lifecycle.js && node tests/test-four-workspace-ui.js && node tests/test-tab-cache-ui.js && node tests/test-background-tasks.js && node tests/test-icon-title-ui.js && node tests/test-chat-persistence.js && node tests/test-chat-stored-rooms.js && node tests/test-chat-stored-rooms-ui.js && node tests/test-chat-participant-persistence.js && node tests/test-chat-join-approval.js && node tests/test-chat-hub-approval.js && node tests/test-chat-join-approval-ui.js && node tests/test-chat-no-manual-approval.js && node tests/test-chat-invite-host.js && node tests/test-chat-close-room-recovery.js && node tests/test-chat-room-repair.js && node tests/test-chat-moderation-ui.js && node tests/test-chat-mention-highlight-ui.js && node tests/test-chat-room-identity.js && node tests/test-chat-default-recipient-ui.js && node tests/test-chat-browser-ui.js && node tests/test-chat-multi-recipient.js && node tests/test-chat-magic-link.js && node tests/test-chat-mcp-approval.js && node tests/test-chat-packaged-worker.js && node tests/test-chat-hub-health.js && node tests/test-chat-storage-boundaries.js && python tests/test-chat-history-atomic.py && python tests/test-chat-generated-standby.py && node tests/test-chat-markdown.js && node tests/test-chat-quote-viewer-ui.js && node tests/test-browser-markdown-preview.js && node tests/test-context-menus.js && node tests/test-context-menu-actions.js && node tests/test-mcp-version-ui.js && node tests/test-prompt-manager-ui.js && node tests/test-prompt-version-note.js && python tests/test-prompt-inheritance.py && node tests/test-chat-layout-scroll-ui.js && node tests/test-pkm-skill-projection.js && npm run test:pkm-skill-mcp && node tests/test-pkm-onboarding-guide.js && node tests/test-guided-onboarding.js && node tests/test-server-proxy.js && node tests/test-server-grouping.js && node tests/test-environment-refresh.js && node tests/test-refresh-actions.js && node tests/test-navigation-status.js && node tests/test-navigation-groups.js && node tests/test-navigation-copy-path.js && node tests/test-detail-path-ui.js && node tests/test-machine-store-path.js && node tests/test-sync-progress.js && node tests/test-localization.js && npm run test:chat-coverage:run",
+    "test:github-sync-coordinator": "npm run build:github-sync-coordinator && node tests/test-github-sync-coordinator.js && node tests/test-cross-process-lock.js && node tests/test-github-sync-scheduler.js && node tests/test-github-sync-version-compatibility.js && node tests/test-github-sync-content-repair.js && node tests/test-github-sync-content-repair-host.js",
+    "pretest:release": "npm run build && npm run test:chat-accounting:run && npm run test:chat-retrieval:run && node scripts/verify-version-bump.js && npm run test:browser:full:run && node tests/test-markdown-image-assets.js && node tests/test-knowledge-quick-open.js && node tests/test-resource-polling.js && node tests/test-skill-router-ui.js && node tests/test-skill-trash-ui.js && node tests/test-workflow-project-model.js && node tests/test-workflow-project-store.js && node tests/test-project-recipe-bundle.js && node tests/test-recipe-filesystem-store.js && node tests/test-recipe-migration-command.js && node tests/test-knowledge-migration-command.js && node tests/test-github-sync-version-compatibility.js && node tests/test-github-sync-coordinator.js && node tests/test-cross-process-lock.js && node tests/test-mcp-version-policy.js && python tests/test-mcp-call-guard.py && node tests/test-mcp-stdio-smoke.js && node tests/test-native-mcp-remote-location.js && node tests/test-webview-restoration.js && python tests/test-methodology-recipe-e2e.py && node tests/test-recipe-browser-editor.js && node tests/test-ui-surface-contracts.js && node tests/test-workflow-contracts.js && node tests/test-agent-snapshots.js && python tests/test-agent-session-mcp-runtime.py && node tests/test-release-dependencies.js && node tests/test-release-workflow.js && node tests/test-version-order.js && node tests/test-content-privacy.js && node tests/test-knowledge-groups.js && node tests/test-knowledge-groups-ui.js && node tests/test-knowledge-trash.js && node tests/test-knowledge-trash-ui.js && node --test tests/test-knowledge-trash-feedback.js && node tests/test-mcp-feature-domains.js && node tests/test-content-privacy-ui.js && node tests/test-cattree-refresh.js && node tests/test-loading-progress.js && node tests/test-cross-window-singletons.js && node tests/test-user-service-ports.js && node tests/test-knowledge-inventory.js && node tests/test-performance-telemetry.js && node tests/test-root-storage-policy.js && node tests/test-subscription-acl.js && node tests/test-subscriptions.js && node tests/test-subscription-fork.js && node tests/test-subscription-ui.js && node tests/test-subscription-actions.js && node tests/test-broker-share-markers.js && node tests/test-broker-share-marker-ui.js && node tests/test-navigation-subscriptions.js && node tests/test-retrieval-snapshot.js && node tests/test-retrieval-worker.js && node tests/test-mcp-windows-stdio.js && node --test tests/test-mcp-python-probe-cache.js tests/test-host-health-startup.js",
+    "test:release": "npm run build && npm run test:chatroom-project-simulation:run && node tests/test-panel-instances.js && node tests/test-action-library-entry.js && node tests/test-action-browser.js && node tests/test-github-sync-model.js && node tests/test-github-sync-scheduler.js && node tests/test-github-sync-ui.js && node tests/test-github-sync-conflicts.js && node tests/test-github-sync-identity.js && node tests/test-github-sync-git.js && node tests/test-github-sync-two-machine.js && node tests/test-github-sync-file-safety.js && node tests/test-github-sync-stable-id.js && node tests/test-github-sync-migration.js && node tests/test-agent-session-lifecycle.js && node tests/test-four-workspace-ui.js && node tests/test-tab-cache-ui.js && node tests/test-background-tasks.js && node tests/test-portal-connections.js && node tests/test-icon-title-ui.js && node tests/test-chat-persistence.js && node tests/test-chat-stored-rooms.js && node tests/test-chat-stored-rooms-ui.js && node tests/test-chat-participant-persistence.js && node tests/test-chat-join-approval.js && node tests/test-chat-hub-approval.js && node tests/test-chat-join-approval-ui.js && node tests/test-chat-no-manual-approval.js && node tests/test-chat-invite-host.js && node tests/test-chat-close-room-recovery.js && node tests/test-chat-room-repair.js && node tests/test-chat-moderation-ui.js && node tests/test-chat-mention-highlight-ui.js && node tests/test-chat-room-identity.js && node tests/test-chat-default-recipient-ui.js && node tests/test-chat-browser-ui.js && node tests/test-chat-multi-recipient.js && node tests/test-chat-magic-link.js && node tests/test-chat-mcp-approval.js && node tests/test-chat-packaged-worker.js && node tests/test-chat-hub-health.js && node tests/test-chat-storage-boundaries.js && python tests/test-chat-history-atomic.py && python tests/test-chat-generated-standby.py && node tests/test-chat-markdown.js && node tests/test-chat-quote-viewer-ui.js && node tests/test-browser-markdown-preview.js && node tests/test-context-menus.js && node tests/test-context-menu-actions.js && node tests/test-mcp-version-ui.js && node tests/test-prompt-manager-ui.js && node tests/test-prompt-version-note.js && python tests/test-prompt-inheritance.py && node tests/test-chat-layout-scroll-ui.js && node tests/test-pkm-skill-projection.js && npm run test:pkm-skill-mcp && node tests/test-pkm-onboarding-guide.js && node tests/test-guided-onboarding.js && node tests/test-server-proxy.js && node tests/test-server-grouping.js && node tests/test-environment-refresh.js && node tests/test-refresh-actions.js && node tests/test-navigation-status.js && node tests/test-navigation-groups.js && node tests/test-navigation-copy-path.js && node tests/test-detail-path-ui.js && node tests/test-machine-store-path.js && node tests/test-sync-progress.js && node tests/test-localization.js && node --test tests/test-profile-sync.js tests/test-persona-profiles.js tests/test-persona-profile-ui.js tests/test-persona-profile-browser.js && npm run test:chat-coverage:run",
     "poc:chat-room-lifecycle": "npm run build && node scripts/poc-chat-room-lifecycle.js",
     "watch": "tsc -p tsconfig.json --watch",
-    "package": "npm run build && node tests/test-mcp-stdio-smoke.js && node tests/test-native-mcp-remote-location.js && node tests/test-webview-restoration.js && node scripts/package-extension.js",
-    "test:chatroom-project-simulation:run": "node tests/test-workflow-project-model.js && node tests/test-workflow-project-store.js && node tests/test-chatroom-project-simulation.js && node tests/test-four-workspace-ui.js"
+    "package": "node scripts/run-package-gate.js",
+    "test:chatroom-project-simulation:run": "node tests/test-workflow-project-model.js && node tests/test-workflow-project-store.js && node tests/test-chatroom-project-simulation.js && node tests/test-four-workspace-ui.js",
+    "test:stability": "node --test tests/test-mcp-lifecycle.js tests/test-chat-managed-mcp.js tests/test-sync-drain-barrier.js tests/test-mcp-warning-boundary.js tests/test-pkm-service-compatibility.js && node tests/test-mcp-version-ui.js && python -B tests/test-mcp-lifecycle.py",
+    "test:chat-input-ui": "node tests/test-chat-member-layout-browser.js && node --test --test-name-pattern=\"clipboard PNG\" tests/test-chat-activity-browser.js",
+    "test:retrieval-setup": "node --test tests/test-retrieval-model-setup.js && python -B tests/test-retrieval-default-model.py && node tests/test-skill-router-ui.js"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@vscode/codicons": "^0.0.36",
     "3d-force-graph": "^1.80.0",
     "aedes": "^1.1.2",
     "casbin": "^5.51.1",
     "cytoscape": "^3.34.0",
+    "diff": "^8.0.4",
     "dompurify": "^3.4.14",
     "highlight.js": "^11.11.1",
+    "image-size": "^2.0.4",
     "ipaddr.js": "^2.5.0",
+    "jsonc-parser": "^3.3.1",
     "katex": "^0.16.47",
     "marked": "^18.0.5",
     "mermaid": "^11.17.2",
     "mqtt": "^5.15.2",
+    "openai": "^7.28.0",
     "rate-limiter-flexible": "^11.2.0",
     "sql.js": "^1.12.0",
     "ws": "^8.21.1"
@@ -1083,6 +1460,7 @@
     "@types/ws": "^8.18.1",
     "@vscode/test-electron": "^3.1.0",
     "c8": "^12.0.0",
+    "d3-sankey": "^0.12.3",
     "esbuild": "^0.28.1",
     "typescript": "^6.0.3"
   }

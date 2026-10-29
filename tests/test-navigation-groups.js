@@ -5,7 +5,7 @@ const os = require("os");
 const path = require("path");
 
 const root = path.join(__dirname, "..");
-const { setStorePath, folderCreate, folderList, folderRename, folderDeletePromote } = require("../dist/filestore.js");
+const { setStorePath, folderCreate, folderList, folderRename, folderDeletePromote } = require("../dist/knowledge/filestore.js");
 const extensionSource = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
 
 assert.match(extensionSource, /let gitCommitQueue = Promise\.resolve\(\)/,
@@ -15,7 +15,7 @@ assert.doesNotMatch(extensionSource, /function gitCommit\(msg: string\): void \{
   "folder UI refresh must not wait for synchronous git add/commit");
 assert.match(extensionSource, /case "folderCreate"[\s\S]{0,900}_treeProvider\?\.refresh\(\)[\s\S]{0,500}respond\(\{ command: "list"/,
   "folder creation must refresh navigation and category trees in the same request");
-const promptStorage = require("../dist/storage.js");
+const promptStorage = require("../dist/knowledge/storage.js");
 const store = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-navigation-groups-"));
 
 try {

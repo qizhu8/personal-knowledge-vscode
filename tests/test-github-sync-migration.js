@@ -7,7 +7,7 @@ const {
   GitHubPublicationMigration,
   githubSyncMigrationCanonicalFiles,
   normalizeGitHubSyncTarget,
-} = require("../dist/github-sync.js");
+} = require("../dist/sync/github-sync.js");
 
 const manifest2 = JSON.stringify({
   schema: 2,
@@ -127,11 +127,59 @@ try {
   migration.completeManualVerification(source);
   assert.strictEqual(target.publication.manualVerificationCompleted, true);
   assert.strictEqual(target.automation.enabled, false, "manual verification never silently re-enables Auto Sync");
+  assert.throws(() => migration.restartPreview(source), /already verified/);
 
   migration.rollback(source);
   assert.strictEqual(target.publication, undefined);
   assert.strictEqual(target.automation.enabled, true, "rollback restores the exact target state");
   assert.strictEqual(target.automation.initialSyncCompleted, true);
+
+  const recoveryTarget = normalizeGitHubSyncTarget({ ...target, id: "recovery-target" }, () => "unused");
+  const recovery = new GitHubPublicationMigration(stateRoot, recoveryTarget.id);
+  const recoverySource = { ...source, target: recoveryTarget };
+  recovery.preview(recoverySource); recovery.stage(recoverySource); recovery.verify(recoverySource); recovery.cutover(recoverySource);
+  const changedSource = { ...recoverySource, remoteCommit: "3".repeat(40) };
+  assert.throws(() => recovery.stage(changedSource), /source changed/);
+  assert.throws(() => recovery.restartPreview({ ...changedSource, target: { ...recoveryTarget, branch: "different" } }), /branch changed/);
+  recoveryTarget.automation.enabled = true;
+  const restarted = recovery.restartPreview(changedSource);
+  assert.strictEqual(restarted.phase, "previewed");
+  assert.strictEqual(restarted.remoteCommit, changedSource.remoteCommit);
+  assert.strictEqual(recoveryTarget.automation.enabled, false);
+  assert.strictEqual(recoveryTarget.automation.initialSyncCompleted, false);
+  assert.strictEqual(recoveryTarget.publication.manualVerificationCompleted, false, "restart never claims verification");
+  const history = path.join(stateRoot, "migrations", recoveryTarget.id, "history");
+  const archived = path.join(history, fs.readdirSync(history)[0]);
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(archived, "migration.json"))).phase, "cutover");
+  assert.strictEqual(fs.readFileSync(path.join(archived, "backup", ".pkm-github-sync.json"), "utf8"), manifest2);
+  assert.throws(() => recovery.verify(changedSource), /source changed|digest|staged|verified/i);
+  recovery.stage(changedSource); recovery.verify(changedSource); recovery.cutover(changedSource);
+  assert.strictEqual(fs.readFileSync(path.join(archived, "backup", ".pkm-github-sync.json"), "utf8"), manifest2,
+    "restaging must not delete archived migration evidence");
+  assert.strictEqual(recoveryTarget.publication.sourceCommit, changedSource.remoteCommit);
+  recovery.rollback(changedSource);
+  assert.strictEqual(recoveryTarget.publication, undefined, "restart retains the original pre-migration rollback target");
+  assert.strictEqual(recoveryTarget.automation.enabled, true);
+
+  const resourceTarget = normalizeGitHubSyncTarget({ ...target, id: "resource-target" }, () => "unused");
+  const capabilities = { storage: "pkm.github.publication/v1", required: ["explicit-deletions", "stable-entity-identity"] };
+  const resourceFiles = [
+    { path: "notes/Project/Report.md", member: "" },
+    { path: "notes/Project/Report.assets/chart.svg", member: "notes/Project/Report.assets/chart.svg" },
+    { path: "notes/Project/_assets/data.tsv", member: "notes/Project/_assets/data.tsv" },
+  ].map(file => ({ ...file, type: "notes", itemId: "report", category: "Project", privacy: "public", digest: "a".repeat(64) }));
+  const resourceSource = { ...source, target: resourceTarget,
+    manifest: JSON.stringify({ schema: 3, capabilities, files: resourceFiles, deletions: [] }), repositoryFiles: resourceFiles.map(file => file.path) };
+  const resourcesMigration = new GitHubPublicationMigration(stateRoot, resourceTarget.id);
+  assert.deepStrictEqual(resourcesMigration.preview(resourceSource).collisions, [], "schema-3 Markdown attachments are entity members, not duplicate documents");
+  resourcesMigration.stage(resourceSource);
+  const duplicateTarget = normalizeGitHubSyncTarget({ ...target, id: "duplicate-target" }, () => "unused");
+  const duplicateFiles = [...resourceFiles, { ...resourceFiles[0], path: "notes/Project/Other.md" }];
+  const duplicateSource = { ...resourceSource, target: duplicateTarget,
+    manifest: JSON.stringify({ schema: 3, capabilities, files: duplicateFiles, deletions: [] }), repositoryFiles: duplicateFiles.map(file => file.path) };
+  const duplicateMigration = new GitHubPublicationMigration(stateRoot, duplicateTarget.id);
+  assert.strictEqual(duplicateMigration.preview(duplicateSource).collisions.length, 1, "two principal documents remain a collision");
+  assert.throws(() => duplicateMigration.stage(duplicateSource), /repeats stable member identity/);
 
   const retry = new GitHubPublicationMigration(stateRoot, target.id);
   assert.strictEqual(retry.stage(source).phase, "staged");

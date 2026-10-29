@@ -4,7 +4,7 @@ import {
   WorkflowCompileResult,
   canonicalJson,
   compileWorkflowDefinitionV1
-} from "../workflow-contracts";
+} from "./workflow-contracts";
 import { NodeKindRegistry } from "./catalog-model";
 
 export const NL_COMPILER_REQUEST_SCHEMA = "pkm.workflow.nl-compiler.request/v1" as const;

@@ -2,13 +2,37 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
-const { subscriptionNavigationRoot } = require("../dist/navigation-subscriptions.js");
-const { SHARED_CONTENT_TYPES } = require("../dist/subscriptions.js");
+const { subscriptionNavigationRoot } = require("../dist/ui/navigation-subscriptions.js");
+const { SHARED_CONTENT_TYPES } = require("../dist/subscriptions/subscriptions.js");
 
 const root = path.join(__dirname, "..");
 const extension = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8");
 const webview = fs.readFileSync(path.join(root, "src", "webview", "panel", "00-core.js"), "utf8");
 const types = [...SHARED_CONTENT_TYPES];
+const ts = require("typescript");
+const methodStart = extension.indexOf("  private _withSubscribedContent(");
+const methodEnd = extension.indexOf("  private _subscribedContentItem(", methodStart);
+const compiled = ts.transpileModule(`class Navigation { ${extension.slice(methodStart, methodEnd)} }`, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022 },
+}).outputText;
+const navigation = new Function("sharedMarket", "subscriptionNavigationRoot", `${compiled}; return new Navigation();`);
+for (const type of types) {
+  const local = [
+    { nodeType:"folder", nodeData:{isPrivate:true}, label:"A private" },
+    { nodeType:"folder", nodeData:{isPrivate:false}, label:"Z public" },
+    { nodeType:"knowledge-trash", nodeData:{}, label:"Trash" },
+    { nodeType:"folder", nodeData:{isPrivate:false}, label:"Pinned public" },
+    { nodeType:"folder", nodeData:{isPrivate:true}, label:"B private" },
+  ];
+  const plain = navigation(undefined, subscriptionNavigationRoot);
+  assert.deepStrictEqual(plain._withSubscribedContent(type, local).map(item => item.label),
+    ["Z public", "Pinned public", "A private", "B private", "Trash"], `${type}: privacy grouping preserves existing order inside each section`);
+  const subscribed = navigation({ cachedGroups:() => [group(type)] }, subscriptionNavigationRoot);
+  subscribed._subscribedContentItem = model => ({ label:model.label, nodeType:"subscribed-content-root" });
+  assert.deepStrictEqual(subscribed._withSubscribedContent(type, local).map(item => item.label),
+    ["Z public", "Pinned public", "From Brokers", "A private", "B private", "Trash"]);
+  assert.strictEqual(local[0].label, "A private", "Sorting must not mutate caller arrays");
+}
 
 function group(type) {
   const itemPath = type === "packages" ? "asset-tool"

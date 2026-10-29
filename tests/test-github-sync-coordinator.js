@@ -7,7 +7,7 @@ const {
   GitHubSyncCoordinator,
   canonicalKnowledgeRoot,
   githubSyncCoordinatorDirectory,
-} = require("../dist/github-sync-coordinator.js");
+} = require("../dist/sync/github-sync-coordinator.js");
 
 const runtimeRoot = path.join(__dirname, ".runtime-github-sync-coordinator");
 const wait = delay => new Promise(resolve => setTimeout(resolve, delay));
@@ -39,6 +39,7 @@ function waitFor(messages, predicate, label, timeoutMs = 5000) {
   await Promise.all(children.map(child => waitFor(messages, message => message.type === "ready" && message.pid === child.pid, `child ${child.pid} ready`)));
 
   for (const child of children) child.send({ type: "hold" });
+  await Promise.all(children.map(child => waitFor(messages, message => message.type === "held" && message.pid === child.pid, `child ${child.pid} hold acknowledgment`)));
   children[0].send({ type: "requests", reasons: ["interval", "manual"] });
   const first = await waitFor(messages, message => message.type === "execute", "initial execution");
   assert.strictEqual(first.reason, "manual", "durable intents coalesce using the documented reason priority");
@@ -166,6 +167,51 @@ function waitFor(messages, predicate, label, timeoutMs = 5000) {
   assert.strictEqual(failureRecovery.snapshot().primary.status, "error");
   failureRecovery.dispose();
 
+  const authState = path.join(runtimeRoot, "auth-state");
+  let authRuns = 0;
+  const auth = new GitHubSyncCoordinator({
+    stateDirectory:authState, knowledgeRoot, extensionVersion:"4.0.0", pollMs:20, leaseMs:200,
+    execute:async () => {
+      authRuns++;
+      throw Object.assign(new Error("VS Code canceled credential access"),
+        {code:"CREDENTIAL_READ_CANCELED", phase:"authenticating"});
+    },
+    onAutoPaused:() => assert.fail("authentication failure must not disable Auto Sync"),
+  });
+  auth.configure([{id:"primary", enabled:true, intervalMinutes:2, syncOnChange:true}]);
+  const authDeadline = Date.now() + 3000;
+  while (auth.snapshot().primary?.status !== "error" && Date.now() < authDeadline) await wait(20);
+  const authDisk = JSON.parse(fs.readFileSync(path.join(authState, "coordinator.json"), "utf8"));
+  assert.equal(authRuns, 1);
+  assert.equal(authDisk.targets.primary.enabled, true);
+  assert.equal(authDisk.targets.primary.lastFailure.errorCode, "CREDENTIAL_READ_CANCELED");
+  assert.equal(Date.parse(auth.snapshot().primary.nextSyncAt) - Date.parse(authDisk.targets.primary.lastFailure.at), 15 * 60_000);
+  auth.dispose();
+  // Model time elapsed while the previous coordinator was offline.
+  const restoredAuthTarget = {...authDisk.targets.primary, lastFailure:{
+    ...authDisk.targets.primary.lastFailure, attempts:3, at:new Date(Date.now() - 15 * 60_000 + 800).toISOString(),
+  }};
+  const authRecovery = new GitHubSyncCoordinator({
+    stateDirectory:authState, knowledgeRoot, extensionVersion:"4.0.0", pollMs:20, leaseMs:200,
+    execute:async () => { authRuns++; },
+    onAutoPaused:() => assert.fail("persisted authentication attempts must not disable Auto Sync"),
+  });
+  authRecovery.configure([restoredAuthTarget]);
+  assert.equal(authRecovery.request("primary", "configuration"), false);
+  assert.equal(authRecovery.request("primary", "interval"), true, "authentication retries remain admitted after three failures");
+  authRecovery.notifyContentChanged();
+  await wait(100);
+  assert.equal(authRuns, 1, "takeover and persisted interval requests cannot bypass the remaining authentication delay");
+  const authRecoveryDeadline = Date.now() + 3000;
+  while ((!authRecovery.snapshot().primary?.lastSuccessAt || authRecovery.snapshot().primary.lastError)
+    && Date.now() < authRecoveryDeadline) await wait(20);
+  assert.equal(authRuns, 2, "an automatic retry succeeds without requiring a manual request");
+  const recoveredAuthDisk = JSON.parse(fs.readFileSync(path.join(authState, "coordinator.json"), "utf8"));
+  assert.equal(recoveredAuthDisk.targets.primary.lastFailure, undefined, "successful recovery durably clears authentication backoff");
+  assert.equal(recoveredAuthDisk.targets.primary.enabled, true);
+  assert.equal(Date.parse(authRecovery.snapshot().primary.nextSyncAt) - Date.parse(authRecovery.snapshot().primary.lastSuccessAt), 2 * 60_000);
+  authRecovery.dispose();
+
   const exhaustedState = path.join(runtimeRoot, "exhausted-state");
   let automaticAttempts = 0;
   const pausedTargets = [];
@@ -225,10 +271,61 @@ function waitFor(messages, predicate, label, timeoutMs = 5000) {
   ], "separate roots elect independent leaders and cannot consume each other's intents");
   for (const coordinator of coordinators) coordinator.dispose();
 
+  const migrationDirectory = path.join(runtimeRoot, "singleton-migration");
+  const legacyRuns = [];
+  let releaseLegacy;
+  const legacy = new GitHubSyncCoordinator({
+    stateDirectory: migrationDirectory, knowledgeRoot, extensionVersion: "3.2.19",
+    pollMs: 20, leaseMs: 500,
+    execute: async (_id, reason) => {
+      legacyRuns.push(reason);
+      await new Promise(resolve => { releaseLegacy = resolve; });
+    },
+  });
+  const migrationTargets = [{ id: "primary", enabled: false, intervalMinutes: 60, syncOnChange: false }];
+  legacy.configure(migrationTargets);
+  legacy.request("primary", "manual");
+  const migrationDeadline = Date.now() + 5000;
+  while (!releaseLegacy && Date.now() < migrationDeadline) await wait(20);
+  assert(releaseLegacy, "legacy execution starts before migration");
+  const serviceRuns = [];
+  const service = new GitHubSyncCoordinator({
+    stateDirectory: migrationDirectory, knowledgeRoot, extensionVersion: "3.2.25",
+    independentService: true, pollMs: 20, leaseMs: 500,
+    execute: async (_id, reason) => { serviceRuns.push(reason); },
+  });
+  service.configure(migrationTargets);
+  await wait(100);
+  assert.strictEqual(service.isLeader(), false, "service must not fence a live in-flight legacy operation halfway through");
+  releaseLegacy();
+  while (!service.isLeader() && Date.now() < migrationDeadline) await wait(20);
+  assert(service.isLeader(), "independent service takes ownership after legacy work drains");
+  const migrationState = JSON.parse(fs.readFileSync(path.join(migrationDirectory, "coordinator.json"), "utf8"));
+  assert.strictEqual(migrationState.leader.independentService, true);
+  assert.strictEqual(migrationState.leader.extensionVersion, "3.2.25");
+  legacy.request("primary", "manual");
+  while (!serviceRuns.length && Date.now() < migrationDeadline) await wait(20);
+  assert.deepStrictEqual(serviceRuns, ["manual"], "even a legacy request is consumed by the independent service once migrated");
+  assert.deepStrictEqual(legacyRuns, ["manual"], "the old Extension Host does not resume execution after service takeover");
+  legacy.dispose();
+  assert(service.isLeader(), "disposing a follower cannot release the service's lease");
+  service.dispose();
+
   assert.strictEqual(
     canonicalKnowledgeRoot("/ignored", "win32", () => "C:\\Users\\ME\\Knowledge\\"),
     "c:/users/me/knowledge",
   );
+  const { sameKnowledgeRoot } = require("../dist/sync/github-sync-coordinator");
+  assert(sameKnowledgeRoot("C:\\Users\\ME\\Knowledge\\", "c:/users/me/knowledge", "win32", value => value));
+  assert(!sameKnowledgeRoot("C:\\Users\\ME\\Knowledge", "c:/users/me/other", "win32", value => value));
+  assert(!sameKnowledgeRoot("/knowledge/Notes", "/knowledge/notes", "linux", value => value));
+  assert(sameKnowledgeRoot("/alias", "/actual", "linux", () => "/actual"));
+  assert(sameKnowledgeRoot("C:\\Knowledge", "c:/knowledge/", "win32", () => {
+    throw Object.assign(new Error("Missing historical root"), { code: "ENOENT" });
+  }));
+  assert.throws(() => sameKnowledgeRoot("/a", "/b", "linux", () => {
+    throw Object.assign(new Error("Permission denied"), { code: "EACCES" });
+  }), /Permission denied/);
   assert.strictEqual(
     canonicalKnowledgeRoot("/ignored", "darwin", () => "/Users/ME/Knowle\u0301dge/"),
     "/Users/ME/Knowl\u00e9dge",
@@ -240,11 +337,11 @@ function waitFor(messages, predicate, label, timeoutMs = 5000) {
   );
 
   const extension = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
-  const sync = fs.readFileSync(path.join(__dirname, "..", "src", "github-sync.ts"), "utf8");
+  const sync = fs.readFileSync(path.join(__dirname, "..", "src", "sync/github-sync.ts"), "utf8");
   const workflow = fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", "github-sync-coordinator.yml"), "utf8");
   assert.match(extension, /withGitHubSyncTargetLock\(context, targetId, \(\) => withGitHubSyncApplyLock\(context,/);
-  assert.match(extension, /githubSyncCoordinatorStatePath !== coordinatorStatePath[\s\S]*githubSyncScheduler\.dispose\(\)[\s\S]*new GitHubSyncCoordinator/,
-    "extension configuration recreates the coordinator when the canonical Knowledge Root changes");
+  assert.match(extension, /githubSyncCoordinatorStatePath !== coordinatorStatePath[\s\S]*githubSyncScheduler\.dispose\(\)[\s\S]*new PkmServiceClient/,
+    "extension configuration reconnects the singleton client when the canonical Knowledge Root changes");
   assert.match(sync, /return applyLocalChanges\(storeRoot, localWrites, localDeletes\.filter\(item => !finalRemote\.has\(item\.file\.path\)\)\)/,
     "the serialized target operation applies local changes without deleting files retained in the final remote catalog");
   for (const os of ["ubuntu-latest", "windows-latest", "macos-latest"]) assert(workflow.includes(os));

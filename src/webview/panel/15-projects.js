@@ -1,14 +1,17 @@
 // ── Projects workspace ─────────────────────────────────────────────────────
-const projectSections = ['Overview','Todos','Threads','Gantt','Agents','Artifacts','Decisions'];
+const projectSections = ['Overview','Now','Artifacts','Decisions','Timeline','Todos','Threads','Gantt','Agents'];
 let projectSnapshot = null;
 let projectSnapshotDirty = false;
 let projectRoute = { projectId:'', section:'', workflowView:'' };
 let selectedGanttTaskId = '';
 let selectedAgentSessionId = '';
+let selectedAgentChatId = '';
 let selectedAgentSnapshotId = '';
 let agentSnapshotContentsState = null;
 let agentSessionArchiveExpanded = vscode.getState()?.agentSessionArchiveExpanded;
-let agentSessionTreeCollapsed = !!vscode.getState()?.agentSessionTreeCollapsed;
+let agentSessionTreeCollapsed = vscode.getState()?.agentSessionTreeCollapsed !== false;
+let agentSessionPortalFilter = ['all','controller','controlled','connected','none'].includes(vscode.getState()?.agentSessionPortalFilter)
+  ? vscode.getState().agentSessionPortalFilter : 'all';
 let agentSessionFullscreenRunId = String(vscode.getState()?.agentSessionFullscreenRunId || '');
 let agentSessionGraphZoom = Number(vscode.getState()?.agentSessionGraphZoom || 1);
 let selectedAgentSessionTodoId = String(vscode.getState()?.selectedAgentSessionTodoId || '');
@@ -55,20 +58,6 @@ const recipeGraphRowPitch = 114;
 const recipeGraphExpandedNodes = new Set();
 const recipeModuleTemplates = RecipeGraph.moduleTemplates;
 
-const todoExecutionPreview = [{
-  executionId:'todoexec_dashboard', projectName:'Personal Knowledge Manager', task:'Implement Automation workspace',
-  recipe:'Build Agent Session Dashboard', recipeRevision:3,
-  agent:{ id:'agent_copilot', name:'Copilot Agent', product:'GitHub Copilot', state:'Running', elapsed:'6m 14s' },
-  todos:[
-    { id:'understand', title:'Understand request', status:'succeeded' },
-    { id:'plan', title:'Plan changes', status:'succeeded' },
-    { id:'implement', title:'Implement dashboard', status:'running' },
-    { id:'validate', title:'Validate behavior', status:'available' },
-    { id:'report', title:'Report outcome', status:'locked' },
-    { id:'release', title:'Release change', status:'locked' }
-  ]
-}];
-
 function todoExecutionSummary(execution) {
   const total = execution.todos.length;
   const completed = execution.todos.filter(todo => todo.status === 'succeeded').length;
@@ -76,8 +65,18 @@ function todoExecutionSummary(execution) {
   return { total, completed, remaining:total - completed, current, percent:total ? Math.round(completed * 100 / total) : 0 };
 }
 
+function pkmExecutionDetails(projection) {
+  return projection ? `<small class="agent-muted">${esc(projection.objectKind)} · ${esc(projection.state)} · Next: ${esc(projection.nextOwner)} · ${esc(projection.reason)} ${esc(projection.resume)}</small>` : '';
+}
+
 function projectTodoExecutions(project) {
-  return todoExecutionPreview.filter(execution => execution.projectId ? execution.projectId === project.projectId : execution.projectName === project.name);
+  return (projectSnapshot?.agentSessions || []).filter(session => session.projectId === project.projectId
+    || (project.links || []).some(link => link.kind === 'agent-session' && link.id === session.sessionId)).map(session => ({
+    executionId:session.sessionId, projectId:project.projectId, task:session.task,
+    recipe:session.runs?.[0]?.recipeName || 'Existing task', recipeRevision:session.runs?.[0]?.recipeRevision || '',
+    agent:{ id:session.sessionId, name:session.task || 'Agent Session', state:session.projection?.state || 'Needs review', elapsed:'' },
+    todos:(session.todos || []).map(todo => ({ id:todo.todoId, title:todo.title || todo.task || todo.todoId, status:todo.status }))
+  }));
 }
 
 function projectDefault(snapshot) {
@@ -132,7 +131,8 @@ function agentSessionSetActive(enabled) {
 }
 
 setInterval(() => {
-  if (document.visibilityState !== 'visible' || state.tab !== 'agentSessions') return;
+  if (document.visibilityState !== 'visible' || !['agentSessions','projects'].includes(state.tab)) return;
+  if (state.tab === 'agentSessions' && nativeHarnessView?.root.isConnected) return;
   const now = Date.now();
   if (agentSessionRefreshRequestedAt && now - agentSessionRefreshRequestedAt < 10_000) return;
   agentSessionRefreshRequestedAt = now;
@@ -146,7 +146,14 @@ function agentSessionGroupToggle(group, open) {
 }
 
 function agentSessionSelect(sessionId) {
+  selectedAgentChatId = '';
   selectedAgentSessionId = String(sessionId || '');
+  renderAgentSessions();
+}
+
+function agentSessionChatSelect(chatId) {
+  selectedAgentChatId = String(chatId || '');
+  selectedAgentSessionId = '';
   renderAgentSessions();
 }
 
@@ -290,7 +297,12 @@ function agentSnapshotOnCreated(data) {
 
 function agentSnapshotRecoveryPrompt(magicCode) {
   const code = String(magicCode || '');
-  return `Call the PKM MCP function agent_session_snapshot_recover with {"magic_code":"${code}"}.`;
+  return `Read the PKM Agent Snapshot state first: call the PKM MCP function agent_session_snapshot_read with {"magic_code":"${code}"}. It is read-only and does not create an Agent Session; continue from its task, todos, checkpoints and Recipe run states.`;
+}
+
+function agentSnapshotRecover(snapshotId, button) {
+  if (!snapshotId) return;
+  ask('agentSnapshotRecover', { snapshotId }, button);
 }
 
 function agentSnapshotCopy(text, button) {
@@ -324,7 +336,8 @@ function agentSnapshotContextMenu(event, snapshotId) {
   showPaperMenu(event.clientX, event.clientY, [
     { label:snapshot?.name || snapshot?.task || snapshotId, header:true },
     { label:'Rename…', onClick:()=>agentSnapshotRename(snapshotId) },
-    recipeCopyPathMenu(agentSnapshotRecoveryPrompt(snapshot?.magicCode || ''), 'Copy Recovery Prompt'),
+    { label:'Recover into New PKM Chat', onClick:()=>agentSnapshotRecover(snapshotId) },
+    recipeCopyPathMenu(agentSnapshotRecoveryPrompt(snapshot?.magicCode || ''), 'Copy Read Prompt'),
     { sep:true },
     { label:'Delete Snapshot…', danger:true, onClick:()=>pkModal({
       title:'Delete Agent Snapshot?',
@@ -337,11 +350,13 @@ function agentSnapshotContextMenu(event, snapshotId) {
 
 function agentSessionContextMenu(event, sessionId, status) {
   event.preventDefault(); event.stopPropagation();
+  const session = (projectSnapshot?.agentSessions || []).find(candidate => candidate.sessionId === sessionId);
+  const pausedNative = status === 'paused' && session?.origin === 'pkm-native' && session?.runtimeOwner === 'pkm';
   const items = [
     recipeCopyPathMenu(`pkm://agent-sessions/${encodeURIComponent(sessionId)}`),
     recipeCopyPathMenu(sessionId, 'Copy Session ID')
   ];
-  if (status === 'running') items.push(
+  if (status === 'running' || pausedNative) items.push(
     { sep:true },
     { label:'Stop Session…', danger:true, onClick:()=>pkModal({
       title:'Stop Agent Session?',
@@ -372,17 +387,37 @@ function agentSessionRootMenu(event) {
 
 function agentSessionFolderMenu(event, folder) {
   event.preventDefault(); event.stopPropagation();
-  const path = String(folder || '').split('/').filter(Boolean);
+  folder = String(folder || '').split('/').pop();
+  if (folder.startsWith('chat-library:')) {
+    showPaperMenu(event.clientX, event.clientY, [
+      { label:'Chat Group', header:true },
+      recipeCopyPathMenu(folder.slice('chat-library:'.length), 'Copy Group identity')
+    ], 'agent-session-context-menu');
+    return;
+  }
+  const storedGroup = (projectSnapshot?.agentSessionGroups || []).find(group => group.groupId === folder);
   showPaperMenu(event.clientX, event.clientY, [
-    { label:path.at(-1) || 'Agent Sessions', header:true },
-    recipeCopyPathMenu(`pkm://agent-sessions/${path.map(encodeURIComponent).join('/')}/`)
+    { label:'Chat Group', header:true },
+    ...(storedGroup?.hostKind === 'pkm' && /^[a-f0-9-]{36}$/.test(storedGroup.hostSessionId || '') ? [
+      { label:'Open PKM Chat', onClick:()=>ask('agentSessionGroupOpenChat',{chatId:storedGroup.hostSessionId}) }
+    ] : []),
+    recipeCopyPathMenu(String(folder || ''), 'Copy Group identity'),
+    ...(storedGroup && !storedGroup.recovered && /^agent_group_[a-f0-9]{64}$/.test(String(folder || '')) ? [{ label:'Delete Chat Group…', danger:true, onClick:()=>pkModal({
+      title:'Delete Chat Group?',
+      message:'Remove this Group from Agent Sessions. Task and Recipe history in Trash is retained. Move any remaining Tasks to Trash first; running Tasks must be stopped explicitly. This does not delete the PKM Chat conversation.',
+      okLabel:'Delete Group', danger:true,
+      onOk:()=>ask('agentSessionGroupDelete',{groupId:String(folder || '')})
+    }) }] : [])
   ], 'agent-session-context-menu');
 }
 
 function agentSessionTrashContextMenu(event, sessionId) {
   event.preventDefault(); event.stopPropagation();
+  const trashed = (projectSnapshot?.agentSessionTrash || []).find(session => session.sessionId === sessionId);
   showPaperMenu(event.clientX, event.clientY, [
-    { label:'Restore', onClick:()=>ask('agentSessionTrash',{action:'restore',sessionId}) },
+    trashed && trashed.restorable === false
+      ? { label:'External agent Session (read-only, not restorable)', header:true }
+      : { label:'Restore', onClick:()=>ask('agentSessionTrash',{action:'restore',sessionId}) },
     { label:'Delete Permanently…', danger:true, onClick:()=>pkModal({ title:'Permanently delete Agent Session?', message:`${sessionId}\n\nRecipe run evidence is retained. This Session record cannot be recovered.`, okLabel:'Delete Permanently', danger:true, onOk:()=>ask('agentSessionTrash',{action:'delete',sessionId}) }) }
   ], 'agent-session-context-menu');
 }
@@ -393,7 +428,7 @@ function emptyAgentSessionTrash() {
   pkModal({
     title:'Empty Agent Sessions Trash?',
     message:`Permanently delete ${count} trashed Agent Session${count === 1 ? '' : 's'}?\n\nRecipe run evidence is retained, but these Session records cannot be recovered.`,
-    okLabel:'Empty Trash',
+    okLabel:'Delete All',
     danger:true,
     onOk:()=>ask('agentSessionTrash',{action:'empty'})
   });
@@ -464,11 +499,133 @@ function agentTechExpansionMode(mode) {
   renderTodoExecutionScope();
 }
 
-function projectNew() {
+function projectNew(template = '') {
   pkModal({ title:'New Project', message:'Create a Project with its required General Thread.', input:true, okLabel:'Create', onOk:name => {
-    if (name.trim()) ask('projectCreate', { name:name.trim() });
+    if (name.trim()) projectCockpitAsk('projectCreate', { name:name.trim(), template });
   }});
 }
+
+function projectCockpitAsk(command, payload) {
+  ask(command, { expectedStoreVersion:projectSnapshot?.storeVersion, ...payload });
+}
+
+function projectCockpitData(project) {
+  return projectSnapshot?.cockpits?.[project.projectId] || { items:[], now:{ running:[], waiting:[], review:[], blocked:[] }, reviewInbox:[], artifacts:[], decisions:project.decisions || [], timeline:project.timeline || [], diagnostics:[], hasActiveRuns:false };
+}
+
+function projectSaveOverview(event) {
+  event.preventDefault();
+  const value = id => document.getElementById(id)?.value || '';
+  projectCockpitAsk('projectOverview', { projectId:projectRoute.projectId, overview:{
+    goal:value('cockpit-goal'), successCriteria:value('cockpit-success').split('\n').map(line => line.trim()).filter(Boolean),
+    status:value('cockpit-status'), currentMilestone:value('cockpit-milestone'), owner:value('cockpit-owner'),
+    deadline:value('cockpit-deadline'), autonomyPolicyReference:value('cockpit-policy')
+  }, reason:value('cockpit-reason'), expectedStoreVersion:Number(event.currentTarget.dataset.version) });
+}
+
+function projectLifecycleAction(action) {
+  const message = action === 'delete' ? 'Remove this archived Project from the active map? All linked Runs, decisions, files and evidence are retained. Restore remains available; this is not a purge.'
+    : action === 'archive' ? 'Archive this Project? Active, waiting or uncertain Runs prevent archival. All evidence is retained.' : 'Restore this Project and its preserved links?';
+  pkModal({ title:`${action[0].toUpperCase() + action.slice(1)} Project`, message, okLabel:action, onOk:() => projectCockpitAsk('projectLifecycle', { projectId:projectRoute.projectId, action, confirmed:true }) });
+}
+
+function projectAttachSource(event) {
+  event.preventDefault();
+  projectCockpitAsk('projectLink', { projectId:projectRoute.projectId, kind:document.getElementById('cockpit-link-kind').value, id:document.getElementById('cockpit-link-id').value.trim() });
+}
+
+function projectSourceOpen(id) {
+  ask('projectOpenSource', { projectId:projectRoute.projectId, id });
+}
+
+function projectCheckpointDeadline(deadline) {
+  const date = new Date(Number(deadline) * 1000);
+  return deadline !== undefined && Number.isFinite(date.getTime()) ? ` · deadline ${esc(date.toISOString())}` : '';
+}
+
+function projectCheckpointSubmit(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const action = event.submitter?.value || 'answer';
+  if (action === 'cancel' && !form.querySelector('[name="confirm"]').checked) return projectOnError({action:'projectCheckpoint',error:'Confirm cancellation of the entire Run first.'});
+  if (action === 'answer') {
+    try { JSON.parse(form.querySelector('textarea').value); } catch { return projectOnError({action:'projectCheckpoint',error:'Answer must be valid JSON.'}); }
+  }
+  ask('projectCheckpoint', { projectId:projectRoute.projectId, id:form.dataset.runId,
+    checkpointId:form.dataset.checkpointId, proposalDigest:form.dataset.digest,
+    eventKey:form.dataset.checkpointId, action, answer:form.querySelector('textarea').value,
+    confirmed:form.querySelector('[name="confirm"]').checked });
+}
+
+function projectCheckpointControls(item) {
+  const cp = item.checkpoint;
+  if (!cp || cp.state !== 'waiting' || !cp.proposal_digest || !/^action_run_[0-9a-f]{32}$/.test(item.sourceId)
+    || cp.trigger?.kind && cp.trigger.kind !== 'human') return '';
+  return `<form class="cockpit-checkpoint-form" data-run-id="${esc(item.sourceId)}" data-checkpoint-id="${esc(cp.checkpoint_id)}" data-digest="${esc(cp.proposal_digest)}" onsubmit="projectCheckpointSubmit(event)">
+    <label>Answer JSON${cp.presentation === 'choice' ? ' (choice schema)' : ''}<textarea name="answer" aria-label="Checkpoint answer JSON" maxlength="65536" placeholder="Enter JSON matching the displayed answer_schema"></textarea></label>
+    <button class="tbtn" type="submit" value="answer">Submit exact answer</button>
+    <label><input type="checkbox" name="confirm">I intend to cancel the entire Run, not answer this checkpoint.</label>
+    <button class="tbtn" type="submit" value="cancel">Cancel Run</button>
+  </form>`;
+}
+
+function projectCockpitOverview(project) {
+  const cockpit = projectCockpitData(project);
+  const inactive = !!(project.archivedAt || project.deletedAt);
+  return `<section class="project-band cockpit-overview"><h3>Overview</h3><p>Project intent is separate from execution state. Goal and success changes require a decision reason.</p>
+    <form class="cockpit-form" data-version="${Number(projectSnapshot?.storeVersion || 0)}" onsubmit="projectSaveOverview(event)"><fieldset ${inactive ? 'disabled' : ''}>
+    <label class="wide">Goal<textarea id="cockpit-goal" maxlength="8000" placeholder="Optional — what are we trying to achieve?">${esc(project.goal || '')}</textarea></label>
+    <label class="wide">Success criteria<textarea id="cockpit-success" placeholder="Optional — one criterion per line">${esc((project.successCriteria || []).join('\n'))}</textarea></label>
+    <label>Status<select id="cockpit-status">${['planned','active','completed'].map(status => `<option ${status === (project.status || 'planned') ? 'selected' : ''}>${status}</option>`).join('')}</select></label>
+    <label>Current milestone<input id="cockpit-milestone" value="${esc(project.currentMilestone || '')}" maxlength="8000"></label>
+    <label>Owner<input id="cockpit-owner" value="${esc(project.owner || '')}" maxlength="8000"></label>
+    <label>Deadline (optional)<input id="cockpit-deadline" type="date" value="${esc(project.deadline || '')}"></label>
+    <label class="wide">Autonomy policy reference<input id="cockpit-policy" value="${esc(project.autonomyPolicyReference || '')}" placeholder="Reference only — does not grant permissions" maxlength="8000"></label>
+    <label class="wide">Decision reason<input id="cockpit-reason" placeholder="Required when changing goal or success criteria" maxlength="8000"></label>
+    <button type="submit" class="tbtn">Save Overview</button></fieldset></form>
+    <div class="cockpit-summary">${['running','waiting','review','blocked'].map(group => `<button class="tbtn" onclick="projectSection('Now')">${group === 'review' ? 'Needs review' : group} · ${cockpit.now[group].length}</button>`).join('')}</div>
+    <p>${inactive ? project.deletedAt ? 'Removed from active map; evidence preserved.' : 'Archived; execution evidence preserved.' : 'Links and execution projections remain read-only.'}</p>
+    ${project.systemKind ? '' : `<div class="project-header-actions">${inactive ? '<button class="tbtn" onclick="projectLifecycleAction(\'restore\')">Restore</button>' : `<button class="tbtn" ${cockpit.hasActiveRuns ? 'disabled title="Resolve active or unverified Runs first"' : ''} onclick="projectLifecycleAction('archive')">Archive</button>`}
+    ${project.archivedAt && !project.deletedAt ? `<button class="tbtn" ${cockpit.hasActiveRuns ? 'disabled' : ''} onclick="projectLifecycleAction('delete')">Remove from active map</button>` : ''}</div>`}
+    <details><summary>Link existing work</summary><form class="cockpit-link-form" onsubmit="projectAttachSource(event)"><select id="cockpit-link-kind" aria-label="Source kind"><option value="action-run">Action Run</option><option value="recipe-run">Recipe Run</option><option value="agent-session">Agent Session</option></select><input id="cockpit-link-id" aria-label="Source ID" placeholder="Existing Run or Session ID" required maxlength="128" ${inactive ? 'disabled' : ''}><button class="tbtn" ${inactive ? 'disabled' : ''}>Link</button></form><p>Links preserve provenance, not a second execution state.</p></details>
+    ${(project.links || []).length ? `<ul>${project.links.map(link => `<li>${esc(link.kind)} · ${esc(link.id)}</li>`).join('')}</ul>` : ''}
+    </section>`;
+}
+
+function projectCockpitItems(items) {
+  return items.length ? `<ul class="cockpit-items">${items.map(item => `<li><strong>${esc(item.title)}</strong><span>${esc(item.projection.state)} · Next owner: ${esc(item.owner)}</span><p>${esc(item.reason)}</p><small>${esc(item.kind)} · ${esc(item.id)}</small>${item.checkpoint ? `<details><summary>Exact proposal and evidence${projectCheckpointDeadline(item.checkpoint.deadline)}</summary><pre>${esc(JSON.stringify(item.checkpoint, null, 2))}</pre></details>${projectCheckpointControls(item)}` : ''}<button class="tbtn" onclick="projectSourceOpen(decodeURIComponent('${encodeURIComponent(item.sourceId).replace(/'/g, '%27')}'))">Inspect original source</button></li>`).join('')}</ul>` : '<p class="agent-muted">None</p>';
+}
+
+function projectCockpitNow(project) {
+  const cockpit = projectCockpitData(project);
+  return `<p>Live projection of existing execution records with one review inbox. Explicit answers target the original checkpoint and its pinned proposal; there is no blind resume.</p>
+    ${cockpit.diagnostics.length ? `<div role="alert">${cockpit.diagnostics.map(esc).join('<br>')}</div>` : ''}
+    <section class="project-band"><h3>Review inbox</h3>${projectCockpitItems(cockpit.reviewInbox)}</section>
+    ${[['running','Running / Ready'],['waiting','Waiting'],['blocked','Blocked']].map(([group,label]) => `<section class="project-band"><h3>${label}</h3>${projectCockpitItems(cockpit.now[group])}</section>`).join('')}`;
+}
+
+function projectCockpitEvidence(project, section) {
+  const cockpit = projectCockpitData(project);
+  const entries = section === 'Artifacts' ? cockpit.artifacts : section === 'Decisions' ? cockpit.decisions : cockpit.timeline;
+  return `<p>${section === 'Artifacts' ? 'Proposal, draft, final and evidence retain their source IDs. No output is silently promoted to final.' : section === 'Decisions' ? 'Explicit goal and success changes, resolved checkpoints and their reasons.' : 'Durable Project events and execution receipts, not debug logs.'}</p>${entries.length ? `<ol class="cockpit-evidence">${entries.map(entry => `<li><strong>${esc(entry.kind || (section === 'Decisions' ? 'Decision' : 'Event'))}</strong>${entry.sourceId ? `<small>Source: ${esc(entry.sourceId)}</small>` : ''}<pre>${esc(JSON.stringify(entry, null, 2))}</pre></li>`).join('')}</ol>` : projectZero(`No ${section}`, 'Evidence will appear when linked work produces durable records.')}`;
+}
+
+window.addEventListener('message', event => {
+  if (event.data?.command === 'projectCheckpointResult') {
+    finishAction('projectCheckpoint');
+    renderProjects();
+    document.getElementById('project-action-error')?.remove();
+    const notice = document.createElement('div');
+    notice.className = 'project-action-error'; notice.setAttribute('role','status');
+    notice.textContent = event.data.data?.action === 'cancel' ? 'Run cancellation recorded.' : 'Checkpoint answer recorded.';
+    document.body.appendChild(notice); setTimeout(() => notice.remove(), 4000);
+    return;
+  }
+  if (event.data?.command !== 'openProject') return;
+  projectRoute = { projectId:String(event.data.projectId || ''), section:'Now', workflowView:'Todos' };
+  vscode.setState({ ...(vscode.getState() || {}), projectRoute });
+  ask('projectState', {});
+});
 
 function projectNewThread() {
   pkModal({ title:'New Thread', message:'Create a Thread in the selected Project.', input:true, okLabel:'Create', onOk:name => {
@@ -560,7 +717,7 @@ function projectCollaborationBody(project, threads) {
     const last = task.history?.at(-1);
     const links = [task.ganttTaskId && `Gantt ${task.ganttTaskId}`, task.agentSessionId && `Session ${task.agentSessionId}`, task.recipeRunId && `Recipe ${task.recipeRunId}`].filter(Boolean);
     return `<article class="project-thread-card" aria-label="${esc(task.title)} collaboration, ${esc(task.status)}">
-      <div><span class="gantt-status ${esc(task.status === 'timed-out' ? 'blocked' : task.status)}">${esc(task.status)}</span><strong>${esc(task.title)}</strong><small>${esc(thread?.name || task.threadId)} · v${task.version} · ${esc(task.phase)}</small></div>
+      <div><span class="gantt-status ${esc(task.status === 'timed-out' ? 'blocked' : task.status)}">${esc(task.projection?.state || task.status)}</span><strong>${esc(task.title)}</strong><small>${esc(thread?.name || task.threadId)} · v${task.version} · ${esc(task.phase)}</small>${pkmExecutionDetails(task.projection)}</div>
       <p><b>Lead:</b> ${esc(task.lead)} · <b>Primary owner:</b> ${esc(task.primaryOwner || task.owners.join(', '))} · <b>Reviewers:</b> ${esc(task.reviewers.join(', '))}</p>
       <p><b>Objective:</b> ${esc(task.objective || 'missing')} · <b>Context/version:</b> ${esc(task.context || 'missing')}</p>
       <p><b>Expected output:</b> ${esc(task.expectedOutput || 'missing')} · <b>Artifact type:</b> ${esc(task.artifactType || 'missing')}</p>
@@ -1131,6 +1288,8 @@ function recipeParameterRestoreSnapshot() {
   recipeDraft.definition.spec.completion.requiredNodes = [...required];
 }
 function recipeParameterSave() {
+  const invalid = [...document.querySelectorAll('.recipe-adapter-config textarea')].find(input => !input.checkValidity());
+  if (invalid) { invalid.reportValidity(); return; }
   const viewState = recipeCaptureViewState();
   recipeParameterSnapshot = null;
   recipeReferencePickerNodeId = '';
@@ -1149,8 +1308,15 @@ function recipeParameterCancel() {
   renderGlobalRecipes();
   recipeRestoreViewState(viewState);
 }
-function recipeGraphAdapterConfigHtml(node) {
-  if (node.kind === 'pkm.step.command/v1') return `<div class="recipe-adapter-config"><label><span>Program</span><input value="${esc(node.config.program || '')}" placeholder="python3" onblur="recipeGraphCommandField(decodeURIComponent('${encodeURIComponent(node.nodeId)}'),'program',this.value)"></label><label><span>Arguments · one per line</span><textarea rows="4" placeholder="script.py&#10;\${inputs.runId}" onblur="recipeGraphCommandField(decodeURIComponent('${encodeURIComponent(node.nodeId)}'),'args',this.value)">${esc((node.config.args || []).join('\n'))}</textarea></label><label><span>Working directory</span><input value="${esc(node.config.cwd || '')}" placeholder="\${inputs.workspace}" onblur="recipeGraphCommandField(decodeURIComponent('${encodeURIComponent(node.nodeId)}'),'cwd',this.value)"></label><div><label><span>Timeout seconds</span><input type="number" min="1" max="3600" value="${node.config.timeoutSeconds || 300}" onblur="recipeGraphCommandField(decodeURIComponent('${encodeURIComponent(node.nodeId)}'),'timeoutSeconds',this.value)"></label><label><span>Output limit bytes</span><input type="number" min="1024" max="1048576" value="${node.config.maxOutputBytes || 65536}" onblur="recipeGraphCommandField(decodeURIComponent('${encodeURIComponent(node.nodeId)}'),'maxOutputBytes',this.value)"></label></div><small>Arguments are passed directly without a shell. Use \${inputs.name} for Recipe instance parameters.</small></div>`;
+function recipeGraphAdapterConfigHtml(node, executorView = false) {
+  if (!executorView && (node.kind === 'pkm.step.pipeline/v1' || node.kind === 'pkm.step.script/v1')) {
+    const executor = node.kind === 'pkm.step.pipeline/v1' ? node.config.executor : 'script';
+    const id = encodeURIComponent(node.nodeId);
+    const selector = node.kind === 'pkm.step.pipeline/v1' ? `<div class="recipe-adapter-config"><label><span>Executor</span><select onchange="recipeGraphPipelineExecutor(decodeURIComponent('${id}'),this.value)"><option value="script" ${executor === 'script' ? 'selected' : ''}>Script</option><option value="command" ${executor === 'command' ? 'selected' : ''}>Command</option></select></label></div>` : '';
+    const args = executor === 'script' ? `<div class="recipe-adapter-config"><label><span>Arguments (JSON)</span><textarea rows="4" spellcheck="false" oninput="recipeGraphPipelineArguments(decodeURIComponent('${id}'),this)">${esc(JSON.stringify(node.config.args || [], null, 2))}</textarea></label></div>` : '';
+    return selector + recipeGraphAdapterConfigHtml({ ...node, kind:executor === 'command' ? 'pkm.step.command/v1' : 'pkm.step.script/v1' }, true) + args;
+  }
+  if (node.kind === 'pkm.step.command/v1') return `<div class="recipe-adapter-config"><label><span>Program</span><input value="${esc(node.config.program || '')}" placeholder="python3" onblur="recipeGraphCommandField(decodeURIComponent('${encodeURIComponent(node.nodeId)}'),'program',this.value)"></label><label><span>Arguments (JSON)</span><textarea rows="4" spellcheck="false" oninput="recipeGraphPipelineArguments(decodeURIComponent('${encodeURIComponent(node.nodeId)}'),this)">${esc(JSON.stringify(node.config.args || [], null, 2))}</textarea></label><label><span>Working directory</span><input value="${esc(node.config.cwd || '')}" placeholder="\${inputs.workspace}" onblur="recipeGraphCommandField(decodeURIComponent('${encodeURIComponent(node.nodeId)}'),'cwd',this.value)"></label><div><label><span>Timeout seconds</span><input type="number" min="1" max="3600" value="${node.config.timeoutSeconds || 300}" onblur="recipeGraphCommandField(decodeURIComponent('${encodeURIComponent(node.nodeId)}'),'timeoutSeconds',this.value)"></label><label><span>Output limit bytes</span><input type="number" min="1024" max="1048576" value="${node.config.maxOutputBytes || 65536}" onblur="recipeGraphCommandField(decodeURIComponent('${encodeURIComponent(node.nodeId)}'),'maxOutputBytes',this.value)"></label></div><small>Arguments are passed directly without a shell. Use \${inputs.name} for Recipe instance parameters.</small></div>`;
   if (node.kind === 'pkm.step.script/v1') {
     const runtime = node.config.runtime || 'bash';
     const environments = typeof envCache === 'undefined' ? [] : envCache;
@@ -1548,9 +1714,31 @@ function recipeGraphGeneralInstruction(nodeId, value) {
   if (instruction) node.generalInstruction = instruction;
   else delete node.generalInstruction;
 }
+function recipeGraphPipelineExecutor(nodeId, executor) {
+  const node = recipeDraft.definition.spec.nodes.find(candidate => candidate.nodeId === nodeId);
+  if (node?.kind !== 'pkm.step.pipeline/v1' || !['command','script'].includes(executor)) return;
+  if (node.config.executor === executor) return;
+  node.config = executor === 'command'
+    ? { executor, program:'python3', args:[], timeoutSeconds:300, maxOutputBytes:65536 }
+    : recipeClone(RecipeGraph.moduleTemplates.pipeline.config);
+  recipeRerenderPreservingView();
+}
+function recipeGraphPipelineArguments(nodeId, input) {
+  const node = recipeDraft.definition.spec.nodes.find(candidate => candidate.nodeId === nodeId);
+  if (!node || !['pkm.step.pipeline/v1','pkm.step.command/v1','pkm.step.script/v1'].includes(node.kind)) return;
+  try {
+    const args = JSON.parse(input.value);
+    if (!Array.isArray(args) || args.some(argument => typeof argument !== 'string' || argument.includes('\0'))) throw new Error();
+    input.setCustomValidity('');
+    if (node.config.args !== undefined || args.length) node.config.args = args;
+  } catch {
+    input.setCustomValidity('Enter a JSON array of strings without null characters.');
+    input.reportValidity();
+  }
+}
 function recipeGraphCommandField(nodeId, field, value) {
   const node = recipeDraft.definition.spec.nodes.find(candidate => candidate.nodeId === nodeId);
-  if (node?.kind !== 'pkm.step.command/v1') return;
+  if (node?.kind !== 'pkm.step.command/v1' && !(node?.kind === 'pkm.step.pipeline/v1' && node.config.executor === 'command')) return;
   if (field === 'args') node.config.args = String(value || '').split('\n').map(argument => argument.trim()).filter(Boolean);
   else if (field === 'timeoutSeconds') node.config.timeoutSeconds = Math.min(3600, Math.max(1, Number.parseInt(value, 10) || 300));
   else if (field === 'maxOutputBytes') node.config.maxOutputBytes = Math.min(1048576, Math.max(1024, Number.parseInt(value, 10) || 65536));
@@ -1561,7 +1749,7 @@ function recipeGraphCommandField(nodeId, field, value) {
 }
 function recipeGraphScriptField(nodeId, field, value) {
   const node = recipeDraft.definition.spec.nodes.find(candidate => candidate.nodeId === nodeId);
-  if (node?.kind !== 'pkm.step.script/v1') return;
+  if (node?.kind !== 'pkm.step.script/v1' && !(node?.kind === 'pkm.step.pipeline/v1' && node.config.executor === 'script')) return;
   if (field === 'runtime') {
     node.config.runtime = ['bash','powershell','python'].includes(value) ? value : 'bash';
     const environments = typeof envCache === 'undefined' ? [] : envCache;
@@ -2017,7 +2205,7 @@ function recipeItemMenu(event, recipeId) {
       { label:'Rename…', onClick:() => pkModal({ title:'Rename Recipe', message:'Enter a new Recipe name.', input:true, inputValue:recipe.name, okLabel:'Rename', onOk:name => { if (name.trim() && name.trim() !== recipe.name) recipePersistUpdate(recipe, { name:name.trim() }); } }) },
       { label:'Move to Folder…', onClick:() => pkModal({ title:'Move Recipe', message:'Enter a folder path. Leave empty for uncategorized.', input:true, inputValue:recipe.category || '', okLabel:'Move', onOk:category => recipePersistUpdate(recipe, { category:String(category || '').trim() }) }) }
     ]),
-    recipeCopyPathMenu(`pkm://recipes/${[recipe.category, recipe.name].filter(Boolean).flatMap(value => String(value).split('/').filter(Boolean)).map(encodeURIComponent).join('/')}`),
+    recipeCopyPathMenu(`pkm://recipes/${encodeURIComponent(recipe.recipeId)}`),
     recipeCopyPathMenu(recipe.recipeId, 'Copy Recipe ID')
   ];
   if (recipe.systemKind !== 'built-in') items.push(
@@ -2171,6 +2359,28 @@ function agentSessionNodeHealth(node) {
   return 'healthy-running';
 }
 
+function agentSessionDisplayStatus(session) {
+  if (session.projection) {
+    const states = { Running:'running', Waiting:'waiting-input', 'Needs review':'waiting-input', Reconciling:'waiting-input', Failed:'failed', Cancelled:'stopped' };
+    return {state:states[session.projection.state] || 'idle', label:session.projection.state};
+  }
+  const status = String(session.status || 'unknown');
+  const todos = session.todos || [];
+  const nodes = (session.runs || []).flatMap(run => run.nodes || []);
+  if (status === 'stopped') return {state:'stopped',label:'Stopped'};
+  if (status === 'failed' || session.nativeAgent?.requestStatus === 'failed' || (status === 'completed' && (todos.some(todo => todo.status === 'failed') || nodes.some(node => node.state === 'failed')))) return {state:'failed',label:'Failed'};
+  if (status === 'running' && (session.nativeAgent?.waitingForInput || nodes.some(node => node.state === 'running' && node.kind === 'pkm.gate.human/v1'))) return {state:'waiting-input',label:'Waiting for Input'};
+  if (status === 'running' && (todos.some(todo => todo.status === 'running') || nodes.some(node => node.state === 'running') || (!todos.length && !nodes.length))) return {state:'running',label:'Running'};
+  return {state:'idle',label:'Idle'};
+}
+
+function agentSessionStatusIndicator(session, compact = false) {
+  const status = agentSessionDisplayStatus(session);
+  const projection = session.projection;
+  const title = `${status.label} · Lifecycle: ${session.status || 'unknown'}${projection ? ` · ${projection.objectKind} · Next: ${projection.nextOwner} · ${projection.reason} ${projection.resume}` : ''}`;
+  return `<span class="agent-session-status-indicator" data-session-state="${status.state}" title="${esc(title)}"><i class="agent-session-status-dot" role="img" aria-label="${esc(title)}"></i>${compact ? '' : `<span>${status.label}</span>`}</span>`;
+}
+
 function agentSessionLivenessLabel(liveness) {
   const stateName = String(liveness?.state || '');
   if (stateName === 'suspected-stalled') return 'Suspected stalled';
@@ -2181,7 +2391,8 @@ function agentSessionLivenessLabel(liveness) {
 }
 
 function agentSessionProgressDetails(node) {
-  if (node.state !== 'running') return '';
+  const projection = pkmExecutionDetails(node.projection);
+  if (node.state !== 'running') return projection;
   const progress = node.progress || {};
   const health = agentSessionNodeHealth(node);
   const completed = Number(progress.completed);
@@ -2190,7 +2401,7 @@ function agentSessionProgressDetails(node) {
     ? Number(progress.percent)
     : (Number.isFinite(completed) && total > 0 ? Math.round(completed * 100 / total) : null);
   const events = Array.isArray(progress.events) ? progress.events.slice(-4) : [];
-  return `<div class="agent-module-progress">
+  return `${projection}<div class="agent-module-progress">
     <div class="agent-module-health ${health}"><i></i><strong>${esc(health.replaceAll('-', ' '))}</strong><span>${esc(progress.phase || 'running')}</span></div>
     ${progress.message ? `<p>${esc(progress.message)}</p>` : ''}
     ${percent !== null ? `<div class="agent-module-meter"><i style="width:${Math.max(0, Math.min(100, percent))}%"></i></div>` : ''}
@@ -2240,7 +2451,7 @@ function agentSessionRunGraph(run, allRuns, seen = new Set(), ownerTodo = null, 
   const runKind = run.origin?.kind === 'agent-session-adhoc' ? 'Ad hoc Recipe' : run.origin?.kind && run.origin.kind !== 'library' ? 'Recipe source unknown' : 'Recipe Library';
   const markerId = `agent-runtime-arrow-${String(run.runId || '').replace(/[^A-Za-z0-9_-]/g, '-')}`;
   const open = forceOpen || agentSessionOpenRunIds.has(run.runId);
-  return `<details class="agent-runtime-run" data-run-id="${esc(run.runId)}"${open ? ' open' : ''} ontoggle="agentSessionRunToggle(this)"><summary><span class="agent-runtime-disclosure codicon codicon-add" aria-hidden="true"></span><div><span>${runKind}</span><strong>${esc(run.recipeName)}</strong><small>r${run.recipeRevision} · ${esc(String(run.executableDigest || '').slice(0,12))}</small></div><span class="agent-session-run-actions"><button title="Open full-screen Session graph" aria-label="Open full-screen Session graph" onclick="event.preventDefault();event.stopPropagation();agentSessionOpenGraph()"><span class="codicon codicon-screen-full"></span></button><b class="agent-runtime-run-status ${esc(run.status)}">${esc(run.status)}</b></span></summary><div class="agent-runtime-run-body">${loops ? `<div class="agent-runtime-loops">${loops}</div>` : ''}<div class="agent-runtime-graph" data-run-id="${esc(run.runId)}"><svg class="agent-runtime-graph-links" data-marker-id="${markerId}" aria-hidden="true"></svg>${nodes.length ? levelHtml : '<p class="agent-muted">No materialized tasks.</p>'}</div></div></details>`;
+  return `<details class="agent-runtime-run" data-run-id="${esc(run.runId)}"${open ? ' open' : ''} ontoggle="agentSessionRunToggle(this)"><summary><span class="agent-runtime-disclosure codicon codicon-add" aria-hidden="true"></span><div><span>${runKind}</span><strong>${esc(run.recipeName)}</strong><small>r${run.recipeRevision} · ${esc(String(run.executableDigest || '').slice(0,12))}</small></div><span class="agent-session-run-actions"><button title="Open full-screen Session graph" aria-label="Open full-screen Session graph" onclick="event.preventDefault();event.stopPropagation();agentSessionOpenGraph()"><span class="codicon codicon-screen-full"></span></button><b class="agent-runtime-run-status ${esc(run.status)}">${esc(run.projection?.state || run.status)}</b></span></summary><div class="agent-runtime-run-body">${pkmExecutionDetails(run.projection)}${loops ? `<div class="agent-runtime-loops">${loops}</div>` : ''}<div class="agent-runtime-graph" data-run-id="${esc(run.runId)}"><svg class="agent-runtime-graph-links" data-marker-id="${markerId}" aria-hidden="true"></svg>${nodes.length ? levelHtml : '<p class="agent-muted">No materialized tasks.</p>'}</div></div></details>`;
 }
 
 function agentSessionLayoutLinks() {
@@ -2532,7 +2743,7 @@ function agentSessionUnifiedGraph(session) {
         <header class="agent-session-traversal-header"><small>Todo execution order</small><strong>${esc(traversalLabel)} execution queue</strong></header>
         <article class="agent-session-unified-session" data-session-node="${esc(session.sessionId)}" data-queue-boundary="start"><small>Agent Session</small><strong>Start</strong><code title="${esc(session.sessionId)}">${esc(session.task)}</code><b>${esc(session.status)}</b></article>
         ${lanes.map((todo, index) => agentSessionUnifiedTodoNode(todo, index)).join('')}
-        <article class="agent-session-graph-terminal" data-queue-boundary="stop"><strong>Stop</strong><small>${esc(['completed','stopped'].includes(session.status) ? session.status : 'pending')}</small></article>
+        <article class="agent-session-graph-terminal" data-queue-boundary="stop"><strong>Complete</strong><small>${esc(['completed','stopped'].includes(session.status) ? session.status : 'pending')}</small></article>
       </div>
       ${agentSessionUnifiedTree(session, lanes)}
     </div>
@@ -2728,24 +2939,190 @@ function agentSessionFullscreenGraph(session) {
   </div>`;
 }
 
+function agentSessionGroupKey(session) {
+  const hostSessionId = session.hostSessionId || session.liveness?.hostSessionId || session.liveness?.owner?.hostSessionId;
+  const storedGroup = hostSessionId && (projectSnapshot?.agentSessionGroups || []).find(group =>
+    group.hostSessionId === hostSessionId && group.hostKind === (session.hostKind || 'copilot'));
+  return session.groupId || storedGroup?.groupId || (hostSessionId
+    ? JSON.stringify([session.hostKind || 'copilot', hostSessionId])
+    : `recovered:${session.sessionId}`);
+}
+
+function agentSessionMatchesPortal(groupId) {
+  if (agentSessionPortalFilter === 'all') return true;
+  const portal = projectSnapshot?.agentSessionGroups?.find(group => group.groupId === groupId)?.portal;
+  if (agentSessionPortalFilter === 'connected') return portal?.connected === true;
+  if (agentSessionPortalFilter === 'none') return !portal?.binding?.role;
+  return portal?.binding?.role === agentSessionPortalFilter;
+}
+
+function agentSessionSetPortalFilter(value) {
+  if (!['all','controller','controlled','connected','none'].includes(value)) return;
+  agentSessionPortalFilter = value;
+  vscode.setState({ ...vscode.getState(), agentSessionPortalFilter:value });
+  renderAgentSessions();
+}
+
 function agentSessionTree(sessions, archived = false) {
-  if (!sessions.length) return '';
-  const tree = buildCatTree(sessions, session => [
-    session.agent?.name || 'Agent',
-    session.hostSessionId ? `Copilot Session ${session.hostSessionId}` : 'Unlinked sessions'
-  ], 'Unlinked sessions');
-  return `<div class="agent-session-tree">${renderCatTree(tree, [], 0, (session, depth) => `<div class="li cattree-item agent-session-row ${session.sessionId === selectedAgentSessionId ? 'active' : ''}" style="padding-left:${8 + depth * 12}px" role="button" tabindex="0" onclick="agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))}" oncontextmenu="agentSessionContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'),'${esc(session.status)}')"><span><i class="${session.status === 'running' ? '' : 'idle'}"></i><strong>${esc(session.task)}</strong></span><b>${esc(session.sessionId.replace(/^agent_session_/, '').slice(0,12))}</b><small>${esc(session.lastActivity?.tool || (session.checkpoint ? 'Checkpoint ready' : 'Registered'))}${agentSessionLivenessLabel(session.liveness) ? ` · <em class="agent-session-liveness ${esc(session.liveness.state)}">${esc(agentSessionLivenessLabel(session.liveness))}</em>` : ''}</small>${archived ? `<button class="agent-session-quick-trash" title="Move archived Agent Session to Trash" aria-label="Move ${esc(session.task)} to Trash" onclick="event.stopPropagation();ask('agentSessionTrash',{action:'move',sessionId:decodeURIComponent('${encodeURIComponent(session.sessionId)}')},this)"><span class="codicon codicon-trash"></span></button>` : ''}<button class="cattree-item-menu" title="Agent Session actions" aria-label="Actions for ${esc(session.task)}" onclick="event.stopPropagation();agentSessionContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'),'${esc(session.status)}')"><span class="codicon codicon-ellipsis"></span></button></div>`, '', (_child, _name, fullPath) => ` oncontextmenu="agentSessionFolderMenu(event,decodeURIComponent('${encodeURIComponent(fullPath.join('/'))}'))"`, null, {
+  sessions = sessions.filter(session => agentSessionMatchesPortal(agentSessionGroupKey(session)));
+  const hiddenGroups = new Set((projectSnapshot?.agentSessionGroups || []).filter(group => group.deletedAt).map(group => group.groupId));
+  if (!archived) sessions = sessions.filter(session => !hiddenGroups.has(agentSessionGroupKey(session)));
+  const groupRecords = archived ? [] : (projectSnapshot?.agentSessionGroups || []).filter(group => !group.deletedAt && agentSessionMatchesPortal(group.groupId));
+  const emptyGroups = groupRecords.filter(group => !sessions.some(session => agentSessionGroupKey(session) === group.groupId));
+  if (!sessions.length && !emptyGroups.length) return '';
+  const groups = new Map(sessions.map(session => [agentSessionGroupKey(session), session]));
+  const titles = new Map((projectSnapshot?.agentSessionGroups || []).map(group => [group.groupId, group.title]));
+  const records = new Map((projectSnapshot?.agentSessionGroups || []).map(group => [group.groupId, group]));
+  const byChat = new Map([...records.values()].filter(group => group.hostKind === 'pkm').map(group => [group.hostSessionId, group]));
+  const paths = new Map();
+  const groupPath = groupId => {
+    if (paths.has(groupId)) return paths.get(groupId);
+    const record = records.get(groupId);
+    if (record?.hostKind !== 'pkm') return [groupId];
+    const lineage = [record];
+    const seen = new Set([groupId]);
+    let parent = byChat.get(record.workerParentChatId);
+    while (parent && !parent.deletedAt && parent.workerTreeId === lineage[0].workerTreeId && !seen.has(parent.groupId)) {
+      seen.add(parent.groupId); lineage.unshift(parent); parent = byChat.get(parent.workerParentChatId);
+    }
+    const owner = lineage[0];
+    const category = `chat-library:${owner.libraryGroupId || 'ungroup'}`;
+    const result = [category, ...lineage.map(group => group.groupId)];
+    paths.set(groupId, result);
+    return result;
+  };
+  const tree = buildCatTree(sessions, session => groupPath(agentSessionGroupKey(session)), 'Recovered Sessions');
+  for (const group of emptyGroups) {
+    let node = tree;
+    for (const segment of groupPath(group.groupId)) node = node.folders[segment] ||= { folders: {}, items: [] };
+  }
+  return `<div class="agent-session-tree">${renderCatTree(tree, [], 0, (session, depth) => `<div class="li cattree-item agent-session-row ${session.sessionId === selectedAgentSessionId ? 'active' : ''}" style="padding-left:${8 + depth * 12}px" role="button" tabindex="0" onclick="agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))}" oncontextmenu="agentSessionContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'),'${esc(session.status)}')"><span>${agentSessionStatusIndicator(session, true)}<strong>${esc(session.task)}</strong></span><b>${esc(session.sessionId.replace(/^agent_session_/, '').slice(0,12))}</b><small>${esc(session.lastActivity?.tool || (session.checkpoint ? 'Checkpoint ready' : 'Registered'))}${agentSessionLivenessLabel(session.liveness) ? ` · <em class="agent-session-liveness ${esc(session.liveness.state)}">${esc(agentSessionLivenessLabel(session.liveness))}</em>` : ''}</small><button class="cattree-item-menu" title="Agent Session actions" aria-label="Actions for ${esc(session.task)}" onclick="event.stopPropagation();agentSessionContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'),'${esc(session.status)}')"><span class="codicon codicon-ellipsis"></span></button></div>`, '', (_child, _name, fullPath) => ` oncontextmenu="agentSessionFolderMenu(event,decodeURIComponent('${encodeURIComponent(fullPath.join('/'))}'))"`, null, {
     area:'agentSessions',
-    defaultOpen:true,
-    renderFolderLabel:(name, path) => path.length === 1
-      ? `<span class="codicon codicon-account"></span>${esc(name)}`
-      : `<span class="codicon codicon-comment-discussion"></span>${name === 'Unlinked sessions' ? name : `Copilot Session ${esc(name.slice('Copilot Session '.length, 'Copilot Session '.length + 12))}`}`
+    countLabel:count => `${count} Tasks`,
+    defaultOpen:false,
+    isFolderExpandable:child => child.items.length > 0 || Object.keys(child.folders).length > 0,
+    renderFolderLabel:name => {
+      if (name.startsWith('chat-library:')) {
+        const id = name.slice('chat-library:'.length);
+        const record = [...records.values()].find(group => (group.libraryGroupId || 'ungroup') === id && group.hostKind === 'pkm');
+        return `<span class="codicon codicon-folder"></span><span>${esc(record?.libraryGroupTitle || 'Ungroup')}</span>`;
+      }
+      const group = groups.get(name) || records.get(name);
+      const source = group?.origin === 'pkm-native' ? 'PKM native'
+        : group?.origin === 'unknown' ? 'Unknown host' : group?.hostKind || 'copilot';
+      const label = titles.get(name) || (group?.hostSessionId
+        ? `${source} Chat ${group.hostSessionId}${group.origin === 'external' ? ' (external)' : ''}`
+        : `Recovered Session: ${group?.task || group?.sessionId || 'Unknown origin'}`);
+      const icon = group?.hostKind === 'pkm' || group?.origin === 'pkm-native' ? '<span class="agent-session-pkm-icon" role="img" aria-label="PKM Chat" title="PKM Chat"></span>' : '<span class="codicon codicon-comment-discussion"></span>';
+      const portalState = records.get(name)?.portal || group?.portal;
+      const portal = portalState?.binding?.role;
+      const portalLabel = portal === 'controller' ? 'Controller' : portal === 'controlled' ? 'Controlled' : '';
+      const chat = records.get(name);
+      const dashboard = !archived && chat?.hostKind === 'pkm' && !chat.deletedAt;
+      const description = [label, portalLabel && `${portalLabel} · ${portalState.connected ? 'Connected' : 'Disconnected'}`,
+        emptyGroups.some(group => group.groupId === name) && 'No Task · Chat history is separate'].filter(Boolean).join(' · ');
+      const labelContent = `${icon}<span class="agent-session-chat-title" title="${esc(description)}">${esc(label)}</span>${portalLabel ? `<small class="agent-session-chat-portal" title="${esc(portalLabel)} · ${portalState.connected ? 'Connected' : 'Disconnected'}" aria-label="${esc(portalLabel)} · ${portalState.connected ? 'Connected' : 'Disconnected'}">${portalLabel} · ${portalState.connected ? 'Connected' : 'Disconnected'}</small>` : ''}`;
+      return `${dashboard ? `<button class="agent-session-chat-select" type="button" aria-label="Open Chat Dashboard: ${esc(label)}" aria-pressed="${selectedAgentChatId === chat.hostSessionId}" onclick="event.stopPropagation();agentSessionChatSelect(decodeURIComponent('${encodeURIComponent(chat.hostSessionId)}'))">${labelContent}</button>` : labelContent}<button class="cattree-item-menu" title="Chat Group actions" aria-label="Chat Group actions" onclick="event.stopPropagation();agentSessionFolderMenu(event,decodeURIComponent('${encodeURIComponent(name)}'))"><span class="codicon codicon-ellipsis"></span></button>`;
+    }
   })}</div>`;
+}
+
+function agentSessionGroupCount(sessions) {
+  const hiddenGroups = new Set((projectSnapshot?.agentSessionGroups || []).filter(group => group.deletedAt).map(group => group.groupId));
+  return new Set([
+    ...sessions.filter(session => !hiddenGroups.has(agentSessionGroupKey(session))).map(agentSessionGroupKey),
+    ...(projectSnapshot?.agentSessionGroups || []).filter(group => !group.deletedAt).map(group => group.groupId)
+  ]).size;
+}
+
+function renderNativeAgentArchitecture(session) {
+  if (session.origin !== 'pkm-native' || !session.nativeAgent) return '';
+  const config = session.nativeAgent;
+  const builtin = config.builtinTools;
+  const servers = config.mcpServers || [];
+  const enabledServers = servers.filter(server => server.enabled);
+  const node = (section, icon, title, labels, status) => `<button class="native-agent-node" title="${esc(labels.join(', ') || status)}" aria-label="Configure ${esc(title)}" onclick="ask('agentSessionConfigure',{sessionId:decodeURIComponent('${encodeURIComponent(session.sessionId)}'),section:'${section}'})"><span class="codicon codicon-${icon}" aria-hidden="true"></span><strong>${esc(title)}</strong><small>${esc(status)}</small>${labels.length ? `<span class="native-agent-items">${labels.map(esc).join(' · ')}</span>` : ''}</button>`;
+  return `<section class="native-agent-architecture" aria-label="Native Agent Configuration"><header><h4>Agent Configuration</h4><span>PKM native · ${esc(config.platform || 'host')}</span></header><div class="native-agent-inputs">${node('profiles','account','User / Agent Profiles',[], 'Inspect current cards / attempt snapshots')}${node('memory','database','Memory',config.memory || [],`${config.includeHistory ? 'History on' : 'History off'} · ${(config.memory || []).length} Tasks`)}${node('pkmSkills','book','PKM Skills',[], 'Automatic')}${node('externalSkills','extensions','External Skills',config.externalSkills || [],`${(config.externalSkills || []).length} attachments`)}${node('context','files','Context',config.context || [],`${(config.context || []).length} attachments`)}</div><div class="native-agent-connector"><span class="codicon codicon-arrow-down" aria-hidden="true"></span></div><div class="native-agent-model">${node('model','hubot',config.model || 'Model',[],config.contextWindow ? `${Number(config.contextWindow).toLocaleString()} context · ${Number(config.maxOutputTokens || 0).toLocaleString()} output` : 'Model budget')}</div><div class="native-agent-connector"><span class="codicon codicon-arrow-down" aria-hidden="true"></span></div><div class="native-agent-inputs">${node('tools','tools','Builtin Tools',builtin || [],builtin ? `${builtin.length} configured` : 'All configured tools')}${node('mcps','plug','MCP',servers.map(server => `${server.label}: ${server.enabled ? 'enabled' : 'disabled'} (${(server.tools || []).length} tools)`),enabledServers.length ? `${enabledServers.length} configured · connects per request` : 'Not connected')}</div></section>`;
+}
+
+function agentHarnessJson(value) {
+  try { return JSON.stringify(typeof value === 'string' ? JSON.parse(value) : value, null, 2); }
+  catch { return String(value || ''); }
+}
+
+function renderAgentHarness(session) {
+  const harness = session.harness;
+  if (!harness) return '';
+  const attempts = harness.attempts || [];
+  const latest = attempts.at(-1) || {};
+  const retrieval = latest.retrieval || [];
+  const actions = latest.toolCalls || [];
+  const recipes = session.runs || [];
+  const possibilities = latest.planning?.possibilities || harness.planning?.possibilities || [];
+  const phase = harness.currentPhase?.kind || harness.state || 'idle';
+  const state = kind => phase === kind ? 'active' : 'idle';
+  const node = (kind, icon, title, detail) => `<div class="agent-harness-node ${state(kind)}" data-harness-phase="${kind}"><span class="codicon codicon-${icon}" aria-hidden="true"></span><strong>${esc(title)}</strong><small>${esc(detail)}</small></div>`;
+  const recipeSpine = recipes.length ? recipes.map(run => {
+    const stages = run.nodes || [];
+    return `<div class="agent-recipe-spine"><header><span class="codicon codicon-library"></span><strong>${esc(run.recipeName || run.recipeId || 'Recipe')}</strong><small>r${Number(run.recipeRevision || 0)} · ${esc(run.status || 'unknown')}</small></header><div class="agent-recipe-stages">${stages.length ? stages.map((stage, index) => `<div class="agent-recipe-stage ${esc(stage.state || 'pending')}"><span>${index + 1}</span><strong>${esc(stage.title || stage.nodeId || stage.kind || `Stage ${index + 1}`)}</strong><small>${esc(stage.instruction || '')}</small></div>`).join('<i class="codicon codicon-arrow-right"></i>') : '<p>No persisted Recipe stages.</p>'}</div></div>`;
+  }).join('') : '<div class="agent-harness-empty">No Recipe framework is attached. Planning is not constrained by a reusable sequential spine.</div>';
+  const possibilityIds = new Set(possibilities.map(item => item.id));
+  const renderPossibilityNodes = (parentId, ancestors = new Set()) => {
+    const children = possibilities.filter(item => (item.parentId && possibilityIds.has(item.parentId) ? item.parentId : '') === parentId);
+    if (!children.length) return '';
+    return `<ul>${children.map(item => {
+      if (ancestors.has(item.id)) return `<li><article class="blocked"><strong>${esc(item.label || item.id)}</strong><small>Invalid planning cycle detected at ${esc(item.id)}.</small></article></li>`;
+      const nextAncestors = new Set(ancestors); nextAncestors.add(item.id);
+      return `<li><article class="${esc(item.status || 'candidate')}" data-parent-id="${esc(item.parentId || '')}"><header><strong>${esc(item.label || item.id || 'Possibility')}</strong><span>${esc(item.status || 'candidate')}${item.recipeStageId ? ` · Recipe: ${esc(item.recipeStageId)}` : ''}</span></header><p>${esc(item.summary || item.description || '')}</p><small>${esc(item.reason || 'No selection evidence recorded')}</small>${item.evidenceRefs?.length ? `<ol>${item.evidenceRefs.map(reference => `<li><code>${esc(reference)}</code></li>`).join('')}</ol>` : ''}</article>${renderPossibilityNodes(item.id, nextAncestors)}</li>`;
+    }).join('')}</ul>`;
+  };
+  const possibilityTree = possibilities.length
+    ? `<div class="agent-possibility-tree"><div class="agent-possibility-root"><strong>${esc(harness.currentProblem || 'Current problem')}</strong></div><div class="agent-possibility-branches">${renderPossibilityNodes('')}</div></div>`
+    : `<div class="agent-harness-empty"><strong>No explicit possibility tree persisted.</strong><span>The planner must record hypotheses/options, selected branch, rejected branches and evidence before this UI can display them. Retrieval candidates are not treated as solution possibilities.</span></div>`;
+  const recipeDetails = recipes.length ? recipes.map(run => `<details><summary><strong>${esc(run.recipeName || run.recipeId || 'Recipe')}</strong><span>r${Number(run.recipeRevision || 0)} · ${esc(run.status || 'unknown')}</span></summary><p>${esc((run.nodes || []).map(item => item.instruction).filter(Boolean).slice(0,3).join(' · ') || 'No persisted planning guidance')}</p><code>${esc(run.recipeId || run.runId || '')}</code></details>`).join('') : '<p>No Recipe framework is attached to this Session.</p>';
+  const retrievalDetails = retrieval.length ? retrieval.map((step, index) => {
+    const receipt = step.receipt || {};
+    const candidates = receipt.candidates || [];
+    return `<details><summary><strong>${esc(step.kind || `Retrieval ${index + 1}`)}</strong><span>${Number(receipt.selectedCount || 0)} selected / ${candidates.length} shown${step.durationMs !== undefined ? ` · ${Number(step.durationMs)} ms` : ''}</span></summary><p class="agent-harness-query"><b>Query</b> ${esc(receipt.query || '')}</p>${receipt.warning ? `<p role="alert">${esc(receipt.warning)}</p>` : ''}<ol class="agent-harness-candidates">${candidates.map(candidate => `<li class="${candidate.selected ? 'selected' : 'excluded'}"><header><strong>${esc(candidate.label || candidate.id)}</strong><span>${candidate.selected ? 'selected' : 'excluded'} · ${Number(candidate.score || 0).toFixed(4)}</span></header><p>${esc(candidate.reason || '')}</p><code>${esc(candidate.method || '')} · ${esc(candidate.sourceUri || '')}${candidate.range ? ` · ${candidate.range.start}-${candidate.range.end} ${candidate.range.unit}` : ''}</code></li>`).join('')}</ol></details>`;
+  }).join('') : '<p>No persisted retrieval receipt for the latest attempt.</p>';
+  const actionDetails = actions.length ? actions.map(call => `<details><summary><strong>${esc(call.name)}</strong><span>${esc(call.status)} · solves current ${esc(call.problemSource || 'input')}</span></summary><p><b>Associated problem</b> ${esc(call.associatedProblem || latest.associatedProblem || '')}</p><h5>Arguments</h5><pre>${esc(agentHarnessJson(call.arguments))}</pre><h5>Result preview</h5><pre>${esc(call.resultPreview || '(No recorded result)')}</pre>${call.resultCharacters > (call.resultPreview || '').length ? `<small>${Number(call.resultCharacters).toLocaleString()} result characters; preview is bounded.</small>` : ''}</details>`).join('') : '<p>No function or Action call in the latest attempt.</p>';
+  const transitions = latest.progress?.transitions || [];
+  const transitionDetails = transitions.length ? `<ol class="agent-harness-transitions">${transitions.map(item => `<li data-status="${esc(item.status)}"><span></span><strong>${esc(item.label)}</strong><time>${esc(new Date(item.at).toISOString())}</time></li>`).join('')}</ol>` : '<p>No state transitions recorded.</p>';
+  const queued = harness.queuedInputs || [];
+  return `<section class="agent-harness" aria-label="Observable Agent Harness"><header><div><span>Observable Harness</span><h4>${esc(harness.currentPhase?.label || harness.state)}</h4></div><p>Recipe supplies the validated sequential framework; planning expands a task-specific possibility tree and prunes it with evidence. This does not claim to expose hidden model chain-of-thought.</p></header><section class="agent-harness-recipe" aria-label="Recipe sequential framework"><h5>Sequential framework · Recipe</h5>${recipeSpine}</section><section class="agent-harness-possibilities" aria-label="Planning possibility tree"><h5>Possibility tree · task-specific planning</h5>${possibilityTree}</section><div class="agent-harness-flow">${node('planning','request-changes','Input / Planning', harness.currentProblemSource || 'user input')}<i class="codicon codicon-arrow-right"></i>${node('retrieval','references','Retrieve Evidence', retrieval.length ? `${retrieval.length} receipts` : 'no receipt')}<i class="codicon codicon-arrow-right"></i>${node('model','hubot','Select / Replan', latest.model || session.nativeAgent?.model || 'model')}<i class="codicon codicon-arrow-right"></i>${node('action','tools','Act / Observe', actions.length ? `${actions.length} calls` : 'no call')}<i class="codicon codicon-arrow-right"></i>${node('waiting','clock','Validate / Wait', harness.waiting?.detail || latest.validation?.responseStatus || harness.state)}</div><div class="agent-harness-grid"><details open><summary>Current input and problem</summary><pre>${esc(harness.currentProblem || '(No persisted input)')}</pre>${queued.length ? `<h5>Queued steering / tasks</h5><ol>${queued.map(input => `<li><strong>${esc(input.mode)}</strong> ${esc(input.text)}</li>`).join('')}</ol>` : ''}</details><details><summary>Recipe planning frameworks <span>${recipes.length}</span></summary>${recipeDetails}</details><details><summary>Retrieval and memory receipts <span>${retrieval.length}</span></summary>${retrievalDetails}</details><details><summary>Actions and function calls <span>${actions.length}</span></summary>${actionDetails}</details><details><summary>Harness state transitions <span>${transitions.length}</span></summary>${transitionDetails}</details><details><summary>Validation and summary</summary><pre>${esc(agentHarnessJson(latest.validation || { state:harness.state }))}</pre></details></div></section>`;
+}
+
+let nativeHarnessView = null;
+let nativeHarnessSessionId = '';
+let nativeHarnessRequestSequence = 0;
+const nativeHarnessRequests = new Map();
+function requestNativeHarness(method, params) {
+  return new Promise((resolve, reject) => {
+    const requestId = `native-harness-${++nativeHarnessRequestSequence}`;
+    const timer = setTimeout(() => { nativeHarnessRequests.delete(requestId); reject(new Error('The native Harness request timed out. Refresh to retry.')); }, 30000);
+    nativeHarnessRequests.set(requestId, { resolve, reject, timer });
+    vscode.postMessage({ command:'nativeHarness', requestId, method, params });
+  });
+}
+window.addEventListener('message', event => {
+  if (event.data?.command !== 'nativeHarnessResult') return;
+  const pending = nativeHarnessRequests.get(event.data.requestId);
+  if (!pending) return;
+  nativeHarnessRequests.delete(event.data.requestId); clearTimeout(pending.timer);
+  if (event.data.error) pending.reject(new Error(event.data.error)); else pending.resolve(event.data.data);
+});
+function nativeHarnessStateChanged() {
+  if (state.tab !== 'agentSessions' || !nativeHarnessView?.root.isConnected) return false;
+  nativeHarnessView.notify();
+  return true;
 }
 
 function renderAgentSessions() {
   if (state.tab !== 'agentSessions') return;
   const detail = document.getElementById('detail');
+  const nativeFocus = nativeHarnessView?.root.contains(document.activeElement) ? document.activeElement : null;
+  const previousSessionId = detail.dataset?.agentSessionId;
+  const inlineView = captureRefreshView(detail, ['.agent-session-overview-graph','.agent-runtime-graph']);
   const previousTreeScroll = detail.querySelector?.('.agent-session-tree-scroll')?.scrollTop || 0;
   const previousContentScroll = detail.querySelector?.('.agent-session-content')?.scrollTop || 0;
   const focused = document.activeElement?.closest?.('[data-run-id][data-node-id]');
@@ -2755,14 +3132,22 @@ function renderAgentSessions() {
   const activeSessions = sessions.filter(session => session.status === 'running');
   const archivedSessions = sessions.filter(session => session.status !== 'running');
   const selectableSessions = [...sessions, ...trash];
-  if (!selectableSessions.some(session => session.sessionId === selectedAgentSessionId)) selectedAgentSessionId = activeSessions[0]?.sessionId || archivedSessions[0]?.sessionId || trash[0]?.sessionId || '';
+  const selectedChat = (projectSnapshot?.agentSessionGroups || []).find(group =>
+    group.hostKind === 'pkm' && !group.deletedAt && group.hostSessionId === selectedAgentChatId && agentSessionMatchesPortal(group.groupId));
+  if (!selectedChat) selectedAgentChatId = '';
+  if (!selectedChat && !selectableSessions.some(session => session.sessionId === selectedAgentSessionId)) selectedAgentSessionId = activeSessions[0]?.sessionId || archivedSessions[0]?.sessionId || trash[0]?.sessionId || '';
   const selectedRecord = selectableSessions.find(session => session.sessionId === selectedAgentSessionId);
-  const selected = selectedRecord && {...selectedRecord, runs:selectedRecord.runs || []};
+  const selected = selectedChat
+    ? { origin:'pkm-native', sessionId:selectedChat.hostSessionId, hostSessionId:selectedChat.hostSessionId,
+      task:selectedChat.title, status:'unknown', runs:[], todos:[] }
+    : selectedRecord && {...selectedRecord, runs:selectedRecord.runs || []};
   const trashList = trash.map(session => `<div class="li knowledge-trash-item cattree-item agent-session-trash-row ${session.sessionId === selectedAgentSessionId ? 'active' : ''}" role="button" tabindex="0" onclick="agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();agentSessionSelect(decodeURIComponent('${encodeURIComponent(session.sessionId)}'))}" oncontextmenu="agentSessionTrashContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'))"><div><strong>${esc(session.task)}</strong><small>${esc(session.agent?.name || 'Agent')}</small></div><button class="cattree-item-menu" title="Trash actions" aria-label="Trash actions for ${esc(session.task)}" onclick="event.stopPropagation();agentSessionTrashContextMenu(event,decodeURIComponent('${encodeURIComponent(session.sessionId)}'))"><span class="codicon codicon-ellipsis"></span></button></div>`).join('');
-  const list = agentSessionTree(sessions);
-  const empty = `<div class="agent-session-empty"><span class="codicon codicon-run-all"></span><strong>No Agent Sessions</strong><p>An Agent appears here only after it explicitly accepts PKM management with agent_session_start.</p></div>`;
+  const list = agentSessionTree(sessions) || '<p class="empty">No Chat Groups match this Portal filter.</p>';
+  const empty = `<div class="agent-session-empty"><span class="codicon codicon-run-all"></span><strong>No Agent Sessions</strong><p>Select a Chat name to inspect its execution records. Managed Tasks appear only after an Agent explicitly accepts PKM management with agent_session_start.</p></div>`;
   let content = empty;
-  if (selected) {
+  const native = selected?.origin === 'pkm-native' && !selected.trashedAt;
+  if (native) content = '<div id="native-agent-harness"></div>';
+  else if (selected) {
     const nodes = selected.runs.flatMap(run => run.nodes || []);
     const terminal = nodes.filter(node => ['succeeded','failed','skipped'].includes(node.state)).length;
     const running = nodes.find(node => node.state === 'running');
@@ -2778,13 +3163,38 @@ function renderAgentSessions() {
     const progressDone = sessionTodos.length ? todoTerminal : terminal;
     const progressTotal = sessionTodos.length || nodes.length;
     const percent = progressTotal ? Math.round(progressDone * 100 / progressTotal) : 0;
-    content = `<div class="agent-dashboard"><header class="agent-session-head"><div><span>PKM-managed Agent Session</span><h3>${esc(selected.task)}</h3><p>${esc(selected.sessionId)} · Updated ${esc(selected.updatedAt || 'unknown')}</p></div><div class="agent-session-head-actions"><button class="tbtn" title="Refresh without resetting graph focus" onclick="agentSessionRefresh()"><span class="codicon codicon-refresh"></span>Refresh</button><span class="agent-status ${selected.status === 'running' ? 'running' : ''}">${selected.status === 'running' ? '<i class="agent-live-dot"></i> ' : ''}${esc(selected.status)}</span>${agentSessionLivenessLabel(selected.liveness) ? `<span class="agent-session-liveness ${esc(selected.liveness.state)}" title="Heartbeat age: ${selected.liveness.heartbeatAgeSeconds === null ? 'unknown' : `${Math.round(selected.liveness.heartbeatAgeSeconds)}s`} · Lease: ${selected.liveness.leaseSeconds}s">${esc(agentSessionLivenessLabel(selected.liveness))}</span>` : ''}</div></header><div class="agent-session-summary"><div><span>Agent</span><strong>${esc(selected.agent?.name || 'Agent')}</strong><small>${esc(selected.agent?.product || '')}</small></div><div><span>Current task</span><strong>${esc(runningTodo?.title || running?.nodeId || (selected.runs.length ? 'No running node' : 'Awaiting task plan'))}</strong><small>${esc(selected.lastActivity?.tool || 'Registered')}</small></div><div><span>${sessionTodos.length ? 'Session todos' : 'Task runs'}</span><strong>${sessionTodos.length || selected.runs.length}</strong><small>${sessionTodos.length ? `${sessionTodos.filter(todo => todo.status === 'pending').length} queued` : `${nodes.length} graph tasks`}</small></div><div><span>Progress</span><strong>${progressDone} / ${progressTotal}</strong><small>${percent}% complete</small><div class="agent-progress" aria-label="${progressDone} of ${progressTotal} tasks terminal"><i style="width:${percent}%"></i></div></div></div>${selected.checkpoint ?  `<div class="agent-checkpoint-strip"><span class="codicon codicon-save"></span><div><strong>Checkpoint ${selected.checkpoint.sequence}</strong><small>${esc(selected.checkpoint.summary || selected.checkpoint.reason || 'Recovery state saved')} · ${selected.checkpoint.nextActionCount} next actions</small></div><code>${esc(selected.checkpoint.checkpointId)}</code></div>` : ''}${agentSessionTodoFlow(selected, sessionTodos, selected.runs)}</div>${agentSessionFullscreenGraph(selected)}`;
+    content = `<div class="agent-dashboard"><header class="agent-session-head"><div><span>PKM-managed Agent Session</span><h3>${esc(selected.task)}</h3><p>${esc(selected.sessionId)} · Updated ${esc(selected.updatedAt || 'unknown')}</p></div><div class="agent-session-head-actions"><button class="tbtn" title="Refresh without resetting graph focus" onclick="agentSessionRefresh()"><span class="codicon codicon-refresh"></span>Refresh</button><span class="agent-status ${selected.status === 'running' ? 'running' : ''}">${selected.status === 'running' ? '<i class="agent-live-dot"></i> ' : ''}${esc(selected.status)}</span>${agentSessionLivenessLabel(selected.liveness) ? `<span class="agent-session-liveness ${esc(selected.liveness.state)}" title="Heartbeat age: ${selected.liveness.heartbeatAgeSeconds === null ? 'unknown' : `${Math.round(selected.liveness.heartbeatAgeSeconds)}s`} · Lease: ${selected.liveness.leaseSeconds}s">${esc(agentSessionLivenessLabel(selected.liveness))}</span>` : ''}</div></header>${renderAgentHarness(selected)}<div class="agent-session-summary"><div><span>Agent</span><strong>${esc(selected.agent?.name || 'Agent')}</strong><small>${esc(selected.agent?.product || '')}</small></div><div><span>Current task</span><strong>${esc(runningTodo?.title || running?.nodeId || (selected.runs.length ? 'No running node' : 'Awaiting task plan'))}</strong><small>${esc(selected.lastActivity?.tool || 'Registered')}</small></div><div><span>${sessionTodos.length ? 'Session todos' : 'Task runs'}</span><strong>${sessionTodos.length || selected.runs.length}</strong><small>${sessionTodos.length ? `${sessionTodos.filter(todo => todo.status === 'pending').length} queued` : `${nodes.length} graph tasks`}</small></div><div><span>Progress</span><strong>${progressDone} / ${progressTotal}</strong><small>${percent}% complete</small><div class="agent-progress" aria-label="${progressDone} of ${progressTotal} tasks terminal"><i style="width:${percent}%"></i></div></div></div>${selected.checkpoint ?  `<div class="agent-checkpoint-strip"><span class="codicon codicon-save"></span><div><strong>Checkpoint ${selected.checkpoint.sequence}</strong><small>${esc(selected.checkpoint.summary || selected.checkpoint.reason || 'Recovery state saved')} · ${selected.checkpoint.nextActionCount} next actions</small></div><code>${esc(selected.checkpoint.checkpointId)}</code></div>` : ''}${agentSessionTodoFlow(selected, sessionTodos, selected.runs)}</div>${agentSessionFullscreenGraph(selected)}`;
   }
-  detail.innerHTML = `<div class="agent-sessions-workspace ${agentSessionTreeCollapsed ? 'cattree-collapsed' : ''}"><aside class="agent-session-list"><div class="agent-session-list-head"><strong>Agent Sessions</strong><span>${sessions.length} ${sessions.length === 1 ? 'session' : 'sessions'}</span></div><div class="agent-session-tree-scroll" oncontextmenu="if(event.target===this)agentSessionRootMenu(event)">${list}</div>${catTreeTrashDock('Trash', trash.length, trashList, 'emptyAgentSessionTrash()')}</aside>${workspaceCatTreeDivider('agentSessions',agentSessionTreeCollapsed)}<main class="agent-session-content">${content}</main></div>`;
+  if (selected && !native) content = renderNativeAgentArchitecture(selected) + content;
+  if (native) content = `<div class="agent-session-head-actions"><button class="tbtn" onclick="nativeHarnessView.showProfiles()" title="View the current Profile assigned to this session">Session Profile</button>${selected.hostSessionId ? `<button class="tbtn" onclick="ask('peerCollaboration',{chatId:decodeURIComponent('${encodeURIComponent(selected.hostSessionId)}')})" title="Portal for this Chat"><span class="codicon codicon-remote"></span>PKM Portal</button>` : ''}</div>` + content;
+  const groupCount = agentSessionGroupCount(sessions);
+  const binding = selectedChat ? `<p class="agent-session-group-binding">PKM Chat: ${esc(selectedChat.title)}<br>Chat execution view. Selecting a Chat does not create a managed Task or a Recipe binding.</p>`
+    : selected ? `<p class="agent-session-group-binding">${selected.hostSessionId || selected.liveness?.hostSessionId ? 'Group' : 'Recovered Group'}: ${esc(agentSessionGroupKey(selected))}<br>Task: ${esc(selected.taskId || selected.sessionId)}<br>Grouping preserves task history; host model context is not isolated.</p>` : '';
+  detail.innerHTML = `<div class="agent-sessions-workspace ${agentSessionTreeCollapsed ? 'cattree-collapsed' : ''}"><aside class="agent-session-list"><div class="agent-session-list-head"><strong>Chat Groups</strong><span>${groupCount} groups · ${sessions.length} tasks total</span></div><label>Portal <select aria-label="Filter Chat Groups by Portal role" onchange="agentSessionSetPortalFilter(this.value)">${[['all','All Chats'],['controller','Controller'],['controlled','Controlled'],['connected','Connected'],['none','No Portal role']].map(([value,label])=>`<option value="${value}"${value === agentSessionPortalFilter ? ' selected' : ''}>${label}</option>`).join('')}</select></label><button class="tbtn" onclick="document.querySelector('.tab[data-tab=portalConnections]').click()">Portal Connections overview</button><p class="agent-session-group-binding">Counts are managed Tasks, not messages or model rounds. A Chat can have history without any managed Task.</p><div class="agent-session-tree-scroll" oncontextmenu="if(event.target===this)agentSessionRootMenu(event)">${list}</div>${catTreeTrashDock('Trash', trash.length, trashList, 'emptyAgentSessionTrash()')}</aside>${workspaceCatTreeDivider('agentSessions',agentSessionTreeCollapsed)}<main class="agent-session-content">${binding}${content}</main></div>`;
+  if (native) {
+    const host = detail.querySelector('#native-agent-harness');
+    if (!nativeHarnessView || nativeHarnessSessionId !== selected.sessionId) {
+      nativeHarnessView?.dispose();
+      nativeHarnessSessionId = selected.sessionId;
+      nativeHarnessView = PkmAgentHarness.mount(host, { initial:selected,
+        configureProfiles:() => ask('agentSessionConfigure', { sessionId:selected.sessionId, section:'profiles' }),
+        request:selectedChat ? (method, params) => requestNativeHarness(method, { ...params, chatId:selectedChat.hostSessionId }) : requestNativeHarness,
+        ...(!selectedChat ? { openBrowser:sessionId => requestNativeHarness('openBrowser', { sessionId }) } : {}) });
+      void nativeHarnessView.refresh(true);
+    } else nativeHarnessView.attach(host);
+    if (nativeFocus?.isConnected) nativeFocus.focus({ preventScroll:true });
+  } else {
+    nativeHarnessView?.dispose(); nativeHarnessView = null; nativeHarnessSessionId = '';
+  }
+  const statusElement = detail.querySelector?.('.agent-session-head .agent-status');
+  if (selected && statusElement) { statusElement.className = 'agent-status'; statusElement.innerHTML = agentSessionStatusIndicator(selected); }
   const nextTree = detail.querySelector?.('.agent-session-tree-scroll');
   const nextContent = detail.querySelector?.('.agent-session-content');
   if (nextTree) nextTree.scrollTop = previousTreeScroll;
   if (nextContent) nextContent.scrollTop = previousContentScroll;
+  const selectionId = selectedAgentChatId || selectedAgentSessionId;
+  if (previousSessionId === selectionId) restoreRefreshView(detail, inlineView);
+  if (detail.dataset) detail.dataset.agentSessionId = selectionId;
   const nextGraphStage = detail.querySelector?.('.agent-session-graph-stage');
   const graphViewport = agentSessionGraphViewport[agentSessionFullscreenRunId];
   if (nextGraphStage && graphViewport) {
@@ -2810,32 +3220,42 @@ function renderAgentSessions() {
 function renderAgentSnapshots() {
   if (state.tab !== 'agentSnapshots') return;
   const detail = document.getElementById('detail');
+  const view = captureRefreshView(detail);
+  const previousSnapshotId = detail.dataset?.agentSnapshotId;
+  const previousSource = document.getElementById('agent-snapshot-source')?.value;
+  const expandedRecords = [...(detail.querySelectorAll?.('.agent-snapshot-capture') || [])].map(record => record.open);
   const snapshots = projectSnapshot?.agentSnapshots || [];
   const sessions = projectSnapshot?.agentSessions || [];
   if (!snapshots.some(snapshot => snapshot.snapshotId === selectedAgentSnapshotId)) {
     selectedAgentSnapshotId = snapshots[0]?.snapshotId || '';
   }
   const selected = snapshots.find(snapshot => snapshot.snapshotId === selectedAgentSnapshotId);
-  const preferredSessionId = sessions.some(session => session.sessionId === selectedAgentSessionId)
-    ? selectedAgentSessionId : sessions.find(session => session.status === 'running')?.sessionId || sessions[0]?.sessionId || '';
+  const preferredSessionId = sessions.some(session => session.sessionId === previousSource) ? previousSource
+    : sessions.some(session => session.sessionId === selectedAgentSessionId)
+      ? selectedAgentSessionId : sessions.find(session => session.status === 'running')?.sessionId || sessions[0]?.sessionId || '';
   const sourceOptions = sessions.map(session => `<option value="${esc(session.sessionId)}" ${session.sessionId === preferredSessionId ? 'selected' : ''}>${esc(session.task)} · ${esc(session.status)}</option>`).join('');
-  const create = `<section class="agent-snapshot-create"><div><span>Capture current durable state</span><strong>Create Agent Snapshot</strong><p>Saves the Session, ordered todos, checkpoints, and linked Recipe runs. The source Session remains unchanged.</p></div><label>Source Agent Session<select id="agent-snapshot-source" ${sessions.length ? '' : 'disabled'}>${sourceOptions || '<option value="">No Agent Sessions available</option>'}</select></label><button class="pk-button primary" data-pending-label="Creating…" onclick="agentSnapshotCreate(this)" ${sessions.length ? '' : 'disabled'}><span class="codicon codicon-save"></span>Create Snapshot</button></section>`;
+  const create = `<section class="agent-snapshot-create"><div><span>Capture current durable state</span><strong>Create Agent Snapshot</strong><p>Saves the PKM Chat Session, conversation, ordered todos, checkpoints, and linked Recipe runs. The source Session remains unchanged.</p></div><label>Source Agent Session<select id="agent-snapshot-source" ${sessions.length ? '' : 'disabled'}>${sourceOptions || '<option value="">No Agent Sessions available</option>'}</select></label><button class="pk-button primary" data-pending-label="Creating…" onclick="agentSnapshotCreate(this)" ${sessions.length ? '' : 'disabled'}><span class="codicon codicon-save"></span>Create Snapshot</button></section>`;
   const list = snapshots.length ? agentSnapshotTree(snapshots) : `<div class="agent-snapshot-empty"><span class="codicon codicon-save"></span><strong>No Agent Snapshots</strong><p>Create one before closing a resource-heavy conversation.</p></div>`;
   let content = `<div class="agent-snapshot-empty detail"><span class="codicon codicon-key"></span><strong>Choose or create a Snapshot</strong><p>A Snapshot can be recovered repeatedly into independent Agent Sessions.</p></div>`;
   if (selected) {
     const encodedMagic = encodeURIComponent(selected.magicCode);
     const encodedPrompt = encodeURIComponent(agentSnapshotRecoveryPrompt(selected.magicCode));
-    content = `<article class="agent-snapshot-detail"><header><div><span>Immutable recovery point</span><div class="agent-snapshot-title"><h3>${esc(selected.name || selected.task)}</h3><button class="ibtn" title="Rename Snapshot" aria-label="Rename Snapshot" onclick="agentSnapshotRename(decodeURIComponent('${encodeURIComponent(selected.snapshotId)}'))"><span class="codicon codicon-edit" aria-hidden="true"></span></button></div><p>${esc(selected.snapshotId)}</p></div><b>${selected.recoveryCount || 0} recoveries</b></header><section class="agent-snapshot-identity"><div><span>Magic Code</span><code>${esc(selected.magicCode)}</code><button class="pk-button secondary" onclick="agentSnapshotCopy(decodeURIComponent('${encodedMagic}'),this)">Copy</button><button class="pk-button secondary" onclick="agentSnapshotCopy(decodeURIComponent('${encodedPrompt}'),this)">Copy Recovery Prompt</button></div><p>No recovery password is created or stored. The payload uses the fixed local <code>uone</code> obfuscation key only to avoid plaintext on disk; it is not credential protection. Keep the Snapshot in this Knowledge Root, or explicitly select it for GitHub Sync before recovering elsewhere.</p></section><div class="agent-snapshot-metrics"><div><span>Source Session</span><strong>${esc(selected.sourceSessionId)}</strong></div><div><span>Captured</span><strong>${esc(selected.createdAt)}</strong></div><div><span>Session Todos</span><strong>${selected.todoCount || 0}</strong></div><div><span>Recipe Runs</span><strong>${selected.recipeRunCount || 0}</strong></div></div><section class="agent-snapshot-recover"><span class="codicon codicon-debug-restart"></span><div><strong>Recover in a new conversation</strong><ol><li>Open a new Copilot session in this Knowledge Root, or restore the Snapshot through GitHub Sync first.</li><li>Paste the recovery prompt containing the Magic Code and explicit PKM recovery-tool instruction.</li><li>The Agent calls <code>agent_session_snapshot_recover</code> before starting any new Agent Session, then continues the captured todos and Recipe runs.</li></ol><p>Each recovery creates a new independent Session. Right-click this Snapshot to delete it when it is no longer needed.</p></div></section></article>`;
+    content = `<article class="agent-snapshot-detail"><header><div><span>Immutable recovery point</span><div class="agent-snapshot-title"><h3>${esc(selected.name || selected.task)}</h3><button class="ibtn" title="Rename Snapshot" aria-label="Rename Snapshot" onclick="agentSnapshotRename(decodeURIComponent('${encodeURIComponent(selected.snapshotId)}'))"><span class="codicon codicon-edit" aria-hidden="true"></span></button></div><p>${esc(selected.snapshotId)}</p></div><b>${selected.recoveryCount || 0} recoveries</b></header><section class="agent-snapshot-identity"><div><span>Magic Code</span><code>${esc(selected.magicCode)}</code><button class="pk-button secondary" onclick="agentSnapshotCopy(decodeURIComponent('${encodedMagic}'),this)">Copy</button><button class="pk-button secondary" onclick="agentSnapshotCopy(decodeURIComponent('${encodedPrompt}'),this)">Copy Read Prompt</button></div><p>No recovery password is created or stored. The payload uses the fixed local <code>uone</code> obfuscation key only to avoid plaintext on disk; it is not credential protection. Keep the Snapshot in this Knowledge Root, or explicitly select it for GitHub Sync before recovering elsewhere.</p></section><div class="agent-snapshot-metrics"><div><span>Source Session</span><strong>${esc(selected.sourceSessionId)}</strong></div><div><span>Captured</span><strong>${esc(selected.createdAt)}</strong></div><div><span>Session Todos</span><strong>${selected.todoCount || 0}</strong></div><div><span>Recipe Runs</span><strong>${selected.recipeRunCount || 0}</strong></div></div><section class="agent-snapshot-recover"><span class="codicon codicon-debug-restart"></span><div><strong>Recover into a new PKM Chat</strong><ol><li>PKM creates a new Chat and Task from this Snapshot. PKM Snapshots also restore the conversation and clone Recipe runs; Snapshots without Recipes restore task, todos and checkpoints only.</li><li>Unfinished todos become pending; running Recipe nodes restart as pending.</li><li>Any other agent can read the same state with the Copy Read Prompt (<code>agent_session_snapshot_read</code>); reading never creates an Agent Session.</li></ol><p>Each recovery creates a new independent PKM Chat. Right-click this Snapshot to delete it when it is no longer needed.</p><button class="pk-button primary" data-pending-label="Recovering…" onclick="agentSnapshotRecover(decodeURIComponent('${encodeURIComponent(selected.snapshotId)}'),this)"><span class="codicon codicon-debug-restart"></span>Recover into New PKM Chat</button></div></section></article>`;
   }
   const contents = selected ? agentSnapshotContentsView(selected.snapshotId) : '';
   if (!selected) agentSnapshotContentsState = null;
   detail.innerHTML = `<div class="agent-snapshot-page">${create}<div class="agent-snapshot-workspace"><aside><header><strong>Agent Snapshots</strong><span>${snapshots.length}</span></header><div>${list}</div></aside><main>${content}${contents}</main></div></div>`;
+  if (previousSnapshotId === selectedAgentSnapshotId) {
+    [...(detail.querySelectorAll?.('.agent-snapshot-capture') || [])].forEach((record, index) => { record.open = !!expandedRecords[index]; });
+    restoreRefreshView(detail, view);
+  }
+  if (detail.dataset) detail.dataset.agentSnapshotId = selectedAgentSnapshotId;
 }
 
 function agentSnapshotTree(snapshots) {
   const tree = buildCatTree(snapshots, snapshot => [
     snapshot.agent?.name || 'Agent',
-    snapshot.sourceHostSessionId ? `Copilot Session ${snapshot.sourceHostSessionId}` : 'Unlinked sessions'
+    snapshot.sourceHostSessionId ? `${snapshot.sourceHostKind === 'pkm' ? 'PKM Chat' : 'External Session'} ${snapshot.sourceHostSessionId}` : 'Unlinked sessions'
   ], 'Unlinked sessions');
   return renderCatTree(tree, [], 0, (snapshot, depth) => {
     const id = encodeURIComponent(snapshot.snapshotId);
@@ -2885,7 +3305,7 @@ function projectGanttBody(project, threads) {
   const rows = tasks.map(task => {
     const thread = threads.find(candidate => candidate.threadId === task.threadId);
     const dependencies = task.dependencyIds.map(id => tasks.find(candidate => candidate.taskId === id)?.title || id);
-    return `<tr><th scope="row"><button class="gantt-title-button" onclick="projectGanttEdit('${esc(task.taskId)}')">${esc(task.title)}</button><small>${esc(task.taskId)}</small></th><td>${esc(thread?.name || 'Project')}</td><td>${esc(task.startDate)} → ${esc(task.endDate)}</td><td><span class="gantt-status ${esc(task.status)}">${esc(task.status)}</span> ${task.progress}%</td><td>${esc(task.owners.map(owner => `${owner.name} (${owner.role})`).join(', ') || '—')}</td><td>${esc(dependencies.join(', ') || '—')}</td><td><button class="tbtn" onclick="projectGanttEdit('${esc(task.taskId)}')">Edit</button><button class="tbtn danger" onclick="projectGanttDelete('${esc(task.taskId)}')">Delete</button></td></tr>`;
+    return `<tr><th scope="row"><button class="gantt-title-button" onclick="projectGanttEdit('${esc(task.taskId)}')">${esc(task.title)}</button><small>${esc(task.taskId)}</small></th><td>${esc(thread?.name || 'Project')}</td><td>${esc(task.startDate)} → ${esc(task.endDate)}</td><td><span class="gantt-status ${esc(task.status)}">${esc(task.projection?.state || task.status)}</span> ${task.progress}% ${pkmExecutionDetails(task.projection)}</td><td>${esc(task.owners.map(owner => `${owner.name} (${owner.role})`).join(', ') || '—')}</td><td>${esc(dependencies.join(', ') || '—')}</td><td><button class="tbtn" onclick="projectGanttEdit('${esc(task.taskId)}')">Edit</button><button class="tbtn danger" onclick="projectGanttDelete('${esc(task.taskId)}')">Delete</button></td></tr>`;
   }).join('');
   const form = `<form class="gantt-editor" onsubmit="event.preventDefault();projectGanttSave(this.querySelector('[type=submit]'))">
     <header><div><span>${selected ? 'Update scheduled work' : 'Add scheduled work'}</span><strong>${selected ? esc(selected.title) : 'New Gantt task'}</strong></div>${selected ? `<button type="button" class="tbtn" onclick="projectGanttCancel()">Cancel</button>` : ''}</header>
@@ -2910,11 +3330,9 @@ function projectSectionBody(project, threads, recipes) {
     result.completed += summary.completed; result.remaining += summary.remaining; result.total += summary.total;
     return result;
   }, { completed:0, remaining:0, total:0 });
-  if (projectRoute.section === 'Overview') return `
-    <div class="project-metrics" aria-label="Project counts">
-      <div><strong>${threads.length}</strong><span>Threads</span></div><div><strong>${totals.completed}</strong><span>Todos complete</span></div><div><strong>${totals.remaining}</strong><span>Todos remaining</span></div><div><strong>${activeAgents}</strong><span>Active Agents</span></div>
-    </div>
-    <section class="project-band"><h3>Current Todos</h3>${executions.length ? executions.map(execution => { const summary = todoExecutionSummary(execution); return `<button class="project-current-todo" onclick="projectSection('Todos')"><span><strong>${esc(summary.current?.title || execution.task)}</strong><small>${esc(execution.agent.name)} · ${summary.completed} complete · ${summary.remaining} remaining</small></span><span class="codicon codicon-chevron-right"></span></button>`; }).join('') : projectZero('No active Todos','Todo executions associated with this Project will appear here.')}</section>
+  if (projectRoute.section === 'Now') return projectCockpitNow(project);
+  if (['Artifacts','Decisions','Timeline'].includes(projectRoute.section)) return projectCockpitEvidence(project, projectRoute.section);
+  if (projectRoute.section === 'Overview') return `${projectCockpitOverview(project)}
     <section class="project-band"><div class="project-band-heading"><h3>Threads</h3><button class="project-band-link" onclick="projectSection('Threads')">View all ${threads.length} <span class="codicon codicon-chevron-right" aria-hidden="true"></span></button></div>${threads.length ? `<div class="project-thread-compact">${threads.slice(0,5).map(thread => `<button onclick="projectOpenThread('${esc(thread.threadId)}')"><span class="project-thread-compact-main"><strong>${esc(thread.name)}</strong><small>${thread.systemKind === 'general-thread' ? 'System thread' : thread.archived ? 'Archived' : thread.chatroom ? 'Chatroom linked' : 'No chatroom linked'}</small></span><span class="codicon codicon-chevron-right" aria-hidden="true"></span></button>`).join('')}</div>` : projectZero('No Threads','Create a Thread to begin project work.')}</section>`;
   if (projectRoute.section === 'Todos') {
     const label = projectRoute.workflowView;
@@ -2946,12 +3364,17 @@ function renderProjects() {
   const executions = projectTodoExecutions(project);
   const activeAgents = new Set(executions.filter(execution => execution.agent.state === 'Running').map(execution => execution.agent.id)).size;
   detail.innerHTML = `<div class="projects-workspace ${projectTreeCollapsed ? 'cattree-collapsed' : ''}">
-    <aside class="project-tree" aria-label="Projects"><div class="project-tree-head"><strong>Projects</strong><button class="tbtn" onclick="projectNew()">New Project</button></div>
-      ${projectSnapshot.projects.map(candidate => `<button class="project-tree-item ${candidate.projectId === project.projectId ? 'active' : ''}" onclick="projectSelect('${esc(candidate.projectId)}')"><span>${esc(candidate.name)}</span><small>${candidate.systemKind === 'default-project' ? 'System · Default' : `${projectSnapshot.threads.filter(thread => thread.projectId === candidate.projectId).length} Threads`}</small></button>`).join('')}</aside>${workspaceCatTreeDivider('projects',projectTreeCollapsed)}
-    <div class="project-content"><header class="project-header"><div><span>${project.systemKind === 'default-project' ? 'System Project' : 'Project'}</span><h2>${esc(project.name)}</h2><p>${threads.length} Threads · ${executions.length} Todo Executions · ${activeAgents} Active Agents</p></div><button class="tbtn" onclick="projectNewThread()">New Thread</button></header>
+    <aside class="project-tree" aria-label="Projects"><div class="project-tree-head"><strong>Projects</strong><button class="tbtn" onclick="projectNew()">New Project</button><select aria-label="Create from Project template" onchange="if(this.value)projectNew(this.value);this.value=''"><option value="">Template…</option><option value="research">Research</option><option value="delivery">Delivery</option></select></div>
+      ${projectSnapshot.projects.filter(candidate => !candidate.deletedAt && !candidate.archivedAt).map(candidate => `<button class="project-tree-item ${candidate.projectId === project.projectId ? 'active' : ''}" onclick="projectSelect('${esc(candidate.projectId)}')"><span>${esc(candidate.name)}</span><small>${candidate.systemKind === 'default-project' ? 'System · Default' : `${projectSnapshot.threads.filter(thread => thread.projectId === candidate.projectId).length} Threads`}</small></button>`).join('')}
+      <details><summary>Archived / removed (evidence retained)</summary>${projectSnapshot.projects.filter(candidate => candidate.deletedAt || candidate.archivedAt).map(candidate => `<button class="project-tree-item" onclick="projectSelect('${esc(candidate.projectId)}')">${esc(candidate.name)} · ${candidate.deletedAt ? 'Removed' : 'Archived'}</button>`).join('')}</details></aside>${workspaceCatTreeDivider('projects',projectTreeCollapsed)}
+    <div class="project-content"><header class="project-header"><div><span>${project.systemKind === 'default-project' ? 'System Project' : 'Project Cockpit'}</span><h2>${esc(project.name)}</h2><p>${threads.length} Threads · ${projectCockpitData(project).items.length} execution items · Intent: ${esc(project.status || 'planned')}</p></div><div class="project-header-actions"><button class="tbtn" onclick="projectCopyPath('${esc(project.projectId)}')">Copy Path</button><button class="tbtn" onclick="ask('projectState',{})">Refresh</button><button class="tbtn" onclick="projectNewThread()">New Thread</button></div></header>
       <nav class="project-sections" aria-label="Project sections">${projectSections.map(section => `<button class="${section === projectRoute.section ? 'active' : ''}" onclick="projectSection('${section}')">${section}</button>`).join('')}</nav>
       <div class="project-section-body">${projectSectionBody(project, threads, recipes)}</div>
     </div></div>`;
+}
+
+function projectCopyPath(projectId) {
+  if (/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(projectId)) copyContextPath(`pkm://projects/${encodeURIComponent(projectId)}`);
 }
 
 function renderGlobalRecipes() {
@@ -2984,13 +3407,13 @@ function renderGlobalRecipes() {
 function recipeSubscriptionGroupsOnResult(groups) {
   recipeSubscriptionGroups = Array.isArray(groups) ? groups : [];
   recipeSubscriptionGroupsRequested = true;
-  if (state.tab === 'recipes') renderGlobalRecipes();
+  if (state.tab === 'recipes') recipeRerenderPreservingView();
 }
 
 function invalidateRecipeSubscriptionGroups() {
   recipeSubscriptionGroups = [];
   recipeSubscriptionGroupsRequested = false;
-  if (state.tab === 'recipes') renderGlobalRecipes();
+  if (state.tab === 'recipes') recipeRerenderPreservingView();
 }
 
 function recipeRefresh() {
@@ -3010,6 +3433,7 @@ function recipeSnapshotSignature(snapshot) {
 function agentSessionSnapshotSignature(snapshot) {
   return JSON.stringify({
     agentSessions:snapshot?.agentSessions || [],
+    agentSessionGroups:snapshot?.agentSessionGroups || [],
     agentSessionTrash:snapshot?.agentSessionTrash || []
   });
 }
@@ -3021,9 +3445,10 @@ function projectOnState(snapshot) {
   const recipeViewState = state.tab === 'recipes' ? recipeCaptureViewState() : null;
   const recipeStateChanged = state.tab !== 'recipes' || !projectSnapshot
     || recipeSnapshotSignature(snapshot) !== recipeSnapshotSignature(projectSnapshot);
+  const preserveProjectForm = state.tab === 'projects' && document.activeElement?.closest?.('.cockpit-form,.cockpit-checkpoint-form');
   projectSnapshot = snapshot;
   projectSnapshotDirty = false;
-  finishAction('agentSnapshotDelete','agentSessionTrash','agentSessionStop');
+  finishAction('agentSnapshotDelete','agentSnapshotRecover','agentSessionTrash','agentSessionStop');
   normalizeProjectRoute(snapshot);
   if (state.tab === 'agentSessions') {
     if (!agentSessionStateChanged) return;
@@ -3034,13 +3459,14 @@ function projectOnState(snapshot) {
     if (!recipeStateChanged) return;
     renderGlobalRecipes();
     recipeRestoreViewState(recipeViewState);
-  } else renderProjects();
+  } else if (!preserveProjectForm) renderProjects();
 }
 
 function projectOnResult(data) {
+  document.getElementById('project-action-error')?.remove();
   projectSnapshotDirty = false;
-  projectSnapshot = data.snapshot;
-  finishAction('projectCreate','threadCreate','threadRename','threadMove','threadOpenChatroom','ganttTaskCreate','ganttTaskUpdate','ganttTaskDelete','collaborationCreate','collaborationTransition','recipeCreate','recipeFolderCreate','recipeFolderDelete','recipeUpdate','recipeDelete','recipeTrash','recipeOpenBrowser');
+  projectSnapshot = { ...data.snapshot, cockpits:projectSnapshot?.cockpits };
+  finishAction('projectCheckpoint','projectOverview','projectLink','projectLifecycle','projectOpenSource','projectCreate','threadCreate','threadRename','threadMove','threadOpenChatroom','ganttTaskCreate','ganttTaskUpdate','ganttTaskDelete','collaborationCreate','collaborationTransition','recipeCreate','recipeFolderCreate','recipeFolderDelete','recipeUpdate','recipeDelete','recipeTrash','recipeOpenBrowser');
   const recipeViewState = data.action === 'recipeUpdate' ? recipePendingViewState || recipeCaptureViewState() : null;
   if (data.action === 'recipeUpdate') { recipeDraft = null; recipeDraftRecipeId = ''; recipeDraftBaseline = ''; recipeDraftBaselinePending = false; recipePendingViewState = null; recipeGraphPendingNodeIds.clear(); }
   if (data.action === 'recipeDelete' && selectedRecipeId === data.entityId) { selectedRecipeId = ''; recipeDraft = null; recipeDraftRecipeId = ''; recipeDraftBaseline = ''; recipeDraftBaselinePending = false; }
@@ -3062,7 +3488,7 @@ function projectOnError(data) {
   if (data?.action === 'recipeOpenBrowser') failAction(data?.error || 'The Recipe workbench could not be opened.', 'recipeOpenBrowser');
   else if (data?.action === 'agentSessionTrash') failAction(data?.error || 'The Agent Session Trash action failed.', 'agentSessionTrash');
   else if (data?.action === 'agentSessionStop') failAction(data?.error || 'The Agent Session could not be stopped.', 'agentSessionStop');
-  else finishAction('projectCreate','threadCreate','threadRename','threadMove','threadOpenChatroom','ganttTaskCreate','ganttTaskUpdate','ganttTaskDelete','collaborationCreate','collaborationTransition','recipeCreate','recipeFolderCreate','recipeFolderDelete','recipeUpdate','recipeValidateDefinition');
+  else finishAction('projectCheckpoint','projectOverview','projectLink','projectLifecycle','projectOpenSource','projectCreate','threadCreate','threadRename','threadMove','threadOpenChatroom','ganttTaskCreate','ganttTaskUpdate','ganttTaskDelete','collaborationCreate','collaborationTransition','recipeCreate','recipeFolderCreate','recipeFolderDelete','recipeUpdate','recipeValidateDefinition');
   const editorError = state.tab === 'recipes' ? document.getElementById('recipe-edit-error') : null;
   if (editorError) {
     const diagnostics = Array.isArray(data?.details?.diagnostics) ? data.details.diagnostics : [];
@@ -3084,8 +3510,9 @@ function projectOnError(data) {
     }
     return;
   }
-  const host = document.querySelector('.project-header') || document.getElementById('detail');
-  host?.querySelector('.project-error')?.remove();
-  const error = document.createElement('div'); error.className = 'project-error'; error.setAttribute('role','alert'); error.textContent = data?.error || 'Project action failed.';
-  host?.appendChild(error);
+  document.getElementById('project-action-error')?.remove();
+  const error = document.createElement('div'); error.id = 'project-action-error'; error.className = 'project-error project-action-error'; error.setAttribute('role','alert');
+  const message = document.createElement('div'); message.className = 'project-action-error-message'; message.textContent = data?.error || 'Project action failed.';
+  const dismiss = document.createElement('button'); dismiss.className = 'tbtn'; dismiss.title = 'Dismiss error'; dismiss.setAttribute('aria-label','Dismiss error'); dismiss.innerHTML = '<span class="codicon codicon-close" aria-hidden="true"></span>'; dismiss.onclick = () => error.remove();
+  error.appendChild(message); error.appendChild(dismiss); document.body.appendChild(error);
 }

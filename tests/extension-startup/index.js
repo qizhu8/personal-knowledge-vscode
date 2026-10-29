@@ -1,6 +1,19 @@
 const assert = require("assert");
 const fs = require("fs");
+const path = require("path");
 const vscode = require("vscode");
+
+function readStartupLog(directory) {
+  if (!fs.existsSync(directory)) return "";
+  return fs.readdirSync(directory).filter(name => name.endsWith(".jsonl")).sort()
+    .flatMap(name => fs.readFileSync(path.join(directory, name), "utf8").split(/\r?\n/))
+    .flatMap(line => {
+      try {
+        const entry = JSON.parse(line);
+        return entry.schema === "pkm.diagnostic/v1" && entry.event === "extension.log" && typeof entry.message === "string" ? [entry.message] : [];
+      } catch { return []; }
+    }).join("\n");
+}
 
 async function waitFor(check, message, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
@@ -17,10 +30,27 @@ async function run() {
 
   await extension.activate();
   assert.strictEqual(extension.isActive, true, "extension did not activate");
+  const store = require(path.join(extension.extensionPath, "dist", "knowledge", "filestore.js"));
+  assert.strictEqual(path.resolve(store.getStorePath()), path.resolve(process.env.PKM_STARTUP_STORE_PATH),
+    "startup acceptance must use its isolated knowledge store, never an account-bound production store");
 
   const commands = await vscode.commands.getCommands(true);
   assert.ok(commands.includes("personalKnowledge.open"), "open command was not registered");
   assert.ok(commands.includes("personalKnowledge.setupMcp"), "config command was not registered");
+  assert.ok(commands.includes("personalKnowledge.hostStatus"), "Host status command was not registered");
+  assert.ok(commands.includes("personalKnowledge.reloadAllHosts"), "Coordinated reload command was not registered");
+  assert.ok(commands.includes("personalKnowledge.openActions"), "Action Workbench command was not registered");
+  assert.ok(commands.includes("personalKnowledge.openActionsInBrowser"), "Browser Action Workbench command was not registered");
+  assert.ok(commands.includes("personalKnowledge.answerActionChoice"), "Action answer compatibility command was not registered");
+  assert.strictEqual(extension.packageJSON.contributes.chatParticipants, undefined,
+    "Packaged extension must not declare deprecated Chat Participants");
+  assert(extension.packageJSON.contributes.mcpServerDefinitionProviders.some(provider => provider.id === "personalKnowledge.pkm"),
+    "Packaged extension did not declare the PKM MCP provider");
+  for (const resource of ["action_modules.py", "action_run_store.py", "action_components.py", "action_components.js", "action-workbench.html"]) {
+    assert(fs.existsSync(path.join(extension.extensionPath, "resources", resource)), `Missing packaged Action resource: ${resource}`);
+  }
+  assert(fs.existsSync(path.join(extension.extensionPath, "dist", "components", "action-components.js")), "Missing packaged TypeScript component implementation");
+  assert(fs.existsSync(path.join(extension.extensionPath, "dist", "runtime", "action-workbench-server.js")), "Missing packaged browser Action server");
   const navigation = await vscode.commands.executeCommand(
     "_personalKnowledge.testNavigationPath",
     "notes",
@@ -46,14 +76,14 @@ async function run() {
   assert.ok(logPath, "startup log path was not provided");
   await waitFor(() => {
     if (!fs.existsSync(logPath)) return false;
-    const log = fs.readFileSync(logPath, "utf8");
+    const log = readStartupLog(logPath);
     return /activation complete durationMs=\d+/.test(log) && (!expectPanel || log.includes("panel created") && log.includes('handleMessage: ready') && log.includes("webview startup scriptStartMs="));
   }, expectPanel ? "Panel did not complete its Webview ready handshake" : "Extension activation did not complete with the panel closed");
   if (!expectPanel) await new Promise(resolve => setTimeout(resolve, 500));
 
   const resultPath = process.env.PKM_STARTUP_RESULT_PATH;
   assert.ok(resultPath, "startup result path was not provided");
-  const startupLog = fs.readFileSync(logPath, "utf8");
+  const startupLog = readStartupLog(logPath);
   const durationMs = Number(/activation complete durationMs=(\d+)/.exec(startupLog)?.[1]);
   const panelHtmlDurationMs = Number(/panel (?:created|restored) \(html \d+ bytes, generated (\d+)ms\)/.exec(startupLog)?.[1]);
   const webviewTiming = /webview startup scriptStartMs=(\d+) firstPaintMs=(\d+) firstContentfulPaintMs=(\d+)/.exec(startupLog);
@@ -68,6 +98,12 @@ async function run() {
     assert(Number(webviewTiming[2]) <= 2500, `webview first paint exceeded 2500ms: ${webviewTiming[2]}`);
   }
   else assert.strictEqual(panelCreatedAt, -1, `panel must remain closed during ${process.env.PKM_STARTUP_SCENARIO || "closed-panel startup"}`);
+  const runtime = await vscode.commands.executeCommand("personalKnowledge.hostStatus");
+  assert.strictEqual(runtime.current.pid, process.pid);
+  assert.strictEqual(runtime.current.vscodeVersion, vscode.version);
+  assert.match(runtime.current.buildId, /^[a-f0-9]{64}$/);
+  assert.strictEqual(runtime.current.buildId, runtime.installed.buildId);
+  assert(runtime.online.some(host => host.hostId === runtime.current.hostId), "Current runtime must register its online identity");
   fs.writeFileSync(resultPath, JSON.stringify({
     activated: extension.isActive,
     commandsRegistered: true,

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 const assert = require("assert");
-const { GitHubSyncScheduler } = require("../dist/github-sync-scheduler.js");
+const { GitHubSyncScheduler, GitHubSyncDeferredError, GITHUB_SYNC_AUTHENTICATION_RETRY_MS,
+  isGitHubSyncAuthenticationFailure } = require("../dist/sync/github-sync-scheduler.js");
+const { GitHubSyncContentRepairError } = require("../dist/sync/github-sync-content-repair.js");
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
@@ -52,6 +54,19 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
   assert.deepStrictEqual(calls, [], "an unchanged scheduled check must not enter the Git sync operation");
   assert.strictEqual([...timers.values()][0].delay, 7 * 60_000, "an unchanged check schedules the next configured interval");
   assert.strictEqual(scheduler.snapshot().primary.nextSyncAt, "2026-09-24T20:12:00.000Z");
+
+  for (let event = 0; event < 3; event++) {
+    now += 1_000;
+    scheduler.notifyContentChanged();
+    const [id, timer] = [...timers.entries()].find(([, timer]) => timer.delay === 25);
+    timers.delete(id);
+    timer.callback();
+    await flush();
+    await flush();
+    assert.strictEqual(calls.length, 0, "unchanged watcher events never enter Git");
+    assert.strictEqual(scheduler.snapshot().primary.nextSyncAt, "2026-09-24T20:12:00.000Z",
+      "skipped change events must not postpone the periodic remote fetch");
+  }
 
   dirty = true;
   scheduler.notifyContentChanged();
@@ -165,7 +180,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
     clearTimeout: timer => failureTimers.delete(timer.id),
     onAutoPaused: targetId => autoPaused.push(targetId),
     shouldExecute: async () => true,
-    execute: async () => { throw new Error("authentication expired"); }
+    execute: async () => { throw new Error("transient failure"); }
   });
   failing.configure(failingTargets);
   assert.strictEqual(failing.snapshot().paused.status, "paused");
@@ -173,7 +188,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
   await flush();
   await flush();
   assert.strictEqual(failing.snapshot().paused.status, "error", "manual failures remain visible when Auto Sync is off");
-  assert.strictEqual(failing.snapshot().paused.lastError, "authentication expired");
+  assert.strictEqual(failing.snapshot().paused.lastError, "transient failure");
   assert.strictEqual(failing.snapshot().retry.status, "error");
   assert([...failureTimers.values()].some(timer => timer.delay === 9 * 60_000), "a transient failure retries after the configured interval");
   assert.strictEqual(failing.request("retry", "change"), false, "file changes cannot revive a failed backup");
@@ -188,11 +203,137 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
   assert.strictEqual(failureTimers.size, 0, "automatic retries stop after three consecutive failures");
   assert.strictEqual(failingTargets[1].enabled, false, "exhausting automatic retries turns Auto Sync off for the failing target");
   assert.deepStrictEqual(autoPaused, ["retry"], "manual failures do not invoke automatic-pause persistence");
-  assert.strictEqual(failing.snapshot().retry.lastError, "authentication expired", "auto-pause retains the actual failure");
+  assert.strictEqual(failing.snapshot().retry.lastError, "transient failure", "auto-pause retains the actual failure");
   assert.strictEqual(failing.request("retry", "interval"), false, "the exhausted retry budget survives new automatic requests");
   assert.strictEqual(failing.request("retry", "manual"), true, "ordinary manual Sync remains available after auto-pause");
   await flush();
   failing.dispose();
+
+  assert.equal(GITHUB_SYNC_AUTHENTICATION_RETRY_MS, 15 * 60_000);
+  for (const failure of [
+    { error:"VS Code canceled credential access", errorCode:"CREDENTIAL_READ_CANCELED" },
+    { error:"Secret storage unavailable", phase:"authenticating" },
+    { error:"fatal: Authentication failed for https://github.com/example/repo.git" },
+    { error:"Permission denied (publickey)." },
+  ]) assert(isGitHubSyncAuthenticationFailure(failure));
+  assert(!isGitHubSyncAuthenticationFailure({ error:"fetch failed: connection reset", phase:"fetch" }));
+  assert(!isGitHubSyncAuthenticationFailure({ error:"Repository not found", phase:"fetch" }),
+    "an unknown repository is not sufficient evidence of an authentication failure");
+
+  for (const intervalMinutes of [2, 30]) {
+    let clock = Date.parse("2026-10-27T23:00:00Z"), attempts = 0, recovered = false;
+    const authTimers = new Map(), pauses = [];
+    const authTarget = { id:"auth", enabled:true, intervalMinutes, syncOnChange:true };
+    const auth = new GitHubSyncScheduler({
+      now:() => clock,
+      setTimeout:(callback, delay) => {
+        const timer = { id:nextTimer++, unref() {} };
+        authTimers.set(timer.id, {callback, delay}); return timer;
+      },
+      clearTimeout:timer => authTimers.delete(timer.id),
+      onAutoPaused:id => pauses.push(id),
+      execute:async () => {
+        attempts++;
+        if (!recovered) {
+          clock += 10_000;
+          throw Object.assign(new Error("VS Code credential storage is temporarily unavailable"),
+            {code:"CREDENTIAL_READ_TIMEOUT", phase:"authenticating"});
+        }
+      },
+    });
+    auth.configure([authTarget]); await flush();
+    for (let retry = 0; retry < 4; retry++) {
+      assert.equal(authTarget.enabled, true, "authentication failures never switch Auto off after three attempts");
+      assert.equal(auth.snapshot().auth.status, "error");
+      assert.equal(authTimers.size, 1);
+      assert.equal([...authTimers.values()][0].delay, 15 * 60_000,
+        "retry is fifteen minutes after the failed credential read finishes, independent of the configured interval");
+      auth.notifyContentChanged();
+      assert.equal(authTimers.size, 1, "watcher events cannot bypass authentication backoff");
+      assert.equal(auth.request("auth", "configuration"), false);
+      auth.configure([authTarget]);
+      assert.equal([...authTimers.values()][0].delay, 15 * 60_000,
+        "reconfiguration preserves persisted authentication delay even after the ordinary failure budget is exhausted");
+      const [id, timer] = [...authTimers.entries()][0]; authTimers.delete(id);
+      clock += timer.delay; timer.callback(); await flush();
+    }
+    assert.deepEqual(pauses, []);
+    assert.equal(attempts, 5);
+    clock += 4 * 60_000;
+    auth.configure([authTarget]);
+    assert.equal([...authTimers.values()][0].delay, 11 * 60_000,
+      "reload resumes only the remaining delay, without resetting or shortening the fifteen-minute deadline");
+    recovered = true;
+    assert.equal(auth.request("auth", "manual"), true, "manual retry remains immediate");
+    await flush();
+    assert.equal(attempts, 6);
+    assert.equal(authTarget.lastFailure, undefined);
+    assert.equal(auth.snapshot().auth.lastError, undefined);
+    assert.equal(auth.snapshot().auth.status, "scheduled");
+    assert.equal([...authTimers.values()][0].delay, intervalMinutes * 60_000,
+      "success restores the original configured interval instead of retaining the authentication delay");
+    auth.notifyContentChanged();
+    assert([...authTimers.values()].some(timer => timer.delay === 2000), "sync-on-change resumes after recovery");
+    auth.configure([{...authTarget, enabled:false,
+      lastFailure:{at:new Date(clock).toISOString(), error:"Authentication failed", reason:"interval", attempts:3}}]);
+    assert.equal(authTimers.size, 0, "a deliberately disabled target stays off even with a persisted authentication failure");
+    auth.dispose();
+  }
+
+  const fatalAuthTarget = {id:"fatal", enabled:true, intervalMinutes:2, syncOnChange:true};
+  const fatalAuth = new GitHubSyncScheduler({
+    shouldRetryFailure:() => false,
+    execute:async () => { throw Object.assign(new Error("Authentication failed; recovery record was NOT saved"), {phase:"authenticating"}); },
+  });
+  fatalAuth.configure([fatalAuthTarget]); await flush();
+  assert.equal(fatalAuthTarget.enabled, false, "an explicit unsafe-to-retry decision overrides the authentication backoff");
+  assert.equal(fatalAuthTarget.lastFailure.retryable, false);
+  fatalAuth.configure([{...fatalAuthTarget, enabled:true}]);
+  assert.equal(fatalAuth.snapshot().fatal.nextSyncAt, undefined, "reload must preserve a fatal failure's no-retry decision");
+  fatalAuth.dispose();
+
+  const deferredTimers = new Map();
+  const deferredTarget = { id: "offline", enabled: true, intervalMinutes: 5, syncOnChange: true };
+  let offline = true, deferredRuns = 0;
+  const deferred = new GitHubSyncScheduler({
+    now: () => now,
+    setTimeout: (callback, delay) => {
+      const timer = { id: nextTimer++, unref() {} };
+      deferredTimers.set(timer.id, { callback, delay });
+      return timer;
+    },
+    clearTimeout: timer => deferredTimers.delete(timer.id),
+    onAutoPaused: () => assert.fail("unavailable preflight must never disable Auto"),
+    execute: async () => {
+      deferredRuns++;
+      if (offline) throw new GitHubSyncDeferredError("Network unavailable before fetch");
+    },
+  });
+  deferred.configure([deferredTarget]);
+  await flush();
+  for (let attempt = 0; attempt < 4; attempt++) {
+    assert.equal(deferredTarget.enabled, true);
+    assert.equal(deferredTarget.lastFailure, undefined);
+    assert.equal(deferred.snapshot().offline.status, "scheduled");
+    assert.match(deferred.snapshot().offline.detail, /Network unavailable/);
+    assert.equal(deferredTimers.size, 1, "offline retries remain interval-bound, not a busy loop");
+    const [id, timer] = [...deferredTimers.entries()][0];
+    assert.equal(timer.delay, 5 * 60_000);
+    deferredTimers.delete(id);
+    now += timer.delay;
+    timer.callback();
+    await flush();
+  }
+  assert.equal(deferredRuns, 5);
+  offline = false;
+  const [deferredId, deferredTimer] = [...deferredTimers.entries()][0];
+  deferredTimers.delete(deferredId);
+  now += deferredTimer.delay;
+  deferredTimer.callback();
+  await flush();
+  assert.equal(deferred.snapshot().offline.lastError, undefined);
+  assert.equal(deferredTarget.enabled, true);
+  deferred.dispose();
 
   const toggleTimers = new Map();
   let failActiveSync;
@@ -217,6 +358,31 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
   assert.strictEqual(toggleTimers.size, 0, "turning off Auto during an active failure must not schedule another attempt");
   assert.strictEqual(toggledOff.request("toggled-off", "interval"), false);
   toggledOff.dispose();
+
+  const offSuccessTimers = new Map();
+  let completeActive;
+  let offSuccessCalls = 0;
+  const offSuccess = new GitHubSyncScheduler({
+    now: () => now,
+    setTimeout: (callback, delay) => {
+      const timer = { id: nextTimer++, unref() {} };
+      offSuccessTimers.set(timer.id, { callback, delay });
+      return timer;
+    },
+    clearTimeout: timer => offSuccessTimers.delete(timer.id),
+    execute: async () => { offSuccessCalls++; await new Promise(resolve => { completeActive = resolve; }); },
+  });
+  offSuccess.configure([{ id: "off-success", enabled: true, intervalMinutes: 5, syncOnChange: true }]);
+  await flush();
+  offSuccess.request("off-success", "change");
+  offSuccess.configure([{ id: "off-success", enabled: false, intervalMinutes: 5, syncOnChange: true }]);
+  completeActive();
+  await flush();
+  await flush();
+  assert.strictEqual(offSuccessCalls, 1, "disabling Auto cancels queued changes without aborting the active operation");
+  assert.strictEqual(offSuccess.snapshot()["off-success"].status, "paused");
+  assert.strictEqual(offSuccessTimers.size, 0, "finishing an active success after Auto is disabled cannot restart scheduling");
+  offSuccess.dispose();
 
   const persistedStateOptions = {
     now: () => Date.parse("2026-09-24T20:00:00.000Z"),
@@ -286,6 +452,83 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
   assert.strictEqual(pausedFailure.snapshot()["paused-failure"].status, "paused", "a successful manual retry clears the failure");
   assert.strictEqual(pausedFailure.snapshot()["paused-failure"].lastError, undefined);
   pausedFailure.dispose();
+
+  const skippedFailure = new GitHubSyncScheduler({ ...persistedStateOptions, shouldExecute: async () => false });
+  skippedFailure.configure([{
+    id: "skip-failure", enabled: false, intervalMinutes: 5, syncOnChange: false,
+    lastFailure: { at: "2026-09-24T19:59:00.000Z", error: "failed before skip", reason: "manual" },
+  }]);
+  assert(skippedFailure.request("skip-failure", "manual"));
+  await flush();
+  await flush();
+  assert.strictEqual(skippedFailure.snapshot()["skip-failure"].status, "error");
+  assert.strictEqual(skippedFailure.snapshot()["skip-failure"].lastError, "failed before skip");
+  assert(skippedFailure.snapshot()["skip-failure"].activityAt, "all visible scheduler transitions have a freshness timestamp");
+  skippedFailure.dispose();
+
+  let unchanged;
+  unchanged = new GitHubSyncScheduler({
+    ...persistedStateOptions,
+    execute: async () => unchanged.report("no-change", "no-change", "No changes on this machine or GitHub"),
+  });
+  unchanged.configure([{ id: "no-change", enabled: false, intervalMinutes: 5, syncOnChange: false }]);
+  assert(unchanged.request("no-change", "manual"));
+  await flush();
+  await flush();
+  assert.strictEqual(unchanged.snapshot()["no-change"].phase, "no-change",
+    "settling a successful execution must retain the actual No Change branch");
+  unchanged.configure([{
+    id: "no-change", enabled: false, intervalMinutes: 5, syncOnChange: false,
+    lastSuccessAt: unchanged.snapshot()["no-change"].lastSuccessAt,
+  }]);
+  assert.strictEqual(unchanged.snapshot()["no-change"].phase, "no-change",
+    "reconfiguring the same completed outcome must not erase its branch");
+  unchanged.dispose();
+
+  let repairRuns = 0;
+  const repairPauses = [];
+  const repairTimers = new Map();
+  let attention;
+  const attentionTarget = { id: "attention", enabled: true, intervalMinutes: 5, syncOnChange: true };
+  attention = new GitHubSyncScheduler({
+    ...persistedStateOptions,
+    setTimeout: callback => { const timer = { unref() {} }; repairTimers.set(timer, callback); return timer; },
+    clearTimeout: timer => repairTimers.delete(timer),
+    onAutoPaused: targetId => repairPauses.push(targetId),
+    execute: async () => { if (++repairRuns === 1) throw new GitHubSyncContentRepairError("attention", [
+      { path: "recipes/Examples/Legacy.recipe_legacy.json", type: "recipes", itemId: "recipe_legacy", source: "local",
+        reason: "recipe-digest", lines: [], digest: "content-digest", content: "{}",
+        error: "Recipe executable digest is invalid", recipeId: "recipe_legacy" },
+    ]); },
+  });
+  attention.configure([attentionTarget]);
+  await flush();
+  await flush();
+  assert.equal(attention.snapshot().attention.status, "needs-attention");
+  assert.equal(attentionTarget.enabled, true, "content blockers do not turn Auto off or consume network retries");
+  assert.equal(attentionTarget.lastFailure, undefined);
+  assert.equal(repairTimers.size, 0);
+  assert.deepEqual(repairPauses, []);
+  attention.notifyContentChanged();
+  assert.equal(repairTimers.size, 0, "waiting for repair must not schedule change retries");
+  assert.equal(attention.request("attention", "interval"), false);
+  attention.configure([attentionTarget]);
+  assert.equal(repairRuns, 1, "reconfiguration preserves waiting-for-user state");
+  assert.equal(attention.request("attention", "manual"), true);
+  await flush();
+  await flush();
+  assert.equal(repairRuns, 2);
+  assert.equal(attentionTarget.needsAttention, false);
+  assert.equal(attention.snapshot().attention.status, "scheduled");
+  attention.dispose();
+  const restartedAttention = new GitHubSyncScheduler({
+    ...persistedStateOptions,
+    execute: async () => { throw new Error("A restored content blocker must not automatically execute"); },
+  });
+  restartedAttention.configure([{ id: "attention", enabled: true, intervalMinutes: 5, syncOnChange: true, needsAttention: true }]);
+  assert.equal(restartedAttention.snapshot().attention.status, "needs-attention");
+  assert.equal(restartedAttention.request("attention", "startup"), false);
+  restartedAttention.dispose();
 
   const deletionTimers = new Map();
   let releaseDeleted;

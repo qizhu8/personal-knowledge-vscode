@@ -3,7 +3,7 @@ const assert = require("assert");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
-const { canonicalJson, compileWorkflowDefinitionV1 } = require("../dist/workflow-contracts.js");
+const { canonicalJson, compileWorkflowDefinitionV1 } = require("../dist/workflows/workflow-contracts.js");
 const {
   RecipeFilesystemStore,
   RecipeFilesystemStoreError,

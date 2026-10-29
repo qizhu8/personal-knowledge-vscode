@@ -3,10 +3,12 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
+const ts = require("typescript");
 
 const panelJs = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "panel.js"), "utf8");
 const panelCss = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "panel.css"), "utf8");
-const sourceTs = fs.readFileSync(path.join(__dirname, "..", "src", "mcp.ts"), "utf8");
+const sourceTs = fs.readFileSync(path.join(__dirname, "..", "src", "mcp/mcp.ts"), "utf8");
+const solutionSource = fs.readFileSync(path.join(__dirname, "..", "resources", "retrieval_solution.py"), "utf8");
 const extensionTs = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
 const sourcePanelCss = fs.readFileSync(path.join(__dirname, "..", "src", "webview", "panel.css"), "utf8");
 assert.match(sourcePanelCss, /\.srv-global-controls select,\.srv-edit input,\.mcp-setup-step select,\.mcp-setup-step input\{[^}]*background:var\(--input\)[^}]*color:var\(--text\)[^}]*color-scheme:dark/,
@@ -20,16 +22,28 @@ assert.match(extensionTs, /case "reconfigureMcpRuntimePath":[\s\S]{0,500}command
   "managed runtime reconfiguration must send a dedicated terminal result");
 assert.match(extensionTs, /case "reconfigureMcpServerPath":[\s\S]{0,500}command: "mcpActionResult"[\s\S]{0,120}action: "reconfigureMcpServerPath"/,
   "server directory reconfiguration must send a dedicated terminal result");
-assert.match(extensionTs, /server\.newerThanExpected \|\| newerRouters\.length[\s\S]{0,900}This window will not downgrade shared PKM files/,
+assert.match(extensionTs, /if \(server\.newerThanExpected\)[\s\S]{0,900}This window will not downgrade shared PKM files/,
   "an older window must stop maintenance and recommend a manual Reload Window");
-assert.doesNotMatch(extensionTs, /executeCommand\([^\n]*(reloadWindow|reload)/i,
-  "PKM must never reload the user's window automatically");
+const extensionAst = ts.createSourceFile("extension.ts", extensionTs, ts.ScriptTarget.Latest, true);
+const hostRuntime = extensionAst.statements.find(statement => ts.isFunctionDeclaration(statement)
+  && statement.name?.text === "registerExtensionHostRuntime");
+assert(hostRuntime, "explicit coordinated Host reload registration must exist");
+assert.doesNotMatch(extensionTs.slice(0, hostRuntime.pos) + extensionTs.slice(hostRuntime.end),
+  /executeCommand\([^\n]*(reloadWindow|reload)/i,
+  "MCP maintenance and other automatic paths must never reload the user's window");
+const hostRuntimeText = hostRuntime.getText(extensionAst);
+assert.match(hostRuntimeText, /if \(registry\.poll\(installed\?\.buildId, isBusy\(\)\)\) \{[\s\S]{0,350}executeCommand\("workbench\.action\.reloadWindow"\)/,
+  "coordinated reload must require the registry's validated request and busy-state gate");
+assert.match(hostRuntimeText, /registerCommand\("personalKnowledge\.reloadAllHosts"[\s\S]*showWarningMessage[\s\S]*modal: true[\s\S]*if \(answer !== "Reload registered windows"\) return;[\s\S]*registry\.requestReload/,
+  "a coordinated reload request must require explicit modal confirmation");
 assert.match(sourceTs, /Refusing to downgrade the installed PKM MCP runtime/,
   "the generated server write boundary must reject downgrades");
 assert.match(sourceTs, /The newer runtime was preserved[\s\S]*Upgrade Personal Knowledge Manager/,
   "downgrade protection must preserve the newer runtime and recommend an extension upgrade");
-assert.match(sourceTs, /UNIFIED_MCP_VERSION = "2\.13\.8"/,
-  "generated MCP changes must carry a new unified runtime patch version");
+assert.match(sourceTs, /export const UNIFIED_MCP_VERSION = "\d+\.\d+\.\d+";/,
+  "unified runtime version must be declared as numeric SemVer");
+assert.match(sourceTs, /SERVER_VERSION = "\$\{UNIFIED_MCP_VERSION\}"/,
+  "generated MCP must use the authoritative unified runtime version");
 assert.doesNotMatch(panelJs, /PKM MCP server is outdated/,
   "equal unified versions must not be mislabeled as an outdated server");
 assert.match(panelJs, /server v\$\{installed\} is current, but runtime components need update/,
@@ -56,8 +70,8 @@ assert.match(extensionTs, /if \(!runtime\.healthy\)[\s\S]{0,500}await ensureMcpR
   "automatic maintenance must create or repair the managed runtime");
 assert.match(extensionTs, /else if \(!server\.current\)[\s\S]{0,500}generateMcpServer\(context\)/,
   "automatic maintenance must regenerate stale server code");
-assert.match(extensionTs, /await reconcilePkmSkillProjections\(context\)[\s\S]{0,900}const python = detectMcpPython\(\)/,
-  "automatic Skill projection reconciliation must run independently before Python runtime checks");
+assert.doesNotMatch(extensionTs, /reconcilePkmSkillProjections|\bconnectPkmSkill\(/,
+  "runtime maintenance must never restore retired Agent Router injections");
 assert.doesNotMatch(extensionTs, /void offerMcpRuntimeDependencyRepair\(context\)/);
 assert.doesNotMatch(extensionTs, /void offerMcpServerRegeneration\(context\)/);
 assert.match(extensionTs, /await ensureMcpRuntime\(context\)/);
@@ -70,6 +84,10 @@ assert.match(sourceTs, /--no-deps", wheel/);
 assert.match(sourceTs, /PROMPT_MANAGER_WHEEL_SHA256/);
 assert.match(sourceTs, /RETRIEVAL_ENGINE_WHEEL_SHA256/);
 assert.match(sourceTs, /import fastmcp, prompt_manager, websockets, adaptive_skill_retrieval/);
+assert.match(solutionSource, /from adaptive_skill_retrieval\.solution_package import import_package/,
+  "offline Solution import must require the retrieval wheel's solution_package API");
+assert.match(solutionSource, /except \(ImportError,[\s\S]{0,350}return 1/,
+  "offline Solution import must reject a wheel missing the required API");
 assert.match(sourceTs, /def search_knowledge\(/);
 assert.match(sourceTs, /def retrieval_status\(/);
 assert.match(sourceTs, /_collector_post\("search_invocation"/);
@@ -106,47 +124,8 @@ assert.strictEqual(presentationContext.present({ installed: true, current: true,
 assert.strictEqual(presentationContext.present({ installed: false, expectedVersion: "2.5.5" }).label,
   "Generate Server Code · target v2.5.5");
 
-const skillStart = panelJs.indexOf("function pkmSkillStateBadge");
-const skillEnd = panelJs.indexOf("function renderMcpPane", skillStart);
-assert(skillStart >= 0 && skillEnd > skillStart, "Skill Router renderer must be bundled");
-const skillCalls = [];
-const updateActions = [{ disabled: false, setAttribute() {} }, { disabled: false, setAttribute() {} }];
-const skillContext = {
-  esc,
-  uiIcon: (name, label = '') => `<span class="codicon codicon-${name}"></span>${label ? `<span>${esc(label)}</span>` : ''}`,
-  ask: (command, data) => skillCalls.push({ command, data }),
-  document: { querySelectorAll: () => updateActions },
-  mcpI18nAttrs: (key, params = {}) => `data-i18n="${key}" ${Object.entries(params).map(([name, value]) => `data-i18n-param-${name}="${value}"`).join(' ')}`,
-};
-vm.createContext(skillContext);
-new vm.Script(`${panelJs.slice(skillStart, skillEnd)}; this.render = renderPkmSkillTargets; this.injectOne = pkmSkillInjectOne; this.injectAll = pkmSkillInjectAll; this.finish = finishPkmSkillUpdates;`).runInContext(skillContext);
-const baseSkill = { routerVersion: "1.1.6", minimumMcpSchema: "2.8.0", sourcePath: "/skill.md", sourceExists: true, targets: [] };
-const currentHtml = skillContext.render({ pkmSkill: { ...baseSkill, targets: [{ id: "copilot", kind: "copilot", label: "GitHub Copilot", root: "/x", skillPath: "/x/pkm-skills/SKILL.md", state: "current", installedVersion: "1.1.6", expectedVersion: "1.1.6", managed: true, detail: "Injected Skill is current." }] }, skillProposals: [] });
-assert.match(currentHtml, /data-i18n="config\.current"[^>]*>Current<\/span> · v1\.1\.6/);
-assert.doesNotMatch(currentHtml, /Reinstall|pkmSkillInject/);
-const outdatedHtml = skillContext.render({ pkmSkill: { ...baseSkill, targets: [{ id: "copilot", kind: "copilot", label: "GitHub Copilot", root: "/x", skillPath: "/x/pkm-skills/SKILL.md", state: "outdated", installedVersion: "1.1.5", expectedVersion: "1.1.6", managed: true, detail: "Router 1.1.5 -> 1.1.6" }] }, skillProposals: [] });
-assert.match(outdatedHtml, />Repair PKM Skill · v1\.1\.6<\/span>/);
-assert.match(outdatedHtml, /pkmSkillInject/);
-const bulkHtml = skillContext.render({ pkmSkill: { ...baseSkill, targets: [
-  { id: "copilot", label: "Copilot", skillPath: "/x", state: "outdated" },
-  { id: "agents", label: "Agents", skillPath: "/y", state: "missing" },
-] }, skillProposals: [] });
-assert.match(bulkHtml, /Update All \(2\)/);
-const oneButton = { disabled: false, innerHTML: "Update", setAttribute(name, value) { this[name] = value; } };
-skillContext.injectOne(oneButton, "copilot");
-skillContext.injectOne(oneButton, "copilot");
-assert.strictEqual(oneButton.disabled, true);
-assert.match(oneButton.innerHTML, /Updating/);
-assert.strictEqual(JSON.stringify(skillCalls), JSON.stringify([{ command: "pkmSkillInject", data: { id: "copilot" } }]), "a pending target must not send duplicate updates");
-skillContext.finish();
-skillCalls.length = 0;
-const allButton = { disabled: false, innerHTML: "Update All", setAttribute(name, value) { this[name] = value; } };
-skillContext.injectAll(allButton, ["copilot", "agents", "copilot"]);
-skillContext.injectAll(allButton, ["copilot", "agents"]);
-assert.strictEqual(allButton.disabled, true);
-assert.match(allButton.innerHTML, /Updating 2/);
-assert.strictEqual(JSON.stringify(skillCalls), JSON.stringify([{ command: "pkmSkillInjectAll", data: { ids: ["copilot", "agents"] } }]), "Update All must send one deduplicated bulk request");
-skillContext.finish();
+assert.doesNotMatch(panelJs, /pkmSkillInject|renderPkmSkillTargets|copyMcpInstructions|agency-install-code|mcp-install-code/,
+  "Settings must not offer retired Router injection or an Agent installation prompt");
 
 assert(sourceTs.includes("installedKnowledgeVersion === KNOWLEDGE_MCP_VERSION"));
 assert(sourceTs.includes("installedChatVersion === CHAT_MCP_VERSION"));
@@ -156,8 +135,23 @@ assert(sourceTs.includes("mcp.add_middleware(McpCallGuardMiddleware(mcp))"));
 assert(sourceTs.includes('"resources", "mcp_call_guard.py"'));
 assert(panelJs.includes("Knowledge: installed v"));
 assert(panelJs.includes("Chat: installed v"));
-for (const text of ["PKM Integration Status", "Unified MCP Server", "Knowledge schema", "Chat schema", "Recipe runtime", "Agent Session runtime", "PKM Skill Router", "Setup progress", "Ready · starts on demand", "Automatic integration", "Agent connection"]) {
+for (const text of ["PKM Integration Status", "Unified MCP Server", "Knowledge schema", "Chat schema", "Recipe runtime", "Agent Session runtime", "Setup progress", "Ready · starts on demand", "Automatic integration", "Account binding (not client discovery)"]) {
   assert(panelJs.includes(text), `missing dashboard text: ${text}`);
+}
+assert.doesNotMatch(panelJs, /Account MCP registration/,
+  "an account binding must not be presented as an actual client registration");
+assert(panelJs.includes("~/.pkm/mcp-binding.json is not a client registration. Verify each client separately."),
+  "the binding dashboard must explicitly distinguish binding from client discovery");
+assert.match(panelJs, /clientRegistration\?\.vscode\?\.definitionAvailable \? 'available on this host \(client discovery not verified\)'/,
+  "a native definition must not be presented as verified client discovery");
+assert.match(panelJs, /Default CLI user configuration: \$\{esc\(data\?\.clientRegistration\?\.copilot\?\.state/,
+  "CLI configuration state must be shown independently from native discovery");
+for (const [id, command, label] of [
+  ["mcp-configure-native", "configureNativeMcpDiscovery", "Configure PKM MCP..."],
+  ["mcp-register-copilot-user", "registerCopilotMcp", "Register Copilot CLI MCP (User)"],
+]) {
+  assert.match(panelJs, new RegExp(`id="${id}"[^>]*beginMcpUiAction\\('${command}'[^>]*>${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}<\\/button>`),
+    `${label} must remain an explicit client-specific setup action`);
 }
 assert.doesNotMatch(panelJs, />Update with Server<\/button>|>Update Code<\/button>|>Repair Runtime<\/button>/,
   "normal Config state must not ask new users to maintain internal components manually");
@@ -165,10 +159,8 @@ assert.match(panelJs, /automatic\.state === 'error' \? '<button class="tbtn" dat
   "automatic failures must expose one Retry action");
 assert.match(panelJs, /Personal Knowledge Manager<\/span>[\s\S]{0,300}Extension v\$\{esc\(data\?\.extensionVersion \|\| 'unknown'\)\}/,
   "the Config header must show the complete Extension semver independently from MCP schema versions");
-assert.match(panelJs, /\['PKM Skill Router',[\s\S]{0,240}<span class="mcp-no-action">No action<\/span>/,
-  "the Skill Router version row must be informational only");
-assert.match(panelJs, /\['PKM Skill Router',[\s\S]{0,240}'Info', 'info'\]/,
-  "the informational Router row must never report Update available");
+assert.doesNotMatch(panelJs, /\['PKM Skill Router',/,
+  "retired Agent adapters must not be presented as required MCP components");
 assert.doesNotMatch(panelJs, /PKM Skill Router',[\s\S]{0,240}>Review Targets<\/button>/,
   "the version table must not duplicate Router target actions");
 assert.match(panelJs, /<details class="mcp-router-field"><summary><span>Skill Router<\/span>/,
@@ -178,10 +170,8 @@ assert.doesNotMatch(panelJs, /<details class="mcp-router-field" open/,
 assert.match(panelJs, /function renderSkillRouterField[\s\S]{0,900}router\.name[\s\S]{0,900}router\.description/,
   "the field must render the backend-provided route list without action buttons");
 assert.match(extensionTs, /firstRunGuide: \{ visible: !!guideStep, step: guideStep \}/);
-assert.match(panelJs, /id="pkm-first-run-guide"[\s\S]{0,1400}Click the highlighted Inject or Update All button/,
-  "first configuration must explain the consent action in a floating guide");
-assert.match(panelJs, /pkm-first-run-target[\s\S]{0,500}pkmSkillInjectAll/,
-  "the first Skill injection action must receive an anchored callout");
+assert.match(panelJs, /guide\.step !== 'python'/,
+  "first configuration must not guide users back into retired injection");
 assert.match(panelJs, /dataset\.step === 'python'\) completeIntegrationGuide\(\)/,
   "Python guidance must complete only when Validate & Save submits a path");
 assert.match(panelCss, /\.pkm-first-run-target::after\{content:'Start here'/);
@@ -192,7 +182,7 @@ assert.match(panelJs, /requestAnimationFrame\(\(\) => \{[\s\S]{0,180}Math\.min\(
 assert.match(panelJs, /\['Unified MCP Server',[\s\S]{0,300}<span class="mcp-no-action">Automatic<\/span>/);
 assert.doesNotMatch(panelJs, />Update with Server<\/button>|>Update Code<\/button>|>Repair Runtime<\/button>/,
   "routine internal updates must not be presented as user actions");
-for (const text of ["Paths", "Knowledge root", "Environments root", "Managed MCP runtime", "MCP Base Python", "MCP server directory", "Automatic", "Connected"]) {
+for (const text of ["Paths", "Knowledge root", "Environments root", "Managed MCP runtime", "MCP Base Python", "MCP server directory", "Automatic", "Account binding (not client discovery)"]) {
   assert(panelJs.includes(text), `missing path/status text: ${text}`);
 }
 for (const key of ["store", "environments", "runtime", "python", "serverDirectory"]) {
@@ -238,10 +228,84 @@ for (const command of ["reconfigureKnowledgeRoot", "reconfigureEnvironmentsRoot"
     `${command} must return a completion state even when its native picker is cancelled`);
 }
 for (const text of ["Knowledge root", "Environments root", "Managed MCP runtime", "MCP Base Python", "MCP server directory", "This directory can grow very large", "Reconfigure & Rebuild", "Reconfigure & Regenerate"]) assert(panelJs.includes(text));
-assert(panelJs.includes("command === 'pkmSkillUpdateComplete'"));
-assert(panelJs.includes("finishPkmSkillUpdates(); if (!data?.ok) ask('checkMcp', {})"));
-assert.doesNotMatch(/command === 'mcpStatus'[^\n]*/.exec(panelJs)?.[0] || "", /finishPkmSkillUpdates/);
+assert.doesNotMatch(panelJs, /pkmSkillUpdateComplete|finishPkmSkillUpdates/,
+  "retired injection responses must not restart maintenance");
 assert(panelJs.includes('class="mcp-path-table"'));
+assert.match(panelJs, /id="mcp-copilot-registration"/,
+  "MCP settings must explain the separate Copilot CLI / SDK registration");
+for (const text of ["~/.copilot/mcp-config.json", "copilot mcp list", "copilot mcp get pkm", "Enabled only confirms configuration", "do not inherit VS Code MCP definitions"]) {
+  assert(panelJs.includes(text), `missing Copilot registration guidance: ${text}`);
+}
+const copilotElements = {
+  "mcp-copilot-cfg-code": { textContent: "", removeAttribute(name) { this.removedAttribute = name; } },
+  "mcp-copy-copilot-cfg": { disabled: true },
+};
+const copilotSandbox = {
+  window: {},
+  esc: value => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"),
+  document: { getElementById: id => copilotElements[id] || null },
+};
+vm.createContext(copilotSandbox);
+vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "src", "webview", "panel", "50-mcp.js"), "utf8"), copilotSandbox);
+const lifecycle = {
+  connectionState:"unverified", configuredGeneration:"generation-a", reason:"Prepared; verify actual client",
+  instances:[
+    { instanceId:"old", pid:123, generation:"generation-old", observedState:"accepting", heartbeatFresh:false },
+    { instanceId:"new<script>", pid:456, generation:"generation-a", observedState:"draining", heartbeatFresh:true, inFlight:2, uncertainCalls:1 },
+  ],
+};
+const lifecycleHtml = copilotSandbox.renderMcpLifecycle(lifecycle);
+assert.match(lifecycleHtml, /actual client connection has been verified/);
+assert.match(lifecycleHtml, /Prepared; verify actual client/);
+assert.match(lifecycleHtml, /generation-old/);
+assert.doesNotMatch(lifecycleHtml, />accepting</, "stale heartbeat must not be displayed as accepting");
+assert.match(lifecycleHtml, />draining</);
+assert.match(lifecycleHtml, /new&lt;script&gt;/);
+assert.match(lifecycleHtml, /<td>2<\/td><td>1<\/td>/);
+assert.match(copilotSandbox.renderMcpLifecycle({ connectionState:"unverified" }), /legacy process state is unknown/);
+assert.equal(copilotSandbox.renderMcpLifecycle(undefined), "");
+const hidden = new Set(["hidden"]), regenerate = { hidden:false };
+copilotElements["mcp-global-warning"] = {
+  classList:{ add:value => hidden.add(value), remove:value => hidden.delete(value) },
+  querySelector:() => regenerate,
+};
+copilotElements["mcp-global-warning-text"] = { textContent:"" };
+copilotSandbox.updateGlobalMcpWarning({ installed:true, current:true, lifecycle:{ ...lifecycle, instances:[] } });
+assert.equal(hidden.has("hidden"), true, "unverified observations alone must not become a permanent global warning");
+assert.equal(copilotElements["mcp-global-warning-text"].textContent, "");
+assert.match(lifecycleHtml, /^<details id="mcp-lifecycle"/, "connection verification detail is collapsed and neutral");
+assert.match(lifecycleHtml, /id="mcp-lifecycle" open/, "actual draining/uncertain instances remain visible");
+copilotSandbox.updateGlobalMcpWarning({ installed:true, current:true, lifecycle });
+assert.equal(hidden.has("hidden"), false, "actual drain/uncertainty still raises an actionable warning");
+assert.equal(regenerate.hidden, true, "regeneration cannot resolve uncertain writes");
+copilotSandbox.updateGlobalMcpWarning({ installed:true, current:true });
+assert.equal(hidden.has("hidden"), true);
+for (const definition of [
+  { type: "stdio", command: "/home/person/pkm runtime/bin/python", args: ["/home/person/knowledge/mcp-server/server.py"] },
+  { type: "stdio", command: String.raw`C:\Program Files\Microsoft VS Code\Code.exe`, args: [String.raw`C:\PKM\pkm-stdio-proxy.js`, String.raw`C:\PKM\runtime\Scripts\python.exe`, String.raw`C:\PKM\server.py`], env: { ELECTRON_RUN_AS_NODE: "1" } },
+]) {
+  copilotSandbox.renderMcpGenerated({ preview: true, configSnippet: JSON.stringify({ servers: { pkm: definition } }) });
+  const config = JSON.parse(copilotSandbox.window._copilotMcpCfg);
+  assert.deepStrictEqual(config, { mcpServers: { pkm: { ...definition, type: "local", tools: ["*"] } } },
+    "Copilot configuration must preserve exact managed launch paths, arguments, and Windows environment");
+  assert.strictEqual(copilotElements["mcp-copilot-cfg-code"].textContent, copilotSandbox.window._copilotMcpCfg);
+  assert.strictEqual(copilotElements["mcp-copilot-cfg-code"].removedAttribute, "data-i18n",
+    "localization must not replace a generated configuration with placeholder text");
+  assert.strictEqual(copilotElements["mcp-copy-copilot-cfg"].disabled, false);
+}
+assert.throws(() => copilotSandbox.renderMcpGenerated({ preview: true, configSnippet: '{"servers":{}}' }),
+  /missing its command or arguments/,
+  "invalid generated launch definitions must not produce a success-shaped CLI configuration");
+for (const locale of ["en", "zh-hans"]) {
+  const contents = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "resources", "locales", `${locale}.json`), "utf8"));
+  for (const key of ["Title", "Boundary", "Generation", "Instance", "InstanceGeneration", "Observed", "InFlight", "Uncertain", "Empty"]) {
+    assert(contents.strings[`config.lifecycle${key}`], `${locale} must localize lifecycle ${key}`);
+  }
+  for (const key of ["Title", "Description", "Prepare", "Merge", "NotReady", "Copy", "Copied", "Schema", "Verify", "Remote"]) {
+    assert(contents.strings[`config.copilotRegistration${key}`],
+      `${locale} must localize Copilot registration ${key}`);
+  }
+}
 assert(panelJs.includes("<th>Path Type</th><th>Location</th><th>Disk Usage</th><th>Action</th>"));
 assert(panelCss.includes("table-layout:fixed"));
 assert(panelCss.includes(".mcp-path-size-col{width:105px}"));
@@ -251,7 +315,8 @@ assert.doesNotMatch(panelJs, /configureStorePath|configureEnvironmentsPath/);
 assert(panelJs.includes("mcpProcess"));
 assert(sourceTs.includes("export function mcpProcessStatus"));
 assert(extensionTs.includes('context.globalState.get<string>("lastStorePath"'));
-assert(extensionTs.includes('_pendingTab = configuredPath ?'));
+assert(extensionTs.includes('initializePanel(webviewPanel, context, true, state)'), 'restore each tab from its own VS Code snapshot');
+assert(extensionTs.includes('if (!configuredPath) panels.instances.get(webviewPanel)!.pendingTab = "mcp"'), 'unconfigured restored tabs must route to MCP setup');
 assert(extensionTs.includes('const initialResolution = resolvedStorePath(context)'));
 assert(extensionTs.includes('case "pkmSkillInjectAll"'));
 assert(extensionTs.includes('case "reconfigureKnowledgeRoot"'));
@@ -271,11 +336,11 @@ for (const text of [
   "safeMcpRuntimeTarget(chosen)",
   "safeMcpServerTarget(chosen)",
   "mcpPathSizeGeneration += 1",
-  'panel?.webview.postMessage({ command: "mcpStatus", data: mcpPanelStatusData() })',
+  'postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() })',
 ]) assert(extensionTs.includes(text), `missing safe path refresh: ${text}`);
 assert(sourceTs.includes("Refusing to replace unrecognized directory"));
 const pipInstallIndex = sourceTs.indexOf('execFile(validation.path, ["-m", "pip", "install"');
 const markerWriteIndex = sourceTs.lastIndexOf("fs.writeFileSync(mcpRuntimeBaseMarker()");
 assert(pipInstallIndex >= 0 && markerWriteIndex > pipInstallIndex, "runtime ownership marker must be written after pip succeeds");
 assert.doesNotMatch(extensionTs, /case "configureStorePath"|case "configureEnvironmentsPath"/);
-console.log("MCP version UI test: regenerate version transitions and current Skill Router action state OK");
+console.log("MCP version UI test: version transitions, account binding versus client discovery, explicit client setup, and retired injection UI OK");

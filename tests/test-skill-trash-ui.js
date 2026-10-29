@@ -48,7 +48,7 @@ assert.match(extension, /registerCommand\("personalKnowledge\.restoreSkillTrash"
 assert.match(extension, /registerCommand\("personalKnowledge\.emptySkillTrash"/);
 assert.match(extension, /registerCommand\("personalKnowledge\.deleteSkillTrashEntry"/);
 assert.match(extension, /case "skillTrashDelete"/);
-assert.match(extension, /group\.area === "skills"/);
+assert.match(extension, /area === "skills" \? skillFolderMoveToTrash\(group\.path\)/);
 const commands = new Set(manifest.contributes.commands.map(command => command.command));
 assert(commands.has("personalKnowledge.restoreSkillTrash"));
 assert(commands.has("personalKnowledge.emptySkillTrash"));

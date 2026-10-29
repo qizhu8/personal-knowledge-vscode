@@ -2,7 +2,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { stableUserPort } = require('../dist/user-service-ports.js');
+const { stableUserPort } = require("../dist/runtime/user-service-ports.js");
 
 const userA = { username: 'alice', uid: 1001, gid: 1001, shell: '', homedir: '/home/alice' };
 const userB = { username: 'bob', uid: 1002, gid: 1002, shell: '', homedir: '/home/bob' };
@@ -16,7 +16,7 @@ assert.deepStrictEqual(services.map(service => stableUserPort(service, userA)), 
 assert(portsA.every(port => port >= 1024 && port <= 65535));
 
 const extension = fs.readFileSync(path.join(__dirname, '..', 'src', 'extension.ts'), 'utf8');
-const subscriptions = fs.readFileSync(path.join(__dirname, '..', 'src', 'subscriptions.ts'), 'utf8');
+const subscriptions = fs.readFileSync(path.join(__dirname, '..', 'src', "subscriptions/subscriptions.ts"), 'utf8');
 const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
 assert.match(extension, /inspect<number>\(setting\)/);
 assert.match(extension, /globalValue === undefined/);

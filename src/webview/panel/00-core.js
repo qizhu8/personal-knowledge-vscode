@@ -1,4 +1,9 @@
-const vscode = acquireVsCodeApi();
+const panelNativeApi = globalThis.PkmWebviewApi || acquireVsCodeApi();
+let panelInitialSnapshot = null;
+try { const value = document.querySelector('meta[name="pkm-panel-snapshot"]')?.content; if (value) panelInitialSnapshot = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(value), c => c.charCodeAt(0)))); } catch {}
+// Each VS Code webview owns its own API state. Host snapshots seed duplicate/serializer instances only.
+if (!panelNativeApi.getState() && panelInitialSnapshot && Object.keys(panelInitialSnapshot).length) panelNativeApi.setState(panelInitialSnapshot);
+const vscode = { getState:()=>panelNativeApi.getState(), postMessage:message=>panelNativeApi.postMessage(message), setState:value=>{ panelNativeApi.setState(value); panelNativeApi.postMessage({command:'panelViewState',state:value}); return value; } };
 const panelStylesReady = getComputedStyle(document.documentElement).getPropertyValue('--pkm-panel-css-ready').trim() === '1';
 if (panelStylesReady) {
   for (const id of ['topbar', 'mcp-global-warning', 'workspace-shell', 'ctx-menu', 'sync-modal-bg']) {
@@ -199,8 +204,9 @@ let _mmSeq = 0;
 // Replace each mermaid code block inside `root` with a rendered SVG diagram.
 // Returns a promise that resolves once every diagram in `root` has rendered,
 // so callers (e.g. HTML export) can await fully-inlined SVGs.
-async function renderMermaid(root, theme) {
+async function renderMermaid(root, theme, interactive = true) {
   if (!root) return;
+  if (interactive) PkmMediaZoom.renderImages(root);
   const blocks = [...root.querySelectorAll('code.language-mermaid')];
   if (!blocks.length) return;
   try {
@@ -233,6 +239,11 @@ async function renderMermaid(root, theme) {
     return Promise.resolve().then(() => mermaid.render(id, src)).then(res => {
       cleanupTemporaryNodes();
       holder.innerHTML = res.svg;
+      if (interactive) {
+        const svg = holder.querySelector('svg');
+        if (!svg) throw new Error('Mermaid did not produce an SVG diagram.');
+        PkmMediaZoom.attach(holder, svg, svg.viewBox.baseVal.width || svg.width.baseVal.value, 'Diagram');
+      }
       if (res.bindFunctions) res.bindFunctions(holder);
     }).catch(err => {
       cleanupTemporaryNodes();
@@ -257,7 +268,7 @@ function fileSelectorCategoryTree(items) {
 function fileSelectorTreeItems(node) { return [...node.items, ...Object.values(node.folders).flatMap(fileSelectorTreeItems)]; }
 const uiIcon = (name, label = '') => `<span class="codicon codicon-${name}" aria-hidden="true"></span>${label ? `<span>${esc(label)}</span>` : ''}`;
 const ICON = {todo:uiIcon('circle-outline'),done:uiIcon('pass-filled'),'data-path':uiIcon('folder'),observation:uiIcon('eye'),general:uiIcon('note')};
-const surfacePanelTitles = { skills:'Skills', notes:'Notes', papers:'Research', agentSessions:'Agent Sessions', recipes:'Recipe Library', prompts:'Prompts', scripts:'Scripts', packages:'Packages', environments:'Environments', servers:'Servers', projects:'Projects', chatroom:'Threads', subscriptions:'Network & Sharing', githubSync:'GitHub Sync', backgroundTasks:'Background Tasks', mcp:'General & MCP', skillRouter:'Router' };
+const surfacePanelTitles = { skills:'Skills', notes:'Notes', papers:'Research', agentSessions:'Agent Sessions', recipes:'Recipe Library', actionLibrary:'Action Library', actions:'Action Workbench', prompts:'Prompts', scripts:'Scripts', packages:'Packages', environments:'Environments', servers:'Servers', projects:'Projects', chatroom:'Threads', portalConnections:'Portal Connections', subscriptions:'Network & Sharing', githubSync:'GitHub Sync', backgroundTasks:'Background Tasks', mcp:'General & MCP', userProfile:'User Profile', skillRouter:'Router' };
 let lastPanelTitle = '';
 function setPanelTitle(title) {
   const next = String(title || 'Personal Knowledge Manager').trim();
@@ -375,8 +386,8 @@ scheduleUiTranslation();
 const workspaceSurfaces = Object.freeze({
   knowledge:['skills','notes','papers'],
   tools:['prompts','scripts','packages','environments','servers'],
-  automation:['agentSessions','agentSnapshots','recipes'],
-  projects:['projects','chatroom'],
+  automation:['userProfile','agentSessions','agentSnapshots','actionLibrary','recipes','actions'],
+  projects:['projects','chatroom','portalConnections'],
   settings:['mcp','skillRouter','subscriptions','githubSync','backgroundTasks']
 });
 const workspaceDefaultSurface = Object.freeze({ knowledge:'skills', tools:'prompts', automation:'agentSessions', projects:'projects', settings:'mcp' });
@@ -390,7 +401,7 @@ const loadProfileRequests = new Map();
 const loadProfileResponseCommands = Object.freeze({
   list:'list', projectState:'projectState', envList:'envList', serverList:'serverList',
   subscriptionState:'subscriptionState', githubSyncState:'githubSyncState',
-  backgroundTasks:'backgroundTasks', chatState:'chatState', checkMcp:'mcpStatus',
+  userProfile:'userProfile', userProfileEdit:'userProfile', backgroundTasks:'backgroundTasks', portalConnections:'portalConnections', chatState:'chatState', checkMcp:'mcpStatus',
   skillRouterStatus:'skillRouterStatus', setLoadProfiling:'mcpStatus',
 });
 function loadProfileEvent(event, detail = {}) {
@@ -436,13 +447,22 @@ function tabCacheIsFresh(updatedAt, now = Date.now()) {
   return Number(updatedAt) > 0 && now - Number(updatedAt) < TAB_CACHE_FRESH_MS;
 }
 const pendingActionButtons = new Map();
+const knowledgeTrashActionLabels = {
+  deleteNote:'Moving Note to Trash...', deleteSkill:'Moving Skill to Trash...', deletePaper:'Moving Paper to Trash...',
+  deleteScript:'Moving Script to Trash...', deleteAllPapers:'Moving Research to Trash...',
+  skillTrashFolder:'Moving Skill folder to Trash...', knowledgeTrashMove:'Moving to Trash...',
+  skillTrashRestore:'Restoring from Trash...', knowledgeTrashRestore:'Restoring from Trash...',
+  skillTrashDelete:'Permanently deleting Trash entry...', knowledgeTrashDelete:'Permanently deleting Trash entry...',
+  skillTrashEmpty:'Emptying Trash...', knowledgeTrashEmpty:'Emptying Trash...',
+};
 const actionTimeouts = {
   subscriptionCopyLink:10000, subscriptionConfigure:15000, subscriptionSetOnline:30000, subscriptionSetSharePublished:30000,
   subscriptionUpsertShare:30000, subscriptionDeleteShare:30000, subscriptionAdd:60000,
   subscriptionTestGitHubBranch:150000, subscriptionMountGitHub:150000,
   subscriptionRename:10000, subscriptionSetPriority:15000, subscriptionRefresh:60000, subscriptionRemove:30000,
   subscriptionRevealSecret:10000, subscriptionRotateSecret:30000, subscriptionUnblockIp:15000, subscriptionFork:30000, subscriptionOpenServerLink:15000,
-  skillTrashRestore:15000, skillTrashDelete:15000, skillTrashEmpty:30000,
+  deleteNote:15000, deleteSkill:15000, deletePaper:15000, deleteScript:15000, deleteAllPapers:30000,
+  skillTrashFolder:15000, skillTrashRestore:15000, skillTrashDelete:15000, skillTrashEmpty:30000,
   knowledgeTrashMove:15000, knowledgeTrashRestore:15000, knowledgeTrashDelete:15000, knowledgeTrashEmpty:30000,
   serverSubscriptionStatus:15000,
   serverSubscriptionRefresh:60000,
@@ -451,15 +471,24 @@ const actionTimeouts = {
   agentSnapshotCreate:30000, agentSnapshotDelete:15000,
   recipeOpenBrowser:30000,
   githubSyncSave:30000, githubSyncDelete:120000, githubSyncRun:120000, githubSyncCreateIdentity:30000, githubSyncTestAuthentication:30000,
+  githubSyncForceUpdate:900000, githubSyncForceRemote:900000,
   githubSyncMigration:180000,
+  githubSyncState:120000, githubSyncRestore:180000, githubSyncPickIdentity:30000,
+  githubSyncConflictChoose:120000, githubSyncConflictValidate:120000,
+  githubSyncRepairOpen:30000, githubSyncRepairPreview:30000, githubSyncRepairApply:180000,
+  githubSyncRecipeRecompilePreview:60000, githubSyncRecipeRecompileApply:180000,
+  githubSyncRepairRevalidate:180000, githubSyncRepairRevalidateOnly:180000,
+  githubSyncRepairPause:180000, githubSyncRepairResume:180000, githubSyncRepairTrash:180000,
   githubSyncConflictOpen:30000, githubSyncConflictChooseAll:120000, githubSyncConflictDelete:120000, githubSyncConflictDeleteAll:120000, githubSyncConflictDeleteLocal:120000, githubSyncConflictDeleteLocalAll:120000, githubSyncConflictAgent:120000, githubSyncConflictAgentAll:1800000, githubSyncConflictAccept:900000, githubSyncConflictDiscard:30000,
   mcpRepairRuntime:600000, mcpSetPython:600000, mcpBrowsePython:600000, generateMcp:90000,
   reconfigureKnowledgeRoot:600000, reconfigureEnvironmentsRoot:600000, reconfigureMcpRuntimePath:600000, reconfigureMcpServerPath:600000,
   checkMcp:600000, mcpDetectPython:60000, refreshMcpPathSizes:30000,
+  configureNativeMcpDiscovery:600000, registerCopilotMcp:600000,
 };
 
 function restoreActionButton(entry) {
   clearTimeout(entry.timer);
+  entry.progress?.remove();
   if (!entry.button.isConnected) return;
   entry.button.disabled = false;
   entry.button.removeAttribute('aria-busy');
@@ -531,16 +560,40 @@ function timeoutAction(command, entry) {
   const remaining = (pendingActionButtons.get(command) || []).filter(candidate => candidate !== entry);
   if (remaining.length) pendingActionButtons.set(command, remaining); else pendingActionButtons.delete(command);
   restoreActionButton(entry);
-  showActionError(entry.button, `${entry.label} timed out. The background operation may still be running; check PKM logs before retrying.`);
+  const message = `${entry.label} timed out. The background operation may still be running; check PKM logs before retrying.`;
+  if (typeof githubSyncRepairCommands !== 'undefined' && githubSyncRepairCommands.has(command)) {
+    for (const [targetId, pending] of githubSyncRepairPending) {
+      if (pending.command === command) githubSyncOnRepairResult({ targetId, action:command, error:message });
+    }
+  }
+  if (entry.button.isConnected) showActionError(entry.button, message);
+  else showViewActionError(message);
 }
 
 function beginAction(command, button) {
   const timeout = actionTimeouts[command];
-  if (!timeout || !(button instanceof HTMLButtonElement)) return true;
-  if (button.disabled || pendingActionButtons.has(command)) return false;
+  const trashLabel = knowledgeTrashActionLabels[command];
+  if (!timeout || (!trashLabel && !(button instanceof HTMLButtonElement))) return true;
+  if (trashLabel && Object.keys(knowledgeTrashActionLabels).some(action => pendingActionButtons.has(action))) return false;
+  if (!(button instanceof HTMLButtonElement)) button = document.createElement('button');
+  if (button.disabled) return false;
+  if (pendingActionButtons.has(command)) {
+    const running = pendingActionButtons.get(command).find(entry => entry.button.isConnected) || pendingActionButtons.get(command)[0];
+    showActionError(button, `${running?.label || 'The previous request'} is still running. Wait for it to finish before trying again.`);
+    return false;
+  }
   clearActionError(button);
   const entries = pendingActionButtons.get(command) || [];
-  const entry = { button, html:button.innerHTML, label:(button.textContent || command).trim(), timer:0 };
+  const entry = { button, html:button.innerHTML, label:(button.textContent || command).trim(), timer:0, progress:null };
+  if (trashLabel) {
+    entry.progress = document.createElement('div');
+    entry.progress.className = 'pk-action-progress';
+    entry.progress.setAttribute('role','status');
+    entry.progress.setAttribute('aria-live','polite');
+    entry.progress.setAttribute('aria-busy','true');
+    entry.progress.textContent = trashLabel;
+    document.body.appendChild(entry.progress);
+  }
   entry.timer = setTimeout(() => timeoutAction(command, entry), timeout);
   entries.push(entry);
   pendingActionButtons.set(command, entries);
@@ -582,7 +635,8 @@ function failAction(message, ...commands) {
   for (const command of commands) {
     for (const entry of pendingActionButtons.get(command) || []) {
       restoreActionButton(entry);
-      showActionError(entry.button, message);
+      if (entry.button.isConnected) showActionError(entry.button, message);
+      else showViewActionError(message);
     }
     pendingActionButtons.delete(command);
   }
@@ -592,6 +646,7 @@ let ctxPinned = false; // pinned state of the note under right-click
 let notePinnedFolders = []; // note folder paths pinned to the top of their level
 let currentDetail = null; // current detail item for edit/delete actions
 let currentDetailRequest = null; // authoritative {type,key}, including packageFile/prompt variants
+let detailRequestSequence = 0;
 let catExpanded = {}; // expanded state per folder key (default: collapsed)
 let pendingTreeRefresh = null; // identifies disk changes whose category path should be revealed
 let pendingEditSlug = null; // note slug awaiting detail load for edit
@@ -783,7 +838,7 @@ window.addEventListener('message', e => {
     ['skills','notes','scripts'].forEach(invalidateKnowledgeTabView);
     if (['skills','notes','scripts'].includes(state.tab)) ask('list', { tab: state.tab, filter: state.filter, q: state.search, fresh: true }, null, true);
   }
-  else if (command === 'list' || command === 'listPartial')     { if (e.data.tab && e.data.tab !== state.tab) return; if (state.tab === 'skills' && (e.data.q || '') !== state.search) return; if (command === 'list') { skillsListLoading = false; finishAction('list','deleteSkill','skillTrashFolder','skillTrashRestore','skillTrashDelete','skillTrashEmpty','knowledgeTrashMove','knowledgeTrashRestore','knowledgeTrashDelete','knowledgeTrashEmpty'); } if (command === 'list' && revealRefreshedTreeItems(state.tab, state.items, data, pendingTreeRefresh)) pendingTreeRefresh = null; state.items = data; state.folders = e.data.folders || []; state.knowledgeGroups = e.data.knowledgeGroups || null; state.subscriptionGroups = e.data.subscriptionGroups || []; state.knowledgeTrash = e.data.knowledgeTrash || []; state.brokerSharedFolders = e.data.brokerSharedFolders || {}; if (Array.isArray(e.data.privateTopLevels)) state.privateTopLevels = e.data.privateTopLevels; renderList(); highlightDetailMatches(document.getElementById('layout'), state.search); }
+  else if (command === 'list' || command === 'listPartial')     { if (e.data.tab && e.data.tab !== state.tab) return; if (state.tab === 'skills' && (e.data.q || '') !== state.search) return; if (command === 'list') { skillsListLoading = false; finishAction('list'); } if (command === 'list' && revealRefreshedTreeItems(state.tab, state.items, data, pendingTreeRefresh)) pendingTreeRefresh = null; state.items = data; state.folders = e.data.folders || []; state.knowledgeGroups = e.data.knowledgeGroups || null; state.subscriptionGroups = e.data.subscriptionGroups || []; state.knowledgeTrash = e.data.knowledgeTrash || []; state.brokerSharedFolders = e.data.brokerSharedFolders || {}; if (Array.isArray(e.data.privateTopLevels)) state.privateTopLevels = e.data.privateTopLevels; renderList(); highlightDetailMatches(document.getElementById('layout'), state.search); }
   else if (command === 'listSubscriptionGroups') {
     if (e.data.tab !== state.tab) {
       updateCachedKnowledgeTabSubscriptions(e.data.tab, data || []);
@@ -793,6 +848,13 @@ window.addEventListener('message', e => {
     renderSubscribedGroups(document.getElementById('item-list'));
   }
   else if (command === 'detail') {
+    if (e.data.editIdentity && e.data.editRevision) {
+      const snapshot = vscode.getState() || {};
+      const preserve = panelRestoreActive && panelRestoreState.view?.selection && Object.keys(panelRestoreState.view?.forms || {}).length;
+      if (!preserve || !snapshot.editRevisions?.[e.data.editIdentity]) vscode.setState({ ...snapshot, editRevisions:{ ...(snapshot.editRevisions || {}), [e.data.editIdentity]:e.data.editRevision } });
+    }
+    if (e.data.detailRequestId !== undefined
+      && (e.data.detailRequestId !== detailRequestSequence || e.data.detailTab !== state.tab || !currentDetailRequest)) return;
     if (pendingEditSlug && data?.type === 'note' && data.slug === pendingEditSlug) {
       pendingEditSlug = null; editNote(data);
     } else {
@@ -811,9 +873,10 @@ window.addEventListener('message', e => {
   }
   else if (command === 'saved')    { ask('list', { tab: state.tab, filter: state.filter, q: state.search }); if (state.tab === 'papers') { ask('paperGroups', {}); ask('paperFacets', {}); } }
   else if (command === 'skillTrashResult') {
+    finishAction('deleteSkill','skillTrashFolder','skillTrashRestore','skillTrashDelete','skillTrashEmpty');
     if (!data?.ok) pkModal({ title:'Skills Trash', message:data?.error || 'Trash action failed.', okLabel:'OK' });
     else vscode.postMessage({ command:'toast', text:data.action === 'emptied' ? `Emptied ${Number(data.count)||0} Trash entries` : `${data.action === 'restored' ? 'Restored' : data.action === 'deleted' ? 'Permanently deleted' : 'Moved to Trash'}: ${data.path || ''}` });
-    currentDetail = null; currentDetailRequest = null; renderEmptyDetail();
+    if (data?.ok) { currentDetail = null; currentDetailRequest = null; renderEmptyDetail(); }
     ask('list', { tab:'skills', filter:'all', q:state.tab === 'skills' ? state.search : '', fresh:true });
   }
   else if (command === 'knowledgeTrashResult') {
@@ -836,6 +899,7 @@ window.addEventListener('message', e => {
     const cb = pendingAssets[e.data.reqId];
     if (cb) { delete pendingAssets[e.data.reqId]; cb(e.data.markdown, e.data.error); }
   }
+  else if (command === 'markdownAssetList') { showMarkdownAssetList(data); }
   else if (command === 'noteLinkMissing') {
     vscode.postMessage({ command: 'toast', text: 'No note found for “' + (e.data.target || '') + '”' });
   }
@@ -843,6 +907,7 @@ window.addEventListener('message', e => {
   else if (command === 'envList') {
     envCache = data || [];
     if (state.tab === 'environments') renderEnvDashboard(envCache);
+    if (e.data.refreshErrors?.length) showViewActionError(`Environment refresh incomplete: ${e.data.refreshErrors.join('; ')}`);
     const refresh = document.querySelector('#content-toolbar .tbtn[onclick="doReload()"]');
     if (refresh) { refresh.disabled = false; refresh.innerHTML = uiIcon('refresh', 'Refresh'); }
   }
@@ -874,22 +939,32 @@ window.addEventListener('message', e => {
   else if (command === 'serverLog') { onServerLog(e.data.slug, e.data.text); }
   else if (command === 'serverPickFolder') { onServerPickFolder(e.data.dir); }
   else if (command === 'subscriptionState') { finishAction('subscriptionState','subscriptionConfigure','subscriptionSetOnline','subscriptionUpsertShare','subscriptionDeleteShare','subscriptionAdd','subscriptionMountGitHub','subscriptionRename','subscriptionSetPriority','subscriptionRefresh','subscriptionRemove','subscriptionUnblockIp','subscriptionRotateSecret'); subscriptionOnState(data); finishLoadingProgress(); }
-  else if (command === 'githubSyncState') { finishAction('githubSyncState','githubSyncSave','githubSyncDelete','githubSyncRun','githubSyncAutomationToggle','githubSyncMigration','githubSyncConflictChoose','githubSyncConflictChooseAll','githubSyncConflictDelete','githubSyncConflictDeleteAll','githubSyncConflictDeleteLocal','githubSyncConflictDeleteLocalAll','githubSyncConflictValidate','githubSyncConflictAgent','githubSyncConflictAgentAll','githubSyncConflictDiscard'); githubSyncOnState(data); finishLoadingProgress(); }
+  else if (command === 'githubSyncState') { if (githubSyncOnState(data) !== false) { finishAction('githubSyncState','githubSyncSave','githubSyncDelete','githubSyncRun','githubSyncAutomationToggle','githubSyncMigration','githubSyncConflictChoose','githubSyncConflictChooseAll','githubSyncConflictDelete','githubSyncConflictDeleteAll','githubSyncConflictDeleteLocal','githubSyncConflictDeleteLocalAll','githubSyncConflictValidate','githubSyncConflictAgent','githubSyncConflictAgentAll','githubSyncConflictDiscard'); finishLoadingProgress(); } }
+  else if (command === 'githubSyncMigrationResult') { finishAction('githubSyncMigration'); }
+  else if (command === 'githubSyncRepairResult') { githubSyncOnRepairResult(data); }
   else if (command === 'githubSyncConflictAcceptProgress') { updateActionProgress('githubSyncConflictAccept', data?.text || 'Applying choices…'); }
   else if (command === 'githubSyncConflictAccepted') {
     finishAction('githubSyncConflictAccept');
     vscode.postMessage({ command:'toast', text:data?.refreshed?.length ? `${data.refreshed.length} changed files need review` : `Applied ${data?.accepted || 0} choices; Initial Sync is queued` });
   }
-  else if (command === 'githubSyncRunQueued') { finishAction('githubSyncRun'); githubSyncOnRunQueued(data); }
+  else if (command === 'githubSyncRunQueued') { finishAction('githubSyncRun'); finishAction('githubSyncForceUpdate'); githubSyncOnRunQueued(data); }
+  else if (command === 'githubSyncForceRemoteResult') { finishAction('githubSyncForceRemote'); githubSyncOnForceRemoteResult(data); }
   else if (command === 'githubSyncRuntimeState') { githubSyncOnRuntimeState(data); }
+  else if (command === 'githubSyncAutomationResult') { githubSyncOnAutomationResult(data); }
   else if (command === 'githubSyncRuntimeSnapshot') { for (const [targetId, runtime] of Object.entries(data || {})) githubSyncOnRuntimeState({ targetId, state:runtime }); }
+  else if (command === 'userProfile') { userProfileOnSnapshot(data); finishAction('userProfileEdit'); finishAction('userProfileFragmentAction'); finishLoadingProgress(); }
   else if (command === 'backgroundTasks') { backgroundTasksOnSnapshot(data); finishLoadingProgress(); }
+  else if (command === 'backgroundProcesses') { backgroundProcessesOnSnapshot(data); }
+  else if (command === 'retrievalSolutions') { skillRouterSolutionsOnSnapshot(data); }
+  else if (command === 'retrievalPerformance') { skillRouterPerformanceOnSnapshot(data); }
+  else if (command === 'retrievalModelSetup') { skillRouterModelSetupOnProgress(data); }
+  else if (command === 'portalConnections') { portalConnectionsOnSnapshot(data); finishLoadingProgress(); }
   else if (command === 'githubSyncRestored') { finishAction('githubSyncRestore'); vscode.postMessage({ command:'toast', text:`Restored ${data?.restored?.length || 0} file(s) from GitHub` }); }
   else if (command === 'githubSyncRestoreCancelled') { finishAction('githubSyncRestore'); }
   else if (command === 'githubSyncIdentityPicked') { finishAction('githubSyncPickIdentity'); githubSyncIdentityPicked(data?.identityFile || ''); }
   else if (command === 'githubSyncIdentityCreated') { finishAction('githubSyncCreateIdentity'); githubSyncIdentityPicked(data?.identityFile || ''); vscode.postMessage({ command:'toast', text:'SSH public key copied; add it to GitHub, then test the account' }); }
   else if (command === 'githubSyncAuthenticationResult') { finishAction('githubSyncTestAuthentication'); githubSyncOnAuthenticationResult(data); vscode.postMessage({ command:'toast', text:`Authenticated as ${data?.login || 'unknown'}` }); }
-  else if (command === 'githubSyncError') { githubSyncSaving = false; const action = String(data?.action || ''); const message = data?.error || 'GitHub Sync failed.'; if (action === 'githubSyncRun') { githubSyncForcePending.clear(); if (state.tab === 'githubSync') renderGitHubSyncPane(); } if (action === 'githubSyncState' && !githubSyncUpdatedAt && state.tab === 'githubSync') { githubSyncStatusRequested = false; showInitialViewError('GitHub Sync could not load', message, 'githubSyncState'); } else if (action === 'githubSyncState') githubSyncOnRefreshError(message); else if (action && pendingActionButtons.has(action)) failAction(message, action); else showViewActionError(message); finishLoadingProgress(); }
+  else if (command === 'githubSyncError') { githubSyncSaving = false; const action = String(data?.action || ''); const message = data?.error || 'GitHub Sync failed.'; if (githubSyncRepairCommands.has(action)) githubSyncOnRepairResult({ ...data, error:message }); if (action === 'githubSyncAutomationToggle') githubSyncOnAutomationResult(data); if (action === 'githubSyncForceRemote') githubSyncOnForceRemoteResult({ targetId:data?.targetId, cancelled:true }); if (action === 'githubSyncRun' || action === 'githubSyncForceUpdate') { githubSyncForcePending.delete(data?.targetId); if (state.tab === 'githubSync') renderGitHubSyncPane(); } if (action === 'githubSyncState' && !githubSyncUpdatedAt && state.tab === 'githubSync') { githubSyncStatusRequested = false; showInitialViewError('GitHub Sync could not load', message, 'githubSyncState'); } else if (action === 'githubSyncState') githubSyncOnRefreshError(message); else if (!githubSyncRepairCommands.has(action) && action && pendingActionButtons.has(action)) failAction(message, action); else if (!githubSyncRepairCommands.has(action)) showViewActionError(message); finishLoadingProgress(); }
   else if (command === 'subscriptionChanged') {
     invalidateSubscriptionKnowledgeViews();
     invalidateRecipeSubscriptionGroups();
@@ -901,11 +976,12 @@ window.addEventListener('message', e => {
     }
     else if (cachedKnowledgeTabs.has(state.tab)) ask('list', { tab: state.tab, filter: state.filter, q: state.search, fresh: true });
   }
+  else if (command === 'actionToolchainsConfigured') { finishAction('actionToolchainsConfigure'); }
   else if (command === 'subscriptionError') {
     const action = String(data?.action || '');
     const message = data?.error || 'Subscription action failed.';
     if (action === 'subscriptionMountGitHub' || action === 'subscriptionTestGitHubBranch') subscriptionGitHubProgressUpdate(null);
-    if (action === 'subscriptionState' && state.tab === 'subscriptions') showInitialViewError('Network & Sharing could not load', message, 'subscriptionState');
+    if (action === 'subscriptionState' && state.tab === 'subscriptions') showInitialViewError('Sharing & Subscribe could not load', message, 'subscriptionState');
     else if (action && pendingActionButtons.has(action)) failAction(message, action);
     else showViewActionError(message);
     finishLoadingProgress();
@@ -973,14 +1049,18 @@ window.addEventListener('message', e => {
   else if (command === 'projectState') { projectOnState(data); }
   else if (command === 'projectStateChanged') {
     projectSnapshotDirty = true;
-    const scope = String(data?.scope || 'all');
-    const relevant = state.tab === 'recipes' ? scope === 'recipes' || scope === 'all'
+    const scopes = Array.isArray(data?.scopes) ? data.scopes : [String(data?.scope || 'all')];
+    const relevant = scopes.some(scope => state.tab === 'recipes' ? scope === 'recipes' || scope === 'all'
       : ['agentSessions','agentSnapshots'].includes(state.tab) ? ['agentSessions','recipeRuns','all'].includes(scope)
-      : state.tab === 'projects' && (scope === 'projects' || scope === 'all');
-    if (relevant) ask('projectState', {});
+      : state.tab === 'projects' && (scope === 'projects' || scope === 'all'));
+    if (relevant) {
+      nativeHarnessStateChanged();
+      ask('projectState', {});
+    }
   }
   else if (command === 'projectResult') { projectOnResult(data); }
   else if (command === 'agentSnapshotCreated') { finishAction('agentSnapshotCreate'); agentSnapshotOnCreated(data); }
+  else if (command === 'agentSnapshotRecovered') finishAction('agentSnapshotRecover');
   else if (command === 'agentSnapshotContents') { finishAction('agentSnapshotContents'); agentSnapshotOnContents(data); }
   else if (command === 'recipeValidationResult') { recipeOnValidation(data); }
   else if (command === 'recipeIntentEdited') { recipeOnIntentEdited(data); }
@@ -1000,7 +1080,7 @@ window.addEventListener('message', e => {
     if (cachedKnowledgeTabs.has(changedArea)) invalidateKnowledgeTabView(changedArea);
     else cachedKnowledgeTabs.forEach(invalidateKnowledgeTabView);
     if (cachedKnowledgeTabs.has(state.tab) && (!changedArea || changedArea === state.tab)) {
-      ask('list', { tab: state.tab, filter: state.filter, q: state.search }, null, true);
+      ask('list', { tab: state.tab, filter: state.filter, q: state.search, fresh:!!data?.manual }, null, true);
     }
     githubSyncUpdatedAt = 0;
     if (['skills','notes','papers','recipes'].includes(state.tab)) ensureGitHubSyncStatus();
@@ -1080,7 +1160,6 @@ window.addEventListener('message', e => {
     else failAction(data?.error || 'MCP configuration failed.', action);
   }
   else if (command === 'skillRouterStatus') { skillRouterOnStatus(data); }
-  else if (command === 'pkmSkillUpdateComplete') { finishPkmSkillUpdates(); if (!data?.ok) ask('checkMcp', {}); }
   else if (command === 'uiLanguage')   { applyUiLanguage(data); }
   else if (command === 'tourCatalog') { updateFeatureTourCatalog(data); }
   else if (command === 'initialExperience') { queueInitialExperience(data); }
@@ -1122,7 +1201,10 @@ window.addEventListener('message', e => {
   else if (command === 'scriptSaved') {
     if (data.error) { alert('Save failed: ' + data.error); return; }
     if (data.cancelled) return; // user declined confirmation — stay in editor
-    if (data.ok && data.path) ask('detail', { type: 'script', key: data.path }); // reload saved script
+    if (data.ok && data.path && currentDetail?.type === 'script' && currentDetail.path === data.path) {
+      document.getElementById('se-script')?.remove();
+      ask('detail', currentDetailRequest || { type: 'script', key: data.path });
+    }
   }
   else if (command === 'metadataUpdateResult') {
     if (!data.ok) pkModal({ title: 'Duplicate name', message: data.error || 'Metadata could not be saved.', okLabel: 'OK' });
@@ -1141,6 +1223,12 @@ window.addEventListener('message', e => {
   else if (command === 'openTab') {
     const btn = document.querySelector(`.tab[data-tab="${e.data.tab}"]`);
     if (btn) btn.dispatchEvent(new MouseEvent('click'));
+  }
+  else if (command === 'openNativeHarness') {
+    selectedAgentSessionId = String(e.data.sessionId || '');
+    const btn = document.querySelector('.tab[data-tab="agentSessions"]');
+    if (btn) btn.dispatchEvent(new MouseEvent('click'));
+    ask('projectState', {});
   }
   else if (command === 'focusServer') { focusServerDashboard(String(e.data.slug || '')); }
   else if (command === 'focusEnvironment') { focusEnvironmentDashboard(String(e.data.environmentId || '')); }
@@ -1175,7 +1263,16 @@ window.addEventListener('message', e => {
 });
 
 function ask(command, payload, button, silent = false) {
-  if (!beginAction(command, button || window.event?.currentTarget)) return;
+  if (typeof githubSyncRepairCommands !== 'undefined' && githubSyncRepairCommands.has(command)
+    && githubSyncRepairPending.has(payload.targetId)) return;
+  const actionButton = button || (silent ? null : window.event?.currentTarget);
+  if (!beginAction(command, actionButton)) return;
+  if (typeof githubSyncBeginRepairAction === 'function') githubSyncBeginRepairAction(command, payload);
+  if (command === 'detail') {
+    currentDetailRequest = { type:payload.type, key:payload.key };
+    payload = { ...payload, detailRequestId:++detailRequestSequence, detailTab:state.tab };
+  }
+  if (command === 'recipeUpdate' && typeof panelRecipeRevision === 'function') payload = { ...payload, expectedRecipeRevision:panelRecipeRevision(payload.recipeId) };
   const knowledgeLoadingLabels = {
     skills: 'Opening the spellbook…',
     notes: 'Opening the enchanted notebook…',
@@ -1191,6 +1288,52 @@ function ask(command, payload, button, silent = false) {
     command, ...payload, ...(silent ? { silent:true } : {}),
     profileRequestId, profileSurface:state.tab, profileWorkspace:state.workspace,
   });
+}
+
+function captureRefreshView(root, selectors = []) {
+  const scrolls = [{ selector:null, index:0, left:root?.scrollLeft || 0, top:root?.scrollTop || 0 }];
+  for (const selector of selectors) [...(root?.querySelectorAll?.(selector) || [])].forEach((element, index) => {
+    scrolls.push({ selector, index, left:element.scrollLeft, top:element.scrollTop });
+  });
+  const active = document.activeElement;
+  const focus = active?.id && root?.contains?.(active)
+    ? { id:active.id, start:active.selectionStart, end:active.selectionEnd, direction:active.selectionDirection } : null;
+  return { scrolls, focus };
+}
+
+function restoreRefreshView(root, view) {
+  if (!root || !view) return;
+  const focus = view.focus && document.getElementById(view.focus.id);
+  if (focus && root.contains?.(focus)) {
+    focus.focus({ preventScroll:true });
+    if (Number.isInteger(view.focus.start) && typeof focus.setSelectionRange === 'function') {
+      focus.setSelectionRange(view.focus.start, view.focus.end, view.focus.direction || 'none');
+    }
+  }
+  for (const saved of view.scrolls) {
+    const element = saved.selector ? root.querySelectorAll(saved.selector)[saved.index] : root;
+    if (element) { element.scrollLeft = saved.left; element.scrollTop = saved.top; }
+  }
+}
+
+function captureRefreshInputs(root, selector, dirtyOnly = false) {
+  return [...(root?.querySelectorAll?.(selector) || [])].filter(input => {
+    if (!dirtyOnly) return true;
+    if (input.type === 'checkbox' || input.type === 'radio') return input.checked !== input.defaultChecked;
+    const baseline = input.tagName === 'SELECT'
+      ? ([...input.options].find(option => option.defaultSelected) || input.options[0])?.value : input.defaultValue;
+    return input.value !== baseline;
+  }).map(input => ({ id:input.id, value:input.value, checked:input.checked }));
+}
+
+function restoreRefreshInputs(root, inputs) {
+  for (const saved of inputs) {
+    const input = document.getElementById(saved.id);
+    if (!input || !root.contains(input)) continue;
+    if (input.tagName === 'SELECT' && ![...input.options].some(option => option.value === saved.value)) continue;
+    input.value = saved.value;
+    if (typeof saved.checked === 'boolean') input.checked = saved.checked;
+  }
 }
 
 function updateLoadingProgress(progress = {}) {
@@ -1212,12 +1355,13 @@ function isInitialViewResponse(command, message = {}) {
   const responseByTab = {
     skills:'list', notes:'list', papers:'list', prompts:'list', packages:'list', scripts:'list',
     environments:'envList', servers:'serverList', agentSessions:'projectState', recipes:'projectState', projects:'projectState',
-    chatroom:'chatState', mcp:'mcpStatus', skillRouter:'skillRouterStatus', subscriptions:'subscriptionState', githubSync:'githubSyncState', backgroundTasks:'backgroundTasks',
+    userProfile:'userProfile', chatroom:'chatState', mcp:'mcpStatus', skillRouter:'skillRouterStatus', subscriptions:'subscriptionState', githubSync:'githubSyncState', backgroundTasks:'backgroundTasks', portalConnections:'portalConnections',
   };
   return responseByTab[state.tab] === command && (command !== 'list' || message.tab === state.tab);
 }
 
 function finishLoadingProgress() {
+  globalThis.PkmHostHealth?.ready();
   clearTimeout(loadingRevealTimer);
   loadingRevealTimer = null;
   latestLoadingProgress = { stage:'ready' };
@@ -1259,13 +1403,19 @@ function renderLoadingProgress(progress = {}) {
 }
 
 // ── Topbar overflow: sliding tabs + collapsing action buttons ───────────
-function scrollTabs(dir) { const t = document.getElementById('tabs'); if (t) t.scrollBy({ left: dir * 160, behavior: 'smooth' }); }
+function scrollTabs(dir, group = document.querySelector('.workspace-context-group.active')) {
+  group?.querySelector('.workspace-context-tabs,.settings-subtabs')?.scrollBy({ left:dir * 160, behavior:'smooth' });
+}
 function updateTabNav() {
-  const t = document.getElementById('tabs'); if (!t) return;
-  const over = t.scrollWidth > t.clientWidth + 2;
-  const l = document.getElementById('tab-left'), r = document.getElementById('tab-right');
-  if (l) l.style.display = over ? '' : 'none';
-  if (r) r.style.display = over ? '' : 'none';
+  document.querySelectorAll('.workspace-context-group,.settings-tabs-group').forEach(group => {
+    const tabs = group.querySelector('.workspace-context-tabs,.settings-subtabs');
+    if (!tabs) return;
+    const overflow = tabs.scrollWidth > tabs.clientWidth + 2;
+    group.querySelectorAll('.tab-scroll').forEach(button => {
+      button.hidden = !overflow;
+      button.disabled = button.dataset.direction === '-1' ? tabs.scrollLeft <= 1 : tabs.scrollLeft + tabs.clientWidth >= tabs.scrollWidth - 1;
+    });
+  });
 }
 function sortToolbar() {
   const tb = document.getElementById('toolbar'); if (!tb) return;
@@ -1303,11 +1453,57 @@ if (window.ResizeObserver) {
   const actionbar = document.getElementById('content-toolbar'); if (actionbar) ro.observe(actionbar);
 }
 (() => {
-  const t = document.getElementById('tabs'); if (!t) return;
-  t.addEventListener('scroll', updateTabNav, { passive: true });
-  t.addEventListener('wheel', e => { if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) { t.scrollLeft += e.deltaY; e.preventDefault(); } }, { passive: false });
+  document.querySelectorAll('.workspace-context-tabs').forEach(tabs => {
+    for (const direction of [-1,1]) {
+      const button = document.createElement('button');
+      button.className = 'tab-scroll'; button.type = 'button'; button.hidden = true;
+      button.dataset.direction = String(direction);
+      button.title = direction < 0 ? 'Previous tabs' : 'Next tabs';
+      button.setAttribute('aria-label',button.title);
+      button.innerHTML = uiIcon(direction < 0 ? 'chevron-left' : 'chevron-right');
+      button.onclick = () => scrollTabs(direction,tabs.parentElement);
+      direction < 0 ? tabs.before(button) : tabs.after(button);
+    }
+    tabs.addEventListener('scroll',updateTabNav,{passive:true});
+    tabs.addEventListener('wheel',event => { if(Math.abs(event.deltaY)>Math.abs(event.deltaX)){tabs.scrollLeft+=event.deltaY;event.preventDefault()} },{passive:false});
+    if(window.ResizeObserver)new ResizeObserver(updateTabNav).observe(tabs);
+  });
 })();
 relayoutTopbar();
+
+const settingsSubtabs = { ...(vscode.getState()?.settingsSubtabs || {}) };
+function settingsTabBar(owner, entries) {
+  if (!entries.some(([id]) => id === settingsSubtabs[owner])) settingsSubtabs[owner] = entries[0][0];
+  const arrow = direction => `<button class="tab-scroll" data-direction="${direction}" type="button" hidden onclick="scrollTabs(${direction},this.parentElement)" aria-label="${direction < 0 ? 'Previous' : 'Next'} settings tabs" title="${direction < 0 ? 'Previous' : 'Next'} settings tabs">${uiIcon(direction < 0 ? 'chevron-left' : 'chevron-right')}</button>`;
+  return `<div class="settings-tabs-group">${arrow(-1)}<nav class="settings-subtabs" role="tablist" aria-label="${esc(owner)} sections" onscroll="updateTabNav()">${entries.map(([id,label]) => `<button role="tab" type="button" data-settings-tab="${id}" aria-selected="${settingsSubtabs[owner] === id}" class="${settingsSubtabs[owner] === id ? 'active' : ''}" onclick="selectSettingsSubtab('${owner}','${id}')">${esc(label)}</button>`).join('')}</nav>${arrow(1)}</div>`;
+}
+function selectSettingsSubtab(owner, id) {
+  settingsSubtabs[owner] = id;
+  vscode.setState({ ...(vscode.getState() || {}), settingsSubtabs:{...settingsSubtabs} });
+  applySettingsSubtab(owner);
+}
+function applySettingsSubtab(owner) {
+  const root = document.querySelector(`[data-settings-owner="${owner}"]`);
+  if (!root) return;
+  root.querySelectorAll('[data-settings-panel]').forEach(panel => { panel.hidden = !panel.dataset.settingsPanel.split(' ').includes(settingsSubtabs[owner]); });
+  root.querySelectorAll('[data-settings-tab]').forEach(button => {
+    const active = button.dataset.settingsTab === settingsSubtabs[owner];
+    button.classList.toggle('active',active); button.setAttribute('aria-selected',String(active));
+    button.tabIndex = active ? 0 : -1;
+    button.onkeydown = event => {
+      const buttons = [...button.parentElement.querySelectorAll('[data-settings-tab]')];
+      let next = buttons.indexOf(button);
+      if (event.key === 'ArrowRight') next = (next + 1) % buttons.length;
+      else if (event.key === 'ArrowLeft') next = (next + buttons.length - 1) % buttons.length;
+      else if (event.key === 'Home') next = 0;
+      else if (event.key === 'End') next = buttons.length - 1;
+      else return;
+      event.preventDefault(); buttons[next].click(); buttons[next].focus();
+    };
+  });
+  requestAnimationFrame(updateTabNav);
+  if (owner === 'router' && typeof skillRouterSchedulePerformanceRefresh === 'function') skillRouterSchedulePerformanceRefresh();
+}
 
 function initColumnResizer(handleId, targetId, storageKey, minWidth, maxWidth, direction, useFlex) {
   const handle = document.getElementById(handleId);

@@ -4,6 +4,7 @@ const os = require("os");
 const path = require("path");
 const { execFileSync, spawn, spawnSync } = require("child_process");
 const { runTests } = require("@vscode/test-electron");
+const { stopFixtureServices } = require("./stop-fixture-services");
 
 async function main() {
   const suiteStartedAt = Date.now();
@@ -23,12 +24,14 @@ async function main() {
   const userDataDir = path.join(testRoot, "user-data");
   const workspaceDir = path.join(testRoot, "workspace");
   const storeDir = path.join(testRoot, "knowledge");
+  const homeDir = path.join(testRoot, "home");
   const settingsDir = path.join(userDataDir, "User");
-  const logPath = path.join(userDataDir, "User", "globalStorage", "uone.personal-knowledge", "personal-knowledge.log");
+  const logPath = path.join(userDataDir, "User", "globalStorage", "uone.personal-knowledge", "diagnostics", "extension");
 
   fs.mkdirSync(settingsDir, { recursive: true });
   fs.mkdirSync(workspaceDir, { recursive: true });
   fs.mkdirSync(storeDir, { recursive: true });
+  fs.mkdirSync(homeDir, { recursive: true });
   const navigationNoteDir = path.join(storeDir, "notes", "Project", "AAGL_Improvement", "Module Optimizer", "LP Processor");
   fs.mkdirSync(navigationNoteDir, { recursive: true });
   fs.writeFileSync(path.join(navigationNoteDir, "progress.md.md"), [
@@ -65,14 +68,20 @@ async function main() {
         "personalKnowledge.logLevel": "debug",
       }, null, 2));
       if (scenario.malformed) injectMalformedState(userDataDir);
-      fs.rmSync(logPath, { force: true });
+      fs.rmSync(logPath, { recursive: true, force: true });
       const resultPath = path.join(testRoot, `startup-result-${scenario.name}.json`);
       await runTests({
         version: "1.90.0",
+        cachePath: require("../tests/dev-paths").vscodeTestCache,
         extensionDevelopmentPath: packagedExtensionPath,
         extensionTestsPath: path.join(root, "tests", "extension-startup"),
         extensionTestsEnv: {
+          HOME: homeDir,
+          USERPROFILE: homeDir,
+          XDG_CONFIG_HOME: path.join(homeDir, ".config"),
+          XDG_DATA_HOME: path.join(homeDir, ".local", "share"),
           DISPLAY: virtualDisplay?.display || process.env.DISPLAY,
+          PKM_STARTUP_STORE_PATH: storeDir,
           PKM_STARTUP_LOG_PATH: logPath,
           PKM_STARTUP_RESULT_PATH: resultPath,
           PKM_STARTUP_SCENARIO: scenario.name,
@@ -109,10 +118,23 @@ async function main() {
       scenarios: scenarioTimings,
       durationMs: Date.now() - suiteStartedAt,
     })}`);
+  } catch (error) {
+    if (fs.existsSync(logPath)) {
+      const lines = fs.readdirSync(logPath).filter(name => name.endsWith(".jsonl")).sort()
+        .flatMap(name => fs.readFileSync(path.join(logPath, name), "utf8").split(/\r?\n/));
+      console.error("[extension-startup] failure log:\n" + lines.slice(-80).join("\n"));
+    }
+    throw error;
   } finally {
     clearInterval(heartbeat);
-    virtualDisplay?.process.kill("SIGTERM");
-    fs.rmSync(testRoot, { recursive: true, force: true });
+    try {
+      await stopFixtureServices({
+        fixtureRoot: testRoot, extensionRoot: packagedExtensionPath,
+        storage: path.join(userDataDir, "User", "globalStorage", "uone.personal-knowledge"),
+        knowledge: storeDir, home: homeDir,
+      });
+      fs.rmSync(testRoot, { recursive: true, force: true });
+    } finally { virtualDisplay?.process.kill("SIGTERM"); }
   }
 }
 
@@ -141,7 +163,7 @@ function packageExtension(root, testRoot) {
 
 async function startVirtualDisplay(root) {
   if (process.env.DISPLAY) return null;
-  const bundled = path.join(root, ".vscode-test", "tools", "xvfb", "usr", "bin", "Xvfb");
+  const bundled = path.join(require("../tests/dev-paths").vscodeTestCache, "tools", "xvfb", "usr", "bin", "Xvfb");
   const system = spawnSync("which", ["Xvfb"], { encoding: "utf8" }).stdout.trim();
   const executable = fs.existsSync(bundled) ? bundled : system;
   if (!executable) throw new Error("Extension startup tests require DISPLAY or Xvfb. Install xvfb before running the release gate.");
@@ -180,7 +202,9 @@ function assertStartupResult(resultPath, scenario) {
   console.log(`Extension startup soak [${scenario}]: activation ${result.activationDurationMs}ms${webview}, commands, state, and panel expectation OK`);
 }
 
-main().catch(error => {
+module.exports = { packageExtension, startVirtualDisplay };
+
+if (require.main === module) main().catch(error => {
   console.error(`[extension-startup] failed after ${Math.round(process.uptime())}s`);
   console.error("Extension startup test failed:", error);
   process.exitCode = 1;

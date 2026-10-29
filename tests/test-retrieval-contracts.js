@@ -5,16 +5,21 @@ const os = require("os");
 const path = require("path");
 const {
   RETRIEVAL_QUERY_SCHEMA_V1,
+  RETRIEVAL_CAPABILITIES_SCHEMA_V1,
+  compileRetrievalCapabilitiesV1,
+  sanitizeRetrievalCandidatesV1,
   compileRetrievalQueryV1,
   compileRetrievalResultV1,
   assertRetrievalIndexEventV1,
-} = require("../dist/retrieval-contracts.js");
-const { RetrievalIndexEventStore } = require("../dist/retrieval-index-events.js");
+} = require("../dist/retrieval/retrieval-contracts.js");
+const { guardRetrievalCandidates } = require("../dist/retrieval/retrieval-provider.js");
+const { RetrievalIndexEventStore } = require("../dist/retrieval/retrieval-index-events.js");
 
 const valid = {
   schema: RETRIEVAL_QUERY_SCHEMA_V1,
   requestId: "request-1",
   text: "检索 RetrievalWorkerManager exact-id",
+  level: "l1-source",
   contentTypeFilter: ["skill", "research", "recipe"],
   scope: { capabilityId: "test", sourceIds: ["pkm://knowledge/knowledge_0123456789abcdef01234567"] },
   topK: 20,
@@ -40,6 +45,81 @@ for (const [field, replacement] of [
   assert(result.diagnostics.some(item => item.pointer === `/${field}`));
 }
 assert.strictEqual(compileRetrievalQueryV1({ ...valid, surprise: true }).ok, false);
+const capabilities = {
+  schema: RETRIEVAL_CAPABILITIES_SCHEMA_V1,
+  provider: {
+    providerId: "pkm.local.hybrid",
+    providerVersion: "1.0.0",
+    route: "hybrid",
+    scoreSemantics: "rrf",
+  },
+  querySchemas: ["pkm.retrieval.query/v1"],
+  resultSchemas: ["pkm.retrieval.result/v1"],
+  levels: ["l1-source", "l2-passage"],
+  sourceKinds: ["skill", "note", "chat-memory"],
+  routes: ["lexical", "semantic", "hybrid"],
+  scoreSemantics: ["rrf", "similarity"],
+  features: {
+    filters: true, generations: true, graph: false,
+    contentRanges: true, refinement: false, streaming: false,
+  },
+  limits: { maxTopK: 100, maxQueryCharacters: 8192, maxDeadlineMs: 300000 },
+};
+assert.deepStrictEqual(compileRetrievalCapabilitiesV1(capabilities), { ok: true, value: capabilities, diagnostics: [] });
+assert.strictEqual(compileRetrievalCapabilitiesV1({
+  ...capabilities,
+  provider: { ...capabilities.provider, scoreSemantics: "mystery" },
+}).ok, false);
+const candidate = {
+  id: "source-1", level: "l1-source", kind: "skill", label: "Skill",
+  sourceUri: "pkm://skills/test", method: "fixture", score: 0.5,
+  scoreSemantics: "similarity", selected: false, reason: "ranked",
+  sourceId: "source-1", sourceRevision: "1", contentHash: "a".repeat(64),
+};
+assert.deepStrictEqual(sanitizeRetrievalCandidatesV1([candidate]).candidates, [candidate]);
+const mixedCandidates = sanitizeRetrievalCandidatesV1([
+  candidate,
+  { ...candidate, id: "nan", score: Number.NaN },
+  { ...candidate, id: "duplicate" },
+  { ...candidate, id: "duplicate" },
+  { ...candidate, id: "orphan", level: "l2-passage", range: { start: 0, end: 5, unit: "characters" } },
+  { ...candidate, id: "reversed", range: { start: 9, end: 2, unit: "characters" } },
+  { ...candidate, id: "stale", sourceRevision: "old" },
+], { sourceIsCurrent: item => item.sourceRevision !== "old" });
+assert.deepStrictEqual(mixedCandidates.candidates.map(item => item.id), ["source-1", "duplicate"]);
+assert.strictEqual(mixedCandidates.incomplete, true);
+assert.strictEqual(mixedCandidates.diagnostics.length, 5);
+const oversizedCandidates = sanitizeRetrievalCandidatesV1(Array.from({ length: 101 }, (_, index) => ({
+  ...candidate, id: `bounded-${index}`,
+})));
+assert.strictEqual(oversizedCandidates.candidates.length, 100);
+assert.strictEqual(oversizedCandidates.incomplete, true);
+assert.strictEqual(sanitizeRetrievalCandidatesV1([{ ...candidate, id: "huge", content: "x".repeat(160001) }]).candidates.length, 0);
+
+async function testProviderGuard() {
+  const active = new AbortController();
+  const poor = await guardRetrievalCandidates(async () => [{ ...candidate, score: -1000 }], active.signal);
+  assert.strictEqual(poor.status, "ok", "poor relevance is valid provider behavior, not a system failure");
+  const partial = await guardRetrievalCandidates(async () => [candidate, { ...candidate, id: "bad", score: Infinity }], active.signal);
+  assert.strictEqual(partial.status, "degraded");
+  assert.deepStrictEqual(partial.candidates, [candidate]);
+  const failed = await guardRetrievalCandidates(async () => { throw new Error("model crashed"); }, active.signal);
+  assert.strictEqual(failed.status, "unavailable");
+  assert.deepStrictEqual(failed.candidates, []);
+  const timedOut = await guardRetrievalCandidates(() => new Promise(() => {}), active.signal, { deadlineMs: 5 });
+  assert.strictEqual(timedOut.status, "unavailable");
+  const cancelled = new AbortController();
+  cancelled.abort(new Error("caller cancelled"));
+  await assert.rejects(() => guardRetrievalCandidates(async () => [], cancelled.signal), /caller cancelled/);
+}
+assert.strictEqual(compileRetrievalCapabilitiesV1({
+  ...capabilities,
+  features: { ...capabilities.features, refinement: undefined },
+}).ok, false);
+assert.strictEqual(compileRetrievalCapabilitiesV1({
+  ...capabilities,
+  levels: ["l3-answer"],
+}).ok, false);
 for (let seed = 1; seed <= 100; seed++) {
   const topK = (seed % 100) + 1;
   const compiled = compileRetrievalQueryV1({ ...valid, requestId: `property-${seed}`, topK });
@@ -77,6 +157,8 @@ const validResult = {
 assert.deepStrictEqual(compileRetrievalResultV1(validResult), { ok: true, value: validResult, diagnostics: [] });
 assert.strictEqual(compileRetrievalResultV1({ ...validResult, readyGeneration: 0 }).ok, false);
 assert.strictEqual(compileRetrievalResultV1({ ...validResult, hits: [{ ...validResult.hits[0], sourceRevision: "" }] }).ok, false);
+assert.strictEqual(compileRetrievalResultV1({ ...validResult, hits: [{ ...validResult.hits[0], score: Number.NaN }] }).ok, false);
+assert.strictEqual(compileRetrievalResultV1({ ...validResult, hits: Array.from({ length: 101 }, () => validResult.hits[0]) }).ok, false);
 
 const source = {
   sourceId: "pkm://knowledge/knowledge_0123456789abcdef01234567",
@@ -149,4 +231,9 @@ try {
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }
-console.log("retrieval contracts test: schemas, bounded query properties, idempotent events, and stale revisions OK");
+testProviderGuard().then(() => {
+  console.log("retrieval contracts test: schemas, provider containment, bounded candidates, idempotent events, and stale revisions OK");
+}, error => {
+  console.error(error);
+  process.exitCode = 1;
+});

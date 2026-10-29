@@ -1,8 +1,18 @@
 // ── Init ───────────────────────────────────────────────────────────────────
 ask('ready', {});                              // tell the extension the webview is loaded
+let lastMarkdownDraftOpen;
+const markdownDraftObserver = new MutationObserver(() => {
+  const busy = markdownAssetDraftOpen();
+  if (busy !== lastMarkdownDraftOpen) {
+    lastMarkdownDraftOpen = busy;
+    ask('markdownDraftState', { busy }, null, true);
+  }
+});
+markdownDraftObserver.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] });
 void loadMarkdownLibraries();                  // markdown assets are not on the first-paint critical path
 const restoredUiState = vscode.getState() || {};
-const restoredWorkspace = workspaceSurfaces[restoredUiState.workspace] ? restoredUiState.workspace : workspaceForTab(restoredUiState.tab);
+const restoredWorkspace = restoredUiState.tab === 'userProfile' ? 'automation'
+  : workspaceSurfaces[restoredUiState.workspace] ? restoredUiState.workspace : workspaceForTab(restoredUiState.tab);
 const restoredTab = workspaceSurfaces[restoredWorkspace]?.includes(restoredUiState.tab)
   ? restoredUiState.tab
   : workspaceDefaultSurface[restoredWorkspace] || 'skills';
@@ -11,12 +21,15 @@ if (restoredButton) restoredButton.dispatchEvent(new MouseEvent('click'));
 else ask('list', { tab:'skills', filter:'all', q:'' });
 
 function retryInitialViewRequest() {
-  if (['agentSessions','agentSnapshots','projects','recipes'].includes(state.tab)) ask('projectState', {});
+  if (['actions','actionLibrary'].includes(state.tab)) { embeddedActionViews[state.tab].pending = false; showEmbeddedActions(); }
+  else if (['agentSessions','agentSnapshots','projects','recipes'].includes(state.tab)) ask('projectState', {});
   else if (state.tab === 'environments') ask('envList', {});
   else if (state.tab === 'servers') ask('serverList', {});
   else if (state.tab === 'subscriptions') ask('subscriptionState', {});
   else if (state.tab === 'githubSync') ask('githubSyncState', {});
   else if (state.tab === 'backgroundTasks') ask('backgroundTasks', {});
+  else if (state.tab === 'userProfile') ask('userProfile', {});
+  else if (state.tab === 'portalConnections') ask('portalConnections', {});
   else if (state.tab === 'chatroom') ask('chatState', {});
   else if (state.tab === 'mcp') ask('checkMcp', {});
   else if (state.tab === 'skillRouter') ask('skillRouterStatus', {});
@@ -32,3 +45,8 @@ setTimeout(() => {
     retryInitialViewRequest();
   }
 }, 8000);
+
+restorePanelViewState();
+panelSnapshotRestoring = false;
+if (panelRestoreState.view && cachedKnowledgeTabs.has(state.tab)) ask('list', { tab:state.tab, filter:state.filter, q:state.search });
+capturePanelViewState();

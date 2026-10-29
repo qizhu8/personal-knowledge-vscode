@@ -9,10 +9,10 @@ const {
   projectedAgentSessionStatus,
   restoreAgentSessionFromTrash,
   terminalAgentSessionStatus,
-} = require("../dist/agent-session-lifecycle");
-const { ChatMeetingLifecycle, latestDiscussAfterCompletedMeeting } = require("../dist/chat-meeting-lifecycle");
-const { messageAddressesManagedAgent } = require("../dist/chat-managed-agent-routing");
-const { MeetingStateStore } = require("../dist/meeting-state");
+} = require("../dist/agent-sessions/agent-session-lifecycle");
+const { ChatMeetingLifecycle, latestDiscussAfterCompletedMeeting } = require("../dist/chatroom/chat-meeting-lifecycle");
+const { messageAddressesManagedAgent } = require("../dist/chatroom/chat-managed-agent-routing");
+const { MeetingStateStore } = require("../dist/chatroom/meeting-state");
 const { ProjectModelError } = require("../dist/workflows/project-model");
 const { ProjectStore, ProjectStoreError } = require("../dist/workflows/project-store");
 const {
@@ -21,7 +21,7 @@ const {
   normalizeCollaborationMessage,
   normalizeCollaborationTaskRecord,
   transitionCollaborationTask,
-} = require("../dist/collaboration-model");
+} = require("../dist/chatroom/collaboration-model");
 const { CHATROOM_PROJECT_SIMULATION_MANIFEST: manifest } = require("./simulation/chatroom-project-manifest");
 const { DeterministicSimulationHarness } = require("./simulation/deterministic-harness");
 
@@ -588,6 +588,7 @@ async function exerciseAgentSessionJourney(harness) {
   const recordPath = path.join(directory, `${sessionId}.json`);
   const record = {
     schema: "pkm.agent.session/v1", sessionId, status: "running",
+    origin: "pkm-native", runtimeOwner: "pkm", hostKind: "pkm",
     createdAt: harness.clock.iso(), updatedAt: harness.clock.iso(),
     todos: [{ status: "running" }],
   };
@@ -605,6 +606,11 @@ async function exerciseAgentSessionJourney(harness) {
   const restored = JSON.parse(fs.readFileSync(recordPath, "utf8"));
   assert.strictEqual(restored.updatedAt, harness.clock.iso());
   assert.strictEqual(restored.trashedAt, undefined);
+
+  const externalId = "agent_session_external_simulation";
+  fs.writeFileSync(path.join(directory, `${externalId}.json`), JSON.stringify({ ...record, sessionId: externalId, origin: "external", runtimeOwner: "external", hostKind: "external" }), { mode: 0o600 });
+  await moveAgentSessionToTrash(harness.sessionsRoot, externalId, { now: harness.clock.iso });
+  assert.throws(() => restoreAgentSessionFromTrash(harness.sessionsRoot, externalId, harness.clock.iso), /Only PKM Chat Sessions can be restored/);
 }
 
 async function main() {

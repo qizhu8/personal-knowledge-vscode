@@ -1,13 +1,13 @@
 import * as fs from "fs";
 import * as path from "path";
 import { createHash, randomUUID } from "crypto";
-import { canonicalJson, compileWorkflowDefinitionV1 } from "../workflow-contracts";
+import { canonicalJson, compileWorkflowDefinitionV1 } from "./workflow-contracts";
 import {
   KNOWLEDGE_SCHEMA_V1,
   KnowledgeIdentityMetadata,
   compileKnowledgeIdentityV1,
   legacyKnowledgeAlias,
-} from "../knowledge-contracts";
+} from "../knowledge/knowledge-contracts";
 import { compileRecipeMethodologyV1 } from "./methodology-model";
 import { ProjectRecord, RecipeRecord, RecipeTrashRecord } from "./project-model";
 

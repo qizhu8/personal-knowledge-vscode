@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pkm-memory-engine"
+version = "0.2.1"
+description = "Independent transactional graph storage for PKM memory"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+pkm-memory-engine = "pkm_memory_engine.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

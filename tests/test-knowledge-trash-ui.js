@@ -22,11 +22,14 @@ assert.match(panel, /Move this Paper to Trash/);
 assert.match(panel, /Move All to Trash/);
 assert.match(panel, /function confirmDeleteAllPapers\(\)/);
 assert.match(panel, /ask\('deleteAllPapers'\)/);
+assert.doesNotMatch(panel, /onclick="confirmDeleteAllPapers\(/, "Research must not expose a Move All to Trash action button");
+assert.doesNotMatch(panel, /class="agent-session-quick-trash"/, "Archived Session trash actions belong to the context menu");
+assert.match(panel, /function catTreeTrashDock\(/);
 assert.match(panel, /Move Note to Trash/);
 assert.match(extension, /case "knowledgeTrashMove"/);
-const filestore = fs.readFileSync(path.join(root, "src/filestore.ts"), "utf8");
-assert.match(filestore, /area === "notes" \? recordKnowledgeTrashDeletion\(entry, source\.full, move\)/,
-  "both panel and Navigation Trash workflows must persist Notes deletion intent at the file mutation boundary");
+const filestore = fs.readFileSync(path.join(root, "src/knowledge/filestore.ts"), "utf8");
+assert.match(filestore, /return recordKnowledgeTrashDeletion\(area, entry, source\.full, move\)/,
+  "both panel and Navigation Trash workflows must persist deletion intent for every supported knowledge area at the file mutation boundary");
 assert.match(extension, /case "knowledgeTrashRestore"/);
 assert.match(extension, /case "knowledgeTrashDelete"/);
 assert.match(extension, /case "knowledgeTrashEmpty"/);
@@ -61,5 +64,28 @@ assert.deepStrictEqual(context.state.folders, ["Project","ProjectsExtra"]);
 assert.strictEqual(context.state.knowledgeTrash[0], entry);
 assert.strictEqual(renders, 1, "a successful result must render without waiting for a list round trip");
 assert.deepStrictEqual(invalidated, ["notes"]);
+
+const projects = fs.readFileSync(path.join(root, "src/webview/panel/15-projects.js"), "utf8");
+const confirmations = [], deletes = [];
+const trashContext = vm.createContext({
+  esc:String, uiIcon:() => '', pkModal:modal => confirmations.push(modal),
+  ask:(command,payload) => deletes.push({command,payload}),
+  projectSnapshot:{recipeTrash:[{scope:'global'}],agentSessionTrash:[{sessionId:'fixture'}]},
+});
+vm.runInContext(projects.slice(projects.indexOf('function catTreeTrashDock('), projects.indexOf('function workspaceCatTreeToggle(')), trashContext);
+vm.runInContext(projects.slice(projects.indexOf('function emptyAgentSessionTrash('), projects.indexOf('function catTreeTrashToggle(')), trashContext);
+vm.runInContext(knowledge.slice(knowledge.indexOf('function emptyKnowledgeTrash('), knowledge.indexOf('function deleteKnowledgeTrashEntry(')), trashContext);
+assert.match(trashContext.catTreeTrashDock('Trash',0,'',"emptyKnowledgeTrash('notes')"), /class="knowledge-trash-empty"[^>]*disabled>Delete All/);
+assert.match(trashContext.catTreeTrashDock('Trash',3,'items',"emptyKnowledgeTrash('notes')"), /class="pk-group-count">3</);
+for (const area of ['skills','notes','papers','prompts','scripts']) trashContext.emptyKnowledgeTrash(area);
+trashContext.emptyRecipeTrash();
+trashContext.emptyAgentSessionTrash();
+assert.strictEqual(confirmations.length, 7, 'Every supported CatTree Trash uses confirmation');
+assert.strictEqual(deletes.length, 0, 'Opening or cancelling confirmation must never delete content');
+confirmations.forEach(modal => { assert.strictEqual(modal.okLabel,'Delete All'); assert.strictEqual(modal.danger,true); modal.onOk(); });
+assert.strictEqual(deletes.length, 7);
+assert.strictEqual(deletes[0].command,'skillTrashEmpty');
+assert.strictEqual(deletes[5].command,'recipeTrash');
+assert.strictEqual(deletes[6].command,'agentSessionTrash');
 
 console.log("Knowledge Trash UI test: shared dock and Navigation workflows cover Notes, Papers, Prompts, and Scripts OK");

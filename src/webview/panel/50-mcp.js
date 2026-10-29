@@ -26,14 +26,13 @@ function mcpI18nAttrs(key, params = {}) {
 }
 
 function renderMcpLoading() {
-  document.getElementById('detail').innerHTML = `<div style="padding:32px 36px;max-width:720px">
-    <div style="color:var(--muted);font-size:12px">Consulting the MCP server wards…</div>
-  </div>`;
+  document.getElementById('detail').innerHTML = `<div class="settings-pane" data-settings-owner="mcp"><h2>Personal Knowledge Manager</h2>${settingsTabBar('mcp',[['general','General Setting'],['mcp','MCP'],['access','Agent feature access'],['debug','Debug']])}<section data-settings-panel="general"><p>${esc(document.getElementById('pkm-version')?.textContent || '')}</p><p role="status">Checking component health and paths in the background...</p></section><section data-settings-panel="mcp access debug"><p role="status">Status has not been received yet.</p></section></div>`;
+  applySettingsSubtab('mcp');
 }
 
 function showMcpTab() {
   if (mcpStatusCache) renderMcpPane(mcpStatusCache); else renderMcpLoading();
-  if (!tabCacheIsFresh(mcpStatusUpdatedAt)) ask('checkMcp', {}, null, Boolean(mcpStatusCache));
+  if (!tabCacheIsFresh(mcpStatusUpdatedAt)) ask('checkMcp', {}, null, true);
 }
 
 function mcpOnStatus(data) {
@@ -67,6 +66,14 @@ function updateGlobalMcpWarning(data) {
   const regenerate = banner?.querySelector('.mcp-regenerate-action');
   if (!banner || !text) return;
   if (data?.installed && data?.current) {
+    const attention = data.lifecycle?.instances?.some(instance => instance.heartbeatFresh === true
+      && (['draining', 'action-required'].includes(instance.observedState) || instance.uncertainCalls > 0 || instance.controlError));
+    if (attention) {
+      banner.classList.remove('hidden');
+      text.textContent = 'An MCP instance is draining or needs review. See Managed MCP lifecycle in Config; do not replay uncertain writes.';
+      if (regenerate) regenerate.hidden = true;
+      return;
+    }
     banner.classList.add('hidden');
     text.textContent = '';
     if (regenerate) regenerate.hidden = false;
@@ -140,104 +147,42 @@ function mcpRegeneratePresentation(data) {
   return { label, title, key, params };
 }
 
-function pkmSkillStateBadge(target) {
-  const labels = {
-    missing: 'Missing', current: 'Current', outdated: 'Router Outdated',
-    newer: 'Newer Version',
-    'content-outdated': 'Content Outdated', modified: 'Modified',
-    conflict: 'Conflict', unavailable: 'Unavailable',
-  };
-  const good = target.state === 'current';
-  const color = good ? '#4ade80' : target.state === 'missing' || target.state === 'newer' ? 'var(--muted)' : target.state === 'conflict' || target.state === 'unavailable' ? '#f87171' : '#f4b400';
-  const keys = { missing: 'config.stateMissing', current: 'config.current', outdated: 'config.stateRouterOutdated', 'content-outdated': 'config.stateContentOutdated', modified: 'config.stateModified', conflict: 'config.stateConflict', unavailable: 'config.stateUnavailable' };
-  return `<span style="font-size:10px;color:${color}">${good ? '●' : '○'} <span ${mcpI18nAttrs(keys[target.state] || '', {})}>${esc(labels[target.state] || target.state)}</span>${target.installedVersion ? ' · v' + esc(target.installedVersion) : ''}</span>`;
-}
-
-const pkmSkillPendingTargets = new Set();
-let pkmSkillUpdatingAll = false;
-function pkmSkillInjectOne(button, id) {
-  if (pkmSkillPendingTargets.has(id) || pkmSkillUpdatingAll) return;
-  pkmSkillPendingTargets.add(id);
-  button.disabled = true;
-  button.setAttribute('aria-busy', 'true');
-  button.innerHTML = '<span class="pkm-action-spinner"></span> Updating…';
-  ask('pkmSkillInject', { id });
-}
-function pkmSkillInjectAll(button, ids) {
-  const targets = [...new Set(ids || [])].filter(Boolean);
-  if (!targets.length || pkmSkillUpdatingAll) return;
-  pkmSkillUpdatingAll = true;
-  targets.forEach(id => pkmSkillPendingTargets.add(id));
-  button.disabled = true;
-  button.setAttribute('aria-busy', 'true');
-  button.innerHTML = `<span class="pkm-action-spinner"></span> Updating ${targets.length}…`;
-  document.querySelectorAll('.pkm-skill-update-action').forEach(action => { action.disabled = true; action.setAttribute('aria-busy', 'true'); });
-  ask('pkmSkillInjectAll', { ids: targets });
-}
-function finishPkmSkillUpdates() {
-  pkmSkillPendingTargets.clear();
-  pkmSkillUpdatingAll = false;
-}
-
-function renderPkmSkillTargets(data) {
-  const skill = data?.pkmSkill;
-  if (!skill) return '<div class="empty">Configure a PKM store before injecting the Skill Router.</div>';
-  const updateTargets = (skill.targets || []).filter(target => ['missing','outdated','content-outdated','modified'].includes(target.state));
-  const guideSkill = data?.firstRunGuide?.visible && data.firstRunGuide.step === 'skill';
-  const rows = (skill.targets || []).map(target => {
-    const update = ['missing','outdated','content-outdated','modified'].includes(target.state);
-    const label = target.state === 'missing' && !target.connected
-      ? `Inject PKM Skill · v${target.expectedVersion || skill.routerVersion}`
-      : `Repair PKM Skill · v${target.expectedVersion || skill.routerVersion}`;
-    const labelKey = target.state === 'missing' && !target.connected ? 'config.injectSkill' : '';
-    const labelParams = target.state === 'missing' && !target.connected
-      ? { version: target.expectedVersion || skill.routerVersion }
-      : {};
-    const pending = pkmSkillPendingTargets.has(target.id) || pkmSkillUpdatingAll;
-    const action = update
-      ? `<button class="tbtn pkm-skill-update-action ${guideSkill && updateTargets.length === 1 ? 'pkm-first-run-target' : ''}" style="border-color:var(--accent)" onclick="${guideSkill && updateTargets.length === 1 ? 'completeIntegrationGuide();' : ''}pkmSkillInjectOne(this,'${esc(target.id)}')" ${pending ? 'disabled aria-busy="true"' : ''}>${pending ? '<span class="pkm-action-spinner"></span> Updating…' : `<span ${labelKey ? mcpI18nAttrs(labelKey, labelParams) : ''}>${label}</span>`}</button>`
-      : '';
-    const remove = target.connected
-      ? `<button class="tbtn" onclick="ask('pkmSkillRemove',{id:'${esc(target.id)}'})">${target.managed ? 'Disconnect & Remove' : 'Disconnect'}</button>`
-      : '';
-    const removeTarget = target.kind === 'custom'
-      ? `<button class="tbtn" onclick="ask('pkmSkillRemoveCustomTarget',{id:'${esc(target.id)}'})">Remove Target</button>`
-      : '';
-    return `<div class="pkm-skill-target">
-      <div class="pkm-skill-target-main"><strong>${esc(target.label)}</strong>${pkmSkillStateBadge(target)}
-        <div class="pkm-skill-path">${esc(target.skillPath)}</div><div class="pkm-skill-detail">${esc(target.detail || '')}</div></div>
-      <div class="pkm-skill-target-actions">${action}${remove}${removeTarget}</div>
-    </div>`;
-  }).join('');
-  const proposals = data?.skillProposals || [];
-  return `<div class="pkm-config-section">
-    <div class="pkm-config-heading"><div><strong>PKM Skill Router</strong><div class="pkm-skill-detail" ${mcpI18nAttrs('config.routerNative', { version: skill.routerVersion, minimum: skill.minimumMcpSchema })}>Native discovery adapter · router v${esc(skill.routerVersion)} · requires MCP ≥ ${esc(skill.minimumMcpSchema)}</div></div>
-      <div class="pkm-config-actions">${updateTargets.length > 1 ? `<button class="tbtn pkm-skill-update-all ${guideSkill ? 'pkm-first-run-target' : ''}" style="border-color:var(--accent)" onclick='${guideSkill ? 'completeIntegrationGuide();' : ''}pkmSkillInjectAll(this,${JSON.stringify(updateTargets.map(target => target.id))})' ${pkmSkillUpdatingAll ? 'disabled aria-busy="true"' : ''}>${pkmSkillUpdatingAll ? '<span class="pkm-action-spinner"></span> Updating all…' : `${uiIcon('refresh')} Update All (${updateTargets.length})`}</button>` : ''}<button class="tbtn" onclick="ask('pkmSkillBrowseCustomTarget',{})">${uiIcon('folder-opened', 'Browse Directory')}</button><button class="tbtn" onclick="ask('pkmSkillEnterCustomTarget',{})">${uiIcon('edit', 'Enter Path')}</button></div></div>
-    <div class="pkm-skill-source">Canonical source: <code>${esc(skill.sourcePath)}</code>${skill.sourceExists ? '' : ' · created on first Inject'}</div>
-    <div class="pkm-skill-detail" style="margin-bottom:8px"><span data-i18n="config.routerTargetHelpStart">Choose any Agent Skills root. PKM creates</span> <code>&lt;root&gt;/pkm-skills/SKILL.md</code>. Connected PKM-managed files are automatically reconciled from the canonical source; unrelated Agent files are never changed. <span data-i18n="config.routerTargetHelpEnd">Windows drive, UNC, user-home, and environment-variable paths are supported on their matching host.</span></div>
-    ${rows || '<div class="empty">No Agent targets configured.</div>'}
-    <div class="pkm-skill-proposals"><span><strong>Skill Proposals</strong> · <span ${mcpI18nAttrs('config.pendingCount', { count: proposals.length })}>${proposals.length} pending</span></span>
-      <button class="tbtn" onclick="ask('pkmSkillOpenProposals',{})">Open Proposals Folder</button></div>
-  </div>`;
-}
-
 function mcpDashboardState(data) {
-  const skill = data?.pkmSkill;
-  const targets = skill?.targets || [];
-  const installedRouterVersions = [...new Set(targets.map(target => target.installedVersion).filter(Boolean))];
-  const routerInstalled = installedRouterVersions.length ? installedRouterVersions.map(version => `v${version}`).join(', ') : 'Missing';
-  const routerCurrent = targets.length > 0 && targets.every(target => target.state === 'current');
   const process = data?.mcpProcess || { running:false, available:false, detail:'Not checked' };
   const runtime = data?.mcpRuntime || {};
   const store = data?.store || {};
   return {
-    process, runtime, store, skill, routerInstalled, routerCurrent,
+    process, runtime, store,
     ready: !!store.valid && !!runtime.healthy && (!!data?.current || !!data?.newerThanExpected),
   };
 }
 
 function mcpStatusLight(kind, label, key = '', params = {}) {
   return `<span class="mcp-status mcp-status-${kind}"><span class="mcp-status-dot"></span><span ${key ? mcpI18nAttrs(key, params) : ''}>${esc(label)}</span></span>`;
+}
+function renderMcpLifecycle(lifecycle) {
+  if (!lifecycle) return '';
+  const label = (key, text) => `<span ${mcpI18nAttrs('config.lifecycle' + key)}>${text}</span>`;
+  const count = value => Number.isInteger(value) && value >= 0 ? String(value) : 'unknown';
+  const instances = Array.isArray(lifecycle.instances) ? lifecycle.instances : [];
+  const attention = instances.some(instance => instance.heartbeatFresh === true
+    && (['draining', 'action-required'].includes(instance.observedState) || instance.uncertainCalls > 0 || instance.controlError));
+  return `<details id="mcp-lifecycle"${attention ? ' open' : ''} style="border:1px solid ${attention ? '#f4b40066' : 'var(--border)'};border-radius:8px;padding:12px 14px;margin-bottom:16px;overflow-wrap:anywhere">
+    <summary>${label('Title', 'Managed MCP lifecycle')} · ${instances.length}</summary>
+    <p>${label('Boundary', 'Runtime prepared does not mean the actual client connection has been verified. Instance observations are not a client handshake.')}</p>
+    <div>${esc(lifecycle.reason || lifecycle.connectionState || 'unverified')}</div>
+    ${lifecycle.action ? `<div>${esc(lifecycle.action)}</div>` : ''}
+    <p>${label('Generation', 'Configured generation')}: <code>${esc(lifecycle.configuredGeneration || 'unprepared')}</code></p>
+    ${instances.length ? `<div style="overflow-x:auto"><table class="mcp-path-table"><thead><tr>
+      <th>${label('Instance', 'Instance / PID')}</th><th>${label('InstanceGeneration', 'Instance generation')}</th>
+      <th>${label('Observed', 'Observed state')}</th><th>${label('InFlight', 'In-flight calls')}</th><th>${label('Uncertain', 'Uncertain calls')}</th>
+    </tr></thead><tbody>${instances.map(instance => `<tr>
+      <td>${esc(instance.instanceId || 'unknown')} / ${esc(count(instance.pid))}</td>
+      <td><code>${esc(instance.generation || 'unknown')}</code></td>
+      <td>${esc(instance.heartbeatFresh === true ? instance.observedState || 'unknown' : 'unknown')}</td>
+      <td>${esc(count(instance.inFlight))}</td><td>${esc(count(instance.uncertainCalls))}</td>
+    </tr>`).join('')}</tbody></table></div>` : `<p>${label('Empty', 'No instrumented instance observed; legacy process state is unknown. Reconnect through the actual client.')}</p>`}
+  </details>`;
 }
 function mcpPathSizeText(bytes) {
   if (!Number.isFinite(bytes) || bytes < 0) return 'Unavailable';
@@ -264,13 +209,10 @@ function completeIntegrationGuide() {
 
 function renderIntegrationGuide(data) {
   const guide = data?.firstRunGuide;
-  if (!guide?.visible) return '';
-  const python = guide.step === 'python';
+  if (!guide?.visible || guide.step !== 'python') return '';
   return `<aside id="pkm-first-run-guide" class="pkm-first-run-guide" data-step="${esc(guide.step)}" role="dialog" aria-label="First configuration guide">
-    <div><strong>${python ? 'Choose Python once' : 'Connect PKM to your Agents'}</strong><button class="icon-btn" onclick="completeIntegrationGuide()" title="Dismiss guide" aria-label="Dismiss guide">${uiIcon('close')}</button></div>
-    <p>${python
-      ? 'Click List Pythons, choose a detected interpreter, then Validate & Save. PKM will create an isolated runtime, install its managed dependencies, generate the MCP server, and build the retrieval index automatically.'
-      : 'Click the highlighted Inject or Update All button. PKM writes only a generated discovery adapter into the selected Agent Skill directories; your canonical Skills remain in PKM. Future Router updates are automatic.'}</p>
+    <div><strong>Choose Python once</strong><button class="icon-btn" onclick="completeIntegrationGuide()" title="Dismiss guide" aria-label="Dismiss guide">${uiIcon('close')}</button></div>
+    <p>Click List Pythons, choose a detected interpreter, then Validate &amp; Save. PKM will create an isolated runtime, install its managed dependencies, generate the MCP server, and build the retrieval index automatically.</p>
   </aside>`;
 }
 
@@ -293,7 +235,6 @@ function renderMcpDashboard(data) {
   const processLabel = status.process.running ? `Running${status.process.pid ? ` · PID ${status.process.pid}` : ''}` : status.ready ? 'Ready · starts on demand' : 'Setup required';
   const processLabelKey = status.process.running ? status.process.pid ? 'config.runningPid' : 'config.running' : status.ready ? 'config.readyOnDemand' : 'config.setupRequired';
   const automatic = data?.automaticSetup || { state: 'idle', error: '' };
-  const missingAgentTargets = (status.skill?.targets || []).filter(target => target.state === 'missing');
   const automaticReady = automatic.state === 'ready' && status.runtime.healthy && data?.current;
   const automaticDetail = automatic.state === 'error' ? automatic.error || 'Automatic setup needs attention.'
     : automatic.state === 'running' ? 'Creating or updating the runtime, server, and retrieval index…'
@@ -308,16 +249,15 @@ function renderMcpDashboard(data) {
     ['Chat schema', data?.installedChatVersion ? `v${data.installedChatVersion}` : 'Missing', `v${data?.chatVersion || '?'}`, data?.installedChatVersion === data?.chatVersion, '<span class="mcp-no-action">Automatic</span>'],
     ['Recipe runtime', data?.installedRecipeVersion ? `v${data.installedRecipeVersion}` : 'Missing', `v${data?.recipeVersion || '?'}`, data?.installedRecipeVersion === data?.recipeVersion, '<span class="mcp-no-action">Automatic</span>'],
     ['Agent Session runtime', data?.installedAgentSessionVersion ? `v${data.installedAgentSessionVersion}` : 'Missing', `v${data?.agentSessionVersion || '?'}`, data?.installedAgentSessionVersion === data?.agentSessionVersion, '<span class="mcp-no-action">Automatic</span>'],
-    ['PKM Skill Router', status.routerInstalled, `v${status.skill?.routerVersion || '?'}`, true, '<span class="mcp-no-action">No action</span>', 'Info', 'info'],
   ];
   const setup = [
     [status.store.valid, 'Knowledge location', status.store.valid ? status.store.path : 'Choose where this machine stores PKM Markdown files.', '<span class="mcp-no-action">Chosen at startup</span>'],
     [!!data?.mcpPython?.valid, 'Python 3.10+', data?.mcpPython?.valid ? `${data.mcpPython.path} · ${data.mcpPython.version}` : 'Select and validate a Python executable.', '<button class="tbtn" onclick="document.getElementById(\'mcp-python-path\')?.scrollIntoView({behavior:\'smooth\'})">Choose Python</button>'],
     [automaticReady, 'Automatic integration', automaticDetail, automatic.state === 'error' ? '<button class="tbtn" data-pending-label="Retrying…" onclick="beginMcpUiAction(\'checkMcp\',{},this)">Retry</button>' : `<span class="mcp-no-action">${automatic.state === 'running' ? 'Working…' : automaticReady ? 'Ready' : 'Automatic'}</span>`],
-    [missingAgentTargets.length === 0, 'Agent connection', missingAgentTargets.length ? 'Authorize PKM to add its discovery adapter to an Agent Skills directory.' : 'Agent discovery adapters are connected and future updates are automatic.', missingAgentTargets.length ? '<button class="tbtn pkm-first-run-target" onclick="document.getElementById(\'pkm-skill-router-section\')?.scrollIntoView({behavior:\'smooth\'})">Review & Connect</button>' : '<span class="mcp-no-action">Connected</span>'],
+    [!!data?.accountBinding, 'Account binding (not client discovery)', data?.accountBinding ? `VS Code owner: ${data.accountBinding.registrationOwner}. ~/.pkm/mcp-binding.json is not a client registration. Verify each client separately.` : 'Complete account-level PKM setup.', '<button class="tbtn" onclick="beginMcpUiAction(\'configureNativeMcpDiscovery\',{},this)">Configure PKM MCP...</button>'],
   ];
   return `<section class="mcp-dashboard">
-    <div class="mcp-dashboard-head"><div><h2>PKM Integration Status</h2><p>Server runtime, generated schemas, and Agent Skill Router are versioned independently.</p></div><div class="mcp-running">${mcpStatusLight(processKind, processLabel, processLabelKey, { pid: status.process.pid || '' })}<button class="tbtn" data-pending-label="Refreshing…" onclick="beginMcpUiAction('checkMcp',{},this)" title="Refresh process and version status" aria-label="Refresh process and version status">${uiIcon('refresh')}</button></div></div>
+    <div class="mcp-dashboard-head"><div><h2>PKM Integration Status</h2><p>Server runtime and generated schemas are versioned independently.</p></div><div class="mcp-running">${mcpStatusLight(processKind, processLabel, processLabelKey, { pid: status.process.pid || '' })}<button class="tbtn" data-pending-label="Refreshing…" onclick="beginMcpUiAction('checkMcp',{},this)" title="Refresh process and version status" aria-label="Refresh process and version status">${uiIcon('refresh')}</button></div></div>
     <div class="mcp-runtime-note" ${status.process.detail === 'Generated server process detected.' ? 'data-i18n="config.processDetected"' : ''}>${esc(status.process.detail || '')}${!status.process.running && status.ready ? ' <span data-i18n="config.onDemandHelp">Stdio MCP servers start when an MCP client requests pkm; use MCP: List Servers to start it manually.</span>' : ''}</div>
     ${renderSkillRouterField(data)}
     <div class="mcp-paths"><div class="mcp-paths-head"><h3>External links</h3></div>
@@ -343,6 +283,8 @@ function renderMcpDashboard(data) {
 
 function renderLoadProfiling(data) {
   const loadProfiling = data?.loadProfiling || {};
+  const baseline = data?.baseline;
+  const metric = value => value?.available ? String(Math.round(value.value * 100)) + '%' : 'Unavailable';
   return `<section class="mcp-paths mcp-load-profiling"><div class="mcp-paths-head"><h3>Load profiling</h3><div class="pkm-config-actions">
     <button class="tbtn" onclick="ask('showLoadProfilingOutput',{})">${uiIcon('output', 'Show output')}</button>
     <button class="tbtn" onclick="ask('openLoadProfilingLog',{})">${uiIcon('file-text', 'Open log')}</button>
@@ -354,19 +296,26 @@ function renderLoadProfiling(data) {
       <span class="mcp-row-action"><label class="pkm-inline-toggle"><input type="checkbox" ${loadProfiling.enabled ? 'checked' : ''} onchange="ask('setLoadProfiling',{enabled:this.checked})"> Debug profiling</label></span>
     </div>
     <div class="pkm-skill-detail"><code>${esc(loadProfiling.logFile || 'Profiling log is created after the extension initializes.')}</code></div>
+    ${baseline ? `<div class="pkm-skill-detail"><strong>P0 local baseline · ${baseline.enabled ? 'Opt-in enabled' : 'Disabled'}</strong>
+      <p>Structured counts and timings only; no prompts, inputs, outputs, bodies, identifiers, or remote telemetry. Synthetic fixtures are not human UX evidence.</p>
+      <p>Storage: ${esc(baseline.storage?.status || 'Unavailable')}${baseline.storage?.reasonCode ? ' · ' + esc(baseline.storage.reasonCode) : ''} · Collection: ${esc(baseline.collection?.status || 'Unavailable')}${baseline.collection?.reasonCode ? ' · ' + esc(baseline.collection.reasonCode) : ''}</p>
+      <p>Start success: ${esc(metric(baseline.observed.startSuccess))} · Cancellation: ${esc(metric(baseline.observed.cancellation))} · Restart loss: ${esc(metric(baseline.observed.restartLoss))} · Waiting recovery: ${esc(metric(baseline.observed.waitingRecovery))} · Repeated approval: ${esc(metric(baseline.observed.repeatedApproval))} · Unknown effects: ${esc(baseline.observed.unknownEffects ?? 'Unavailable')}</p>
+      <p>Find next step: ${esc(baseline.observed.nextStepMs.available ? baseline.observed.nextStepMs.mean + ' ms' : 'Unavailable')} · Human UX: ${baseline.personas.map(row => `${esc(row.persona)}: ${esc(row.humanUxEvidence)}`).join(' · ')}</p>
+    </div>` : ''}
   </section>`;
 }
 
 function renderMcpPane(data) {
   const el = document.getElementById('detail');
   const previousScrollTop = el?.scrollTop || 0;
+  const drafts = captureRefreshInputs(el, 'input[id],textarea[id],select[id]', true);
   const installed = data?.installed;
   const serverPath = data?.serverPath ?? '';
   const python = data?.mcpPython || { path:'', version:'', valid:false, source:'none', error:'Python status unavailable.' };
   const runtime = data?.mcpRuntime || { path:'', python:'', exists:false, healthy:false, registered:false, error:'Managed runtime status unavailable.' };
   const regenerate = mcpRegeneratePresentation(data);
   el.innerHTML = `
-    <div style="padding:28px 36px;max-width:980px">
+    <div class="settings-pane" data-settings-owner="mcp" style="max-width:980px">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
         <span style="font-size:22px">${uiIcon('library')}</span>
         <span style="font-size:17px;font-weight:700">Personal Knowledge Manager</span>
@@ -374,17 +323,23 @@ function renderMcpPane(data) {
         <span style="flex:1"></span>
         <label class="pkm-language-control"><span data-i18n="language.label">Language</span><select id="pkm-language-select" onchange="changeUiLanguage(this.value)" data-i18n-title="language.choose" title="${esc(t('language.choose'))}">${languageOptionsHtml()}</select></label>
       </div>
+      ${settingsTabBar('mcp',[['general','General Setting'],['mcp','MCP'],['access','Agent feature access'],['debug','Debug']])}
       <p style="color:var(--muted);font-size:12px;margin-bottom:14px;line-height:1.6">
         Configure the external runtimes and Agent integrations used by Personal Knowledge Manager.
       </p>
       <div id="mcp-completion-slot">${mcpCompletionNotice ? `<div id="mcp-completion-notice" role="status" style="margin-bottom:14px;padding:9px 11px;border:1px solid #4ade8066;border-radius:6px;background:#4ade8012;color:#4ade80;font-size:11px">${uiIcon('check')} ${esc(mcpCompletionNotice)}</div>` : ''}</div>
-      ${renderMcpDashboard(data)}
-      ${renderMcpFeatureDomains(data)}
-      <div id="pkm-skill-router-section">${renderPkmSkillTargets(data)}</div>
+      <section data-settings-panel="general">${renderMcpDashboard(data)}
+        <div class="mcp-paths-head"><h3>Optional Action toolchains</h3><button class="tbtn" onclick="ask('actionToolchainsConfigure',{},this)">${uiIcon('settings-gear', 'Configure toolchains')}</button></div>
+      </section>
+      <section data-settings-panel="access">${renderMcpFeatureDomains(data)}</section>
+      <section data-settings-panel="mcp">
       <div style="background:var(--panel);border:1px solid ${data?.nativeMcpProvider ? '#4ade8066' : '#f4b40066'};border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:11px;line-height:1.6;color:var(--muted)">
-        ${data?.nativeMcpProvider
-          ? '<strong style="color:#4ade80" data-i18n="config.availableEverywhereTitle">Available in every workspace.</strong> <span data-i18n="config.availableEverywhereDescription">The extension registers pkm directly with VS Code; no project MCP configuration is needed. Remove old workspace pkm, pkm-chat, and pkm-chat-live entries to avoid duplicates.</span>'
-          : '<strong style="color:#f4b400" data-i18n="config.userConfigFallbackTitle">User configuration fallback.</strong> <span data-i18n="config.userConfigFallbackDescription">This VS Code version cannot accept extension-provided MCP definitions. Add the generated pkm entry once with MCP: Open User Configuration.</span>'}
+        <strong data-i18n="config.definitionTitle">VS Code MCP definition</strong>
+        <div><span data-i18n="config.source">Source</span>: <code>${data?.accountBinding?.registrationOwner ? esc(data.accountBinding.registrationOwner) : '<span data-i18n="config.stateMissing">Missing</span>'}</code></div>
+        <div>Native definition: ${data?.clientRegistration?.vscode?.definitionAvailable ? 'available on this host (client discovery not verified)' : 'unavailable or not selected'}</div>
+        <div>${esc(data?.clientRegistration?.vscode?.detail || '')}</div>
+        <button class="tbtn" id="mcp-configure-native" onclick="beginMcpUiAction('configureNativeMcpDiscovery',{},this)">Configure PKM MCP...</button>
+        <span data-i18n="config.restartServer">Run MCP: List Servers, select pkm, then Start/Restart. Remote SSH windows use the provider and paths from the remote extension host.</span>
       </div>
       <div style="background:var(--panel);border:1px solid ${python.valid ? '#4ade8066' : '#f4b40066'};border-radius:8px;padding:12px 14px;margin-bottom:16px">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
@@ -426,6 +381,7 @@ function renderMcpPane(data) {
         </ul>
       </div>
 
+      ${renderMcpLifecycle(data?.lifecycle)}
       ${installed ? `
         <div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:16px">
           <div style="font-size:11px;color:var(--muted);margin-bottom:4px" data-i18n="config.serverLocation">Server location</div>
@@ -435,11 +391,13 @@ function renderMcpPane(data) {
         <div style="font-size:13px;font-weight:600;margin-bottom:10px" data-i18n="config.definitionTitle">VS Code MCP definition</div>
         <div style="font-size:12px;color:var(--muted);margin-bottom:8px">
           <strong data-i18n="config.currentMachinePreview">Current machine preview.</strong>
-          ${data?.nativeMcpProvider ? '<span data-i18n="config.definitionAutomatic">The extension provides this definition automatically in every workspace.</span>' : '<span data-i18n="config.definitionManual">Merge this entry once into MCP: Open User Configuration, preserving other servers.</span>'}
+          ${data?.nativeMcpProvider && data?.accountBinding?.registrationOwner !== 'manual-user'
+            ? '<span data-i18n="config.definitionAutomatic">The extension provides this definition automatically in every workspace.</span>'
+            : '<span data-i18n="config.definitionManual">Merge this entry once into MCP: Open User Configuration, preserving other servers.</span>'}
           <span data-i18n="config.definitionCommand">The command always uses the managed runtime's absolute Python path:</span>
         </div>
         <pre style="background:var(--vscode-textCodeBlock-background);border-radius:6px;padding:12px;font-size:11px;overflow-x:auto"><code id="mcp-cfg-code"></code></pre>
-        <button class="tbtn" style="margin-top:8px;font-size:11px" onclick="copyCfg()" data-i18n="config.copySnippet">Copy config snippet</button>
+        ${!data?.nativeMcpProvider || data?.accountBinding?.registrationOwner === 'manual-user' ? '<button class="tbtn" style="margin-top:8px;font-size:11px" onclick="copyCfg()" data-i18n="config.copySnippet">Copy config snippet</button>' : ''}
         <hr class="div" style="margin:18px 0">
         <div style="font-size:12px;color:var(--muted);margin:10px 0 4px" data-i18n="config.restartServer">Run MCP: List Servers, select pkm, then Start/Restart. Remote SSH windows use the provider and paths from the remote extension host.</div>
         <hr class="div" style="margin:18px 0">
@@ -461,20 +419,46 @@ function renderMcpPane(data) {
       <div id="mcp-result" style="margin-top:12px;font-size:12px"></div>
 
       <hr class="div" style="margin:24px 0">
-      <div id="mcp-agency-registration" style="font-size:14px;font-weight:700;margin-bottom:6px">MCP Agency registration</div>
-      <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:8px" data-i18n="config.agencyDescription">The extension cannot reliably inspect an external Agency registry. If pkm is not registered there, copy these current-machine instructions into Copilot or Agency. The resolved paths let the agent register the single pkm entry and verify its unified tool surface.</div>
-      <pre style="background:var(--vscode-textCodeBlock-background);border-radius:6px;padding:12px;font-size:11px;overflow:auto;max-height:340px"><code id="agency-install-code">${esc(data?.agencyInstallInstruction || '')}</code></pre>
-      <button class="tbtn" style="margin-top:8px;border-color:var(--accent)" onclick="copyAgencyInstall()" data-i18n="config.copyAgencyInstructions">Copy Agency installation instructions</button>
-    </div>${renderIntegrationGuide(data)}${renderLoadProfiling(data)}`;
+      <div id="mcp-account-registration" style="font-size:14px;font-weight:700;margin-bottom:6px" data-i18n="config.registration">Account-level MCP registration</div>
+      <div style="font-size:12px;color:var(--muted);line-height:1.6" data-i18n="config.restartServer">Run MCP: List Servers, select pkm, then Start/Restart. Remote SSH windows use the provider and paths from the remote extension host.</div>
+      <div id="mcp-copilot-registration" style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-top:16px;font-size:12px;line-height:1.7">
+        <strong>Copilot CLI / SDK: explicit user-level registration</strong>
+        <p data-i18n="config.copilotRegistrationDescription">Installing PKM supplies a VS Code MCP definition, but does not write Copilot CLI configuration. CLI / SDK sessions that do not inherit VS Code MCP definitions need a separate registration. If your session already exposes pkm tools, skip this step; do not duplicate registrations within the same client.</p>
+        <div id="mcp-copilot-registration-status"><strong>Default CLI user configuration: ${esc(data?.clientRegistration?.copilot?.state || 'not inspected')}</strong><br><code>${esc(data?.clientRegistration?.copilot?.path || '')}</code><br>${esc(data?.clientRegistration?.copilot?.detail || '')}</div>
+        <button class="tbtn" id="mcp-register-copilot-user" onclick="beginMcpUiAction('registerCopilotMcp',{},this)" ${runtime.healthy && installed ? '' : 'disabled'}>Register Copilot CLI MCP (User)</button>
+        <p>Review and confirm the host, account path and launch command before writing. The command backs up an existing file, preserves unrelated entries and rejects conflicts or edits made after review. It never writes project configuration or starts a server. Registration does not prove client discovery, trust or callable tools. Alternatively, use the manual steps below. Custom CLI --config-dir locations are not modified.</p>
+        <ol style="padding-left:20px">
+          <li data-i18n="config.copilotRegistrationPrepare">First select Python and finish managed runtime setup and server generation above. Install Copilot CLI if the copilot command is unavailable.</li>
+          <li><span data-i18n="config.copilotRegistrationMerge">Back up ~/.copilot/mcp-config.json, then merge the pkm entry below into its mcpServers object. Create the file if it is missing. Preserve other servers; review an existing pkm entry instead of adding a duplicate. This is user-level configuration for this machine and OS account, not workspace configuration.</span>
+            <pre style="background:var(--vscode-textCodeBlock-background);border-radius:6px;padding:12px;font-size:11px;overflow-x:auto"><code id="mcp-copilot-cfg-code" data-i18n="config.copilotRegistrationNotReady">Finish runtime setup and server generation to see this machine's Copilot configuration.</code></pre>
+            <button id="mcp-copy-copilot-cfg" class="tbtn" onclick="copyCopilotMcpCfg()" data-i18n="config.copilotRegistrationCopy" disabled>Copy Copilot CLI config snippet</button>
+            <div data-i18n="config.copilotRegistrationSchema">Use mcpServers with type local for Copilot CLI, not the VS Code servers / type stdio snippet. This generated configuration uses the managed runtime and preserves the Windows launcher environment. The tools wildcard exposes all enabled PKM tools; client consent still applies.</div>
+          </li>
+          <li><span data-i18n="config.copilotRegistrationVerify">Run the commands below to verify registration, then start a new CLI / SDK chat. If it still has the old tool list in VS Code, run Developer: Reload Window. Enabled only confirms configuration: verify that the agent can discover PKM tools and actually call check_version.</span>
+            <pre style="background:var(--vscode-textCodeBlock-background);border-radius:6px;padding:12px;font-size:11px">copilot mcp list
+copilot mcp get pkm</pre>
+          </li>
+        </ol>
+        <p data-i18n="config.copilotRegistrationRemote">For Remote SSH, edit the remote account's configuration and run Copilot on that remote machine; do not run Linux paths on the local Windows client. If you move the runtime or server directory, update this registration. Do not add a duplicate VS Code user/workspace entry when its native provider already supplies pkm.</p>
+      </div>
+      ${renderIntegrationGuide(data)}</section><section data-settings-panel="debug">${renderLoadProfiling(data)}</section>
+    </div>`;
 
+  applySettingsSubtab('mcp');
+
+  restoreRefreshInputs(el, drafts);
   requestAnimationFrame(() => {
     const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
     el.scrollTop = Math.min(previousScrollTop, maxScrollTop);
   });
 
   for (const cached of mcpPathSizeCache.values()) renderMcpPathSize(cached);
-  if (mcpGeneratedCache) renderMcpGenerated(mcpGeneratedCache);
-  else if (installed && runtime.healthy) ask('generateMcp', { previewOnly: true }, null, true);
+  window._copilotMcpCfg = '';
+  if (installed && runtime.healthy) {
+    if (data?.combinedRegistry) renderMcpGenerated({ configSnippet: data.combinedRegistry, preview: true });
+    else if (mcpGeneratedCache) renderMcpGenerated(mcpGeneratedCache);
+    else ask('generateMcp', { previewOnly: true }, null, true);
+  }
 }
 
 function renderMcpFeatureDomains(data) {
@@ -516,6 +500,16 @@ function renderMcpGenerated(data) {
   window._mcpCfg = data.configSnippet || '';
   const codeEl = document.getElementById('mcp-cfg-code');
   if (codeEl) codeEl.textContent = data.configSnippet || '';
+  const copilotCodeEl = document.getElementById('mcp-copilot-cfg-code');
+  const copilotCopyButton = document.getElementById('mcp-copy-copilot-cfg');
+  if (copilotCodeEl && data.configSnippet) {
+    const definition = JSON.parse(data.configSnippet).servers?.pkm;
+    if (!definition?.command || !Array.isArray(definition.args)) throw new Error('Generated PKM MCP definition is missing its command or arguments.');
+    window._copilotMcpCfg = JSON.stringify({ mcpServers: { pkm: { ...definition, type: 'local', tools: ['*'] } } }, null, 2);
+    copilotCodeEl.removeAttribute('data-i18n');
+    copilotCodeEl.textContent = window._copilotMcpCfg;
+    if (copilotCopyButton) copilotCopyButton.disabled = false;
+  }
   // A preview call only fills the config block — do NOT re-render (would loop)
   if (data.preview) return;
   const el = document.getElementById('mcp-result');
@@ -523,7 +517,7 @@ function renderMcpGenerated(data) {
     const base = String(data.serverPath || '').replace(/[\\/]server\.py$/, '');
     el.innerHTML = `<div style="color:#4ade80">✓ Unified MCP code regenerated:</div>` +
       `<div style="margin-top:4px;color:var(--muted)"><code>${esc(data.serverPath)}</code><br><code>${esc(base + '/chat_server.py')}</code><br><code>${esc(base + '/requirements.txt')}</code></div>` +
-      `<div style="margin-top:7px;color:var(--muted)">No Agency registry was modified. If <code>pkm</code> is not registered in your MCP Agency, copy the installation instructions below into Copilot or Agency.</div>`;
+      `<div style="margin-top:7px;color:var(--muted)">Registration owner and client configuration were not changed. Use <strong>MCP: List Servers</strong> to verify the selected account registration; do not add a duplicate server.</div>`;
   }
   // Real generation: refresh the pane once to show the installed state
   setTimeout(() => ask('checkMcp', {}), 300);
@@ -628,7 +622,12 @@ function copyCfg() {
     vscode.window.setStatusBarMessage?.('Copied!'));
 }
 
-function copyAgencyInstall() {
-  const text = document.getElementById('agency-install-code')?.textContent || '';
-  navigator.clipboard.writeText(text).then(() => vscode.window.setStatusBarMessage?.('Copied!'));
+function copyCopilotMcpCfg() {
+  if (!window._copilotMcpCfg) {
+    failAction(t('config.copilotRegistrationNotReady'));
+    return;
+  }
+  navigator.clipboard.writeText(window._copilotMcpCfg)
+    .then(() => vscode.postMessage({ command: 'toast', text: t('config.copilotRegistrationCopied') }))
+    .catch(error => failAction(error.message || String(error)));
 }

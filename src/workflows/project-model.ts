@@ -8,7 +8,7 @@ import {
   WORKFLOW_DEFINITION_SCHEMA,
   WorkflowDefinitionV1,
   compileWorkflowDefinitionV1
-} from "../workflow-contracts";
+} from "./workflow-contracts";
 import {
   CollaborationError,
   CollaborationTaskRecord,
@@ -18,7 +18,7 @@ import {
   normalizeCollaborationTaskRecord,
   transitionCollaborationTask as transitionStructuredCollaborationTask,
   CollaborationOwnerPartition,
-} from "../collaboration-model";
+} from "../chatroom/collaboration-model";
 import {
   RECIPE_METHODOLOGY_SCHEMA,
   RecipeMethodologyV1,
@@ -61,6 +61,39 @@ export interface ProjectRecord {
   name: string;
   systemKind?: ProjectSystemKind;
   version: number;
+  goal?: string;
+  successCriteria?: string[];
+  status?: "planned" | "active" | "completed";
+  currentMilestone?: string;
+  owner?: string;
+  deadline?: string;
+  autonomyPolicyReference?: string;
+  archivedAt?: string;
+  deletedAt?: string;
+  links?: ProjectSourceLink[];
+  decisions?: ProjectDecision[];
+  timeline?: ProjectTimelineEvent[];
+}
+
+export interface ProjectSourceLink {
+  kind: "action-run" | "recipe-run" | "agent-session" | "chat";
+  id: string;
+  linkedAt: string;
+}
+
+export interface ProjectDecision {
+  decisionId: string;
+  at: string;
+  reason: string;
+  changes: { field: string; before: unknown; after: unknown }[];
+}
+
+export interface ProjectTimelineEvent {
+  eventId: string;
+  at: string;
+  kind: string;
+  summary: string;
+  sourceId?: string;
 }
 
 export interface ThreadRecord {
@@ -733,53 +766,6 @@ const BUILT_IN_RECIPES: ReadonlyArray<{
     }
   },
   {
-    key: "create-agent-snapshot",
-    name: "Create Agent Snapshot",
-    category: "System/PKM/Agent Sessions",
-    revision: 2,
-    description: "Create and persist an immutable PKM Agent Snapshot for the active managed Session, then return its one-time recovery credentials without storing them in Recipe state.",
-    applicableFunctions: [
-      "Create Agent Snapshot",
-      "Generate Agent Snapshot",
-      "Save conversation recovery point",
-      "Prepare Agent Session recovery",
-    ],
-    requiredInputs: [
-      { name: "reason", description: "Optional reason recorded with the Snapshot." },
-      { name: "stateJson", description: "Optional JSON object to checkpoint immediately before capture." },
-    ],
-    expectedOutputs: [
-      { name: "snapshot", description: "Persisted immutable Snapshot metadata." },
-      { name: "recoveryPrompt", description: "Reusable Magic Code recovery prompt with no user-managed password." },
-    ],
-    definition: {
-      schema: WORKFLOW_DEFINITION_SCHEMA,
-      spec: {
-        inputs: {
-          reason: { type: "string", required: false, nullable: false, schema: {}, default: "manual" },
-          stateJson: { type: "string", required: false, nullable: false, schema: {}, default: "" },
-        },
-        nodes: [{
-          nodeId: "create-snapshot",
-          kind: NATIVE_NODE_KIND,
-          config: {
-            operation: "agent_session_snapshot_create",
-            arguments: {
-              reason: "${inputs.reason}",
-              state_json: "${inputs.stateJson}",
-            },
-          },
-          generalInstruction: "PKM executes this allowlisted operation in-process. Return the ephemeral recovery credentials to the user immediately; they cannot be replayed from Recipe state.",
-          dependsOn: [],
-          ports: { inputs: ["reason", "stateJson"], outputs: ["snapshot", "ephemeralOutput"] },
-          control: { mode: "single" },
-        }],
-        outputs: {},
-        completion: { requiredNodes: ["create-snapshot"] },
-      },
-    },
-  },
-  {
     key: "publish-personal-knowledge-vsix",
     name: "Publish Personal Knowledge VSIX",
     category: "Release/VS Code",
@@ -837,6 +823,51 @@ const BUILT_IN_RECIPES: ReadonlyArray<{
         completion: { requiredNodes: ["verify-and-report-release"] }
       }
     }
+  },
+  {
+    key: "structured-test-result-gate",
+    name: "Structured Test Result Gate",
+    category: "Development/Validation",
+    description: "Run pytest or Node tests with native JUnit reports, preserve complete local artifacts, and return only failures plus explicit execution and coverage gates.",
+    applicableFunctions: ["Test automation", "Failure-only test output", "Coverage gate", "Recipe validation"],
+    definition: {
+      schema: WORKFLOW_DEFINITION_SCHEMA,
+      spec: {
+        inputs: {
+          python: { type: "string", required: true, nullable: false, schema: {} },
+          gate_script: { type: "string", required: true, nullable: false, schema: {} },
+          config_file: { type: "string", required: true, nullable: false, schema: {} },
+        },
+        nodes: [{
+          nodeId: "run-tests-and-gate", kind: COMMAND_NODE_KIND,
+          config: {
+            program: "${inputs.python}",
+            args: ["${inputs.gate_script}", "--config", "${inputs.config_file}"],
+            timeoutSeconds: 3600, maxOutputBytes: 65536,
+          },
+          generalInstruction: "Use the installed resources/recipe_test_gate.py with an authorized local JSON configuration: runner (pytest or node), command argv, cwd, artifact_directory, timeout_seconds <=3500, and optional pytest coverage_threshold. The command runs without a shell. A nonzero exit fails this Module, including missing/corrupt reports, no executed tests, timeout, startup and coverage errors. Read compact JSON only; full logs, JUnit and untruncated result are local artifacts. Never replace a failed gate with an Agent success report.",
+          dependsOn: [], ports: { inputs: [], outputs: ["result"] }, control: { mode: "single" },
+        }],
+        outputs: {}, completion: { requiredNodes: ["run-tests-and-gate"] },
+      },
+    },
+  },
+  {
+    key: "pkm-chat-e2e-acceptance",
+    name: "PKM Chat E2E Acceptance",
+    category: "System/PKM/Chat",
+    description: "Validate a real isolated PKM Chat Session through model usage, PKM MCP reads and approved edit/save/process execution, preserving bounded evidence and explicit unavailable capabilities.",
+    applicableFunctions: ["PKM Chat E2E", "Session-driven acceptance", "MCP tool validation", "Usage diagnostics"],
+    expectedOutputs: [
+      { name: "sessionId", description: "Identity of the isolated tested PKM-native Session." },
+      { name: "acceptanceReport", description: "Retained chat-e2e fixture acceptance.json and matching Session/tool evidence." },
+      { name: "verdict", description: "Evidence-backed pass, failure or blocked result, with usage/credit availability reported separately." },
+    ],
+    definition: linearRecipeDefinition([
+      ["prepare-isolated-session", "Inspect the requested acceptance scope and any supplied acceptance.json or PKM-native Session read-only. Preserve existing attempts; never resume, wake, modify or migrate the user's original Session. Obtain explicit authorization for real model credits and a trusted fixture workspace. Use a new isolated Chat with a specifically selected callable model, normal tool approvals and no automatic fallback. Record loaded Host build identity and model where available. If authorization or a live provider is missing, report blocked instead of substituting mocks."],
+      ["execute-real-acceptance", "Run the existing personalKnowledge.testApiChatE2E command through an authorized native command entry. Its native confirmation, model selection and per-tool approvals remain required. If this Agent cannot invoke that command, pause for the user to run Personal Knowledge Manager: Run Chat E2E Acceptance and provide its report path; do not claim automatic Session control. The entry creates a new Chat and chat-e2e fixture, performs the usage marker probe, invokes real registered PKM list_notes and list_skills, then reads, edits, saves and tests only the fixture. Record the resulting Session ID and acceptance.json. A cancellation, failed prerequisite or uncertain side effect is not permission to retry."],
+      ["verify-and-report", "Read the actual acceptance.json and the matching tested Session without replaying work. Require schema pkm.chat.e2e/v1, matching Chat/Session/model identity and successful usage, pkm-mcp and coding steps; inspect actual completed tool calls, exact approved test argv, exitCode 0, PKM_E2E_TEST_OK, changed saved module hash and unchanged test hash. Mock success, registration alone and an Agent's success sentence are not E2E evidence. Report real usage frames/tokens and provider-reported credits separately from missing, invalid or unavailable metadata; unknown is not zero and partial credit coverage is not a complete bill. Preserve failed or partial evidence and report the first blocker without automatic retry, model escalation or invented results."],
+    ]),
   },
   {
     key: "executable-module-examples",
@@ -1063,7 +1094,9 @@ export function builtInRecipeInventory(): ReadonlyArray<{
   });
 }
 
-const RETIRED_BUILT_IN_RECIPE_KEYS: ReadonlyArray<string> = [];
+// "create-agent-snapshot" needed an external MCP Agent Session; Agent Sessions are now PKM Chat only and
+// Snapshots are created from the Agent Snapshots panel.
+const RETIRED_BUILT_IN_RECIPE_KEYS: ReadonlyArray<string> = ["create-agent-snapshot"];
 
 function linearRecipeDefinition(steps: ReadonlyArray<readonly [nodeId: string, generalInstruction: string]>): unknown {
   return {

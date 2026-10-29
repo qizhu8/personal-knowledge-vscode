@@ -19,6 +19,16 @@ cutover, RSS where the host exposes it, persisted snapshot size, and update
 mode. The 50K and 100K tiers remain explicitly `planned-not-run` unless an
 extended run includes them. Results must never be copied from estimates.
 
+The Router panel's **Run benchmark** action runs the 1K tier with five
+repetitions and displays only the five lexical queries (excluding the hybrid
+relation query). Success@5 is the fraction of queries whose labeled document
+appears in the first five results. Precision@5 divides relevant hits by five;
+with just one known relevant document per query it cannot exceed 20%. NDCG@5
+discounts the labeled document by rank, and latency shows p50/p95 for these
+same query runs. These synthetic labels do not measure recall against a complete
+relevance set or predict quality on the live corpus. Unmeasured routing paths
+display availability only, with no inferred performance values.
+
 ## Measured revision 2 run
 
 Linux x64, Node 22.23.1, five repetitions per labeled query, 2026-09-28:

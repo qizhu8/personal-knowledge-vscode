@@ -4,7 +4,7 @@ const {
   MODULE_USAGE_SCHEMA,
   compileModuleUsageEventV1,
   summarizeModuleUsage,
-} = require("../dist/module-contracts.js");
+} = require("../dist/workflows/module-contracts.js");
 
 const measured = {
   schema: MODULE_USAGE_SCHEMA,

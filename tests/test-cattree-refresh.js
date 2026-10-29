@@ -5,7 +5,7 @@ const path = require('path');
 const vm = require('vm');
 const os = require('os');
 const childProcess = require('child_process');
-const { SHARED_CONTENT_TYPES } = require('../dist/subscriptions.js');
+const { SHARED_CONTENT_TYPES } = require("../dist/subscriptions/subscriptions.js");
 
 const root = path.join(__dirname, '..');
 const knowledge = fs.readFileSync(path.join(root, 'src/webview/panel/20-knowledge.js'), 'utf8');
@@ -179,6 +179,8 @@ const cacheElements = {
 };
 const cachedItems = Array.from({ length: 5000 }, (_, index) => ({ slug: `note-${index}` }));
 const tabCacheContext = {
+  currentDetail: null,
+  currentDetailRequest: null,
   state: { filter: 'all', search: '', items: cachedItems, folders: ['Large'], subscriptionGroups: [], knowledgeTrash: [], privateTopLevels: [], brokerSharedFolders: {} },
   document: { createDocumentFragment: () => new FakeContainer(), getElementById: id => cacheElements[id] },
   renderSubscribedGroups: () => {},
@@ -206,7 +208,10 @@ const core = fs.readFileSync(path.join(root, 'src/webview/panel/00-core.js'), 'u
 const genericSubscribedTabs = [...knowledge.match(/const cachedKnowledgeTabs = new Set\(\[([^\]]+)\]\)/)[1].matchAll(/'([^']+)'/g)].map(match => match[1]);
 assert.deepStrictEqual(genericSubscribedTabs.sort(), SHARED_CONTENT_TYPES.filter(type => type !== 'servers' && type !== 'recipes').sort(),
   'generic Knowledge CatTrees plus explicit Server and Recipe surfaces must cover every shared content type');
-assert.match(extension, /changedPath = path\.relative\(getStorePath\(\), uri\.fsPath\)/);
+assert.match(extension, /const relativePath = path\.relative\(getStorePath\(\), uri\.fsPath\)[\s\S]{0,150}knowledgePaths\.add\(relativePath\)/,
+  'coalesced knowledge refresh must retain every changed path');
+assert.match(extension, /relevantPaths\.length === 1 \? \{ changedPath: relevantPaths\[0\] \}/,
+  'single-path refresh must preserve the CatTree compatibility field');
 assert.match(core, /pendingTreeRefresh = data \|\| \{\}/);
 assert.match(extension, /respond\(\{ command: "list", tab, q, filter, data: projectedData, folders/,
   'local CatTree response must use the privacy/share projection produced by the profiled list pipeline');
@@ -238,7 +243,8 @@ assert.match(core, /e\.data\.tab && e\.data\.tab !== state\.tab\) return/);
 assert.match(core, /inventoryReady[\s\S]{0,300}fresh: true/);
 assert.match(core, /skillTrashResult[\s\S]{0,700}fresh:true/);
 assert.match(extension, /const useInventory = !msg\.fresh/);
-assert.match(knowledge, /search\.value = ''[\s\S]{0,80}state\.search = ''/);
+assert.match(knowledge, /state\.search = '';[\s\S]{0,50}closePanelFind\(\)/);
+assert.match(knowledge, /document\.getElementById\('searchbox'\)\.value = ''/);
 assert.match(knowledge, /ask\('refreshKnowledgeFolder', \{ area: state\.tab, category \}\)/);
 assert.match(extension, /case "refreshKnowledgeFolder"[\s\S]{0,1200}Folder scan timed out after 3 seconds/);
 assert.match(extension, /target !== root && !target\.startsWith\(root \+ path\.sep\)/);
@@ -250,7 +256,7 @@ const notePath = path.join(noteDir, 'progress.md.md');
 fs.writeFileSync(notePath, '---\ntitle: "LPFeatureProcessor v1.1 Optimization Progress"\ntype: "general"\n---\nbody');
 const compiled = path.join(fixtureRoot, 'compiled');
 fs.mkdirSync(compiled, { recursive: true });
-childProcess.execFileSync('npx', ['esbuild', path.join(root, 'src/filestore.ts'), '--bundle', '--platform=node', '--format=cjs', `--outfile=${path.join(compiled, 'filestore.js')}`], { cwd: root, stdio: 'ignore' });
+childProcess.execFileSync('npx', ['esbuild', path.join(root, "src/knowledge/filestore.ts"), '--bundle', '--platform=node', '--format=cjs', `--outfile=${path.join(compiled, 'filestore.js')}`], { cwd: root, stdio: 'ignore' });
 const filestore = require(path.join(compiled, 'filestore.js'));
 filestore.setStorePath(fixtureRoot);
 filestore.skillUpsert({ name: 'Priority Skill', content: 'body', category: 'Coding', priority: 'high' });

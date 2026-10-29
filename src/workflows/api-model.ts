@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { canonicalJson } from "../workflow-contracts";
+import { canonicalJson } from "./workflow-contracts";
 
 export const WORKFLOW_REQUEST_SCHEMA = "pkm.workflow.request/v1" as const;
 export const WORKFLOW_RESPONSE_SCHEMA = "pkm.workflow.response/v1" as const;

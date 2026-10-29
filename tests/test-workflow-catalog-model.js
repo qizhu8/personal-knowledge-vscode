@@ -38,6 +38,10 @@ assert.deepStrictEqual(new Set(Object.values(registry).map(item => item.adapterC
 assert(registry["pkm.step.noop/v1"].evidenceDeclarations.includes("invocation-receipt"));
 assert(registry["pkm.control.join/v1"].stateContractId.includes("control"));
 assert(registry["pkm.step.command/v1"].portability.portable === false);
+assert.strictEqual(registry["pkm.step.pipeline/v1"].adapterClass, "command");
+assert.strictEqual(registry["pkm.step.pipeline/v1"].runtimeOwner, "pkm.adapter.command");
+assert.strictEqual(registry["pkm.step.pipeline/v1"].portability.portable, false);
+assert.deepStrictEqual(registry["pkm.step.pipeline/v1"].capabilityDeclarations, ["pkm.capability.command"]);
 
 const digest = digestCanonical({ exact: true });
 const validRegistration = {

@@ -1,6 +1,7 @@
 // ── Tabs ──────────────────────────────────────────────────────────────────
 const cachedKnowledgeTabs = new Set(['skills','notes','papers','prompts','packages','scripts']);
 const knowledgeTabViewCache = new Map();
+const knowledgeDetailViewCache = new Map();
 let skillsListLoading = false;
 
 function detachChildren(element) {
@@ -11,6 +12,10 @@ function detachChildren(element) {
 
 function stashKnowledgeTabView(tab) {
   if (!cachedKnowledgeTabs.has(tab)) return;
+  if (currentDetail) {
+    const detail = document.getElementById('detail');
+    knowledgeDetailViewCache.set(tab, { content:detachChildren(detail), currentDetail, currentDetailRequest, scrollTop:detail?.scrollTop || 0 });
+  }
   if (state.filter !== 'all' || state.search) {
     knowledgeTabViewCache.delete(tab);
     return;
@@ -34,6 +39,15 @@ function stashKnowledgeTabView(tab) {
 }
 
 function restoreKnowledgeTabView(tab) {
+  const savedDetail = knowledgeDetailViewCache.get(tab);
+  if (savedDetail) {
+    knowledgeDetailViewCache.delete(tab);
+    const detail = document.getElementById('detail');
+    detail?.replaceChildren(savedDetail.content);
+    if (detail) detail.scrollTop = savedDetail.scrollTop;
+    currentDetail = savedDetail.currentDetail;
+    currentDetailRequest = savedDetail.currentDetailRequest;
+  }
   const cached = knowledgeTabViewCache.get(tab);
   if (!cached) return false;
   knowledgeTabViewCache.delete(tab);
@@ -99,16 +113,19 @@ document.querySelectorAll('.workspace-button').forEach(button => button.addEvent
 document.querySelectorAll('.tab').forEach(t =>
   t.addEventListener('click', () => {
     loadProfileEvent('webview.tab.clicked', { workspace:workspaceForTab(t.dataset.tab), surface:t.dataset.tab });
+    capturePanelViewState();
+    setEmbeddedActionsVisible(t.dataset.tab);
     stashKnowledgeTabView(state.tab);
     if (state.tab === 'chatroom' && t.dataset.tab !== 'chatroom') chatCaptureDraft();
     if (state.tab === 'servers' && t.dataset.tab !== 'servers') stopSubscribedServerMonitoring();
     state.tab = t.dataset.tab; state.filter = 'all'; state.search = '';
+    closePanelFind();
     currentDetail = null;
     currentDetailRequest = null;
     state.workspace = workspaceForTab(state.tab);
     agentSessionSetActive(['agentSessions','agentSnapshots'].includes(state.tab));
     const persisted = vscode.getState() || {};
-    vscode.setState({ ...persisted, tab: state.tab, workspace: state.workspace, workspaceRoutes: { ...(persisted.workspaceRoutes || {}), [state.workspace]: state.tab } });
+    vscode.setState({ ...persisted, view: panelSnapshotRestoring ? persisted.view : null, tab: state.tab, workspace: state.workspace, workspaceRoutes: { ...(persisted.workspaceRoutes || {}), [state.workspace]: state.tab } });
     document.getElementById('searchbox').value = '';
     document.querySelectorAll('.tab').forEach(x => {
       const active = x.dataset.tab === state.tab;
@@ -122,11 +139,15 @@ document.querySelectorAll('.tab').forEach(t =>
     if (!hasCachedProjectView) renderEmptyDetail();
     closePaperViews();
     updatePaperChrome();
-    const fullWidthTab = ['mcp', 'skillRouter', 'environments', 'servers', 'subscriptions', 'githubSync', 'backgroundTasks', 'agentSessions', 'agentSnapshots', 'recipes', 'projects', 'chatroom'].includes(state.tab);
+    const fullWidthTab = ['actionLibrary', 'actions', 'mcp', 'userProfile', 'skillRouter', 'environments', 'servers', 'subscriptions', 'githubSync', 'backgroundTasks', 'portalConnections', 'agentSessions', 'agentSnapshots', 'recipes', 'projects', 'chatroom'].includes(state.tab);
     document.getElementById('layout-resizer').style.display = fullWidthTab ? 'none' : '';
     document.getElementById('sidebar-toggle').style.display = fullWidthTab ? 'none' : '';
     document.getElementById('content-toolbar').style.display = fullWidthTab ? 'none' : '';
-    if (state.tab === 'agentSessions') {
+    if (['actions','actionLibrary'].includes(state.tab)) {
+      document.getElementById('sidebar').style.display = 'none';
+      document.getElementById('searchbox').style.display = 'none';
+      showEmbeddedActions();
+    } else if (state.tab === 'agentSessions') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
       renderAgentSessions();
@@ -156,27 +177,35 @@ document.querySelectorAll('.tab').forEach(t =>
     } else if (state.tab === 'environments') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
-      document.getElementById('detail').innerHTML = '<div class="empty">Loading environments…</div>';
-      ask('envList', {});
+      renderEnvDashboard(envCache, true);
+      ask('envList', {}, null, true);
     } else if (state.tab === 'servers') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
-      document.getElementById('detail').innerHTML = '<div class="empty">Loading servers…</div>';
-      ask('serverList', {});
-      ask('serverGroupList', {});
+      renderServerDashboard(serverCache);
+      ask('serverList', {}, null, true);
+      ask('serverGroupList', {}, null, true);
     } else if (state.tab === 'subscriptions') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
       renderSubscriptionLoading();
-      ask('subscriptionState', {});
+      ask('subscriptionState', {}, null, true);
     } else if (state.tab === 'githubSync') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
       showGitHubSyncTab();
+    } else if (state.tab === 'userProfile') {
+      document.getElementById('sidebar').style.display = 'none';
+      document.getElementById('searchbox').style.display = 'none';
+      showUserProfileTab();
     } else if (state.tab === 'backgroundTasks') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
       showBackgroundTasksTab();
+    } else if (state.tab === 'portalConnections') {
+      document.getElementById('sidebar').style.display = 'none';
+      document.getElementById('searchbox').style.display = 'none';
+      showPortalConnectionsTab();
     } else if (state.tab === 'chatroom') {
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
@@ -188,13 +217,14 @@ document.querySelectorAll('.tab').forEach(t =>
       applyMainSidebarState();
       if (state.tab === 'papers') { ask('paperFacets', {}); ask('paperGroups', {}); }
       if (state.tab === 'notes') { ask('noteFolderPins', {}); }
-      if (!restoreKnowledgeTabView(state.tab)) {
+      const restoredKnowledge = restoreKnowledgeTabView(state.tab);
+      if (!restoredKnowledge) {
         if (state.tab === 'skills') {
           skillsListLoading = true;
           setKnowledgeListMarkup(document.getElementById('item-list'), 'skills', '<div class="skill-list-progress" role="status" aria-live="polite"><span>Finding skills...</span><progress aria-label="Finding skills"></progress></div>');
         }
         ask('list', { tab: state.tab, filter: 'all', q: '' });
-      }
+      } else ask('list', { tab: state.tab, filter: 'all', q: '' }, null, true);
     }
   })
 );
@@ -237,6 +267,7 @@ function contentSearchChanged(requestList = true) {
   clearTimeout(searchDebounce);
   searchDebounce = setTimeout(() => {
     if (compileFindPattern(state.search, options.regex, options.caseSensitive) !== false) {
+      if (requestKnowledgeSearch(options)) return;
       if (state.tab === 'skills') {
         skillsListLoading = true;
         state.items = [];
@@ -249,6 +280,23 @@ function contentSearchChanged(requestList = true) {
 }
 document.getElementById('searchbox').addEventListener('input', e => {
   contentSearchChanged(true);
+});
+
+function closePanelFind() {
+  document.querySelectorAll('.panel-find-open').forEach(control => control.classList.remove('panel-find-open'));
+}
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape') { closePanelFind(); return; }
+  if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'f') return;
+  const controls = [...document.querySelectorAll('#detail .pkm-search-field,#detail .recipe-search,#detail .find-control')];
+  const control = controls.find(element => !element.closest('.hidden') && element.querySelector('input'))
+    || (cachedKnowledgeTabs.has(state.tab) ? document.getElementById('content-find-control') : null);
+  if (!control) return;
+  event.preventDefault();
+  closePanelFind();
+  control.classList.add('panel-find-open');
+  const input = control.querySelector('input');
+  input?.focus(); input?.select();
 });
 
 function folkDisplayName(value) {
@@ -356,9 +404,10 @@ function renderGroupedKnowledgeTree(root, area, renderLeaf, q, folderAttr, order
   for (const { group, folders: groupFolders } of byGroup.values()) {
     if (!groupFolders.length && group.id === 'unnamed') continue;
     const key = `${area}:${group.id}`;
-    const expanded = paperGroupExpanded[key] !== false;
+    const expanded = !!q || paperGroupExpanded[key] !== false;
     const groupRoot = { folders: Object.fromEntries(groupFolders.map(folder => [folder, root.folders[folder]])), items: [] };
     const count = countTreeLeaves(groupRoot);
+    if (q && count === 0 && !treeFolderPathMatches(groupRoot, [], q)) continue;
     html += `<div class="pk-group knowledge-visual-group" style="--knowledge-group-color:${esc(group.color)}">
       <div class="pk-group-hdr" onclick="togglePaperGroup(${JSON.stringify(key).replace(/"/g, '&quot;')})" oncontextmenu="knowledgeGroupMenu(event,${JSON.stringify(area).replace(/"/g, '&quot;')},${JSON.stringify(group.id).replace(/"/g, '&quot;')},${JSON.stringify(group.name).replace(/"/g, '&quot;')},${JSON.stringify(group.color).replace(/"/g, '&quot;')})">
         <span class="pk-group-arrow">${uiIcon(expanded ? 'chevron-down' : 'chevron-right')}</span>
@@ -481,14 +530,14 @@ function renderList() {
     fEl.innerHTML = ['all',...langs].map(l =>
       `<span class="chip ${filter===l?'active':''}" onclick="setFilter('${l}')">${l}</span>`).join('');
     const shown = filter==='all' ? items : items.filter(r => r.lang===filter);
-    el.innerHTML = `<div class="sub-virtual-divider local-packages"><span>Local Packages</span></div>` + (shown.map(r => {
+    el.innerHTML = `<div class="sub-virtual-divider local-packages"><span>Local Packages</span><button type="button" class="tbtn" onclick="ask('packageImportGit',{})" title="Import a Git branch as a source snapshot; no dependencies are installed">Import Git</button></div>` + (shown.map(r => {
       const gitTag = r.gitRepo
         ? '<span class="pkg-git repo" title="Has its own .git repository">git repo</span>'
         : r.gitTracked
           ? '<span class="pkg-git tracked" title="Tracked in the knowledge store\'s git">git</span>'
           : '<span class="pkg-git untracked" title="Not tracked by git yet (uncommitted)">untracked</span>';
           const sourceTag = packageSourceTag(r.source);
-      return `<div class="li" onclick="openItem('package','${esc(r.name)}')" oncontextmenu="packageItemMenu(event,${JSON.stringify(r.name).replace(/"/g,'&quot;')})">
+      return `<div class="li" onclick="openItem('package','${esc(r.name)}')" oncontextmenu="packageItemMenu(event,${JSON.stringify(r.name).replace(/"/g,'&quot;')},${!!r.gitSource})">
       <div class="li-name">${privacyLock(r.isPrivate)}${folkDisplayPath(r.name)} ${gitTag}${brokerShareMarker(r.brokerShares)}${githubSyncFileMarker('packages', r.name)}</div>
           <div class="li-meta">${esc(r.lang)} · ${esc((r.description||'').slice(0,50))}${sourceTag}</div>
     </div>`;
@@ -647,7 +696,7 @@ function restoreKnowledgeTrash(area, id, button) {
 }
 
 function emptyKnowledgeTrash(area) {
-  pkModal({ title:`Empty ${area} Trash?`, message:`Permanently delete every item and folder in ${area} Trash? This cannot be undone.`, okLabel:'Empty Trash', danger:true, onOk:()=>ask(area === 'skills' ? 'skillTrashEmpty' : 'knowledgeTrashEmpty', area === 'skills' ? {} : {area}) });
+  pkModal({ title:`Empty ${area} Trash?`, message:`Permanently delete every item and folder in ${area} Trash? This cannot be undone.`, okLabel:'Delete All', danger:true, onOk:()=>ask(area === 'skills' ? 'skillTrashEmpty' : 'knowledgeTrashEmpty', area === 'skills' ? {} : {area}) });
 }
 
 function deleteKnowledgeTrashEntry(area, id, name, kind) {
@@ -663,7 +712,7 @@ function skillLi(r, displayName, q, indent) {
   return `<div class="li${r.pinned ? ' nt-pinned' : ''}" data-skill-name="${esc(r.name)}" onclick="openItem('skill','${esc(r.name)}')" oncontextmenu="skillItemMenu(event,'${esc(r.name)}',${JSON.stringify(r.category || '').replace(/"/g, '&quot;')})" style="padding-left:${indent}px">
     <div class="li-name"><span class="pc-star${r.pinned ? ' on' : ''}" onclick="event.stopPropagation();toggleSkillPin('${esc(r.name)}',${r.pinned ? 'false' : 'true'})" title="${r.pinned ? 'Unpin' : 'Pin to top of folder'}">${uiIcon(r.pinned ? 'pinned' : 'pin')}</span> ${privacyLock(r.isPrivate)}${hl(displayName||r.name, q)}${brokerShareMarker(r.brokerShares)}${typeof githubSyncFileMarker === 'function' ? githubSyncFileMarker('skills', r.name) : ''}</div>
     <div class="li-meta">${r.description ? hl(r.description.slice(0,50), q) : ''}${priority}</div>
-  </div>`;
+  </div>${markdownAssetFolder('skills', [r.category, r.name].filter(Boolean).join('/') + '.md', indent)}`;
 }
 
 function toggleSkillPin(name, pinned) {
@@ -683,7 +732,44 @@ function noteLi(r, q, indent) {
   return `<div class="li nt-${r.type}${r.pinned ? ' nt-pinned' : ''}" data-note-slug="${esc(r.slug)}" data-note-pinned="${r.pinned ? '1' : ''}" style="padding-left:${indent}px" onclick="openItem('note','${esc(r.slug)}')" title="notes/${esc(r.slug)}.md">
     <div class="li-name"><span class="pc-star${r.pinned ? ' on' : ''}" onclick="event.stopPropagation();toggleNotePin('${esc(r.slug)}',${r.pinned ? 'false' : 'true'})" title="${r.pinned ? 'Unpin' : 'Pin to top of folder'}">${uiIcon(r.pinned ? 'pinned' : 'pin')}</span> ${ICON[r.type]||uiIcon('note')} ${privacyLock(r.isPrivate)}${hl(r.title, q)}${brokerShareMarker(r.brokerShares)}${typeof githubSyncFileMarker === 'function' ? githubSyncFileMarker('notes', r.slug) : ''}</div>
     <div class="li-meta">${hl(filename, q)} · ${(r.updated_at||'').slice(0,10)}</div>
-  </div>`;
+  </div>${markdownAssetFolder('notes', r.slug + '.md', indent)}`;
+}
+function markdownAssetFolder(area, documentPath, indent) {
+  return `<details class="markdown-assets" data-asset-area="${esc(area)}" data-asset-document="${esc(documentPath)}" style="margin-left:${indent + 12}px"><summary onclick="loadMarkdownAssetFolder(event,this)">${uiIcon('folder')} ${esc(documentPath.split('/').pop().replace(/\.md$/i, '.assets'))}</summary><button class="tbtn" onclick="manageMarkdownResourceFolder(this)">Manage resources...</button><div data-markdown-asset-items></div></details>`;
+}
+function loadMarkdownAssetFolder(event, summary) {
+  event.stopPropagation();
+  const folder = summary.parentElement;
+  if (!folder.open) {
+    folder.querySelector('[data-markdown-asset-items]').textContent = 'Loading resources...';
+    ask('markdownAssetList', { area: folder.dataset.assetArea, documentPath: folder.dataset.assetDocument });
+  }
+}
+function manageMarkdownResourceFolder(button) {
+  if (markdownAssetDraftOpen()) { ask('toast', { text: 'Save or close inline Markdown editors before managing resources.' }); return; }
+  const folder = button.closest('.markdown-assets');
+  ask('manageMarkdownAssets', { area: folder.dataset.assetArea, documentPath: folder.dataset.assetDocument });
+}
+function markdownAssetDraftOpen() {
+  return !!document.getElementById('se-content') || ['note-form', 'paper-form'].some(id => {
+    const form = document.getElementById(id);
+    return form && !form.classList.contains('hidden');
+  });
+}
+function showMarkdownAssetList(data) {
+  for (const folder of document.querySelectorAll('.markdown-assets')) {
+    if (folder.dataset.assetArea !== data.area || folder.dataset.assetDocument !== data.documentPath) continue;
+    const container = folder.querySelector('[data-markdown-asset-items]');
+    container.replaceChildren();
+    for (const asset of data.assets || []) {
+      const button = document.createElement('button');
+      button.className = 'tbtn'; button.style.display = 'block'; button.style.maxWidth = '100%';
+      button.style.overflowWrap = 'anywhere'; button.style.whiteSpace = 'normal'; button.textContent = asset.path;
+      button.onclick = () => ask('previewMarkdownAsset', { area: data.area, documentPath: data.documentPath, assetPath: asset.path });
+      container.append(button);
+    }
+    if (!data.assets?.length) container.textContent = 'No resources attached.';
+  }
 }
 function toggleNotePin(slug, pinned) {
   ask('noteSetPinned', { slug, pinned });
@@ -793,7 +879,8 @@ function renderCatTree(node, path, depth, renderLeaf, q, folderAttr, order, opti
     if (path.length === 0 && privacyInherited([name]) && !folderKeys.slice(0, index).some(previous => privacyInherited([previous]))) html += privacyDivider();
     // Base64 key: safe inside HTML attrs and JS strings (no quotes/null/unicode issues)
     const key = expandedCategoryKey(path.concat(name), options.area || state.tab);
-    const open = !!q || (Object.prototype.hasOwnProperty.call(catExpanded, key) ? !!catExpanded[key] : !!options.defaultOpen);
+    const expandable = !options.isFolderExpandable || options.isFolderExpandable(child, name, path.concat(name));
+    const open = expandable && (!!q || (Object.prototype.hasOwnProperty.call(catExpanded, key) ? !!catExpanded[key] : !!options.defaultOpen));
     const pad = (Number.isFinite(options.baseIndent) ? options.baseIndent : 8) + depth * 12;
     const pinnedFolder = isFP && name !== '(uncategorized)' && isFP(path.concat(name));
     const addPath = name === '(uncategorized)' ? '' : path.concat(name).join('/');
@@ -803,13 +890,13 @@ function renderCatTree(node, path, depth, renderLeaf, q, folderAttr, order, opti
     const syncType = options.githubSyncType || state.tab;
     const syncFolder = path.concat(name).filter(part => !['(uncategorized)','(root)'].includes(part)).join('/');
     html += `<div class="tree-cat">
-      <div class="tree-cat-hdr${pinnedFolder ? ' cat-pinned' : ''}" role="button" tabindex="0" style="padding-left:${pad}px" onclick="toggleCat('${key}',this)" onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();toggleCat('${key}',this)}" title="${esc(name)}" aria-expanded="${open}"${folderAttr ? folderAttr(child, name, path.concat(name)) : ''}>
-        <span class="tree-cat-arrow">${uiIcon(open ? 'chevron-down' : 'chevron-right')}</span>
+      <div class="tree-cat-hdr${pinnedFolder ? ' cat-pinned' : ''}" ${expandable ? `role="button" tabindex="0" onclick="toggleCat('${key}',this)" onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();toggleCat('${key}',this)}" aria-expanded="${open}"` : 'role="group"'} style="padding-left:${pad}px" title="${esc(name)}"${folderAttr ? folderAttr(child, name, path.concat(name)) : ''}>
+        <span class="tree-cat-arrow">${expandable ? uiIcon(open ? 'chevron-down' : 'chevron-right') : ''}</span>
         <span class="tree-cat-label">${folderLabel}${githubSyncTypes.includes(syncType) ? githubSyncFolderMarker(syncType, syncFolder) : ''}</span>
-        <span class="tree-cat-count">${countTreeLeaves(child)}</span>
-        ${['skills', 'notes', 'papers'].includes(state.tab) ? `<button class="tree-cat-add" type="button" title="Add inside ${esc(name)}" aria-label="Add inside ${esc(name)}" onclick="openCatFolderAddMenu(event,${JSON.stringify(state.tab).replace(/"/g, '&quot;')},${JSON.stringify(addPath).replace(/"/g, '&quot;')})">${uiIcon('add')}</button>` : ''}
+        <span class="tree-cat-count">${options.countLabel ? esc(options.countLabel(countTreeLeaves(child))) : countTreeLeaves(child)}</span>
+        ${!options.readOnly && ['skills', 'notes', 'papers'].includes(state.tab) ? `<button class="tree-cat-add" type="button" title="Add inside ${esc(name)}" aria-label="Add inside ${esc(name)}" onclick="openCatFolderAddMenu(event,${JSON.stringify(state.tab).replace(/"/g, '&quot;')},${JSON.stringify(addPath).replace(/"/g, '&quot;')})">${uiIcon('add')}</button>` : ''}
       </div>
-      <div class="tree-cat-body" style="${open ? '' : 'display:none'}">${renderCatTree(child, path.concat(name), depth + 1, renderLeaf, q, folderAttr, order, options)}</div>
+      ${expandable ? `<div class="tree-cat-body" style="${open ? '' : 'display:none'}">${renderCatTree(child, path.concat(name), depth + 1, renderLeaf, q, folderAttr, order, options)}</div>` : ''}
     </div>`;
   }
   let leaves = node.items;
@@ -1469,11 +1556,10 @@ function markdownToolbar(data) {
   const area = type + 's';
   const key = type === 'skill' ? data.name : data.slug;
   const category = type === 'skill' ? data.category || '' : '';
-  const stableKey = type === 'skill' ? [category, key].filter(Boolean).join('/') : key;
   return `
     <button class="tbtn" style="font-size:11px" onclick="${pin}" title="${data.pinned ? 'Unpin' : 'Pin to top'}">${uiIcon(data.pinned ? 'pinned' : 'pin', data.pinned ? 'Pinned' : 'Pin')}</button>
     <button class="tbtn" style="font-size:11px" onclick="exportMarkdown('browser')" title="Open the browser preview">${uiIcon('globe', 'Browser')}</button>
-    <button class="tbtn" style="font-size:11px" onclick="ask('copyPublicContentLink',{kind:'${type}',key:'${esc(stableKey)}'})" title="Copy the stable public browser link">${uiIcon('link', 'Copy Link')}</button>
+    <button class="tbtn" style="font-size:11px" onclick="copyDetailUrl()" title="Copy PKM URL">${uiIcon('link', 'Copy PKM URL')}</button>
     ${type === 'note' ? `<button class="tbtn" style="font-size:11px" onclick="exportMarkdown('linkedSave')" title="Save this Note and its linked Notes as a shareable site">${uiIcon('package', 'Site')}</button>` : ''}
     <button class="tbtn" style="font-size:11px" onclick="exportMarkdown('file')" title="Download as a self-contained HTML file">${uiIcon('cloud-download', 'Download')}</button>
     <button class="tbtn" style="font-size:11px" onclick="openMarkdownItem('${area}', '${esc(category)}', '${esc(key)}')">${uiIcon('edit', 'Edit Content')}</button>
@@ -1493,7 +1579,17 @@ function detailPathHtml(data) {
   return value ? `<div class="d-path" title="PKM URI">${esc(value)}</div>` : '';
 }
 
+function copyDetailUrl() {
+  const locator = currentDetail && detailContentPath(currentDetail);
+  if (locator) copyContextPath(locator);
+}
+
 function renderDetail(data) {
+  if (data?.type === 'script' && currentDetail?.type === 'script'
+      && data.path === currentDetail.path && document.getElementById('se-script')) {
+    currentDetail = data;
+    return;
+  }
   const promptViewState = data?.type === 'prompt' && promptIdentityKey(data) === promptIdentityKey()
     ? promptCaptureWorkbenchState()
     : null;
@@ -1540,7 +1636,6 @@ function renderDetail(data) {
         <span>Updated ${(data.updated_at||'').slice(0,10)}</span>
         <span style="flex:1"></span>
         ${markdownToolbar(data)}
-        <button class="tbtn" style="font-size:11px" onclick="confirmDeleteSkill(this)">${uiIcon('trash', 'Move to Trash')}</button>
       </div>
       <div class="meta-grid">
         <span class="ml">Source</span><span class="mv meta-value"><span>${esc(data.source_project||'—')}</span><button class="meta-edit" onclick="editCurrentMetadata('source_project')" title="Edit source">✎</button></span>
@@ -1752,7 +1847,7 @@ function renderDetail(data) {
         <span>${wordCount(data.content||'')}</span>
         <span style="flex:1"></span>
         <button class="tbtn" style="font-size:11px" onclick="ask('openMarkdownPreview',{kind:'script',key:'${esc(data.path || data.file)}'})" title="Open the browser preview">${uiIcon('globe', 'Browser')}</button>
-        <button class="tbtn" style="font-size:11px" onclick="ask('copyPublicContentLink',{kind:'script',key:'${esc(data.path || data.file)}'})" title="Copy the stable public browser link">${uiIcon('link', 'Copy Link')}</button>
+        <button class="tbtn" style="font-size:11px" onclick="copyDetailUrl()" title="Copy PKM URL">${uiIcon('link', 'Copy PKM URL')}</button>
         <button class="tbtn" style="font-size:11px" onclick="startEditScript()">${uiIcon('edit', 'Edit')}</button>
         <select id="ai-backend-select" title="AI backend for summarization"
           style="font-size:11px;background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 6px;outline:none;max-width:200px">
@@ -1804,10 +1899,15 @@ function startEditScript() {
     ${detailPathHtml(d)}
     <textarea id="se-script" style="width:100%;height:calc(100vh - 200px);background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:10px;font-size:12px;font-family:var(--vscode-editor-font-family);resize:none;outline:none;line-height:1.5">${esc(d.content||'')}</textarea>
     <div class="form-actions" style="margin-top:8px">
-      <button class="tbtn" onclick="ask('detail',{type:'script',key:currentDetail.path})">Cancel</button>
+      <button class="tbtn" onclick="cancelScriptEdit()">Cancel</button>
       <button class="tbtn" style="border-color:var(--accent)" onclick="submitScriptEdit()">${uiIcon('save', 'Save')}</button>
     </div>`;
   document.getElementById('se-script').focus();
+}
+
+function cancelScriptEdit() {
+  document.getElementById('se-script')?.remove();
+  ask('detail', currentDetailRequest || { type:'script', key:currentDetail.path });
 }
 
 function submitScriptEdit() {
@@ -1948,7 +2048,7 @@ async function exportMarkdown(mode) {
   tmp.innerHTML = inner;
   // Inline mermaid diagrams as self-contained SVG so the exported file needs no
   // runtime. Use the light theme to match the export page's white background.
-  await renderMermaid(tmp, 'default');
+  await renderMermaid(tmp, 'default', false);
   _mermaidReady = false;
   initMermaidOnce();
   tmp.querySelectorAll('pre code').forEach(el => safeHljs(el));
@@ -1984,7 +2084,7 @@ async function renderLinkedExport(data) {
     catch (e) { inner = '<pre>' + esc(n.content || '') + '</pre>'; }
     const tmp = document.createElement('div');
     tmp.innerHTML = inner;
-    await renderMermaid(tmp, 'default');
+    await renderMermaid(tmp, 'default', false);
     tmp.querySelectorAll('pre code').forEach(el => safeHljs(el));
     files.push({ filename: n.filename, slug: n.slug, bodyHtml: tmp.innerHTML });
   }
@@ -2031,10 +2131,7 @@ function doExport() { ask('export', {}); }
 function doReload() {
   const btn = document.querySelector('#content-toolbar .tbtn[onclick="doReload()"]');
   if (btn) { btn.disabled = true; btn.innerHTML = uiIcon('loading', 'Refreshing…'); }
-  if (state.tab === 'environments') { ask('envList', {}); return; }
-  const search = document.getElementById('searchbox');
-  if (search) search.value = '';
-  state.search = '';
+  if (state.tab === 'environments') { ask('envList', { refresh:true }); return; }
   ask('reload', {});
 }
 function triggerImport() { document.getElementById('import-file').click(); }
@@ -2396,10 +2493,10 @@ function insertAtCursor(ta, text) {
           updateNotePreview();
           pendingAssets[reqId] = (markdown, error) => {
             ta.value = ta.value.replace(placeholder, error ? '![paste failed]()' : markdown);
+            if (error) ask('toast', { text: error });
             updateNotePreview();
           };
-          const catEl = document.getElementById('note-category');
-          ask('saveAsset', { data: b64, ext, reqId, category: catEl ? catEl.value : '' });
+          ask('saveAsset', { data: b64, ext, reqId, slug: document.getElementById('note-edit-slug').value });
         };
         reader.readAsDataURL(file);
       }
@@ -2629,6 +2726,7 @@ function paperFolderMenu(ev, b64, name, path) {
         onOk: () => ask('paperFolderDelete', { path: physicalPath }),
       }),
     });
+    items.push({ label:'Move folder to Trash…', danger:true, onClick:()=>moveKnowledgeFolderToTrash('papers',physicalPath,name) });
   }
   showPaperMenu(ev.clientX, ev.clientY, items);
 }
@@ -2789,7 +2887,7 @@ function scriptItemMenu(ev, relPath, category) {
 }
 
 // Right-click a Package -> open its folder in a new window.
-function packageItemMenu(ev, name) {
+function packageItemMenu(ev, name, gitSource = false) {
   ev.preventDefault(); ev.stopPropagation();
   const items = [
     { label: name, header: true },
@@ -2797,6 +2895,7 @@ function packageItemMenu(ev, name) {
     copyPathMenu(`packages/${name}/`),
     { sep: true },
   ];
+  if (gitSource) items.push({ label:'Update Git branch (refuses local changes)', onClick:() => ask('packageUpdateGit', { name }) });
   appendPrivacyMenu(items, 'packages', name);
   items.push({ sep: true });
   items.push({ label: 'Delete Package…', danger: true, onClick: () => confirmDeletePackage(name) });
@@ -2827,8 +2926,7 @@ function confirmDeletePackage(name) {
 function renderPaperFilters(fEl) {
   const opts = ['<option value="">All topics</option>'].concat(
     paperFacetsData.topics.map(t => `<option value="${esc(t.name)}"${t.name === paperTopicFilter ? ' selected' : ''}>${esc(t.name)} (${t.count})</option>`)).join('');
-  fEl.innerHTML = `<div style="padding:6px 8px"><select id="paper-topic-filter" style="width:100%" onchange="setPaperTopic(this.value)">${opts}</select></div>
-    <button class="knowledge-group-create paper-delete-all" type="button" onclick="confirmDeleteAllPapers()">${uiIcon('trash')} Move All to Trash</button>`;
+  fEl.innerHTML = `<div style="padding:6px 8px"><select id="paper-topic-filter" style="width:100%" onchange="setPaperTopic(this.value)">${opts}</select></div>`;
 }
 function setPaperTopic(v) { paperTopicFilter = v; renderList(); }
 function confirmDeleteAllPapers() {
@@ -2854,7 +2952,7 @@ function paperCard(p, q, pad) {
       ${p.publisher ? `<span>${esc(p.publisher)}</span>` : ''}
       ${tags}
     </div>
-  </div>`;
+  </div>${markdownAssetFolder('papers', p.slug + '.md', pad)}`;
 }
 function togglePin(slug, pinned) {
   ask('paperSetPinned', { slug, pinned });
@@ -2886,7 +2984,6 @@ function paperDetailHtml(d) {
       ${d.file ? `<button class="tbtn" style="font-size:11px" onclick="openPaperLink('','${esc(d.file)}','${esc(d.category)}')">${uiIcon('file', 'File')}</button>` : ''}
       <button class="tbtn" style="font-size:11px" onclick="openPaperForm(currentDetail)">✎ Edit Fields</button>
       ${markdownToolbar(d)}
-      <button class="tbtn" style="font-size:11px" onclick="confirmDeletePaper()">${uiIcon('trash', 'Move to Trash')}</button>
     </div>
     <div class="meta-grid">
       <span class="ml">Description</span><span class="mv meta-value"><span>${esc(d.description || '—')}</span><button class="meta-edit" onclick="editCurrentMetadata('description')" title="Edit description">✎</button></span>
@@ -3003,8 +3100,9 @@ function uploadPaperFile(input) {
     const b64 = String(reader.result || '').split(',')[1] || '';
     pendingPaperFile = (rel, err) => {
       if (!err && rel) { document.getElementById('pf-file').value = rel; document.getElementById('pf-file-label').textContent = file.name; }
+      if (err) ask('toast', { text: err });
     };
-    ask('savePaperFile', { data: b64, ext, category: document.getElementById('pf-category').value, reqId: 'pf' + Date.now() });
+    ask('savePaperFile', { data: b64, ext, slug: document.getElementById('pf-slug').value, reqId: 'pf' + Date.now() });
   };
   reader.readAsDataURL(file);
 }

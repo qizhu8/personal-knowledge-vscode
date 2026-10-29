@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 const assert = require("assert");
-const { brokerShareMarkers } = require("../dist/broker-share-markers");
+const { brokerShareMarkers } = require("../dist/subscriptions/broker-share-markers");
 
 const items = [
   { name: "Direct", category: "Team/Current" },

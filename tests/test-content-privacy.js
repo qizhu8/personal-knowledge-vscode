@@ -3,7 +3,7 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const privacy = require("../dist/content-privacy");
+const privacy = require("../dist/knowledge/content-privacy");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-content-privacy-"));
 privacy.setPrivacyStoreRoot(root);

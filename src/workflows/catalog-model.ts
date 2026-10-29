@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "crypto";
-import { canonicalJson } from "../workflow-contracts";
+import { canonicalJson } from "./workflow-contracts";
 import { WorkflowPortDescriptor, normalizePortDescriptor } from "./value-contracts";
 
 export type NodeKindSupportState = "active" | "deprecated" | "archived" | "revoked";
@@ -132,6 +132,7 @@ export const BUILTIN_NODE_KIND_IDS = [
   "pkm.step.noop/v1",
   "pkm.step.command/v1",
   "pkm.step.script/v1",
+  "pkm.step.pipeline/v1",
   "pkm.step.agent/v1",
   "pkm.check/v1",
   "pkm.gate.human/v1",
@@ -310,7 +311,7 @@ function normalizePorts(ports: Readonly<Record<string, WorkflowPortDescriptor>>)
 }
 
 function builtinRegistration(kindId: typeof BUILTIN_NODE_KIND_IDS[number], runtimeAvailable: boolean): NodeKindRegistration {
-  const adapterClass: AdapterClass = kindId.includes(".command/") || kindId.includes(".script/") ? "command"
+  const adapterClass: AdapterClass = kindId.includes(".command/") || kindId.includes(".script/") || kindId.includes(".pipeline/") ? "command"
     : kindId.includes(".agent/") ? "agent"
       : kindId === "pkm.check/v1" ? "check"
         : kindId === "pkm.gate.human/v1" ? "human-gate"

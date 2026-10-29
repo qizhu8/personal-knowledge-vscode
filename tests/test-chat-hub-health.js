@@ -3,8 +3,8 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { ChatHub } = require("../dist/chatroom-hub");
-const { probeChatRoomActive } = require("../dist/chat-hub-health");
+const { ChatHub } = require("../dist/chatroom/chatroom-hub");
+const { probeChatRoomActive } = require("../dist/chatroom/chat-hub-health");
 
 class MemorySecretStorage {
   constructor() { this.values = new Map(); }

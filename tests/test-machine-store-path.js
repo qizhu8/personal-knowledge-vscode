@@ -3,7 +3,13 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { cloudSynchronizedPath, isAbsoluteForPlatform, isForeignAbsolutePath, resolveMachineStorePath, extensionHostDescription } = require("../dist/store-path.js");
+const fixture = fs.mkdtempSync(path.join(__dirname, ".pkm-machine-store-path-"));
+const compiled = path.join(fixture, "store-path.js");
+require("child_process").execFileSync("npx", [
+  "esbuild", path.join(__dirname, "../src/knowledge/store-path.ts"),
+  "--bundle", "--platform=node", "--format=cjs", `--outfile=${compiled}`,
+], { cwd: path.join(__dirname, ".."), stdio: "ignore" });
+const { cloudSynchronizedPath, isAbsoluteForPlatform, isForeignAbsolutePath, resolveMachineStorePath, extensionHostDescription } = require(compiled);
 
 const existing = new Set(["/linux/store", "/linux/previous", "C:\\Users\\me\\knowledge"]);
 const isDirectory = value => existing.has(value);
@@ -42,7 +48,7 @@ assert.strictEqual(manifest.contributes.configuration.properties["personalKnowle
 assert.strictEqual(manifest.contributes.configuration.properties["personalKnowledge.mcpRuntimePath"].scope, "machine");
 assert.strictEqual(manifest.contributes.configuration.properties["personalKnowledge.mcpServerPath"].scope, "machine");
 assert.strictEqual(manifest.contributes.configuration.properties["personalKnowledge.chatInviteHost"].scope, "machine");
-for (const file of ["src/filestore.ts", "src/storage.ts"]) {
+for (const file of ["src/knowledge/filestore.ts", "src/knowledge/storage.ts"]) {
   const source = fs.readFileSync(path.join(root, file), "utf8");
   assert.doesNotMatch(source, /homedir\(\).*personal-knowledge/);
   assert.match(source, /let _store(?:Path)? = "";/);
@@ -67,7 +73,7 @@ assert.match(extension, /Existing environments will not be moved automatically/)
 assert.match(extension, /It can grow very large/);
 assert.match(extension, /Current disk usage:/);
 assert.match(extension, /localAbsolutePathError\(value\)/);
-const mcpSource = fs.readFileSync(path.join(root, "src", "mcp.ts"), "utf8");
+const mcpSource = fs.readFileSync(path.join(root, "src", "mcp/mcp.ts"), "utf8");
 assert.match(mcpSource, /export function managedMcpRuntimePath/);
 assert.match(mcpSource, /export function managedMcpServerDirectory/);
 assert.match(mcpSource, /isAbsoluteForPlatform\(configured\) && !isForeignAbsolutePath\(configured\)/);
@@ -79,4 +85,40 @@ assert.match(extension, /Choose an empty directory or an existing PKM-generated 
 assert.match(mcpSource, /insideInstalledExtension/,
   "legacy MCP server paths inside the read-only installed extension must fall back to the Knowledge Root");
 
-console.log("machine store path test: machine scope, cross-OS rejection, reinstall recovery, host-aware setup, no fallback, and Sync target confirmation OK");
+async function checkStartupPersistence() {
+  const vm = require("vm");
+  const ts = require("typescript");
+  const helper = extension.match(/async function rememberMachineStorePath\([\s\S]*?\n\}/);
+  assert(helper);
+  let stored = { machine: "/linux/store", lastStorePath: "/linux/store", setupComplete: true };
+  let configured = "/linux/store";
+  const writes = [];
+  const context = { globalState: {
+    get: key => stored[key],
+    update: async (key, value) => { writes.push(key); stored[key] = value; },
+  } };
+  const sandbox = vm.createContext({ MACHINE_STORE_PATH_KEY: "machine", vscode: {
+    workspace: { getConfiguration: () => ({
+      get: () => configured,
+      inspect: () => ({ globalValue: configured }),
+      update: async (_key, value) => { writes.push("configuration"); configured = value; },
+    }) }, ConfigurationTarget: { Global: 1 },
+  }, _nativeMcpProvider: true, readAccountMcpBinding: () => undefined, writeAccountMcpBinding: async () => {} });
+  vm.runInContext(ts.transpileModule(helper[0], { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText, sandbox);
+  await sandbox.rememberMachineStorePath(context, "/linux/store");
+  assert.deepStrictEqual(writes, [], "unchanged setup must not await redundant persistent writes");
+  stored = {};
+  configured = "";
+  await sandbox.rememberMachineStorePath(context, "/linux/store");
+  assert.deepStrictEqual(writes, ["machine", "lastStorePath", "setupComplete", "configuration"]);
+  writes.length = 0;
+  await sandbox.rememberMachineStorePath(context, "/linux/store");
+  assert.deepStrictEqual(writes, []);
+  await sandbox.rememberMachineStorePath(context, "/linux/previous");
+  assert.deepStrictEqual(writes, ["machine", "lastStorePath", "configuration"], "root changes must still persist");
+}
+
+checkStartupPersistence().then(() => {
+  console.log("machine store path test: machine scope, cross-OS rejection, reinstall recovery, host-aware setup, no fallback, Sync target confirmation, and no-op startup persistence OK");
+}).catch(error => { console.error(error); process.exitCode = 1; })
+  .finally(() => fs.rmSync(fixture, { recursive: true, force: true }));

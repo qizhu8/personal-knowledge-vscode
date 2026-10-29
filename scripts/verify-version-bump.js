@@ -42,12 +42,13 @@ assert(greater(currentPackage, baselinePackage),
 assert.strictEqual(json("package-lock.json").version, currentPackage, "package-lock.json version must match package.json");
 assert.strictEqual(json("package-lock.json").packages[""].version, currentPackage, "lockfile root package version must match package.json");
 
-const currentMcp = fs.readFileSync(path.join(root, "src", "mcp.ts"), "utf8");
-const baselineMcp = show("src/mcp.ts");
+const currentMcp = fs.readFileSync(path.join(root, "src", "mcp/mcp.ts"), "utf8");
+const baselineMcpPaths = run(["ls-tree", "-r", "--name-only", "HEAD", "--", "src/mcp/mcp.ts", "src/mcp.ts"]).split("\n");
+const baselineMcp = show(baselineMcpPaths.includes("src/mcp/mcp.ts") ? "src/mcp/mcp.ts" : "src/mcp.ts");
 const currentUnified = versionFrom(currentMcp, /UNIFIED_MCP_VERSION\s*=\s*"([^"]+)"/, "current unified MCP version");
 const baselineUnified = versionFrom(baselineMcp, /UNIFIED_MCP_VERSION\s*=\s*"([^"]+)"/, "baseline unified MCP version");
 const runtimeChanged = [...changed].some(file =>
-  file === "src/mcp.ts" || file === "resources/retrieval_worker.py"
+  file === "src/mcp/mcp.ts" || file === "resources/retrieval_worker.py"
   || file === "resources/recipe_runtime.py" || file === "resources/agent_session_runtime.py");
 if (runtimeChanged) {
   assert(greater(currentUnified, baselineUnified),

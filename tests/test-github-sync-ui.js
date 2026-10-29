@@ -15,12 +15,109 @@ const context = vm.createContext({
   uiIcon: (_name, label) => label,
   Map,
   Set,
-  document: { querySelector: () => null, querySelectorAll: () => [] },
+  document: { querySelector: () => null, querySelectorAll: () => [], getElementById: () => null },
   state: { tab: 'other' },
   vscode: { postMessage: () => {} },
   pendingActionButtons: new Map(),
+  setTimeout: () => 1,
+  clearTimeout: () => {},
 });
+vm.runInContext(coreSource.match(/function fileSelectorCategoryTree\(items\) \{[\s\S]*?\n\}/)[0],context);
 vm.runInContext(source, context);
+assert.deepEqual(JSON.parse(vm.runInContext("JSON.stringify(githubSyncDefaultSelection().public.profiles)",context)),{items:[],folders:[]});
+assert.deepEqual(JSON.parse(vm.runInContext("JSON.stringify(githubSyncDefaultSelection().private.profiles)",context)),{items:[],folders:[]});
+assert.doesNotMatch(vm.runInContext("githubSyncPrivacyTree({}, 'public')",context),/User \/ Agent Profiles/);
+assert.match(vm.runInContext("githubSyncPrivacyTree({}, 'private')",context),/User \/ Agent Profiles/);
+const fixedNow = Date.parse("2026-10-20T12:00:00Z");
+context.fixedNow = fixedNow;
+for (const [minutes, expected] of [[0, "0 h 0 min ago"], [59, "0 h 59 min ago"], [60, "1 h 0 min ago"], [1501, "25 h 1 min ago"]]) {
+  context.ageAt = new Date(fixedNow - minutes * 60000).toISOString();
+  assert.equal(vm.runInContext("githubSyncRelativeAge(ageAt, fixedNow)", context), expected);
+}
+assert.equal(vm.runInContext("githubSyncRelativeAge('invalid', fixedNow)", context), "");
+assert.equal(vm.runInContext("githubSyncRelativeAge('2026-10-20T12:01:00Z', fixedNow)", context), "clock ahead");
+assert.match(vm.runInContext("githubSyncLastTime('2026-10-20T10:00:00Z')", context), /<time datetime=.*data-github-sync-age=/);
+assert.equal(vm.runInContext("githubSyncLastTime()", context), "Never synchronized");
+assert.match(vm.runInContext("githubSyncLastTime('invalid')", context), /invalid recorded timestamp/);
+const ageNode = { dataset: { githubSyncAge: new Date(Date.now() - 61 * 60000).toISOString() }, textContent: "" };
+context.document.querySelectorAll = () => [ageNode];
+vm.runInContext("githubSyncUpdateAges()", context);
+assert.equal(ageNode.textContent, "1 h 1 min ago", "age refresh touches only the dedicated text node, never rerenders drafts");
+context.document.querySelectorAll = () => [];
+assert.match(vm.runInContext("githubSyncPhaseDiagram('', 'scheduled')", context), /github-sync-phase-current " aria-hidden="true">Scheduled</,
+  "a scheduled snapshot without a phase must not claim that Sync failed");
+assert.doesNotMatch(vm.runInContext("githubSyncPhaseDiagram('', 'scheduled')", context), /Sync failed/);
+assert.match(vm.runInContext("githubSyncPhaseDiagram('', 'syncing')", context), /Synchronizing/);
+assert.match(vm.runInContext("githubSyncPhaseDiagram('', 'queued')", context), /Queued/);
+assert.match(vm.runInContext("githubSyncPhaseDiagram('resolve-conflicts', 'partial')", context),
+  /Partially synchronized: other content continues syncing/);
+assert.strictEqual(vm.runInContext("githubSyncEffectiveStatus({lastSync:{entityBases:{pending:'base'}}}, {status:'scheduled'}, {}, false)", context), "partial");
+assert.match(vm.runInContext("githubSyncPhaseDiagram('', 'paused')", context), /Auto sync off/);
+assert.match(vm.runInContext("githubSyncPhaseDiagram('', 'error')", context), />Sync failed</,
+  "genuine failures without phase metadata must remain visible");
+const initialCards = vm.runInContext(`(() => {
+  const previous = githubSyncData;
+  githubSyncData = {targets:[
+    {id:'primary',name:'Primary Backup',automation:{enabled:true,initialSyncCompleted:true}},
+    {id:'share',name:'CreativeGen Share',automation:{enabled:true,initialSyncCompleted:true}},
+  ],runtime:{}};
+  const cards = githubSyncCards();
+  githubSyncData = previous;
+  return cards;
+})()`, context);
+assert.equal((initialCards.match(/github-sync-phase-current " aria-hidden="true">Scheduled</g) || []).length, 2,
+  "both healthy cards show Scheduled on the initial target-only snapshot");
+assert.doesNotMatch(initialCards, /Sync failed/);
+const dangerZones = [...initialCards.matchAll(/<details class="github-sync-danger-zone"[\s\S]*?<\/details>/g)];
+assert.equal(dangerZones.length, 2, "each target has its own Danger Zone dropdown");
+for (const [markup] of dangerZones) {
+  assert.match(markup, /<summary class="pk-button danger">Danger Zone<\/summary>/);
+  assert.doesNotMatch(markup.split('>')[0].replace(/"[^"]*"/g, '""'), /\sopen(?:\s|=|$)/, "danger actions are collapsed by default");
+  for (const label of ['Force use Local', 'Force use Remote', 'Restore snapshot…']) assert(markup.includes(label));
+  assert.match(markup, /onkeydown="event.stopPropagation\(\)/, "keyboard activation must not toggle the target editor");
+  assert.match(markup, /event.key==='Escape'/, "Escape closes the dropdown and returns focus");
+}
+const outsideDangerZones = initialCards.replace(/<details class="github-sync-danger-zone"[\s\S]*?<\/details>/g, '');
+assert.doesNotMatch(outsideDangerZones, /Force use Local|Force use Remote|Restore snapshot/);
+assert.match(outsideDangerZones, /githubSyncForce\(/, "normal synchronization stays outside Danger Zone");
+context.failedTarget = { lastFailure: { at: '2026-07-19T10:00:00Z', error: 'snapshot failed' }, lastSync: { at: '2026-07-18T10:00:00Z' }, automation: { enabled: true, initialSyncCompleted: true } };
+assert.strictEqual(vm.runInContext("githubSyncEffectiveStatus(failedTarget, {status:'scheduled'}, null, false)", context), 'error', 'a scheduled timer must not hide a newer persisted synchronization failure');
+assert.strictEqual(vm.runInContext("githubSyncEffectiveStatus(failedTarget, {status:'syncing'}, null, false)", context), 'syncing');
+assert.strictEqual(vm.runInContext("githubSyncEffectiveError(failedTarget, {status:'scheduled',lastError:'stale earlier error'})", context), '[SYNC_FAILED] snapshot failed', 'a newer persisted failure must not display a stale scheduler error');
+assert.strictEqual(vm.runInContext("githubSyncEffectiveError(failedTarget, {status:'error',lastError:'current attempt failed'})", context), '[SYNC_FAILED] current attempt failed');
+assert.match(vm.runInContext("githubSyncEffectiveError({lastFailure:{error:'Canceled'}}, {})", context), /\[SYNC_CANCELED\].*Retry Sync/);
+assert.match(vm.runInContext("githubSyncEffectiveError({}, {status:'error',lastError:'Reload then retry',lastErrorCode:'CREDENTIAL_READ_TIMEOUT',lastErrorPhase:'authenticating'})", context),
+  /\[CREDENTIAL_READ_TIMEOUT · authenticating\] Reload then retry/);
+const credentialErrorCards = vm.runInContext(`(() => {
+  const previous = githubSyncData;
+  githubSyncData = {targets:[{id:'share',name:'CreativeGen Share',automation:{enabled:false,initialSyncCompleted:true},
+    lastFailure:{at:'2026-10-22T21:01:46Z',error:'VS Code canceled credential access. Reload then retry.',errorCode:'CREDENTIAL_READ_CANCELED',phase:'authenticating'}}],runtime:{}};
+  const cards = githubSyncCards();
+  githubSyncData = previous;
+  return cards;
+})()`, context);
+assert.match(credentialErrorCards, /class="github-sync-error"[^>]*>\[CREDENTIAL_READ_CANCELED · authenticating\]/,
+  "a collapsed target card shows code, failed phase and actionable error without opening settings");
+assert.match(credentialErrorCards, /github-sync-phase-current error" aria-hidden="true">Authentication failed</,
+  "the failed authentication phase survives a target-only snapshot after reloading");
+assert.equal((credentialErrorCards.match(/VS Code canceled credential access/g) || []).length, 1,
+  "the error message is not duplicated in the metadata column");
+context.failedTarget.lastSync.at = '2026-07-20T10:00:00Z';
+assert.strictEqual(vm.runInContext("githubSyncEffectiveStatus(failedTarget, {status:'scheduled'}, null, false)", context), 'scheduled', 'a later successful sync clears the effective failure status');
+assert.strictEqual(vm.runInContext("githubSyncEffectiveStatus(failedTarget, {status:'error',lastError:'old error',lastAttemptAt:'2026-07-19T10:00:00Z'}, null, false)", context), 'scheduled',
+  'a stale runtime failure cannot replace a newer persisted success');
+assert.strictEqual(vm.runInContext("githubSyncEffectiveStatus({}, {status:'scheduled',lastError:'failed',lastAttemptAt:'2026-07-20T11:00:00Z'}, null, false)", context), 'error',
+  'a queued retry must not erase the failed outcome while awaiting execution');
+context.failedTarget.lastSync.at = '2026-07-18T10:00:00Z';
+assert.strictEqual(vm.runInContext("githubSyncEffectiveStatus(failedTarget, {status:'scheduled',lastSuccessAt:'2026-07-20T10:00:00Z'}, null, false)", context), 'scheduled',
+  'a late full target snapshot cannot resurrect a failure older than the runtime success');
+vm.runInContext(`
+  githubSyncOnRuntimeState({targetId:'freshness',state:{status:'error',activityAt:'2026-07-20T11:00:00Z',lastError:'failed'}});
+  githubSyncOnRuntimeState({targetId:'freshness',state:{status:'scheduled',lastAttemptAt:'2026-07-20T10:00:00Z'}});
+`, context);
+assert.strictEqual(vm.runInContext("githubSyncData.runtime.freshness.status", context), 'error',
+  'a runtime lacking activityAt cannot replace a newer failed state');
+assert.match(vm.runInContext("githubSyncStatusTitle('yellow')", context), /Names alone.*pending or unverified.*Refresh is read-only/);
 vm.runInContext("githubSyncForce('primary', {})", context);
 vm.runInContext("githubSyncForce('primary', {})", context);
 assert.strictEqual(requests.length, 1, "rapid Force Sync clicks must synchronously post at most one request before host state returns");
@@ -29,16 +126,19 @@ assert.strictEqual(requests[0].payload.targetId, "primary");
 vm.runInContext('githubSyncForcePending.clear()', context);
 const phaseNode = { outerHTML: '' };
 const detailNode = { textContent: '' };
-context.syncButton = { closest: () => ({ querySelector: selector => selector === '.github-sync-phase' ? phaseNode : selector === '.sub-broker-meta > small:last-of-type' ? detailNode : null }) };
+let staleConflictRemoved = false;
+const staleConflictNode = { remove: () => { staleConflictRemoved = true; } };
+context.syncButton = { closest: () => ({ querySelector: selector => selector === '.github-sync-phase' ? phaseNode : selector === '.sub-broker-meta > small:last-of-type' ? detailNode : selector === '.github-sync-conflict-actions' ? staleConflictNode : null }) };
 vm.runInContext("githubSyncForce('primary', syncButton)", context);
 assert.match(phaseNode.outerHTML, /data-phase="waiting-for-lock"/, "click updates the target phase before any host reply");
 assert.strictEqual(detailNode.textContent, 'Waiting for Git lock', "click updates the target detail before any host reply");
+assert.strictEqual(staleConflictRemoved, true, "manual recheck immediately removes the previous conflict prompt before a host response");
 assert.strictEqual(requests.length, 2);
 vm.runInContext('githubSyncForcePending.clear()', context);
 vm.runInContext("tabCacheIsFresh = () => false; ensureGitHubSyncStatus(); ensureGitHubSyncStatus()", context);
 assert.strictEqual(requests.filter(request => request.command === "githubSyncState").length, 1,
   "concurrent GitHub Sync status refreshes must post only one request");
-assert.match(source, /function showGitHubSyncTab\(\) \{[\s\S]*?ensureGitHubSyncStatus\(\);/,
+assert.match(source, /function showGitHubSyncTab\(\) \{[\s\S]*?ask\('githubSyncState', \{\}, null, true\)/,
   "opening GitHub Sync uses the same deduplicated status request");
 assert.match(source, /function showGitHubSyncTab\(\) \{[\s\S]*?ask\('githubSyncRuntimeSnapshot', \{\}, null, true\)/,
   "reopening GitHub Sync gets the current runtime even while the content cache is fresh");
@@ -70,14 +170,112 @@ assert.match(source, /\['fetch', 'Fetch \/ Pull'\][\s\S]*\['resolve-conflicts', 
   "the diagram follows Git-native runtime phases in order");
 assert.doesNotMatch(source, /'merge':'Merge'|'up-to-date':'Up to date'/,
   "target cards do not expose internal reconciliation or a terminal state instead of Scheduled");
-assert.match(extensionSource, /const report = \(phase:[\s\S]*githubSyncScheduler\?\.report\(targetId, phase, detail\)[\s\S]*report\(targetId, "authenticating"[\s\S]*syncGitHubTarget\([\s\S]*\n\s+report,[\s\S]*report\(targetId, "refresh-index"[\s\S]*report\(targetId, "scheduled"/,
+assert.match(extensionSource, /const report = \(phase:[\s\S]*githubSyncScheduler\?\.report\(targetId, phase, detail\)[\s\S]*report\(targetId, "authenticating"[\s\S]*syncGitHubTarget\([\s\S]*\n\s+report,[\s\S]*report\(targetId, "refresh-index"[\s\S]*report\(targetId, githubSyncResultIsNoChange\(result\) \? "no-change" : "scheduled"/,
   "the extension reports Git phases from the execution path through index refresh");
-assert.match(extensionSource, /const credentials = await readGitHubSyncCredentials\(context, target\);\s*report\("fetch", [^\n]+\);\s*const catalog = await githubSyncCatalog\(\);/,
-  "Authentication ends before catalog loading can fail; preparation errors belong to Fetch / Pull");
-assert.match(extensionSource, /report\(targetId, "refresh-index"[\s\S]*await refreshKnowledgeInventory\(context\)[\s\S]*await refreshRetrievalIndex\(context\)[\s\S]*report\(targetId, "scheduled"/,
+assert.match(extensionSource, /const credentials = await readGitHubSyncCredentials\(context, target\);\s*report\("fetch", [^\n]+\);\s*invalidateSharedContentCatalog\(\);\s*const catalog = await githubSyncCatalog\(\);/,
+  "Authentication ends before catalog loading; each Sync attempt refreshes stale source paths even when a watcher missed a rename");
+assert.match(extensionSource, /await finalizeGitHubSyncServiceResult\(context, targetId, reason, result,[\s\S]*report\(targetId, "refresh-index"[\s\S]*report\(targetId, githubSyncResultIsNoChange\(result\) \? "no-change" : "scheduled"/,
   "Scheduled is reached only after materialization, inventory refresh, and retrieval refresh complete");
+assert.match(extensionSource, /async function finalizeGitHubSyncServiceResult[\s\S]*reportRefresh\?\.\(\)[\s\S]*await refreshKnowledgeInventory\(context\)[\s\S]*await refreshRetrievalIndex\(context\)/,
+  "normal and recovered completion share guarded inventory/retrieval postprocessing");
+const noChangeDiagram = vm.runInContext("githubSyncPhaseDiagram('no-change','scheduled')", context);
+assert.match(noChangeDiagram, /github-sync-no-change current" data-phase="no-change"/);
+assert.match(noChangeDiagram, /done" data-phase="fetch"/);
+assert.match(noChangeDiagram, /upcoming" data-phase="commit"/);
+assert.match(noChangeDiagram, /upcoming" data-phase="refresh-index"/);
+assert.match(styles, /github-sync-no-change[^}]*grid-column:5;grid-row:2;justify-self:start/,
+  "No Change shares Resolve conflicts' stage column on the lower branch");
+assert.match(styles, /github-sync-no-change:before\{left:-12px;top:auto;bottom:50%;width:12px;height:calc\(100% \+ 12px\)/,
+  "the connector spans from Fetch's right edge to the left edge of the No Change dot");
+context.localRepair = { id: "attempt", issues: [{
+  path: "scripts/Test.script", source: "local", reason: "merge-conflict-markers", lines: [28, 30, 31], hasCandidate: true, canOpen: true,
+}] };
+const localRepairPanel = vm.runInContext("githubSyncContentRepairPanel('primary',localRepair)", context);
+assert.match(localRepairPanel, /Remote has not been fetched/);
+for (const action of ["githubSyncRepairOpen", "githubSyncRepairPreview", "githubSyncRepairApply", "githubSyncRepairRevalidate"]) {
+  assert(localRepairPanel.includes(action));
+  assert(coreSource.includes(`'${action}'`) || source.includes(`'${action}'`) && coreSource.includes("githubSyncOnRepairResult(data)"),
+    `${action} must release its pending UI action`);
+}
+assert(!localRepairPanel.includes("githubSyncConflictChoose"), "local preflight repairs must not offer an unavailable GitHub version");
+context.emptySkillRepair = { id: "empty-skills", issues: [
+  { path: "skills/Coding.md", type: "skills", itemId: "Coding", reason: "content-validation",
+    error: "Skill must have a name and non-empty body", lines: [], canOpen: true, canTrash: true, hasCandidate: false },
+  { path: "skills/Project/AutoGen/Strict/strict_model_overview.md.md", type: "skills",
+    itemId: "strict_model_overview.md", reason: "content-validation",
+    error: "Skill must have a name and non-empty body", lines: [], canOpen: true, canTrash: true, hasCandidate: false },
+] };
+const emptySkillsPanel = vm.runInContext("githubSyncContentRepairPanel('primary',emptySkillRepair)", context);
+for (const label of ["Edit content", "Pause sync for this item", "Move to Trash", "Revalidate only"]) {
+  assert(emptySkillsPanel.includes(label), `empty Skill blockers need an actionable ${label} control`);
+}
+for (const command of ["githubSyncRepairPause", "githubSyncRepairTrash", "githubSyncRepairRevalidateOnly", "githubSyncRepairResume"]) {
+  assert(source.includes(`'${command}'`) && coreSource.includes("githubSyncOnRepairResult(data)"), `${command} must release its pending action`);
+  assert(extensionSource.includes(`case "${command}"`), `${command} must have a host handler`);
+}
+assert.match(emptySkillsPanel, /onclick="event.stopPropagation\(\)"/, "repair buttons do not toggle the surrounding target card");
+assert(!emptySkillsPanel.includes("githubSyncRepairApply"), "empty Skills must not offer a fabricated automatic cleanup");
+context.pausedTarget = { id: "primary", automation: { enabled: false },
+  pausedItems: [{ type: "skills", itemId: 'A"<B' }] };
+const originalEsc = context.esc;
+context.esc = value => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const pausedPanel = vm.runInContext("githubSyncPausedItemsPanel(pausedTarget)", context);
+context.esc = originalEsc;
+assert.match(pausedPanel, /Resume &amp; revalidate/);
+assert.match(pausedPanel, /githubSyncRepairResume/);
+assert(!pausedPanel.includes('A"<B'), "paused identities must be HTML escaped");
+assert.match(extensionSource, /target\.pausedItems = existing\?\.pausedItems/, "saving normal target settings must preserve paused items");
+assert.match(extensionSource, /await trashKnowledgeFileViaMcp/, "repair Trash must use MCP, not unlink");
+const revalidateOnlyHelper = extensionSource.slice(extensionSource.indexOf("async function revalidateGitHubSyncLocalContent"),
+  extensionSource.indexOf("function readGitHubSyncTargets"));
+assert(!revalidateOnlyHelper.includes("githubSyncScheduler.request"), "local revalidation must never queue Sync");
+context.localRepair.issues.push({ path: "recipes/Examples/Legacy.recipe_legacy.json", recipeId: "recipe_legacy",
+  reason: "recipe-digest", error: "Recipe executable digest is invalid", diagnostics: [{ storedDigest: "old", compiledDigest: "new" }],
+  lines: [], canOpen: true, hasCandidate: false });
+const mixedRepairPanel = vm.runInContext("githubSyncContentRepairPanel('primary',localRepair)", context);
+assert.match(mixedRepairPanel, /local content validation/);
+assert.match(mixedRepairPanel, /Open Recipe editor/);
+assert.match(mixedRepairPanel, /export path, not necessarily a local source file/);
+assert.match(mixedRepairPanel, /Recipe executable digest is invalid/);
+assert.match(mixedRepairPanel, /compiledDigest/, "the UI retains compiler diagnostics as well as the original error");
+for (const action of ["githubSyncRecipeRecompilePreview", "githubSyncRecipeRecompileApply"]) {
+  assert(mixedRepairPanel.includes(action));
+  assert(source.includes(`'${action}'`) && coreSource.includes("githubSyncOnRepairResult(data)"), `${action} must release pending actions`);
+}
+assert(!mixedRepairPanel.includes("Fetch / Pull failed"));
+assert.equal(vm.runInContext("githubSyncEffectiveStatus(failedTarget,{status:'scheduled'},null,false,localRepair)", context), "needs-attention");
 assert.match(extensionSource, /case "githubSyncAutomationToggle"[\s\S]*initialSyncCompleted[\s\S]*target\.automation\.enabled = enabled/,
   "the host owns the Auto Sync readiness gate and persists explicit user toggles");
+assert.match(extensionSource, /case "githubSyncAutomationToggle":[\s\S]*respond\(\{ command: "githubSyncAutomationResult"[\s\S]*await githubSyncStateData/,
+  "the host acknowledges the saved setting before expensive catalog/fingerprint work");
+assert.match(coreSource, /action === 'githubSyncAutomationToggle'\) githubSyncOnAutomationResult\(data\)/,
+  "an explicit host error releases and rolls back the optimistic toggle");
+vm.runInContext(`
+  var originalAutomationRender = renderGitHubSyncPane;
+  var automationRenders = [];
+  renderGitHubSyncPane = () => automationRenders.push(githubSyncCards());
+  githubSyncData = {targets:[{id:'auto',name:'Automatic',automation:{enabled:false,initialSyncCompleted:true,intervalMinutes:5}}],runtime:{auto:{status:'scheduled'}}};
+  githubSyncAutomationToggle('auto', true, {});
+`, context);
+assert.match(vm.runInContext("automationRenders[0]", context), /aria-checked="true" aria-busy="true"/,
+  "Auto changes visually before any host response");
+assert.match(vm.runInContext("automationRenders[0]", context), /Saving…/);
+const toggleCount = requests.filter(request => request.command === "githubSyncAutomationToggle").length;
+vm.runInContext("githubSyncAutomationToggle('auto', false, {})", context);
+assert.strictEqual(requests.filter(request => request.command === "githubSyncAutomationToggle").length, toggleCount,
+  "rapid clicks cannot send a second toggle while the first is pending");
+vm.runInContext("githubSyncOnState({targets:[{id:'auto',name:'Automatic',automation:{enabled:false,initialSyncCompleted:true}}]})", context);
+assert.match(vm.runInContext("githubSyncCards()", context), /aria-checked="true" aria-busy="true"/,
+  "unrelated stale state replies cannot undo a pending visual toggle");
+vm.runInContext("githubSyncOnAutomationResult({targetId:'auto',enabled:true})", context);
+assert.match(vm.runInContext("githubSyncCards()", context), /aria-checked="true" aria-busy="false"/);
+vm.runInContext("githubSyncAutomationToggle('auto', false, {}); githubSyncOnAutomationResult({targetId:'auto'})", context);
+assert.match(vm.runInContext("githubSyncCards()", context), /aria-checked="true" aria-busy="false"/,
+  "a failed toggle restores the confirmed setting rather than claiming success");
+vm.runInContext("githubSyncData.runtime.auto={status:'syncing'}", context);
+assert.doesNotMatch(vm.runInContext("githubSyncCards()", context).match(/<button class="github-sync-auto-toggle[\s\S]*?<\/button>/)[0], / disabled/,
+  "Auto can be turned off during a run without aborting the current Git transaction");
+vm.runInContext("renderGitHubSyncPane = originalAutomationRender", context);
 assert.match(extensionSource, /manualVerificationCompleted[\s\S]*Fetch\/Pull, conflict resolution, Commit, Push, inventory refresh, and retrieval refresh/,
   "Auto Sync remains gated until the post-cutover manual publication cycle is verified");
 assert.match(extensionSource, /case "githubSyncMigration"[\s\S]*preview[\s\S]*stage[\s\S]*verify[\s\S]*cutover[\s\S]*rollback/,
@@ -89,12 +287,30 @@ assert.match(coreSource, /githubSyncMigration:180000/,
 for (const label of ["Staging…", "Verifying…", "Cutting over…", "Rolling back…"]) {
   assert(source.includes(`data-pending-label="${label}"`), `${label} must provide migration progress feedback`);
 }
-assert.match(source, /One-time GitHub publication upgrade[\s\S]*Required once for targets created before PKM 3\.2\.1[\s\S]*does not change local files or GitHub/,
-  "the target card explains the migration purpose, scope, and read-only preview");
-assert.match(source, /migrationCompleted \? ''/,
+assert.match(source, /One-time GitHub publication upgrade[\s\S]*PKM format from before 3\.2\.1[\s\S]*Upgrade from this machine[\s\S]*Cut over \(switch to the new format\)[\s\S]*Rollback discards the staged copy; neither path changes your local files/,
+  "the target card explains the migration purpose, both upgrade paths, and what Cut over and Rollback mean");
+assert.match(source, /githubSyncUpgradeFromLocal\('[\s\S]*ask\('githubSyncForceUpdate', \{ targetId, publicationUpgrade:true \}/,
+  "local-authority targets can finish the publication upgrade in one confirmed publish");
+assert.match(extensionSource, /publicationUpgrade[\s\S]*supersedeWithLocalAuthority\(\)/,
+  "the one-step upgrade retires any unfinished staged migration before publishing");
+assert.match(extensionSource, /reason === "force-local-authority" \|\| \(!wasInitialSyncCompleted && !current\.publication\)/,
+  "a successful local-authority publish records the current publication capability");
+assert.match(coreSource, /command === 'githubSyncMigrationResult'\) \{ finishAction\('githubSyncMigration'\)/,
+  "migration buttons must unlock on the migration result even if its state snapshot is superseded");
+assert.match(coreSource, /is still running\. Wait for it to finish before trying again\./,
+  "clicks blocked by a pending action must explain why instead of being silently ignored");
+assert.match(extensionSource, /targets = readGitHubSyncTargets\(context\);\n[^\n]*\n  const snapshotSequence = \+\+githubSyncStateSequence;/,
+  "GitHub Sync snapshots are ordered by read time so slow snapshots cannot hide newer migration state");
+assert.match(source, /migrationCompleted = [^;]*\['cutover','rolled-back'\][\s\S]*migrationCompleted \? ''/,
   "the one-time migration panel disappears after a successful post-cutover sync");
 assert.match(source, /inventory\/retrieval refresh[\s\S]*Auto Sync remains off/,
   "the cutover UI explains the required manual verification and automation gate");
+assert.match(source, /restart-preview[\s\S]*Restart migration preview/,
+  "an unverified cutover provides an explicit recovery preview instead of a dead-end sync loop");
+assert.match(extensionSource, /action === "restart-preview" \? migration\.restartPreview\(source\)/,
+  "recovery is dispatched through the fenced migration transaction");
+assert.match(extensionSource, /\["stage", "cutover", "rollback", "restart-preview"\]\.includes\(action\)/,
+  "restarting persists the target's disabled automation state");
 const deleteHandler = extensionSource.match(/case "githubSyncDelete":[\s\S]*?case "githubSyncAutomationToggle":/)?.[0] || "";
 assert.doesNotMatch(deleteHandler, /await withGitHubSyncTargetLock/,
   "deleting a target never waits for an in-flight Git operation or a Windows checkout handle");
@@ -118,7 +334,7 @@ assert.match(source, /All Use GitHub[\s\S]*All Use This Machine[\s\S]*Ask Agent 
   "large conflict sets expose host-backed bulk resolution actions");
 assert.match(source, /Delete GitHub[\s\S]*githubSyncConflictDeleteAll/,
   "missing-local conflict sets expose an explicit destructive GitHub deletion choice");
-assert.match(source, /missing on this machine[\s\S]*missing on GitHub[\s\S]*deletion safeguard/,
+assert.match(source, /missing-local members[\s\S]*missing-GitHub members[\s\S]*deletion safeguard/,
   "conflict summaries distinguish missing-file safeguards from content merges");
 assert.match(extensionSource, /case "githubSyncConflictChooseAll"[\s\S]*selectAllGitHubSyncConflictCandidates/,
   "bulk source selection is validated and applied by the extension host");
@@ -138,10 +354,10 @@ assert.match(extensionSource, /scheduleRetrievalRefresh\(context, 0\)/,
   "pulled file content explicitly refreshes retrieval instead of relying only on filesystem watcher timing");
 assert.doesNotMatch(extensionSource, /Agent-assisted merge currently supports Skills only/,
   "the obsolete Skill-only Agent failure is removed");
-assert.match(extensionSource, /msg\.mode === "edit"[\s\S]*vscode\.open[\s\S]*Validate edited copy/,
-  "manual conflict resolution opens an editable candidate with an explicit validation step");
-assert.match(extensionSource, /const comparisonVariant = selected\.hasRemote \? "remote" : selected\.hasBase \? "base" : "local";[\s\S]*const leftLabel = comparisonVariant === "remote" \? "GitHub"[\s\S]*const rightLabel = selected\.candidateSource === "unresolved" \? "Merge candidate \(unresolved\)"[\s\S]*`LEFT: \$\{leftLabel\} \| RIGHT: \$\{rightLabel\}/,
-  "the compare title identifies the actual left source and right merge candidate");
+assert.match(extensionSource, /case "githubSyncConflictOpen":[\s\S]*openGitHubSyncResolutionWorkbench\(context, targetId/,
+  "Compare and manual merge open the integrated source/result decision workbench");
+assert.match(extensionSource, /case "save":[\s\S]*saveGitHubSyncManualCandidate[\s\S]*case "apply":[\s\S]*acceptGitHubSyncConflict/,
+  "the workbench exposes separate validated-save and final-apply operations");
 
 const recoveredCard = vm.runInContext(`(() => {
   githubSyncData = {
@@ -160,6 +376,9 @@ const recoveredCard = vm.runInContext(`(() => {
   return githubSyncCards();
 })()`, context);
 assert.match(recoveredCard, /github-sync-flow-step current" data-phase="scheduled"/);
+vm.runInContext("githubSyncData.runtime.primary.service = {pid:12345,version:'3.2.25',protocol:'pkm.service/v1'}", context);
+assert.match(vm.runInContext('githubSyncCards()', context), /PKM service 3\.2\.25 · PID 12345/,
+  "the dashboard exposes the actual independent service executor, not just the window version");
 assert.doesNotMatch(recoveredCard, /stale failure/, "scheduled targets must not render stale persisted failures");
 assert.match(recoveredCard, /githubSyncForce\('primary',this\)" disabled/, "Auto Sync disables manual Sync with Remote");
 assert.match(recoveredCard, /githubSyncForceUpdate\('primary',this\)" disabled/, "Auto Sync disables Force Update");
@@ -168,7 +387,7 @@ const enabledAutoToggle = recoveredCard.match(/<button class="github-sync-auto-t
 assert.doesNotMatch(enabledAutoToggle, /disabled/, "an enabled Auto Sync switch remains available so the user can turn Auto off");
 assert.match(extensionSource, /function requireGitHubSyncManualMode[\s\S]*Turn off Auto Sync/,
   "the Extension Host owns the Auto/manual exclusivity boundary");
-for (const handler of ["githubSyncRun", "githubSyncForceUpdate", "githubSyncRestore"]) {
+for (const handler of ["githubSyncRun", "githubSyncForceUpdate", "githubSyncForceRemote", "githubSyncRestore"]) {
   const block = extensionSource.match(new RegExp(`case "${handler}":[\\s\\S]*?break;`))?.[0] || "";
   assert.match(block, /requireGitHubSyncManualMode/, `${handler} rejects direct Host requests while Auto Sync is enabled`);
 }
@@ -180,7 +399,7 @@ const failingCard = vm.runInContext(`(() => {
 assert.match(failingCard, /github-sync-flow-step error" data-phase="fetch"/);
 assert.match(failingCard, /github-sync-phase-current error" aria-hidden="true">Fetch \/ Pull failed</,
   "the current failure stays visible when its node is scrolled out of view");
-assert.match(failingCard, /github-sync-error[^>]*>current failure</, "error targets show their current failure");
+assert.match(failingCard, /github-sync-error[^>]*>\[SYNC_FAILED\] current failure</, "error targets show their current failure");
 assert.match(failingCard, /github-sync-flow-step done" data-phase="authenticating"/,
   "a Fetch / Pull failure keeps the completed Authentication stage successful");
 const retryButton = failingCard.match(/<button[^>]*githubSyncForce\('primary',this\)[\s\S]*?<\/button>/)?.[0] || '';
@@ -207,21 +426,21 @@ const manualFailureCard = vm.runInContext(`(() => {
 })()`, context);
 assert.match(manualFailureCard, /github-sync-phase-current error" aria-hidden="true">Sync failed</,
   "manual failures without a reported phase use a red, non-duplicated failure label");
-assert.match(manualFailureCard, /github-sync-error[^>]*>authentication expired</,
+assert.match(manualFailureCard, /github-sync-error[^>]*>\[SYNC_FAILED\] authentication expired</,
   "manual failures display the actual error even with Auto Sync off");
 const missingErrorCard = vm.runInContext(`(() => {
   githubSyncData.runtime.primary = {status:'error'};
   delete githubSyncData.targets[0].lastFailure;
   return githubSyncCards();
 })()`, context);
-assert.match(missingErrorCard, /github-sync-error[^>]*>No error details were recorded\. Open Sync Diagnostic Log for this attempt\.</,
+assert.match(missingErrorCard, /github-sync-error[^>]*>\[SYNC_FAILED\] No error details were recorded\. Open Sync Diagnostic Log for this attempt\.</,
   'a failed target without recorded details still displays an explicit diagnostic message');
 const persistedFailureCard = vm.runInContext(`(() => {
   githubSyncData.runtime.primary = {status:'error'};
   githubSyncData.targets[0].lastFailure = {error:'Local content changed during synchronization: notes/Images/diagram.png'};
   return githubSyncCards();
 })()`, context);
-assert.match(persistedFailureCard, /<small>Local content changed during synchronization: notes\/Images\/diagram\.png<\/small>/,
+assert.match(persistedFailureCard, /github-sync-error[^>]*>\[SYNC_FAILED\] Local content changed during synchronization: notes\/Images\/diagram\.png<\/small>/,
   "a persisted failure gives the actual cause directly on the target card");
 assert.match(persistedFailureCard, /githubSyncForce\('primary',this\)" >Sync with Remote<\/button>/,
   "a persisted manual failure exposes an enabled retry action instead of an unusable instruction");
@@ -275,6 +494,26 @@ const conflictCard = vm.runInContext(`(() => {
 })()`, context);
 assert.match(conflictCard, /github-sync-flow-step conflicts" data-phase="resolve-conflicts"/, "conflicts highlight the resolution node instead of a generic Syncing state");
 assert.match(conflictCard, /Choose a candidate for each file, then Apply resolutions & Sync/, "the target gives a next step even when the conflict occurs after a push");
+vm.runInContext("githubSyncForce('shared', {})", context);
+assert.doesNotMatch(vm.runInContext('githubSyncCards()', context), /github-sync-conflict-actions|Choose a candidate/,
+  "queued manual recheck hides old conflict choices without deleting them");
+assert.match(vm.runInContext('githubSyncCards()', context), /current" data-phase="waiting-for-lock"/);
+vm.runInContext("githubSyncOnRuntimeState({targetId:'shared',state:{status:'queued',phase:'waiting-for-lock',detail:'Queued for a new attempt'}})", context);
+assert.doesNotMatch(vm.runInContext('githubSyncCards()', context), /github-sync-conflict-actions/);
+for (const phase of ['authenticating', 'fetch', 'resolve-conflicts', 'commit', 'push', 'refresh-index']) {
+  context.recheckPhase = phase;
+  vm.runInContext("githubSyncOnRuntimeState({targetId:'shared',state:{status:'syncing',phase:recheckPhase,detail:'New attempt in progress',lastAttemptAt:'2026-10-13T04:40:00Z'}})", context);
+  const card = vm.runInContext('githubSyncCards()', context);
+  assert.match(card, new RegExp(`current" data-phase="${phase}"`), `old conflict does not override current ${phase} phase`);
+  assert.doesNotMatch(card, /github-sync-conflict-actions|Choose a candidate/, "old conflict actions stay hidden throughout a new attempt");
+}
+assert.strictEqual(vm.runInContext("githubSyncData.conflicts.shared.files[1].candidateSource", context), 'agent',
+  "rechecking preserves saved candidates");
+vm.runInContext("githubSyncOnRuntimeState({targetId:'shared',state:{status:'conflicts',phase:'resolve-conflicts',lastAttemptAt:'2026-10-13T04:40:00Z'}})", context);
+assert.match(vm.runInContext('githubSyncCards()', context), /github-sync-conflict-actions/,
+  "a new attempt that really finds conflicts displays resolution choices again");
+assert.match(extensionSource, /reason !== "force-local-authority" && reason !== "manual" && readGitHubSyncConflict/,
+  "manual Sync bypasses the stored-conflict auto-sync gate and executes a fresh reconciliation");
 const skillConflictPanel = vm.runInContext(`githubSyncConflictPanel('shared', { files: [{
   path: 'skills/Shared/One.md', type: 'skills', hasBase: true, hasLocal: true, hasRemote: true,
   candidateSource: 'unresolved'
@@ -299,15 +538,34 @@ assert.doesNotMatch(source, /github-sync-resolution-bar/,
   "the persistent resolution flow omits the percentage bar and rule legend");
 assert.match(extensionSource, /target\.lastResolutionReport = existing\?\.lastResolutionReport/,
   "saving an unchanged target preserves its persistent resolution report");
-assert.match(source, /Force Update GitHub from this machine\?[\s\S]*one more native confirmation/,
+assert.match(source, /Force use Local · replace GitHub\?[\s\S]*one more native confirmation/,
   "Force Update is available only through a local danger button with a first explicit confirmation");
 assert.match(extensionSource, /showInputBox\(\{[\s\S]*Explain why this destructive local-authority update is required[\s\S]*A reason is required/,
   "Force Update requires a non-empty user comment before the final native confirmation");
-assert.match(extensionSource, /Actor: \$\{actor\}[\s\S]*Reason: \$\{comment\.trim\(\)\}[\s\S]*Force Update GitHub/,
+assert.match(extensionSource, /actionLabel = publicationUpgrade \? "Upgrade from this machine" : "Force use Local"[\s\S]*Actor: \$\{actor\}[\s\S]*Reason: \$\{comment\.trim\(\)\}[\s\S]*actionLabel,\n/,
   "the final native confirmation identifies the actor and audit comment");
 assert.match(source, /Recheck with Remote/, "a manual sync can re-evaluate conflicts after schema migration or remote changes");
 assert.match(source, /Sync with Remote/, "the primary action names the pull-merge-push workflow");
 assert.match(source, /Restore snapshot…/, "historical file selection is clearly distinguished from normal synchronization");
+assert.match(recoveredCard, /githubSyncForceRemote\('primary',this\)" disabled/, "Auto Sync disables Force use Remote");
+assert.match(recoveredCard, /Force use Local/);
+assert.match(recoveredCard, /Force use Remote/);
+assert.match(coreSource, /githubSyncRunQueued.*finishAction\('githubSyncForceUpdate'\)/, "Local cancellation releases its own action button");
+assert.match(coreSource, /githubSyncForceRemoteResult.*finishAction\('githubSyncForceRemote'\)/, "Remote completion and cancellation release the action button");
+let remoteModal;
+vm.runInContext("state.tab = 'other'", context);
+context.pkModal = options => { remoteModal = options; };
+vm.runInContext("githubSyncForceRemote('primary', {})", context);
+assert.match(remoteModal.message, /Local-only selected files will be deleted/);
+assert.match(remoteModal.message, /backed up; GitHub is not pushed/);
+remoteModal.onOk();
+vm.runInContext("githubSyncForceRemote('primary', {})", context);
+assert.equal(requests.filter(request => request.command === "githubSyncForceRemote").length, 1, "Remote duplicate clicks are rejected");
+assert(vm.runInContext("githubSyncRemotePending.has('primary')", context));
+vm.runInContext("githubSyncOnRuntimeState({targetId:'primary',state:{status:'scheduled',lastAttemptAt:'future'}})", context);
+assert(vm.runInContext("githubSyncRemotePending.has('primary')", context), "unrelated scheduler updates cannot clear Remote pending state");
+vm.runInContext("githubSyncOnForceRemoteResult({targetId:'primary',cancelled:true})", context);
+assert(!vm.runInContext("githubSyncRemotePending.has('primary')", context));
 assert.match(source, /differences found[\s\S]*Remote was fetched read-only/,
   "initial setup presents a read-only comparison before applying changes");
 assert.match(source, /githubSyncDifferenceTree[\s\S]*All Use GitHub[\s\S]*All Use This Machine/,
@@ -329,7 +587,8 @@ const expandedResolvedCard = vm.runInContext(`(() => {
 assert.match(expandedResolvedCard, /skills\/System\/PKM\/PKM Skills\.md[\s\S]*Agent merge/,
   "completed files remain available only after the user explicitly expands them");
 vm.runInContext("githubSyncResolvedExpanded.delete('shared')", context);
-assert.match(conflictCard, /2 changed on both sides/, "the conflict workspace summarizes conflict shape");
+assert.match(conflictCard, /workspace members.*choice required.*candidates awaiting approval/, "workspace counts distinguish choice and approval");
+assert.doesNotMatch(conflictCard, /changed on both sides/, "presence flags do not prove two-sided changes");
 assert.match(conflictCard, /All Use GitHub/, "the conflict workspace offers one-click GitHub staging for unresolved files");
 assert.match(conflictCard, /Ask Agent for 1 unresolved/, "the Agent bulk action counts only unresolved compatible files");
 assert.match(conflictCard, /Apply resolutions &amp; Sync<\/button>/);
@@ -349,11 +608,11 @@ assert.match(source, /Delete this machine[\s\S]*githubSyncConflictDeleteLocal/,
   "local-only files can explicitly accept GitHub absence");
 assert.match(source, /Delete This Machine \(\$\{localOnly\}\)[\s\S]*githubSyncConflictDeleteLocalAll/,
   "local-only files support a visible bulk deletion action");
-assert.match(extensionSource, /filter\(candidate => !candidate\.deleteRemote && !!candidate\.destination\)[\s\S]*map\(\(\{ destination, content \}\) => \(\{ destination: destination!, content \}\)\)/,
-  "accepted machine-local deletions are applied through the atomic file mutation path");
+assert.match(extensionSource, /filter\(candidate => !candidate\.deleteRemote && !!candidate\.destination\)[\s\S]*flatMap\(\(\{ source, destination, content, originalLocal \}\)[\s\S]*destination: destination!, content, guard/,
+  "accepted machine-local deletions use the atomic mutation path with a source snapshot guard");
 assert.match(extensionSource, /candidate\.deleteLocal && candidate\.file\.type === "recipes"[\s\S]*applyGitHubSyncRecipeDeletes/,
   "accepted machine-local Recipe deletions use Project Store trash semantics");
-assert.match(source, /openGitHubSyncDiagnosticLog[\s\S]*Open Sync Diagnostic Log/,
+assert.match(source, /aria-label="Open Sync Diagnostic Log"[^>]*openGitHubSyncDiagnosticLog/,
   "GitHub Sync exposes its persistent diagnostic log directly in the pane");
 assert.match(extensionSource, /github_sync\.started[\s\S]*github_sync\.phase[\s\S]*github_sync\.catalog[\s\S]*github_sync\.completed/,
   "successful GitHub Sync runs emit structured lifecycle diagnostics");
@@ -369,8 +628,8 @@ const missingLocalCard = vm.runInContext(`(() => {
 assert.match(missingLocalCard, /All Use GitHub/, "a missing-local conflict offers the available restore candidate");
 assert.doesNotMatch(missingLocalCard, /All Use This Machine/, "a missing-local conflict must not offer a no-op machine candidate");
 assert.match(missingLocalCard, /Delete GitHub/, "a missing-local conflict offers an explicit remote deletion choice");
-assert.match(missingLocalCard, /confirms the local deletion[\s\S]*Apply resolutions &amp; Sync/,
-  "deletion safeguards explain that remote deletion is staged before approval");
+assert.match(missingLocalCard, /deletion safeguard, not proof of deletion[\s\S]*Apply resolutions &amp; Sync/,
+  "absence is not deletion evidence and still requires approval");
 
 const initialResolvedCard = vm.runInContext(`(() => {
   githubSyncData.conflicts.shared = {purpose:'initial-preview',remoteSchema:3,files:[
@@ -395,7 +654,7 @@ assert.match(extensionSource, /function refreshStaleGitHubSyncConflicts[\s\S]*re
   "Recipe stale checks compare the same layout-free canonical content used by GitHub publication");
 assert.match(extensionSource, /function applyGitHubSyncRecipePulls[\s\S]*recipeSyncEntries\(\)[\s\S]*githubSyncManagedContent\("recipes"/,
   "Recipe pull safety checks ignore machine-local editor layout without weakening executable validation");
-assert.match(extensionSource, /async function githubSyncStateData[\s\S]*refreshStaleGitHubSyncConflicts\(context\)[\s\S]*listGitHubSyncConflicts/,
+assert.match(extensionSource, /async function githubSyncStateData[\s\S]*withGitHubSyncTargetLock[\s\S]*refreshStaleGitHubSyncConflicts\(context, record\.targetId\)[\s\S]*listGitHubSyncConflicts/,
   "stale conflict snapshots are refreshed before the resolution workspace is serialized");
 assert.match(extensionSource, /function clearEquivalentGitHubSyncConflict[\s\S]*current\.equals\(remote\)[\s\S]*clearGitHubSyncConflict/,
   "identity-only conflicts are retired only when every machine-local file exactly matches its remote candidate");
@@ -416,7 +675,7 @@ const fileMarker = vm.runInContext(`(() => {
 })()`, context);
 assert.match(fileMarker, /github-sync-file-status/);
 assert.match(fileMarker, /data-status="yellow"/);
-assert.match(fileMarker, /File notes\/Adhoc\/changed\.md has local content different/);
+assert.match(fileMarker, /File notes\/Adhoc\/changed\.md differs from at least one selected target/);
 assert.match(vm.runInContext("githubSyncFileMarker('notes','same','notes/Adhoc/same.md')", context), /data-status="green"/);
 assert.match(source, /function githubSyncOnState[\s\S]*updateGitHubSyncFileShields\(\)/,
   "file statuses patch existing leaf markers without rebuilding the active tree");
@@ -461,7 +720,8 @@ async function verifyRetryHost() {
   targets[0].lastFailure = {error:'network unavailable', attempts:3};
   const updates = [];
   host.log = {warn:() => {},error:message => { throw new Error(message); }};
-  host.panel = {visible:true,webview:{postMessage:message => updates.push(message)}};
+  host.panels = {instances:new Map([['primary', {}]])};
+  host.postToPanel = message => updates.push(message);
   const autoPause = vm.runInContext(`targetId => { ${autoPauseHandler} }`, host);
   autoPause('primary');
   await new Promise(resolve => setImmediate(resolve));

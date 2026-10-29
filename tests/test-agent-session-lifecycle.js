@@ -7,10 +7,18 @@ const ts = require("typescript");
 
 const root = path.join(__dirname, "..");
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-const lifecycle = require(path.join(root, "dist", "agent-session-lifecycle.js"));
+const lifecycle = require(path.join(root, "dist", "agent-sessions/agent-session-lifecycle.js"));
 const projectsSource = fs.readFileSync(path.join(root, "src", "webview", "panel", "15-projects.js"), "utf8");
 const extensionSource = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8");
 const setting = packageJson.contributes.configuration.properties["personalKnowledge.agentSessionArchiveKeepLatestK"];
+const groupA = lifecycle.agentSessionGroup({sessionId:"a", hostSessionId:"shared", agent:{name:"A"}});
+const groupB = lifecycle.agentSessionGroup({sessionId:"b", hostSessionId:"shared", agent:{name:"B"}});
+assert.strictEqual(groupA.groupId, groupB.groupId, "Agent names must not split a chat Group");
+assert.notStrictEqual(groupA.taskId, groupB.taskId);
+assert.notStrictEqual(groupA.groupId, lifecycle.agentSessionGroup({hostSessionId:"other"}).groupId);
+assert.notStrictEqual(groupA.groupId, lifecycle.agentSessionGroup({hostSessionId:"shared", hostKind:"claude"}).groupId);
+assert.match(lifecycle.agentSessionGroup({sessionId:"unlinked"}).groupId, /^agent_group_[a-f0-9]{64}$/,
+  "Every valid Session must have a stable Group even when historical chat metadata is missing");
 
 const escapeHtml = value => String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 const graphContext = {
@@ -164,6 +172,7 @@ fs.mkdirSync(activeDirectory, { recursive: true });
 function writeSession(id, status, updatedAt) {
   fs.writeFileSync(path.join(activeDirectory, `${id}.json`), JSON.stringify({
     schema: "pkm.agent.session/v1", sessionId: id, status, task: id, createdAt: updatedAt, updatedAt,
+    origin: "pkm-native", runtimeOwner: "pkm", hostKind: "pkm",
   }));
 }
 
@@ -174,12 +183,18 @@ function writeSession(id, status, updatedAt) {
     writeSession("agent_session_newest", "completed", "2026-03-01T00:00:00Z");
     writeSession("agent_session_running", "running", "2025-01-01T00:00:00Z");
 
-    const result = await lifecycle.enforceAgentSessionArchiveRetention(stateDirectory, 2, () => "2026-04-01T00:00:00Z");
+    const initialRetention = await lifecycle.enforceAgentSessionArchiveRetention(stateDirectory, 2);
+    assert.deepStrictEqual(initialRetention.moved, [], "completed Sessions stay in their Group until explicit Trash");
+    for (const id of ["agent_session_oldest", "agent_session_middle", "agent_session_newest"]) {
+      assert.ok(fs.existsSync(path.join(activeDirectory, `${id}.json`)));
+      await lifecycle.moveAgentSessionToTrash(stateDirectory, id, {now: () => "2026-04-01T00:00:00Z"});
+    }
+    const result = await lifecycle.enforceAgentSessionArchiveRetention(stateDirectory, 2);
     assert.deepStrictEqual(result.retained, ["agent_session_newest", "agent_session_middle"], "the newest trashed Sessions remain recoverable");
-    assert.deepStrictEqual(result.moved, ["agent_session_newest", "agent_session_middle", "agent_session_oldest"], "all completed Sessions move directly to Trash");
+    assert.deepStrictEqual(result.moved, [], "retention only processes explicitly trashed Sessions");
     assert.deepStrictEqual(result.deleted, ["agent_session_oldest"], "the oldest Trash overflow is removed");
     assert.ok(fs.existsSync(path.join(activeDirectory, "agent_session_running.json")), "active Sessions are never moved");
-    assert.ok(!fs.existsSync(path.join(activeDirectory, "agent_session_newest.json")), "completed Sessions no longer remain in History");
+    assert.ok(!fs.existsSync(path.join(activeDirectory, "agent_session_newest.json")), "explicit Trash removes a Session from the normal list");
     assert.ok(fs.existsSync(path.join(trashDirectory, "agent_session_newest.json")), "retention uses recoverable Trash");
     assert.strictEqual(JSON.parse(fs.readFileSync(path.join(trashDirectory, "agent_session_newest.json"))).trashedAt, "2026-04-01T00:00:00Z");
     assert.strictEqual(lifecycle.projectedAgentSessionStatus({
@@ -234,7 +249,10 @@ function writeSession(id, status, updatedAt) {
       /Only completed or stopped Agent Sessions/,
       "quick/manual Trash refuses active Sessions",
     );
-    assert.ok(fs.existsSync(path.join(trashDirectory, "agent_session_middle.json")), "completed Sessions enter Trash without a manual action");
+    const stoppedBytes = fs.readFileSync(path.join(activeDirectory, "agent_session_stoppable.json"), "utf8");
+    await lifecycle.enforceAgentSessionArchiveRetention(stateDirectory, 2);
+    assert.strictEqual(fs.readFileSync(path.join(activeDirectory, "agent_session_stoppable.json"), "utf8"), stoppedBytes, "stopped Sessions survive refresh unchanged");
+    assert.ok(fs.existsSync(path.join(trashDirectory, "agent_session_middle.json")), "explicit Trash preserves completed Sessions");
 
     lifecycle.restoreAgentSessionFromTrash(stateDirectory, "agent_session_middle", () => "2026-04-03T00:00:00Z");
     const restored = JSON.parse(fs.readFileSync(path.join(activeDirectory, "agent_session_middle.json")));
@@ -247,6 +265,7 @@ function writeSession(id, status, updatedAt) {
     lifecycle.permanentlyDeleteTrashedAgentSession(stateDirectory, "agent_session_middle");
     assert.ok(!fs.existsSync(path.join(trashDirectory, "agent_session_middle.json")), "explicit permanent delete still removes a Trash record");
     assert.ok(fs.existsSync(path.join(activeDirectory, "agent_session_running.json")), "Trash operations do not affect active Sessions");
+    await lifecycle.moveAgentSessionToTrash(stateDirectory, "agent_session_stoppable");
     assert.strictEqual(lifecycle.emptyAgentSessionTrash(stateDirectory), 2, "Empty Trash reports the number of permanently deleted Session records");
     assert.deepStrictEqual(fs.readdirSync(trashDirectory), [], "Empty Trash removes every validated trashed Session record");
     assert.strictEqual(lifecycle.emptyAgentSessionTrash(stateDirectory), 0, "Empty Trash is idempotent when no Session records remain");
@@ -278,7 +297,8 @@ function writeSession(id, status, updatedAt) {
       schema:'pkm.agent.session/v1', sessionId:'agent_session_legacy', status:'completed', createdAt:'2026-01-01T00:00:00Z',
     }));
     const legacy = await lifecycle.enforceAgentSessionArchiveRetention(legacyState, 50);
-    assert.deepStrictEqual(legacy.moved, ['agent_session_legacy'], 'a missing updatedAt is not mistaken for an explicit restore');
+    assert.deepStrictEqual(legacy.moved, [], 'legacy completed Sessions also require explicit Trash');
+    assert.ok(fs.existsSync(path.join(legacyState, 'agent-sessions', 'agent_session_legacy.json')));
 
     const knowledgeSource = fs.readFileSync(path.join(root, 'src/webview/panel/20-knowledge.js'), 'utf8');
     assert.match(knowledgeSource, /dock.innerHTML = catTreeTrashDock\(/, 'Knowledge tabs use the same Trash renderer as Automation');
@@ -298,7 +318,7 @@ function writeSession(id, status, updatedAt) {
     assert.deepStrictEqual(deletedRecipes, ['global-trash'], 'Recipe Delete All never deletes project-scoped Trash');
     assert.strictEqual(responses[0].command, 'projectState', 'Delete All refreshes the complete durable UI snapshot');
 
-    assert.match(projectsSource, /class="agent-session-quick-trash"[^>]*title="Move archived Agent Session to Trash"/, "archived rows expose an obvious one-click Trash action");
+    assert.match(projectsSource, /label:'Move to Trash…'[\s\S]{0,400}ask\('agentSessionTrash',\{action:'move',sessionId\}\)/, "completed and stopped Sessions expose a confirmed context-menu Trash action");
     assert.match(projectsSource, /const list = agentSessionTree\(sessions\)/, "restored Sessions share the normal tree rather than an automatic History tier");
     assert.doesNotMatch(projectsSource, /Keep newest \$\{archiveKeepLatestK\}/, "the obsolete archive tier is no longer rendered");
     assert.match(projectsSource, /catTreeTrashDock\('Trash', trash.length, trashList, 'emptyAgentSessionTrash\(\)'\)/, "Agent Sessions has a fixed Delete All action");
@@ -311,6 +331,38 @@ function writeSession(id, status, updatedAt) {
     assert.match(projectsSource, /projectSnapshot\?\.agentSessionTrash\?\.length/, "Empty Trash confirmation reports the cached record count");
     assert.match(projectsSource, /Stop Session…/, "running Sessions expose an explicit non-success Stop action");
     assert.match(projectsSource, /status === 'completed' \|\| status === 'stopped'/, "completed and stopped Sessions can move to Trash");
+    const nativeId = "agent_session_native_paused";
+    const nativePath = path.join(activeDirectory, `${nativeId}.json`);
+    writeSession(nativeId, "paused", "2026-04-01T00:00:00Z");
+    const nativeRecord = JSON.parse(fs.readFileSync(nativePath, "utf8"));
+    Object.assign(nativeRecord, { origin: "pkm-native", runtimeOwner: "pkm", todos: [{ status: "pending" }] });
+    fs.writeFileSync(nativePath, JSON.stringify(nativeRecord));
+    await lifecycle.stopAgentSession(stateDirectory, nativeId);
+    const nativeStopped = JSON.parse(fs.readFileSync(nativePath, "utf8"));
+    assert.strictEqual(nativeStopped.status, "stopped", "Idle PKM Chats must support Stop Session");
+    assert.strictEqual(nativeStopped.todos[0].status, "pending", "Stop must preserve unfinished evidence");
+    await lifecycle.moveAgentSessionToTrash(stateDirectory, nativeId, { requireCompleted: true });
+    assert(fs.existsSync(path.join(trashDirectory, `${nativeId}.json`)), "Stopped PKM Sessions can be deleted through Trash");
+    lifecycle.permanentlyDeleteTrashedAgentSession(stateDirectory, nativeId);
+    assert(!fs.existsSync(path.join(trashDirectory, `${nativeId}.json`)));
+    writeSession("agent_session_external_paused", "paused", "2026-04-01T00:00:00Z");
+    const externalPath = path.join(activeDirectory, "agent_session_external_paused.json");
+    fs.writeFileSync(externalPath, JSON.stringify({ ...JSON.parse(fs.readFileSync(externalPath, "utf8")), origin: "external", runtimeOwner: "host", hostKind: "copilot" }));
+    await assert.rejects(lifecycle.stopAgentSession(stateDirectory, "agent_session_external_paused"), /Only a running/);
+    const menuContext = {
+      projectSnapshot: { agentSessions: [{ sessionId: nativeId, origin: "pkm-native", runtimeOwner: "pkm" }] },
+      recipeCopyPathMenu: () => ({}), pkModal: () => {}, ask: () => {},
+      showPaperMenu: (_x, _y, items) => { menuContext.items = items; },
+    };
+    vm.createContext(menuContext);
+    const menuStart = projectsSource.indexOf("function agentSessionContextMenu(");
+    const menuEnd = projectsSource.indexOf("\nfunction agentSessionRootMenu(", menuStart);
+    vm.runInContext(projectsSource.slice(menuStart, menuEnd), menuContext);
+    const event = { preventDefault() {}, stopPropagation() {}, clientX: 0, clientY: 0 };
+    menuContext.agentSessionContextMenu(event, nativeId, "paused");
+    assert(menuContext.items.some(item => item.label === "Stop Session…"));
+    menuContext.agentSessionContextMenu(event, "agent_session_external_paused", "paused");
+    assert(!menuContext.items.some(item => item.label === "Stop Session…"));
     assert.match(projectsSource, /session\.status === 'running'/, "only running Sessions remain in the active CatTree section");
     assert.match(projectsSource, /function agentSessionNodeHealth/, "running modules derive a visible health classification");
     assert.match(projectsSource, /Do not skip active work/, "unsafe active modules explain why Skip is not safe");
@@ -329,7 +381,7 @@ function writeSession(id, status, updatedAt) {
     assert.match(projectsSource, /class="agent-session-ownership-edge"/, "Todo-to-Recipe ownership is visible as a structural link");
     assert.match(projectsSource, /data-todo-status="\$\{esc\(status\)\}"/, "Todo cards expose only their durable lifecycle status");
     assert.match(projectsSource, /data-recipe-statuses="\$\{esc\(statuses\)\}"/, "Recipe subtree overlays expose runtime status separately from Todo status");
-    assert.match(projectsSource, /state\.tab !== 'agentSessions'[\s\S]{0,220}ask\('projectState', \{\}, null, true\)/,
+    assert.match(projectsSource, /\['agentSessions','projects'\]\.includes\(state\.tab\)[\s\S]{0,320}ask\('projectState', \{\}, null, true\)/,
       "visible Agent Sessions poll durable state silently so terminal Todo transitions do not remain stale");
     assert.match(projectsSource, /agentSessionSnapshotSignature\(snapshot\) !== agentSessionSnapshotSignature\(projectSnapshot\)/,
       "silent polling compares durable Agent Session state before replacing interactive DOM");
@@ -351,7 +403,79 @@ function writeSession(id, status, updatedAt) {
       "Agent Session UI distinguishes stalled and interrupted suspicion without changing lifecycle status");
     assert.match(extensionSource, /progress: record\.progress/, "Agent Session projection includes structured module progress");
     assert.match(extensionSource, /await applyAgentSessionArchiveRetention\(\)/, "state projection waits for retention before reading");
-    assert.match(extensionSource, /"agentSessionTrash", "agentSessionStop"\]\.includes/, "file failures are returned to the Agent Sessions UI");
+    assert.match(extensionSource, /"agentSessionTrash", "agentSessionStop", "agentSessionGroupDelete"\]\.includes/, "file failures are returned to the Agent Sessions UI");
+    const groupState = path.join(scratch, "group-deletion");
+    const group = { schema: "pkm.agent.group/v1", ...lifecycle.agentSessionGroup({ hostKind: "copilot", hostSessionId: "delete-fixture" }) };
+    const groupDirectory = path.join(groupState, "agent-groups"); fs.mkdirSync(groupDirectory, { recursive: true });
+    const groupPath = path.join(groupDirectory, `${group.groupId}.json`); fs.writeFileSync(groupPath, JSON.stringify(group));
+    const task = { schema: "pkm.agent.session/v1", sessionId: "agent_session_group_fixture", status: "running", hostKind: group.hostKind, hostSessionId: group.hostSessionId, todos: [{ status: "pending" }], recipeRunIds: ["preserved-run"] };
+    const taskPath = path.join(groupState, "agent-sessions", `${task.sessionId}.json`); fs.mkdirSync(path.dirname(taskPath), { recursive: true }); fs.writeFileSync(taskPath, JSON.stringify(task));
+    const originalTask = fs.readFileSync(taskPath, "utf8");
+    await assert.rejects(lifecycle.deleteAgentSessionGroup(groupState, group.groupId), /Tasks to Trash/);
+    assert.strictEqual(fs.readFileSync(taskPath, "utf8"), originalTask, "Group deletion must never stop or mutate a running Task");
+    assert.strictEqual(JSON.parse(fs.readFileSync(groupPath, "utf8")).deletedAt, undefined);
+    task.status = "paused"; fs.writeFileSync(taskPath, JSON.stringify(task));
+    const pausedTask = fs.readFileSync(taskPath, "utf8");
+    await assert.rejects(lifecycle.deleteAgentSessionGroup(groupState, group.groupId), error => /status: paused/.test(error.message) && error.message.includes(task.sessionId) && /explicitly stopped or completed/.test(error.message));
+    assert.strictEqual(fs.readFileSync(taskPath, "utf8"), pausedTask, "Explaining a paused blocker must not stop or mutate it");
+    task.status = "completed"; fs.writeFileSync(taskPath, JSON.stringify(task));
+    await assert.rejects(lifecycle.deleteAgentSessionGroup(groupState, group.groupId), /Tasks to Trash/);
+    await lifecycle.moveAgentSessionToTrash(groupState, task.sessionId);
+    const trashedTaskPath = path.join(groupState, "agent-sessions-trash", `${task.sessionId}.json`);
+    const preservedTask = fs.readFileSync(trashedTaskPath, "utf8");
+    await lifecycle.deleteAgentSessionGroup(groupState, group.groupId, () => "2026-10-06T18:00:00Z");
+    const tombstone = fs.readFileSync(groupPath, "utf8"); assert.strictEqual(JSON.parse(tombstone).deletedAt, "2026-10-06T18:00:00Z");
+    assert.strictEqual(fs.readFileSync(trashedTaskPath, "utf8"), preservedTask);
+    await lifecycle.deleteAgentSessionGroup(groupState, group.groupId); assert.strictEqual(fs.readFileSync(groupPath, "utf8"), tombstone);
+    await assert.rejects(lifecycle.deleteAgentSessionGroup(groupState, "../outside"), /identity is invalid/);
+    const groupUi = { agentSessionPortalFilter:"all", projectSnapshot: { agentSessionGroups: [group, { ...group, groupId: "hidden-fixture", deletedAt: "deleted" }] }, esc: escapeHtml,
+      buildCatTree: () => ({ folders: {}, items: [] }),
+      renderCatTree: (tree, _path, _depth, _leaf, _q, folderAttr, _order, options) => {
+        const render = (node, ancestors = []) => Object.entries(node.folders).map(([name, child]) =>
+          `<div${folderAttr(child, name, [...ancestors, name])}>${options.renderFolderLabel(name)}${render(child, [...ancestors, name])}</div>`).join("");
+        return render(tree);
+      }, recipeCopyPathMenu: () => ({ label: "Copy Group identity" }),
+      showPaperMenu: (_x, _y, items) => { groupUi.items = items; }, pkModal: options => { groupUi.confirmation = options; }, ask: (command, args) => { groupUi.request = { command, args }; } };
+    vm.createContext(groupUi);
+    const wantedGroupFunctions = new Set(["agentSessionGroupKey", "agentSessionMatchesPortal", "agentSessionTree", "agentSessionGroupCount", "agentSessionFolderMenu", "agentSessionSnapshotSignature", "agentSessionDisplayStatus", "agentSessionStatusIndicator"]);
+    const groupParsed = ts.createSourceFile("projects.js", projectsSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    for (const node of groupParsed.statements) if (ts.isFunctionDeclaration(node) && wantedGroupFunctions.has(node.name?.text)) vm.runInContext(node.getText(groupParsed), groupUi);
+    assert.strictEqual(groupUi.agentSessionDisplayStatus({ status: "paused", todos: [], nativeAgent: { requestStatus: "failed" } }).state, "failed");
+    assert.strictEqual(groupUi.agentSessionDisplayStatus({ status: "running", todos: [], nativeAgent: { waitingForInput: true } }).state, "waiting-input");
+    assert.strictEqual(groupUi.agentSessionDisplayStatus({ status: "stopped", todos: [], nativeAgent: { requestStatus: "failed" } }).state, "stopped");
+    assert.strictEqual(groupUi.agentSessionDisplayStatus({ status: "paused", todos: [] }).state, "idle");
+    assert.strictEqual(groupUi.agentSessionDisplayStatus({ status: "running", todos: [] }).state, "running");
+    const emptyTree = groupUi.agentSessionTree([]);
+    assert.match(emptyTree, /oncontextmenu="agentSessionFolderMenu/); assert.match(emptyTree, /Chat Group actions/);
+    assert(!emptyTree.includes("hidden-fixture")); assert.strictEqual(groupUi.agentSessionGroupCount([]), 1);
+    assert.strictEqual(groupUi.agentSessionGroupCount([{ ...group, sessionId: "fixture", status: "running" }]), 1, "Metadata and Tasks must not double-count one Group");
+    const recovered = lifecycle.agentSessionGroup({ sessionId: "agent_session_legacy", status: "stopped" });
+    assert.match(recovered.groupId, /^agent_group_[a-f0-9]{64}$/);
+    assert.strictEqual(recovered.groupRecovered, true);
+    assert.strictEqual(recovered.hostSessionId, "", "Recovery must not fabricate a historical Chat");
+    assert.notStrictEqual(recovered.groupId, lifecycle.agentSessionGroup({ sessionId: "agent_session_other" }).groupId);
+    assert.strictEqual(lifecycle.agentSessionGroup({ sessionId: "legacy", groupId: group.groupId }).groupId, group.groupId);
+    assert.strictEqual(lifecycle.agentSessionGroup({ sessionId: "legacy", hostKind: group.hostKind,
+      liveness: { owner: { hostSessionId: group.hostSessionId } } }).groupId, group.groupId);
+    assert.strictEqual(groupUi.agentSessionGroupCount([{ sessionId: "legacy" }, { sessionId: "other" }]), 3,
+      "Recovery Groups and stored Chat Groups must all be counted");
+    assert.strictEqual(groupUi.agentSessionGroupKey({ sessionId: "legacy", hostKind: group.hostKind,
+      liveness: { hostSessionId: group.hostSessionId } }), group.groupId);
+    groupUi.agentSessionFolderMenu(event, group.groupId); groupUi.items.find(item => item.label === "Delete Chat Group…").onClick();
+    assert.strictEqual(groupUi.request, undefined, "Deleting a Group requires explicit confirmation");
+    groupUi.confirmation.onOk(); assert.strictEqual(groupUi.request.command, "agentSessionGroupDelete"); assert.strictEqual(groupUi.request.args.groupId, group.groupId);
+    groupUi.agentSessionFolderMenu(event, "unlinked:fixture"); assert(!groupUi.items.some(item => item.label === "Delete Chat Group…"));
+    assert.notStrictEqual(groupUi.agentSessionSnapshotSignature({ agentSessionGroups: [group] }), groupUi.agentSessionSnapshotSignature({ agentSessionGroups: [] }), "Group-only changes must invalidate cached UI state");
+    assert.match(extensionSource, /apiChatGroupSnapshots\(path\.join\(getStorePath\(\), "\.pkm", "state"\)\)/);
+    assert.match(projectsSource, /hiddenGroups\.has\(agentSessionGroupKey\(session\)\)/);
+    const chatGroup = { groupId:"pkm-chat-fixture",hostKind:"pkm",hostSessionId:"00000000-0000-0000-0000-000000000000" };
+    groupUi.projectSnapshot.agentSessionGroups.push(chatGroup);
+    groupUi.agentSessionFolderMenu(event, chatGroup.groupId);
+    groupUi.items.find(item => item.label === "Open PKM Chat").onClick();
+    assert.strictEqual(groupUi.request.command, "agentSessionGroupOpenChat");
+    assert.strictEqual(groupUi.request.args.chatId, chatGroup.hostSessionId);
+    groupUi.agentSessionFolderMenu(event, "chat-library:ungroup");
+    assert(!groupUi.items.some(item => item.label === "Open PKM Chat"), "Library categories are not Chats");
     console.log("agent-session lifecycle tests passed");
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });

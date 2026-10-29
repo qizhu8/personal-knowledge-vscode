@@ -11,12 +11,12 @@ const panelCss = fs.readFileSync(path.join(root, "dist", "webview", "panel.css")
 const subscriptionPanel = fs.readFileSync(path.join(root, "src", "webview", "panel", "45-subscriptions.js"), "utf8");
 const knowledgePanel = fs.readFileSync(path.join(root, "src", "webview", "panel", "20-knowledge.js"), "utf8");
 const extension = fs.readFileSync(path.join(root, "src", "extension.ts"), "utf8");
-const subscriptions = fs.readFileSync(path.join(root, "src", "subscriptions.ts"), "utf8");
-const materializer = fs.readFileSync(path.join(root, "src", "subscription-materialize-worker.ts"), "utf8");
-const gateway = fs.readFileSync(path.join(root, "src", "subscription-gateway-entry.ts"), "utf8");
-const mcp = fs.readFileSync(path.join(root, "src", "mcp.ts"), "utf8");
+const subscriptions = fs.readFileSync(path.join(root, "src", "subscriptions/subscriptions.ts"), "utf8");
+const materializer = fs.readFileSync(path.join(root, "src", "subscriptions/subscription-materialize-worker.ts"), "utf8");
+const gateway = fs.readFileSync(path.join(root, "src", "subscriptions/subscription-gateway-entry.ts"), "utf8");
+const mcp = fs.readFileSync(path.join(root, "src", "mcp/mcp.ts"), "utf8");
 
-assert.match(html, /data-workspace-group="settings"[\s\S]*data-tab="subscriptions">Network &amp; Sharing</);
+assert.match(html, /data-workspace-group="settings"[\s\S]*data-tab="subscriptions">Sharing &amp; Subscribe</);
 assert.doesNotMatch(html, /id="content-toolbar"[\s\S]{0,1800}onclick="openSyncModal\(\)"/,
 	"Knowledge actions must not retain the old Sync button");
 assert.ok(html.indexOf('id="loading-banner"') < html.indexOf('<script src="%%PANEL_JS%%"></script>'), "loading banner must exist before the panel script runs");
@@ -120,8 +120,10 @@ assert.match(extension, /case "subscriptionDeleteShare"[\s\S]{0,800}showWarningM
 assert.match(extension, /brokerDeleteCancelled/);
 assert.doesNotMatch(panel, /if \(confirm\(`Delete Share/);
 assert.match(panel, /function beginAction\(command, button\)/);
-assert.match(panel, /button\.disabled \|\| pendingActionButtons\.has\(command\)/);
-assert.match(panel, /if \(!beginAction\(command, button \|\| window\.event\?\.currentTarget\)\) return/);
+assert.match(panel, /if \(button\.disabled\) return false/);
+assert.match(panel, /if \(pendingActionButtons\.has\(command\)\) \{[\s\S]{0,400}showActionError\(button,[\s\S]{0,200}return false/);
+assert.match(panel, /const actionButton = button \|\| \(silent \? null : window\.event\?\.currentTarget\)/);
+assert.match(panel, /if \(!beginAction\(command, actionButton\)\) return/);
 assert.match(panel, /function hasPendingActionPrefix\(prefix\)/);
 assert.match(panel, /state\.tab === 'subscriptions' && !hasPendingActionPrefix\('subscription'\)/);
 assert.match(panel, /const actionTimeouts =/);
@@ -172,7 +174,7 @@ assert.match(panel, /folder\.indeterminate = !folder\.checked && descendants\.so
 	"a folder with selected descendants must render as partially selected");
 assert.match(panel, /folder\.setAttribute\('aria-checked', folder\.indeterminate \? 'mixed'/,
 	"partial folder selection must be exposed to assistive technology");
-assert.match(panel, /function renderSubscriptionPane\(\)[\s\S]*?subscriptionSyncFolderStates\(\);\s*}/,
+assert.match(panel, /function renderSubscriptionPane\(\)[\s\S]*?subscriptionSyncFolderStates\(\);[\s\S]{0,350}restoreRefreshView\(detail, view\);\s*}/,
 	"initial Broker editor rendering must synchronize partial folder states");
 assert.match(panel, /targets\.forEach\(item => item\.checked=input\.checked\);\s*subscriptionSyncFolderStates\(type\);/,
 	"folder toggles must refresh ancestor partial states");
@@ -277,14 +279,16 @@ assert.match(extension, /if \(sharedCatalogCache\?\.revision === revision\) retu
 assert.match(extension, /if \(sharedCatalogBuild\?\.revision === revision\) return sharedCatalogBuild\.promise/);
 assert.match(extension, /function invalidateSharedContentCatalog\(\)/);
 assert.match(extension, /function gitCommit[\s\S]{0,100}invalidateSharedContentCatalog\(\)/);
-assert.match(extension, /const onChange = \(uri:[^)]*\) => \{\n    invalidateSharedContentCatalog\(\)/);
+assert.match(extension, /const onChange = \(uri:[^)]*\) => \{[\s\S]{0,1500}if \(signatureController\.signal\.aborted \|\| !relevantPaths\.length\) return;\s*invalidateSharedContentCatalog\(\)/, "relevant knowledge changes invalidate the shared catalog");
 assert.match(extension, /subscription catalog build revision=/);
-assert.match(fs.readFileSync(path.join(root, "src", "subscriptions.ts"), "utf8"), /MAX_CACHED_SEARCH_FILE_BYTES = 256 \* 1024/);
-assert.match(fs.readFileSync(path.join(root, "src", "subscriptions.ts"), "utf8"), /MAX_CACHED_SEARCH_RESULTS = 200/);
+assert.match(fs.readFileSync(path.join(root, "src", "subscriptions/subscriptions.ts"), "utf8"), /MAX_CACHED_SEARCH_FILE_BYTES = 256 \* 1024/);
+assert.match(fs.readFileSync(path.join(root, "src", "subscriptions/subscriptions.ts"), "utf8"), /MAX_CACHED_SEARCH_RESULTS = 200/);
 assert.doesNotMatch(subscriptions, /Buffer\.from\(await bundleResponse\.arrayBuffer\(\)\)/,
 	"subscription downloads must not allocate the complete HTTP body in the extension host");
 assert.match(subscriptions, /pipeline\(Readable\.fromWeb\(bundleResponse\.body/);
-assert.match(subscriptions, /fork\(path\.join\(__dirname, "subscription-materialize-worker\.js"\)/);
+assert.match(subscriptions, /fork\(path\.join\(require\("path"\)\.resolve\(__dirname, "\.\."\), "subscription-materialize-worker\.js"\)/);
+assert(fs.existsSync(path.join(root, "dist", "subscription-materialize-worker.js")),
+	"the migrated subscription materializer must retain its runtime worker entry");
 assert.match(subscriptions, /isolatedProcess: true/);
 assert.match(subscriptions, /Subscription materializer timed out/);
 assert.match(subscriptions, /private pruneStaleDownloads\(\)/);

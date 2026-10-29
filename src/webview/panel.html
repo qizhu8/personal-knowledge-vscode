@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' %%CSP_SOURCE%%; style-src 'unsafe-inline' %%CSP_SOURCE%%; font-src %%CSP_SOURCE%%; img-src data: https: %%CSP_SOURCE%%;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' %%CSP_SOURCE%%; style-src 'unsafe-inline' %%CSP_SOURCE%%; font-src data: %%CSP_SOURCE%%; img-src data: https: %%CSP_SOURCE%%; frame-src 'self';">
 <title>Personal Knowledge Manager</title>
 <meta name="pkm-skills-base" content="%%SKILLS_BASE%%">
 <meta name="pkm-notes-base" content="%%NOTES_BASE%%">
@@ -20,10 +20,13 @@
 <meta name="pkm-katex-css" content="%%KATEX_CSS%%">
 <link rel="stylesheet" href="%%CODICON_CSS%%">
 <link rel="stylesheet" href="%%PANEL_CSS%%">
+<link rel="stylesheet" href="%%AGENT_HARNESS_CSS%%">
 </head>
 <body>
 <div id="topbar" hidden>
   <strong>Personal Knowledge</strong>
+  <button id="open-pkm-chat-button" type="button" class="topbar-help-button" onclick="ask('openApiChat')" title="PKM Chat" aria-label="PKM Chat"><span class="codicon codicon-comment-discussion" aria-hidden="true"></span></button>
+  <button id="duplicate-pkm-tab" type="button" class="topbar-help-button" onclick="duplicatePkmTab()" title="Duplicate PKM tab" aria-label="Duplicate PKM tab"><span class="codicon codicon-split-horizontal" aria-hidden="true"></span></button>
   <span id="workspace-title">Knowledge</span>
   <span id="pkm-version" title="Personal Knowledge Manager extension version" style="font-size:10px;color:var(--muted);opacity:.7;padding-left:4px">v%%PKM_VERSION%%</span>
   <button id="go-to-pkm-path-button" class="topbar-help-button" type="button" onclick="ask('goToPkmPath')" title="Go to PKM Path…" aria-label="Go to PKM Path…"><span class="codicon codicon-go-to-file" aria-hidden="true"></span></button>
@@ -65,13 +68,12 @@
           <button id="search-next" type="button" onclick="navigateFind('content',1)" title="Next match" aria-label="Next match"><span class="codicon codicon-arrow-down" aria-hidden="true"></span></button>
           <button id="search-case" type="button" onclick="toggleFindOption('content','case')" title="Match case">Aa</button>
           <button id="search-regex" type="button" onclick="toggleFindOption('content','regex')" title="Use regular expression">.*</button>
+          <button type="button" onclick="closePanelFind()" title="Close search" aria-label="Close search"><span class="codicon codicon-close" aria-hidden="true"></span></button>
         </div>
         <div id="toolbar">
           <button class="tbtn" data-ord="1" onclick="doReload()" title="Reload from disk (pick up external / MCP changes)"><span class="codicon codicon-refresh" aria-hidden="true"></span><span>Refresh</span></button>
           <button class="tbtn" data-ord="2" id="btn-add-knowledge" onclick="addCurrentKnowledge()" title="Create a new Skill"><span class="codicon codicon-add" aria-hidden="true"></span><span>Skill</span></button>
           <button class="tbtn" data-ord="3" id="btn-paper-graph" onclick="togglePaperGraph()" title="Open or close the paper graph" style="display:none"><span class="codicon codicon-type-hierarchy" aria-hidden="true"></span><span>Graph</span></button>
-          <button class="tbtn" data-ord="4" onclick="doExport()" title="Export Personal Knowledge content"><span class="codicon codicon-export" aria-hidden="true"></span><span>Export</span></button>
-          <button class="tbtn" data-ord="5" onclick="triggerImport()" title="Import Personal Knowledge content"><span class="codicon codicon-cloud-upload" aria-hidden="true"></span><span>Import</span></button>
         </div>
         <div id="more-wrap">
           <button id="more-btn" class="tbtn" onclick="toggleMoreMenu(event)" title="More content actions" style="display:none">⋯</button>
@@ -93,9 +95,12 @@
     <div class="workspace-context-group" data-workspace-group="automation">
       <span class="workspace-context-title">Automation</span>
       <div class="workspace-context-tabs" role="tablist" aria-label="Automation views">
+        <button class="tab" role="tab" aria-selected="false" data-tab="userProfile">User Profile</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="agentSessions">Agent Sessions</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="agentSnapshots">Agent Snapshot</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="actionLibrary">Action Library</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="recipes">Recipe Library</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="actions">Action Workbench</button>
       </div>
     </div>
     <div class="workspace-context-group" data-workspace-group="projects">
@@ -103,6 +108,7 @@
       <div class="workspace-context-tabs" role="tablist" aria-label="Project views">
         <button class="tab" role="tab" aria-selected="false" data-tab="projects">Overview</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="chatroom">Threads</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="portalConnections">Portal Connections</button>
       </div>
     </div>
     <div class="workspace-context-group" data-workspace-group="settings">
@@ -110,7 +116,7 @@
       <div class="workspace-context-tabs" role="tablist" aria-label="Setting views">
         <button class="tab" role="tab" aria-selected="false" data-tab="mcp">General &amp; MCP</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="skillRouter">Router</button>
-        <button class="tab" role="tab" aria-selected="false" data-tab="subscriptions">Network &amp; Sharing</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="subscriptions">Sharing &amp; Subscribe</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="githubSync">GitHub Sync</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="backgroundTasks">Background Tasks</button>
       </div>
@@ -342,5 +348,7 @@
   <div class="loading-stage-count" hidden></div>
   <progress class="loading-bar" max="100" value="5" hidden></progress>
 </div>
+<link rel="stylesheet" href="%%HOST_HEALTH_CSS%%">
+<script src="%%HOST_HEALTH_JS%%"></script>
 <script src="%%PANEL_JS%%"></script>
 </body></html>

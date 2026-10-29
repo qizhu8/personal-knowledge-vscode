@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { canonicalJson } from "../workflow-contracts";
+import { canonicalJson } from "./workflow-contracts";
 
 export const RECIPE_METHODOLOGY_SCHEMA = "pkm.recipe.methodology/v1" as const;
 

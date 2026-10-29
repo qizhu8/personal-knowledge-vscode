@@ -6,7 +6,9 @@ const {
   PkmLocatorError,
   parsePkmLocator,
   resolvePkmLocator,
-} = require("../dist/knowledge-locator");
+  chatPkmUrl,
+  chatIdFromPkmUrl,
+} = require("../dist/knowledge/knowledge-locator");
 
 const inventory = [
   { area: "skills", relativePath: "Coding/Review.md", slug: "Coding/Review", title: "Review", knowledgeId: "knowledge_0123456789abcdef01234567" },
@@ -14,6 +16,8 @@ const inventory = [
   { area: "papers", relativePath: "Retrieval/Router.md", slug: "Retrieval/Router", title: "Router", knowledgeId: "knowledge_bbbbbbbbbbbbbbbbbbbbbbbb" },
   { area: "recipes", relativePath: "Operations/Create Snapshot.recipe_123.json", slug: "Operations/Create Snapshot.recipe_123", title: "Create Snapshot", knowledgeId: "knowledge_cccccccccccccccccccccccc" },
   { area: "scripts", relativePath: "tools/check.js", slug: "tools/check", title: "Check", knowledgeId: "knowledge_dddddddddddddddddddddddd" },
+  { area: "scripts", relativePath: "moved/check.py", slug: "moved/check", title: "Python Check", knowledgeId: "script_0123456789abcdef01234567",
+    aliases: ["pkm://scripts/original/check.py"] },
 ];
 const subscriptionGroups = [{
   nodeId: "node/one",
@@ -71,6 +75,17 @@ assert.strictEqual(
   "Team/Meeting Notes",
 );
 assert.deepStrictEqual(
+  resolvePkmLocator("pkm://script/script_0123456789abcdef01234567", inventory),
+  { kind: "panel", locator: "pkm://script/script_0123456789abcdef01234567", type: "script",
+    key: "moved/check.py", tab: "scripts", title: "Python Check" },
+);
+assert.strictEqual(resolvePkmLocator("pkm://scripts/original/check.py", inventory).key, "moved/check.py");
+assert.strictEqual(resolvePkmLocator("pkm://scripts/moved/check.py", inventory).key, "moved/check.py");
+assert.deepStrictEqual(
+  resolvePkmLocator("pkm://recipes/recipe_123", inventory),
+  { kind: "recipe", locator: "pkm://recipes/recipe_123", recipeId: "recipe_123", title: "Create Snapshot" },
+);
+assert.deepStrictEqual(
   resolvePkmLocator("pkm://subscriptions/node%2Fone/share%20one/notes/Team/Remote%20Note.md", inventory, subscriptionGroups),
   {
     kind: "panel",
@@ -93,6 +108,22 @@ function rejects(locator, code) {
     locator,
   );
 }
+const namespace = "0123456789abcdef";
+const chatId = "816fcfcc-05f3-4506-9b10-eeb09efbafd2";
+const chatUrl = `pkm://chats/${namespace}/${chatId}`;
+assert.strictEqual(chatPkmUrl(namespace, chatId), chatUrl);
+assert.deepStrictEqual(parsePkmLocator(chatUrl), { kind: "chat", locator: chatUrl, namespace, chatId });
+assert.deepStrictEqual(resolvePkmLocator(chatUrl, []), { kind: "chat", locator: chatUrl, namespace, chatId, title: "PKM Chat" });
+assert.strictEqual(chatIdFromPkmUrl(chatUrl, namespace), chatId);
+assert.strictEqual(chatIdFromPkmUrl(chatId, namespace), chatId);
+assert.throws(() => chatIdFromPkmUrl(chatUrl, "aaaaaaaaaaaaaaaa"), /another workspace/);
+assert.throws(() => chatIdFromPkmUrl("pkm://notes/Team/Meeting.md", namespace), /Chat URL/);
+rejects(`pkm://chats/${namespace}/not-a-uuid`, "invalid");
+rejects(`pkm://chats/wrong/${chatId}`, "invalid");
+rejects(chatUrl + "/", "invalid");
+rejects(chatUrl + "/extra", "invalid");
+rejects(chatUrl + "?host=anything", "invalid");
+rejects(`pkm://chats/${namespace}/%2e%2e`, "invalid");
 rejects("", "invalid");
 rejects("https://example.com", "invalid");
 rejects("pkm://knowledge/not-an-id", "invalid");
@@ -101,6 +132,20 @@ rejects("pkm://notes/Team/../Secret.md", "invalid");
 rejects("pkm://notes/Team/%2e%2e/Secret.md", "invalid");
 rejects("pkm://knowledge/knowledge_0123456789abcdef01234567?revision=2", "invalid");
 rejects("pkm://chatroom", "unsupported");
+for (const invalid of [
+  "pkm://script/not-a-script", "pkm://script/script_valid/", "pkm://script/script_a/extra",
+  "pkm://scripts/C%3A/check.py", "pkm://scripts/folder%2F..%2Fsecret.py",
+  "pkm://scripts/folder%5Csecret.py", "pkm://scripts/%2e%2e/secret.py",
+  "pkm://scripts/folder/check.py?root=C:/other",
+  "pkm://recipes/recipe_123/", "pkm://recipes/recipe_123#node",
+]) rejects(invalid, "invalid");
+rejects("pkm://recipes/not-a-recipe", "not-found");
+rejects("pkm://script/script_missing", "not-found");
+rejects("pkm://recipes/recipe_missing", "not-found");
+for (const locator of ["pkm://script/script_0123456789abcdef01234567", "pkm://scripts/original/check.py"]) {
+  assert.throws(() => resolvePkmLocator(locator, [...inventory, { ...inventory[inventory.length - 1], relativePath: "duplicate.py" }]),
+    error => error instanceof PkmLocatorError && error.code === "duplicate");
+}
 rejects("pkm://knowledge/knowledge_eeeeeeeeeeeeeeeeeeeeeeee", "not-found");
 rejects("pkm://knowledge/knowledge_dddddddddddddddddddddddd", "unsupported");
 rejects("pkm://subscriptions/node%2Fone/share%20one/notes/Team/Missing.md", "not-found");

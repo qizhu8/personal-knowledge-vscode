@@ -4,15 +4,16 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { createHash } = require("crypto");
-const githubSyncSource = fs.readFileSync(path.join(__dirname, "..", "src", "github-sync.ts"), "utf8");
+const githubSyncSource = fs.readFileSync(path.join(__dirname, "..", "src", "sync/github-sync.ts"), "utf8");
 const { execFileSync } = require("child_process");
-const { storeGitHubSyncConflict } = require("../dist/github-sync-conflicts.js");
-const scriptStorage = require("../dist/storage.js");
+const { storeGitHubSyncConflict } = require("../dist/sync/github-sync-conflicts.js");
+const scriptStorage = require("../dist/knowledge/storage.js");
 const {
   deterministicTextMerge,
   fetchGitHubRemoteSnapshot,
   formatGitMergeFileFailure,
   GITHUB_SYNC_CONTENT_TYPES,
+  githubSyncReadNetworkUnavailable,
   GitHubSyncConflictError,
   normalizeGitHubSyncTarget,
   readGitHubRemoteFile,
@@ -20,7 +21,7 @@ const {
   readGitHubRemoteFilesForSubscription,
   restoreGitHubRemoteFiles,
   syncGitHubTarget
-} = require("../dist/github-sync.js");
+} = require("../dist/sync/github-sync.js");
 
 const run = (cwd, args) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 const skill = (name, body) => `---\nname: ${JSON.stringify(name)}\ndescription: \"test\"\n---\n# ${name}\n\n${body}\n`;
@@ -35,6 +36,19 @@ const rememberSync = (target, result) => {
 };
 
 (async () => {
+  for (const detail of [
+    "fatal: unable to access 'https://example.invalid/': Could not resolve host: example.invalid",
+    "ssh: connect to host example.invalid port 22: Network is unreachable",
+    "Failed to connect to example.invalid port 443: Connection timed out",
+    "Connection reset by peer",
+  ]) {
+    assert(githubSyncReadNetworkUnavailable("fetch", detail));
+    assert(githubSyncReadNetworkUnavailable("clone", detail));
+    assert(!githubSyncReadNetworkUnavailable("push", detail), "a lost push response cannot be classified as safe to repeat");
+  }
+  for (const detail of ["Authentication failed", "Permission denied (publickey)", "repository not found", "certificate verify failed"]) {
+    assert(!githubSyncReadNetworkUnavailable("fetch", detail), "authentication/configuration failures retain bounded retry policy");
+  }
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-github-sync-"));
   try {
     const cleanMerge = await deterministicTextMerge(
@@ -212,9 +226,11 @@ const rememberSync = (target, result) => {
     assert.match(fs.readFileSync(path.join(verify, "agentSnapshots", "agent_snapshot_test.json"), "utf8"), /A256GCM-PKM-LOCAL-OBFUSCATION/);
     const manifest = JSON.parse(fs.readFileSync(path.join(verify, ".pkm-github-sync.json"), "utf8"));
     assert.strictEqual(manifest.schema, 3, "new syncs publish stable identity, capability, privacy, and digest metadata");
-    assert.deepStrictEqual(manifest.capabilities.required, ["explicit-deletions", "stable-entity-identity"]);
+    assert.deepStrictEqual(manifest.capabilities.required, ["explicit-deletions", "stable-entity-identity", "entity-partial-progress"]);
     assert(manifest.files.some(file => file.path === "skills/Private/Two.md" && file.privacy === "private" && file.itemId === "Private/Two"));
-    assert(manifest.files.some(file => file.path === "scripts/.run.sh.pkm.json" && file.itemId === "run.sh"));
+    assert(manifest.files.some(file => file.path === "scripts/.run.sh.pkm.json"
+      && file.itemId === scriptIdentity && file.member === "identity-sidecar"));
+    assert(manifest.files.some(file => file.path === "scripts/run.sh" && file.itemId === scriptIdentity && file.member === ""));
 
     const second = await syncGitHubTarget(target, catalog, checkoutRoot);
     assert.strictEqual(second.changed, false);
@@ -381,7 +397,7 @@ const rememberSync = (target, result) => {
         twoConflictError = error;
         return error instanceof GitHubSyncConflictError
           && error.conflicts.some(conflict => conflict.path === "skills/Design/Three.md")
-          && /Resolve and approve/.test(error.message);
+          && /approval.*isolated/i.test(error.message);
       },
       "two same-file conflict hunks must reach the human-required workflow instead of aborting merge-file"
     );

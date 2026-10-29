@@ -3,7 +3,7 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { ChatPersistence } = require("../dist/chat-persistence");
+const { ChatPersistence } = require("../dist/chatroom/chat-persistence");
 const initSqlJs = require("sql.js");
 
 function message(id, content) {
