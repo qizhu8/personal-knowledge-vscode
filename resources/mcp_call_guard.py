@@ -18,6 +18,50 @@ from fastmcp.server.middleware import Middleware
 ERROR_SCHEMA = "pkm.mcp.tool-error/v1"
 MAX_INVALID_CALL_FINGERPRINTS = 256
 LIFECYCLE_SCHEMA = "pkm.mcp.lifecycle/v1"
+ATTRIBUTION_SCHEMA = "pkm.mcp.attribution/v1"
+
+
+def managed_mcp_launch_attribution():
+    """Snapshot explicit launch context, never process ancestry or the active Chat."""
+    fallback = {"schema": ATTRIBUTION_SCHEMA, "source": "standalone", "scope": "unknown"}
+    encoded = os.environ.get("PKM_MCP_LAUNCH_ATTRIBUTION", "")
+    if not encoded or len(encoded) > 32768:
+        return fallback
+    try:
+        raw = json.loads(encoded)
+        if (not isinstance(raw, dict) or raw.get("schema") != ATTRIBUTION_SCHEMA
+                or raw.get("source") not in ("vscode-provider", "pkm-chat", "standalone")
+                or raw.get("scope") not in ("shared-host", "chat", "unknown")):
+            return fallback
+        result = {key: raw[key] for key in ("schema", "source", "scope")}
+        for key in ("hostId", "editorSessionId", "hostSlotId", "workspace", "machine", "remoteName", "extensionHostLogUri", "chatId"):
+            if key not in raw:
+                continue
+            value = raw[key]
+            if (not isinstance(value, str) or not 0 < len(value) <= 2048
+                    or re.search(r"[\x00-\x1f\x7f]", value)):
+                return fallback
+            result[key] = value
+        log_uri = result.get("extensionHostLogUri")
+        if log_uri and (not re.match(r"^[a-z][a-z0-9+.-]*:/", log_uri, re.IGNORECASE)
+                        or re.search(r"\s", log_uri)):
+            return fallback
+        if "extensionHostPid" in raw:
+            pid = raw["extensionHostPid"]
+            if type(pid) is not int or not 0 < pid <= 9007199254740991:
+                return fallback
+            result["extensionHostPid"] = pid
+        if (result["scope"] == "chat" and (result["source"] != "pkm-chat" or not result.get("chatId"))
+                or result["scope"] != "chat" and "chatId" in result
+                or result["scope"] == "shared-host" and not all(
+                    result.get(key) for key in ("hostId", "editorSessionId", "extensionHostPid"))
+                or result["source"] == "standalone" and (
+                    result["scope"] != "unknown" or any(
+                        key in result for key in ("hostId", "editorSessionId", "extensionHostPid")))):
+            return fallback
+        return result
+    except (ValueError, TypeError):
+        return fallback
 
 
 class ManagedMcpLifecycle(Middleware):
@@ -28,6 +72,7 @@ class ManagedMcpLifecycle(Middleware):
         self.root = Path(manifest["managedRoot"])
         self.generation = manifest["generation"]
         self.instance_id = uuid.uuid4().hex
+        self.attribution = managed_mcp_launch_attribution()
         self.drain_seconds = drain_seconds
         self.poll_seconds = poll_seconds
         self.in_flight = {}
@@ -131,6 +176,7 @@ class ManagedMcpLifecycle(Middleware):
         return {
             "schema": LIFECYCLE_SCHEMA, "generation": self.generation,
             "instanceId": self.instance_id, "pid": os.getpid(),
+            "attribution": dict(self.attribution),
             "version": self.manifest["version"], "components": self.manifest["components"],
             "runtimeBuild": self.manifest.get("runtimeBuild", ""),
             "extensionVersion": self.manifest.get("extensionVersion", ""),

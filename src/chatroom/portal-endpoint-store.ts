@@ -41,6 +41,7 @@ export interface PortalEndpointRecord {
   revision: number;
   acceptsIncoming: boolean;
   permissions: PortalPermission[];
+  externalAccess?: boolean;
   paired?: { binding: PeerBinding; transport: PortalEndpointTransport };
 }
 
@@ -52,7 +53,7 @@ export interface PortalEndpointCreate {
   chatName?: string;
 }
 
-export type PortalEndpointChanges = Partial<Pick<PortalEndpointRecord, "name" | "chatId" | "chatName" | "deleted" | "acceptsIncoming" | "permissions">>;
+export type PortalEndpointChanges = Partial<Pick<PortalEndpointRecord, "name" | "chatId" | "chatName" | "deleted" | "acceptsIncoming" | "permissions" | "externalAccess">>;
 
 interface StoredState {
   version: 1;
@@ -63,10 +64,10 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const CAPABILITY = /^[a-z0-9][a-z0-9._:+-]{0,63}$/i;
 const SECRET = /^[A-Za-z0-9_-]{16,256}$/;
 const CONTROL = /[\u0000-\u001f\u007f]/;
-const RECORD_KEYS = new Set(["id", "name", "root", "localMachine", "chatId", "chatName", "deleted", "revision", "acceptsIncoming", "permissions", "paired"]);
+const RECORD_KEYS = new Set(["id", "name", "root", "localMachine", "chatId", "chatName", "deleted", "revision", "acceptsIncoming", "permissions", "externalAccess", "paired"]);
 const BINDING_KEYS = new Set(["pairId", "peerId", "peerName", "role", "peerChatId", "peerMachine", "peerChatName", "peerEndpoint", "peerCapabilities"]);
 const TRANSPORT_KEYS = new Set(["url", "roomId", "user", "cid", "host", "port"]);
-const CHANGE_KEYS = new Set(["name", "chatId", "chatName", "deleted", "acceptsIncoming", "permissions"]);
+const CHANGE_KEYS = new Set(["name", "chatId", "chatName", "deleted", "acceptsIncoming", "permissions", "externalAccess"]);
 
 function plainObject(value: unknown, what: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) throw new Error(`Invalid Portal endpoint ${what}.`);
@@ -172,6 +173,11 @@ function record(value: unknown): PortalEndpointRecord {
     onlyKeys(paired, new Set(["binding", "transport"]), "pairing");
     result.paired = { binding: binding(paired.binding), transport: transport(paired.transport) };
   }
+  if (item.externalAccess !== undefined) {
+    if (typeof item.externalAccess !== "boolean") throw new Error("Invalid Portal endpoint external MCP access flag.");
+    result.externalAccess = item.externalAccess;
+  }
+  if (result.externalAccess && (!result.paired || result.deleted)) throw new Error("External MCP access requires a paired, non-deleted Portal endpoint.");
   if (result.deleted && (result.acceptsIncoming || result.permissions.length)) throw new Error("A deleted Portal endpoint cannot hold incoming access or permissions.");
   return result;
 }
@@ -200,6 +206,16 @@ function parseState(value: unknown): PortalEndpointRecord[] {
 function assertSecret(value: unknown): string {
   if (typeof value !== "string" || !SECRET.test(value)) throw new Error("Invalid Portal endpoint channel secret: expected 16..256 base64url characters.");
   return value;
+}
+
+export function portalEndpointAllowsExternalAccess(endpoint: PortalEndpointRecord | undefined, context: {
+  root: string; localMachine: string; trusted: boolean; suspended: boolean;
+  binding?: Pick<PeerBinding, "pairId" | "peerId" | "role" | "peerChatId">;
+}): boolean {
+  const saved = endpoint?.paired?.binding, live = context.binding;
+  return !!endpoint?.externalAccess && !!saved && !endpoint.deleted && context.trusted && !context.suspended
+    && endpoint.root === context.root && endpoint.localMachine === context.localMachine
+    && (!live || live.pairId === saved.pairId && live.peerId === saved.peerId && live.role === saved.role && live.peerChatId === saved.peerChatId);
 }
 
 export class PortalEndpointStore {
@@ -233,13 +249,14 @@ export class PortalEndpointStore {
     });
   }
 
-  async update(id: string, changes: PortalEndpointChanges): Promise<PortalEndpointRecord> {
+  async update(id: string, changes: PortalEndpointChanges, expectedRevision?: number): Promise<PortalEndpointRecord> {
     uuid(id, "id");
     const item = plainObject(changes, "changes");
     onlyKeys(item, CHANGE_KEYS, "changes");
     return this.mutate(endpoints => {
       const index = this.indexOf(endpoints, id);
       const current = endpoints[index];
+      if (expectedRevision !== undefined && current.revision !== expectedRevision) throw new Error("Portal endpoint changed during approval; review its current binding before authorizing.");
       const next: PortalEndpointRecord = copy(current);
       let bump = false;
       let identityChanged = false;
@@ -256,13 +273,14 @@ export class PortalEndpointStore {
         next.deleted = item.deleted;
         identityChanged ||= next.deleted !== current.deleted;
       }
-      const grantChange = "acceptsIncoming" in item || "permissions" in item;
+      const grantChange = "acceptsIncoming" in item || "permissions" in item || "externalAccess" in item;
       if (identityChanged) {
-        if (grantChange && (item.acceptsIncoming === true || (Array.isArray(item.permissions) && item.permissions.length))) {
+        if (grantChange && (item.acceptsIncoming === true || item.externalAccess === true || (Array.isArray(item.permissions) && item.permissions.length))) {
           throw new Error("Changing a Portal endpoint's Chat or deletion state clears grants; grant access in a separate update.");
         }
         next.acceptsIncoming = false;
         next.permissions = [];
+        delete next.externalAccess;
         bump = true;
       } else if (grantChange) {
         if ("acceptsIncoming" in item) {
@@ -270,8 +288,13 @@ export class PortalEndpointStore {
           next.acceptsIncoming = item.acceptsIncoming;
         }
         if ("permissions" in item) next.permissions = permissions(item.permissions);
+        if ("externalAccess" in item) {
+          if (typeof item.externalAccess !== "boolean") throw new Error("Invalid Portal endpoint external MCP access flag.");
+          next.externalAccess = item.externalAccess;
+        }
         if (next.deleted && (next.acceptsIncoming || next.permissions.length)) throw new Error("A deleted Portal endpoint cannot accept incoming access or hold permissions.");
-        bump = next.acceptsIncoming !== current.acceptsIncoming || JSON.stringify(next.permissions) !== JSON.stringify(current.permissions);
+        bump = next.acceptsIncoming !== current.acceptsIncoming || JSON.stringify(next.permissions) !== JSON.stringify(current.permissions)
+          || !!next.externalAccess !== !!current.externalAccess;
       }
       if (!next.deleted) this.assertUniqueName(endpoints, next.name, id);
       if (bump) next.revision = current.revision + 1;
@@ -295,7 +318,7 @@ export class PortalEndpointStore {
       const index = this.indexOf(endpoints, id);
       const current = endpoints[index];
       if (current.deleted) throw new Error("Cannot pair a deleted Portal endpoint.");
-      const next = record({ ...copy(current), paired, acceptsIncoming: false, permissions: [], revision: current.revision + 1 });
+      const next = record({ ...copy(current), paired, acceptsIncoming: false, permissions: [], externalAccess: false, revision: current.revision + 1 });
       const updated = [...endpoints];
       updated[index] = next;
       return { endpoints: updated, result: next, secret: channelSecret };
@@ -321,7 +344,7 @@ export class PortalEndpointStore {
       const identityChanged = previous.peerChatId !== refreshed.peerChatId || previous.role !== refreshed.role;
       const next = record({
         ...copy(current), paired: { binding: refreshed, transport: copy(current.paired.transport) },
-        ...(identityChanged ? { acceptsIncoming: false, permissions: [], revision: current.revision + 1 } : {}),
+        ...(identityChanged ? { acceptsIncoming: false, permissions: [], externalAccess: false, revision: current.revision + 1 } : {}),
       });
       const updated = [...endpoints];
       updated[index] = next;

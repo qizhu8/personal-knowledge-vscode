@@ -245,3 +245,57 @@ test("accepts real PeerSession capability advertisements and keeps strict limits
     await assert.rejects(store.pair(ep.id, binding({ peerCapabilities: bad }), transport(), SECRET), /capabilities/);
   }
 });
+
+test("saved external MCP access is explicit, durable, independently revocable and defaults off for legacy endpoints", async () => {
+  const { state, secrets, store } = fixture();
+  const ep = await store.create(base);
+  assert.equal(!!ep.externalAccess, false);
+  await assert.rejects(store.update(ep.id, { externalAccess: true }), /requires a paired/);
+  await store.pair(ep.id, binding(), transport(), SECRET);
+  const current = store.get(ep.id);
+  const granted = await store.update(ep.id, { externalAccess: true }, current.revision);
+  assert.equal(granted.externalAccess, true);
+  assert.equal(new S.PortalEndpointStore(state, secrets).get(ep.id).externalAccess, true);
+  assert.equal(granted.acceptsIncoming, false, "local MCP authorization never grants remote execution");
+  assert.deepEqual(granted.permissions, []);
+  await assert.rejects(store.update(ep.id, { externalAccess: false }, current.revision), /changed during approval/);
+  await assert.rejects(store.update(ep.id, { externalAccess: "yes" }), /flag/);
+  assert.equal((await store.update(ep.id, { name: "Renamed" })).externalAccess, true);
+  assert.equal((await store.update(ep.id, { externalAccess: false })).externalAccess, false);
+  delete state.data[S.PORTAL_ENDPOINT_STATE_KEY].endpoints[0].externalAccess;
+  assert.equal(!!new S.PortalEndpointStore(state, secrets).get(ep.id).externalAccess, false);
+});
+
+test("saved external MCP access is cleared by either Chat identity change, deletion or pairing replacement", async () => {
+  for (const change of ["local-chat", "deleted", "peer-chat", "peer-role", "pair"]) {
+    const { store } = fixture();
+    const ep = await store.create(base);
+    await store.pair(ep.id, binding(), transport(), SECRET);
+    await store.update(ep.id, { externalAccess: true });
+    if (change === "local-chat") {
+      await assert.rejects(store.update(ep.id, { chatId: "new", externalAccess: true }), /separate update/);
+      await store.update(ep.id, { chatId: "new" });
+    } else if (change === "deleted") await store.update(ep.id, { deleted: true });
+    else if (change === "peer-chat") await store.refreshPeer(ep.id, binding({ peerChatId: "new" }));
+    else if (change === "peer-role") await store.refreshPeer(ep.id, binding({ role: "controlled" }));
+    else await store.pair(ep.id, binding(), transport(), SECRET);
+    assert.equal(!!store.get(ep.id).externalAccess, false, change);
+  }
+});
+
+test("durable external access checks Host, Root, trust, suspension and the actual pairing", async () => {
+  const { store } = fixture();
+  const ep = await store.create(base);
+  await store.pair(ep.id, binding(), transport(), SECRET);
+  const context = { root: base.root, localMachine: base.localMachine, trusted: true, suspended: false, binding: binding() };
+  assert.equal(S.portalEndpointAllowsExternalAccess(store.get(ep.id), context), false);
+  const granted = await store.update(ep.id, { externalAccess: true });
+  assert.equal(S.portalEndpointAllowsExternalAccess(granted, context), true);
+  assert.equal(S.portalEndpointAllowsExternalAccess(granted, { ...context, binding: undefined }), true, "offline status can reuse an explicitly saved grant");
+  for (const over of [
+    { root: "/other" }, { localMachine: "other" }, { trusted: false }, { suspended: true },
+    ...[{ pairId: "other" }, { peerId: "other" }, { role: "controlled" }, { peerChatId: "other" }].map(over => ({ binding: binding(over) })),
+  ]) assert.equal(S.portalEndpointAllowsExternalAccess(granted, { ...context, ...over }), false);
+  assert.equal(S.portalEndpointAllowsExternalAccess({ ...granted, deleted: true }, context), false);
+  assert.equal(S.portalEndpointAllowsExternalAccess(undefined, context), false);
+});

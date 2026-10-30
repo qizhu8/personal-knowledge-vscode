@@ -102,6 +102,33 @@ driver, an independent semantic evaluator or general natural-language intent
 classification. Evidence-linked acceptance remains a model claim. A successful
 diagnostic is not independently proof that the original problem is fixed.
 
+The work-intent admission baseline is evaluated through `prepareWorkGoal`,
+separately from any change to runtime dispatch. Its 29 execution, exploration
+and quoted-instruction fixtures have provisional labels: the current heuristic
+misses 9 of 18 explicit execution requests (50% false-negative rate) and
+admits 7 of 11 non-execution phrases (63.6% false-positive rate; 56.3%
+precision on this sample). The user confirmed “Pause the current task.” is an
+explicit pause command. The stop matcher now accepts “the current task” and a
+negative-command regression verifies “Please do not pause the current task.”
+does not pause. All four stop/resume controls pass.
+
+`tools/work-intent-review/index.html` is an offline annotation bench for the 29
+intent phrases and four controls. It hides provisional labels until a reviewer
+decides, supports unclear/notes, local persistence, JSON import/export, and
+comparison only after all samples are reviewed. It does not change dispatch.
+The benchmark labels remain provisional pending user review; these small
+sample results are not calibrated population rates or authorization to change
+automatic goal activation.
+
+The false-completion regression also resumes after a `continue` report that
+contained successful evidence, then verifies that the new attempt clears those
+receipts, rejects the prior assistant reply, and cannot resolve using the old
+call ID alone.
+
+The conditional requirement recall fixture now also corrects an AML rule,
+deletes the superseded requirement, verifies the deletion suppression survives
+a later source, and confirms a separate Root cannot see either requirement.
+
 The complete related context gate passed 218/218 tests without skips, including
 both transports, actual local fixture repair after an early diagnostic summary,
 blocked-answer resume, cancellation/resume without duplicating an effect, and
@@ -133,6 +160,18 @@ This establishes a small, uncoached repair task end to end, not universal
 autonomy or proof of reliable long-running production recovery. The production
 authentication problem remains unresolved and was not resumed. More complex
 tasks and the separate reload-slot acknowledgement remain follow-up work.
+
+## Bounded transition receipts, 2026-10-29
+
+The `pkm-harness-improve` branch adds an optional, bounded list of up to 64
+typed work-goal lifecycle transitions: delegation, follow-up/answer/resume,
+pause, agent report/action, cancellation/failure and host recovery. Events
+contain a timestamp and input/attempt IDs plus controlled reason/status enums;
+they do not copy user text. Older records without the field remain valid.
+
+This is diagnostic evidence, not an independently calibrated stop-reason
+classifier. It does not change execution or permissions and has not been
+installed. Focused build/tests are the only validation claimed here.
 
 ## Current pragmatic policy
 

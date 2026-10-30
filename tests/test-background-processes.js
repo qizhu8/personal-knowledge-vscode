@@ -9,7 +9,12 @@ const bundledPanel = fs.readFileSync(path.join(extensionRoot, "dist/webview/pane
 const fragmentStart = bundledPanel.indexOf("let backgroundTaskSnapshot = null;");
 const fragmentEnd = bundledPanel.indexOf("// UI snapshots contain data only;", fragmentStart);
 assert(fragmentStart >= 0 && fragmentEnd > fragmentStart, "packaged panel must contain the Background Tasks renderer");
-const renderer = bundledPanel.slice(fragmentStart, fragmentEnd);
+const mcpPanelSource = fs.readFileSync(path.resolve(__dirname, "../src/webview/panel/50-mcp.js"), "utf8");
+const attributionStart = mcpPanelSource.indexOf("function mcpLaunchAttributionHtml(");
+const attributionEnd = mcpPanelSource.indexOf("\nfunction mcpPathSizeText(", attributionStart);
+assert(attributionStart >= 0 && attributionEnd > attributionStart);
+const renderer = mcpPanelSource.slice(attributionStart, attributionEnd) + "\n"
+  + fs.readFileSync(path.resolve(__dirname, "../src/webview/panel/52-background-tasks.js"), "utf8");
 
 const rows = parseProcessTable(`
  123 1 6-08:01:02 102400 /usr/bin/python /tmp/pkm-startup-old/extension/resources/retrieval_worker.py --secret do-not-expose
@@ -77,7 +82,10 @@ const ambiguous = describeBackgroundProcesses(rows, () => ({}), {
 }).find(p => p.pid === 125);
 assert.match(ambiguous.runtimeError, /ownership is ambiguous/);
 assert.equal(ambiguous.runtime, undefined);
-const currentMcp = { ...olderMcp, pid: 128, runtime: { ...olderMcp.runtime, extensionVersion: installedExtension.version } };
+const currentMcp = { ...olderMcp, pid: 128, runtime: { ...olderMcp.runtime, extensionVersion: installedExtension.version,
+  attribution: { schema: "pkm.mcp.attribution/v1", source: "vscode-provider", scope: "shared-host",
+    hostId: "registered-host", editorSessionId: "same-session", extensionHostPid: 12, workspace: "file:///workspace/<img>",
+    remoteName: "ssh-remote", extensionHostLogUri: "file:///remote/logs/exthost1/<img>" } } };
 currentMcp.assessment = assessBackgroundProcess(currentMcp, installedExtension.version);
 assert.equal(currentMcp.assessment.state, "current");
 const superseded = { ...currentMcp, pid: 129, runtime: { ...currentMcp.runtime, generation: "generation-old" } };
@@ -153,6 +161,12 @@ assert.equal(assessBackgroundProcess(currentMcp).state, "unverified", "missing i
     assert.equal(await warning.evaluate(element => getComputedStyle(element).color), 'rgb(204, 167, 0)', "old PID has a yellow warning label");
     const olderText = await mcpGroup.textContent();
     for (const expected of ["copilot-runtime", "In flight: 2", "Uncertain calls: 1"]) assert(olderText.includes(expected), expected);
+    for (const expected of ["Editor session: same-session (not a unique window ID)", "Extension host: registered-host", "not a single Chat",
+      "legacy or missing launch metadata", "separate PIDs do not prove separate windows", "file:///workspace/<img>",
+      "Remote Extension Host log location (not the Windows renderer): file:///remote/logs/exthost1/<img>"]) {
+      assert(olderText.includes(expected), expected);
+    }
+    assert.equal(await mcpGroup.locator("img").count(), 0, "attribution is escaped, never injected as markup");
     await retrievalGroup.locator('.background-process-entry summary').click();
     for (const width of [320, 768, 1280]) {
       await page.setViewportSize({ width, height: 900 });

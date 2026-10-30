@@ -37,7 +37,7 @@ def approve_graph_proposal(page, runtime):
     proposal = next(item for item in runtime.proposal_list()["proposals"] if item["action_id"] == identifier)
     review = runtime.qualification_review(identifier, proposal["content_hash"], proposal["proposal_id"])
     attempt = runtime.qualification_execute(identifier, proposal["content_hash"], review["snapshot_hash"],
-        {"approved": True, "summary": "Controlled fixture review passed", "issues": [], "model": "fixture"},
+        {"user_confirmed": True, "summary": "Controlled fixture review passed", "issues": [], "model": "fixture"},
         proposal["proposal_id"], allow_effects=True)
     runtime.qualification_admit(attempt["attempt_id"])
     page.wait_for_function("() => !refreshing")
@@ -394,7 +394,7 @@ window.acquireVsCodeApi=()=>({getState:()=>null,setState:()=>{},postMessage:mess
                         block = page.locator(".block").first
                         expect(block.locator('[data-input^="input_"]')).to_have_count(4)
                         expect(block.locator('[data-output="value"]')).to_be_visible()
-                        expect(block.locator(".component-type")).to_have_count(0)
+                        expect(block.locator(".component-type [data-implementation]")).to_be_visible()
                         expect(block.locator('mark[title="math.log"]')).to_have_text("log")
                         expect(block.locator(".math-provenance")).to_contain_text("log : math.log")
                         expression = block.locator('[data-field="expression"]')
@@ -513,7 +513,7 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
     const { action_id, content_hash, allow_effects } = params;
     const review = await invoke("qualification_review", { action_id, content_hash });
     const attempt = await invoke("qualification_execute", { action_id, content_hash, allow_effects, snapshot_hash: review.snapshot_hash,
-      report: { approved: true, summary: "Controlled fixture review passed", issues: [], model: "fixture" } });
+      report: { user_confirmed: true, summary: "Controlled fixture review passed", issues: [], model: "fixture" } });
     return invoke("qualification_admit", { attempt_id: attempt.attempt_id });
   }
   return invoke(method, params);
@@ -576,7 +576,7 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     page.locator("#validate").click()
                     if page.locator("#validation-dialog").is_visible():
                         page.locator("#validation-accept").click()
-                    expect(page.locator("#validation-feedback")).to_contain_text("admitted and ready", timeout=30000)
+                    expect(page.locator("#validation-feedback")).to_contain_text("ready to use", timeout=30000)
                     expect(page.locator("#run")).to_be_enabled(timeout=30000)
                     page.locator("#run").click()
                     expect(page.locator("#result")).to_contain_text('"value": 7', timeout=30000)
@@ -598,7 +598,7 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     page.locator("#validate").click()
                     if page.locator("#validation-dialog").is_visible():
                         page.locator("#validation-accept").click()
-                    expect(page.locator("#validation-feedback")).to_contain_text("admitted and ready", timeout=30000)
+                    expect(page.locator("#validation-feedback")).to_contain_text("ready to use", timeout=30000)
                     expect(page.locator("#run")).to_be_enabled(timeout=30000)
                     page.locator("#run").click()
                     page.wait_for_selector("[data-choice]", timeout=30000)
@@ -800,13 +800,10 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                         request["params"]["destination"] = str(package)
                     if request["method"] == "import":
                         request["params"]["local_path"] = str(package)
-                    if request["method"] == "validate":
+                    if request["method"] == "prepare":
                         runtime = ModuleRuntime(active_store[0])
                         params = request["params"]
-                        review = runtime.qualification_review(params["action_id"], params["content_hash"])
-                        attempt = runtime.qualification_execute(params["action_id"], params["content_hash"], review["snapshot_hash"],
-                            {"approved": True, "summary": "Controlled fixture review passed", "issues": [], "model": "fixture"},
-                            allow_effects=params.get("allow_effects", False))
+                        attempt = runtime.qualification_prepare(params["action_id"], params["content_hash"], params.get("proposal_id"))
                         output = json.dumps(runtime.qualification_admit(attempt["attempt_id"]))
                     else:
                         process = subprocess.run([sys.executable, str(ROOT / "resources" / "action_modules.py"), "--api", str(active_store[0])],
@@ -835,8 +832,11 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     self.assertEqual(page.locator('[data-add="core.user-action"]').count(), 1)
                     self.assertEqual(page.locator('[data-export="core.constant"]').count(), 0)
                     self.assertTrue(page.locator('[data-add="test.fixture.add"]').is_disabled())
+                    page.locator('[data-action="test.fixture.add"]').hover()
                     page.locator('[data-qualify="test.fixture.add"]').click()
+                    expect(page.locator("#validation-choice-dialog")).not_to_be_visible()
                     page.wait_for_function('!document.querySelector(\'[data-add="test.fixture.add"]\').disabled', timeout=30000)
+                    page.locator('[data-action="test.fixture.add"]').hover()
                     page.locator('[data-add="test.fixture.add"]').click()
                     page.locator('[data-add="test.fixture.add"]').click()
                     blocks = page.locator(".block")
@@ -895,7 +895,7 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     page.locator("#save").click()
                     approve_graph_proposal(page, ModuleRuntime(stores[0]))
                     page.locator("#validate").click()
-                    expect(page.locator("#validation-feedback")).to_contain_text("admitted and ready", timeout=30000)
+                    expect(page.locator("#validation-feedback")).to_contain_text("ready to use", timeout=30000)
                     page.wait_for_function("!document.querySelector('#run').disabled", timeout=30000)
                     page.locator("#run").click()
                     page.wait_for_function("JSON.parse(document.querySelector('#result').textContent||'{}').state === 'Completed'", timeout=30000)
@@ -903,6 +903,7 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     page.locator('#toggle-parameters').click()
                     self.assertFalse(page.locator('#run').is_disabled())
                     page.locator('#toggle-parameters').click()
+                    page.locator('[data-action^="local.graph."]').hover()
                     page.locator('[data-edit^="local.graph."]').click()
                     self.assertEqual(page.locator(".block").count(), 2)
                     page.locator(".block").nth(1).locator('[data-field="right"]').fill("5")
@@ -935,7 +936,7 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     page.wait_for_selector('[data-add^="local.graph."]', state="attached")
                     expand_palette(page)
                     page.wait_for_selector('[data-add^="local.graph."]')
-                    self.assertIn("blocked", page.locator('[data-add^="local.graph."]').locator("..").inner_text())
+                    self.assertIn("Preparing", page.locator('[data-action^="local.graph."]').inner_text())
                     page.locator("[data-set]").uncheck()
                     page.wait_for_function("document.querySelectorAll('[data-add^=\"local.graph.\"]').length === 0")
                     ModuleRuntime(stores[1]).register(fixture)
@@ -946,6 +947,7 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     self.assertTrue(page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
                     self.assertTrue(page.locator('.palette-row > div').evaluate_all('nodes => nodes.filter(node => node.getClientRects().length).every(node => node.getBoundingClientRect().width >= 75)'), 'Mobile palette titles must not be squeezed into a one-character column')
                     self.assertEqual(page.locator('[data-add^="core.cast."]').count(), 0)
+                    page.locator('[data-action="core.cast"]').hover()
                     page.locator('[data-add="core.cast"]').click()
                     cast_block = page.locator('.block').last
                     cast_block.locator('[data-value-type]').select_option('number')
@@ -983,6 +985,7 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     self.assertEqual(cast_block.locator('[data-field="value"]').input_value(), '"3.25"')
                     page.screenshot(path=str(acceptance / "action-workbench-optional-mobile.png"), full_page=True)
                     page.evaluate("graph={action_id:'local.choice.fixture',name:'Chat choice',nodes:[],edges:[]};saved=null;renderGraph()")
+                    page.locator('[data-action="core.user-action"]').hover()
                     page.locator('[data-add="core.user-action"]').click()
                     page.locator('[data-field="prompt"]').fill('Choose an outcome')
                     page.locator('[data-field="prompt"]').blur()
@@ -994,7 +997,7 @@ createActionWorkbenchServer({ extensionPath: root, async request(method, params)
                     page.locator('#validate').click()
                     if page.locator("#validation-dialog").is_visible():
                         page.locator("#validation-accept").click()
-                    expect(page.locator("#validation-feedback")).to_contain_text("admitted and ready", timeout=30000)
+                    expect(page.locator("#validation-feedback")).to_contain_text("ready to use", timeout=30000)
                     page.wait_for_function("!document.querySelector('#run').disabled", timeout=30000)
                     self.assertEqual(page.locator('[data-choice]').count(), 0)
                     page.locator('#run').click()

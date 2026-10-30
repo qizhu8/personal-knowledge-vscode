@@ -4,6 +4,7 @@ import { StdioClientTransport, StdioServerParameters } from "@modelcontextprotoc
 import { ApiChatTool } from "./api-chat-client";
 import { abortable } from "./api-chat-tools";
 import { ToolSafetyHints } from "./permissions";
+import { managedMcpAttributionEnv } from "../mcp/mcp-attribution";
 import { boundedLifecycleRead, handshakeManagedMcpConnection, managedMcpApiCompatible, ManagedMcpManifest,
   MCP_LIFECYCLE_SCHEMA, readManagedMcpGeneration, readManagedMcpManifest, waitForManagedMcpDrain } from "../mcp/mcp-lifecycle";
 
@@ -40,14 +41,16 @@ async function withMcpDiscoveryDeadline<T>(
 /** This is the configured PKM service, not a name-based substitute for an arbitrary native tool. */
 export async function connectManagedChatMcp(
   launch: StdioServerParameters, signal: AbortSignal, managedDirectory: string,
-  options: { drainTimeoutMs?: number; discoveryTimeoutMs?: number } = {},
+  options: { drainTimeoutMs?: number; discoveryTimeoutMs?: number; chatId?: string } = {},
 ): Promise<ManagedChatMcp> {
   if (signal.aborted) throw new Error("Request cancelled.");
   const configured = readManagedMcpManifest(managedDirectory);
   if (!configured) throw new Error("Managed PKM lifecycle ownership is unavailable. Explicit reconnect/action required; legacy drain state is unknown.");
   let expected: ManagedMcpManifest = configured;
   const client = new Client({ name: "pkm-chat-managed", version: "1.0.0" });
-  const transport = new StdioClientTransport({ ...launch, stderr: "inherit" });
+  const transport = new StdioClientTransport({
+    ...launch, env: managedMcpAttributionEnv(launch.env, "pkm-chat", options.chatId), stderr: "inherit",
+  });
   const drainTimeoutMs = Math.max(1, options.drainTimeoutMs ?? 30_000);
   let admissionClosed = false;
   let verified = false;

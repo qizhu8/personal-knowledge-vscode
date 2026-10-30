@@ -175,14 +175,34 @@ function renderMcpLifecycle(lifecycle) {
     <p>${label('Generation', 'Configured generation')}: <code>${esc(lifecycle.configuredGeneration || 'unprepared')}</code></p>
     ${instances.length ? `<div style="overflow-x:auto"><table class="mcp-path-table"><thead><tr>
       <th>${label('Instance', 'Instance / PID')}</th><th>${label('InstanceGeneration', 'Instance generation')}</th>
-      <th>${label('Observed', 'Observed state')}</th><th>${label('InFlight', 'In-flight calls')}</th><th>${label('Uncertain', 'Uncertain calls')}</th>
+      <th>Launch attribution (reported)</th><th>${label('Observed', 'Observed state')}</th><th>${label('InFlight', 'In-flight calls')}</th><th>${label('Uncertain', 'Uncertain calls')}</th>
     </tr></thead><tbody>${instances.map(instance => `<tr>
       <td>${esc(instance.instanceId || 'unknown')} / ${esc(count(instance.pid))}</td>
       <td><code>${esc(instance.generation || 'unknown')}</code></td>
+      <td>${mcpLaunchAttributionHtml(instance.attribution, instance.heartbeatFresh)}</td>
       <td>${esc(instance.heartbeatFresh === true ? instance.observedState || 'unknown' : 'unknown')}</td>
       <td>${esc(count(instance.inFlight))}</td><td>${esc(count(instance.uncertainCalls))}</td>
     </tr>`).join('')}</tbody></table></div>` : `<p>${label('Empty', 'No instrumented instance observed; legacy process state is unknown. Reconnect through the actual client.')}</p>`}
   </details>`;
+}
+function mcpLaunchAttributionHtml(attribution, fresh) {
+  if (!attribution || attribution.schema !== 'pkm.mcp.attribution/v1') {
+    return 'Window / Chat: unverified · legacy or missing launch metadata';
+  }
+  const lines = [
+    `Source: ${attribution.source || 'unknown'} · ${fresh === true ? 'launch context reported' : 'historical launch context; not current ownership'}`,
+    attribution.scope === 'shared-host' ? 'Shared host/provider process · not a single Chat'
+      : attribution.scope === 'chat' && typeof attribution.chatId === 'string' ? `Chat: ${attribution.chatId} (caller provided)`
+      : 'Chat: unknown / not supplied',
+    `Editor session: ${attribution.editorSessionId || 'unknown'} (not a unique window ID)`,
+    `Extension host: ${attribution.hostId || 'unknown'} · PID ${attribution.extensionHostPid || 'unknown'}`,
+  ];
+  if (attribution.hostSlotId) lines.push(`Host registry slot: ${attribution.hostSlotId} (workspace/storage correlation; not a unique window ID)`);
+  if (attribution.workspace) lines.push(`Workspace: ${attribution.workspace}`);
+  if (attribution.machine) lines.push(`Machine: ${attribution.machine}`);
+  if (attribution.remoteName) lines.push(`Remote: ${attribution.remoteName}`);
+  if (attribution.extensionHostLogUri) lines.push(`${attribution.remoteName ? 'Remote Extension Host log location (not the Windows renderer)' : 'Extension Host log location'}: ${attribution.extensionHostLogUri} (reported location evidence only)`);
+  return lines.map(line => esc(line)).join('<br>');
 }
 function mcpPathSizeText(bytes) {
   if (!Number.isFinite(bytes) || bytes < 0) return 'Unavailable';

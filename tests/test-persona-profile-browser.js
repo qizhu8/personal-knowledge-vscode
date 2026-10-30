@@ -52,7 +52,7 @@ test("built Projects/Agent and Chat/Automation Profile entries reach native card
   host.lm.selectChatModels = async () => { modelCalls++; throw new Error("Opening a card must not discover/invoke models"); };
   host.window.showQuickPick = async items => {
     if (items.some(item => item.action)) return items.find(item => item.action === (uiAction === "assign" ? "assign" : "user"));
-    return items.find(item => item.id === agent.id);
+    return items.find(item => item.id === agent.id) || items[0];
   };
   host.window.showInformationMessage = async (_title, options) => {
     if (options?.modal) { inspections++; return uiAction === "edit" ? "Edit" : undefined; }
@@ -180,7 +180,8 @@ test("Automation User Profile page reads and edits the real current store withou
   host.commands.executeCommand=async command=>{
     assert.equal(command,"personalKnowledge.userProfileFragments");return fragments.snapshot();
   };
-  store.save("user",{name:"Settings user",role:"Developer",focus:"Tests",preferences:"<img src=x>Preference text",boundaries:"No deployment"});
+  store.save("user",{name:"Settings user",role:"Developer",focus:"Tests",preferences:"<img src=x>Preference text",boundaries:"No deployment",
+    responseStyle:{verbosity:"detailed",terminology:"domain",ordering:"evidence-first"}});
   const extension=fs.readFileSync(path.join(root,"src/extension.ts"),"utf8");
   const start=extension.indexOf('case "userProfile":'),end=extension.indexOf('case "backgroundTasks":',start);
   assert(start>=0&&end>start);
@@ -191,7 +192,10 @@ test("Automation User Profile page reads and edits the real current store withou
   const page=await browser.newPage({viewport:{width:390,height:900}}),errors=[],calls=[];
   page.on("pageerror",error=>errors.push(error.message));
   let input=["Settings user","Engineer","Validation","Updated settings preference","No deployment"];
-  host.window.showQuickPick=async()=>assert.fail("Settings must not require Chat or Profile selection");
+  host.window.showQuickPick=async items=>{
+    assert(items.every(item=>Object.hasOwn(item,"value")),"editing the User Profile should offer only explicit response-style choices");
+    return items[0];
+  };
   host.window.showInformationMessage=async(_title,options)=>options?.modal?"Edit":undefined;
   host.window.showInputBox=async()=>input.shift();
   await page.exposeFunction("settingsHost",async command=>{
@@ -200,18 +204,22 @@ test("Automation User Profile page reads and edits the real current store withou
       {globalStorageUri:{fsPath:path.join(directory,"host")}},()=>path.join(directory,"knowledge"));
   });
   await page.setContent('<main id="detail"></main>');
+  await page.addStyleTag({path:path.join(assets,"panel.css")});
   await page.addStyleTag({path:path.join(assets,"agent-harness.css")});
   await page.addScriptTag({path:path.join(assets,"agent-harness.js")});
   const script=fs.readFileSync(path.join(root,"src/webview/panel/54-persona-profiles.js"),"utf8");
   assert(fs.readFileSync(path.join(assets,"panel.js"),"utf8").includes(script));
   await page.addScriptTag({content:`const state={tab:'userProfile'};const ask=command=>settingsHost(command);${script};showUserProfileTab();`});
+  await page.getByRole("tab",{name:"Long-term",exact:true}).click();
   await page.locator('.profile-configured-card>summary').click();
   await page.getByText("<img src=x>Preference text",{exact:true}).waitFor();
+  assert.match(await page.locator(".profile-configured-card").innerText(),/detailed · Use domain terminology · Evidence first/);
   assert.equal(await page.locator("img,script[src=x]").count(),0);
   assert.doesNotMatch(await page.locator("#detail").innerText(),new RegExp(store.user().id));
   await page.getByRole("button",{name:"Edit / manage User Profile",exact:true}).click();
   await page.getByText("Updated settings preference",{exact:true}).waitFor();
   assert.equal(store.user().revision,2);
+  assert.equal(store.user().responseStyle,undefined,"explicit default choices remove the previous style controls");
   assert.deepEqual(calls,["userProfile","userProfileEdit"]);
   await page.getByRole("button",{name:"Refresh",exact:true}).click();
   await until(()=>calls.length===3);

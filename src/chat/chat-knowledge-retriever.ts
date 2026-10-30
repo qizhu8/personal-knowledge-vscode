@@ -54,10 +54,10 @@ export function createChatKnowledgeRetriever(
     return { candidates: materialized.candidates, invocation };
   }, {
     ...validation, readSnapshot,
-    feedback: async (retrievalId: string, relevantSourceIds: string[], provenance: "user" | "model" = "user") => {
+    feedback: async (retrievalId: string, relevantSourceIds: string[], provenance: "user" | "model" = "user", judgedSourceIds?: string[]) => {
       const current = worker();
       if (!current) throw new Error("The unified retrieval worker is not ready.");
-      return current.submitFeedback(retrievalId, relevantSourceIds, provenance);
+      return current.submitFeedback(retrievalId, relevantSourceIds, provenance, judgedSourceIds);
     },
   });
 }

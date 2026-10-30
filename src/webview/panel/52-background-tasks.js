@@ -60,7 +60,7 @@ function backgroundProcessesHtml() {
           <br>Entry-path version: ${esc(p.pathVersion || 'Unknown')}
           <br>Runtime-reported extension: ${esc(runtime?.extensionVersion || 'Unknown')}${p.kind === 'mcp' ? ` · MCP server version: ${esc(runtime?.serverVersion || 'Unknown')}` : ''}
           <br>Entry: ${p.entryExists === false ? 'Missing' : p.entryExists === true ? 'Present' : 'Unknown'} · ${p.fixture ? 'Test fixture path' : 'No known test-fixture marker'}
-          ${p.kind === 'mcp' ? '<br>Client / Chat identity: Unverified; a parent PID does not identify a conversation.' : ''}</div>
+          ${p.kind === 'mcp' ? `<br>${mcpLaunchAttributionHtml(runtime?.attribution, runtime?.fresh)}<br>A parent PID does not identify a conversation; separate PIDs do not prove separate windows.` : ''}</div>
         ${runtime ? `<div class="background-process-evidence"><strong>${runtime.fresh ? 'Fresh at sample time' : 'Stale report · not used as current runtime evidence'}</strong>
           <div class="background-process-meta">Source: managed MCP registry (not a same-client handshake) · Reported ${esc(runtime.observedAt || 'Unknown')}
             <br>Phase: ${esc(runtime.phase || 'Unknown')} · In flight: ${esc(runtime.inFlight ?? 'Unknown')} · Uncertain calls: ${esc(runtime.uncertainCalls ?? 'Unknown')}

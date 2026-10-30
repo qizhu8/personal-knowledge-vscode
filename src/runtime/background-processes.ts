@@ -6,6 +6,7 @@ import { promisify } from "util";
 import { managedMcpLifecycleStatus } from "../mcp/mcp-lifecycle";
 import { ExtensionBuild } from "./extension-host-runtime";
 import { compareVersionOrder } from "./version-order";
+import { ManagedMcpAttribution, normalizeManagedMcpAttribution } from "../mcp/mcp-attribution";
 
 export interface BackgroundProcessRuntime {
   source: "managed-registry";
@@ -19,6 +20,7 @@ export interface BackgroundProcessRuntime {
   phase?: string;
   inFlight?: number;
   uncertainCalls?: number;
+  attribution?: ManagedMcpAttribution;
 }
 
 export interface BackgroundProcessAssessment {
@@ -151,6 +153,7 @@ export function describeBackgroundProcesses(
             Number.isSafeInteger(record[key]) && record[key] >= 0 ? record[key] : undefined;
           process.runtime = {
             source: "managed-registry", fresh: record.heartbeatFresh === true,
+            attribution: normalizeManagedMcpAttribution(record.attribution),
             observedAt: Number.isFinite(record.heartbeatAt) ? new Date(record.heartbeatAt * 1000).toISOString() : undefined,
             extensionVersion: string("extensionVersion"), serverVersion: string("version"),
             generation: string("generation"), configuredGeneration: report.configuredGeneration,

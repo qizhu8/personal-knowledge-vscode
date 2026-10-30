@@ -20,6 +20,16 @@ but clears those records only after successful component and baseline applicatio
 
 ## Offline and disconnected hosts
 
+Conflict snapshots sent to the panel include both the workspace ID and its
+persisted revision. Choice requests must return that same pair; only genuinely
+outdated requests are rejected. A displayed candidate is not approval, and neither
+an extension version nor a file modification time establishes which content to
+keep. Compare Local, Base and GitHub before approving content or deletion choices.
+The panel separates choices still needed from prepared candidates awaiting
+approval. Reason-specific guidance directs users to compare content or investigate
+moves before deletion; bulk source choices are collapsed under Advanced rather
+than presented as the default next step.
+
 ### Superseded service recovery results
 
 A disconnected Host can leave an older completed or partial-conflict result
@@ -99,6 +109,14 @@ RPC eventually returns. It does not delete credentials or automatically launch
 sign-in. A failing account check is returned separately, so one unresponsive
 target cannot suppress other targets or their synchronization errors.
 
+For an automatic Sync, a `CREDENTIAL_READ_TIMEOUT` during authentication, before
+any raw Sync operation has been submitted, deprioritizes that Extension Host on
+the next scheduled attempt. Another available Host is preferred; a sole Host is
+still eligible, and when all have failed the earliest failed Host is preferred.
+The failed request is never replayed in place. Manual Sync remains bound to its
+requesting Host. Cancellation, generic credential errors, GitHub rejection and
+failures after an operation was submitted do not trigger this routing rule.
+
 Failed attempts retain `errorCode` and `phase` alongside the message and existing
 retry count, through target normalization, scheduler state and service IPC.
 Collapsed target cards show the code, failed phase and actionable message once.
@@ -114,8 +132,12 @@ failure diagram. The diagnostic event also contains `errorCode`.
 
 For storage timeout/cancellation/failure, reload the affected window and explicitly
 retry Sync. These failures occur before GitHub Fetch/Push and are not evidence of
-an expired token or GitHub permission denial. Existing retry limits and Auto
-intent are unchanged. Historical bare `Canceled` records display `SYNC_CANCELED`
+an expired token or GitHub permission denial. A timed-out read is labeled
+**Local credential channel unavailable**, with the executing Host information
+when available. Enabled targets show the next automatic retry time even while
+displaying an error; disabled targets do not advertise a stale retry. The
+15-minute authentication backoff and Auto intent are unchanged.
+Historical bare `Canceled` records display `SYNC_CANCELED`
 with a retry hint; they are not retrospectively assigned an authentication cause.
 These bounds cannot retrofit a call already hung inside an old Host.
 

@@ -13,6 +13,7 @@ let profiling = false;
 let serviceHook;
 let accelerateReviewTimeout = false;
 let confirmationHook;
+let backgroundPreparationTick;
 const disposable = { dispose() {} };
 const authoringRequests = {
   group_create: { name: "Tools", parent: "" },
@@ -65,12 +66,51 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
       return { stdin: { end(input) { const request=JSON.parse(input);serviceCalls.push(request);serviceHook?.(request);callback(null, JSON.stringify(nextResult)); } } };
     } };
     return require(name);
-  }, process, console, URL, setTimeout: (callback, delay) => setTimeout(callback, accelerateReviewTimeout && delay === 180000 ? 5 : delay), clearTimeout,
+  }, process, console, URL, setTimeout: (callback, delay) => {
+    if (delay === 5000) { backgroundPreparationTick = callback; return { unref() {} }; }
+    return setTimeout(callback, accelerateReviewTimeout && delay === 180000 ? 5 : delay);
+  }, clearTimeout, setInterval: () => ({ unref() {} }), clearInterval() {},
 });
 
 (async () => {
   const context = { extensionUri: root, extensionPath: root, globalStorageUri: { fsPath: "/isolated/global" }, subscriptions: [] };
   moduleExports.initializeActionCommands(context);
+  const automaticCalls = serviceCalls.length;
+  const preparationItems = [
+    { action_id: "auto.parent", content_hash: "parent", dependencies: { "auto.child": "child" }, version: 1 },
+    { action_id: "auto.child", content_hash: "child", dependencies: {}, version: 1 },
+  ];
+  serviceHook = request => {
+    if (request.method === "catalog") nextResult = { ok: true, actions: [], pending_admissions: preparationItems, proposals: [] };
+    else if (request.method === "qualification_prepare") nextResult = { ok: true, state: "environment_checked", attempt_id: "attempt_" + "a".repeat(32) };
+    else if (request.method === "qualification_admit") nextResult = { ok: true, state: "succeeded" };
+    else throw Error("Unexpected background request: " + request.method);
+  };
+  backgroundPreparationTick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepStrictEqual(serviceCalls.slice(automaticCalls).map(call => call.method),
+    ["catalog", "qualification_prepare", "qualification_admit", "qualification_prepare", "qualification_admit"]);
+  assert.deepStrictEqual(serviceCalls.slice(automaticCalls).filter(call => call.method === "qualification_prepare").map(call => call.params.action_id),
+    ["auto.child", "auto.parent"], "background preparation orders dependencies before parents without opening UI");
+  assert.strictEqual(executions.length, 0, "automatic preparation does not navigate or open confirmation dialogs");
+  const beforeDuplicateTick = serviceCalls.length;
+  backgroundPreparationTick(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepStrictEqual(serviceCalls.slice(beforeDuplicateTick).map(call => call.method), ["catalog"],
+    "identical revisions are not repeatedly prepared");
+  serviceHook = request => {
+    if (request.method === "qualification_prepare") {
+      nextResult = { ok: true, state: "environment_checked", attempt_id: "attempt_" + "b".repeat(32) };
+      trusted = false;
+    }
+  };
+  const beforeLostTrust = serviceCalls.length;
+  await moduleExports.handleActionWorkbenchMessage(context, { requestId: "automatic-lost-trust", method: "prepare",
+    params: { action_id: "auto.trust", content_hash: "pinned" } }, reply => replies.push(reply));
+  assert.match(replies.at(-1).result.error, /trusted/);
+  assert.deepStrictEqual(serviceCalls.slice(beforeLostTrust).map(call => call.method), ["qualification_prepare"],
+    "loss of trust during background checks must prevent admission");
+  trusted = true;
+  serviceHook = undefined; nextResult = { ok: true };
   const manifest = require("../package.json");
   assert.strictEqual(manifest.contributes.chatParticipants, undefined);
   assert(manifest.contributes.mcpServerDefinitionProviders.some(provider => provider.id === "personalKnowledge.pkm"));
@@ -101,9 +141,12 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
   assert(!foreignLibrary.includes("foreign-run"), "another Root's launch must not resume observation");
   const workbenchListener = listener;
   listener = message => moduleExports.handleActionLibraryMessage(context, { knowledgeRoot: "/isolated/test/store", ...message }, reply => replies.push(reply));
-  nextResult = { ok: true, actions: [{ action_id: "test.authoring" }], proposals: [{ proposal_id: "hidden" }], pending_admissions: ["hidden"] };
+  nextResult = { ok: true, actions: [{ action_id: "test.authoring" }], proposals: [{ proposal_id: "hidden" }], pending_admissions: [] };
   await listener({ requestId: "library-catalog", method: "catalog" });
-  assert.deepStrictEqual(JSON.parse(JSON.stringify(replies.at(-1).result)), { ok: true, actions: [{ action_id: "test.authoring" }] });
+  const exposedCatalog = JSON.parse(JSON.stringify(replies.at(-1).result));
+  assert.deepStrictEqual(exposedCatalog.actions.map(({ preparation, ...action }) => action), nextResult.actions);
+  assert.deepStrictEqual(exposedCatalog.proposals.map(({ preparation, ...proposal }) => proposal), nextResult.proposals,
+    "Library exposes pending items for read-only review without admitting them");
   for (const method of ["validate", "group_create", "source_save", "qualification_admit", "proposal_decide"]) {
     const before = serviceCalls.length;
     await listener({ requestId: "library-blocked", method, params: {} });
@@ -270,7 +313,7 @@ vm.runInNewContext(fs.readFileSync(path.join(root, "dist", "ui", "action-browser
   assert.strictEqual(serviceCalls.at(-2).params.proposal_id,"proposal_second");
   const batchProgress = replies.filter(item=>item.requestId==="validate-batch"&&item.progress).map(item=>item.progress);
   assert(batchProgress.some(item=>item.completed===1&&item.result?.state==="succeeded"));
-  assert(batchProgress.some(item=>item.action_id==="batch.second"&&item.stage.startsWith("Smoke tests")));
+  assert(batchProgress.some(item=>item.action_id==="batch.second"&&item.stage.startsWith("Example tests")));
   assert.strictEqual(batchProgress.at(-1).completed,2);
   const originalModels=vscode.lm.selectChatModels;
   const fixtureModel=(await originalModels())[0];

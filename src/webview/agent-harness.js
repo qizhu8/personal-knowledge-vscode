@@ -34,9 +34,9 @@
   }
 
   const memoryTiers = Object.freeze([
-    Object.freeze({ id:'cache', label:'Cache', horizon:'Short-term', meaning:'Actual model context, evidenced by a sent manifest.' }),
-    Object.freeze({ id:'memory', label:'Memory', horizon:'Mid-term', meaning:'Organized Chat history and source-backed derived observations.' }),
-    Object.freeze({ id:'disk', label:'Disk', horizon:'Long-term', meaning:'Independently maintained knowledge assets and accepted Profile cards.' }),
+    Object.freeze({ id:'cache', label:'Short-term', horizon:'Short-term', meaning:'Actual model context, evidenced by a sent manifest.' }),
+    Object.freeze({ id:'memory', label:'Mid-term', horizon:'Mid-term', meaning:'Organized Chat history and source-backed derived observations.' }),
+    Object.freeze({ id:'disk', label:'Long-term', horizon:'Long-term', meaning:'Independently maintained knowledge assets and accepted Profile cards.' }),
   ]);
   function memoryTierObservations(data, attempt) {
     const sent = list(attempt?.budgetReceipts).filter(receipt => receipt.status === 'sent').at(-1);
@@ -52,7 +52,7 @@
           ? `Last recorded sent round ${sent.round ?? 'unknown'}. Historical payload evidence, not a live view into the provider. Prepared rounds are not sent evidence.`
           : 'Context is unknown, not empty. Prepared references and stored pieces do not prove transmission.' },
       memory:{ summary:Array.isArray(data?.pieces) ? `${data.pieces.length} displayed pieces` : 'Stored overview unavailable',
-        detail:'Chat-scoped, bounded stored organization. Abstraction Levels belong inside Memory; they are not temporal tiers or expiry rules.' },
+        detail:'Chat-scoped, bounded stored organization. Stored abstraction levels belong to mid-term knowledge; they are not expiry rules.' },
       disk:{ summary:`${assets.size} asset references / ${cards} Profile snapshots`,
         detail:'References recorded in this attempt, not a Knowledge Root inventory or proof that assets still exist. Note, Skill and other saved assets have independent lifetimes; retrieval does not move or promote them.' },
     };
@@ -60,7 +60,7 @@
   function memoryTierPyramid(observations, onSelect) {
     const root = document.createElement('div');
     root.className = 'pkm-harness-memory-tiers';
-    root.setAttribute('role','group'); root.setAttribute('aria-label','Cache / Memory / Disk tiers');
+    root.setAttribute('role','group'); root.setAttribute('aria-label','3-Level Knowledge Hierarchy');
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('viewBox','0 0 600 282');
     svg.setAttribute('preserveAspectRatio','none'); svg.setAttribute('aria-hidden','true');
@@ -72,9 +72,9 @@
       const row = document.createElement('div'), title = document.createElement('strong'), summary = document.createElement('span');
       row.className = 'pkm-harness-memory-tier'; row.dataset.memoryTier = tier.id; row.dataset.piece = tier.id;
       row.setAttribute('role','group');
-      row.setAttribute('aria-label',`${tier.label} / ${tier.horizon}. ${observation.summary}. ${observation.detail}`);
+      row.setAttribute('aria-label',`${tier.label}. ${observation.summary}. ${observation.detail}`);
       row.title = `${tier.meaning}\n${observation.summary}\n${observation.detail}`;
-      title.textContent = `${tier.label} / ${tier.horizon}`; summary.textContent = observation.summary;
+      title.textContent = tier.label; summary.textContent = observation.summary;
       row.append(title,summary); root.append(row);
       pieceInteraction(root,row,tier.id,onSelect && (() => onSelect(tier.id)));
     });
@@ -89,7 +89,7 @@
     details.className = 'pkm-harness-memory-abstraction-detail';
     details.open = abstractionExpansion.get(data) === true;
     details.addEventListener('toggle',() => abstractionExpansion.set(data,details.open));
-    summary.textContent = 'Inside Memory: stored abstraction levels and evidence';
+    summary.textContent = 'Mid-term knowledge: stored abstraction levels and evidence';
     details.append(summary,memoryPiecePyramid(data,attempt,onInspect)); section.append(pyramid,details);
     return section;
   }
@@ -1108,7 +1108,7 @@
         else {
           memoryOverview = state.data;
           memory.append(memoryPyramid(memoryOverview,attempt,piece => { memoryPieceChoice = piece; drawDashboard(); }),
-            el('small','Cache / Memory / Disk are logical tiers, not age buckets. Expand Inside Memory for stored abstraction levels and evidence. Blue: prepared reference; green: historical sent membership, not proof the current revision was sent.'));
+            el('small','3-Level Knowledge Hierarchy: short-term, mid-term and long-term knowledge, not expiry rules. Expand mid-term knowledge for stored abstraction levels and evidence. Blue: prepared reference; green: historical sent membership, not proof the current revision was sent.'));
           if (memoryPieceChoice) {
             const evidence = el('section'); evidence.setAttribute('aria-label','Stored Memory piece evidence');
             const piece = readDashboardMemory('memoryPiece',{piece:memoryPieceChoice.id,after:0});
@@ -1476,6 +1476,15 @@
           const term = document.createElement('dt'), content = document.createElement('dd');
           term.textContent = label; content.textContent = value || 'Not specified'; fields.append(term, content);
         }
+        const style = profile.responseStyle;
+        const styleTerm = document.createElement('dt'), styleContent = document.createElement('dd');
+        styleTerm.textContent = 'Explicit response style';
+        styleContent.textContent = style ? [
+          style.verbosity === 'default' ? '' : style.verbosity,
+          style.terminology === 'explain' ? 'Explain specialist terms' : style.terminology === 'domain' ? 'Use domain terminology' : '',
+          style.ordering === 'conclusion-first' ? 'Conclusion first' : style.ordering === 'evidence-first' ? 'Evidence first' : '',
+        ].filter(Boolean).join(' · ') || 'No preference' : 'No preference';
+        fields.append(styleTerm, styleContent);
         section.append(fields);
       }
       root.append(section);

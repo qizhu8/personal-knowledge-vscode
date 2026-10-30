@@ -95,6 +95,24 @@ assert.doesNotMatch(detail.innerHTML,/Permissions:/,"the controller side grants 
 ui.onSnapshot({connections:[{...snapshot.connections[0],state:"reconnecting",reconnecting:{since:0,deadline:Date.now()-1}}]});
 assert.match(detail.innerHTML,/No Portal is connected/,"a lapsed reconnect grace is hidden");
 
+for(const [state,extra,expected] of [
+  ["connected",{},"connected"],
+  ["connecting",{},"connecting"],
+  ["disconnected",{},"standby"],
+  ["disconnected",{paired:false},"disconnected"],
+  ["disconnected",{deleted:true},"disconnected"],
+  ["disconnected",{error:"Connection failed"},"disconnected"],
+]){
+  ui.onSnapshot({connections:[],endpoints:[{id:"indicator",name:"Local",paired:true,deleted:false,
+    acceptsIncoming:false,permissions:[],state,...extra}]});
+  assert(detail.innerHTML.includes(`class="portal-connection-row ${expected}"`));
+  assert.match(detail.innerHTML,new RegExp(`<i aria-hidden="true"></i>${expected}</span>`),"saved endpoints show a decorative connection light with a text label");
+  if(expected==="standby"){
+    assert.match(detail.innerHTML,/remote availability has not been checked/);
+    assert.match(detail.innerHTML,/data-portal-command="portalEndpointConnect"/,"standby preserves the Connect action");
+  }
+}
+
 for(const [endpoint,scope] of [["ws://127.0.0.1:7345","forwarded-localhost"],["ws://[::1]:9","forwarded-localhost"],
   ["wss://10.1.2.3:443","lan"],["wss://172.20.0.1","lan"],["wss://box.local","lan"],["wss://pkm.example.com","remote"],["not a url","unknown"]]){
   assert.equal(endpointScope(endpoint),scope);

@@ -36,6 +36,14 @@ plus explicit reusable user requirements with their applicability conditions.
 Do not store credentials, inferred sensitive traits, project facts, temporary
 instructions or entire conversations.
 
+The accepted User / Agent card has optional, explicit response-style controls:
+verbosity (concise/detailed), terminology (explain specialist terms/use domain
+terminology), and ordering (conclusion-first/evidence-first). Each dimension
+can be reset to **No preference**. These settings affect presentation only;
+they never relax factual accuracy, evidence, uncertainty, safety, scope,
+permissions or acceptance criteria. Older cards without these fields retain
+their existing behavior.
+
 The accepted card uses direct user editing. A separate, private/root-scoped
 `pkm.user-profile-fragments/v1` collection now captures model-derived habits,
 interests, focus areas, cautions and requirements from completed local PKM Chat turns, with
@@ -97,11 +105,25 @@ explicit assignment.
 
 ## Always-inspectable persona cards
 
+- User Profile presents Short-term, Mid-term and Long-term as mutually exclusive
+  tabs, not stacked sections. Mid-term opens by default; the selected tab persists
+  in the webview and survives background refresh. Arrow keys, Home and End support
+  keyboard navigation. Switching tabs does not request model inference or reset
+  fragment filters, evidence or accepted-card edits.
+- Keep the three-level pyramid above the tabs as a real-entry overview. Mid-term
+  dots identify individual source-backed fragments; Long-term dots identify
+  accepted Profile cards. This Root-wide view has no selected sent-context
+  manifest, so Short-term is unknown and renders no synthetic dots. Each dot has
+  a stable entry ID, an accessible text/revision tooltip and navigates to its
+  actual detail; fragment navigation clears filters that would hide the target.
+  Show at most 24 dots per tier and an exact `+N more` control opening the full
+  tab. Counts reflect the stored snapshot, not inferred importance or certainty.
 - A stable User Profile entry opens the user's concise preference card.
 - Chat identity and Agent entries in Projects / Agent Sessions open the
   corresponding Agent Profile card.
 - Cards show role, focus, working preferences and responsibility boundaries,
-  not a raw system prompt. Distinguish configured focus from verified outcomes.
+  explicit response-style settings and responsibility boundaries, not a raw
+  system prompt. Distinguish configured focus from verified outcomes.
 - Viewing works before, during and after execution, without model inference,
   tool execution, synthetic Tasks or a new Chat.
 - Show current Profile revision separately from the revision used by a selected

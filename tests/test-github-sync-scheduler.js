@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 const assert = require("assert");
 const { GitHubSyncScheduler, GitHubSyncDeferredError, GITHUB_SYNC_AUTHENTICATION_RETRY_MS,
-  isGitHubSyncAuthenticationFailure } = require("../dist/sync/github-sync-scheduler.js");
+  isGitHubSyncAuthenticationFailure, isGitHubSyncCredentialChannelFailure,
+  isGitHubSyncCredentialRetryFailure, isGitHubSyncRemoteAuthenticationFailure } = require("../dist/sync/github-sync-scheduler.js");
 const { GitHubSyncContentRepairError } = require("../dist/sync/github-sync-content-repair.js");
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
@@ -211,16 +212,23 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 
   assert.equal(GITHUB_SYNC_AUTHENTICATION_RETRY_MS, 15 * 60_000);
   for (const failure of [
-    { error:"VS Code canceled credential access", errorCode:"CREDENTIAL_READ_CANCELED" },
     { error:"Secret storage unavailable", phase:"authenticating" },
     { error:"fatal: Authentication failed for https://github.com/example/repo.git" },
     { error:"Permission denied (publickey)." },
   ]) assert(isGitHubSyncAuthenticationFailure(failure));
+  for (const errorCode of ["CREDENTIAL_READ_TIMEOUT", "CREDENTIAL_READ_CANCELED", "CREDENTIAL_READ_FAILED"]) {
+    const failure = { error:"Local channel unavailable", errorCode, phase:"authenticating" };
+    assert(isGitHubSyncCredentialChannelFailure(failure));
+    assert(!isGitHubSyncRemoteAuthenticationFailure(failure), "a local credential channel failure is not a GitHub authentication failure");
+    assert(isGitHubSyncAuthenticationFailure(failure), "existing hosts retain the broad retry-budget predicate");
+    assert(isGitHubSyncCredentialRetryFailure(failure), "local credential failures retain the authentication retry contract");
+    assert(!isGitHubSyncCredentialRetryFailure({...failure, retryable:false}));
+  }
   assert(!isGitHubSyncAuthenticationFailure({ error:"fetch failed: connection reset", phase:"fetch" }));
   assert(!isGitHubSyncAuthenticationFailure({ error:"Repository not found", phase:"fetch" }),
     "an unknown repository is not sufficient evidence of an authentication failure");
 
-  for (const intervalMinutes of [2, 30]) {
+  for (const [intervalMinutes, failureKind] of [[2, "channel"], [30, "channel"], [2, "authentication"], [30, "authentication"]]) {
     let clock = Date.parse("2026-10-27T23:00:00Z"), attempts = 0, recovered = false;
     const authTimers = new Map(), pauses = [];
     const authTarget = { id:"auth", enabled:true, intervalMinutes, syncOnChange:true };
@@ -236,8 +244,8 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
         attempts++;
         if (!recovered) {
           clock += 10_000;
-          throw Object.assign(new Error("VS Code credential storage is temporarily unavailable"),
-            {code:"CREDENTIAL_READ_TIMEOUT", phase:"authenticating"});
+          throw Object.assign(new Error(failureKind === "channel" ? "VS Code credential storage is temporarily unavailable" : "Bad credentials"),
+            {code:failureKind === "channel" ? "CREDENTIAL_READ_TIMEOUT" : "AUTH_FAILED", phase:"authenticating"});
         }
       },
     });

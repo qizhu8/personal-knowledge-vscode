@@ -42,6 +42,32 @@ test("Profiles are private Host/user scoped, Agents root scoped, bounded and CAS
   if (process.platform !== "win32") assert.equal(fs.statSync(path.join(store.userDirectory, `${user.id}.json`)).mode & 0o777, 0o600);
 });
 
+test("Explicit response styles are reversible, backward-compatible and cannot weaken Profile authority", t => {
+  const { store } = fixture(t);
+  const legacy = store.save("user", card());
+  assert.equal(legacy.responseStyle, undefined);
+  const style = { verbosity:"concise", terminology:"explain", ordering:"conclusion-first" };
+  const saved = store.save("user", { ...card(), responseStyle:style }, legacy);
+  assert.deepEqual(saved.responseStyle, style);
+  const message = personaMessage(store.capture()).content;
+  assert.match(message, /user-selected responseStyle only to presentation/);
+  assert.match(message, /never lower factual accuracy, evidence, uncertainty, safety, permission, scope or acceptance standards/);
+  assert.match(message, /"responseStyle":\{"verbosity":"concise","terminology":"explain","ordering":"conclusion-first"\}/);
+  const historical = structuredClone(store.capture());
+
+  const filename = path.join(store.userDirectory, `${saved.id}.json`);
+  const concurrentlyChanged = { ...saved, responseStyle:{ ...style, verbosity:"detailed" } };
+  fs.writeFileSync(filename, JSON.stringify(concurrentlyChanged));
+  assert.throws(() => store.save("user", { ...card(), responseStyle:style }, saved), /changed in another window/);
+  assert.equal(store.user().responseStyle.verbosity, "detailed");
+
+  const cleared = store.save("user", card(), store.user());
+  assert.equal(cleared.responseStyle, undefined);
+  assert.deepEqual(historical.user.responseStyle,style,"style edits do not rewrite an earlier attempt snapshot");
+  assert(!personaMessage(store.capture()).content.includes('"responseStyle"'));
+  assert.throws(() => store.save("user", { ...card(), responseStyle:{ ...style, verbosity:"unbounded" } }, store.user()), /Invalid private Profile/);
+});
+
 test("Deleting stops future use, never resurrects stale cards and leaves captured history unchanged", t => {
   const { directory, store } = fixture(t);
   const user = store.save("user", card()), agent = store.save("agent", card("Tests"));

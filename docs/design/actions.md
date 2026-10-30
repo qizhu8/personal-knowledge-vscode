@@ -36,24 +36,43 @@ not prove a remote transfer completed or an output contract was satisfied.
 
 Public agent authoring submits proposals, not formal registry writes. The Workbench
 lists pending proposals and existing/imported unapproved definitions separately
-from admitted Actions. The independent Library lists only admitted Actions.
-Clicking Validate in Workbench requests Agent risk information, followed
-by smoke execution after the user confirms the risks and exact test scope.
-Exact bundled core revisions use deterministic environment self-tests without a model.
-Successful tests
-automatically admit/authorize the exact version; no separate manual grant or
-admission dialog is required. Updates
+from admitted Actions. The independent Library keeps its executable catalog
+limited to admitted Actions, with a separate read-only **Preparing Actions**
+section for pending proposals and unapproved definitions. Search
+includes these pending items; selecting one shows its revision, effects and
+reason, with an optional link to preparation details in Workbench. A pending
+update does not replace the previously admitted executable revision.
+Admitted public Actions support manual invocation directly in the Library: the
+theme-aware **Inputs** section shows typed parameters, descriptions and JSON
+examples; **Outputs** separates the declared return fields from the actual Run
+result. Each invocation requires explicit confirmation and pins the definition
+revision. Non-ready Actions explain their blocking condition and link to
+preparation details rather than silently disabling Run. Private Actions still
+require their owning runtime context; manual invocation does not bypass readiness,
+authorization or admission checks.
+The trusted Extension Host automatically discovers new and non-ready Actions,
+prepares dependencies first, and admits the exact revision in the background.
+No Validate click, model selection, smoke-test consent or risk card is required.
+Discovery starts after activation and repeats every 15 seconds while the Host is
+running; blocked revisions retry after a minute. Successful checks persist across
+restarts. Workspace trust, the automation domain and a healthy managed runtime
+are required. Explicitly revoked revisions remain disabled.
+Effectful and arbitrary program/MCP examples never run during automatic
+preparation; these receive environment-only checks, not a safety certification.
+Eligible pure builtin/pipeline examples execute in the staging registry. Missing
+toolchains, required builds and failed tests remain blocked with a visible reason;
+automatic preparation never installs tools or runs arbitrary build commands.
+Updates
 keep the previous approved revision usable while pending, require a higher
 version and cannot overwrite approved implementation files in the Workbench.
 Admission rechecks the base revision, selected implementation, source fingerprints,
 environment and dependency revisions; the host rechecks Root/trust after tests.
 Qualification uses a staged registry so failed tests leave the previous approved
-definition untouched. Agent findings do not veto user-authorized operations.
-An unavailable/incomplete assessment is explicitly disclosed for confirmation.
-Cancellation, missing consent, stale revisions, invalid execution conditions and
+definition untouched. The automatic path does not call a model or claim a human
+approved its checks. Stale revisions, invalid execution conditions and
 failed tests still prevent admission. Readiness means environment tests passed,
 not that the Action is certified safe.
-Cancelling or rejecting never installs the proposal.
+Rejecting a pending proposal never installs it.
 Pipelines need admission too; no MCP or generic agent-dispatch approval tool is
 exposed. Built-in system components remain preinstalled exceptions.
 
@@ -114,7 +133,7 @@ MCP/generic dispatch, just like single qualification orchestration.
 
 The Workbench inspector separates installation, enabled state, grant, qualification,
 environment and authoritative readiness. Ordinary qualification is checked against
-the definition hash, environment and expiry. Components need no operator grant;
+the definition hash and current environment, without time-based expiry. Components need no operator grant;
 private platform grant status is explicitly **runtime-checked**, not a claim that
 the inspector has independently certified every private binding. The durable
 executor rechecks permission/readiness at launch. Its original Run history,
@@ -483,20 +502,31 @@ Proposed availability states:
 | State | Meaning |
 | --- | --- |
 | unsupported | No implementation supports this target |
-| unverified | Supported target without applicable controlled acceptance |
+| unverified | Supported target with examples that have not passed controlled acceptance |
+| environment-only | No examples, or effectful examples that cannot safely run without an OS sandbox; current preflight is checked |
 | blocked | Missing runtime, dependencies, configuration, auth or permissions |
-| ready | Applicable unexpired acceptance and current preflight both pass |
+| ready | Applicable acceptance and current preflight both pass |
 | failed | Applicable controlled acceptance failed |
-| stale | Implementation/environment changed or evidence expired |
+| stale | Implementation/environment changed or evidence is invalid |
 
-The qualification pipeline is static contract validation, runtime/dependency
-preflight, then a controlled smoke/acceptance test with explicit test scope.
+Qualification happens when an Action revision is added or explicitly reviewed,
+not on a periodic timer. Each invocation still checks current build, environment,
+dependencies, authorization and input/output contracts. Actions with no examples
+use environment-only readiness and do not require a synthetic smoke test. Examples
+run only for pure built-in/pipeline Actions whose nested Actions are also eligible.
+Effectful examples and arbitrary program/MCP implementations are not executed
+unless an OS-enforced sandbox with mock effect boundaries is available; the
+current host does not provide that sandbox, so those examples are explicitly
+skipped and the Action remains labeled environment-only. Declared effects are
+not an OS security boundary. A staging registry or temporary fixture directory
+is not an OS sandbox.
+
 Preflight is read-only unless an independently authorized validation step declares
 an effect. Never silently install dependencies, start login or create remote jobs.
 
 Evidence binds to the definition and implementation digests, OS/architecture,
 runtime and dependency versions, relevant configuration revision, host identity,
-principal/scope references, validation recipe revision, timestamps and expiry.
+principal/scope references, validation recipe revision and validation timestamp.
 Never hash credential contents into a shareable fingerprint. Recheck dynamic
 prerequisites before launch: yesterday's valid token does not prove today's access.
 
@@ -665,8 +695,11 @@ ModuleSet subset export/import, disabled-by-default installation, explicit
 load/unload/remove, stable identity retention and unsafe ZIP path rejection have
 focused executable tests. Imported packages never carry grants or readiness.
 
-Calls now fail closed unless a local operator-owned smoke record matches the
-definition/implementation, environment and expiry. The environment fingerprint
+Calls still require admission/trust and current runtime checks. When examples are
+available, their passing record must match the definition/implementation and
+environment. Environment-only Actions rely on those live checks rather than a
+smoke record. Validation evidence does not expire based on elapsed time. Historical
+`expires_at` fields are ignored. The environment fingerprint
 includes runtime, executable and declared build inputs/outputs for generic modules,
 but does not capture the full dependency/config/auth context described above.
 The generic queue is executable; the legacy Cosmos adapters still lack a production
@@ -680,7 +713,7 @@ and canonical digest rules are still required for production.
 
 [test-action-runtime.py](../../tests/test-action-runtime.py) passes twelve isolated
 Linux tests covering discovery/ambiguity, background argv execution, idempotency,
-scope/schema rejection, cancellation, stale/expired/environment-mismatched evidence
+scope/schema rejection, cancellation, stale/environment-mismatched evidence
 and FastMCP registration, including Cosmos being absent from a clean default store.
 [test-action-modules.py](../../tests/test-action-modules.py) covers nineteen tests,
 including completed-child admission, typed Basic Components, bounded control flow
@@ -1171,7 +1204,8 @@ manifest-authoring risk; the runtime does not pretend this is a hermetic build.
 
 Qualification performs preflight, required build, controlled example executions,
 output-contract checks and a final environment-fingerprint comparison. A passing
-record expires after 24 hours. Any relevant binding, source, dependency, runtime
+record does not expire after a fixed interval; runtime preflight remains required.
+Any relevant binding, source, dependency, runtime
 or artifact change makes the old evidence stale. Compilation failure is distinct
 from execution-test failure. Readiness belongs to a pinned implementation on an
 actual execution host, not to an Action name globally.
@@ -1244,7 +1278,7 @@ node tests/test-ui-build-artifacts.js
 ## Decisions still needing review
 
 - Formal Action storage/index migration and aliases using existing stable PKM IDs.
-- Qualification TTL and invalidation boundaries; platform-specific sandbox choice.
+- Qualification invalidation boundaries; platform-specific sandbox choice.
 - Initial artifact quotas, diagnostic TTL, export retention and managed-root UX.
 - SDK packaging and dedicated-pipe framing for the first compiled languages.
 - Windows/macOS host staging directories and target-host acceptance.

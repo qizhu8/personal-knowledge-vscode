@@ -88,7 +88,7 @@ test("built Agent Session tree retains empty Chats without false expansion and s
   assert.match(await empty.locator(".agent-session-chat-title").getAttribute("title"),/No Task · Chat history is separate/);
   assert(await empty.evaluate(node=>node.getBoundingClientRect().height<=36),"Chat entries must stay on one compact line with production list CSS");
   assert(await empty.getByRole("button",{name:"Open Chat Dashboard: Empty Chat"}).evaluate(node=>node.getBoundingClientRect().height<=24));
-  assert.equal(await empty.locator(".tree-cat-count").innerText(), "0 Tasks");
+  assert.equal(await empty.locator(".tree-cat-count").innerText(), "1 Chat");
   assert.equal(await empty.locator(".agent-session-pkm-icon").count(), 1);
   assert.equal(await empty.evaluate(node => node.nextElementSibling === null), true);
   assert.equal(await empty.getByRole("button", { name:"Open Chat Dashboard: Empty Chat" }).count(), 1);

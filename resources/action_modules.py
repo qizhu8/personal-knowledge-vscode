@@ -265,12 +265,12 @@ class ModuleRuntime:
 
     @staticmethod
     def proposal_result(record):
-        return {"ok": True, "state": "pending_operator_approval", "next_owner": "operator",
+        return {"ok": True, "state": "pending_operator_approval", "next_owner": "background",
                 "proposal_id": record["proposal_id"], "action_id": record["action_id"],
                 "content_hash": record["content_hash"], "registered": False, "callable": False,
-                "next_action": "Ask the operator to review this proposal in Automation > Action Library. "
-                               "Click Review in canvas, then Validate: confirm Agent risk information before smoke tests. "
-                               "Only passing tests admit this version. Do not self-grant, call or retry registration."}
+                "next_action": "The trusted PKM Extension Host prepares this revision automatically in the background. "
+                               "Wait for Action readiness; no manual Validate or model selection is required. "
+                               "If blocked, inspect preparation details. Do not self-grant or retry registration."}
 
     def module_set_path(self, module_set_id, version):
         if not isinstance(module_set_id, str) or not re.fullmatch(r"[a-z][a-z0-9_.-]{2,100}", module_set_id) or type(version) is not int or version < 1:
@@ -468,7 +468,9 @@ class ModuleRuntime:
                 for name in manifest["actions"]:
                     definition = self.definition(name)
                     _atomic_write(self.root / "admissions" / (name + ".json"), {"content_hash": definition["content_hash"]})
-        return {"ok": True, "module_set_id": module_set_id, "version": version, "enabled": enabled}
+        readiness = ({name: self.availability(name) for name in manifest["actions"]} if enabled else {})
+        return {"ok": True, "module_set_id": module_set_id, "version": version, "enabled": enabled,
+                "readiness": readiness}
 
     def module_set_remove(self, module_set_id, version):
         directory = self.module_set_path(module_set_id, version)
@@ -638,7 +640,8 @@ class ModuleRuntime:
                 except Exception:
                     shutil.rmtree(temporary)
                     raise
-        return {"ok": True, "manifest": manifest, "enabled": False, "qualified": False}
+        return {"ok": True, "manifest": manifest, "enabled": False, "qualified": False,
+                "readiness": "deferred_until_load"}
 
     @contextlib.contextmanager
     def lock(self, recover=False):
@@ -763,7 +766,11 @@ class ModuleRuntime:
         return {"ok": True, "action_id": action_id, "display_name": name.strip()}
 
     def action_move(self, action_id, category):
-        self.authoring_action(action_id)
+        try:
+            self.authoring_action(action_id)
+        except FileNotFoundError:
+            if not any(proposal["action_id"] == action_id for proposal in self.proposal_list()["proposals"]):
+                raise
         self.category_path(category)
         with self.lock():
             layout = self.catalog_layout()
@@ -916,6 +923,22 @@ class ModuleRuntime:
                 languages.update(detected or {"Unknown"})
         return languages or {"Graph"}
 
+    def catalog_presentation(self, definition, layout, packages):
+        identifier = definition["action_id"]
+        system = identifier in builtin_definitions()
+        languages = sorted(self.action_languages(definition))
+        try:
+            self.implementation(definition)
+            language = "Hybrid" if len(languages) > 1 else languages[0]
+        except (ValueError, OSError):
+            language = " / ".join(languages)
+        metadata = layout["actions"].get(identifier, {}) if not system else {}
+        category = ("core/interaction" if identifier in {"core.ask-user", "core.chatroom-alias"} else
+                    "core/timing" if identifier == "core.delay" else
+                    "core/filesystem" if identifier.startswith("core.artifact.") else "core/values") if system else metadata.get("category") or next(
+            (package["name"] for package in packages if package["enabled"] and identifier in package["actions"]), "Actions")
+        return {**metadata, "category": category, "languages": languages, "language": language}
+
     def catalog(self):
         layout = self.catalog_layout()
         packages = self.module_set_list()["module_sets"]
@@ -929,23 +952,12 @@ class ModuleRuntime:
             identifier = definition["action_id"]
             system = identifier in builtin_definitions()
             if not system and not self.admitted(definition):
-                pending_admissions.append(definition)
+                pending_admissions.append({**definition, **self.catalog_presentation(definition, layout, packages)})
                 continue
-            languages = sorted(self.action_languages(definition))
-            try:
-                self.implementation(definition)
-                language = "Hybrid" if len(languages) > 1 else languages[0]
-            except (PermissionError, OSError):
-                language = " / ".join(languages)
-            metadata = layout["actions"].get(identifier, {}) if not system else {}
-            category = ("core/interaction" if identifier in {"core.ask-user", "core.chatroom-alias"} else
-                        "core/timing" if identifier == "core.delay" else
-                        "core/filesystem" if identifier.startswith("core.artifact.") else "core/values") if system else metadata.get("category") or next(
-                (package["name"] for package in packages if package["enabled"] and identifier in package["actions"]), "Actions")
-            actions.append({**definition, **metadata, "execution_contract": action_contract(definition), "category": category, "read_only": system,
+            actions.append({**definition, **self.catalog_presentation(definition, layout, packages),
+                            "execution_contract": action_contract(definition), "read_only": system,
                             "palette_hidden": identifier.startswith("core.cast."),
                             "editable": not system and (self.registry / (identifier + ".json")).is_file(),
-                            "languages": languages, "language": language,
                             "availability": self.availability(identifier)})
         from action_runtime import ActionRuntime
         actions.extend(ActionRuntime(self.store).private_catalog())
@@ -953,9 +965,18 @@ class ModuleRuntime:
         for action in actions:
             parts = action["category"].split("/")
             groups.update("/".join(parts[:index]) for index in range(1, len(parts) + 1))
+        proposals = self.proposal_list()["proposals"]
+        for proposal in proposals:
+            proposal.update(self.catalog_presentation(proposal["definition"], layout, packages))
+        for action in actions + pending_admissions + proposals:
+            preparation = self.root / "preparations" / (action["action_id"] + ".json")
+            if preparation.exists():
+                state = json.loads(preparation.read_text(encoding="utf-8"))
+                if state["content_hash"] == action["content_hash"]:
+                    action["preparation"] = state
         return {"ok": True, "actions": actions, "groups": sorted(groups),
                 "module_sets": packages, "queue": self.queue_status(),
-                "proposals": self.proposal_list()["proposals"], "pending_admissions": pending_admissions}
+                "proposals": proposals, "pending_admissions": pending_admissions}
 
     def workspace(self):
         value = self.settings().get("workspace_roots", {}).get(PLATFORM_KEYS.get(platform.system()))
@@ -1002,17 +1023,19 @@ class ModuleRuntime:
             self.authorize(definition)
         except (PermissionError, OSError, ValueError) as error:
             grant = {"state": "blocked", "reason": str(error)}
-        qualification = {"state": "unverified"}
+        qualification = ({"state": "environment-only", "reason": self.validation_mode_reason(definition)}
+                         if self.validation_mode(definition) == "environment-only" else {"state": "unverified"})
         filename = self.root / "validations" / (action_id + ".json")
         if filename.exists():
             record = json.loads(filename.read_text(encoding="utf-8"))
-            qualification = {"state": "stale", "content_hash": record.get("content_hash"),
-                             "expires_at": record.get("expires_at")}
+            qualification = {"state": "stale", "content_hash": record.get("content_hash")}
             try:
                 if (record["content_hash"] == definition["content_hash"]
-                        and record["environment_fingerprint"] == self.fingerprint(definition)
-                        and datetime.datetime.fromisoformat(record["expires_at"]) > now()):
-                    qualification["state"] = record["status"]
+                        and record["environment_fingerprint"] == self.fingerprint(definition)):
+                    qualification = {"state": record.get("validation_mode", "examples")
+                                     if record.get("validation_mode") == "environment-only" else record["status"],
+                                     "content_hash": record.get("content_hash"),
+                                     **({"reason": record["reason"]} if record.get("reason") else {})}
             except (PermissionError, OSError, ValueError, TypeError, KeyError) as error:
                 qualification["reason"] = str(error)
         return {"ok": True, "action": action, "installation": "installed", "enabled": True,
@@ -1721,13 +1744,23 @@ class ModuleRuntime:
             "digest": hashlib.sha256(content).hexdigest(), "ownership": "borrowed", "owner_root": None,
             "references": [], "published": True, "gc_state": "retained"})
 
-    def qualification_review(self, action_id, content_hash, proposal_id=None):
+    def qualification_review(self, action_id, content_hash, proposal_id=None, automatic=False):
+        if automatic:
+            if not isinstance(action_id, str) or not re.fullmatch(r"[a-z][a-z0-9_.-]{2,100}", action_id):
+                raise ValueError("Invalid Action identity for automatic preparation.")
+            preparation = self.root / "preparations" / (action_id + ".json")
+            if preparation.exists():
+                state = json.loads(preparation.read_text(encoding="utf-8"))
+                if state.get("content_hash") == content_hash and state.get("state") == "disabled":
+                    raise PermissionError("Automatic preparation is disabled for this explicitly revoked revision.")
         review = self.proposal_review(proposal_id) if proposal_id else self.host_trust_review(action_id, content_hash)
         if review["action_id"] != action_id or review["content_hash"] != content_hash:
             raise ValueError("Choose the exact proposed Action revision.")
         sources = {}
         total = 0
         for filename in review["files"]:
+            if automatic:
+                continue
             path = Path(filename)
             if path.suffix.lower() not in {".py", ".cs", ".js", ".ts", ".sh", ".go", ".rs", ".java", ".mjs", ".cjs", ".ps1"}:
                 continue
@@ -1737,7 +1770,8 @@ class ModuleRuntime:
             total += len(sources[filename].encode("utf-8"))
             if total > 256 * 1024:
                 raise ValueError("Action sources exceed the automatic review limit; split the implementation.")
-        sources.update(self.runtime_review_sources(review["definition"]))
+        if not automatic:
+            sources.update(self.runtime_review_sources(review["definition"]))
         review["sources"] = sources
         review["workspace"] = str(self.workspace())
         review["settings"] = self.settings()
@@ -1745,24 +1779,49 @@ class ModuleRuntime:
         review["validation_kind"] = ("environment-self-test" if not proposal_id and builtin is not None
                                      and self.definition_value(builtin)["content_hash"] == content_hash
                                      else "risk-review")
+        review["validation_mode"] = self.validation_mode(review["definition"])
+        if review["validation_mode"] == "environment-only":
+            review["validation_mode_reason"] = self.validation_mode_reason(review["definition"])
         review["snapshot_hash"] = digest(review)
         return review
 
-    def qualification_execute(self, action_id, content_hash, snapshot_hash, report, proposal_id=None, allow_effects=False):
-        if (not isinstance(report, dict) or report.get("user_confirmed") is not True
+    def qualification_prepare(self, action_id, content_hash, proposal_id=None):
+        try:
+            review = self.qualification_review(action_id, content_hash, proposal_id, automatic=True)
+            report = {"mode": "automatic", "policy": "environment-or-pure-builtin/v1",
+                      "user_confirmed": False, "model": "pkm:automatic-readiness", "issues": [],
+                      "summary": "Automatic readiness checks; effectful and arbitrary-code examples are not executed."}
+            result = self.qualification_execute(action_id, content_hash, review["snapshot_hash"], report,
+                                                proposal_id, automatic=True)
+            return result
+        except Exception as error:
+            # Keep failures visible across Host restarts without granting readiness.
+            if isinstance(action_id, str) and re.fullmatch(r"[a-z][a-z0-9_.-]{2,100}", action_id):
+                path = self.root / "preparations" / (action_id + ".json")
+                previous = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+                if previous.get("state") == "disabled" and previous.get("content_hash") == content_hash:
+                    raise
+                _atomic_write(self.root / "preparations" / (action_id + ".json"),
+                              {"state": "blocked", "content_hash": content_hash, "reason": str(error)})
+            raise
+
+    def qualification_execute(self, action_id, content_hash, snapshot_hash, report, proposal_id=None, allow_effects=False, automatic=False):
+        automated_report = (automatic is True and isinstance(report, dict)
+                            and report.get("mode") == "automatic"
+                            and report.get("policy") == "environment-or-pure-builtin/v1")
+        if (not isinstance(report, dict) or (not automated_report and report.get("user_confirmed") is not True)
                 or not isinstance(report.get("summary"), str) or not report["summary"].strip()
                 or not isinstance(report.get("issues"), list)
                 or not all(isinstance(issue, str) for issue in report["issues"])
                 or not isinstance(report.get("model"), str) or not report["model"]):
-            raise PermissionError("Confirm the risk notice before smoke tests; no tests or admission were performed.")
-        review = self.qualification_review(action_id, content_hash, proposal_id)
+            raise PermissionError("Confirm the risk notice before environment checks; no checks or admission were performed.")
+        review = self.qualification_review(action_id, content_hash, proposal_id, automatic=automatic)
         if review["snapshot_hash"] != snapshot_hash:
             raise ValueError("Implementation changed after code review; review again before execution.")
         definition = review["definition"]
-        if type(allow_effects) is not bool or (set(definition["effects"]) != {"pure"} and not allow_effects):
-            raise PermissionError("Explicit consent to smoke test effects is required.")
-        if not definition["examples"]:
-            raise ValueError("Action has no controlled smoke examples.")
+        validation_mode = self.validation_mode(definition)
+        if type(allow_effects) is not bool:
+            raise ValueError("allow_effects must be a boolean.")
         self.completed_dependencies(action_id, definition["dependencies"])
         # A separate registry keeps the previous approved version authoritative throughout smoke execution.
         stage = ModuleRuntime(self.root / "qualification-attempts" / ("attempt_" + uuid.uuid4().hex))
@@ -1794,8 +1853,10 @@ class ModuleRuntime:
             raise ValueError("Smoke tests failed; Action was not admitted. Evidence: " + str(stage.root / "validations"))
         _atomic_write(stage.root / "qualification-request.json", {
             "action_id": action_id, "content_hash": content_hash, "snapshot_hash": snapshot_hash,
-            "report": report, "proposal_id": proposal_id, "completed_at": time.time(), "result": result})
-        return {"ok": True, "state": "tested", "attempt_id": stage.store.name}
+            "report": report, "proposal_id": proposal_id, "automatic": automatic,
+            "completed_at": time.time(), "result": result})
+        return {"ok": True, "state": result["state"], "validation_mode": result["validation_mode"],
+                "reason": result.get("reason"), "attempt_id": stage.store.name}
 
     def qualification_admit(self, attempt_id):
         if not isinstance(attempt_id, str) or not re.fullmatch(r"attempt_[a-f0-9]{32}", attempt_id):
@@ -1809,7 +1870,7 @@ class ModuleRuntime:
         definition = stage.definition(action_id)
         policy_path = self.root / "policy.json"
         with self.lock():
-            current = self.qualification_review(action_id, content_hash, proposal_id)
+            current = self.qualification_review(action_id, content_hash, proposal_id, automatic=request.get("automatic") is True)
             if current["snapshot_hash"] != snapshot_hash:
                 raise ValueError("Implementation or base revision changed during smoke tests; Action was not admitted.")
             self.authoring_idle(action_id)
@@ -1825,6 +1886,9 @@ class ModuleRuntime:
                       (self.root / "validations" / (action_id + ".json"), result),
                       (self.root / "code-reviews" / (action_id + ".json"),
                        {**report, "snapshot_hash": snapshot_hash, "content_hash": content_hash})]
+            if request.get("automatic") is True:
+                writes.append((self.root / "preparations" / (action_id + ".json"),
+                               {"state": "ready", "content_hash": content_hash}))
             if proposal_id:
                 record = self.proposal_read(proposal_id)
                 writes.insert(1, (self.registry / (action_id + ".json"), record["definition"]))
@@ -1833,7 +1897,9 @@ class ModuleRuntime:
             for build_path in (stage.root / "builds").glob("*.json"):
                 writes.insert(0, (self.root / "builds" / build_path.name, json.loads(build_path.read_text(encoding="utf-8"))))
             self.write_review_changes(writes)
-        return {"ok": True, "state": "succeeded", "stage": "qualified", "action_id": action_id,
+        return {"ok": True, "state": "succeeded",
+                "stage": "environment_checked" if result.get("validation_mode") == "environment-only" else "qualified",
+                "action_id": action_id,
                 "content_hash": content_hash, "registered": True, "report": report,
                 "evidence": result["evidence"], "evidence_root": str(stage.root)}
 
@@ -1884,15 +1950,17 @@ class ModuleRuntime:
                 for item in matches:
                     item.pop("trusted_host_execution", None)
             admission = self.root / "admissions" / (action_id + ".json")
-            self.write_review_changes([(path, policy), (admission, {"content_hash": content_hash if grant else None})])
+            self.write_review_changes([(path, policy), (admission, {"content_hash": content_hash if grant else None}),
+                                       (self.root / "preparations" / (action_id + ".json"),
+                                        {"state": "queued" if grant else "disabled", "content_hash": content_hash,
+                                         "reason": "" if grant else "Execution of this revision was explicitly revoked."})])
         return {"ok": True, "granted": grant, "action_id": action_id, "content_hash": content_hash}
 
     def authorize(self, definition):
         if not self.admitted(definition):
-            raise PermissionError("ACTION_ADMISSION_REQUIRED: This Action revision is not approved for the formal library. "
-                                  "Agent: stop; ask the operator to open Automation > Action Library > Review in canvas "
-                                  "and click Validate. Confirm the Agent risk notice before smoke tests; successful tests "
-                                  "automatically admit the exact version. No manual grant is needed. Do not call, "
+            raise PermissionError("ACTION_ADMISSION_REQUIRED: This Action revision is being prepared for the formal library. "
+                                  "Wait for automatic background preparation by the trusted PKM Host. "
+                                  "Inspect preparation details if blocked. No manual Validate is required. Do not call, "
                                   "self-approve, edit policy/admissions or retry registration.")
         implementation = self.implementation(definition)
         if implementation["kind"] == "builtin" or implementation["kind"] == "pipeline":
@@ -1940,16 +2008,47 @@ class ModuleRuntime:
                     return {"state": "blocked", "reason": "Dependency is not ready: " + child}
         except (PermissionError, OSError, ValueError) as error:
             return {"state": "unsupported" if str(error).startswith("unsupported:") else "blocked", "reason": str(error)}
+        validation_mode = self.validation_mode(definition)
         path = self.root / "validations" / (action_id + ".json")
         if not path.exists():
+            if validation_mode == "environment-only":
+                return {"state": "ready", "validation_mode": validation_mode,
+                        "reason": self.validation_mode_reason(definition)}
             return {"state": "unverified"}
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
-            if record["content_hash"] != definition["content_hash"] or record["environment_fingerprint"] != fingerprint or datetime.datetime.fromisoformat(record["expires_at"]) <= now():
+            if record["content_hash"] != definition["content_hash"] or record["environment_fingerprint"] != fingerprint:
                 return {"state": "stale"}
-            return {"state": "ready" if record["status"] == "passed" else "failed"}
+            return {"state": "ready" if record["status"] == "passed" else "failed",
+                    "validation_mode": record.get("validation_mode", "examples"),
+                    **({"reason": record["reason"]} if record.get("reason") else {})}
         except (ValueError, TypeError, KeyError):
             return {"state": "stale"}
+
+    def validation_mode(self, definition, ancestry=None):
+        ancestry = set(ancestry or ())
+        action_id = definition["action_id"]
+        if action_id in ancestry or not definition.get("examples") or set(definition.get("effects", [])) != {"pure"}:
+            return "environment-only"
+        if any(implementation.get("kind") not in {"builtin", "pipeline"}
+               for implementation in definition.get("implementations", [])):
+            return "environment-only"
+        for child, pin in definition.get("dependencies", {}).items():
+            child_definition = self.definition(child)
+            if (child_definition["content_hash"] != pin
+                    or self.validation_mode(child_definition, ancestry | {action_id}) != "examples"):
+                return "environment-only"
+        return "examples"
+
+    def validation_mode_reason(self, definition):
+        if not definition.get("examples"):
+            return "No test examples are declared; only the current build and runtime environment are checked."
+        if set(definition.get("effects", [])) != {"pure"}:
+            return "Examples were not run because effectful Actions require an OS-enforced sandbox with mock effect boundaries."
+        if any(implementation.get("kind") not in {"builtin", "pipeline"}
+               for implementation in definition.get("implementations", [])):
+            return "Examples were not run because arbitrary program/MCP code has no OS-enforced sandbox."
+        return "Examples were not run because a nested Action requires an OS-enforced sandbox."
 
     def cast(self, definition, inputs):
         if not isinstance(inputs, dict):
@@ -2159,52 +2258,59 @@ class ModuleRuntime:
     def validate(self, action_id, content_hash, progress=None, cancel_path=None):
         definition = self.definition(action_id)
         if self.proposal_mode and action_id not in builtin_definitions():
-            raise PermissionError("ACTION_CODE_REVIEW_REQUIRED: Open this Action in the Workbench and click the flask Validate button. "
-                                  "The host presents risks for user confirmation before smoke tests and admission. "
+            raise PermissionError("ACTION_CODE_REVIEW_REQUIRED: The trusted PKM Host prepares this Action automatically. "
+                                  "Wait for readiness or inspect preparation details if blocked. "
                                   "Do not grant policy access manually or retry direct validation.")
-        if content_hash != definition["content_hash"] or not definition["examples"]:
-            raise ValueError("Pin a definition with controlled smoke examples.")
+        if content_hash != definition["content_hash"]:
+            raise ValueError("Pin the current Action definition.")
         self.authorize(definition)
         self.completed_dependencies(action_id, definition["dependencies"])
         if cancel_path and Path(cancel_path).exists():
             raise TimeoutError("Validation cancelled.")
+        validation_mode = self.validation_mode(definition)
         if progress:
-            progress("build" if self.implementation(definition).get("build") else "preflight")
-        self.ensure_build(definition, cancel_path)
-        self.validation_fixtures(action_id)
+            progress("build" if validation_mode == "examples" and self.implementation(definition).get("build") else "preflight")
+        if validation_mode == "examples":
+            self.ensure_build(definition, cancel_path)
+        elif self.build_state(definition)["state"] not in {"not_required", "built"}:
+            raise ValueError("Environment-only validation will not execute a build; build this Action explicitly first.")
         fingerprint = self.fingerprint(definition)
-        if progress:
-            progress("test")
         evidence = []
-        for example in definition["examples"]:
-            if cancel_path and Path(cancel_path).exists():
-                raise TimeoutError("Validation cancelled.")
-            result = self.call(action_id, example["inputs"], "validation-" + uuid.uuid4().hex, content_hash, validation=True)
-            while result["state"] in {"running", "waiting"}:
-                self.recovery.safety_scan()
+        if validation_mode == "examples":
+            self.validation_fixtures(action_id)
+            if progress:
+                progress("test")
+            for example in definition["examples"]:
                 if cancel_path and Path(cancel_path).exists():
-                    self.cancel(result["run_id"])
-                if result["state"] == "running" and time.time() > result["deadline"] + 5:
-                    self.cancel(result["run_id"])
-                    raise TimeoutError("Validation worker deadline exceeded; reconcile before retry.")
-                time.sleep(0.05)
-                result = self.get(result["run_id"])
-            passed = result["state"] == "succeeded" and ("output" not in example or result.get("output") == example["output"])
-            if passed and action_id == "core.artifact.copy":
-                source_id = example["inputs"]["source"]["artifact_id"]
-                copied_id = result["output"]["artifact_id"]
-                passed = copied_id != source_id and self.artifact(copied_id)["digest"] == self.artifact(source_id)["digest"]
-            evidence.append({"run_id": result["run_id"], "passed": passed})
-            self.gc(result["run_id"], release_outputs=True)
-            if result["state"] == "outcome_unknown" or (cancel_path and Path(cancel_path).exists()):
-                raise TimeoutError("Validation outcome unknown or cancelled; readiness was not granted.")
+                    raise TimeoutError("Validation cancelled.")
+                result = self.call(action_id, example["inputs"], "validation-" + uuid.uuid4().hex, content_hash, validation=True)
+                while result["state"] in {"running", "waiting"}:
+                    self.recovery.safety_scan()
+                    if cancel_path and Path(cancel_path).exists():
+                        self.cancel(result["run_id"])
+                    if result["state"] == "running" and time.time() > result["deadline"] + 5:
+                        self.cancel(result["run_id"])
+                        raise TimeoutError("Validation worker deadline exceeded; reconcile before retry.")
+                    time.sleep(0.05)
+                    result = self.get(result["run_id"])
+                passed = result["state"] == "succeeded" and ("output" not in example or result.get("output") == example["output"])
+                if passed and action_id == "core.artifact.copy":
+                    source_id = example["inputs"]["source"]["artifact_id"]
+                    copied_id = result["output"]["artifact_id"]
+                    passed = copied_id != source_id and self.artifact(copied_id)["digest"] == self.artifact(source_id)["digest"]
+                evidence.append({"run_id": result["run_id"], "passed": passed})
+                self.gc(result["run_id"], release_outputs=True)
+                if result["state"] == "outcome_unknown" or (cancel_path and Path(cancel_path).exists()):
+                    raise TimeoutError("Validation outcome unknown or cancelled; readiness was not granted.")
         if self.fingerprint(definition) != fingerprint:
             raise ValueError("Environment changed during qualification.")
+        reason = self.validation_mode_reason(definition) if validation_mode == "environment-only" else None
         record = {"schema": "pkm.action.validation/v1", "action_id": action_id, "content_hash": content_hash,
                   "environment_fingerprint": fingerprint, "status": "passed" if all(item["passed"] for item in evidence) else "failed",
-                  "validated_at": now().isoformat(), "expires_at": (now() + datetime.timedelta(hours=24)).isoformat(), "evidence": evidence}
+                  "validation_mode": validation_mode, "validated_at": now().isoformat(), "evidence": evidence,
+                  **({"reason": reason} if reason else {})}
         _atomic_write(self.root / "validations" / (action_id + ".json"), record)
-        return {"ok": record["status"] == "passed", **record}
+        return {"ok": record["status"] == "passed", "state": "environment_checked" if reason else "tested", **record}
 
     def queue_read(self):
         path = self.root / "validation-queue.json"
@@ -2226,8 +2332,8 @@ class ModuleRuntime:
 
     def queue_enqueue(self, action_id, content_hash, priority="demand", allow_effects=False, launch=True):
         if self.proposal_mode and action_id not in builtin_definitions():
-            raise PermissionError("ACTION_CODE_REVIEW_REQUIRED: Click Validate in the PKM Workbench. "
-                                  "Confirm the risk notice before smoke tests and automatic admission; no manual grant is needed.")
+            raise PermissionError("ACTION_CODE_REVIEW_REQUIRED: Automatic preparation is owned by the trusted PKM Host. "
+                                  "Wait for readiness; no manual validation or risk confirmation is required.")
         priorities = {"demand": 0, "graph": 1, "module_set": 2, "idle": 3}
         if priority not in priorities or type(allow_effects) is not bool:
             raise ValueError("Invalid validation priority or effect consent.")
@@ -2243,9 +2349,7 @@ class ModuleRuntime:
                 return
             definition = self.definition(name)
             if not allow_effects and set(definition["effects"]) != {"pure"}:
-                raise PermissionError("Effectful smoke tests require explicit consent; enqueueing never grants permissions.")
-            if not definition["examples"]:
-                raise ValueError("Action has no controlled smoke examples: " + name)
+                raise PermissionError("Effectful validation requests require explicit user consent.")
             for child, pin in definition["dependencies"].items():
                 if self.definition(child)["content_hash"] != pin:
                     raise ValueError("Dependency changed: " + child)
@@ -2270,10 +2374,13 @@ class ModuleRuntime:
                 if len(queue["jobs"]) >= 2048:
                     raise PermissionError("Validation queue history limit reached; archive reviewed diagnostics before adding jobs.")
                 job_id = "validation_" + uuid.uuid4().hex
-                ready = self.availability(name)["state"] == "ready"
+                availability = self.availability(name)
+                ready = availability["state"] == "ready"
                 job = {"job_id": job_id, "key": key, "action_id": name, "content_hash": definition["content_hash"],
                        "priority": priorities[priority], "allow_effects": allow_effects, "queued_at": time.time(),
-                       "state": "succeeded" if ready else "queued", "stage": "qualified" if ready else "queued",
+                       "state": "succeeded" if ready else "queued",
+                       "stage": ("environment_checked" if availability.get("validation_mode") == "environment-only"
+                                 else "qualified") if ready else "queued",
                        "depends_on": [selected[child] for child in definition["dependencies"]]}
                 queue["jobs"][job_id] = job
                 selected[name] = job_id
@@ -2353,7 +2460,8 @@ class ModuleRuntime:
                     raise PermissionError("Effect consent is required.")
                 result = self.validate(job["action_id"], job["content_hash"],
                                        progress=lambda stage: self.queue_update(job["job_id"], stage=stage), cancel_path=cancel_path)
-                self.queue_update(job["job_id"], state="succeeded" if result["ok"] else "failed", stage="qualified" if result["ok"] else "test_failed",
+                stage = ("environment_checked" if result.get("validation_mode") == "environment-only" else "qualified")
+                self.queue_update(job["job_id"], state="succeeded" if result["ok"] else "failed", stage=stage if result["ok"] else "test_failed",
                                   completed_at=now().isoformat(), evidence=result["evidence"])
             except Exception as error:
                 state = "outcome_unknown" if isinstance(error, TimeoutError) else "blocked" if isinstance(error, (PermissionError, FileNotFoundError)) else "failed"
@@ -2726,6 +2834,7 @@ if __name__ == "__main__":
                    "proposal_list": runtime.proposal_list, "proposal_review": runtime.proposal_review,
                    "proposal_decide": runtime.proposal_decide,
                    "qualification_review": runtime.qualification_review, "qualification_execute": runtime.qualification_execute,
+                   "qualification_prepare": runtime.qualification_prepare,
                    "qualification_admit": runtime.qualification_admit,
                    "definition_get": lambda action_id: {**platform_runtime.definition(action_id),
                        "availability": platform_runtime.availability(action_id) if action_id.startswith("cosmos.")

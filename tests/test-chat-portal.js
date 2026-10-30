@@ -15,7 +15,7 @@ const { toolPermissionScope } = require("../dist/chat/permissions");
 const { PortalConnectionJournal, portalConnectionAccess, endpointLabel, endpointScope } = require("../dist/chatroom/portal-connections");
 const { createPortalLink, parsePortalLink } = require("../dist/chatroom/portal-link");
 const { validateQuestionAnswer } = require("../dist/chat/chat-questions");
-const { PortalEndpointStore } = require("../dist/chatroom/portal-endpoint-store");
+const { PortalEndpointStore, portalEndpointAllowsExternalAccess } = require("../dist/chatroom/portal-endpoint-store");
 
 function endpointStore() {
   const state = new Map(), secrets = new Map();
@@ -33,7 +33,7 @@ function managerFixture() {
   const declaration = ast.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === "ChatRoomManager");
   const scope = {
     ...require("../dist/chatroom/portal-command"),
-    PeerSession, PortalPermissions, PORTAL_PERMISSION_DIMENSIONS, PortalFiles, toolPermissionScope, PortalConnectionJournal, portalConnectionAccess, endpointLabel, endpointScope, portalChanged() {}, portalLog() {}, hubLog() {},
+    PeerSession, PortalPermissions, PORTAL_PERMISSION_DIMENSIONS, PortalFiles, toolPermissionScope, PortalConnectionJournal, portalConnectionAccess, endpointLabel, endpointScope, portalEndpointAllowsExternalAccess, portalChanged() {}, portalLog() {}, hubLog() {},
     assertPeerEndpoint, parsePortalLink, preflightPortalEndpoint:async () => {}, path, os, process, randomUUID, setTimeout, setInterval, clearInterval, AbortController, root: "/fixture", executions: [], confirmations: [],
     getStorePath: () => scope.root,
     portalInteraction: async (chatId, interaction, current) => {
@@ -558,6 +558,45 @@ test("remembered external access removes repeated read prompts only for the live
   scope.portalAnswer = async () => { manager.invalidatePortal(id); return { action:"submit", fields:{minutes:15} }; };
   await assert.rejects(manager.portalControl({}, { operation:"status", contextId:id }, true), /changed during external authorization/);
   assert.equal(manager.externalPortalExpiry.has(id), false, "late approval cannot resurrect a revoked connection grant");
+});
+
+test("saved endpoint MCP access is explicitly enabled, reused offline after manager restart, and revocable", async () => {
+  const { scope, manager } = managerFixture();
+  const store = endpointStore();
+  const endpoint = await store.create({ name: "Saved MCP", root: scope.root, localMachine: os.hostname() });
+  const binding = { pairId: randomUUID(), peerId: "saved-peer", peerName: "Remote", role: "controller",
+    peerChatId: "remote-chat", peerCapabilities: ["persistent-v1"] };
+  await store.pair(endpoint.id, binding, { url: "wss://relay.example.com/pkm/portal", roomId: "saved-room",
+    user: "fixture", cid: "fixture", host: false }, "abcdefghijklmnop_-0123456789ABCD");
+  manager.endpointStore = store;
+  manager.endpointLocks.set(endpoint.id, () => {});
+  const room = { client: { isConnected: true }, peer: { binding, receipts: new Map(), observations: new Map() } };
+  manager.chatPortals.set(endpoint.id, { id: endpoint.id, label: endpoint.name, root: scope.root, external: false, room });
+  assert.equal(manager.externalAuthorized(endpoint.id), false);
+  scope.portalAnswer = async (_id, interaction) => {
+    assert(interaction.choices.some(choice => choice.value === "persistent"));
+    return { action: "persistent", fields: {} };
+  };
+  scope.vscode.window.showQuickPick = async choices => choices.find(choice => choice.enabled === true);
+  await manager.portalControl({}, { operation: "status", contextId: endpoint.id }, true);
+  assert.equal(store.get(endpoint.id).externalAccess, true);
+  const prompts = scope.confirmations.length;
+  await manager.portalControl({}, { operation: "status", contextId: endpoint.id }, true);
+  assert.equal(scope.confirmations.length, prompts, "enabled endpoint must skip temporary consent");
+
+  const restarted = managerFixture();
+  restarted.manager.endpointStore = store;
+  restarted.manager.endpointLocks.set(endpoint.id, () => {});
+  restarted.manager.chatPortals.set(endpoint.id, { id: endpoint.id, label: endpoint.name, root: restarted.scope.root, external: false });
+  const status = await restarted.manager.portalControl({}, { operation: "status", contextId: endpoint.id }, true);
+  assert.equal(status.localEndpoint.externalAccess, true);
+  assert.equal(restarted.scope.confirmations.length, 0, "offline status reuses explicit saved access");
+  restarted.scope.vscode.window.showQuickPick = async choices => choices.find(choice => choice.enabled === false);
+  await restarted.manager.managePersistentEndpoint({}, "external-access", endpoint.id);
+  assert.equal(restarted.manager.externalAuthorized(endpoint.id), false);
+  restarted.scope.portalAnswer = async () => ({ action: "once", fields: {} });
+  await restarted.manager.portalControl({}, { operation: "status", contextId: endpoint.id }, true);
+  assert.equal(restarted.scope.confirmations.length, 1, "revocation restores per-request consent");
 });
 
 test("external status requests wait for the existing connection-authorization card instead of duplicating consent",async()=>{

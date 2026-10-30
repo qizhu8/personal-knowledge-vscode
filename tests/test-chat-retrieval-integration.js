@@ -96,6 +96,8 @@ test("production Chat adapter uses real worker dual routing, retains feedback id
     await new Promise(resolve=>setTimeout(resolve,25));
   }
   assert.equal(status.semantic_status,"ready");
+  assert.equal((await manager.observeLearning()).enabled, false, "new stores require explicit opt-in");
+  await manager.setAdaptiveResultCount(true);
   const retrieve = createChatKnowledgeRetriever(()=>manager,()=>snapshot);
   const result = await retrieve("guidance",new AbortController().signal);
   assert.equal(result.invocation.requestedRoute,"dual");
@@ -107,9 +109,14 @@ test("production Chat adapter uses real worker dual routing, retains feedback id
   assert(validChatRetrievalReceipt({schema:"pkm.chat.retrieval/v1",chatId:"chat",model:"fixture",query:"guidance",
     selectedCount:0,candidates:result.candidates.map(({content,...item})=>item),invocation:result.invocation},"chat"));
   assert((await manager.observeLearning()).calls.every(call=>call.recall == null),"selection is not a relevance judgment");
-  const selfEvaluation = await retrieve.feedback(result.invocation.retrievalId,["source-7"],"model");
+  const judged = [...new Set(result.candidates.map(item => item.sourceId))];
+  const selfEvaluation = await retrieve.feedback(result.invocation.retrievalId,[judged[0]],"model",judged);
   assert(selfEvaluation.ranker_revision > 0 && selfEvaluation.calibrator_revision > 0);
   assert.equal(selfEvaluation.provenance,"model");
+  const partialCall = (await manager.observeLearning()).calls.at(-1);
+  assert.equal(partialCall.partial, true);
+  assert.equal(partialCall.judged_count, judged.length);
+  assert.equal(partialCall.recall, null);
   const feedback = await retrieve.feedback(result.invocation.retrievalId,["source-0","source-9","missed-relevant-source"]);
   assert.equal(feedback.ok,true);
   assert.equal(feedback.superseded,true, "explicit user correction replaces the model label for the same query");

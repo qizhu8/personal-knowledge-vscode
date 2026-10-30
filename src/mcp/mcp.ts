@@ -11,6 +11,7 @@ import { isAbsoluteForPlatform, isForeignAbsolutePath } from "../knowledge/store
 import { compareVersionOrder } from "../runtime/version-order";
 import { ensureRecipeCompiler } from "./recipe-compiler";
 import { mcpStdioCommand } from "./mcp-stdio-command";
+import { managedMcpAttributionEnv } from "./mcp-attribution";
 import { hasNewerMcpRuntime } from "./mcp-version-policy";
 import { withCrossProcessLock } from "../runtime/cross-process-lock";
 import { bundledMcpBuildIdentity, managedMcpLauncher, managedMcpLifecycleStatus, publishManagedMcpGeneration, readManagedMcpManifest, stageManagedMcpGeneration, withManagedMcpGenerationLock } from "./mcp-lifecycle";
@@ -402,7 +403,7 @@ export function resolveMcpPython(): string {
   throw new Error("Managed PKM MCP runtime is missing or broken. Create or Repair it in the Config tab.");
 }
 
-export function mcpServerDefinitionData(): { label: string; command: string; args: string[]; env?: Record<string, string>; cwd: string; version: string } {
+export function mcpServerDefinitionData(attributeNativeProvider = false): { label: string; command: string; args: string[]; env?: Record<string, string>; cwd: string; version: string } {
   const cwd = managedMcpServerDirectory();
   const python = mcpRuntimePythonPath();
   if (!fs.existsSync(python) || !fs.existsSync(path.join(cwd, "server.py"))) {
@@ -414,7 +415,8 @@ export function mcpServerDefinitionData(): { label: string; command: string; arg
     label: "pkm",
     command: launch.command,
     args: launch.args,
-    env: launch.env,
+    // Persisted account/profile registrations must not pin the configuring window's identity.
+    env: attributeNativeProvider ? managedMcpAttributionEnv(launch.env) : launch.env,
     cwd,
     version: UNIFIED_MCP_VERSION,
   };

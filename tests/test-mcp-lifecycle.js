@@ -27,6 +27,116 @@ function sourceModule(filename, replacements = {}) {
   return loaded.exports;
 }
 const lifecycle = sourceModule("src/mcp/mcp-lifecycle.ts");
+const attribution = sourceModule("src/mcp/mcp-attribution.ts");
+
+test("launch attribution reuses host identity, distinguishes shared clients and explicit Chat, and clears inherited identity", () => {
+  const host = { hostId: "existing-host", editorSessionId: "editor-session", hostSlotId: "existing-slot",
+    extensionHostPid: 4321, workspace: "file:///workspace", machine: "machine", remoteName: "ssh-remote",
+    extensionHostLogUri: "file:///home/user/.vscode-server/data/logs/session/exthost1/uone.pkm" };
+  attribution.configureManagedMcpAttribution(host);
+  const decode = (source, chatId) => JSON.parse(attribution.managedMcpAttributionEnv(
+    { OTHER: "preserved", [attribution.MCP_ATTRIBUTION_ENV]: '{"chatId":"inherited"}' }, source, chatId)[attribution.MCP_ATTRIBUTION_ENV]);
+  const provider = decode("vscode-provider");
+  assert.equal(provider.hostId, host.hostId);
+  assert.equal(provider.editorSessionId, host.editorSessionId);
+  assert.equal(provider.extensionHostLogUri, host.extensionHostLogUri);
+  assert.equal(provider.scope, "shared-host");
+  assert.equal(provider.chatId, undefined);
+  const sharedChat = decode("pkm-chat");
+  assert.equal(sharedChat.scope, "shared-host", "PKM Chat connection may be reused across conversations");
+  assert.equal(sharedChat.chatId, undefined);
+  const chat = decode("pkm-chat", "actual-caller-chat");
+  assert.equal(chat.chatId, "actual-caller-chat");
+  assert.equal(chat.scope, "chat");
+  attribution.configureManagedMcpAttribution({ ...host, hostId: "another-activation", extensionHostPid: 4322 });
+  const siblingHost = decode("vscode-provider");
+  assert.notEqual(siblingHost.hostId, provider.hostId);
+  assert.equal(siblingHost.editorSessionId, provider.editorSessionId);
+  assert.equal(siblingHost.hostSlotId, provider.hostSlotId);
+  assert.equal(siblingHost.windowId, undefined, "editor session and storage slot do not establish an exact window ID");
+  assert.equal(attribution.managedMcpAttributionEnv({ OTHER: "preserved" }).OTHER, "preserved");
+  attribution.configureManagedMcpAttribution(undefined);
+  const unknown = decode("vscode-provider");
+  assert.equal(unknown.scope, "unknown");
+  assert.equal(unknown.hostId, undefined);
+  for (const bad of [null, [], { ...provider, schema: "future" }, { ...provider, chatId: "fabricated" },
+    { ...chat, chatId: "" }, { ...provider, editorSessionId: "\nspoof" },
+    { ...provider, extensionHostPid: "123" }, { ...provider, workspace: "x".repeat(2049) },
+    ...[{}, "", "x".repeat(2049), "file:///logs\nforged", "/logs/window2", "file:///logs with spaces"]
+      .map(extensionHostLogUri => ({ ...provider, extensionHostLogUri }))]) {
+    assert.equal(attribution.normalizeManagedMcpAttribution(bad), undefined);
+  }
+});
+
+test("registry preserves additive attribution but legacy/malformed metadata never acquires an identity", t => {
+  const { managed } = fixture(t);
+  const directory = path.join(managed, "instances");
+  fs.mkdirSync(directory, { recursive: true });
+  const report = { schema: lifecycle.MCP_LIFECYCLE_SCHEMA, instanceId: "a".repeat(32), pid: 123,
+    phase: "accepting", inFlight: 2, uncertainCalls: 1, heartbeatAt: 10 };
+  const filename = path.join(directory, `${report.instanceId}.json`);
+  const read = value => {
+    fs.writeFileSync(filename, JSON.stringify(value));
+    return lifecycle.managedMcpLifecycleStatus(managed, 10000).instances[0];
+  };
+  assert.equal(read(report).attribution, undefined);
+  const owner = { schema: attribution.MCP_ATTRIBUTION_SCHEMA, source: "pkm-chat", scope: "chat", chatId: "explicit",
+    extensionHostLogUri: "file:///c:/logs/session/window2/exthost/uone.pkm" };
+  const current = read({ ...report, attribution: owner });
+  assert.deepEqual(current.attribution, owner);
+  assert.equal(current.inFlight, 2);
+  assert.equal(current.heartbeatFresh, true);
+  assert.equal(current.completionVerified, false);
+  assert.equal(read({ ...report, attribution: { ...owner, chatId: { injected: true } } }).attribution, undefined);
+  assert.equal(read({ ...report, attribution: { ...owner, scope: "shared-host" } }).attribution, undefined);
+  const stale = read({ ...report, heartbeatAt: 1, attribution: owner });
+  assert.equal(stale.heartbeatFresh, false);
+  assert.deepEqual(stale.attribution, owner, "stale attribution is historical, not reconstructed");
+});
+
+test("source UI renders escaped reported attribution and honest legacy/shared boundaries", () => {
+  const vm = require("node:vm");
+  const source = fs.readFileSync(path.resolve(__dirname, "../src/webview/panel/50-mcp.js"), "utf8");
+  const context = vm.createContext({ esc: value => String(value).replace(/</g, "&lt;").replace(/>/g, "&gt;") });
+  vm.runInContext(source, context);
+  assert.match(context.mcpLaunchAttributionHtml(undefined, true), /unverified.*legacy/);
+  assert.match(context.mcpLaunchAttributionHtml({ schema: attribution.MCP_ATTRIBUTION_SCHEMA,
+    source: "vscode-provider", scope: "shared-host", editorSessionId: "session" }, true), /not a single Chat/);
+  const html = context.mcpLaunchAttributionHtml({ schema: attribution.MCP_ATTRIBUTION_SCHEMA,
+    source: "pkm-chat", scope: "chat", chatId: "<script>", workspace: "<workspace>" }, false);
+  assert.match(html, /historical launch context; not current ownership/);
+  assert.match(html, /&lt;script&gt;/);
+  assert.doesNotMatch(html, /<script>/);
+  const localLog = context.mcpLaunchAttributionHtml({ schema: attribution.MCP_ATTRIBUTION_SCHEMA,
+    source: "vscode-provider", scope: "shared-host",
+    extensionHostLogUri: "file:///c:/logs/window2/exthost/<img>" }, true);
+  assert.match(localLog, /Extension Host log location: file:\/\/\/c:\/logs\/window2\/exthost\/&lt;img&gt;/);
+  assert.doesNotMatch(localLog, /<img>/);
+  const remoteLog = context.mcpLaunchAttributionHtml({ schema: attribution.MCP_ATTRIBUTION_SCHEMA,
+    source: "vscode-provider", scope: "shared-host", remoteName: "ssh-remote",
+    extensionHostLogUri: "file:///remote/logs/exthost1" }, true);
+  assert.match(remoteLog, /Remote Extension Host log location \(not the Windows renderer\)/);
+});
+
+test("background inventory exposes only normalized attribution and never splits siblings into windows", () => {
+  const { describeBackgroundProcesses } = sourceModule("src/runtime/background-processes.ts");
+  const owner = { schema: attribution.MCP_ATTRIBUTION_SCHEMA, source: "vscode-provider", scope: "shared-host",
+    hostId: "host", editorSessionId: "same-session", extensionHostPid: 12, secret: "not-forwarded" };
+  const rows = [123, 124, 125].map(pid => ({ pid, parentPid: 12, elapsedSeconds: 2, rssBytes: 100,
+    command: "/usr/bin/python /knowledge/mcp-server/server.py" }));
+  const processes = describeBackgroundProcesses(rows, () => ({}), { now: 10000,
+    mcpStatus: () => ({ configuredGeneration: "generation", instances: [
+      { pid: 123, attribution: owner, heartbeatFresh: true },
+      { pid: 124, attribution: owner, heartbeatFresh: true },
+      { pid: 125, attribution: { ...owner, chatId: "guessed" }, heartbeatFresh: true },
+    ] }),
+  });
+  assert.equal(processes[0].runtime.attribution.editorSessionId, "same-session");
+  assert.deepEqual(processes[0].runtime.attribution, processes[1].runtime.attribution);
+  assert.equal(processes[0].runtime.attribution.chatId, undefined);
+  assert.equal(processes[2].runtime.attribution, undefined);
+  assert.doesNotMatch(JSON.stringify(processes), /not-forwarded|secret/);
+});
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(__dirname, ".mcp-generation-"));

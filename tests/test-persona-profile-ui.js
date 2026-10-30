@@ -31,7 +31,8 @@ test("Current cards remain inspectable without a model, task or running-state de
 });
 test("Explicit edits are atomic, cancel discards all fields, and stale editors cannot overwrite a newer revision", async t => {
   const store = fixture(t), original = store.save("user", card);
-  host.window.showQuickPick = async items => items.find(item => item.action === "user");
+  host.window.showQuickPick = async items => items.find(item => item.action === "user")
+    || items.find(item => item.value === "concise") || items[0];
   host.window.showInformationMessage = async () => "Edit";
   let inputs = ["Changed name", undefined];
   host.window.showInputBox = async () => inputs.shift();
@@ -41,6 +42,14 @@ test("Explicit edits are atomic, cancel discards all fields, and stale editors c
   host.window.showInputBox = async () => inputs.shift();
   await configurePersonaProfiles(store, { messages:[] }, () => {});
   assert.equal(store.user().revision, 2); assert.equal(store.user().preferences, "Verify first");
+  assert.deepEqual(store.user().responseStyle, {verbosity:"concise",terminology:"default",ordering:"default"});
+  inputs = ["New user", "SDE", "Tests", "Verify first", "Bounded responsibility"];
+  host.window.showInputBox = async () => inputs.shift();
+  host.window.showQuickPick = async items => items.find(item => item.action === "user") || items[0];
+  await configurePersonaProfiles(store, { messages:[] }, () => {});
+  assert.equal(store.user().responseStyle, undefined,"choosing no preference for each control clears the style");
+  host.window.showQuickPick = async items => items.find(item => item.action === "user")
+    || items.find(item => item.value === "concise") || items[0];
   inputs = ["Stale editor", "DS", "Data", "Check data", "No authority"];
   let updated = false;
   host.window.showInputBox = async () => {

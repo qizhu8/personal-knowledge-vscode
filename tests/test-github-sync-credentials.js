@@ -5,7 +5,8 @@ const path = require("node:path");
 const vm = require("node:vm");
 const ts = require("typescript");
 const { readStoredGitHubSyncCredentials, GitHubSyncCredentialError } = require("../dist/sync/github-sync-credentials");
-const { GitHubSyncScheduler, githubSyncFailureDetails, isGitHubSyncAuthenticationFailure } = require("../dist/sync/github-sync-scheduler");
+const { GitHubSyncScheduler, githubSyncFailureDetails, isGitHubSyncAuthenticationFailure,
+  isGitHubSyncCredentialRetryFailure } = require("../dist/sync/github-sync-scheduler");
 const { normalizeGitHubSyncTarget } = require("../dist/sync/github-sync");
 
 const target = normalizeGitHubSyncTarget({ id:"share", name:"CreativeGen Share",
@@ -29,7 +30,9 @@ test("default credential deadline is exactly 10 seconds and releases the waiting
     finished = true;
     assert.equal(error.code, "CREDENTIAL_READ_TIMEOUT");
     assert.equal(error.phase, "authenticating");
-    assert.match(error.message, /10 seconds.*Reload.*GitHub was not contacted/);
+    assert.match(error.message, /executing VS Code host.*credential channel.*GitHub was not contacted/);
+    assert.match(error.message, /Automatic retry.*another connected compatible host/);
+    assert.doesNotMatch(error.message, /Reload this window/);
     return true;
   });
   t.mock.timers.tick(9_999);
@@ -164,7 +167,7 @@ test("actual Host execution persists and logs an authentication timeout without 
       acknowledgeExecutionErrors:async () => {} },
     githubSyncDiagnostics:{ record:(event, fields) => events.push({ event, ...fields }) },
     readGitHubSyncCredentials:() => readStoredGitHubSyncCredentials(() => new Promise(() => {}), target, 5),
-    githubSyncFailureDetails, isGitHubSyncAuthenticationFailure,
+    githubSyncFailureDetails, isGitHubSyncAuthenticationFailure, isGitHubSyncCredentialRetryFailure,
     mutateGitHubSyncTargets:async (_context, _owner, mutation) => mutation([saved]),
     GitHubSyncContentRepairError:UnrelatedError, GitHubSyncExtensionCompatibilityError:UnrelatedError,
     GitHubSyncConflictError:UnrelatedError, PkmServiceRecoveryPersistenceError:UnrelatedError,
@@ -183,6 +186,6 @@ test("actual Host execution persists and logs an authentication timeout without 
   const failure = events.find(event => event.event === "github_sync.failed");
   assert.equal(failure.errorCode, "CREDENTIAL_READ_TIMEOUT");
   assert.equal(failure.phase, "authenticating");
-  assert.match(failure.error, /Reload.*GitHub was not contacted/);
+  assert.match(failure.error, /executing VS Code host.*GitHub was not contacted/);
   assert.equal(errors.length, 1);
 });

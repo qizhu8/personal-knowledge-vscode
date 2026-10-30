@@ -32,14 +32,90 @@ class TestLearning(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.learning = RetrievalLearning(self.root)
         self.learning.salt = "deterministic-local-learning-fixture"
+        self.learning.configure(True)
         with self.learning.connect() as connection:
             connection.execute("UPDATE settings SET value=? WHERE key='salt'", (self.learning.salt,))
         self.addCleanup(self.temp.cleanup)
+
+    def test_new_learning_store_defaults_off_until_explicitly_enabled(self):
+        state = self.root / "default-off"
+        state.mkdir()
+        learning = RetrievalLearning(state)
+        self.assertFalse(learning.summary()["enabled"])
+        observed = result()
+        learning.observe(observed, 1, "synthetic query")
+        self.assertFalse(observed["online_learning"]["enabled"])
+        self.assertEqual(observed["adaptive"]["reason"], "disabled")
+        with self.assertRaisesRegex(ValueError, "disabled"):
+            learning.feedback(observed["retrieval_id"], ["source-0"], True, "model")
+        learning.configure(True)
+        self.assertTrue(learning.summary()["enabled"])
+
+    def test_existing_default_on_store_is_migrated_off_once_without_erasing_history(self):
+        state = self.root / "legacy-default-on"
+        state.mkdir()
+        legacy = RetrievalLearning(state)
+        observed = result()
+        legacy.observe(observed, 1, "synthetic query")
+        with legacy.connect() as connection:
+            connection.execute("UPDATE settings SET value='true' WHERE key='enabled'")
+            connection.execute("DELETE FROM settings WHERE key='online_learning_opt_in_version'")
+        migrated = RetrievalLearning(state)
+        self.assertFalse(migrated.summary()["enabled"])
+        self.assertEqual(migrated.summary()["stored_calls"], 1)
+        migrated.configure(True)
+        self.assertTrue(RetrievalLearning(state).summary()["enabled"],
+                        "an explicit opt-in must persist across worker restart")
 
     def observe(self, value=None):
         value = value if value is not None else result()
         self.learning.observe(value, 12.5)
         return value
+
+    def test_partial_model_feedback_leaves_unexamined_candidates_unknown(self):
+        value = result([1, .9, .8])
+        self.learning.observe(value, 1, "partial query", output_limit=2)
+        receipt = value["retrieval_id"]
+        feedback = self.learning.feedback(receipt, ["source-0"], False, "model", ["source-0", "source-1"])
+        self.assertTrue(feedback["trained"])
+        self.assertIsNone(feedback["recall"])
+        row = self.learning.summary()["calls"][0]
+        self.assertTrue(row["partial"])
+        self.assertEqual(row["judged_count"], 2)
+        self.assertIsNone(row["precision"])
+        with self.learning.connect() as connection:
+            serialized, judged = connection.execute(
+                "SELECT candidates,judged FROM calls WHERE receipt=?", (receipt,)).fetchone()
+        self.assertEqual(len(json.loads(serialized)), 3, "oversampled evidence remains recorded")
+        self.assertNotIn(self.learning.identity("source-2"), json.loads(judged))
+        clean_root = self.root / "partial-clean"
+        clean_root.mkdir()
+        clean = RetrievalLearning(clean_root)
+        clean.salt = self.learning.salt
+        clean.configure(True)
+        bounded = result([1, .9])
+        clean.observe(bounded, 1, "partial query")
+        clean.feedback(bounded["retrieval_id"], ["source-0"], False, "model", ["source-0", "source-1"])
+        self.assertEqual(self.learning.summary()["models"][0]["ranker"]["weights"],
+                         clean.summary()["models"][0]["ranker"]["weights"],
+                         "the unexamined third source must not receive a negative gradient")
+        self.assertEqual(self.learning.summary()["models"][0]["safe_streak"], 0)
+        user = self.learning.feedback(receipt, ["source-2"], True)
+        self.assertTrue(user["superseded"])
+        ignored = self.learning.feedback(receipt, [], False, "model", ["source-0"])
+        self.assertTrue(ignored["ignored"])
+        self.assertEqual(ignored["reason"], "user-precedence")
+
+    def test_partial_model_feedback_rejects_unknown_ids_and_invalid_scope(self):
+        value = result([1, .9, .8])
+        self.learning.observe(value, 1, output_limit=2)
+        for relevant, complete, provenance, judged in [
+                ([], False, "model", []), ([], True, "model", ["source-0"]),
+                (["source-1"], False, "model", ["source-0"]),
+                ([], False, "model", ["source-0", "source-0"]),
+                ([], False, "model", ["source-2"]), ([], False, "user", ["source-0"])]:
+            with self.assertRaises(ValueError):
+                self.learning.feedback(value["retrieval_id"], relevant, complete, provenance, judged)
 
     def train(self):
         for _ in range(8):
@@ -233,6 +309,7 @@ class TestLearning(unittest.TestCase):
     def test_user_correction_replay_removes_stale_gradient_and_has_precedence(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as other:
             clean = RetrievalLearning(Path(other))
+            clean.configure(True)
             # Identical private feature hashing lets us compare full parameters exactly.
             clean.salt = self.learning.salt
             receipts = []
@@ -313,6 +390,7 @@ class TestLearning(unittest.TestCase):
                                                "prequential", "model_labels", "user_labels", "judged_calls")}
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as other:
             clean = RetrievalLearning(Path(other))
+            clean.configure(True)
             clean.salt = self.learning.salt
             first = observe(self.learning)
             self.learning.feedback(first, ["source-2"], True, "model")
@@ -533,8 +611,17 @@ class TestWorkerLearning(unittest.TestCase):
                     self.assertFalse(request("/retrieval-learning", {"enabled": "false"})["ok"])
                     self.assertFalse(request("/retrieval-feedback", [])["ok"])
                     self.assertFalse(request("/retrieval-feedback", {"oversized": "x" * (1024 * 1024)})["ok"])
-                    self.assertTrue(request("/retrieval-learning")["learning"]["enabled"])
                     query = {"query": "private query sentinel", "route": "semantic", "limit": 10}
+                    self.assertFalse(request("/retrieval-learning")["learning"]["enabled"])
+                    disabled = request("/search", query)
+                    self.assertFalse(disabled["online_learning"]["enabled"])
+                    self.assertEqual(disabled["adaptive"]["reason"], "disabled")
+                    rejected = request("/retrieval-feedback", {"retrieval_id": disabled["retrieval_id"],
+                        "relevant_source_ids": ["source-0"], "complete": True, "provenance": "model"})
+                    self.assertFalse(rejected["ok"])
+                    self.assertIn("disabled", rejected["error"])
+                    request("/retrieval-learning", {"enabled": True})
+                    self.assertTrue(request("/retrieval-learning")["learning"]["enabled"])
                     receipts = []
                     for _ in range(8):
                         value = request("/search", query)
@@ -573,7 +660,7 @@ class TestWorkerLearning(unittest.TestCase):
                     self.assertEqual(len(request("/search", query)["hits"]), 10)
                     catalog = request("/solutions")
                     self.assertFalse(catalog["learning"]["enabled"])
-                    self.assertEqual(len(catalog["learning"]["calls"]), 13)
+                    self.assertEqual(len(catalog["learning"]["calls"]), 14)
                     self.assertFalse(catalog["learning"]["calls"][-2]["success"])
                     output = os.environ.get("PKM_RETRIEVAL_LEARNING_FIXTURE")
                     if output:
@@ -607,6 +694,17 @@ class TestWorkerLearning(unittest.TestCase):
                     self.assertFalse(precedence["trained"])
                     self.assertFalse(request("/retrieval-feedback", {"retrieval_id": receipts[0],
                         "relevant_source_ids": [], "complete": True, "provenance": "invalid"})["ok"])
+                    partial_call = request("/search", {**query, "query": "partial model query", "output_limit": 2})
+                    delivered = [hit["source_id"] for hit in partial_call["hits"]]
+                    partial = request("/retrieval-feedback", {"retrieval_id": partial_call["retrieval_id"],
+                        "relevant_source_ids": delivered[:1], "judged_source_ids": delivered,
+                        "complete": False, "provenance": "model"})
+                    self.assertTrue(partial["trained"], partial)
+                    self.assertIsNone(partial["recall"])
+                    last = request("/retrieval-learning")["learning"]["calls"][-1]
+                    self.assertTrue(last["partial"])
+                    self.assertEqual(last["judged_count"], len(delivered))
+                    self.assertIsNone(last["precision"])
                     request("/retrieval-learning", {"enabled": False})
                     baseline = request("/search", query)
                     self.assertFalse(baseline["online_learning"]["applied"])

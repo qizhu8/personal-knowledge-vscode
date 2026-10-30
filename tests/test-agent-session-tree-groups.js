@@ -71,7 +71,10 @@ assert(emptyRow, "Empty Chat remains visible");
 assert.match(emptyRow, /role="group"/);
 assert.match(emptyRow, /agent-session-pkm-icon/);
 assert.match(emptyRow, /No Task/);
-assert.match(emptyRow, /0 Tasks/);
+assert.match(emptyRow, /1 Chat/);
+assert.doesNotMatch(rendered, /\d+ Tasks/);
+const researchRow = rendered.match(/<div class="tree-cat-hdr[^>]*title="chat-library:research"[^>]*>[\s\S]*?<\/div>/)?.[0];
+assert.match(researchRow, /3 Chats/, "Count Chats including empty and nested worker Chats, not managed Tasks");
 assert.match(emptyRow, /Chat Group actions/);
 assert.doesNotMatch(emptyRow, /aria-expanded|toggleCat|chevron-down|chevron-right/);
 for (const name of ["manager", "worker", "existing", "chat-library:research"]) {

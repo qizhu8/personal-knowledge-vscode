@@ -87,7 +87,7 @@ assert.strictEqual(vm.runInContext("githubSyncEffectiveError(failedTarget, {stat
 assert.strictEqual(vm.runInContext("githubSyncEffectiveError(failedTarget, {status:'error',lastError:'current attempt failed'})", context), '[SYNC_FAILED] current attempt failed');
 assert.match(vm.runInContext("githubSyncEffectiveError({lastFailure:{error:'Canceled'}}, {})", context), /\[SYNC_CANCELED\].*Retry Sync/);
 assert.match(vm.runInContext("githubSyncEffectiveError({}, {status:'error',lastError:'Reload then retry',lastErrorCode:'CREDENTIAL_READ_TIMEOUT',lastErrorPhase:'authenticating'})", context),
-  /\[CREDENTIAL_READ_TIMEOUT · authenticating\] Reload then retry/);
+  /\[CREDENTIAL_READ_TIMEOUT · authenticating\].*executing VS Code host.*GitHub was not contacted/);
 const credentialErrorCards = vm.runInContext(`(() => {
   const previous = githubSyncData;
   githubSyncData = {targets:[{id:'share',name:'CreativeGen Share',automation:{enabled:false,initialSyncCompleted:true},
@@ -98,10 +98,39 @@ const credentialErrorCards = vm.runInContext(`(() => {
 })()`, context);
 assert.match(credentialErrorCards, /class="github-sync-error"[^>]*>\[CREDENTIAL_READ_CANCELED · authenticating\]/,
   "a collapsed target card shows code, failed phase and actionable error without opening settings");
-assert.match(credentialErrorCards, /github-sync-phase-current error" aria-hidden="true">Authentication failed</,
-  "the failed authentication phase survives a target-only snapshot after reloading");
-assert.equal((credentialErrorCards.match(/VS Code canceled credential access/g) || []).length, 1,
+assert.match(credentialErrorCards, /github-sync-phase-current error" aria-hidden="true">Local credential channel unavailable</,
+  "target-only snapshots distinguish local credential failures from rejected GitHub authentication");
+assert.doesNotMatch(credentialErrorCards, /Authentication failed|Reload this window/);
+assert.equal((credentialErrorCards.match(/local credential channel was canceled/g) || []).length, 1,
   "the error message is not duplicated in the metadata column");
+for (const persisted of [false, true]) {
+  for (const errorCode of ['CREDENTIAL_READ_TIMEOUT', 'CREDENTIAL_READ_CANCELED', 'CREDENTIAL_READ_FAILED', 'SYNC_FAILED']) {
+    context.retryFixture = { persisted, errorCode };
+    const retryCard = vm.runInContext(`(() => {
+      const previous = githubSyncData;
+      const failure = {at:'2026-10-22T21:00:00Z',error:'previous failure: Reload this window',
+        errorCode:retryFixture.errorCode,phase:retryFixture.errorCode === 'SYNC_FAILED' ? 'fetch' : 'authenticating'};
+      githubSyncData = {targets:[{id:'retry',name:'Retry',automation:{enabled:true,initialSyncCompleted:true},
+        ...(retryFixture.persisted ? {lastFailure:failure} : {})}],runtime:{retry:{status:'error',
+        lastAttemptAt:failure.at,nextSyncAt:'2026-10-22T21:15:00Z',
+        ...(!retryFixture.persisted ? {lastError:failure.error,lastErrorCode:failure.errorCode,lastErrorPhase:failure.phase} : {})}}};
+      const cards = githubSyncCards();
+      githubSyncData.targets[0].automation.enabled = false;
+      const paused = githubSyncCards();
+      githubSyncData = previous;
+      return {cards,paused};
+    })()`, context);
+    assert.match(retryCard.cards, /Next automatic retry after/);
+    assert.doesNotMatch(retryCard.paused, /Next automatic retry after/,
+      "stale nextSyncAt cannot claim that a disabled target will retry");
+    if (errorCode !== 'SYNC_FAILED') {
+      assert.match(retryCard.cards, /Local credential channel unavailable/);
+      assert.match(retryCard.cards, /GitHub was not contacted/);
+      assert.doesNotMatch(retryCard.cards, /Authentication failed|Reload this window/);
+      if (errorCode === 'CREDENTIAL_READ_TIMEOUT') assert.match(retryCard.cards, /prefer another connected compatible host/);
+    } else assert.match(retryCard.cards, /Fetch \/ Pull failed/);
+  }
+}
 context.failedTarget.lastSync.at = '2026-07-20T10:00:00Z';
 assert.strictEqual(vm.runInContext("githubSyncEffectiveStatus(failedTarget, {status:'scheduled'}, null, false)", context), 'scheduled', 'a later successful sync clears the effective failure status');
 assert.strictEqual(vm.runInContext("githubSyncEffectiveStatus(failedTarget, {status:'error',lastError:'old error',lastAttemptAt:'2026-07-19T10:00:00Z'}, null, false)", context), 'scheduled',
@@ -576,7 +605,7 @@ assert.match(extensionSource, /previewGitHubSyncTarget[\s\S]*initial-preview/,
 assert.match(conflictCard, /Choice required/, "unresolved files visibly require a decision");
 assert.doesNotMatch(conflictCard, /Agent merge|skills\/System\/PKM\/PKM Skills\.md/,
   "selected files disappear from the working tree instead of rendering hidden cards");
-assert.match(conflictCard, /github-sync-resolved-group"[^>]*><summary>Resolved<small>1 · show completed<\/small>/,
+assert.match(conflictCard, /github-sync-resolved-group"[^>]*><summary>Prepared candidates · approval required<small>1 · review candidates<\/small>/,
   "selected files leave only one compact opt-in review entry");
 assert.doesNotMatch(conflictCard, /github-sync-resolved-group" open/,
   "the resolved group is collapsed by default");
@@ -638,7 +667,7 @@ const initialResolvedCard = vm.runInContext(`(() => {
   ]};
   return githubSyncCards();
 })()`, context);
-assert.match(initialResolvedCard, /github-sync-resolved-group"[^>]*><summary>Resolved<small>2 · show completed<\/small>/,
+assert.match(initialResolvedCard, /github-sync-resolved-group"[^>]*><summary>Prepared candidates · approval required<small>2 · review candidates<\/small>/,
   "automatically preserved one-sided files stay collapsed even for large initial comparisons");
 assert.doesNotMatch(initialResolvedCard, /github-sync-conflict-file unresolved/,
   "a fully selected initial comparison does not render expanded unresolved files");

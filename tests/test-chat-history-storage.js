@@ -35,6 +35,7 @@ test("host recovery disarms persisted root work and preserves uncertain effects 
   assert.equal(reader.load(chat.id, false).workGoal.status, "active", "observation must not claim a running host died");
   const recovered = reader.load(chat.id, true);
   assert.equal(recovered.workGoal.status, "interrupted");
+  assert.equal(recovered.workGoal.transitions.at(-1).reason, "host_interrupted");
   assert.equal(recovered.workGoal.id, root.id);
   assert.equal(recovered.workGoal.objective, root.objective);
   assert.equal(recovered.messages.at(-1).toolCalls[0].status, "failed");
@@ -43,6 +44,7 @@ test("host recovery disarms persisted root work and preserves uncertain effects 
   assert.equal(recovered.workGoal.status, "interrupted");
   prepareWorkGoal(recovered, randomUUID(), "Continue", "a".repeat(64));
   assert.equal(recovered.workGoal.status, "active");
+  assert.equal(recovered.workGoal.transitions.at(-1).reason, "user_resumed");
   assert.equal(recovered.messages.at(-1).toolCalls.length, 1);
   store.save(recovered);
   assert.equal(reader.load(chat.id, false).workGoal.id, root.id);

@@ -63,7 +63,7 @@ import { assertPeerEndpoint, PORTAL_TRANSPORT_PATH } from "./chatroom/peer-proto
 import { createPortalLink, parsePortalLink, preflightPortalEndpoint } from "./chatroom/portal-link";
 import { configurePortalRuntime, onPortalChanged, portalChanged, PortalObserver, PortalSource, PortalReview } from "./chatroom/portal-runtime";
 import { endpointScope, portalConnectionAccess, PortalConnectionJournal, PortalConnectionLive, PortalConnectionSnapshot, type PortalHubPortStatus } from "./chatroom/portal-connections";
-import { PortalEndpointStore, type PortalEndpointRecord } from "./chatroom/portal-endpoint-store";
+import { PortalEndpointStore, portalEndpointAllowsExternalAccess, type PortalEndpointRecord } from "./chatroom/portal-endpoint-store";
 import { PortalPermissions, PORTAL_PERMISSION_DIMENSIONS } from "./chatroom/portal-permissions";
 import { toolPermissionScope } from "./chat/permissions";
 import { PortalFiles, PortalTransferStatus } from "./chatroom/portal-files";
@@ -125,6 +125,7 @@ import {
   resolveMcpPython, validateMcpPython, writeMcpFeatureDomainConfig, writeActionWorkspaceConfig, trashKnowledgeFileViaMcp,
 } from "./mcp/mcp";
 import { nativeMcpCwdUri } from "./mcp/mcp-native-location";
+import { configureManagedMcpAttribution } from "./mcp/mcp-attribution";
 import { readAccountMcpBinding, writeAccountMcpBinding, accountKnowledgeSecurity } from "./mcp/mcp-account-binding";
 import { assertNoManualPkm, copilotMcpConfigPath, copilotMcpDefinition, inspectCopilotMcpRegistration, parseNativeMcpConfiguration, registerCopilotMcp, inspectVscodeMcpRegistration, registerVscodeMcp } from "./mcp/mcp-client-registration";
 import { scheduleRestoredWebviewRecovery } from "./ui/webview-restoration";
@@ -3005,6 +3006,7 @@ async function githubSyncStateData(context: vscode.ExtensionContext, waitForExpe
     })),
     conflicts: Object.fromEntries(listGitHubSyncConflicts(githubSyncStateDirectory(context)).map(record => [record.targetId, {
       id: record.id,
+      revision: record.revision || 0,
       remoteCommit: record.remoteCommit,
       createdAt: record.createdAt,
       purpose: record.purpose,
@@ -4109,7 +4111,7 @@ function registerNativeMcpProvider(context: vscode.ExtensionContext): void {
   const changed = new vscode.EventEmitter<void>();
   _mcpDefinitionsChanged = changed;
   const createDefinition = () => {
-    const data = mcpServerDefinitionData();
+    const data = mcpServerDefinitionData(true);
     const definition = new api.McpStdioServerDefinition(data.label, data.command, data.args, data.env || {}, data.version);
     definition.cwd = nativeMcpCwdUri(context.extensionUri, data.cwd, vscode.Uri.file);
     return definition;
@@ -4969,6 +4971,26 @@ class ChatRoomManager {
         this.invalidatePortal(endpoint.id);
         const updated = await store.update(endpoint.id, { chatId: chat.id, chatName: chat.label, deleted: false, acceptsIncoming: false, permissions: [] });
         this.applyEndpointPermissions(updated); this.endpointSuspended.delete(endpoint.id); this.publishEndpoint(endpoint.id);
+      } else if (operation === "external-access") {
+        if (!endpoint.paired || endpoint.deleted) throw new Error("Pair a non-deleted endpoint before authorizing external MCP access.");
+        const selected = await vscode.window.showQuickPick([
+          { label: "Disabled", enabled: false, description: endpoint.externalAccess ? undefined : "Current setting" },
+          { label: "Enable external MCP access", enabled: true, description: endpoint.externalAccess ? "Current setting" : undefined },
+        ], { title: `External MCP access · ${endpoint.name}`, ignoreFocusOut: true });
+        if (!selected) return;
+        if (selected.enabled) {
+          const confirm = await vscode.window.showWarningMessage(`Remember external MCP access for ${endpoint.name}?`, { modal: true,
+            detail: "This authorizes all MCP clients on this Host, not one Copilot Chat, to inspect this endpoint and submit Portal requests. It survives reconnects and restarts until revoked here. The paired peer, Knowledge Root and local machine must match. Replacing either bound Chat clears access. Remote execution permissions and file-batch approvals remain separate." }, "Enable saved MCP access");
+          if (confirm !== "Enable saved MCP access") return;
+        }
+        if (!vscode.workspace.isTrusted || endpoint.root !== getStorePath()) throw new Error("Portal context changed during external MCP authorization.");
+        this.endpointSuspended.add(endpoint.id);
+        this.invalidatePortal(endpoint.id);
+        try {
+          const updated = await store.update(endpoint.id, { externalAccess: selected.enabled }, endpoint.revision);
+          this.applyEndpointPermissions(updated);
+          this.publishEndpoint(endpoint.id);
+        } finally { this.endpointSuspended.delete(endpoint.id); }
       } else if (operation === "permissions") {
         const selected = await vscode.window.showQuickPick(
           PORTAL_PERMISSION_DIMENSIONS.map(permission => ({ label: permission, picked: endpoint.permissions.includes(permission) })),
@@ -5039,6 +5061,7 @@ class ChatRoomManager {
       return {
         id: item.id, name: item.name, localMachine: item.localMachine, chatId: item.chatId, chatName: item.chatName,
         deleted: item.deleted, acceptsIncoming: item.acceptsIncoming, permissions: item.permissions, paired: !!item.paired,
+        externalAccess: item.externalAccess === true,
         state: connected ? "connected" as const : room ? "connecting" as const : "disconnected" as const,
         error: this.endpointErrors.get(item.id),
         ...(binding ? { peer: { name: state?.name || binding.peerName, machine: binding.peerMachine,
@@ -5276,6 +5299,9 @@ class ChatRoomManager {
         if (!canRemember || !entry.room?.client.isConnected || entry.room.peer?.binding !== binding
           || (this.portalEpochs.get(id) || 0) !== epoch || entry.root !== getStorePath() || !vscode.workspace.isTrusted) throw new Error("Portal changed during external authorization; approval was not remembered.");
         this.externalPortalExpiry.set(id, { expiresAt: duration === null ? Infinity : Date.now() + duration, pairId: binding!.pairId, role: binding!.role });
+      } else if (answer?.action === "persistent") {
+        await this.managePersistentEndpoint(context, "external-access", id);
+        if (!this.externalAuthorized(id)) throw new Error("Saved endpoint external MCP access was not enabled.");
       } else if (answer?.action !== "once") throw new Error("External Portal request declined.");
     }
     if (entry.root !== getStorePath() || !vscode.workspace.isTrusted) throw new Error("Portal workspace or Knowledge Root changed during approval.");
@@ -5387,7 +5413,7 @@ class ChatRoomManager {
       : binding.peerCapabilities?.includes("auto-review-v1") ? "auto" : binding.peerCapabilities?.includes("review-mode-v1") ? "manual" : undefined;
     return { connected, reviewMode,
       ...(savedEndpoint ? { persistentEndpoint: true, localEndpoint: { id: savedEndpoint.id, name: savedEndpoint.name,
-        chatId: savedEndpoint.chatId, deleted: savedEndpoint.deleted, acceptsIncoming: savedEndpoint.acceptsIncoming },
+        chatId: savedEndpoint.chatId, deleted: savedEndpoint.deleted, acceptsIncoming: savedEndpoint.acceptsIncoming, externalAccess: savedEndpoint.externalAccess === true },
         remoteEndpoint: room?.peer?.peerEndpoint } : {}),
       state: grace ? "reconnecting" : connected ? "connected" : pending ? "awaiting-peer" : savedEndpoint && room ? "connecting" : "disconnected",
       ...(grace ? { reconnecting: { since: grace.since, deadline: grace.since + PORTAL_GRACE_MS, reason: grace.reason } } : {}),
@@ -5402,6 +5428,10 @@ class ChatRoomManager {
   }
 
   private externalAuthorized(id: string): boolean {
+    if (portalEndpointAllowsExternalAccess(this.endpoint(id), {
+      root: getStorePath(), localMachine: os.hostname(), trusted: vscode.workspace.isTrusted,
+      suspended: this.endpointSuspended.has(id), binding: this.chatPortals.get(id)?.room?.peer?.binding,
+    })) return true;
     const grant = this.externalPortalExpiry.get(id);
     const binding = this.chatPortals.get(id)?.room?.peer?.binding;
     if (!grant || grant.expiresAt <= Date.now() || !binding || binding.pairId !== grant.pairId || binding.role !== grant.role) {
@@ -5426,8 +5456,10 @@ class ChatRoomManager {
   }
 
   private externalPortalConsent(owner: { id: string; label: string }, title: string, detail: string, remember: boolean, offerOnly = false) {
+    const saved = this.endpoint(owner.id);
     return this.portalPrompt(owner, { title, detail: `${owner.label}\n${detail}\nMCP cannot authenticate individual Copilot conversations. Trust only the intended MCP clients. A remembered grant is bound to this pairing/direction, with a fixed deadline that activity never renews. Disconnect, switch, revoke or context change invalidates it. Controlled-side task approval remains separate.`,
-      choices: [...(offerOnly ? [] : [{ value: "once", label: "Allow once" }]), ...(remember ? [{ value: "submit", label: "Remember this connection" }] : []), { value: "cancel", label: "Cancel" }],
+      choices: [...(offerOnly ? [] : [{ value: "once", label: "Allow once" }]), ...(remember ? [{ value: "submit", label: "Remember temporarily" }] : []),
+        ...(saved?.paired && !saved.deleted ? [{ value: "persistent", label: "Configure saved endpoint MCP access..." }] : []), { value: "cancel", label: "Cancel" }],
       ...(remember ? { form: { type: "object" as const, required: ["minutes"], properties: {
         minutes: { type: "number" as const, title: "Minutes (0 = until disconnected)", minimum: 0, maximum: 525600, default: 15 },
         longLived: { type: "boolean" as const, title: "I accept extended exposure beyond 15 minutes or until disconnected", default: false },
@@ -5455,6 +5487,12 @@ class ChatRoomManager {
     const epoch = this.portalEpochs.get(id) || 0;
     const answer = await this.externalPortalConsent(entry, `Remember external access · ${binding.peerMachine || binding.peerName}`,
       "Allow this external Chat to check status and send Portal requests without repeated prompts?", true, true);
+    if (answer?.action === "persistent") {
+      if (!this.endpointContext) throw new Error("Saved endpoint settings are unavailable.");
+      await this.managePersistentEndpoint(this.endpointContext, "external-access", id);
+      if (!this.externalAuthorized(id)) throw new Error("Saved endpoint external MCP access was not enabled.");
+      return;
+    }
     if (answer?.action !== "submit") return;
     const duration = Number(answer.fields.minutes) === 0 ? null : Number(answer.fields.minutes) * 60_000;
     const current = this.chatPortals.get(id)?.room?.peer?.binding;
@@ -5573,7 +5611,7 @@ class ChatRoomManager {
           if (previous && (priorIdentity ? priorIdentity !== identity : previous.peerChatId !== state.chatId || state.deleted)) {
             this.endpointSuspended.add(owner.id);
             this.invalidatePortal(owner.id);
-            void this.endpointStore!.update(owner.id, { acceptsIncoming: false, permissions: [] }).then(async () => {
+            void this.endpointStore!.update(owner.id, { acceptsIncoming: false, permissions: [], externalAccess: false }).then(async () => {
               const binding = room.peer?.binding;
               if (binding && !this.endpoint(owner.id)?.deleted) await this.endpointStore!.refreshPeer(owner.id, binding);
               this.endpointSuspended.delete(owner.id);
@@ -8298,10 +8336,10 @@ async function handleMessage(
     }
 
     case "portalEndpointCreate": case "portalEndpointPair": case "portalEndpointConnect":
-    case "portalEndpointDisconnect": case "portalEndpointBind": case "portalEndpointPermissions": case "portalEndpointRemove": {
+    case "portalEndpointDisconnect": case "portalEndpointBind": case "portalEndpointPermissions": case "portalEndpointExternalAccess": case "portalEndpointRemove": {
       const operations: Record<string, string> = { portalEndpointCreate: "create", portalEndpointPair: "pair",
         portalEndpointConnect: "connect", portalEndpointDisconnect: "disconnect", portalEndpointBind: "bind",
-        portalEndpointPermissions: "permissions", portalEndpointRemove: "remove" };
+        portalEndpointPermissions: "permissions", portalEndpointExternalAccess: "external-access", portalEndpointRemove: "remove" };
       await getChatMgr().managePersistentEndpoint(context, operations[msg.command], typeof msg.endpointId === "string" ? msg.endpointId : undefined);
       respond({ command: "portalConnections", data: getChatMgr().portalConnectionHistory() });
       break;
@@ -12886,7 +12924,7 @@ function maintainPkmIntegration(context: vscode.ExtensionContext): Promise<void>
 // ── Sidebar tree provider ──────────────────────────────────────────────────
 type PkNodeType =
   | 'module-knowledge' | 'module-tools' | 'module-automation' | 'module-projects' | 'module-settings'
-  | 'page-agent-sessions' | 'page-agent-snapshots' | 'page-recipes' | 'page-projects' | 'page-skill-router' | 'page-github-sync' | 'page-background-tasks'
+  | 'page-user-profile' | 'page-agent-sessions' | 'page-agent-snapshots' | 'page-recipes' | 'page-action-library' | 'page-actions' | 'page-projects' | 'page-portal-connections' | 'page-skill-router' | 'page-github-sync' | 'page-background-tasks'
   | 'recipe-folder' | 'recipe'
   | 'root-skills' | 'root-notes' | 'root-papers' | 'root-prompts' | 'root-packages' | 'root-scripts' | 'root-environments' | 'root-servers' | 'root-chatroom' | 'root-subscriptions' | 'root-mcp'
   | 'environment-group' | 'environment-item'
@@ -12921,6 +12959,7 @@ class PkTreeItem extends vscode.TreeItem {
     const ICONS: Partial<Record<PkNodeType, string>> = {
       "module-knowledge": "library", "module-tools": "tools", "module-automation": "run-all", "module-projects": "project", "module-settings": "settings-gear",
       "page-agent-sessions": "hubot", "page-agent-snapshots": "save", "page-recipes": "notebook", "page-projects": "project", "page-skill-router": "git-branch", "page-github-sync": "git-merge",
+      "page-user-profile": "account", "page-action-library": "library", "page-actions": "tools", "page-portal-connections": "plug", "page-background-tasks": "tasklist",
       "recipe-folder": "folder", "recipe": "notebook",
       "root-skills": "book", "root-notes": "note", "root-papers": "library", "root-prompts": "comment-discussion",
       "root-packages": "package", "root-scripts": "terminal", "root-environments": "beaker", "root-servers": "server-environment", "root-chatroom": "comment-discussion", "root-subscriptions": "broadcast", "root-mcp": "server-process",
@@ -13061,15 +13100,22 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
       const recipes = new PkTreeItem("Recipe Library", "page-recipes", C);
       recipes.command = { command: "personalKnowledge.openPanelTab", title: "Open Recipe Library", arguments: ["recipes"] };
       return [
+        this._panelPage("User Profile", "page-user-profile", "userProfile"),
         this._panelPage("Agent Sessions", "page-agent-sessions", "agentSessions"),
         this._panelPage("Agent Snapshot", "page-agent-snapshots", "agentSnapshots"),
         recipes,
+        this._panelPage("Action Library", "page-action-library", "actionLibrary"),
+        this._panelPage("Action Workbench", "page-actions", "actions"),
       ];
     }
     if (element.nodeType === "module-projects") {
       const chatroom = new PkTreeItem("Threads", "root-chatroom", C);
       chatroom.command = { command: "personalKnowledge.openChatroom", title: "Open Threads" };
-      return [this._panelPage("Overview", "page-projects", "projects"), chatroom];
+      return [
+        this._panelPage("Overview", "page-projects", "projects"),
+        chatroom,
+        this._panelPage("Portal Connections", "page-portal-connections", "portalConnections"),
+      ];
     }
     if (element.nodeType === "module-settings") {
       const mcp = new PkTreeItem("General & MCP", "root-mcp", vscode.TreeItemCollapsibleState.None);
@@ -13956,6 +14002,18 @@ function registerExtensionHostRuntime(context: vscode.ExtensionContext, isBusy: 
   const registry = new ExtensionHostRegistry(path.join(context.globalStorageUri.fsPath, "runtime", "extension-hosts", scope), {
     ...build, hostId: randomUUID(), slotId, scope, pid: process.pid, vscodeVersion: vscode.version,
   });
+  configureManagedMcpAttribution({
+    hostId: registry.identity.hostId,
+    editorSessionId: vscode.env.sessionId,
+    hostSlotId: registry.identity.slotId,
+    extensionHostPid: process.pid,
+    extensionHostLogUri: context.logUri.toString(),
+    workspace: vscode.workspace.workspaceFile?.toString()
+      || vscode.workspace.workspaceFolders?.map(folder => folder.uri.toString()).join(" | ") || undefined,
+    machine: os.hostname(),
+    remoteName: vscode.env.remoteName || undefined,
+  });
+  refreshMcpDefinitions();
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, -1000);
   status.command = "personalKnowledge.hostStatus";
   let retrievalObservation: RetrievalWorkerStatus | undefined;

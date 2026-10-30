@@ -25,6 +25,8 @@ assert.match(panel, /function renderSubscriptionPane\(\)/);
 assert.match(panel, /<h3>Direct Sync<\/h3>[\s\S]*onclick="openSyncModal\(\)">Open Direct Sync<\/button>/,
 	"Network & Sharing must expose the existing one-time encrypted Sync flow");
 assert.match(panel, /My Share Brokers/);
+assert.match(panel, /class="tbtn" onclick="subscriptionNewShare\(\)"/,
+  "Broker creation must use the same neutral toolbar button as other create actions");
 assert.match(panel, /sub-broker-card/);
 assert.match(panel, /pk-card sub-broker-card/);
 assert.match(panel, /pk-card sub-subscriber-card/);

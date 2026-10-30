@@ -89,6 +89,103 @@ def register_test_add(runtime):
 
 
 class ModuleTests(unittest.TestCase):
+    def test_action_without_examples_uses_current_environment_not_a_validation_gate(self):
+        definition = self.runtime.register({"schema": "pkm.action.definition/v1",
+            "action_id": "test.fixture.noexamples", "version": 1,
+            "input_schema": object_schema({"value": INTEGER}), "output_schema": object_schema({"value": INTEGER}),
+            "effects": ["pure"], "implementations": [{"kind": "pipeline", "platforms": [platform.system()],
+                "steps": [{"id": "increment", "component": "core.math-expression",
+                    "inputs": {"expression": "{0} + 1", "input_0": {"$input": "value"}}}],
+                "output": {"value": {"$step": "increment.value"}}}]})
+        availability = self.runtime.availability(definition["action_id"])
+        self.assertEqual(availability["state"], "ready")
+        self.assertEqual(availability["validation_mode"], "environment-only")
+        self.assertEqual(self.runtime.library_get(definition["action_id"])["qualification"]["state"], "environment-only")
+        review = self.runtime.qualification_review(definition["action_id"], definition["content_hash"])
+        attempt = self.runtime.qualification_execute(definition["action_id"], definition["content_hash"],
+            review["snapshot_hash"], {"user_confirmed": True, "summary": "Reviewed", "issues": [], "model": "fixture"})
+        self.assertEqual(attempt["state"], "environment_checked")
+        self.assertEqual(attempt["validation_mode"], "environment-only")
+        self.runtime.qualification_admit(attempt["attempt_id"])
+        run = self.runtime.call(definition["action_id"], {"value": 2}, "no-examples", definition["content_hash"])
+        self.assertEqual(self.runtime.wait(run["run_id"])["output"], {"value": 3})
+
+    def test_effectful_examples_are_not_executed_without_an_os_sandbox(self):
+        definition = self.runtime.definition("test.fixture.add")
+        definition = self.runtime.register({**{key: value for key, value in definition.items()
+            if key not in {"content_hash", "implementation_hash", "source_id", "knowledgeId"}},
+            "action_id": "test.fixture.effectful", "version": 1, "effects": ["pure", "delete"]})
+        with patch.object(self.runtime, "call", side_effect=AssertionError("effectful example must not execute")) as call:
+            result = self.runtime.validate(definition["action_id"], definition["content_hash"])
+        self.assertFalse(call.called)
+        self.assertEqual(result["state"], "environment_checked")
+        self.assertEqual(result["validation_mode"], "environment-only")
+        self.assertIn("OS-enforced sandbox", result["reason"])
+        self.assertEqual(self.runtime.availability(definition["action_id"])["state"], "ready")
+
+    def test_program_examples_are_not_executed_even_when_declared_pure(self):
+        marker = self.directory / "must-not-exist"
+        script = self.directory / "untrusted.py"
+        script.write_text(
+            "from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text('executed')\n"
+            "print('{\"value\": 1}')\n", encoding="utf-8")
+        definition = self.runtime.register({"schema": "pkm.action.definition/v1",
+            "action_id": "test.fixture.untrusted", "version": 1,
+            "input_schema": object_schema({}), "output_schema": object_schema({"value": INTEGER}),
+            "effects": ["pure"], "implementations": [{"kind": "program", "platforms": [platform.system()],
+                "program": sys.executable, "args": [str(script)], "files": [str(script)]}],
+                "examples": [{"inputs": {}, "output": {"value": 1}}]})
+        self.grant(definition)
+        result = self.runtime.validate(definition["action_id"], definition["content_hash"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["validation_mode"], "environment-only")
+        self.assertIn("arbitrary program/MCP code", result["reason"])
+        self.assertFalse(marker.exists())
+
+    def test_module_set_load_reports_environment_only_readiness(self):
+        definition = self.runtime.register({"schema": "pkm.action.definition/v1",
+            "action_id": "test.package.noexamples", "version": 1,
+            "input_schema": object_schema({"value": INTEGER}), "output_schema": object_schema({"value": INTEGER}),
+            "effects": ["pure"], "implementations": [{"kind": "pipeline", "platforms": [platform.system()],
+                "steps": [{"id": "increment", "component": "core.math-expression",
+                    "inputs": {"expression": "{0} + 1", "input_0": {"$input": "value"}}}],
+                "output": {"value": {"$step": "increment.value"}}}]})
+        package = self.runtime.workspace() / "no-examples.pkm-actions"
+        self.runtime.module_set_export("test.noexamples", 1, [definition["action_id"]], str(package))
+        target = ModuleRuntime(self.directory / "noexamples-target")
+        target.configure_workspace(str(self.runtime.workspace()))
+        imported = target.module_set_import(str(package))
+        self.assertEqual(imported["readiness"], "deferred_until_load")
+        loaded = target.module_set_load("test.noexamples", 1)
+        self.assertEqual(loaded["readiness"][definition["action_id"]]["validation_mode"], "environment-only")
+        run = target.call(definition["action_id"], {"value": 4}, "loaded-no-examples", definition["content_hash"])
+        self.assertEqual(target.wait(run["run_id"])["output"], {"value": 5})
+
+    def test_validation_does_not_expire_but_still_checks_current_environment(self):
+        action_id = "test.fixture.add"
+        definition = self.runtime.definition(action_id)
+        path = self.runtime.root / "validations" / (action_id + ".json")
+        original = json.loads(path.read_text(encoding="utf-8"))
+        self.assertNotIn("expires_at", original)
+        for index, expiry in enumerate(["2000-01-01T00:00:00+00:00", "malformed", None]):
+            record = {**original, "expires_at": expiry}
+            if expiry is None:
+                record.pop("expires_at")
+            path.write_text(json.dumps(record), encoding="utf-8")
+            self.assertEqual(self.runtime.availability(action_id)["state"], "ready")
+            self.assertEqual(self.runtime.library_get(action_id)["qualification"]["state"], "passed")
+            run = self.runtime.call(action_id, {"left": 2, "right": 3}, f"old-evidence-{index}", definition["content_hash"])
+            self.assertEqual(self.runtime.wait(run["run_id"])["output"], {"sum": 5})
+        for field in ["content_hash", "environment_fingerprint"]:
+            path.write_text(json.dumps({**original, field: "changed"}), encoding="utf-8")
+            self.assertEqual(self.runtime.availability(action_id)["state"], "stale")
+            self.assertEqual(self.runtime.library_get(action_id)["qualification"]["state"], "stale")
+            with self.assertRaises(PermissionError):
+                self.runtime.call(action_id, {"left": 2, "right": 3}, "changed-evidence", definition["content_hash"])
+        path.write_text(json.dumps({**original, "status": "failed"}), encoding="utf-8")
+        self.assertEqual(self.runtime.availability(action_id)["state"], "failed")
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -161,6 +258,8 @@ class ModuleTests(unittest.TestCase):
                 "implementations": [implementation], "examples": [{"inputs": {"left": 2, "right": 3}, "output": {"sum": 5}}]})
             self.grant(definition)
             self.assertIn(language, self.runtime.action_languages(definition))
+            if language == "TypeScript":
+                self.runtime.ensure_build(definition)
             self.assertTrue(self.runtime.validate(definition["action_id"], definition["content_hash"])["ok"])
             self.assertEqual(self.call(definition["action_id"], {"left": 7, "right": 8}, language)["output"], {"sum": 15})
 
@@ -413,7 +512,10 @@ class ModuleTests(unittest.TestCase):
         self.assertTrue(self.runtime.validate(path["action_id"], path["content_hash"])["ok"])
         self.assertEqual(self.call(path["action_id"], {}, "path")["output"], {"value": str(self.runtime.workspace() / "new.txt")})
         outside = self.component_action("test.core.outside", [{"id": "path", "component": "core.file-path", "inputs": {"path": "../outside.txt"}}], {"$step": "path.path"}, ["pure", "local-read"])
-        self.assertFalse(self.runtime.validate(outside["action_id"], outside["content_hash"])["ok"])
+        outside_validation = self.runtime.validate(outside["action_id"], outside["content_hash"])
+        self.assertTrue(outside_validation["ok"])
+        self.assertEqual(outside_validation["validation_mode"], "environment-only")
+        self.assertEqual(self.runtime.availability(outside["action_id"])["state"], "ready")
         mismatch = self.component_action("test.core.mismatch", [{"id": "constant", "component": "core.constant", "inputs": {"value": "not integer"}, "output_schema": {"type": "object", "properties": {"value": {"type": "integer"}}}}], {"$step": "constant.value"})
         self.assertFalse(self.runtime.validate(mismatch["action_id"], mismatch["content_hash"])["ok"])
         choice = self.component_action("test.core.choice", [{"id": "choice", "component": "core.user-action", "inputs": {"prompt": "Choose a branch", "options": [{"label": "First", "value": "first"}, {"label": "Second", "value": "second"}], "test_choice": 0}}], {"$step": "choice.value"}, ["pure", "human-input"])
@@ -555,8 +657,11 @@ class ModuleTests(unittest.TestCase):
             "casts": {"left": "integer"}, "implementations": [{"kind": "program", "program": "python", "args": [str(script)],
                 "files": [str(script)], "platforms": [platform.system()]}], "examples": [{"inputs": {"left": "2", "right": 3}}]})
         self.grant(definition)
-        self.assertFalse(self.runtime.validate(definition["action_id"], definition["content_hash"])["ok"])
-        self.assertEqual(self.runtime.availability(definition["action_id"])["state"], "failed")
+        validation = self.runtime.validate(definition["action_id"], definition["content_hash"])
+        self.assertEqual(validation["validation_mode"], "environment-only")
+        self.assertEqual(self.runtime.availability(definition["action_id"])["state"], "ready")
+        result = self.call(definition["action_id"], {"left": "2", "right": 3}, "bad-output")
+        self.assertEqual(result["state"], "failed")
         with self.assertRaises(ValueError):
             self.runtime.cast(definition, {"left": "2.1", "right": 3})
 
@@ -588,6 +693,7 @@ var output=process.StandardOutput.ReadToEnd(); process.WaitForExit(); if(process
             "examples": [{"inputs": {"left": 20, "right": 22}, "output": {"sum": 42}}]})
         self.grant(definition)
         self.assertEqual(self.runtime.availability(definition["action_id"])["state"], "needs_build")
+        self.runtime.ensure_build(definition)
         previous = {key: os.environ.get(key) for key in ["TEST_PYTHON", "TEST_BRIDGE"]}
         os.environ.update({"TEST_PYTHON": sys.executable, "TEST_BRIDGE": bridge})
         try:
@@ -672,6 +778,10 @@ class ValidationQueueTests(unittest.TestCase):
         self.assertEqual(self.finish()["counts"], {"cancelled": 1})
         with self.assertRaises(PermissionError):
             self.enqueue("core.artifact.write", "idle")
+        allowed = self.runtime.queue_enqueue("core.artifact.write", self.runtime.definition("core.artifact.write")["content_hash"],
+                                             "idle", allow_effects=True, launch=False)
+        job = next(item for item in self.runtime.queue_status()["jobs"] if item["job_id"] == allowed["job_id"])
+        self.assertEqual(job["state"], "succeeded")
 
 
 class ResourceReferenceTests(unittest.TestCase):
@@ -910,6 +1020,7 @@ class ResourceReferenceTests(unittest.TestCase):
                                    "source_files": [self.uri], "outputs": ["result.py"]}
         definition = self.runtime.register(editable)
         self.grant(self.runtime, definition)
+        self.runtime.ensure_build(definition)
         self.assertTrue(self.runtime.validate(definition["action_id"], definition["content_hash"])["ok"])
         run = self.runtime.call(definition["action_id"], {}, "built", definition["content_hash"])
         self.assertEqual(self.runtime.wait(run["run_id"])["output"], {"value": 42})

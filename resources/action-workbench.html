@@ -21,7 +21,18 @@
 .definition-editor textarea{flex:1;min-height:220px;resize:none;tab-size:4;white-space:pre;overflow:auto}
 #catalog-message{max-width:360px;overflow-wrap:anywhere}
 .port-row.required,.port-row.optional{border:0}
-.palette-row{grid-template-columns:18px minmax(0,1fr) 28px 28px 28px}
+.palette-row{position:relative;grid-template-columns:16px minmax(0,1fr);gap:6px;min-height:36px}
+.palette-row>div{min-width:0}
+.palette-title{display:block}
+.palette-title strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:400}
+.palette-meta{display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;white-space:nowrap;line-height:14px}
+.palette-meta small,.palette-meta .language{display:inline;overflow:hidden;text-overflow:ellipsis;border:0;padding:0;min-width:0}
+.palette-tools{position:absolute;right:0;top:50%;transform:translateY(-50%);display:flex;gap:2px;opacity:0;pointer-events:none;background:var(--panel)}
+.tree-cat .palette-tools .icon{width:22px;height:22px;padding:0;border-color:transparent}
+.palette-row:hover .palette-tools,.cattree-item:focus-within .palette-tools{opacity:1;pointer-events:auto}
+.palette-row:hover .palette-content,.cattree-item:focus-within .palette-content{padding-right:var(--palette-tools-width)}
+.cattree-item[aria-selected=true]{background:var(--vscode-list-inactiveSelectionBackground,#37373d)}
+.tree-cat-hdr.drop-target{background:var(--vscode-list-dropBackground,#383b3d);outline:1px solid var(--accent);outline-offset:-1px}
 .raw-string{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:4px;align-items:start}
 .literal-delimiter{font:11px/1.5 var(--vscode-editor-font-family,monospace);padding-top:6px;color:var(--muted)}
 .raw-string-body{position:relative;min-width:0}
@@ -50,12 +61,6 @@ header.top{flex-shrink:0}
 	.tree-cat-hdr,.cattree-item{padding-left:8px!important}
 	.tree-cat .tree-cat-hdr,.tree-cat .cattree-item{padding-left:14px!important}
 	.tree-cat .tree-cat .tree-cat-hdr,.tree-cat .tree-cat .cattree-item{padding-left:20px!important}
-	.palette-row{grid-template-columns:18px minmax(0,1fr) 28px 28px;row-gap:4px}
-	.palette-row>div{grid-column:1 / -1;grid-row:1}
-	.palette-row>:first-child{grid-column:1;grid-row:2}
-	.palette-row>:nth-child(3){grid-column:2;grid-row:2;justify-self:end}
-	.palette-row>:nth-child(4){grid-column:3;grid-row:2}
-	.palette-row>[data-add]{grid-column:4;grid-row:2}
 }
 </style></head><body>
 <header class="top"><h1>Action Workbench</h1><div class="toolbar"><button id="workspace" title="Select working directory" class="icon" aria-label="Select working directory"><span class="codicon codicon-folder-opened" aria-hidden="true"></span></button><button id="open-browser" title="Open in browser" class="icon" aria-label="Open in browser"><span class="codicon codicon-link-external" aria-hidden="true"></span></button><button id="refresh" title="Refresh catalog and validation queue" class="icon" aria-label="Refresh catalog and validation queue"><span class="codicon codicon-refresh"></span></button></div></header>
@@ -91,7 +96,7 @@ if(!vscode){try{const previous=sessionStorage.getItem('pkm-action-token'),launch
 const chat=document.createElement('section');chat.id='action-chat';chat.hidden=true;chat.innerHTML='<header><h2>Action Chat</h2></header><div id="chat-messages" role="log" aria-live="polite"></div>';byId('result').before(chat);const seenChoices=new Set(),catExpanded=Object.assign(Object.create(null),initialView?.catExpanded||{});
 byId('open-browser').hidden=!vscode;byId('open-browser').onclick=()=>perform('open_browser',{draft:{graph,saved,currentRun,pendingLaunch,lastRun,editorState,privateLaunch,libraryDraft:initialView?.libraryDraft,nestedDraft:initialView?.nestedDraft,treeCollapsed:document.querySelector('.layout').classList.contains('tree-collapsed'),catExpanded}});
 byId('background-tasks').hidden=!vscode&&!browserToken;byId('background-tasks').onclick=async()=>{const result=await perform('background_tasks');if(!vscode&&result){queue=result;renderQueue();byId('queue').scrollIntoView({block:'nearest'})}};
-function request(method,params={}){const timeout=method==='validate_batch'?Math.min(2147483647,1200000*Math.max(1,params.items?.length||0)):method==='validate'?1200000:35000;if(!vscode)return fetch('api',{method:'POST',headers:{'Content-Type':'application/json',...(browserToken?{Authorization:'Bearer '+browserToken}:{})},body:JSON.stringify({method,params}),signal:AbortSignal.timeout(timeout)}).then(response=>response.json()).then(result=>{if(result.ok===false)throw Error(result.error);return result}).catch(error=>{if(['AbortError','TimeoutError'].includes(error.name))throw Error('Request timed out; reconcile before retrying.');throw error});return new Promise((resolve,reject)=>{const requestId=String(++requestSequence),timer=setTimeout(()=>{pending.delete(requestId);reject(Error('Request timed out; reconcile before retrying.'))},timeout);pending.set(requestId,{resolve,reject,timer});vscode.postMessage({requestId,method,params})})}
+function request(method,params={}){const timeout=['validate_batch','prepare_batch'].includes(method)?Math.min(2147483647,1200000*Math.max(1,params.items?.length||0)):['validate','prepare'].includes(method)?1200000:35000;if(!vscode)return fetch('api',{method:'POST',headers:{'Content-Type':'application/json',...(browserToken?{Authorization:'Bearer '+browserToken}:{})},body:JSON.stringify({method,params}),signal:AbortSignal.timeout(timeout)}).then(response=>response.json()).then(result=>{if(result.ok===false)throw Error(result.error);return result}).catch(error=>{if(['AbortError','TimeoutError'].includes(error.name))throw Error('Request timed out; reconcile before retrying.');throw error});return new Promise((resolve,reject)=>{const requestId=String(++requestSequence),timer=setTimeout(()=>{pending.delete(requestId);reject(Error('Request timed out; reconcile before retrying.'))},timeout);pending.set(requestId,{resolve,reject,timer});vscode.postMessage({requestId,method,params})})}
 window.addEventListener('message',event=>{const item=pending.get(event.data.requestId);if(!item)return;if(event.data.progress){if(event.data.progress.confirmation)window.pkmRiskReview?.show(event.data.progress.confirmation,event.data.requestId);updateBatchProgress(event.data.progress);return}clearTimeout(item.timer);pending.delete(event.data.requestId);window.pkmRiskReview?.hide(event.data.requestId);event.data.result?.ok===false?item.reject(Error(event.data.result.error)):item.resolve(event.data.result)});
 let actions=[],groups=[],moduleSets=[],queue={jobs:[]},graph=initialView?.graph||{action_id:'local.graph.'+crypto.randomUUID().replaceAll('-',''),name:'New composition',nodes:[],edges:[]},saved=initialView?.saved||null,source=null,pendingInput=null,selectedEdge=null,wireGesture=null,history=[],selectedExports=new Set(),refreshing=false,currentRun=initialView?.currentRun||null,previewWorkspace='',hostWorkspace='',editorState=initialView?.editorState||null,catalogOperation=null;
 let startingRun=false,cancellingRun=null,pendingLaunch=initialView?.pendingLaunch||null,lastRun=initialView?.lastRun||null,refreshQueued=false;
@@ -223,8 +228,21 @@ function definition(node){
 }
 function buildCatTree(items,getCat,fallback,emptyGroups=[]){const root={folders:Object.create(null),items:[]};const folder=category=>{let node=root;for(const segment of String(category||fallback).split('/').map(value=>value.trim()).filter(Boolean)){node.folders[segment]??={folders:Object.create(null),items:[]};node=node.folders[segment]}return node};for(const category of emptyGroups)folder(category);for(const item of items)folder(getCat(item)).items.push(item);return root}
 function countTreeLeaves(node){return node.items.length+Object.values(node.folders).reduce((count,child)=>count+countTreeLeaves(child),0)}
+let selectedPaletteAction=null,paletteDragging=false;
+function canMoveAction(action){return action.visibility!=='private'&&(!action.read_only||action.pending_review)}
+function revealCatalogCategory(category){
+ const path=category.split('/');for(let index=1;index<=path.length;index++)catExpanded[JSON.stringify(path.slice(0,index))]=true;
+ byId('search').value='';setTreeCollapsed(false);saveView();renderPalette();
+}
+async function moveActionToFolder(action,category){
+ if(!canMoveAction(action)||category.split('/')[0].toLowerCase()==='core')throw Error('System components and folders are read-only.');
+ if((action.category||'Actions')===category)return;
+ const result=await request('action_move',{action_id:action.action_id,category});
+ await refresh();revealCatalogCategory(result.category);status('Moved Action to '+result.category);
+}
 function renderCatTree(node,path,depth,renderLeaf,query){let html='';for(const name of Object.keys(node.folders).sort((left,right)=>left==='core'?-1:right==='core'?1:left.localeCompare(right))){const child=node.folders[name],key=JSON.stringify([...path,name]),open=!!query||catExpanded[key]===true;html+='<div class="tree-cat"><div class="tree-cat-hdr" role="treeitem" tabindex="0" data-category="'+esc(key)+'" aria-expanded="'+open+'" style="padding-left:'+(8+depth*12)+'px"><span class="tree-cat-arrow"><i class="codicon codicon-chevron-'+(open?'down':'right')+'"></i></span><i class="codicon codicon-folder"></i><span class="tree-cat-label">'+esc(name)+'</span><span class="tree-cat-count">'+countTreeLeaves(child)+'</span></div><div class="tree-cat-body" role="group" '+(open?'':'hidden')+'>'+renderCatTree(child,[...path,name],depth+1,renderLeaf,query)+'</div></div>'}for(const item of node.items)html+=renderLeaf(item,depth);return html}
 function renderPalette(){
+	if(paletteDragging)return;
 	const filter=byId('search').value.toLowerCase();
 	const paletteActions=workbenchActions();
 	const category=action=>action.category||'Actions';
@@ -233,28 +251,54 @@ function renderPalette(){
 	const tree=buildCatTree(rows,category,'Actions',visibleGroups);
 	byId('palette').innerHTML=renderCatTree(tree,[],0,(action,depth)=>{
 		const ready=action.availability.state==='ready',editable=!action.read_only&&action.editable!==false,needsValidation=!action.component&&!ready;
-        if(action.visibility==='private')return '<div class="li cattree-item" role="treeitem" tabindex="0" data-action="'+esc(action.action_id)+'" draggable="false" style="padding-left:'+(8+depth*12)+'px"><div class="palette-title"><strong>'+esc(action.action_id)+'</strong><span class="language">Private</span></div><small>'+esc(action.availability.state)+' · '+esc(action.availability.reason||'Operator grants and qualification verified')+'</small><button data-private="'+esc(action.action_id)+'">Inspect / Run</button></div>';
-		return '<div class="li cattree-item" role="treeitem" tabindex="0" data-action="'+esc(action.action_id)+'" draggable="'+ready+'" style="padding-left:'+(8+depth*12)+'px"><div class="palette-row">'+(action.component?'<i class="codicon codicon-symbol-misc" title="System Basic Component"></i>':action.pending_review?'<i class="codicon codicon-git-pull-request" title="Pending review"></i>':'<input type="checkbox" aria-label="Select '+esc(action.action_id)+' for export" data-export="'+esc(action.action_id)+'" '+(selectedExports.has(action.action_id)?'checked':'')+'>')+'<div><div class="palette-title"><strong>'+esc(action.display_name||action.action_id)+'</strong><span class="language" title="'+esc((action.languages||[action.language||'Unknown']).join(' + '))+'">'+esc(action.language||'Unknown')+'</span></div><small class="'+(needsValidation?'needs-validation-label':'')+'">'+(needsValidation?'Need Validation':esc((action.read_only?'System / ':'')+(action.component?'Basic Component':action.availability.state)))+'</small></div>'+(editable?'<button class="icon" data-edit="'+esc(action.action_id)+'" aria-label="Edit '+esc(action.action_id)+'" title="Edit Action definition"><i class="codicon codicon-edit"></i></button>':'<span></span>')+(action.component?'<span></span>':'<button class="icon'+(needsValidation?' validation-needed':'')+'" data-qualify="'+esc(action.action_id)+'" aria-label="Validate '+esc(action.action_id)+'" title="Validate Action: Agent review, then smoke tests"><i class="codicon codicon-beaker"></i></button>')+'<button class="icon" data-add="'+esc(action.action_id)+'" aria-label="Add '+esc(action.action_id)+'" title="'+(ready?'Add block':'Complete validation before nesting')+'" '+(ready?'':'disabled')+'><i class="codicon codicon-add"></i></button></div></div>';
+		const language=action.visibility==='private'?'Private':action.language&&action.language!=='Unknown'?action.language:'';
+		const state=needsValidation?(['blocked','disabled'].includes(action.preparation?.state)?'Needs attention':'Preparing'):action.component?'Basic Component':action.availability.state;
+		const tools=action.visibility==='private'?'<button class="icon" data-private="'+esc(action.action_id)+'" title="Inspect / Run" aria-label="Inspect / Run '+esc(action.action_id)+'"><i class="codicon codicon-eye"></i></button>':
+			(editable?'<button class="icon" data-edit="'+esc(action.action_id)+'" aria-label="Edit '+esc(action.action_id)+'" title="Edit Action definition"><i class="codicon codicon-edit"></i></button>':'')+
+			(action.component?'':'<button class="icon'+(needsValidation?' validation-needed':'')+'" data-qualify="'+esc(action.action_id)+'" aria-label="Retry preparation '+esc(action.action_id)+'" title="Retry automatic readiness checks"><i class="codicon codicon-refresh"></i></button>')+
+			'<button class="icon" data-add="'+esc(action.action_id)+'" aria-label="Add '+esc(action.action_id)+'" title="'+(ready?'Add block':'Preparing automatically before use')+'" '+(ready?'':'disabled')+'><i class="codicon codicon-add"></i></button>';
+		return '<div class="li cattree-item" role="treeitem" tabindex="0" aria-selected="'+(selectedPaletteAction===action.action_id)+'" title="'+esc(action.action_id)+'" data-action="'+esc(action.action_id)+'" style="padding-left:'+Math.min(8+depth*12,56)+'px;--palette-tools-width:'+(action.visibility==='private'?24:((editable?1:0)+(action.component?0:1)+1)*24)+'px"><div class="palette-row">'+
+			(action.visibility==='private'?'<i class="codicon codicon-lock"></i>':action.component?'<i class="codicon codicon-symbol-misc" title="System Basic Component"></i>':action.pending_review?'<i class="codicon codicon-git-pull-request" title="Preparing automatically"></i>':'<input type="checkbox" aria-label="Select '+esc(action.action_id)+' for export" data-export="'+esc(action.action_id)+'" '+(selectedExports.has(action.action_id)?'checked':'')+'>')+
+			'<div class="palette-content"><div class="palette-title"><strong>'+esc(action.display_name||action.action_id)+'</strong></div><div class="palette-meta">'+(language?'<span class="language" title="'+esc((action.languages||[language]).join(' + '))+'">'+esc(language)+'</span>':'')+'<small class="'+(needsValidation?'needs-validation-label':'')+'">'+esc(state)+'</small></div></div><span class="palette-tools">'+tools+'</span></div></div>';
 	},filter);
 	document.querySelectorAll('[data-category]').forEach(row=>{
 		const group=JSON.parse(row.dataset.category).join('/');
 		const toggle=()=>{catExpanded[row.dataset.category]=row.getAttribute('aria-expanded')!=='true';saveView();renderPalette()};
 		row.onclick=toggle;
+		if(group.split('/')[0].toLowerCase()!=='core'){
+			row.ondragover=event=>{if([...event.dataTransfer.types].includes('application/x-pkm-action-move')){event.preventDefault();event.stopPropagation();event.dataTransfer.dropEffect='move';row.classList.add('drop-target')}};
+			row.ondragleave=event=>{if(!row.contains(event.relatedTarget))row.classList.remove('drop-target')};
+			row.ondrop=async event=>{
+				if(![...event.dataTransfer.types].includes('application/x-pkm-action-move'))return;
+				event.preventDefault();event.stopPropagation();row.classList.remove('drop-target');
+				const action=paletteActions.find(item=>item.action_id===event.dataTransfer.getData('application/x-pkm-action-move'));
+				try{if(!action)throw Error('The dragged Action is no longer available. Refresh and retry.');await moveActionToFolder(action,group)}catch(error){status(error.message||String(error),true)}
+			};
+		}
 		row.oncontextmenu=event=>{event.preventDefault();event.stopPropagation();showCatalogMenu(event,[{label:'Add subgroup',icon:'new-folder',disabled:group.split('/')[0].toLowerCase()==='core',run:()=>openCatalogDialog('group',null,group)}])};
 		row.onkeydown=event=>{if(event.key==='ContextMenu'||(event.shiftKey&&event.key==='F10')){event.preventDefault();row.oncontextmenu(keyboardMenuEvent(row))}else if(['Enter',' '].includes(event.key)){event.preventDefault();toggle()}};
 	});
 	document.querySelectorAll('[data-action]').forEach(row=>{
 		const action=paletteActions.find(item=>item.action_id===row.dataset.action);
 		const open=()=>action.pending_review?openAdmissionReview(action.proposal_id?{proposal_id:action.proposal_id}:{action_id:action.action_id,content_hash:action.content_hash}):action.visibility==='private'?openPrivateAction(action):editAction(action);
-		row.ondblclick=event=>{if(!event.target.closest('button,input'))open()};
-		row.draggable=!action.direct_only;
-		row.ondragstart=event=>{if(action.direct_only||action.availability.state!=='ready'){event.preventDefault();if(!action.direct_only)explainValidation(action);return}event.dataTransfer.setData('application/x-pkm-action',action.action_id);event.dataTransfer.effectAllowed='copy'};
+		row.onclick=event=>{if(event.target.closest('button,input'))return;selectedPaletteAction=action.action_id;document.querySelectorAll('[data-action]').forEach(item=>item.setAttribute('aria-selected',String(item===row)));row.focus()};
+		row.ondblclick=event=>{if(!paletteDragging&&!event.target.closest('button,input'))open()};
+		const movable=canMoveAction(action),composable=!action.direct_only&&action.availability.state==='ready';
+		row.draggable=movable||composable;
+		row.ondragstart=event=>{
+			if(event.target.closest('button,input')||(!movable&&!composable)){event.preventDefault();return}
+			paletteDragging=true;
+			if(movable)event.dataTransfer.setData('application/x-pkm-action-move',action.action_id);
+			if(composable)event.dataTransfer.setData('application/x-pkm-action',action.action_id);
+			event.dataTransfer.effectAllowed=movable&&composable?'copyMove':movable?'move':'copy';
+		};
+		row.ondragend=()=>{document.querySelectorAll('.drop-target').forEach(item=>item.classList.remove('drop-target'));setTimeout(()=>{paletteDragging=false;renderPalette()},0)};
 		row.oncontextmenu=event=>{event.preventDefault();event.stopPropagation();const protectedAction=!!action.read_only;showCatalogMenu(event,[
 			{label:'Copy Path',icon:'copy',run:()=>copyActionPath(action)},
 			{label:'Rename',icon:'edit',disabled:protectedAction,run:()=>openCatalogDialog('rename',action)},
 			{label:'Edit',icon:'go-to-file',disabled:protectedAction||action.editable===false,run:()=>editAction(action)},
 			{label:'Delete',icon:'trash',disabled:protectedAction||action.editable===false,run:()=>openCatalogDialog('delete',action)},
-			{label:'Move to',icon:'move',disabled:protectedAction,run:()=>openCatalogDialog('move',action)}])};
+			{label:'Move to',icon:'move',disabled:!canMoveAction(action),run:()=>openCatalogDialog('move',action)}])};
 		row.onkeydown=event=>{if(event.key==='ContextMenu'||(event.shiftKey&&event.key==='F10')){event.preventDefault();row.oncontextmenu(keyboardMenuEvent(row))}else if(event.key==='Enter'&&event.target===row)open()};
 	});
 	document.querySelectorAll('[data-qualify]').forEach(button=>button.onclick=()=>chooseActionValidation(paletteActions.find(item=>item.action_id===button.dataset.qualify)));
@@ -293,7 +337,7 @@ byId('catalog-form').onsubmit=async event=>{
 	if(operation.kind==='rename')result=await mutate('action_rename',{action_id:action.action_id,name:byId('catalog-name').value.trim()});
 	if(operation.kind==='move')result=await mutate('action_move',{action_id:action.action_id,category:byId('catalog-group').value});
 	if(operation.kind==='delete')result=await mutate('action_delete',{action_id:action.action_id,content_hash:action.content_hash});
-	if(result?.category){const path=result.category.split('/');for(let index=1;index<=path.length;index++)catExpanded[JSON.stringify(path.slice(0,index))]=true;byId('search').value='';setTreeCollapsed(false);saveView();renderPalette();status(operation.kind==='group'?'Created folder: '+result.category:'Moved Action to '+result.category)}
+	if(result?.category){revealCatalogCategory(result.category);status(operation.kind==='group'?'Created folder: '+result.category:'Moved Action to '+result.category)}
 	if(!result)return;if(operation.kind==='delete'){selectedExports.delete(action.action_id);if(saved?.action_id===action.action_id){saved=null;saveView();byId('run').disabled=true}}if(operation.kind==='rename'&&graph.action_id===action.action_id){graph.name=result.display_name;saveView();renderGraph()}byId('catalog-dialog').close();
 	}catch(error){byId('catalog-error').textContent=error.message||String(error)}finally{submit.disabled=false}
 };
@@ -326,7 +370,7 @@ byId('editor-file').onchange=async()=>{
 };
 byId('save-definition').onclick=async()=>{
 	if(editorState?.read_only)return status('This contract is read-only.',true);
-	try{if(editorState.filename){const result=await request('source_save',{action_id:editorState.action_id,filename:editorState.filename,content:editorState.content,source_hash:editorState.source_hash});editorState.source_hash=result.source_hash}else{const definition=JSON.parse(editorState.content);const result=await request('definition_save',{action_id:editorState.action_id,definition,content_hash:editorState.content_hash});if(result.definition.state==='pending_operator_approval'){editorState.proposal={...result.definition,definition};editorState.dirty=false;saveView();await refresh();status('Proposal submitted. Use Review / test Actions to review and validate it; the existing approved version is unchanged.');return}editorState.content_hash=result.definition.content_hash;editorState.definition={...definition,version:result.definition.version+1};editorState.content=JSON.stringify(editorState.definition,null,2)}editorState.dirty=false;showDefinitionEditor();saveView();await refresh();status('Saved; validation is required before running.')}catch(error){status(error.message,true)}
+	try{if(editorState.filename){const result=await request('source_save',{action_id:editorState.action_id,filename:editorState.filename,content:editorState.content,source_hash:editorState.source_hash});editorState.source_hash=result.source_hash}else{const definition=JSON.parse(editorState.content);const result=await request('definition_save',{action_id:editorState.action_id,definition,content_hash:editorState.content_hash});if(result.definition.state==='pending_operator_approval'){editorState.proposal={...result.definition,definition};editorState.dirty=false;saveView();await refresh();status('Created. Preparing automatically in the background; the existing ready version remains available.');return}editorState.content_hash=result.definition.content_hash;editorState.definition={...definition,version:result.definition.version+1};editorState.content=JSON.stringify(editorState.definition,null,2)}editorState.dirty=false;showDefinitionEditor();saveView();await refresh();status('Saved. Preparing automatically in the background.')}catch(error){status(error.message,true)}
 };
 byId('canvas').ondragover=event=>{if([...event.dataTransfer.types].includes('application/x-pkm-action')){event.preventDefault();event.dataTransfer.dropEffect='copy'}};
 byId('canvas').ondrop=event=>{event.preventDefault();const identifier=event.dataTransfer.getData('application/x-pkm-action');if(!identifier)return;const origin=byId('canvas').getBoundingClientRect();addBlock(identifier,{x:Math.max(20,event.clientX-origin.left),y:Math.max(20,event.clientY-origin.top)})};
@@ -354,7 +398,7 @@ byId('poll-template-form').onsubmit=async event=>{
    field:byId('poll-template-field').value,expected:JSON.parse(byId('poll-template-expected').value),
    interval_seconds:Number(byId('poll-template-interval').value),timeout_seconds:Number(byId('poll-template-timeout').value),
    max_iterations:Number(byId('poll-template-limit').value)}});
-  byId('poll-template-dialog').close();await refresh();status('Polling Action created. Validate explicitly before running.');
+  byId('poll-template-dialog').close();await refresh();status('Polling Action created. Preparing automatically in the background.');
  }catch(error){byId('poll-template-error').textContent=error.message}
  finally{button.disabled=false}
 };
@@ -489,7 +533,7 @@ async function refresh(){
   if(previewWorkspace){byId('workspace').disabled=true;byId('workspace').title=previewWorkspace}
   const unseen=workbenchActions().filter(action=>action.pending_review&&!seenPendingActions.has(action.proposal_id||action.action_id));
   for(const action of unseen)seenPendingActions.add(action.proposal_id||action.action_id);
-  if(unseen.length){catExpanded[JSON.stringify(['Actions'])]=true;setTreeCollapsed(false)}
+  if(unseen.length){for(const action of unseen){const path=(action.category||'Actions').split('/');for(let index=1;index<=path.length;index++)catExpanded[JSON.stringify(path.slice(0,index))]=true}setTreeCollapsed(false)}
   renderPalette();renderSets();updateWorkbenchTasks();if(document.getElementById('action-library')?.open)libraryRows();
   if(!byId('blocks').contains(document.activeElement)&&document.activeElement!==byId('name')&&!wireGesture)renderGraph();
   renderQueue();updateValidationFeedback();updateRunControls();
@@ -545,7 +589,7 @@ byId('arrange').onclick=()=>{remember();let top=40;graph.nodes.forEach((node,ind
 byId('name').onchange=()=>{graph.name=byId('name').value;persist()};
 byId('output').onchange=()=>{graph.output_node=byId('output').value;persist()};
 byId('check').onclick=async()=>{const result=await perform('check_graph',{graph});if(result)status('Graph contract is valid')};
-byId('save').onclick=async()=>{const result=await perform('save_graph',{graph:{...graph,version:(actions.find(action=>action.action_id===graph.action_id)?.version||0)+1}});if(result){if(result.state==='pending_operator_approval'){pendingGraphProposal={...result,graph:structuredClone(graph)};saved=null;saveView();updateRunControls();status('Proposal submitted. Use Review / test Actions to run Agent review and validation before admission or invocation.');return}saved=result;graph.version=result.version;saveView();status('Saved v'+result.version)}};
+byId('save').onclick=async()=>{const result=await perform('save_graph',{graph:{...graph,version:(actions.find(action=>action.action_id===graph.action_id)?.version||0)+1}});if(result){if(result.state==='pending_operator_approval'){pendingGraphProposal={...result,graph:structuredClone(graph)};saved=null;saveView();updateRunControls();status('Created. Preparing automatically in the background.');return}saved=result;graph.version=result.version;saveView();status('Saved v'+result.version)}};
 byId('validate').onclick=()=>saved?startActionValidation(saved,'graph'):status('Save and approve the current graph first.',true);
 byId('run').onclick=async()=>{if((!saved&&!pendingLaunch)||currentRun||startingRun)return;startingRun=true;updateRunControls();try{if(!pendingLaunch)pendingLaunch={action_id:saved.action_id,inputs:{},key:crypto.randomUUID(),content_hash:saved.content_hash};saveView();const result=await request('call',pendingLaunch);currentRun=lastRun=result.run_id;pendingLaunch=null;saveView();status((result.userState||result.state)+' '+currentRun);await refresh()}catch(error){status(error.message+' The original launch key is retained; retry reconciles the same submission.',true)}finally{startingRun=false;updateRunControls()}};
 byId('destination-label').hidden=!!vscode;
@@ -575,7 +619,7 @@ async function initialize(){
   else{editorState={action_id:action.action_id,name:(action.display_name||action.action_id)+' ('+action.action_id+')',language:action.language||'Contract',definition:action,files:[],filename:'',content:JSON.stringify(action,null,2),dirty:false,read_only:true};showDefinitionEditor();saveView()}
  }
 }
-window.addEventListener('resize',draw);updateRunControls();document.addEventListener('DOMContentLoaded',()=>initialize(),{once:true});setInterval(()=>{if(refreshQueued&&!refreshing){refreshQueued=false;refresh()}else if(currentRun||(queue.jobs||[]).some(job=>['queued','running'].includes(job.state)))refresh()},2000);
+window.addEventListener('resize',draw);updateRunControls();document.addEventListener('DOMContentLoaded',()=>initialize(),{once:true});setInterval(()=>{if(refreshQueued&&!refreshing){refreshQueued=false;refresh()}else if(currentRun||actionsNeedingValidation().length||(queue.jobs||[]).some(job=>['queued','running'].includes(job.state)))refresh()},5000);
 </script>
 <script>
 const libraryStyle=document.createElement('style');
@@ -591,7 +635,7 @@ library.append(taskSummary,taskDetails);
 const showPending=document.createElement('button');showPending.id='show-validation-actions';showPending.textContent='Show Actions needing validation';
 showPending.onclick=()=>{library.close();showValidationActions()};
 taskSummary.after(showPending);
-const libraryButton=document.createElement('button');libraryButton.id='open-library';libraryButton.textContent='Review / test Actions';
+const libraryButton=document.createElement('button');libraryButton.id='open-library';libraryButton.textContent='Action readiness';
 document.querySelector('header.top .toolbar').prepend(libraryButton);
 const admittedLibraryButton=document.createElement('button');admittedLibraryButton.id='open-action-library';admittedLibraryButton.textContent='Action Library';
 admittedLibraryButton.hidden=!vscode;
@@ -601,23 +645,24 @@ let librarySequence=0,librarySelection,librarySubmitting=false,actionProposals=[
 const seenPendingActions=new Set();
 function workbenchActions(){
  const candidates=new Map(actions.map(action=>[action.action_id,action]));
- for(const action of pendingAdmissions)candidates.set(action.action_id,{...action,category:'Actions',pending_review:true,read_only:true,availability:{state:'unverified'}});
+ for(const action of pendingAdmissions)candidates.set(action.action_id,{...action,pending_review:true,read_only:true,availability:{state:'unverified'}});
  for(const proposal of actionProposals){
   const existing=candidates.get(proposal.action_id);
   if(existing?.proposal_id&&existing.version>=proposal.definition.version)continue;
-  candidates.set(proposal.action_id,{...proposal.definition,action_id:proposal.action_id,content_hash:proposal.content_hash,proposal_id:proposal.proposal_id,category:'Actions',pending_review:true,read_only:true,editable:false,component:false,palette_hidden:false,availability:{state:'unverified'}});
+  candidates.set(proposal.action_id,{...proposal.definition,action_id:proposal.action_id,content_hash:proposal.content_hash,proposal_id:proposal.proposal_id,preparation:proposal.preparation,category:proposal.category||existing?.category||'Actions',display_name:proposal.display_name||proposal.definition.display_name,language:proposal.language,languages:proposal.languages,pending_review:true,read_only:true,editable:false,component:false,palette_hidden:false,availability:{state:'unverified'}});
  }
  return [...candidates.values()];
 }
 const workbenchTasks=document.createElement('section');workbenchTasks.id='workbench-tasks';workbenchTasks.setAttribute('role','status');
 byId('status').after(workbenchTasks);
-const batchValidateButton=document.createElement('button');batchValidateButton.id='validate-all-actions';batchValidateButton.textContent='Validate all needed';
+const batchValidateButton=document.createElement('button');batchValidateButton.id='validate-all-actions';batchValidateButton.textContent='Retry preparation';
 workbenchTasks.after(batchValidateButton);
 let batchValidating=false;
 function actionsNeedingValidation(){return workbenchActions().filter(action=>!action.component&&action.visibility!=='private'&&action.availability.state!=='ready')}
 function updateWorkbenchTasks(){
  const count=actionsNeedingValidation().length;
- workbenchTasks.textContent=count?count+' Actions need validation. Click a highlighted flask on the left to test the environment.':'No Actions need validation. Drag a ready Action from the left to compose.';
+ const blocked=workbenchActions().filter(action=>action.preparation?.state==='blocked');
+ workbenchTasks.textContent=count?(blocked.length?blocked.length+' Actions need attention. '+blocked.map(action=>action.action_id+': '+action.preparation.reason).join('\n'):count+' Actions are being prepared automatically in the background. You can continue working.'):'Actions are ready. Drag an Action from the left to compose.';
  byId('library-next-step').textContent=workbenchTasks.textContent;
  batchValidateButton.disabled=!count||batchValidating;
 }
@@ -638,7 +683,7 @@ const reviewCanvas=document.createElement('section');reviewCanvas.id='admission-
 document.querySelector('.workspace').append(reviewCanvas);
 let admissionSequence=0;
 const validationStyle=document.createElement('style');
-validationStyle.textContent='[data-qualify].validation-needed{border:2px solid var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 30%,transparent);background:var(--vscode-button-background,var(--panel))}.needs-validation-label{display:inline-block;color:var(--accent);font-weight:600;border:1px solid var(--accent);border-radius:3px;padding:1px 4px}#workbench-tasks{padding:8px 12px;border-bottom:1px solid var(--line)}#validation-dialog p{white-space:pre-wrap;overflow-wrap:anywhere}#validation-dialog .tools{justify-content:flex-end}#validation-feedback{padding:10px;border-bottom:1px solid var(--line);white-space:pre-wrap;overflow-wrap:anywhere}#validation-feedback[data-failed=true]{color:var(--bad)}';
+validationStyle.textContent='[data-qualify].validation-needed{color:var(--accent)}.needs-validation-label{color:var(--muted);font-weight:400}#workbench-tasks{padding:8px 12px;border-bottom:1px solid var(--line)}#validation-dialog p{white-space:pre-wrap;overflow-wrap:anywhere}#validation-dialog .tools{justify-content:flex-end}#validation-feedback{padding:10px;border-bottom:1px solid var(--line);white-space:pre-wrap;overflow-wrap:anywhere}#validation-feedback[data-failed=true]{color:var(--bad)}';
 document.head.append(validationStyle);
 validationStyle.textContent+='@media(max-width:600px){.layout.review-open{grid-template-columns:0 6px minmax(0,1fr)}.layout.review-open>aside{visibility:hidden;overflow:hidden;padding:0}}';
 const validationDialog=document.createElement('dialog');validationDialog.id='validation-dialog';
@@ -650,12 +695,9 @@ validationChoiceDialog.innerHTML='<h2 id="validation-choice-title">Validation</h
 document.body.append(validationChoiceDialog);
 let validationChoiceAction=null;
 function chooseActionValidation(action){
- if(!action)return status('Select an Action to validate.',true);
- if(batchValidating||validationDialog.open||validationChoiceDialog.open)return;
- validationChoiceAction=structuredClone(action);
- byId('validation-choice-all').disabled=!actionsNeedingValidation().length;
- validationChoiceDialog.showModal();
- byId('validation-choice-cancel').focus();
+ if(!action)return status('Select an Action.',true);
+ if(batchValidating)return;
+ return enqueueActionValidation(action,'demand',false);
 }
 byId('validation-choice-cancel').onclick=()=>validationChoiceDialog.close();
 byId('validation-choice-this').onclick=()=>{
@@ -763,23 +805,18 @@ function renderBatchStage(){
 }
 let validationTarget=null,validationJob=null;
 batchValidateButton.onclick=()=>{
- if(batchValidating||validationDialog.open)return;
+ if(batchValidating)return;
  const items=actionsNeedingValidation().map(action=>structuredClone(action));if(!items.length)return;
- validationTarget={items};
- byId('validation-title').textContent='Validate all '+items.length+' Actions';
- byId('validation-message').textContent='Core Actions run environment self-tests. Other Actions show Agent risk information for your confirmation before testing. Failures do not stop the others. Passing tests do not certify safety.\n\n'+items.map(action=>action.action_id+' · v'+action.version+'\nEffects: '+(action.effects||[]).join(', ')).join('\n\n')+'\n\nApprove only if the declared smoke tests are authorized. Expand Smoke test inputs to inspect the exact examples.';
- showValidationInputs(items);
- byId('validation-accept').textContent='Review and validate this batch';
- validationDialog.showModal();
+ return validateActionBatch(items);
 };
 async function validateActionBatch(items){
  batchValidating=true;updateWorkbenchTasks();validationFeedback.hidden=true;
  byId('batch-validation-results').replaceChildren();
  byId('batch-validation-details').open=false;
- updateBatchProgress({total:items.length,completed:0,stage:'Choose review model'});
+ updateBatchProgress({total:items.length,completed:0,stage:'Preparing automatically'});
  const heartbeat=setInterval(renderBatchStage,1000);
  try{
-  const result=await request('validate_batch',{items:items.map(action=>({action_id:action.action_id,content_hash:action.content_hash,...(action.proposal_id?{proposal_id:action.proposal_id}:{})})),allow_effects:true});
+  const result=await request('prepare_batch',{items:items.map(action=>({action_id:action.action_id,content_hash:action.content_hash,...(action.proposal_id?{proposal_id:action.proposal_id}:{})}))});
   if(result.cancelled){batchProgressState.stage='Cancelled';return}
   const failed=result.results.filter(item=>item.state!=='succeeded');
   byId('batch-validation-results').replaceChildren();result.results.forEach(appendBatchResult);
@@ -803,23 +840,11 @@ function focusValidation(action){
 }
 function explainValidation(action){
  focusValidation(action);
- byId('validation-title').textContent='Validate before adding to canvas';
- byId('validation-input-details').hidden=true;
- byId('validation-message').textContent=action.action_id+' is '+action.availability.state+'.\nFirst click the highlighted flask button (Validate) beside this Action. After validation succeeds and the state becomes ready, you can drag it onto the canvas.\nThis prompt does not execute anything.';
- byId('validation-accept').textContent='Show flask button';validationTarget={action,explain:true};
- if(!validationDialog.open)validationDialog.showModal();
+ validationNotice(action.preparation?.reason||action.action_id+' is being prepared automatically. You can use it once it is ready.',action.preparation?.state==='blocked');
 }
 function startActionValidation(action,priority='demand'){
  if(!action)return status('Select an Action to validate.',true);
- if(validationDialog.open)return;
- const effects=(action.effects||[]).some(effect=>effect!=='pure');
- if(!effects)return enqueueActionValidation(action,priority,false);
- validationTarget={action,priority,explain:false};
- byId('validation-title').textContent='Validate Action: confirm real execution';
- byId('validation-message').textContent=action.action_id+'\nCore Actions run environment self-tests. Other Actions show Agent risk information; you decide whether to run the tests.\nDeclared effects: '+action.effects.join(', ')+'\n\nTests use the host account. Passing tests do not certify safety. Expand Smoke test inputs to inspect the exact examples.';
- showValidationInputs([action]);
- byId('validation-accept').textContent='Validate these examples';
- validationDialog.showModal();
+ return enqueueActionValidation(action,priority,false);
 }
 byId('validation-dismiss').onclick=()=>validationDialog.close();
 validationDialog.addEventListener('close',()=>{const target=validationTarget;validationTarget=null;if(target?.explain)focusValidation(target.action)});
@@ -831,12 +856,12 @@ byId('validation-accept').onclick=()=>{
  else enqueueActionValidation(target.action,target.priority,true);
 };
 async function enqueueActionValidation(action,priority,allowEffects){
- validationJob=null;validationNotice('Validating environment for '+action.action_id+'… Non-core Actions ask for risk confirmation before testing.');
+ validationJob=null;validationNotice('Preparing '+action.action_id+' automatically. You can continue working.');
  try{
-  const result=await request('validate',{action_id:action.action_id,content_hash:action.content_hash,priority,allow_effects:allowEffects,...(action.proposal_id?{proposal_id:action.proposal_id}:{})});
+  const result=await request('prepare',{action_id:action.action_id,content_hash:action.content_hash,...(action.proposal_id?{proposal_id:action.proposal_id}:{})});
   if(result.cancelled){validationNotice('Validation cancelled. No smoke tests or admission were performed.');return}
   if(result.state==='succeeded'){
-   validationNotice('Environment tests passed for '+action.action_id+'. This version is ready to use; this is not a safety certification.\n'+(result.report?.summary||''));
+   validationNotice(action.action_id+' is ready to use.');
    closeAdmissionReview();await refresh();return;
   }
   validationJob={job_id:result.job_id,action_id:action.action_id};

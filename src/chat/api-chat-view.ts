@@ -38,7 +38,7 @@ import { guardRetrievalCandidates } from "../retrieval/retrieval-provider";
 import { passageReferenceGroup, refineRuleCandidates } from "../retrieval/retrieval-passages";
 import { workerLimits, workerIsDescendant, WorkerEvent, WorkerPhase, WorkerDecisionReason } from "./worker-tree";
 import { chatRetrievalReceipt, ChatKnowledgeRetriever, ChatRetrievalCandidate, ChatRetrievalInvocation, validChatRetrievalInvocation } from "./chat-retrieval";
-import { knowledgeCandidatePriority, parseRetrievalJudgments, requireLearningAcknowledgment, retrievalJudgmentInput } from "./chat-retrieval-learning";
+import { knowledgeCandidatePriority, parseRetrievalSelection, requireLearningAcknowledgment, retrievalJudgmentInput } from "./chat-retrieval-learning";
 import { handleChatLibraryAction } from "./library-actions";
 import { hostname } from "os";
 import { activeHarnessBinding, assertHarnessRecipeBinding, createHarnessReportTool, currentHarnessTask, currentHarnessTaskState, HarnessBinding } from "./chat-harness-records";
@@ -51,7 +51,7 @@ import { chatPkmUrl, parsePkmLocator } from "../knowledge/knowledge-locator";
 import { captureExecutionContext, ChatExecutionContext, validExecutionContext } from "./execution-context";
 import { readHarnessActions } from "../runtime/native-harness-actions";
 import { JsonFileCache } from "../runtime/json-file-cache";
-import { prepareWorkGoal, reportWork, workEvidenceKey, workGoalContext, workGoalInputs, workStop } from "./chat-work-goal";
+import { prepareWorkGoal, recordWorkGoalTransition, reportWork, workEvidenceKey, workGoalContext, workGoalInputs, workStop } from "./chat-work-goal";
 import { activeTaskContextCheckpoint, createTaskContextCheckpoint, readTaskContextInput, taskContextInputs } from "./task-context-checkpoint";
 import { portalTaskAttempts, portalTaskReplyLink, type PortalTaskAttempts } from "./portal-task-attempts";
 import { recordPortalCommand, type PortalCommandActivity } from "./portal-command-activity";
@@ -1875,7 +1875,8 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         const reply = chat.messages.find(item => item.id === message.id && item.role === "assistant");
         const receipt = reply?.retrievalActivity?.attempts.find(item => item.kind === "knowledge")?.receipt;
         const invocation = receipt?.invocation;
-        if (!receipt || !invocation?.retrievalId || !invocation.modelInvoked || invocation.semanticStatus !== "ready") throw new Error("Choose a successful model retrieval receipt before reviewing relevance.");
+        if (!receipt || !invocation?.retrievalId || !invocation.modelInvoked || invocation.semanticStatus !== "ready"
+          || invocation.onlineLearning?.enabled !== true) throw new Error("Choose a successful receipt with online learning enabled before reviewing relevance.");
         const ids = [...new Set(receipt.candidates.map(item => item.sourceId).filter((id): id is string => !!id))];
         const answer = await this.requestDecision(chat, "Review retrieval relevance",
           `Query: ${receipt.query}\n${receipt.candidates.map(item => `${item.sourceId}: ${item.label}`).join("\n")}\nJudge relevance to the query, not whether a reference was selected or the task succeeded. Include missed relevant canonical source IDs. Your complete judgments override model self-evaluation and retrain the local ranker and calibrator, never embeddings.`,
@@ -3100,7 +3101,9 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         || toolNames.some(name => ["read_file", "find_files", "search_text", "diagnostic_logs", "run_process", "list_directory", "write_file", "apply_patch", "spawn_workers"].includes(name))) {
         prepareWorkGoal(chat, inputId, text, executionContext.digest);
       }
-      if (stopDebug && chat.workGoal && chat.workGoal.status !== "resolved") chat.workGoal.status = "paused";
+      if (stopDebug && chat.workGoal && chat.workGoal.status !== "resolved" && chat.workGoal.status !== "paused") {
+        chat.workGoal = recordWorkGoalTransition(chat.workGoal, "paused", "user_paused", inputId);
+      }
       if (stopDebug) delete chat.debugRequest;
       else if (toolNames.some(name => ["read_file", "search_text", "diagnostic_logs", "run_process", "list_directory"].includes(name))
         && (explicitDebug || chat.includeHistory && chat.debugRequest?.status === "investigating")) {
@@ -3816,7 +3819,6 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         reply!.retrieval = { ...chatRetrievalReceipt(sourceChat, text, settings.model, [...knowledge, ...scoped, ...requirements], selected, "prepared"),
           ...(knowledgeInvocation ? { invocation: structuredClone(knowledgeInvocation) } : {}), ...(reply!.retrieval?.warning ? { warning: reply!.retrieval.warning } : {}) };
       };
-      const contextPlanner = new ChatContextPlanner(messages, automatic, toolSchema);
       const sampleWorkerBudget = (ledger: import("./chat-budget-ledger").ChatBudgetLedger) => {
         const cfg = vscode.workspace.getConfiguration("personalKnowledge");
         const limits = workerLimits(cfg.get<number>("apiChatAutomaticWorkers", 3), cfg.get<number>("apiChatMaximumWorkers", 10));
@@ -3829,6 +3831,77 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
       let workingStateMessage = messages.find(message => message.content.startsWith("Recorded current-task working state (agent report"));
       let apiKey = "";
       if (settings.provider !== "vscode") { stage("Reading API credentials"); apiKey = await this.readApiKey(controller.signal); }
+      if (knowledgeInvocation?.retrievalId && knowledgeInvocation.modelInvoked
+        && knowledgeInvocation.semanticStatus === "ready" && knowledgeInvocation.onlineLearning?.enabled === true
+        && retrieval?.feedback && knowledge.length) {
+        const label = "Selecting useful retrieval sources (online learning)";
+        reply.retrievalLearning = { status:"evaluating", provenance:"model", retrievalId:knowledgeInvocation.retrievalId, judgedSources:0 };
+        this.persist(chat); this.publish();
+        modelActivity({ operation:"inference", label, status:"running" });
+        try {
+          this.assertExecution(chat, executionContext);
+          const judgment = retrievalJudgmentInput(text, knowledge);
+          const observation: { usage?: ChatTokenUsage } = {};
+          (reply.auxiliaryModelUsage ||= []).push(observation);
+          const evaluationSignal = AbortSignal.any([controller.signal, AbortSignal.timeout(45_000)]);
+          const evaluation = {
+            ...settings, apiKey, messages:judgment.messages, tools:[], signal:evaluationSignal,
+            outputTokenParameter:profile.outputTokenParameter, includeUsage:profile.includeUsage,
+            maxOutputTokens:Math.min(1024, settings.maxOutputTokens), timeoutMs:45_000,
+            onUsage:(usage: ChatTokenUsage) => {
+              observation.usage = { ...usage };
+              reply!.usage = chatBudgetUsage(reply!.budgetReceipts || [], reply!.auxiliaryModelUsage!.flatMap(item => item.usage ? [item.usage] : []));
+              const total = reply!.usage;
+              if (!total) throw new Error("Retrieval selector usage was not recorded.");
+              reply!.estimatedCost = estimateCost(profile, total.inputTokens, total.outputTokens);
+              this.persist(chat);
+            },
+          };
+          let output = "";
+          const collect = (chunk: string) => {
+            if (output.length + chunk.length > 8000) throw new Error("Retrieval selection exceeded its response boundary.");
+            output += chunk;
+          };
+          await abortable(nativeModel ? streamVscodeChat(nativeModel, evaluation, collect)
+            : streamApiChat({ ...evaluation, provider:settings.provider === "azure-openai" ? "azure-openai" : "openai-compatible" }, collect), evaluationSignal);
+          this.assertExecution(chat, executionContext);
+          controller.signal.throwIfAborted();
+          retrieval.refreshSourceValidation?.();
+          if (knowledge.some(candidate => retrieval.sourceIsCurrent?.(candidate) === false)) {
+            throw new Error("Knowledge changed during relevance selection; no selection or training was applied.");
+          }
+          const { relevant, judged } = parseRetrievalSelection(output, judgment.sourceIds);
+          const rejected = new Set(knowledge.filter(candidate =>
+            judged.includes(candidate.sourceId || "") && !relevant.includes(candidate.sourceId || "")).map(candidate => candidate.id));
+          for (let index = messages.length - 1; index >= 0; index--) {
+            const reference = automatic.get(messages[index]);
+            if (reference?.ids.some(id => rejected.has(id))) {
+              automatic.delete(messages[index]); messages.splice(index, 1);
+            }
+          }
+          knowledge = knowledge.map(candidate => rejected.has(candidate.id)
+            ? { ...candidate, reason:"Excluded by pre-answer model relevance selection (not a budget or permission exclusion)", evidenceState:"excluded" }
+            : candidate);
+          reply.retrievalLearning = { ...reply.retrievalLearning, status:"selected", selectionApplied:true,
+            judgedSources:judged.length, judgedSourceIds:judged, unknownSources:judgment.sourceIds.length - judged.length,
+            relevantSources:relevant.length, relevantSourceIds:relevant };
+          this.persist(chat);
+          if (judged.length) {
+            const acknowledgment = requireLearningAcknowledgment(await retrieval.feedback(knowledgeInvocation.retrievalId, relevant, "model", judged));
+            reply.retrievalLearning = { ...reply.retrievalLearning,
+              status:acknowledgment.ignored && acknowledgment.reason === "user-precedence" ? "user-protected" : "learned", acknowledgment };
+          }
+          modelActivity({ operation:"inference", label, status:"complete" });
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          reply.retrievalLearning = { ...reply.retrievalLearning, status:"failed", error:detail.slice(0, 1000) };
+          modelActivity({ operation:"inference", label, status:"failed" });
+          this.notify(new Error(`Retrieval selection/learning failed; inspect the receipt for whether selection was applied. ${detail}`), { chatId:chat.id });
+          if (controller.signal.aborted) throw error;
+        }
+        this.persist(chat); this.publish();
+      }
+      const contextPlanner = new ChatContextPlanner(messages, automatic, toolSchema);
       if (controller.signal.aborted) throw new Error("Request cancelled.");
       this.assertRunnable(chat, chat.progress?.attemptId, executionContext);
       this.persist(chat); this.publish();
@@ -3957,12 +4030,17 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
           const previousWorkGoal = chat.workGoal;
           if (workActive) {
             if (steering.some(input => workStop.test(input.text))) {
-              if (chat.workGoal) chat.workGoal.status = "paused";
+              const stopInput = steering.find(input => workStop.test(input.text))!;
+              if (chat.workGoal) chat.workGoal = recordWorkGoalTransition(chat.workGoal, "paused", "user_paused", stopInput.id);
               controller.abort();
               throw new Error("User steering paused the work objective; no further inference was dispatched.");
             }
-            if (steering.length && chat.workGoal) chat.workGoal = { ...chat.workGoal, status: "active", reason: undefined, nextAction: undefined,
-              acceptance: chat.workGoal.acceptance.map(item => ({ ...item, verified: false, evidenceCallIds: [] })) };
+            if (steering.length && chat.workGoal) {
+              const lastSteering = steering[steering.length - 1];
+              chat.workGoal = recordWorkGoalTransition({ ...chat.workGoal, reason: undefined, nextAction: undefined,
+                acceptance: chat.workGoal.acceptance.map(item => ({ ...item, verified: false, evidenceCallIds: [] })) },
+              "active", "user_followup", lastSteering.id);
+            }
             const content = workGoalContext(chat);
             const existing = planned.find(message => message.role === "system" && message.content.startsWith("User work objective ("));
             if (existing) existing.content = content;
@@ -4059,8 +4137,9 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
           if (controller.signal.aborted) return;
           if (workActive && event.status === "running" && chat.workGoal && chat.workGoal.status !== "active"
             && !["report_work", "session_info", "record_harness"].includes(event.name)) {
-            chat.workGoal = { ...chat.workGoal, status: "active", reason: undefined,
-              acceptance: chat.workGoal.acceptance.map(item => ({ ...item, verified: false, evidenceCallIds: [] })) };
+            chat.workGoal = recordWorkGoalTransition({ ...chat.workGoal, reason: undefined,
+              acceptance: chat.workGoal.acceptance.map(item => ({ ...item, verified: false, evidenceCallIds: [] })) },
+            "active", "agent_started_action");
           }
           if (event.status === "running") {
             const outputs = reply!.publicOutputSegments;
@@ -4108,63 +4187,14 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
       if (controller.signal.aborted) throw new Error("Request cancelled.");
       if (workActive && chat.workGoal?.status === "active") throw new Error("The user objective remains open; the response or tool budget ended without verified acceptance or a concrete blocker.");
       if (!workActive && debugActive && chat.debugRequest?.status === "investigating") throw new Error("Debugging remains incomplete; the response or tool budget ended before an evidence-backed outcome or concrete blocker was recorded.");
-      if (knowledgeInvocation?.retrievalId && knowledgeInvocation.modelInvoked
-        && knowledgeInvocation.semanticStatus === "ready" && retrieval?.feedback && knowledge.length) {
-        const label = "Evaluating retrieval relevance (online learning)";
-        reply.retrievalLearning = { status:"evaluating", provenance:"model", retrievalId:knowledgeInvocation.retrievalId, judgedSources:0 };
-        this.persist(chat); this.publish();
-        modelActivity({ operation:"inference", label, status:"running" });
-        try {
-          this.assertExecution(chat, executionContext);
-          const judgment = retrievalJudgmentInput(text, reply.content, knowledge);
-          reply.retrievalLearning.judgedSources = judgment.sourceIds.length;
-          const observation: { usage?: ChatTokenUsage } = {};
-          (reply.auxiliaryModelUsage ||= []).push(observation);
-          const evaluationSignal = AbortSignal.any([controller.signal, AbortSignal.timeout(45_000)]);
-          const evaluation = {
-            ...settings, apiKey:request.apiKey, messages:judgment.messages, tools:[], signal:evaluationSignal,
-            outputTokenParameter:request.outputTokenParameter, includeUsage:request.includeUsage,
-            maxOutputTokens:Math.min(1024, settings.maxOutputTokens), timeoutMs:45_000,
-            onUsage:(usage: ChatTokenUsage) => {
-              observation.usage = { ...usage };
-              reply!.usage = chatBudgetUsage(reply!.budgetReceipts || [], reply!.auxiliaryModelUsage!.flatMap(item => item.usage ? [item.usage] : []));
-              const total = reply!.usage;
-              if (!total) throw new Error("Online evaluator usage was not recorded.");
-              reply!.estimatedCost = estimateCost(settings.selectedProfile, total.inputTokens, total.outputTokens);
-              this.persist(chat);
-            },
-          };
-          let output = "";
-          const collect = (chunk: string) => {
-            if (output.length + chunk.length > 8000) throw new Error("Online relevance evaluation exceeded its response boundary.");
-            output += chunk;
-          };
-          await abortable(nativeModel ? streamVscodeChat(nativeModel, evaluation, collect)
-            : streamApiChat({ ...evaluation, provider:settings.provider === "azure-openai" ? "azure-openai" : "openai-compatible" }, collect), evaluationSignal);
-          this.assertExecution(chat, executionContext);
-          if (controller.signal.aborted) throw new Error("Online relevance evaluation cancelled.");
-          const relevant = parseRetrievalJudgments(output, judgment.sourceIds);
-          const acknowledgment = requireLearningAcknowledgment(await retrieval.feedback(knowledgeInvocation.retrievalId, relevant, "model"));
-          reply.retrievalLearning = { ...reply.retrievalLearning,
-            status:acknowledgment.ignored && acknowledgment.reason === "user-precedence" ? "user-protected" : "learned",
-            relevantSources:relevant.length, relevantSourceIds:relevant, acknowledgment };
-          modelActivity({ operation:"inference", label, status:"complete" });
-        } catch (error) {
-          const detail = error instanceof Error ? error.message : String(error);
-          reply.retrievalLearning = { ...reply.retrievalLearning, status:"failed", error:detail.slice(0, 1000) };
-          modelActivity({ operation:"inference", label, status:"failed" });
-          this.notify(new Error(`Retrieval online learning failed; no successful learning update is claimed. ${detail}`), { chatId:chat.id });
-          if (controller.signal.aborted) throw error;
-        }
-        this.persist(chat); this.publish();
-      }
       reply.status = "complete";
       chat.progress.status = "complete";
       if (chat.workerState) chat.workerState.sleeping = chat.messages.some(message => message.delegations?.some(record => record.treeId && record.status === "running"));
       if (chat.workerActivity) { chat.workerActivity.state = chat.workerState?.sleeping ? "running" : "completed"; delete chat.workerActivity.decision; }
     } catch (error) {
       if (chat.workGoal && chat.workGoal.attemptInputId === reply?.inputId && chat.workGoal.status === "active") {
-        chat.workGoal.status = controller.signal.aborted ? "paused" : "interrupted";
+        chat.workGoal = recordWorkGoalTransition(chat.workGoal, controller.signal.aborted ? "paused" : "interrupted",
+          controller.signal.aborted ? "execution_cancelled" : "execution_failed");
         chat.workGoal.reason = "Execution ended before goal resolution. Explicitly resume after reconciling recorded results; do not replay uncertain effects.";
       }
       if (queuedBatch && queuedInputsCommitted && !queuedTransportSent) {

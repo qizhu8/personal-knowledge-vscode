@@ -16,6 +16,8 @@ test("real HTTP worker history and learned parameters render in Router without f
     ["-B", path.join(root, "tests/test-retrieval-learning.py")],
     { env:{ ...process.env, PKM_RETRIEVAL_LEARNING_FIXTURE:fixturePath }, timeout:60000, stdio:["ignore","pipe","pipe"] });
   const { catalog, runtime } = JSON.parse(fs.readFileSync(fixturePath, "utf8"));
+  const defaultOffCatalog = structuredClone(catalog);
+  defaultOffCatalog.learning.enabled = false;
   const browser = await chromium.launch({ headless:true, ...(process.env.PKM_CHROMIUM_EXECUTABLE
     ? { executablePath:process.env.PKM_CHROMIUM_EXECUTABLE } : {}) });
   t.after(() => browser.close());
@@ -59,16 +61,27 @@ test("real HTTP worker history and learned parameters render in Router without f
       semanticStatus:runtime.semantic_status, skillServing:runtime.skill_serving, solution:runtime.solution },
       solutions:{ copilot_default:{ externallyServed:true }, l1_online:{ available:true, mature:true, enabled:true } } });
     skillRouterSolutionsOnSnapshot(catalog);
-  }, { catalog, runtime });
+  }, { catalog:defaultOffCatalog, runtime });
   assert.equal(await page.getByRole("tab").count(), 7);
   const tabs = ["Skill Sources","Retrieval & Performance","Collector & Privacy"];
   assert.equal(await page.getByRole("tab", { name:tabs[1], exact:true }).getAttribute("aria-selected"), "true", "old Models state migrates");
   const performance = page.locator("#sr-performance");
   assert.equal(await page.getByRole("tabpanel", {name:"Parameters", exact:true}).isVisible(), true);
   assert.equal(await page.getByRole("tablist", {name:"Stage details"}).getByRole("tab").count(), 4);
+  await page.getByRole("tab", {name:"Controls",exact:true}).click();
+  assert.equal(await page.getByLabel("Enable Online Retrieval Learning", {exact:true}).isChecked(), false,
+    "new installations present online learning as an explicit opt-in");
+  await page.getByLabel("Enable Online Retrieval Learning").check();
+  const enableRequest = await page.evaluate(() => __posts.at(-1));
+  assert.equal(enableRequest.command, "retrievalAdaptiveCount");
+  assert.equal(enableRequest.enabled, true);
+  await page.evaluate(({catalog,request}) => skillRouterSolutionsOnSnapshot({...catalog, actionCompleted:true,
+    operationId:request.requestId, learning:{...catalog.learning,enabled:true}}), {catalog,request:enableRequest});
+  assert.equal(await page.getByLabel("Enable Online Retrieval Learning", {exact:true}).isChecked(), true);
+  await page.getByRole("tab", {name:"Parameters",exact:true}).click();
   await page.getByRole("tab", {name:"Metrics", exact:true}).click();
   const chart = performance.getByRole("img", { name:"Runtime (ms) by Model Call", exact:true });
-  assert.equal(await chart.locator("circle").count(), 12, "metrics follow the selected calibration context");
+  assert.equal(await chart.locator("circle").count(), 13, "metrics include the disabled baseline attempt without fabricating a judgment");
   assert.equal(await chart.locator(".sr-chart-failed").count(), 0);
   const dual = catalog.learning.models.find(model => model.route === "dual");
   await page.getByLabel("Calibration Route").selectOption(dual.context);
@@ -105,13 +118,7 @@ test("real HTTP worker history and learned parameters render in Router without f
   assert.equal(await page.evaluate(() => document.activeElement.id), "sr-inspector-tab-parameters");
   await page.keyboard.press("ArrowRight");
   assert.equal(await page.getByRole("tabpanel", {name:"Controls",exact:true}).isVisible(), true);
-  await page.getByLabel("Adaptive Result Count").uncheck();
-  const knob = await page.evaluate(() => __posts.at(-1));
-  assert.equal(knob.command, "retrievalAdaptiveCount");
-  assert.equal(knob.enabled, false);
-  await page.evaluate(({catalog,knob}) => skillRouterSolutionsOnSnapshot({...catalog, actionCompleted:true,
-    operationId:knob.requestId, learning:{...catalog.learning,enabled:false}}), {catalog,knob});
-  assert.equal(await page.getByLabel("Adaptive Result Count").isChecked(), false);
+  assert.equal(await page.getByLabel("Enable Online Retrieval Learning").isChecked(), true);
   await page.evaluate(data => skillRouterSolutionsOnSnapshot(data), catalog);
   await page.getByRole("tab", {name:"Metrics", exact:true}).click();
   await page.getByLabel("Performance Metric", { exact:true }).selectOption("recall");
@@ -226,17 +233,17 @@ test("real HTTP worker history and learned parameters render in Router without f
     await page.locator("#sr-performance").screenshot({ path:process.env.PKM_FEATURE_ROUTER_SCREENSHOT });
   }
   await page.getByRole("tab", {name:"Controls",exact:true}).click();
-  await page.getByLabel("Adaptive Result Count", { exact:true }).uncheck();
+  await page.getByLabel("Enable Online Retrieval Learning", { exact:true }).uncheck();
   const post = await page.evaluate(() => __posts.at(-1));
   assert.equal(post.command, "retrievalAdaptiveCount");
   assert.equal(post.enabled, false);
   assert(post.requestId);
-  assert.equal(await page.getByLabel("Adaptive Result Count", { exact:true }).isChecked(), false);
-  assert.match(await performance.innerText(), /Applying Adaptive Result Count/);
+  assert.equal(await page.getByLabel("Enable Online Retrieval Learning", { exact:true }).isChecked(), false);
+  assert.match(await performance.innerText(), /Applying Online Retrieval Learning/);
   await page.evaluate(data => skillRouterSolutionsOnSnapshot(data), {
     ...catalog, learning:{ ...catalog.learning, enabled:false }, actionCompleted:true, operationId:post.requestId,
   });
-  assert.equal(await page.getByLabel("Adaptive Result Count", { exact:true }).isEnabled(), true);
+  assert.equal(await page.getByLabel("Enable Online Retrieval Learning", { exact:true }).isEnabled(), true);
   const legacy = { ...catalog };
   delete legacy.learning;
   const posts = await page.evaluate(() => __posts.length);

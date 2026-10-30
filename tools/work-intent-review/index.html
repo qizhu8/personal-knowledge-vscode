@@ -1,0 +1,534 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Work-intent field review</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f3f0e8;
+      --paper-deep: #e8e2d5;
+      --ink: #1d2c32;
+      --muted: #647276;
+      --line: #c9c7bc;
+      --blue: #1e5361;
+      --blue-soft: #dce8e7;
+      --rust: #a74d31;
+      --rust-soft: #f1dfd7;
+      --green: #376d50;
+      --green-soft: #e0eadf;
+      --gold: #9a6a22;
+      --gold-soft: #f1e7ce;
+      --serif: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+      --sans: "Avenir Next", "Segoe UI", sans-serif;
+      --mono: "SFMono-Regular", Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(ellipse at 86% 0%, rgba(201, 168, 104, .16), transparent 34rem),
+        repeating-linear-gradient(0deg, transparent 0 31px, rgba(49, 77, 78, .035) 31px 32px),
+        var(--paper);
+      font: 15px/1.5 var(--sans);
+    }
+    button, input, textarea { font: inherit; }
+    button { color: inherit; }
+    .page { width: min(1320px, calc(100% - 48px)); margin: 0 auto; padding: 32px 0 72px; }
+    .masthead {
+      display: flex; align-items: center; justify-content: space-between;
+      padding-bottom: 14px; border-bottom: 1px solid var(--ink);
+      color: var(--muted); font: 11px/1.2 var(--mono); letter-spacing: .12em; text-transform: uppercase;
+    }
+    .masthead strong { color: var(--ink); font-weight: 700; }
+    .hero {
+      display: grid; grid-template-columns: minmax(0, 1fr) 270px; gap: 48px;
+      align-items: end; padding: 44px 0 32px;
+    }
+    .eyebrow { color: var(--rust); font: 700 11px/1.3 var(--mono); letter-spacing: .13em; text-transform: uppercase; }
+    h1 { margin: 12px 0 14px; max-width: 800px; font: 500 clamp(42px, 6vw, 78px)/.98 var(--serif); letter-spacing: -.045em; }
+    h1 em { color: var(--blue); font-weight: 400; }
+    .lede { max-width: 680px; margin: 0; color: #435358; font-size: 17px; }
+    .score-card {
+      padding: 20px; border: 1px solid var(--line); background: rgba(255,255,255,.55);
+      box-shadow: 6px 6px 0 rgba(29,44,50,.08);
+    }
+    .score-top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+    .score-top span { color: var(--muted); font: 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .score-top strong { font: 500 34px/1 var(--serif); }
+    .progress-track { height: 7px; margin: 17px 0 10px; background: var(--paper-deep); overflow: hidden; }
+    .progress-fill { width: 0; height: 100%; background: var(--blue); transition: width .25s ease; }
+    .score-foot { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; }
+    .legend {
+      display: grid; grid-template-columns: repeat(4, 1fr); margin: 8px 0 28px;
+      border-block: 1px solid var(--line); background: rgba(255,255,255,.34);
+    }
+    .legend article { min-height: 92px; padding: 15px 18px; border-right: 1px solid var(--line); }
+    .legend article:last-child { border-right: 0; }
+    .legend b { display: block; margin-bottom: 5px; font: 700 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .legend p { margin: 0; color: var(--muted); font-size: 13px; }
+    .legend .execute b { color: var(--green); }
+    .legend .explore b { color: var(--blue); }
+    .legend .quoted b { color: var(--rust); }
+    .legend .unclear b { color: var(--gold); }
+    .toolbar {
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      margin-bottom: 14px; padding: 12px 0; border-top: 2px solid var(--ink);
+    }
+    .filters, .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .filter, .action {
+      border: 1px solid var(--line); background: transparent; padding: 8px 11px;
+      cursor: pointer; transition: background .16s ease, color .16s ease, border-color .16s ease;
+    }
+    .filter { color: var(--muted); font-size: 12px; }
+    .filter[aria-pressed="true"] { color: #fff; background: var(--ink); border-color: var(--ink); }
+    .action { font: 11px var(--mono); text-transform: uppercase; letter-spacing: .04em; }
+    .action.primary { color: #fff; background: var(--blue); border-color: var(--blue); }
+    .action:hover, .filter:hover { border-color: var(--blue); }
+    .action:disabled { opacity: .42; cursor: not-allowed; }
+    .search {
+      width: min(240px, 26vw); padding: 8px 10px; border: 1px solid var(--line);
+      border-radius: 0; color: var(--ink); background: rgba(255,255,255,.55);
+    }
+    .workspace { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 28px; align-items: start; }
+    .rail { position: sticky; top: 16px; }
+    .rail h2 { margin: 0 0 11px; font: 500 23px/1.1 var(--serif); }
+    .rail p { margin: 0 0 15px; color: var(--muted); font-size: 13px; }
+    .rail-note { padding: 13px 14px; border-left: 3px solid var(--rust); background: var(--rust-soft); color: #653d30; font-size: 12px; }
+    .rail-note strong { display: block; margin-bottom: 4px; font: 700 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .privacy { margin-top: 15px !important; font: 11px/1.45 var(--mono) !important; }
+    .samples { display: grid; gap: 10px; }
+    .sample {
+      position: relative; display: grid; grid-template-columns: 66px minmax(0,1fr); gap: 14px;
+      padding: 18px 19px; border: 1px solid var(--line); background: rgba(255,255,255,.62);
+      animation: arrive .32s ease both;
+    }
+    .sample::before { position: absolute; inset: 0 auto 0 0; width: 3px; background: transparent; content: ""; }
+    .sample[data-reviewed="true"]::before { background: var(--green); }
+    .sample-id { padding-top: 2px; color: var(--muted); font: 11px var(--mono); }
+    .sample-content { min-width: 0; }
+    .sample-quote { margin: 0 0 14px; font: 500 20px/1.35 var(--serif); overflow-wrap: anywhere; }
+    .sample-type { display: inline-block; margin: 0 0 9px; color: var(--muted); font: 10px var(--mono); letter-spacing: .09em; text-transform: uppercase; }
+    .choices { display: flex; gap: 7px; flex-wrap: wrap; }
+    .choice {
+      min-width: 91px; padding: 7px 10px; border: 1px solid var(--line); background: transparent;
+      color: #46575a; cursor: pointer; font-size: 12px; transition: all .15s ease;
+    }
+    .choice:hover { border-color: var(--ink); color: var(--ink); transform: translateY(-1px); }
+    .choice[aria-pressed="true"] { border-color: var(--ink); color: #fff; background: var(--ink); }
+    .choice[data-choice="execute"][aria-pressed="true"], .choice[data-choice="pause"][aria-pressed="true"] { background: var(--green); border-color: var(--green); }
+    .choice[data-choice="explore"][aria-pressed="true"], .choice[data-choice="resume"][aria-pressed="true"] { background: var(--blue); border-color: var(--blue); }
+    .choice[data-choice="quoted"][aria-pressed="true"], .choice[data-choice="none"][aria-pressed="true"] { background: var(--rust); border-color: var(--rust); }
+    .choice[data-choice="uncertain"][aria-pressed="true"] { background: var(--gold); border-color: var(--gold); }
+    .outcome { margin: 11px 0 0; padding: 8px 10px; border-left: 2px solid var(--blue); background: var(--blue-soft); color: #2e5054; font-size: 12px; }
+    .outcome[hidden] { display: none; }
+    .note-toggle { display: inline-block; margin-top: 10px; color: var(--muted); font: 11px var(--mono); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+    .note {
+      display: block; width: 100%; min-height: 58px; margin-top: 8px; padding: 9px 10px;
+      resize: vertical; border: 1px solid var(--line); background: #fbfaf6; color: var(--ink); font-size: 12px;
+    }
+    .note[hidden] { display: none; }
+    .empty { padding: 42px; border: 1px dashed var(--line); color: var(--muted); text-align: center; }
+    .comparison {
+      display: none; margin: 18px 0 0; padding: 20px; border: 1px solid var(--blue); background: var(--blue-soft);
+    }
+    .comparison[data-visible="true"] { display: block; }
+    .comparison h2 { margin: 0 0 6px; font: 500 25px var(--serif); }
+    .comparison p { margin: 4px 0; color: #36545a; }
+    .footer { margin-top: 42px; padding-top: 12px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; gap: 20px; color: var(--muted); font: 10px var(--mono); letter-spacing: .04em; }
+    .status { min-height: 20px; margin-top: 10px; color: var(--muted); font-size: 12px; }
+    .status[data-error="true"] { color: #8d321f; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+    @keyframes arrive { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+    @media (max-width: 860px) {
+      .hero { grid-template-columns: 1fr; gap: 20px; }
+      .score-card { max-width: 400px; }
+      .legend { grid-template-columns: repeat(2,1fr); }
+      .legend article:nth-child(2) { border-right: 0; }
+      .legend article:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+      .workspace { grid-template-columns: 1fr; }
+      .rail { position: static; display: grid; grid-template-columns: 1fr 1fr; gap: 8px 18px; }
+      .rail h2, .rail p { grid-column: 1 / -1; }
+      .rail-note { align-self: start; }
+    }
+    @media (max-width: 620px) {
+      .page { width: min(100% - 28px, 1320px); padding-top: 18px; }
+      .masthead { font-size: 9px; }
+      .hero { padding: 32px 0 24px; }
+      h1 { font-size: 49px; }
+      .legend article { padding: 12px; }
+      .toolbar { align-items: flex-start; flex-direction: column; }
+      .search { width: 100%; }
+      .sample { grid-template-columns: 42px minmax(0,1fr); padding: 14px 12px; gap: 8px; }
+      .sample-quote { font-size: 18px; }
+      .choice { min-width: 0; flex: 1 1 42%; }
+      .rail { display: block; }
+      .rail-note { margin: 12px 0; }
+      .footer { flex-direction: column; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div class="masthead">
+      <span><strong>PKM / Harness Research</strong> &nbsp;·&nbsp; Field study 01</span>
+      <span>Offline review &nbsp; / &nbsp; No dispatch changes</span>
+    </div>
+    <header class="hero">
+      <div>
+        <div class="eyebrow">Human calibration · Work intent</div>
+        <h1>What did the request<br><em>actually authorize?</em></h1>
+        <p class="lede">Judge the sentence on its own. Decide whether it delegates work, opens a discussion, quotes content, or needs clarification—before comparing it with the current classifier.</p>
+      </div>
+      <section class="score-card" aria-label="Review progress">
+        <div class="score-top"><span>Reviewed</span><strong id="progress-value">0 / 33</strong></div>
+        <div class="progress-track" role="progressbar" aria-label="Review completion" aria-valuemin="0" aria-valuemax="33" aria-valuenow="0">
+          <div class="progress-fill" id="progress-fill"></div>
+        </div>
+        <div class="score-foot"><span id="uncertain-count">0 unclear</span><span id="storage-state">Saved on this browser</span></div>
+      </section>
+    </header>
+
+    <section class="legend" aria-label="Decision guide">
+      <article class="execute"><b>01 · Execute</b><p>A clear instruction to start doing the work now.</p></article>
+      <article class="explore"><b>02 · Explore</b><p>A question or discussion request; do not start a task.</p></article>
+      <article class="quoted"><b>03 · Quoted</b><p>Instruction-like text is content, not authorization.</p></article>
+      <article class="unclear"><b>04 · Unclear</b><p>Ambiguous intent; ask rather than guess.</p></article>
+    </section>
+
+    <div class="toolbar">
+      <div class="filters" role="group" aria-label="Filter samples">
+        <button class="filter" data-filter="all" aria-pressed="true">All <span id="all-count">33</span></button>
+        <button class="filter" data-filter="pending" aria-pressed="false">Unreviewed <span id="pending-count">33</span></button>
+        <button class="filter" data-filter="mismatch" aria-pressed="false" disabled>Compare after review</button>
+      </div>
+      <div class="actions">
+        <label class="sr-only" for="search">Search sample text</label>
+        <input id="search" class="search" type="search" placeholder="Find a phrase…">
+        <button class="action" id="compare" disabled>Reveal comparison</button>
+        <button class="action primary" id="export">Export labels</button>
+        <button class="action" id="import-button">Import labels</button>
+        <input class="sr-only" id="import-file" type="file" accept="application/json,.json">
+        <button class="action" id="reset">Reset</button>
+      </div>
+    </div>
+
+    <div class="workspace">
+      <aside class="rail">
+        <h2>Read first.<br>Then decide.</h2>
+        <p>The existing labels are intentionally hidden until you make a judgment. “Unclear” is a valid result; don't force a category when context is missing.</p>
+        <div class="rail-note"><strong>Research boundary</strong>This is an offline annotation bench. Your choices are saved in this browser and only leave it when you export a JSON file.</div>
+        <p class="privacy">33 synthetic examples · 29 task-intent samples · 4 pause/resume controls</p>
+      </aside>
+      <section>
+        <div id="samples" class="samples" aria-live="polite"></div>
+        <div id="empty" class="empty" hidden>No samples match this view.</div>
+        <section id="comparison" class="comparison" aria-live="polite">
+          <h2>Reference comparison</h2>
+          <p id="comparison-summary"></p>
+          <p id="comparison-detail"></p>
+          <p>Agreement here is against provisional labels, not a population-level accuracy estimate. Unclear answers are reported separately and are not counted as matches.</p>
+        </section>
+        <p id="status" class="status" role="status"></p>
+      </section>
+    </div>
+    <footer class="footer"><span>PKM · Work-intent baseline review</span><span>Annotations do not change production behavior.</span></footer>
+  </main>
+
+  <script id="review-data" type="application/json">
+  {
+    "schemaVersion": 1,
+    "samples": [
+      {"id":"W01","kind":"intent","text":"Please fix this broken endpoint.","reference":"execute","observed":true},
+      {"id":"W02","kind":"intent","text":"Should I implement a memory retrieval controller?","reference":"explore","observed":true},
+      {"id":"W03","kind":"intent","text":"The note says: 'Please fix this broken endpoint.'","reference":"quoted","observed":true},
+      {"id":"W04","kind":"intent","text":"Please debug this failing test.","reference":"execute","observed":true},
+      {"id":"W05","kind":"intent","text":"How would I fix this endpoint?","reference":"explore","observed":false},
+      {"id":"W06","kind":"intent","text":"Investigate the production timeout.","reference":"execute","observed":true},
+      {"id":"W07","kind":"intent","text":"Can you investigate this timeout?","reference":"explore","observed":true},
+      {"id":"W08","kind":"intent","text":"Implement a memory retrieval controller.","reference":"execute","observed":true},
+      {"id":"W09","kind":"intent","text":"What if we build a retrieval index?","reference":"explore","observed":false},
+      {"id":"W10","kind":"intent","text":"The README asks: implement a retrieval controller.","reference":"quoted","observed":true},
+      {"id":"W11","kind":"intent","text":"Build a workflow diagram.","reference":"execute","observed":true},
+      {"id":"W12","kind":"intent","text":"Could you explain how I can fix this?","reference":"explore","observed":true},
+      {"id":"W13","kind":"intent","text":"Repair the login flow.","reference":"execute","observed":true},
+      {"id":"W14","kind":"intent","text":"Please tell me whether I should repair the login flow.","reference":"explore","observed":true},
+      {"id":"W15","kind":"intent","text":"Please research session memory and propose a plan.","reference":"execute","observed":false},
+      {"id":"W16","kind":"intent","text":"Please write a report comparing these options.","reference":"execute","observed":false},
+      {"id":"W17","kind":"intent","text":"Please test the current branch and summarize failures.","reference":"execute","observed":false},
+      {"id":"W18","kind":"intent","text":"Run the focused tests and summarize failures.","reference":"execute","observed":false},
+      {"id":"W19","kind":"intent","text":"帮我看看 session memory 可以怎么设计。","reference":"explore","observed":false},
+      {"id":"W20","kind":"intent","text":"怎么修复这个接口？","reference":"explore","observed":false},
+      {"id":"W21","kind":"intent","text":"I saw 'investigate this issue' in the log.","reference":"quoted","observed":true},
+      {"id":"W22","kind":"intent","text":"我现在需要下线，把研究工作交给你。","reference":"execute","observed":false},
+      {"id":"W23","kind":"intent","text":"帮我认真研究 session memory 和 harness，并总结方案。","reference":"execute","observed":false},
+      {"id":"W24","kind":"intent","text":"帮我写一份对比文档。","reference":"execute","observed":false},
+      {"id":"W25","kind":"intent","text":"请测试当前分支并汇总失败。","reference":"execute","observed":false},
+      {"id":"W26","kind":"intent","text":"帮我调查这个错误。","reference":"execute","observed":true},
+      {"id":"W27","kind":"intent","text":"开始排查启动失败。","reference":"execute","observed":true},
+      {"id":"W28","kind":"intent","text":"帮我实现检索控制器。","reference":"execute","observed":true},
+      {"id":"W29","kind":"intent","text":"请整理这份报告。","reference":"execute","observed":false},
+      {"id":"C01","kind":"control","text":"Pause the current task.","reference":"pause","observed":"paused"},
+      {"id":"C02","kind":"control","text":"请暂停当前任务。","reference":"pause","observed":"paused"},
+      {"id":"C03","kind":"control","text":"Continue the task.","reference":"resume","observed":"active"},
+      {"id":"C04","kind":"control","text":"恢复任务。","reference":"resume","observed":"active"}
+    ]
+  }
+  </script>
+  <script>
+    (() => {
+      const data = JSON.parse(document.getElementById("review-data").textContent);
+      const samples = data.samples;
+      const storageKey = "pkm.work-intent-review.v1";
+      const choices = {
+        intent: [
+          ["execute", "Execute"], ["explore", "Explore"], ["quoted", "Quoted"], ["uncertain", "Unclear"],
+        ],
+        control: [
+          ["pause", "Pause"], ["resume", "Resume"], ["none", "No action"], ["uncertain", "Unclear"],
+        ],
+      };
+      const decisions = Object.create(null);
+      let filter = "all";
+      let revealed = false;
+      let storageAvailable = true;
+      const list = document.getElementById("samples");
+      const status = document.getElementById("status");
+
+      const makeChoice = (id, value, label, selected) => {
+        const button = document.createElement("button");
+        button.className = "choice";
+        button.type = "button";
+        button.dataset.id = id;
+        button.dataset.choice = value;
+        button.setAttribute("aria-pressed", String(selected));
+        button.textContent = label;
+        button.addEventListener("click", () => select(id, value));
+        return button;
+      };
+      const choiceFor = sample => choices[sample.kind];
+      const decisionMatches = sample => decisions[sample.id]?.value === sample.reference;
+
+      function save() {
+        try {
+          localStorage.setItem(storageKey, JSON.stringify({ schemaVersion:1, decisions }));
+          storageAvailable = true;
+          document.getElementById("storage-state").textContent = "Saved on this browser";
+        } catch {
+          storageAvailable = false;
+          document.getElementById("storage-state").textContent = "Export to preserve";
+        }
+      }
+
+      function loadSaved() {
+        try {
+          const raw = localStorage.getItem(storageKey);
+          if (!raw) return;
+          applyImport(JSON.parse(raw), false);
+        } catch {
+          storageAvailable = false;
+          document.getElementById("storage-state").textContent = "Export to preserve";
+        }
+      }
+
+      function select(id, value) {
+        const sample = samples.find(item => item.id === id);
+        if (!sample || !choiceFor(sample).some(([candidate]) => candidate === value)) return;
+        decisions[id] = { value, note:decisions[id]?.note || "" };
+        save();
+        render();
+      }
+
+      function visibleSamples() {
+        const query = document.getElementById("search").value.trim().toLocaleLowerCase();
+        return samples.filter(sample => {
+          const decision = decisions[sample.id];
+          const matchesFilter = filter === "all" || filter === "pending" && !decision
+            || filter === "mismatch" && revealed && decision && decision.value !== "uncertain" && !decisionMatches(sample);
+          return matchesFilter && (!query || `${sample.id} ${sample.text}`.toLocaleLowerCase().includes(query));
+        });
+      }
+
+      function render() {
+        const reviewed = samples.filter(sample => decisions[sample.id]).length;
+        const unclear = samples.filter(sample => decisions[sample.id]?.value === "uncertain").length;
+        document.getElementById("progress-value").textContent = `${reviewed} / ${samples.length}`;
+        document.getElementById("progress-fill").style.width = `${reviewed / samples.length * 100}%`;
+        document.querySelector('[role="progressbar"]').setAttribute("aria-valuenow", String(reviewed));
+        document.getElementById("uncertain-count").textContent = `${unclear} unclear`;
+        document.getElementById("pending-count").textContent = String(samples.length - reviewed);
+        document.getElementById("all-count").textContent = String(samples.length);
+        document.querySelector('[data-filter="mismatch"]').disabled = !revealed;
+        list.replaceChildren();
+        const visible = visibleSamples();
+        document.getElementById("empty").hidden = visible.length > 0;
+
+        for (const [index, sample] of visible.entries()) {
+          const current = decisions[sample.id];
+          const card = document.createElement("article");
+          card.className = "sample";
+          card.dataset.id = sample.id;
+          card.dataset.reviewed = String(!!current);
+          card.style.animationDelay = `${Math.min(index, 12) * 18}ms`;
+          const id = document.createElement("div");
+          id.className = "sample-id";
+          id.textContent = sample.id;
+          const content = document.createElement("div");
+          content.className = "sample-content";
+          const kind = document.createElement("span");
+          kind.className = "sample-type";
+          kind.textContent = sample.kind === "control" ? "Pause / resume control" : "Work-intent phrase";
+          const quote = document.createElement("p");
+          quote.className = "sample-quote";
+          quote.textContent = sample.text;
+          const group = document.createElement("div");
+          group.className = "choices";
+          group.setAttribute("role", "group");
+          group.setAttribute("aria-label", `Choose the intent for ${sample.id}`);
+          for (const [value, label] of choiceFor(sample)) {
+            group.appendChild(makeChoice(sample.id, value, label, current?.value === value));
+          }
+          const outcome = document.createElement("p");
+          outcome.className = "outcome";
+          outcome.hidden = !current;
+          outcome.textContent = !current ? "" : sample.kind === "control"
+            ? `Current behavior: ${sample.observed === "paused" ? "goal pauses" : "goal remains active"}.`
+            : `Current behavior: ${sample.observed ? "starts a work goal" : "does not start a work goal"}.`;
+          content.append(kind, quote, group, outcome);
+
+          const noteToggle = document.createElement("label");
+          noteToggle.className = "note-toggle";
+          noteToggle.textContent = "Reviewer note";
+          const note = document.createElement("textarea");
+          note.className = "note";
+          note.hidden = true;
+          note.maxLength = 500;
+          note.placeholder = "What context would change this decision?";
+          note.value = current?.note || "";
+          note.setAttribute("aria-label", `Reviewer note for ${sample.id}`);
+          noteToggle.addEventListener("click", event => {
+            event.preventDefault();
+            note.hidden = !note.hidden;
+            if (!note.hidden) note.focus();
+          });
+          note.addEventListener("input", () => {
+            if (!decisions[sample.id]) return;
+            decisions[sample.id].note = note.value;
+            save();
+          });
+          content.append(noteToggle, note);
+          if (revealed && current) {
+            const reference = document.createElement("p");
+            reference.className = "outcome";
+            reference.textContent = `Provisional reference: ${sample.reference}${decisionMatches(sample) ? " · agrees" : current.value === "uncertain" ? " · marked unclear" : " · differs"}.`;
+            content.appendChild(reference);
+          }
+          card.append(id, content);
+          list.appendChild(card);
+        }
+
+        for (const button of document.querySelectorAll(".filter")) {
+          button.setAttribute("aria-pressed", String(button.dataset.filter === filter));
+        }
+        document.getElementById("compare").disabled = reviewed !== samples.length;
+        if (revealed) updateComparison();
+      }
+
+      function updateComparison() {
+        const eligible = samples.filter(sample => decisions[sample.id]?.value !== "uncertain");
+        const agrees = eligible.filter(decisionMatches).length;
+        const disagreements = eligible.filter(sample => !decisionMatches(sample));
+        const uncertainItems = samples.filter(sample => decisions[sample.id]?.value === "uncertain");
+        document.getElementById("comparison-summary").textContent =
+          `${agrees} of ${eligible.length} decided labels agree with the provisional reference${uncertainItems.length ? `; ${uncertainItems.length} marked unclear` : ""}.`;
+        document.getElementById("comparison-detail").textContent = disagreements.length
+          ? `Needs reconciliation: ${disagreements.map(sample => sample.id).join(", ")}.`
+          : "No disagreements among the labels you chose.";
+      }
+
+      function applyImport(value, announce = true) {
+        if (!value || value.schemaVersion !== 1 || !value.decisions || typeof value.decisions !== "object" || Array.isArray(value.decisions)) {
+          throw new Error("That file is not a supported work-intent review export.");
+        }
+        const known = new Map(samples.map(sample => [sample.id, sample]));
+        const next = Object.create(null);
+        for (const [id, decision] of Object.entries(value.decisions)) {
+          const sample = known.get(id);
+          if (!sample || !decision || typeof decision !== "object"
+            || !choiceFor(sample).some(([choice]) => choice === decision.value)
+            || typeof (decision.note || "") !== "string" || (decision.note || "").length > 500) {
+            throw new Error(`Invalid annotation for sample ${id}. No labels were imported.`);
+          }
+          next[id] = { value:decision.value, note:decision.note || "" };
+        }
+        for (const id of Object.keys(decisions)) delete decisions[id];
+        Object.assign(decisions, next);
+        revealed = false;
+        if (announce) status.textContent = `Imported ${Object.keys(next).length} labels.`;
+        save();
+        render();
+      }
+
+      document.querySelectorAll(".filter").forEach(button => button.addEventListener("click", () => {
+        filter = button.dataset.filter;
+        render();
+      }));
+      document.getElementById("search").addEventListener("input", render);
+      document.getElementById("compare").addEventListener("click", () => {
+        revealed = true;
+        document.getElementById("comparison").dataset.visible = "true";
+        filter = "all";
+        render();
+      });
+      document.getElementById("export").addEventListener("click", () => {
+        const payload = {
+          schemaVersion:1,
+          exportedAt:new Date().toISOString(),
+          decisions:Object.fromEntries(Object.entries(decisions).map(([id, value]) => [id, value])),
+        };
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type:"application/json" }));
+        link.download = "work-intent-review.json";
+        link.click();
+        URL.revokeObjectURL(link.href);
+        status.textContent = storageAvailable ? "Review exported. A browser copy is also saved locally." : "Review exported. Keep the downloaded file to preserve your labels.";
+      });
+      document.getElementById("import-button").addEventListener("click", () => document.getElementById("import-file").click());
+      document.getElementById("import-file").addEventListener("change", async event => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+        try { applyImport(JSON.parse(await file.text())); status.dataset.error = "false"; }
+        catch (error) { status.textContent = String(error.message || error); status.dataset.error = "true"; }
+        event.target.value = "";
+      });
+      document.getElementById("reset").addEventListener("click", () => {
+        if (!window.confirm("Clear all saved decisions on this browser? Export first if you need a copy.")) return;
+        for (const id of Object.keys(decisions)) delete decisions[id];
+        revealed = false;
+        document.getElementById("comparison").dataset.visible = "false";
+        try { localStorage.removeItem(storageKey); } catch { storageAvailable = false; }
+        status.textContent = "All local decisions were cleared.";
+        render();
+      });
+      document.addEventListener("keydown", event => {
+        if (!["1", "2", "3", "4"].includes(event.key) || event.target.matches("input,textarea,select,[contenteditable=true]")) return;
+        const card = event.target.closest(".sample") || document.activeElement.closest?.(".sample");
+        if (!card) return;
+        const sample = samples.find(item => item.id === card.dataset.id);
+        const choicesForSample = choiceFor(sample);
+        const chosen = choicesForSample[Number(event.key) - 1];
+        if (chosen) { event.preventDefault(); select(sample.id, chosen[0]); }
+      });
+
+      loadSaved();
+      render();
+    })();
+  </script>
+</body>
+</html>

@@ -61,7 +61,7 @@ export type ChatKnowledgeRetriever = ((query: string, signal: AbortSignal) => Pr
   sourceIsCurrent?: (candidate:ChatRetrievalCandidate) => boolean;
   refreshSourceValidation?: () => void;
   readSnapshot?: () => RetrievalSnapshot;
-  feedback?: (retrievalId: string, relevantSourceIds: string[], provenance?: "user" | "model") => Promise<unknown>;
+  feedback?: (retrievalId: string, relevantSourceIds: string[], provenance?: "user" | "model", judgedSourceIds?: string[]) => Promise<unknown>;
 };
 
 export interface ChatRetrievalActivity {

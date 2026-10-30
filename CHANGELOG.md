@@ -5,6 +5,31 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Restore the User Profile pyramid above its tabs with individually inspectable dots backed by real fragments and accepted Profile cards. Cap each layer at 24 dots with an exact overflow count; never fabricate Short-term context or decorative memory entries.
+- Replace stacked User Profile knowledge sections with Short-term, Mid-term and Long-term tabs, preserving selection across refresh/reopening and supporting keyboard navigation without model calls.
+- Add persistent drag-to-folder moves in Action Workbench, including pending Actions, while retaining ready-Action canvas drops. Single clicks select rather than open; compact tree rows reveal tools on hover/focus and pending revisions retain real folder/language metadata instead of a generic `Unknown` badge.
+- Automatically prepare newly created and non-ready Actions in the background, order dependencies before parents, and admit successful exact revisions without manual Validate, model selection or risk-confirmation cards. Effectful/program/MCP examples remain unexecuted; real blockers stay visible and explicit revocations are preserved.
+- Give Action Library clear Inputs/manual-run and Outputs/result sections, use standard VS Code form/button theme tokens, show field types and JSON guidance, and explain blocked manual runs with a Workbench review/validation shortcut.
+- Show pending proposals and unapproved definitions in a separate read-only Action Library review section, with search, reasons and explicit Workbench navigation; pending revisions cannot run from the Library.
+- Align sidebar Navigation with the panel: add Portal Connections under Projects and User Profile, Action Library and Action Workbench under Automation, preserving panel order and destinations.
+- Distinguish local credential-channel timeouts from GitHub authentication rejection, show the next automatic retry during errors, and prefer another available Extension Host on the next scheduled attempt without replaying the failed Sync.
+- Attribute new managed MCP launches to their Extension Host, optional explicit Chat, and log location; label shared and legacy processes honestly without treating an editor session or storage slot as a unique window.
+- Add explicit, revocable saved-endpoint MCP access so authorized persistent Portals do not repeat temporary client-consent prompts across reconnects; existing endpoints remain opt-in and remote execution/file approvals stay separate.
+- Show saved Portal endpoint connection lights: green connected, amber connecting, blue outlined Standby for paired endpoints without a current connection or error, and gray disconnected.
+- Initialize Sync status when opening Recipe Library or Action Library, and show the Actions shield on both Action Library and Action Workbench.
+- Initialize GitHub Sync shields when opening Prompts, Scripts and other syncable libraries, including before status data arrives.
+- Label the shared knowledge pyramid as a 3-Level Knowledge Hierarchy (short-term, mid-term and long-term), without Cache / Memory / Disk metaphors.
+- Hide the GitHub Sync shield on the Agent Snapshot tab.
+- Count Chats, including empty and nested worker Chats, in Agent Sessions tree badges instead of managed Tasks.
+- Show cached GitHub Sync targets immediately on tab return; refresh lightweight runtime status without repeating content scans or replacing cards with a loading screen.
+- Match the Broker creation button to the neutral toolbar styling used by other create actions.
+- Action validation no longer expires after 24 hours or requires periodic revalidation. Existing time-expired records remain usable when their definition and environment still match; runtime readiness, authorization and contract checks remain enforced.
+- Actions without examples can use environment-only readiness; effectful examples and arbitrary program/MCP implementations are skipped until an OS-enforced sandbox and mock effect boundary are available. Pure built-in/pipeline examples remain eligible for one-time controlled validation.
+
+## [4.0.1] - 2026-10-29
+
+- GitHub Sync conflict review now explains how to compare content, check possible moves before deletion, and review prepared candidates without choosing a side again. Bulk choices are under a collapsed Advanced section; candidates are no longer labeled completed.
+- GitHub Sync conflict snapshots now include their persisted revision, so current conflict choices are no longer incorrectly rejected as stale. Concurrent changes remain protected by version checks.
 ## [4.0.0] - 2026-10-29
 
 ### Release highlights

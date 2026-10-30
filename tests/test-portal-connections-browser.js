@@ -138,6 +138,41 @@ const root = process.env.PKM_PORTAL_TEST_EXTENSION_ROOT || path.resolve(__dirnam
     }] }));
     assert.match(await page.locator("[data-endpoint-id]").innerText(), /not synchronized/);
     assert.match(await page.locator("[data-endpoint-id]").innerText(), /Accept local control: Unknown/);
+    assert.match(await page.locator("[data-endpoint-id]").innerText(), /External MCP access: Disabled/);
+    await page.getByRole("button", { name: "MCP access…", exact: true }).click();
+    assert.deepEqual(await page.evaluate(() => requests.at(-1)), { command: "portalEndpointExternalAccess", payload: { endpointId: "offline" } });
+    const requestCount = await page.evaluate(() => requests.length);
+    for (const [state, extra, label, background] of [
+      ["connected", {}, "connected", "rgb(63, 185, 80)"],
+      ["connecting", {}, "connecting", "rgb(204, 167, 0)"],
+      ["disconnected", {}, "standby", "rgba(0, 0, 0, 0)"],
+      ["disconnected", { paired: false }, "disconnected", "rgb(170, 170, 170)"],
+      ["disconnected", { deleted: true }, "disconnected", "rgb(170, 170, 170)"],
+      ["disconnected", { error: "Connection failed" }, "disconnected", "rgb(170, 170, 170)"],
+      ["connected", {}, "connected", "rgb(63, 185, 80)"],
+    ]) {
+      await page.evaluate(({state, extra}) => portalConnectionsOnSnapshot({ connections: [], endpoints: [{
+        id: "indicator", name: "Local", localMachine: "linux", paired: true, deleted: false,
+        acceptsIncoming: false, permissions: [], state, ...extra,
+      }] }), { state, extra });
+      const endpoint = page.locator('[data-endpoint-id="indicator"]');
+      const status = endpoint.getByRole("status");
+      assert.equal(await status.textContent(), label);
+      const dot = status.locator('i[aria-hidden="true"]');
+      const appearance = await dot.evaluate(element => {
+        const style = getComputedStyle(element), rect = element.getBoundingClientRect();
+        return { background: style.backgroundColor, border: style.borderTopColor, width: rect.width, height: rect.height };
+      });
+      assert.equal(appearance.background, background);
+      assert.equal(appearance.width, 6);
+      assert.equal(appearance.height, 6);
+      if (label === "standby") {
+        assert.equal(appearance.border, "rgb(55, 148, 255)");
+        assert.match(await status.getAttribute("title"), /remote availability has not been checked/);
+        assert.equal(await endpoint.getByRole("button", { name: "Connect", exact: true }).count(), 1);
+      }
+    }
+    assert.equal(await page.evaluate(() => requests.length), requestCount, "state updates never request authorization or send commands");
     await page.evaluate(() => portalConnectionsOnSnapshot({ connections: [], hubPort: {
       requestedPort: 37009, actualPort: 42137, state: "ready", reason: "in-use", at: Date.now(),
     } }));

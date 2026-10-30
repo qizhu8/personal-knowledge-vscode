@@ -7,6 +7,44 @@ const path = require("path");
 const root = path.join(__dirname, "..");
 const { setStorePath, folderCreate, folderList, folderRename, folderDeletePromote } = require("../dist/knowledge/filestore.js");
 const extensionSource = fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8");
+const vm = require("node:vm");
+const ts = require("typescript");
+
+const ast = ts.createSourceFile("extension.ts", extensionSource, ts.ScriptTarget.Latest, true);
+const navigationClasses = ["PkTreeItem", "PkTreeProvider"].map(name =>
+  ast.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === name).getText(ast));
+const navigationScope = {
+  vscode: {
+    TreeItem: class { constructor(label, collapsibleState) { this.label = label; this.collapsibleState = collapsibleState; } },
+    ThemeIcon: class { constructor(id) { this.id = id; } },
+    EventEmitter: class { event = () => {}; },
+    TreeItemCollapsibleState: { None: 0, Collapsed: 1 },
+  },
+};
+vm.runInNewContext(ts.transpileModule(`${navigationClasses.join("\n")}\nglobalThis.provider = new PkTreeProvider({});`, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022 },
+}).outputText, navigationScope);
+const panelHtml = fs.readFileSync(path.join(root, "src/webview/panel.html"), "utf8");
+const commandTabs = {
+  "personalKnowledge.openChatroom": "chatroom",
+  "personalKnowledge.setupMcp": "mcp",
+  "personalKnowledge.openSubscriptions": "subscriptions",
+};
+for (const module of ["automation", "projects", "settings"]) {
+  const group = panelHtml.split(`data-workspace-group="${module}"`)[1];
+  assert(group, `${module} panel navigation must exist`);
+  const currentGroup = group.split('<div class="workspace-context-group')[0].split("</nav>")[0];
+  const expectedTabs = [...currentGroup.matchAll(/data-tab="([^"]+)"/g)].map(match => match[1]);
+  assert(expectedTabs.length > 0);
+  const items = navigationScope.provider.getChildren({ nodeType: `module-${module}` });
+  const actualTabs = Array.from(items, item => item.command.command === "personalKnowledge.openPanelTab"
+    ? item.command.arguments[0] : commandTabs[item.command.command]);
+  assert.deepStrictEqual(actualTabs, expectedTabs, `${module} sidebar must match panel entry order and destinations`);
+  for (const item of items.filter(item => ["userProfile", "actionLibrary", "actions", "portalConnections"].includes(item.command.arguments?.[0]))) {
+    assert.strictEqual(item.collapsibleState, 0, `${item.label} must be a clickable leaf`);
+    assert(item.iconPath?.id, `${item.label} must have an icon`);
+  }
+}
 
 assert.match(extensionSource, /let gitCommitQueue = Promise\.resolve\(\)/,
   "automatic Git commits must be serialized without blocking the extension host");

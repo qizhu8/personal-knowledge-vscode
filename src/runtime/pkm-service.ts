@@ -769,6 +769,7 @@ async function startPkmServiceRuntime(options: PkmServiceBootOptions): Promise<{
   const metadata: EndpointMetadata = { ...identity, protocol: PKM_SERVICE_PROTOCOL, extensionVersion: options.extensionVersion, pid: process.pid, nonce: randomUUID() };
   pinVersion(identity, options.extensionVersion);
   const connections = new Set<Connection>();
+  const credentialTimeouts = new Map<string, Set<Connection>>();
   const selected = new Map<string, Connection>();
   const initiating = new Map<string, { connection: Connection; reason: GitHubSyncReason }>();
   const active = new Map<string, ActiveExecution>();
@@ -790,7 +791,11 @@ async function startPkmServiceRuntime(options: PkmServiceBootOptions): Promise<{
       if (!requester || requester.reason !== reason || !matching(requester.connection)) throw new PkmServiceOfflineError("The extension host that requested this manual/force sync is disconnected or lacks the required callbacks. Resubmit explicitly from a live compatible window.");
       return requester.connection;
     }
-    const client = [...connections].find(matching);
+    const eligible = [...connections].filter(matching);
+    const failed = credentialTimeouts.get(targetId);
+    // Prefer unfailed channels; if all timed out, retry the least recently failed.
+    const client = eligible.find(connection => !failed?.has(connection))
+      || [...(failed || [])].find(connection => eligible.includes(connection));
     if (!client) throw new GitHubSyncDeferredError(new PkmServiceOfflineError().message);
     return client;
   }
@@ -844,8 +849,16 @@ async function startPkmServiceRuntime(options: PkmServiceBootOptions): Promise<{
       try {
         await reverse(connection, "execute", { executionId: execution.executionId, targetId, reason, fencingToken });
         succeeded = true;
+        credentialTimeouts.get(targetId)?.delete(connection);
       } catch (error) {
         if (!connection.peer.connected) throw new PkmServiceExecutionUncertainError();
+        if (error && typeof error === "object" && "code" in error && error.code === "CREDENTIAL_READ_TIMEOUT"
+          && "phase" in error && error.phase === "authenticating" && execution.operations.size === 0) {
+          const failed = credentialTimeouts.get(targetId) || new Set<Connection>();
+          failed.delete(connection);
+          failed.add(connection);
+          credentialTimeouts.set(targetId, failed);
+        }
         if (error instanceof Error && error.name === "GitHubSyncConflictError" && "partialResult" in error && error.partialResult) {
           succeeded = true;
         }
@@ -993,7 +1006,13 @@ async function startPkmServiceRuntime(options: PkmServiceBootOptions): Promise<{
     const peer = new RpcPeer(socket, metadata, options.extensionVersion, version => validVersion(version) && (!connection.version || connection.version === version));
     const connection: Connection = { peer, registered: false };
     connections.add(connection);
-    peer.onClose = () => { connections.delete(connection); };
+    peer.onClose = () => {
+      connections.delete(connection);
+      for (const [targetId, failed] of credentialTimeouts) {
+        failed.delete(connection);
+        if (!failed.size) credentialTimeouts.delete(targetId);
+      }
+    };
     peer.handler = async (method, value, message) => {
       if (connection.version && connection.version !== message.extensionVersion) throw new Error("PKM client changed its version within a connection.");
       connection.version = message.extensionVersion;

@@ -12,13 +12,36 @@ export interface ChatWorkGoal {
   acceptance: Array<{ criterion: string; verified: boolean; evidenceCallIds: string[] }>;
   reason?: string;
   nextAction?: string;
+  transitions?: WorkGoalTransition[];
 }
 
-export const workStop = /^\s*(?:(?:please\s+)?(?:stop|pause)(?:\s+(?:(?:the|this|current)\s+)?(?:debugging|investigating|diagnosing|work|investigation|task))?(?:\s+(?:now|for now))?|(?:请|先)?(?:停止|暂停)(?:当前|这次|本次)?(?:调试|排查|调查|debug|任务)?)(?:[.!。！,，;；\n]|$)/i;
+export type WorkGoalTransitionReason = "user_delegated" | "user_followup" | "user_answered" | "user_resumed"
+  | "user_paused" | "agent_started_action" | "agent_continue" | "agent_claimed_resolved" | "agent_blocked" | "agent_needs_input"
+  | "execution_cancelled" | "execution_failed" | "host_interrupted";
+export interface WorkGoalTransition {
+  at: number;
+  inputId: string;
+  attemptInputId: string;
+  status: ChatWorkGoal["status"];
+  reason: WorkGoalTransitionReason;
+}
+
+const WORK_GOAL_TRANSITION_LIMIT = 64;
+
+export const workStop = /^\s*(?:(?:please\s+)?(?:stop|pause)(?:\s+(?:(?:(?:the\s+)?current|the|this)\s+)?(?:debugging|investigating|diagnosing|work|investigation|task))?(?:\s+(?:now|for now))?|(?:请|先)?(?:停止|暂停)(?:当前|这次|本次)?(?:调试|排查|调查|debug|任务)?)(?:[.!。！,，;；\n]|$)/i;
 export const delegatedWork = /(?:\b(?:please\s+)?(?:debug|investigate|diagnose|fix|implement|build|repair)\s+(?:this|the|my|our|a|an)\b|(?:帮我|请你|请|开始|继续|去).{0,24}(?:debug|调试|排查|调查|修复|修好|实现|开发|解决)|(?:debug|调试|排查).{0,16}(?:吧|一下))/i;
 export const rootWorkCriterion = "The original user objective and all subsequent requirements are satisfied.";
 const resumeWork = /^\s*(?:continue|resume|继续|恢复)(?:\b|一下|吧|工作|任务|调查|排查|调试|推进|$)/i;
 const explanatory = /^\s*(?:(?:what|why|how|explain|describe)\b|为什么|为何|解释|说明|介绍)/i;
+
+export function recordWorkGoalTransition(goal: ChatWorkGoal, status: ChatWorkGoal["status"], reason: WorkGoalTransitionReason,
+  inputId = goal.attemptInputId, at = Date.now()): ChatWorkGoal {
+  const last = goal.transitions?.[goal.transitions.length - 1];
+  if (last && last.status === status && last.reason === reason && last.inputId === inputId
+    && last.attemptInputId === goal.attemptInputId) return { ...goal, status };
+  const transition: WorkGoalTransition = { at, inputId, attemptInputId: goal.attemptInputId, status, reason };
+  return { ...goal, status, transitions: [...(goal.transitions || []), transition].slice(-WORK_GOAL_TRANSITION_LIMIT) };
+}
 
 export function validWorkGoal(value: unknown): value is ChatWorkGoal {
   if (!value || typeof value !== "object") return false;
@@ -35,12 +58,22 @@ export function validWorkGoal(value: unknown): value is ChatWorkGoal {
     && new Set(goal.acceptance.map(item => item.criterion)).size === goal.acceptance.length
     && (goal.status !== "resolved" || goal.acceptance.every(item => item.verified && item.evidenceCallIds.length > 0))
     && (goal.reason === undefined || typeof goal.reason === "string" && goal.reason.length <= 2000)
-    && (goal.nextAction === undefined || typeof goal.nextAction === "string" && goal.nextAction.length <= 2000);
+    && (goal.nextAction === undefined || typeof goal.nextAction === "string" && goal.nextAction.length <= 2000)
+    && (goal.transitions === undefined || Array.isArray(goal.transitions) && goal.transitions.length <= WORK_GOAL_TRANSITION_LIMIT
+      && goal.transitions.every(item => item && Number.isSafeInteger(item.at) && item.at >= 0
+        && typeof item.inputId === "string" && /^[a-f0-9-]{36}$/.test(item.inputId)
+        && typeof item.attemptInputId === "string" && /^[a-f0-9-]{36}$/.test(item.attemptInputId)
+        && ["active", "resolved", "blocked", "needs_input", "interrupted", "paused"].includes(item.status)
+        && ["user_delegated", "user_followup", "user_answered", "user_resumed", "user_paused", "agent_started_action", "agent_continue",
+          "agent_claimed_resolved", "agent_blocked", "agent_needs_input", "execution_cancelled", "execution_failed",
+          "host_interrupted"].includes(item.reason)));
 }
 
 export function prepareWorkGoal(chat: ApiConversation, inputId: string, text: string, executionDigest: string): void {
   if (workStop.test(text)) {
-    if (chat.workGoal && chat.workGoal.status !== "resolved") chat.workGoal.status = "paused";
+    if (chat.workGoal && chat.workGoal.status !== "resolved") {
+      chat.workGoal = recordWorkGoalTransition(chat.workGoal, "paused", "user_paused", inputId);
+    }
     return;
   }
   const previous = chat.includeHistory ? chat.workGoal : undefined;
@@ -54,12 +87,16 @@ export function prepareWorkGoal(chat: ApiConversation, inputId: string, text: st
   if (unfinished) {
     if (previous.executionDigest !== executionDigest) throw new Error("The unfinished goal belongs to another execution context. Resume it in its original context; it was not retargeted.");
     if (["paused", "interrupted"].includes(previous.status) && !explicit) return;
-    chat.workGoal = { ...previous, attemptInputId: inputId, status: "active",
+    const reason: WorkGoalTransitionReason = ["paused", "interrupted"].includes(previous.status) ? "user_resumed"
+      : ["needs_input", "blocked"].includes(previous.status) ? "user_answered" : "user_followup";
+    chat.workGoal = recordWorkGoalTransition({ ...previous, attemptInputId: inputId,
       acceptance: previous.acceptance.map(item => ({ ...item, verified: false, evidenceCallIds: [] })),
-      reason: undefined, nextAction: undefined };
+      reason: undefined, nextAction: undefined }, "active", reason, inputId);
   } else if (delegation) {
-    chat.workGoal = { id: randomUUID(), inputId, attemptInputId: inputId, objective: text, executionDigest, status: "active",
-      acceptance: [{ criterion: rootWorkCriterion, verified: false, evidenceCallIds: [] }] };
+    chat.workGoal = recordWorkGoalTransition({ id: randomUUID(), inputId, attemptInputId: inputId,
+      objective: text, executionDigest, status: "active",
+      acceptance: [{ criterion: rootWorkCriterion, verified: false, evidenceCallIds: [] }] },
+    "active", "user_delegated", inputId);
   }
 }
 
@@ -116,7 +153,10 @@ export function reportWork(chat: ApiConversation, reply: ChatMessage, args: Reco
     }
   }
   if (args.status === "resolved" && candidate.acceptance.some(item => !item.verified)) throw new Error("The user objective remains open: every acceptance criterion must be verified before resolution.");
-  chat.workGoal = candidate;
+  const reason: WorkGoalTransitionReason = args.status === "continue" ? "agent_continue"
+    : args.status === "resolved" ? "agent_claimed_resolved"
+      : args.status === "blocked" ? "agent_blocked" : "agent_needs_input";
+  chat.workGoal = recordWorkGoalTransition(candidate, candidate.status, reason);
   return JSON.stringify({ recorded: true, goal: candidate, agentClaimNotIndependentCertification: true });
 }
 

@@ -2,7 +2,7 @@
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge Manager",
   "description": "%extension.description%",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "publisher": "Uone",
   "author": {
     "name": "Yu Wang"
@@ -1264,6 +1264,7 @@
     "test:pkm-chat:daily": "npm run build && npm run test:pkm-chat:daily:run",
     "test:pkm-chat:daily:run": "node --test tests/test-api-chat.js tests/test-chat-managed-mcp.js tests/test-chat-library-actions.js tests/test-host-health-startup.js tests/test-chat-activity-browser.js tests/test-chat-history-storage.js tests/test-agent-session-tree-groups.js tests/test-agent-session-tree-browser.js tests/test-panel-instances-browser.js tests/test-portal-connections.js tests/test-portal-permissions.js tests/test-persona-profiles.js tests/test-persona-profile-ui.js tests/test-persona-profile-browser.js tests/test-chat-context-contracts.js tests/test-peer-collaboration.js tests/test-portal-profile-wiring.js tests/test-chat-workers.js tests/test-persona-installed-helper.js",
     "test:persona-profiles": "npm run build && node --test tests/test-user-profile-fragments.js tests/test-profile-sync.js tests/test-persona-profiles.js tests/test-persona-profile-ui.js tests/test-persona-profile-browser.js tests/test-chat-context-contracts.js tests/test-peer-collaboration.js tests/test-portal-profile-wiring.js tests/test-persona-installed-helper.js",
+    "test:work-intent-review": "node --test tests/test-work-intent-review-browser.js",
     "test:mcp-lifecycle": "npm run build && node --test tests/test-mcp-lifecycle.js tests/test-chat-managed-mcp.js && python -B tests/test-mcp-lifecycle.py",
     "test:chat-report-ui": "npm run build && node --test tests/test-chat-library-actions.js tests/test-chat-activity-browser.js tests/test-agent-session-tree-groups.js tests/test-agent-session-tree-browser.js tests/test-native-harness-browser.js tests/test-visualization-window-browser.js tests/test-api-chat.js tests/test-chat-history-storage.js tests/test-chat-harness-records.js",
     "test:library-git": "npm run build && node --test tests/test-git-source.js tests/test-action-sync.js tests/test-library-git-browser.js tests/test-github-sync-model.js tests/test-github-sync-ui.js && python tests/test-action-modules.py ModuleTests.test_javascript_and_typescript_programs_use_the_existing_qualified_runtime",

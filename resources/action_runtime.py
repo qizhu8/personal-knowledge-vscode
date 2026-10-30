@@ -311,7 +311,7 @@ class ActionRuntime:
             raise RuntimeError("Execution environment changed during qualification.")
         record = {"schema": "pkm.action.validation/v1", "action_id": action_id, "kind": "smoke", "status": "passed",
                   "content_hash": definition["content_hash"], "environment_fingerprint": before, "proof": proof,
-                  "expires_at": (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=24)).isoformat()}
+                  "validated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
         _atomic_write(self.root / "validations" / (action_id + ".json"), record)
         return {"ok": True, "state": "ready", "proof": proof}
 
@@ -324,18 +324,16 @@ class ActionRuntime:
             return {"state": "unverified", "reason": "No operator-owned smoke-test evidence for this environment."}
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
-            expires = datetime.datetime.fromisoformat(record["expires_at"])
             valid = (record.get("schema") == "pkm.action.validation/v1"
                      and record.get("action_id") == action_id
                      and record.get("content_hash") == definition["content_hash"]
                      and record.get("environment_fingerprint") == self.environment_fingerprint()
-                     and record.get("kind") == "smoke"
-                     and expires > datetime.datetime.now(datetime.timezone.utc))
+                     and record.get("kind") == "smoke")
         except (ValueError, TypeError, KeyError, OSError):
             valid = False
             record = {}
         if not valid:
-            return {"state": "stale", "reason": "Validation is invalid, expired or does not match the implementation/environment."}
+            return {"state": "stale", "reason": "Validation is invalid or does not match the implementation/environment."}
         return {"state": "ready" if record.get("status") == "passed" else "failed"}
 
     def retrieve(self, task, limit=1):

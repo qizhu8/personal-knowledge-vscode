@@ -210,8 +210,12 @@ class LanguagePipelines(unittest.TestCase):
              "content_hash": components["core.file-path"]["content_hash"], "parameters": {"path": "../outside.txt", "must_exist": False}}],
             "edges": [], "output_node": "path"})
         result = self.runtime.validate(definition["action_id"], definition["content_hash"])
-        self.assertFalse(result["ok"])
-        failed = self.runtime.get(result["evidence"][0]["run_id"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["state"], "environment_checked")
+        self.assertEqual(result["evidence"], [])
+        run = self.runtime.call(definition["action_id"], {}, "outside-workspace", definition["content_hash"])
+        failed = self.runtime.wait(run["run_id"])
+        self.assertEqual(failed["state"], "failed")
         self.assertEqual(failed["error"], "File path is outside the Action workspace or does not exist.")
 
 

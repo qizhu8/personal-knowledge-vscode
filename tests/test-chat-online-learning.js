@@ -1,6 +1,6 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { retrievalJudgmentInput, parseRetrievalJudgments, requireLearningAcknowledgment, knowledgeCandidatePriority } = require("../dist/chat/chat-retrieval-learning");
+const { retrievalJudgmentInput, parseRetrievalSelection, requireLearningAcknowledgment, knowledgeCandidatePriority } = require("../dist/chat/chat-retrieval-learning");
 const { fitChatContext } = require("../dist/chat/chat-context");
 
 const source = (id, content = "Original evidence") => ({
@@ -8,21 +8,24 @@ const source = (id, content = "Original evidence") => ({
 });
 const passage = (id, parentId, content, score) => ({...source(id, content), sourceId:parentId, parentId, level:"l2-passage", score});
 
-test("self-evaluation is bounded, query-grounded, complete and explicitly model-attributed", () => {
+test("pre-answer selection is bounded, query-grounded, permits unknown and is explicitly model-attributed", () => {
   const candidates = Array.from({length:8}, (_, index) => source(`source-${index}`, "x".repeat(20000)));
-  const input = retrievalJudgmentInput("question".repeat(1000), "answer".repeat(2000), candidates);
+  const input = retrievalJudgmentInput("question".repeat(1000), candidates);
   assert.equal(input.sourceIds.length, 8);
   assert(Buffer.byteLength(JSON.stringify(input.messages)) < 20000);
-  assert.match(input.messages[0].content, /later explicit user correction supersedes/);
+  assert.match(input.messages[0].content, /later explicit user correction supersedes/i);
   assert.match(input.messages[0].content, /not verified human truth/);
   const output = JSON.stringify({labels:input.sourceIds.map((_, index) => ({index, relevant:index === 4}))});
-  assert.deepEqual(parseRetrievalJudgments(output, input.sourceIds), ["source-4"]);
+  assert.deepEqual(parseRetrievalSelection(output, input.sourceIds), { relevant:["source-4"], judged:input.sourceIds });
+  assert.equal(JSON.parse(input.messages[1].content).answer, undefined, "selection runs without the answer");
+  assert.deepEqual(parseRetrievalSelection('{"labels":[{"index":0,"relevant":null}]}', ["unknown"]),
+    { relevant:[], judged:[] });
   for (const invalid of ["not json", '{"labels":[]}', JSON.stringify({labels:input.sourceIds.map(() => ({index:0, relevant:true}))}),
     JSON.stringify({labels:input.sourceIds.map((_, index) => ({index, relevant:"true"}))}), "x".repeat(8001)]) {
-    assert.throws(() => parseRetrievalJudgments(invalid, input.sourceIds));
+    assert.throws(() => parseRetrievalSelection(invalid, input.sourceIds));
   }
-  assert.throws(() => retrievalJudgmentInput("q", "a", []), /one and eight/);
-  assert.throws(() => retrievalJudgmentInput("q", "a", [...candidates, source("ninth")]), /one and eight/);
+  assert.throws(() => retrievalJudgmentInput("q", []), /one and eight/);
+  assert.throws(() => retrievalJudgmentInput("q", [...candidates, source("ninth")]), /one and eight/);
 });
 
 test("legacy success-shaped feedback cannot claim that the ranker and calibrator learned", () => {

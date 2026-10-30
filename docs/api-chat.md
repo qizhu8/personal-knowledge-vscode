@@ -16,6 +16,10 @@ Both Hosts must support persistent endpoints; old temporary Portals are not
 silently upgraded. The saved row labels
 **Local** and **Remote** identities, Chat bindings, connection state and each
 direction's independent receiving-control switch.
+The connection light is green when connected, amber while connecting, and gray
+when disconnected or unpaired. A blue outlined **Standby** light means a saved
+pairing is idle without a connection error; it does not assert that the remote
+machine is currently reachable.
 
 Saved pairings reconnect after disconnects/restarts; commands and model tasks are
 never replayed. Pairing credentials stay in VS Code SecretStorage, configuration
@@ -50,6 +54,14 @@ The Chat `portal` tool can list `connections` and select a saved `connectionId`,
 or use the endpoint bound to its Chat by default. Capability routing requires a
 unique connected matching endpoint; ambiguity does not execute anything. External
 MCP access to a saved endpoint still requires separate local client authorization.
+**MCP access...** explicitly enables or revokes durable authorization on this
+Host. It defaults off for existing endpoints and survives reconnects and restarts
+only after local confirmation. It covers MCP clients on this Host, not one
+identifiable Copilot conversation. The saved pairing, local machine, Knowledge
+Root and trusted workspace must match; replacing either bound Chat, deleting the
+binding or pairing again clears the authorization. It never grants remote
+execution permissions or file-transfer approval. Temporary authorization remains
+available as **Remember temporarily**, with its existing fixed deadline.
 
 Temporary live Portals show one row per pairing, with **Controlled**
 on the left and **Controller** on the right. When both Chats are local, each
@@ -130,6 +142,23 @@ retrieval, inference or a tool.
 - Rounds with only a budget receipt remain inspectable even when retrieval
   evidence is absent. The bounded retrieval timeline can omit earlier rounds;
   unavailable receipts are not reconstructed from the latest response.
+- When the retrieval worker explicitly reports online learning enabled, Chat
+  uses one bounded, no-tool **pre-answer relevance selector** for up to eight
+  retrieved sources, using the configured Chat model. It receives the query and
+  source excerpts, not an answer; explicit negatives are removed before context
+  planning and dispatch. Unknown sources remain eligible for the existing budget
+  and freshness checks. One selection supplies both context filtering and
+  model-provenance feedback; there is no separate post-answer evaluator.
+  Selection adds model usage and latency, not a proven net cost saving.
+  Partial feedback trains only explicitly judged, delivered source IDs; unseen,
+  unknown and budget-omitted sources are not automatically negative labels.
+  Partial judgments cannot certify Recall or a safe truncation threshold.
+  These model labels are not human truth. Turning learning off, or lacking
+  an explicit enabled status, skips selection and training. Failed selection
+  retains normal budget planning with an explicit failure receipt; feedback
+  failure after successful selection preserves that selection and reports the
+  learning failure. The inspector records selection, unknown count and auxiliary
+  usage. The bounded selector does not claim coverage of sources never retrieved.
 
 Synthetic four-turn loopback HTTP tests check exact request manifests and
 immutable records after reopening. Browser tests cover historical selection,
@@ -1724,6 +1753,13 @@ Chat or assigning an Agent Profile. Its derived observations are separate from
 the handwritten current card under **Handwritten Profile / accepted preferences**.
 Both entry points keep card read errors explicit and do not change Profile Sync
 or historical attempt snapshots merely by viewing them.
+
+The explicit Profile editor also offers reversible response-style controls for
+verbosity, specialist terminology and answer ordering. Each control defaults to
+**No preference**; resetting all three removes the optional setting. Older
+Profile cards without style fields remain compatible. These preferences affect
+presentation only and cannot lower accuracy, evidence, uncertainty, safety,
+scope, permissions or acceptance requirements.
 
 Completed local human Chat turns automatically schedule tool-free extraction
 through the configured **Memory model**, without delaying the Chat or writing a

@@ -801,7 +801,7 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/retrieval-feedback":
                 self.reply(200, retrieval_learning.feedback(payload.get("retrieval_id"),
                                                             payload.get("relevant_source_ids"), payload.get("complete"),
-                                                            payload.get("provenance", "user")))
+                                                            payload.get("provenance", "user"), payload.get("judged_source_ids")))
             elif self.path == "/retrieval-learning":
                 retrieval_learning.configure(payload.get("enabled"))
                 self.reply(200, {"ok": True, "learning": retrieval_learning.summary()})

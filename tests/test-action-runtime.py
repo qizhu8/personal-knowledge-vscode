@@ -133,8 +133,13 @@ class ActionTests(unittest.TestCase):
         path = self.runtime.root / "validations" / (action_id + ".json")
         original = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(self.runtime.availability(action_id)["state"], "ready")
-        for field, value in [("content_hash", "changed"), ("environment_fingerprint", "windows-unverified"),
-                             ("expires_at", "2000-01-01T00:00:00+00:00"), ("expires_at", "malformed")]:
+        for expiry in ["2000-01-01T00:00:00+00:00", "malformed", None]:
+            record = {**original, "expires_at": expiry}
+            if expiry is None:
+                record.pop("expires_at")
+            path.write_text(json.dumps(record), encoding="utf-8")
+            self.assertEqual(self.runtime.availability(action_id)["state"], "ready")
+        for field, value in [("content_hash", "changed"), ("environment_fingerprint", "windows-unverified")]:
             path.write_text(json.dumps({**original, field: value}), encoding="utf-8")
             self.assertEqual(self.runtime.availability(action_id)["state"], "stale")
             with self.assertRaises(PermissionError):

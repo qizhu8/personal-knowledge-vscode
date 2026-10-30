@@ -20,7 +20,7 @@ from jsonschema import Draft202012Validator
 
 
 class Authoring(unittest.TestCase):
-    def test_review_first_validation_admits_only_after_smoke_passes(self):
+    def test_review_first_validation_admits_after_environment_only_check(self):
         agent = ModuleRuntime(self.runtime.store, proposal_mode=True)
         proposal = agent.register(self.example)
         report = {"approved": False, "user_confirmed": True, "summary": "User acknowledged the stated risk.",
@@ -30,8 +30,10 @@ class Authoring(unittest.TestCase):
         self.assertFalse((agent.registry / (proposal["action_id"] + ".json")).exists())
         result = agent.qualification_execute(proposal["action_id"], proposal["content_hash"], review["snapshot_hash"],
                                              report, proposal["proposal_id"])
+        self.assertEqual(result["state"], "environment_checked")
+        self.assertEqual(result["validation_mode"], "environment-only")
         self.assertFalse((agent.registry / (proposal["action_id"] + ".json")).exists(),
-                         "successful tests still wait for the host's final Root/trust recheck")
+                         "the environment check still waits for the host's final Root/trust recheck")
         result = agent.qualification_admit(result["attempt_id"])
         self.assertTrue(result["registered"])
         self.assertEqual(agent.availability(proposal["action_id"])["state"], "ready")
@@ -54,14 +56,15 @@ class Authoring(unittest.TestCase):
                 agent.qualification_execute(proposal["action_id"], proposal["content_hash"], review["snapshot_hash"],
                                              report, proposal["proposal_id"])
         report.update(user_confirmed=True)
-        with self.assertRaisesRegex(ValueError, "Smoke tests failed"):
-            agent.qualification_execute(proposal["action_id"], proposal["content_hash"], review["snapshot_hash"],
-                                         report, proposal["proposal_id"])
+        attempt = agent.qualification_execute(proposal["action_id"], proposal["content_hash"], review["snapshot_hash"],
+                                              report, proposal["proposal_id"])
+        self.assertEqual(attempt["state"], "environment_checked")
+        self.assertEqual(attempt["validation_mode"], "environment-only")
         self.assertEqual(agent.definition(original["action_id"])["content_hash"], original["content_hash"])
         self.assertEqual(agent.availability(original["action_id"])["state"], "ready")
         self.assertEqual(len(agent.proposal_list()["proposals"]), 1)
 
-    def test_reviewed_build_qualification_transfers_and_changed_source_blocks_execution(self):
+    def test_build_qualification_does_not_execute_untrusted_build_without_sandbox(self):
         builder = self.runtime.workspace() / "build_fixture.py"
         builder.write_text("import pathlib,sys\npathlib.Path(sys.argv[1]).write_text("
                            + repr("import json,sys\nprint(json.dumps(json.load(sys.stdin)))\n") + ")\n")
@@ -81,10 +84,11 @@ class Authoring(unittest.TestCase):
                 agent.qualification_execute(proposal["action_id"], proposal["content_hash"], review["snapshot_hash"],
                                              report, proposal["proposal_id"])
         review = agent.qualification_review(proposal["action_id"], proposal["content_hash"], proposal["proposal_id"])
-        attempt = agent.qualification_execute(proposal["action_id"], proposal["content_hash"], review["snapshot_hash"],
-                                               report, proposal["proposal_id"])
-        agent.qualification_admit(attempt["attempt_id"])
-        self.assertEqual(agent.availability(proposal["action_id"])["state"], "ready")
+        with self.assertRaisesRegex(ValueError, "will not execute a build"):
+            agent.qualification_execute(proposal["action_id"], proposal["content_hash"], review["snapshot_hash"],
+                                         report, proposal["proposal_id"])
+        self.assertFalse(any((agent.root / "builds").glob("*.json")))
+        self.assertEqual(agent.proposal_list()["proposals"][0]["state"], "pending")
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="pkm-action-authoring-")
@@ -122,7 +126,8 @@ class Authoring(unittest.TestCase):
         self.assertEqual(definition["content_hash"], proposal["content_hash"])
         self.assertTrue(agent.admitted(definition))
         agent.authorize(definition)
-        self.assertNotEqual(agent.availability(definition["action_id"])["state"], "ready")
+        self.assertEqual(agent.availability(definition["action_id"])["state"], "ready")
+        self.assertEqual(agent.availability(definition["action_id"])["validation_mode"], "environment-only")
         with self.assertRaisesRegex(PermissionError, "ACTION_CODE_REVIEW_REQUIRED"):
             agent.validate(definition["action_id"], definition["content_hash"])
         self.assertTrue(self.runtime.validate(definition["action_id"], definition["content_hash"])["ok"])
@@ -373,7 +378,10 @@ class Authoring(unittest.TestCase):
         value["examples"] = [{"inputs": {"url": url + "/status"}}]
         definition = self.runtime.register(value)
         self.grant(definition)
-        self.assertTrue(self.runtime.validate(definition["action_id"], definition["content_hash"])["ok"])
+        validation = self.runtime.validate(definition["action_id"], definition["content_hash"])
+        self.assertTrue(validation["ok"])
+        self.assertEqual(validation["validation_mode"], "environment-only")
+        self.assertEqual(requests, [], "remote-read examples must not execute without an OS sandbox")
         for path in ["/status", "/forbidden", "/bad-json", "/large"]:
             with self.subTest(path=path):
                 run = self.runtime.call(definition["action_id"], {"url": url + path}, path, definition["content_hash"])
@@ -385,7 +393,7 @@ class Authoring(unittest.TestCase):
                 else:
                     self.assertNotEqual(completed["state"], "succeeded", completed)
                     self.assertIsNone(completed.get("output"))
-        self.assertEqual(requests, ["/status", "/status", "/forbidden", "/bad-json", "/large"])
+        self.assertEqual(requests, ["/status", "/forbidden", "/bad-json", "/large"])
 
     def test_real_mcp_discovery_and_preflight_readonly_annotation(self):
         async def exercise():

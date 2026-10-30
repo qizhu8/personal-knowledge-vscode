@@ -1083,7 +1083,7 @@ window.addEventListener('message', e => {
       ask('list', { tab: state.tab, filter: state.filter, q: state.search, fresh:!!data?.manual }, null, true);
     }
     githubSyncUpdatedAt = 0;
-    if (['skills','notes','papers','recipes'].includes(state.tab)) ensureGitHubSyncStatus();
+    if ((githubSyncTypes.includes(state.tab) && state.tab !== 'agentSnapshots') || state.tab === 'actionLibrary') ensureGitHubSyncStatus();
     // Re-render the currently open note/skill so external edits and regenerated
     // images (same path) are picked up, not just the sidebar list.
     if (currentDetailRequest) ask('detail', currentDetailRequest);

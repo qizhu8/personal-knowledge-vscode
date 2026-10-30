@@ -3,20 +3,25 @@
 <style>
 :root{color-scheme:light dark;--bg:var(--vscode-editor-background,#171717);--panel:var(--vscode-sideBar-background,#242424);--text:var(--vscode-editor-foreground,#eee);--muted:var(--vscode-descriptionForeground,#bbb);--line:var(--vscode-panel-border,#555);--accent:var(--vscode-focusBorder,#75a7ff);--tree-width:300px}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:var(--vscode-font-size,13px)/1.5 var(--vscode-font-family,"Segoe UI",sans-serif);height:100vh;display:flex;flex-direction:column}header{padding:14px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:16px;flex-wrap:wrap}h1{margin:0;font-size:20px}header p{margin:2px 0 0;color:var(--muted)}header .heading{flex:1;min-width:180px}h2{font-size:20px;overflow-wrap:anywhere}button,input,select,textarea{font:inherit;color:inherit;background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:7px;max-width:100%}button{cursor:pointer}button:hover,button:focus-visible{border-color:var(--accent)}:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}button:disabled{opacity:.5;cursor:not-allowed}main{display:grid;grid-template-columns:minmax(200px,min(var(--tree-width),50vw)) 5px minmax(0,1fr);min-height:0;flex:1}aside{background:var(--panel);min-width:0;display:flex;flex-direction:column}.search-label{padding:12px;margin:0}#search{width:100%;background:var(--vscode-input-background,var(--bg));color:var(--vscode-input-foreground,var(--text))}.tree-tools{display:flex;align-items:center;gap:6px;padding:0 12px 8px;font-size:11px;font-weight:600;letter-spacing:.04em}.tree-tools span{flex:1}.tree-tools button{font-size:12px;padding:2px 6px;font-weight:400;letter-spacing:normal}#list{overflow:auto;flex:1;padding:0 4px 12px}#list p{padding:8px}.tree-cat{margin:0}.tree-cat-hdr{list-style:none;display:flex;align-items:center;gap:7px;padding:7px 8px;cursor:pointer;font-weight:600;min-height:32px}.tree-cat-hdr::-webkit-details-marker{display:none}.tree-cat-arrow{width:7px;height:7px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(-45deg);margin-right:3px;flex-shrink:0}.tree-cat[open]>.tree-cat-hdr .tree-cat-arrow{transform:rotate(45deg)}.tree-folder{width:14px;height:10px;border:1px solid currentColor;border-radius:1px;position:relative;flex-shrink:0;color:var(--vscode-icon-foreground,var(--text))}.tree-folder:before{content:"";position:absolute;top:-4px;left:-1px;width:7px;height:3px;border:1px solid currentColor;border-bottom:0;border-radius:2px 2px 0 0}.tree-cat-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tree-cat-count{color:var(--muted);font-size:11px;font-weight:400}.cattree-item{display:flex;align-items:center;gap:8px;width:100%;border:1px solid transparent;border-radius:2px;text-align:left;padding:7px 8px;min-height:43px;background:transparent}.tree-cat-hdr:hover,.cattree-item:hover{background:var(--vscode-list-hoverBackground,#30343a)}.cattree-item[aria-selected=true]{background:var(--vscode-list-activeSelectionBackground,#234b75);color:var(--vscode-list-activeSelectionForeground,#fff);border-color:var(--accent)}.action-label{min-width:0;flex:1}.action-name{display:block;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.action-id{display:block;font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.cattree-item[aria-selected=true] .action-id{color:inherit}.readiness{font-size:11px;white-space:nowrap;border:1px solid var(--line);border-radius:3px;padding:0 4px}.readiness-dot{width:7px;height:7px;border-radius:50%;background:var(--vscode-editorWarning-foreground,#e1b458);flex-shrink:0}.readiness-dot[data-state=ready]{background:var(--vscode-testing-iconPassed,#78b76c)}.readiness-dot[data-state=blocked],.readiness-dot[data-state=disabled]{background:var(--vscode-errorForeground,#f48771)}#tree-divider{background:var(--line);cursor:col-resize;touch-action:none}#tree-divider:hover,#tree-divider:focus-visible{background:var(--accent)}#detail{padding:20px 24px;min-width:0;overflow:auto}label{display:grid;gap:5px;margin:12px 0}label input[type=checkbox]{justify-self:start}#error{color:var(--vscode-errorForeground,#f88);white-space:pre-wrap;padding:0 20px;margin:0}#error:not(:empty){padding:8px 20px}pre{white-space:pre-wrap;overflow-wrap:anywhere}dl{display:grid;grid-template-columns:100px minmax(0,1fr);gap:8px}dd{margin:0;overflow-wrap:anywhere}.tools{display:flex;gap:8px;flex-wrap:wrap}@media(max-width:520px){body{height:auto;min-height:100vh}main{grid-template-columns:1fr}aside{max-height:42vh;min-height:180px;border-bottom:1px solid var(--line)}#tree-divider{display:none}#detail{padding:16px;overflow:visible}header{padding:12px}}
 </style></head><body>
-<header><div class="heading"><h1>Action Library</h1><p>Browse admitted Actions. Author and validate in Workbench.</p></div><button id="refresh">Refresh library</button></header>
+<header><div class="heading"><h1>Action Library</h1><p>Browse admitted Actions and pending review. Author and validate in Workbench.</p></div><button id="refresh">Refresh library</button></header>
 <p id="error" role="alert"></p><main><aside aria-label="Action navigation"><label class="search-label">Search Actions<input id="search" type="search" placeholder="Name, identity, folder or purpose"></label><div class="tree-tools"><span id="action-count">ACTIONS</span><button id="expand-all" title="Expand all folders">Expand</button><button id="collapse-all" title="Collapse all folders">Collapse</button></div><section id="list" role="tree" aria-label="Admitted Actions"></section></aside><div id="tree-divider" role="separator" aria-label="Action tree width" aria-orientation="vertical" tabindex="0"></div><section id="detail" aria-live="polite"><h2>Select an Action</h2><p>Inspect its purpose, inputs, outputs and readiness, or explicitly open it in the Workbench.</p></section></main>
+<style>
+#pending-review{border-top:1px solid var(--line);padding:8px;overflow:auto;max-height:40%;flex-shrink:0}#pending-review h2{font-size:13px;margin:0 4px 4px}#pending-review p{color:var(--muted);margin:4px;font-size:12px}#pending-review .readiness{white-space:normal;max-width:100px}#pending-review .action-name{white-space:normal;overflow-wrap:anywhere}
+.action-section{margin-top:20px;border:1px solid var(--line);border-radius:4px;min-width:0;background:var(--bg)}.action-section-head{padding:12px 16px;border-bottom:1px solid var(--line);background:var(--panel)}.action-section-head h3{margin:0;font-size:15px}.action-section-head p{margin:4px 0 0;color:var(--muted);font-size:12px}.action-section-body{padding:16px;min-width:0}.action-section-body>:first-child{margin-top:0}.field-label{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;font-weight:600}.field-type{font-weight:400;font-size:11px;color:var(--muted)}.field-help{font-size:12px;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}.action-field{margin:0 0 18px;min-width:0}.action-field input:not([type=checkbox]),.action-field select,.action-field textarea{width:100%;min-width:0;background:var(--vscode-input-background,var(--panel));color:var(--vscode-input-foreground,var(--text));border:1px solid var(--vscode-input-border,var(--line));padding:8px 10px;border-radius:4px}.action-field textarea{min-height:100px;resize:vertical;font-family:var(--vscode-editor-font-family,monospace);line-height:1.5}.action-field ::placeholder{color:var(--vscode-input-placeholderForeground,var(--muted));opacity:1}.action-field select{background:var(--vscode-dropdown-background,var(--vscode-input-background,var(--panel)));color:var(--vscode-dropdown-foreground,var(--text));border-color:var(--vscode-dropdown-border,var(--line))}.action-section input[type=checkbox]{appearance:auto;width:16px;height:16px;flex-shrink:0;margin:0;accent-color:var(--vscode-checkbox-background,var(--accent))}.invocation-approval{display:flex;align-items:flex-start;gap:9px;padding-top:14px;border-top:1px solid var(--line);font-size:12px}.invocation-approval input{margin-top:2px!important}.run-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.primary{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);border-color:var(--vscode-button-border,transparent);padding:7px 14px}.primary:hover:not(:disabled){background:var(--vscode-button-hoverBackground,#1177bb)}.run-blocked{padding:10px 12px;border-left:3px solid var(--vscode-editorWarning-foreground,#e1b458);background:var(--panel);white-space:pre-wrap;overflow-wrap:anywhere}.run-blocked[hidden]{display:none}.output-field{padding:10px 0;border-bottom:1px solid var(--line)}.output-field:first-child{padding-top:0}.output-field:last-child{border-bottom:0}.output-field p{margin:4px 0;color:var(--muted);font-size:12px}.run-output{padding:12px;background:var(--vscode-textCodeBlock-background,var(--panel));border:1px solid var(--line);border-radius:4px;max-height:400px;overflow:auto}.action-section h4{font-size:12px;margin:18px 0 8px}#run-status button{display:block;margin-top:8px}@media(max-width:520px){.action-section-head,.action-section-body{padding:12px}}
+</style>
 <script>
 const host=acquireVsCodeApi(),byId=id=>document.getElementById(id),pending=new Map();
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const initialState=host.getState()||{};
-let sequence=0,actions=[],selection=initialState.selection||null,detailSequence=0,launch=initialState.launch||null,submitting=false,polling=false,expanded={...initialState.expanded},treeWidth=initialState.treeWidth||300;
+let sequence=0,actions=[],reviewActions=[],reviewSelection=initialState.reviewSelection||null,selection=initialState.selection||null,detailSequence=0,detailSignature='',launch=initialState.launch||null,submitting=false,polling=false,expanded={...initialState.expanded},treeWidth=initialState.treeWidth||300;
+const reviewSection=document.createElement('section');reviewSection.id='pending-review';reviewSection.setAttribute('aria-label','Preparing Actions');reviewSection.hidden=true;byId('list').after(reviewSection);
 byId('search').value=initialState.query||'';
-function save(){host.setState({launch,selection,query:byId('search').value,expanded,treeWidth})}
+function save(){host.setState({launch,selection,reviewSelection,query:byId('search').value,expanded,treeWidth})}
 function runFeedback(){
  if(!launch||selection!==launch.action_id)return;
  const result=launch.result;
  byId('run-status').textContent=result?'Run '+result.run_id+': '+(result.userState||result.state):'Submission may have reached the executor. Inspect Runs in Workbench before submitting again.';
- byId('run-result').textContent=result?JSON.stringify(result.outputs??result.output??result.error??{},null,2):'';
+ byId('run-result').textContent=result?JSON.stringify(result.outputs??result.output??result.error??(launch.terminal?'No output values returned.':'No outputs returned yet.'),null,2):'No confirmed result. Inspect the original Run before submitting again.';
  if(launch.run_id){const button=document.createElement('button');button.type='button';button.textContent='Open Run in Workbench';button.onclick=()=>request('open_workbench',{action_id:launch.action_id,run_id:launch.run_id}).catch(error);byId('run-status').append(button)}
 }
 function request(method,params={}){
@@ -63,6 +68,22 @@ function rows(){
  }));
  const oldFocus=visibleRows().find(row=>focused?.action?row.dataset.action===focused.action:focused?.category&&row.dataset.category===focused.category);
  ensureTabStop();if(oldFocus)focusRow(oldFocus);
+ reviewRows(query);
+}
+function reviewRows(query){
+ const visible=reviewActions.filter(action=>[action.display_name,action.action_id,action.description,action.reviewReason].some(value=>String(value||'').toLowerCase().includes(query)));
+ reviewSection.hidden=reviewActions.length===0;
+ reviewSection.innerHTML='<h2>Preparing Actions · '+visible.length+'</h2><p>Preparation runs automatically. Ready Actions appear above.</p>'
+  +(visible.map(action=>'<button type="button" class="cattree-item" data-pending="'+esc(action.action_id)+'" aria-pressed="'+(reviewSelection===action.action_id)+'"><span class="readiness-dot" aria-hidden="true"></span><span class="action-label"><span class="action-name">'+esc(action.display_name||action.action_id)+'</span><span class="action-id">'+esc(action.action_id)+'</span></span><span class="readiness">'+esc(['blocked','disabled'].includes(action.preparation?.state)?'Needs attention':'Preparing')+'</span></button>').join('')||'<p>No pending Actions match.</p>');
+ reviewSection.querySelectorAll('[data-pending]').forEach(button=>button.onclick=()=>inspectReview(button.dataset.pending));
+}
+function inspectReview(id){
+ const action=reviewActions.find(item=>item.action_id===id);if(!action)return;
+ ++detailSequence;selection=null;reviewSelection=id;save();
+ byId('list').querySelectorAll('[data-action]').forEach(row=>row.setAttribute('aria-selected','false'));
+ reviewSection.querySelectorAll('[data-pending]').forEach(row=>row.setAttribute('aria-pressed',String(row.dataset.pending===id)));
+ byId('detail').innerHTML='<h2>'+esc(action.display_name||id)+'</h2><p>'+esc(action.description||'No description supplied.')+'</p><dl><dt>Identity</dt><dd>'+esc(id)+'</dd><dt>Version</dt><dd>'+esc(action.version)+'</dd><dt>Status</dt><dd>'+esc(action.preparation?.state==='blocked'?'Needs attention':'Preparing automatically')+'</dd><dt>Reason</dt><dd>'+esc(action.reviewReason)+'</dd><dt>Revision</dt><dd>'+esc(action.content_hash||'Not supplied')+'</dd><dt>Effects</dt><dd>'+esc((action.effects||[]).join(', '))+'</dd></dl><p>This revision is not admitted and cannot run from the Library. Preparation runs in the background. Any previously admitted revision remains separate.</p><button id="review-workbench">View preparation details</button>';
+ byId('review-workbench').onclick=()=>request('open_workbench',{action_id:id}).catch(error);
 }
 function visibleRows(){return [...byId('list').querySelectorAll('[role=treeitem]')].filter(row=>!row.closest('details:not([open]) > [role=group]'))}
 function ensureTabStop(){const rows=visibleRows(),active=rows.find(row=>row===document.activeElement)||rows.find(row=>row.dataset.action===selection)||rows[0];for(const row of byId('list').querySelectorAll('[role=treeitem]'))row.tabIndex=row===active?0:-1}
@@ -96,52 +117,100 @@ byId('tree-divider').onpointerdown=event=>{
 };
 byId('tree-divider').onkeydown=event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();resizeTree(event.key==='Home'?200:event.key==='End'?innerWidth/2:treeWidth+(event.key==='ArrowRight'?20:-20));save()};
 window.addEventListener('resize',()=>resizeTree(treeWidth));
-async function refresh(){
- try{const result=await request('catalog');actions=result.actions.filter(action=>!action.component&&!action.palette_hidden);rows();byId('error').textContent='';if(selection)await inspect(selection)}catch(value){error(value)}
+async function refresh(preserveInputs=false){
+ try{
+  const previous=actions.find(action=>action.action_id===selection);
+  const draft=preserveInputs?[...byId('fields')?.querySelectorAll('[data-field]')||[]].map(input=>({name:input.dataset.field,value:input.value,checked:input.checked})):[];
+  const result=await request('catalog');actions=result.actions.filter(action=>!action.component&&!action.palette_hidden);
+  const candidates=new Map((result.pending_admissions||[]).map(action=>[action.action_id,{...action,reviewReason:action.preparation?.reason||'Preparing automatically in the background. No validation action is required.'}]));
+  for(const proposal of result.proposals||[]){
+   const existing=candidates.get(proposal.action_id);if(existing?.proposal_id&&existing.version>=proposal.definition.version)continue;
+   candidates.set(proposal.action_id,{...proposal.definition,action_id:proposal.action_id,proposal_id:proposal.proposal_id,content_hash:proposal.content_hash,preparation:proposal.preparation,reviewReason:proposal.preparation?.reason||'Preparing this new revision automatically in the background. The admitted version remains available.'});
+  }
+  reviewActions=[...candidates.values()].sort((a,b)=>(a.display_name||a.action_id).localeCompare(b.display_name||b.action_id));
+  rows();byId('error').textContent='';
+  if(reviewSelection){
+   if(reviewActions.some(action=>action.action_id===reviewSelection))inspectReview(reviewSelection);
+   else{const id=reviewSelection;reviewSelection=null;save();if(actions.some(action=>action.action_id===id))await inspect(id);else{++detailSequence;byId('detail').innerHTML='<h2>Pending item no longer available</h2><p>Select an Action to inspect its current status.</p>'}}
+  }else if(selection){
+   const selected=actions.find(action=>action.action_id===selection);
+   if(!preserveInputs||JSON.stringify([selected?.content_hash,selected?.availability,selected?.preparation])!==detailSignature){
+    await inspect(selection);
+    if(preserveInputs&&previous?.content_hash===selected?.content_hash)for(const input of byId('fields')?.querySelectorAll('[data-field]')||[]){
+     const saved=draft.find(item=>item.name===input.dataset.field);if(saved){input.value=saved.value;if(input.type==='checkbox')input.checked=saved.checked}
+    }
+   }
+  }
+ }catch(value){error(value)}
 }
 async function inspect(id){
  const current=++detailSequence;
  try{
   const result=await request('library_get',{action_id:id});if(current!==detailSequence)return;
-  const action=result.action;selection=id;save();
+  const action=result.action;selection=id;reviewSelection=null;save();
+  detailSignature=JSON.stringify([action.content_hash,action.availability,action.preparation]);
+  reviewSection.querySelectorAll('[data-pending]').forEach(row=>row.setAttribute('aria-pressed','false'));
   byId('list').querySelectorAll('[data-action]').forEach(row=>row.setAttribute('aria-selected',String(row.dataset.action===id)));
-  byId('detail').innerHTML='<h2>'+esc(action.display_name||id)+'</h2><p>'+esc(action.description||'No description supplied.')+'</p><dl><dt>Identity</dt><dd>'+esc(id)+'</dd><dt>Folder</dt><dd>'+esc(action.category||'Actions')+'</dd><dt>Readiness</dt><dd>'+esc(action.availability.state)+'</dd><dt>Reason</dt><dd>'+esc(action.availability.reason||'None')+'</dd><dt>Effects</dt><dd>'+esc((action.effects||[]).join(', '))+'</dd></dl><button id="open-workbench">Open in Workbench</button><h3>Inputs</h3><form id="run-form"><section id="fields"></section><label><input id="approve" type="checkbox" required>I approve this exact invocation and its declared effects.</label><button id="run" type="submit">Run Action</button></form><h3>Outputs</h3><dl>'+Object.entries(action.output_schema?.properties||{}).map(([name,schema])=>'<dt>'+esc(name)+'</dt><dd>'+esc(schema.description||schema.type||'value')+'</dd>').join('')+'</dl><p id="run-status" role="status"></p><pre id="run-result"></pre>';
+  const readinessReason=action.preparation?.reason||action.availability.reason||({stale:'The environment changed. Readiness is being checked automatically.',unverified:'Preparing automatically in the background. No manual validation is required.',failed:'Preparation did not succeed. See Workbench for the blocking condition.',needs_build:'This implementation needs an explicit build before automatic preparation can finish.',build_failed:'The implementation build failed. Review it in Workbench.',disabled:'This Action is disabled. Review its configuration in Workbench.',blocked:'Runtime requirements or authorization are missing. Review readiness in Workbench.',unsupported:'This implementation does not support the current environment.'}[action.availability.state])||'Ready for manual execution.';
+  byId('detail').innerHTML='<h2>'+esc(action.display_name||id)+'</h2><p>'+esc(action.description||'No description supplied.')+'</p><dl><dt>Identity</dt><dd>'+esc(id)+'</dd><dt>Folder</dt><dd>'+esc(action.category||'Actions')+'</dd><dt>Readiness</dt><dd>'+esc(action.availability.state)+'</dd><dt>Reason</dt><dd>'+esc(readinessReason)+'</dd><dt>Effects</dt><dd>'+esc((action.effects||[]).join(', '))+'</dd></dl><button id="open-workbench">Open in Workbench</button>'
+   +'<section class="action-section" aria-labelledby="inputs-title"><div class="action-section-head"><h3 id="inputs-title">Inputs</h3><p>Manual run · Fill in the parameters, confirm this invocation, then run the Action.</p></div><div class="action-section-body"><form id="run-form"><section id="fields"></section><p id="run-blocked" class="run-blocked" role="status" hidden></p><label class="invocation-approval"><input id="approve" type="checkbox" required><span>I approve this exact invocation and its declared effects.</span></label><div class="run-actions"><button id="run" class="primary" type="submit">Run Action</button><button id="validate-workbench" type="button" hidden>Review / validate in Workbench</button></div></form></div></section>'
+   +'<section class="action-section" aria-labelledby="outputs-title"><div class="action-section-head"><h3 id="outputs-title">Outputs</h3><p>Declared return values and the result of your manual run.</p></div><div class="action-section-body"><div id="output-fields">'+(Object.entries(action.output_schema?.properties||{}).map(([name,schema])=>'<div class="output-field"><div class="field-label">'+esc(schema.title||name)+'<span class="field-type">'+esc(schema.type||'value')+'</span></div><p>'+esc(schema.description||name)+'</p></div>').join('')||'<p class="field-help">No output fields declared.</p>')+'</div><h4>Run result</h4><p id="run-status" role="status">Not run yet.</p><pre id="run-result" class="run-output">Run this Action to see returned values.</pre></div></section>';
   byId('open-workbench').onclick=async()=>{try{await request('open_workbench',{action_id:id})}catch(value){error(value)}};
-  for(const [name,schema]of Object.entries(action.input_schema?.properties||{})){
-   const label=document.createElement('label');label.textContent=(schema.title||name)+((action.input_schema.required||[]).includes(name)?' *':'');
+  const properties=Object.entries(action.input_schema?.properties||{});
+  if(!properties.length)byId('fields').innerHTML='<p class="field-help">No inputs required. You can run this Action directly.</p>';
+  for(const [index,[name,schema]]of properties.entries()){
+   const label=document.createElement('label');label.className='action-field';
+   const title=document.createElement('span');title.className='field-label';title.textContent=(schema.title||name)+((action.input_schema.required||[]).includes(name)?' *':'');
+   const type=document.createElement('span');type.className='field-type';type.textContent=schema.type||'value';title.append(type);label.append(title);
    const input=document.createElement(schema.enum?'select':['object','array'].includes(schema.type)?'textarea':'input');
-   if(schema.enum)for(const option of schema.enum)input.add(new Option(String(option),JSON.stringify(option)));
+   if(schema.enum){input.add(new Option('Select a value',''));for(const option of schema.enum)input.add(new Option(String(option),JSON.stringify(option)))}
    else if(schema.type==='boolean')input.type='checkbox';
-   else if(['number','integer'].includes(schema.type)){input.type='number';input.step=schema.type==='integer'?'1':'any'}
+   else if(['number','integer'].includes(schema.type)){input.type='number';input.step=schema.type==='integer'?'1':'any';if(schema.minimum!==undefined)input.min=schema.minimum;if(schema.maximum!==undefined)input.max=schema.maximum}
+   else if(schema.type==='string'){if(schema.minLength!==undefined)input.minLength=schema.minLength;if(schema.maxLength!==undefined)input.maxLength=schema.maxLength}
+   input.id='action-input-'+index;label.htmlFor=input.id;
    input.dataset.field=name;input.required=(action.input_schema.required||[]).includes(name)&&schema.type!=='boolean';
    if(schema.default!==undefined){if(schema.type==='boolean')input.checked=schema.default;else input.value=schema.enum?JSON.stringify(schema.default):typeof schema.default==='object'?JSON.stringify(schema.default):String(schema.default)}
-   label.append(input);byId('fields').append(label);
+   const example=(action.examples||[]).find(example=>example.inputs?.[name]!==undefined)?.inputs[name];
+   if(input.tagName!=='SELECT'&&input.type!=='checkbox')input.placeholder=example===undefined?(schema.type==='object'?'{"key": "value"}':schema.type==='array'?'["value"]':'Enter '+(schema.title||name)):typeof example==='object'?JSON.stringify(example,null,2):String(example);
+   label.append(input);
+   if(schema.description||['object','array'].includes(schema.type)){const help=document.createElement('span');help.id=input.id+'-help';help.className='field-help';help.textContent=[schema.description,['object','array'].includes(schema.type)?'Enter a JSON '+schema.type+'. Required fields: '+(schema.required?.join(', ')||'none')+'.':null].filter(Boolean).join('\n');input.setAttribute('aria-describedby',help.id);label.append(help)}
+   byId('fields').append(label);
   }
   byId('fields').oninput=()=>{byId('approve').checked=false};
   const canRun=()=>action.availability.state==='ready'&&action.visibility!=='private'&&!submitting&&(!launch||launch.terminal);
-  byId('run').disabled=!canRun();runFeedback();
+  const updateRunControls=()=>{
+   byId('run').disabled=!canRun();
+   const reason=action.visibility==='private'?'This private Action requires its owning runtime context and cannot be invoked directly.':action.availability.state!=='ready'?readinessReason:submitting?'Submitting this invocation.':launch&&!launch.terminal?'A Run is still active, or its submission is unconfirmed. Inspect the original Run in Workbench before submitting another.':'';
+   byId('run-blocked').hidden=!reason;byId('run-blocked').textContent=reason;
+   byId('validate-workbench').hidden=action.availability.state==='ready'&&action.visibility!=='private';byId('validate-workbench').textContent='View preparation details';
+  };
+  byId('validate-workbench').onclick=()=>request('open_workbench',{action_id:id}).catch(error);
+  updateRunControls();runFeedback();
   byId('run-form').onsubmit=async event=>{
    event.preventDefault();if(!canRun())return;
-   submitting=true;byId('run').disabled=true;
+   submitting=true;updateRunControls();byId('error').textContent='';
    try{
     const inputs={};
     for(const input of byId('fields').querySelectorAll('[data-field]')){
      const schema=action.input_schema.properties[input.dataset.field];
      if(!input.required&&input.type!=='checkbox'&&input.value==='')continue;
-     inputs[input.dataset.field]=schema.enum||['object','array'].includes(schema.type)?JSON.parse(input.value):schema.type==='boolean'?input.checked:['number','integer'].includes(schema.type)?Number(input.value):input.value;
+     const name=input.dataset.field;
+     if(schema.enum||['object','array'].includes(schema.type)){try{inputs[name]=JSON.parse(input.value)}catch{throw Error((schema.title||name)+': Enter valid JSON'+(schema.enum?'.':' for this '+schema.type+'.'))}}
+     else inputs[name]=schema.type==='boolean'?input.checked:['number','integer'].includes(schema.type)?Number(input.value):input.value;
     }
     if(!byId('approve').checked)throw Error('Approve the exact invocation first.');
     launch={action_id:id,inputs,content_hash:action.content_hash,key:crypto.randomUUID()};save();
     const result=await request('call',launch);
-    launch={...launch,run_id:result.run_id,result,terminal:['succeeded','failed','cancelled'].includes(result.state)};save();runFeedback();byId('approve').checked=false;
+    launch={...launch,run_id:result.run_id,result,terminal:['succeeded','failed','cancelled'].includes(result.state)};save();runFeedback();if(current===detailSequence)byId('approve').checked=false;
    }catch(value){error(value);runFeedback()}
-   finally{submitting=false;byId('run').disabled=!canRun()}
+   finally{submitting=false;if(current===detailSequence)updateRunControls()}
   };
  }catch(value){error(value)}
 }
-byId('search').oninput=()=>{rows();save()};byId('refresh').onclick=refresh;refresh();
+byId('search').oninput=()=>{rows();save()};byId('refresh').onclick=()=>refresh();refresh();
 setInterval(async()=>{
  if(polling||!launch?.run_id||launch.terminal)return;polling=true;
  try{const result=await request('run',{run_id:launch.run_id});launch={...launch,result,terminal:['succeeded','failed','cancelled'].includes(result.state)};save();if(selection===launch.action_id)runFeedback();if(selection&&launch.terminal)await inspect(selection)}catch(value){error(value)}finally{polling=false}
 },2000);
+setInterval(()=>{if(!submitting&&!pending.size&&(reviewActions.length||actions.some(action=>action.availability.state!=='ready')))refresh(true)},10000);
 </script></body></html>

@@ -195,8 +195,8 @@ window.acquireVsCodeApi=()=>({getState:()=>({libraryOpen:true}),setState:value=>
  __calls.push(message);let result={ok:true};
  if(message.method==='catalog')result=__catalog;
  if(message.method==='runs')result={runs:[]};
- if(message.method==='validate')result={ok:true,cancelled:true};
- if(message.method==='validate_batch'){
+ if(message.method==='prepare')result={ok:true,cancelled:true};
+ if(message.method==='prepare_batch'){
   result={ok:true,results:message.params.items.map((item,index)=>({...item,state:index===1?'succeeded':'failed',error:index===1?null:'Fixture blocked review'}))};
   window.__finishBatch=()=>window.dispatchEvent(new MessageEvent('message',{data:{requestId:message.requestId,result}}));
   queueMicrotask(()=>window.dispatchEvent(new MessageEvent('message',{data:{requestId:message.requestId,progress:{total:message.params.items.length,completed:1,action_id:message.params.items[1].action_id,stage:'Agent code review',result:result.results[0]}}})));
@@ -218,43 +218,29 @@ window.acquireVsCodeApi=()=>({getState:()=>({libraryOpen:true}),setState:value=>
                     for name in names:
                         row = page.locator(f'[data-action="{name}"]')
                         expect(row).to_be_visible()
-                        expect(row.locator(".needs-validation-label")).to_have_text("Need Validation")
+                        expect(row.locator(".needs-validation-label")).to_have_text("Preparing")
                         expect(row.locator("[data-qualify]")).to_have_class("icon validation-needed")
                         expect(row.locator("[data-add]")).to_be_disabled()
                         self.assertEqual(row.locator("[data-export]").count(), 0)
                     expect(page.locator("#action-library")).not_to_be_visible()
-                    expect(page.locator("#workbench-tasks")).to_contain_text("Click a highlighted flask")
-                    self.assertFalse(page.evaluate("__calls.some(item=>item.method==='validate')"))
+                    expect(page.locator("#workbench-tasks")).to_contain_text("prepared automatically")
+                    self.assertFalse(page.evaluate("__calls.some(item=>item.method==='prepare')"))
                     page.locator("#open-library").click()
-                    expect(page.locator("#library-next-step")).to_contain_text("need validation")
+                    expect(page.locator("#library-next-step")).to_contain_text("prepared automatically")
                     self.assertFalse(page.locator("#workbench-review-details").evaluate("node=>node.open"))
                     page.locator("#show-validation-actions").click()
                     first = page.locator(f'[data-qualify="{names[0]}"]')
+                    page.locator(f'[data-action="{names[0]}"]').hover()
                     first.click()
-                    expect(page.locator("#validation-choice-dialog")).to_be_visible()
-                    self.assertEqual(page.locator("#validation-choice-dialog button").all_text_contents(),
-                                     ["Cancel", "Validate this action", "Validate all possible actions"])
-                    page.locator("#validation-choice-cancel").click()
                     expect(page.locator("#validation-choice-dialog")).not_to_be_visible()
-                    self.assertFalse(page.evaluate("__calls.some(item=>['validate','validate_batch'].includes(item.method))"))
-                    first.click()
-                    page.keyboard.press("Escape")
-                    expect(page.locator("#validation-choice-dialog")).not_to_be_visible()
-                    self.assertFalse(page.evaluate("__calls.some(item=>['validate','validate_batch'].includes(item.method))"))
-                    first.click()
-                    page.locator("#validation-choice-this").click()
-                    expect(page.locator("#validation-message")).to_contain_text("remote-write")
-                    page.locator("#validation-dismiss").click()
-                    self.assertFalse(page.evaluate("__calls.some(item=>item.method==='validate')"))
-                    first.click()
-                    page.locator("#validation-choice-this").click()
-                    page.locator("#validation-accept").click()
+                    expect(page.locator("#validation-dialog")).not_to_be_visible()
+                    expect(page.locator("#risk-review")).not_to_be_visible()
                     expect(page.locator("#validation-feedback")).to_contain_text("cancelled")
-                    request = page.evaluate("__calls.find(item=>item.method==='validate').params")
+                    request = page.evaluate("__calls.find(item=>item.method==='prepare').params")
                     self.assertEqual(request["proposal_id"], proposals[0]["proposal_id"])
                     self.assertEqual(request["content_hash"], proposals[0]["content_hash"])
                     self.assertEqual(request["action_id"], names[0])
-                    self.assertTrue(request["allow_effects"])
+                    self.assertNotIn("allow_effects", request)
                     self.assertFalse(page.evaluate("actions.some(item=>item.action_id.startsWith('dlis.falcon.'))"),
                                      "pending rows must not enter the executable action catalog")
                     page.evaluate("""() => {
@@ -264,7 +250,7 @@ window.acquireVsCodeApi=()=>({getState:()=>({libraryOpen:true}),setState:value=>
                     page.locator("#refresh").click()
                     expect(page.locator(f'[data-action="{names[0]}"] .needs-validation-label')).to_have_count(0)
                     expect(page.locator(f'[data-qualify="{names[0]}"]')).to_have_class("icon")
-                    expect(page.locator(f'[data-action="{names[1]}"] .needs-validation-label')).to_have_text("Need Validation")
+                    expect(page.locator(f'[data-action="{names[1]}"] .needs-validation-label')).to_have_text("Preparing")
                     previous_hash = page.evaluate("actions.find(item=>item.action_id==='test.library.echo').content_hash")
                     page.evaluate("""() => {
                       const previous=actions.find(item=>item.action_id==='test.library.echo');
@@ -272,18 +258,13 @@ window.acquireVsCodeApi=()=>({getState:()=>({libraryOpen:true}),setState:value=>
                         definition:{...previous,version:previous.version+1}});
                     }""")
                     page.locator("#refresh").click()
-                    expect(page.locator('[data-action="test.library.echo"] .needs-validation-label')).to_have_text("Need Validation")
+                    expect(page.locator('[data-action="test.library.echo"] .needs-validation-label')).to_have_text("Preparing")
                     self.assertEqual(page.evaluate("actions.find(item=>item.action_id==='test.library.echo').content_hash"), previous_hash,
                                      "a pending update must not replace the executable approved version")
                     self.assertEqual(page.locator('[data-action="test.library.echo"]').count(), 1)
                     page.locator("#validate-all-actions").click()
-                    expect(page.locator("#validation-title")).to_contain_text("Validate all")
-                    expect(page.locator("#validation-message")).to_contain_text("remote-write")
-                    page.locator("#validation-dismiss").click()
-                    self.assertFalse(page.evaluate("__calls.some(item=>item.method==='validate_batch')"))
-                    page.locator(f'[data-qualify="{names[1]}"]').click()
-                    page.locator("#validation-choice-all").click()
-                    page.locator("#validation-accept").click()
+                    expect(page.locator("#validation-dialog")).not_to_be_visible()
+                    expect(page.locator("#risk-review")).not_to_be_visible()
                     expect(page.locator("#batch-validation-progress")).to_be_visible()
                     expect(page.locator("#batch-validation-stage")).to_contain_text("1/3")
                     expect(page.locator("#batch-validation-stage")).to_contain_text("Review")
@@ -301,9 +282,9 @@ window.acquireVsCodeApi=()=>({getState:()=>({libraryOpen:true}),setState:value=>
                     page.locator("#batch-validation-results summary").first.click()
                     expect(page.locator("#batch-validation-results pre").first).to_have_text("Fixture blocked review")
                     expect(page.locator("#batch-validation-results li")).to_have_count(3)
-                    batch = page.evaluate("__calls.find(item=>item.method==='validate_batch').params")
+                    batch = page.evaluate("__calls.find(item=>item.method==='prepare_batch').params")
                     self.assertEqual(len(batch["items"]), 3)
-                    self.assertTrue(batch["allow_effects"])
+                    self.assertNotIn("allow_effects", batch)
                     self.assertTrue(all(item.get("proposal_id") for item in batch["items"]))
                     self.assertEqual(errors, [])
                 finally:
@@ -315,7 +296,8 @@ window.acquireVsCodeApi=()=>({getState:()=>({libraryOpen:true}),setState:value=>
             catalog = runtime.catalog()
             action = next(item for item in catalog["actions"] if item["action_id"] == "test.library.echo")
             catalog["actions"] = [action]
-            catalog["proposals"] = [{"action_id": "pending.hidden", "proposal_id": "proposal_hidden"}]
+            catalog["proposals"] = [{"action_id": "pending.review", "proposal_id": "proposal_review",
+                                    "content_hash": "pending", "definition": {**action, "action_id": "pending.review"}}]
             bootstrap = """
 window.__catalog=CATALOG;window.__action=ACTION;window.__calls=[];window.__state={};window.__fail=false;
 window.acquireVsCodeApi=()=>({getState:()=>__state,setState:value=>{__state=value},postMessage:message=>{
@@ -340,7 +322,8 @@ window.acquireVsCodeApi=()=>({getState:()=>__state,setState:value=>{__state=valu
                     page.locator('[data-action="test.library.echo"]').click()
                     expect(page.locator("#detail")).to_contain_text("unverified")
                     expect(page.locator("#run")).to_be_disabled()
-                    self.assertEqual(page.get_by_text("pending.hidden").count(), 0)
+                    expect(page.locator('#pending-review [data-pending="pending.review"]')).to_be_visible()
+                    self.assertEqual(page.locator('#list [data-action="pending.review"]').count(), 0)
                     self.assertFalse(page.evaluate("__calls.some(item=>['call','validate','open_workbench'].includes(item.method))"))
                     page.evaluate("__action.availability={state:'ready',reason:''}")
                     page.locator("#refresh").click()
@@ -369,7 +352,14 @@ window.acquireVsCodeApi=()=>({getState:()=>__state,setState:value=>{__state=valu
     def test_embedded_subfolders_and_nested_move_persist_and_show_errors(self):
         with tempfile.TemporaryDirectory() as directory:
             runtime, definition = self.create_runtime(directory)
+            runtime.validate(definition["action_id"], definition["content_hash"])
+            pending = runtime.propose({
+                "schema": "pkm.action.definition/v1", "action_id": "dlis.azuredevops.pipeline.status.pending", "version": 1, "description": "Pending folder move",
+                "input_schema": object_schema({}), "output_schema": object_schema({}), "effects": ["pure"],
+                "implementations": [{"kind": "pipeline", "platforms": [platform.system()], "steps": [], "output": {}}],
+            })
             calls = []
+            move_fail = [False]
 
             def dispatch(message):
                 calls.append(message)
@@ -380,6 +370,8 @@ window.acquireVsCodeApi=()=>({getState:()=>__state,setState:value=>{__state=valu
                     if method == "group_create":
                         return runtime.group_create(**params)
                     if method == "action_move":
+                        if move_fail[0]:
+                            raise PermissionError("Fixture move denied")
                         return runtime.action_move(**params)
                     return {"ok": True, "runs": [], "draft": None}
                 except (ValueError, PermissionError) as failure:
@@ -401,7 +393,7 @@ const result=await dispatch(event.data);event.source.postMessage({requestId:even
                     page.goto("https://action.test/")
                     page.locator("iframe").evaluate("(node,html)=>node.srcdoc=html", bridge + html)
                     frame = page.frame_locator("iframe")
-                    frame.locator("#toggle-tree").click()
+                    expect(frame.locator("#add-group")).to_be_visible()
                     frame.locator("#add-group").click()
                     frame.locator("#catalog-name").fill("Tools")
                     frame.locator("#catalog-submit").click()
@@ -414,7 +406,36 @@ const result=await dispatch(event.data);event.source.postMessage({requestId:even
                         frame.locator("#catalog-name").fill(child)
                         frame.locator("#catalog-submit").click()
                         expect(frame.locator("#catalog-dialog")).not_to_be_visible()
-                    frame.locator('[data-category=\'["Actions"]\']').click()
+                    expect(frame.locator('[data-category=\'["Actions"]\']')).to_have_attribute("aria-expanded", "true")
+                    pending_row = frame.locator(f'[data-action="{pending["action_id"]}"]')
+                    pending_row.locator("strong").click()
+                    expect(pending_row).to_have_attribute("aria-selected", "true")
+                    expect(frame.locator("#admission-review")).not_to_be_visible()
+                    before_drag = len(calls)
+                    pending_row.drag_to(frame.locator('[data-category=\'["Tools"]\']'))
+                    expect(frame.locator('[data-category=\'["Tools"]\']')).to_have_attribute("aria-expanded", "true")
+                    self.assertEqual(runtime.catalog_layout()["actions"][pending["action_id"]]["category"], "Tools")
+                    self.assertFalse(any(item["method"] in {"qualification_review", "definition_read", "prepare", "call"}
+                                         for item in calls[before_drag:]), "moving must not open or execute the Action")
+                    expect(pending_row.locator(".language")).to_have_text("Graph")
+                    expect(pending_row).to_have_attribute("title", pending["action_id"])
+                    self.assertNotIn("Unknown", pending_row.inner_text())
+                    for width in [320, 760, 1280]:
+                        page.set_viewport_size({"width": width, "height": 950})
+                        self.assertLessEqual(pending_row.bounding_box()["height"], 58,
+                                             "Action rows must remain compact at narrow and desktop widths")
+                        self.assertTrue(pending_row.evaluate("node=>node.scrollWidth<=node.clientWidth"))
+                    page.set_viewport_size({"width": 1280, "height": 950})
+                    move_fail[0] = True
+                    pending_row.drag_to(frame.locator('[data-category=\'["Tools","Cloud"]\']'))
+                    expect(frame.locator("#status")).to_contain_text("Fixture move denied")
+                    self.assertEqual(runtime.catalog_layout()["actions"][pending["action_id"]]["category"], "Tools")
+                    expect(frame.locator(".drop-target")).to_have_count(0)
+                    move_fail[0] = False
+                    moves_before_core = sum(item["method"] == "action_move" for item in calls)
+                    pending_row.drag_to(frame.locator('[data-category=\'["core"]\']'))
+                    self.assertEqual(sum(item["method"] == "action_move" for item in calls), moves_before_core,
+                                     "system folders must reject drops")
                     frame.locator(f'[data-action="{definition["action_id"]}"]').click(button="right")
                     frame.get_by_role("menuitem", name="Move to", exact=True).click()
                     frame.locator("#catalog-group").select_option("Tools/Cloud/Pipelines")
@@ -422,13 +443,16 @@ const result=await dispatch(event.data);event.source.postMessage({requestId:even
                     expect(frame.locator("#catalog-dialog")).not_to_be_visible()
                     expect(frame.locator('[data-category=\'["Tools","Cloud","Pipelines"]\']')).to_have_attribute("aria-expanded", "true")
                     self.assertEqual(runtime.catalog_layout()["actions"][definition["action_id"]]["category"], "Tools/Cloud/Pipelines")
+                    frame.locator(f'[data-action="{definition["action_id"]}"]').drag_to(
+                        frame.locator("#canvas"), target_position={"x": 100, "y": 100})
+                    expect(frame.locator(".block")).to_have_count(1)
                     frame.locator('[data-category=\'["Tools","Cloud"]\']').click(button="right")
                     frame.get_by_role("menuitem", name="Add subgroup").click()
                     frame.locator("#catalog-name").fill("Pipelines")
                     frame.locator("#catalog-submit").click()
                     expect(frame.locator("#catalog-error")).to_contain_text("already exists")
                     expect(frame.locator("#catalog-dialog")).to_be_visible()
-                    self.assertEqual(sum(item["method"] == "action_move" for item in calls), 1)
+                    self.assertEqual(sum(item["method"] == "action_move" for item in calls), 3)
                 finally:
                     browser.close()
 
@@ -447,7 +471,7 @@ window.acquireVsCodeApi=()=>({getState:()=>null,setState:()=>{},postMessage:mess
  __calls.push(message);let result={ok:true};
  if(message.method==='catalog')result={...__catalog,queue:{jobs:__job?[__job]:[]}};
  if(message.method==='runs')result={runs:[]};
- if(message.method==='validate'){
+ if(message.method==='prepare'){
   if(__fail)result={ok:false,error:'Fixture permission denied'};
   else{__job={job_id:'validation_fixture',action_id:message.params.action_id,state:'queued',stage:'queued'};result={ok:true,job_id:__job.job_id}}
  }
@@ -468,32 +492,29 @@ window.acquireVsCodeApi=()=>({getState:()=>null,setState:()=>{},postMessage:mess
                     page.evaluate("setTreeCollapsed(false);catExpanded[JSON.stringify(['Actions'])]=true;renderPalette()")
                     row = page.locator('[data-action="test.library.echo"]')
                     expect(row).to_have_attribute("draggable", "true")
-                    row.dispatch_event("dragstart", {"dataTransfer": page.evaluate_handle("new DataTransfer()")})
-                    expect(page.locator("#validation-dialog")).to_be_visible()
-                    expect(page.locator("#validation-message")).to_contain_text("highlighted flask")
+                    transfer = page.evaluate_handle("new DataTransfer()")
+                    row.dispatch_event("dragstart", {"dataTransfer": transfer})
+                    expect(page.locator("#validation-dialog")).not_to_be_visible()
+                    self.assertEqual(transfer.evaluate("data=>data.getData('application/x-pkm-action-move')"), "test.library.echo")
+                    self.assertEqual(transfer.evaluate("data=>data.getData('application/x-pkm-action')"), "",
+                                     "pending Actions can move folders but cannot compose")
+                    row.dispatch_event("dragend")
                     expect(page.locator("[data-qualify]")).to_have_class("icon validation-needed")
-                    page.locator("#validation-accept").click()
-                    self.assertFalse(page.evaluate("__calls.some(item=>item.method==='validate')"))
+                    self.assertFalse(page.evaluate("__calls.some(item=>item.method==='prepare')"))
+                    row.hover()
                     page.locator("[data-qualify]").click()
-                    page.locator("#validation-choice-this").click()
-                    expect(page.locator("#validation-dialog")).to_be_visible()
-                    expect(page.locator("#validation-message")).to_contain_text("remote-read")
-                    page.locator("#validation-dismiss").click()
-                    self.assertFalse(page.evaluate("__calls.some(item=>item.method==='validate')"))
-                    page.locator("[data-qualify]").click()
-                    page.locator("#validation-choice-this").click()
-                    page.locator("#validation-accept").click()
+                    expect(page.locator("#validation-dialog")).not_to_be_visible()
+                    expect(page.locator("#risk-review")).not_to_be_visible()
                     expect(page.locator("#validation-feedback")).to_contain_text("queued")
-                    self.assertTrue(page.evaluate("__calls.find(item=>item.method==='validate').params.allow_effects"))
+                    self.assertNotIn("allow_effects", page.evaluate("__calls.find(item=>item.method==='prepare').params"))
                     page.evaluate("__job.state='blocked';__job.error='Operator approval required';refresh()")
                     expect(page.locator("#validation-feedback")).to_contain_text("Operator approval required")
                     expect(page.locator("#validation-feedback")).to_have_attribute("data-failed", "true")
                     page.evaluate("__job.state='succeeded';delete __job.error;refresh()")
                     expect(page.locator("#validation-feedback")).to_contain_text("Ready:")
                     page.evaluate("__fail=true")
+                    row.hover()
                     page.locator("[data-qualify]").click()
-                    page.locator("#validation-choice-this").click()
-                    page.locator("#validation-accept").click()
                     expect(page.locator("#validation-feedback")).to_contain_text("Fixture permission denied")
                     self.assertEqual(errors, [])
                 finally:
@@ -527,15 +548,12 @@ window.acquireVsCodeApi=()=>({getState:()=>null,setState:()=>{},postMessage:mess
                     if not cancel[0]:
                         granted[0] = request["params"]["grant"]
                     result = {"ok": True, "cancelled": cancel[0]}
-                elif method == "validate":
+                elif method == "prepare":
                     if cancel[0]:
                         result = {"ok": True, "cancelled": True}
                     else:
                         params = request["params"]
-                        review = runtime.qualification_review(params["action_id"], params["content_hash"], params.get("proposal_id"))
-                        result = runtime.qualification_execute(params["action_id"], params["content_hash"], review["snapshot_hash"],
-                            {"user_confirmed": True, "issues": [], "summary": "Fixture review passed", "model": "fixture"},
-                            params.get("proposal_id"), params.get("allow_effects", False))
+                        result = runtime.qualification_prepare(params["action_id"], params["content_hash"], params.get("proposal_id"))
                         result = runtime.qualification_admit(result["attempt_id"])
                         granted[0] = True
                 elif method == "inspect_admission":
@@ -591,8 +609,7 @@ window.acquireVsCodeApi=()=>({getState:()=>null,setState:()=>{},postMessage:mess
                     self.assertFalse(granted[0], "cancelled native review must not grant")
                     cancel[0] = False
                     page.locator("#admission-confirm").click()
-                    expect(page.locator("#validation-feedback")).to_contain_text("Environment tests passed")
-                    expect(page.locator("#validation-feedback")).to_contain_text("not a safety certification")
+                    expect(page.locator("#validation-feedback")).to_contain_text("ready to use")
                     page.locator("#open-library").click()
                     page.locator("#workbench-review-details").evaluate("node=>node.open=true")
                     page.locator(f'[data-inspect-library="{action["action_id"]}"]').click()
@@ -619,7 +636,7 @@ window.acquireVsCodeApi=()=>({getState:()=>null,setState:()=>{},postMessage:mess
                     self.assertFalse((runtime.registry / "example.pending.json").exists())
                     cancel[0] = False
                     page.locator("#admission-confirm").click()
-                    expect(page.locator("#validation-feedback")).to_contain_text("Environment tests passed")
+                    expect(page.locator("#validation-feedback")).to_contain_text("ready to use")
                     page.locator("#open-library").click()
                     page.locator("#workbench-review-details").evaluate("node=>node.open=true")
                     expect(page.locator('[data-inspect-library="example.pending"]')).to_be_visible()

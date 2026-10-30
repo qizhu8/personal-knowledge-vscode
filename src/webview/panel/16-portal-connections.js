@@ -91,10 +91,12 @@ function portalConnectionRow(item) {
 
 function portalEndpointRow(item) {
   const peer = item.peer;
+  const connectionState = item.state === 'disconnected' && item.paired && !item.deleted && !item.error ? 'standby' : item.state;
+  const statusTitle = connectionState === 'standby' ? 'Paired and not connected; remote availability has not been checked' : `Portal connection: ${connectionState}`;
   const localChat = item.deleted ? 'deleted' : item.chatName || 'General Enteray';
   const remoteChat = peer?.deleted ? 'deleted' : peer?.chatName || (peer ? 'General Enteray' : 'Not paired');
   const button = (operation, label, title = label) => portalConnectionButton(`portalEndpoint${operation}`, 'endpointId', item.id, label, title);
-  return `<article class="portal-connection-row ${esc(item.state)}" role="listitem" data-endpoint-id="${portalConnectionAttribute(item.id)}">
+  return `<article class="portal-connection-row ${esc(connectionState)}" role="listitem" data-endpoint-id="${portalConnectionAttribute(item.id)}">
     <span class="portal-connection-icon codicon codicon-plug" aria-hidden="true"></span>
     <div class="portal-connection-copy">
       <div class="portal-connection-title">
@@ -108,14 +110,16 @@ function portalEndpointRow(item) {
           <span>Accept local control: ${!peer?.confirmed ? 'Unknown' : peer.acceptsIncoming && !peer.deleted ? 'Enabled' : 'Disabled'}</span>
         </span>
       </div>
-      <span class="portal-connection-status" role="status">${esc(item.state)}</span>
+      <span class="portal-connection-status" role="status" title="${portalConnectionAttribute(statusTitle)}"><i aria-hidden="true"></i>${esc(connectionState)}</span>
       <div class="portal-connection-detail">Local long-term permissions: ${esc(item.permissions.join(', ') || 'None · requests still need approval')}</div>
+      <div class="portal-connection-detail">External MCP access: ${item.externalAccess ? 'Enabled · saved for this endpoint' : 'Disabled · external requests require approval'}</div>
       <div class="portal-connection-detail">Saved pairing · automatic reconnection · no task replay${item.deleted ? ' · Bind another Chat and authorize again' : ''}</div>
       ${item.error ? `<div class="portal-connection-detail" role="alert">${esc(item.error)}</div>` : ''}
     </div>
     <div class="portal-connection-actions">
       ${!item.paired && item.state === 'disconnected' ? button('Pair', 'Pair…') : item.state === 'disconnected' ? button('Connect', 'Connect') : button('Disconnect', 'Disconnect')}
       ${button('Bind', 'Replace Chat…')}${button('Permissions', 'Local permissions…')}
+      ${item.paired && !item.deleted ? button('ExternalAccess', 'MCP access…', 'Explicitly allow or revoke saved external MCP access on this Host') : ''}
       ${item.chatId && !item.deleted ? portalConnectionButton('portalConnectionOpenChat', 'chatId', item.chatId, 'Open Chat', 'Open the bound local Chat') : ''}
       ${button('Remove', 'Remove…')}
     </div>

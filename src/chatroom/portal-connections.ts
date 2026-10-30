@@ -53,6 +53,7 @@ export interface PortalPendingInvitation {
 export interface PortalEndpointView {
   id: string; name: string; localMachine: string; chatId?: string; chatName?: string; deleted: boolean;
   acceptsIncoming: boolean; permissions: PortalPermission[]; paired: boolean;
+  externalAccess?: boolean;
   state: "connected" | "connecting" | "disconnected"; error?: string;
   peer?: { name: string; machine?: string; chatId?: string; chatName?: string; deleted?: boolean; acceptsIncoming?: boolean; confirmed: boolean };
 }

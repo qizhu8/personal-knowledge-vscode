@@ -144,6 +144,7 @@ document.querySelectorAll('.tab').forEach(t =>
     document.getElementById('sidebar-toggle').style.display = fullWidthTab ? 'none' : '';
     document.getElementById('content-toolbar').style.display = fullWidthTab ? 'none' : '';
     if (['actions','actionLibrary'].includes(state.tab)) {
+      ensureGitHubSyncStatus();
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
       showEmbeddedActions();
@@ -156,6 +157,7 @@ document.querySelectorAll('.tab').forEach(t =>
       document.getElementById('searchbox').style.display = 'none';
       renderAgentSnapshots();
     } else if (state.tab === 'recipes') {
+      ensureGitHubSyncStatus();
       document.getElementById('sidebar').style.display = 'none';
       document.getElementById('searchbox').style.display = 'none';
       renderGlobalRecipes();
@@ -424,7 +426,7 @@ function renderList() {
   const { tab, items, filter } = state;
   const el = document.getElementById('item-list');
   const fEl = document.getElementById('sidebar-filters');
-  if (['skills','notes','papers'].includes(tab)) ensureGitHubSyncStatus();
+  if (githubSyncTypes.includes(tab)) ensureGitHubSyncStatus();
 
   if (tab === 'skills') {
     renderKnowledgeGroupControls(fEl, 'skills');
@@ -893,7 +895,7 @@ function renderCatTree(node, path, depth, renderLeaf, q, folderAttr, order, opti
       <div class="tree-cat-hdr${pinnedFolder ? ' cat-pinned' : ''}" ${expandable ? `role="button" tabindex="0" onclick="toggleCat('${key}',this)" onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();toggleCat('${key}',this)}" aria-expanded="${open}"` : 'role="group"'} style="padding-left:${pad}px" title="${esc(name)}"${folderAttr ? folderAttr(child, name, path.concat(name)) : ''}>
         <span class="tree-cat-arrow">${expandable ? uiIcon(open ? 'chevron-down' : 'chevron-right') : ''}</span>
         <span class="tree-cat-label">${folderLabel}${githubSyncTypes.includes(syncType) ? githubSyncFolderMarker(syncType, syncFolder) : ''}</span>
-        <span class="tree-cat-count">${options.countLabel ? esc(options.countLabel(countTreeLeaves(child))) : countTreeLeaves(child)}</span>
+        <span class="tree-cat-count">${options.countLabel ? esc(options.countLabel(countTreeLeaves(child), child, name)) : countTreeLeaves(child)}</span>
         ${!options.readOnly && ['skills', 'notes', 'papers'].includes(state.tab) ? `<button class="tree-cat-add" type="button" title="Add inside ${esc(name)}" aria-label="Add inside ${esc(name)}" onclick="openCatFolderAddMenu(event,${JSON.stringify(state.tab).replace(/"/g, '&quot;')},${JSON.stringify(addPath).replace(/"/g, '&quot;')})">${uiIcon('add')}</button>` : ''}
       </div>
       ${expandable ? `<div class="tree-cat-body" style="${open ? '' : 'display:none'}">${renderCatTree(child, path.concat(name), depth + 1, renderLeaf, q, folderAttr, order, options)}</div>` : ''}

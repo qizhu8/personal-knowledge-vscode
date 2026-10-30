@@ -120,6 +120,45 @@ test("reusable requirements persist across Chats and Host restarts without becom
   assert.match(request.messages[0].content,/NOT a ban on all AML/);
   assert.equal(JSON.parse(request.messages[1].content).existing[0].kind,"requirement");
 });
+test("requirement correction, deletion suppression and Root isolation keep only the current scoped rule",async t=>{
+  const fixtureData=fixture(t),{store,chat,chats,directory}=fixtureData;
+  const old=seedRequirement(fixtureData),oldSource=userProfileSources(chat)[0];
+  const correctedSourceText="Across chats, for AML tasks, use the supported Python SDK instead of the unavailable ml extension.";
+  chat.messages[0].content=correctedSourceText;chats.save(chat);
+  const correctedSources=userProfileSources(chat);
+  const correctedText="For AML tasks, use the supported Python SDK instead of the unavailable ml extension.";
+  const correctedOutput=JSON.stringify({fragments:[{kind:"requirement",text:correctedText,tags:["AML","SDK"],
+    evidence:[{source_id:correctedSources[0].id,quote:correctedSourceText}]}]});
+  store.apply(correctedSources,parseProfileFragments(correctedOutput,correctedSources));
+  const corrected=store.snapshot().fragments.find(item=>item.text===correctedText);
+  assert(corrected);
+  assert.equal(corrected.kind,"requirement");
+  assert.equal(store.snapshot().fragments.find(item=>item.id===old.id).revision,1);
+
+  store.remove(old.id,old.revision);
+  const replayChat=chats.create();replayChat.includeHistory=true;
+  replayChat.messages.push({...chat.messages[0],id:randomUUID(),content:oldSource.text});
+  chats.save(replayChat);
+  const replaySources=userProfileSources(replayChat);
+  store.apply(replaySources,parseProfileFragments(JSON.stringify({fragments:[{kind:"requirement",text:old.text,
+    tags:old.tags,evidence:[{source_id:replaySources[0].id,quote:oldSource.text}]}]}),replaySources));
+
+  const visible=store.snapshot().fragments;
+  assert.equal(visible.some(item=>item.id===old.id),false,"a deleted requirement must not reappear from a later source");
+  assert.deepEqual(visible.map(item=>item.id),[corrected.id]);
+  assert.equal(new UserProfileFragmentStore(path.join(directory,"host"),path.join(directory,"other-root")).snapshot().fragments.length,0);
+  assert.throws(()=>parseProfileRequirementMatches(JSON.stringify({matches:[
+    {id:old.id,revision:old.revision,request_quote:"AML"},
+  ]}),"Inspect AML.",visible),/unknown, stale or duplicate/);
+
+  const selected=await recallProfileRequirements(store,"Inspect my AML pipeline run.",async request=>{
+    const candidates=JSON.parse(request.messages[1].content).requirements;
+    assert.deepEqual(candidates.map(item=>item.id),[corrected.id]);
+    return {text:JSON.stringify({matches:[{id:corrected.id,revision:corrected.revision,
+      request_quote:"AML pipeline"}]})};
+  },()=>{},new AbortController().signal);
+  assert.deepEqual(selected.fragments.map(item=>item.id),[corrected.id]);
+});
 test("requirement applicability has explicit negative cases, current-input priority and strict source revision/identity checks",async t=>{
   const fixtureData=fixture(t),{store}=fixtureData,fragment=seedRequirement(fixtureData);
   const cases=[
@@ -248,15 +287,32 @@ test("production fragment and keyword-cloud renderer filters, links sources, con
   await page.addStyleTag({path:path.join(root,"src/webview/agent-harness.css")});
   await page.addScriptTag({path:path.join(root,"src/webview/agent-harness.js")});
   const script=fs.readFileSync(path.join(root,"src/webview/panel/54-persona-profiles.js"),"utf8");
-  await page.addScriptTag({content:`const state={tab:'userProfile'},__calls=[];const ask=(command,params)=>__calls.push({command,params});${script}`});
+  await page.addScriptTag({content:`const state={tab:'userProfile'},__calls=[];let __saved={unrelated:'preserved'};
+    const vscode={getState:()=>__saved,setState:value=>{__saved=value}};
+    const ask=(command,params)=>__calls.push({command,params});${script}`});
   await page.evaluate(snapshot=>userProfileOnSnapshot({scope:"Private",fragments:snapshot}),snapshot);
-  const tiers=page.getByRole("group",{name:"Cache / Memory / Disk tiers",exact:true});
-  assert.equal(await tiers.locator("[data-memory-tier]").count(),3);
+  const tiers=page.getByRole("tablist",{name:"Profile knowledge levels",exact:true});
+  const pyramid=page.getByRole("group",{name:"3-Level Knowledge Hierarchy",exact:true});
+  assert.equal(await pyramid.locator("[data-memory-tier]").count(),3);
+  assert.deepEqual(await pyramid.locator(".profile-memory-dot").evaluateAll(nodes=>nodes.map(node=>node.dataset.profilePiece)),
+    snapshot.fragments.map(fragment=>fragment.id),"every rendered dot identifies a real fragment, without placeholders");
+  assert.equal(await pyramid.locator("[data-memory-tier=cache] .profile-memory-dot").count(),0,"unknown context must not fabricate points");
+  assert.match(await pyramid.locator("[data-memory-tier=cache]").innerText(),/Per-Session context/);
+  assert.equal(await tiers.getByRole("tab").count(),3);
+  assert.equal(await page.getByRole("tabpanel").count(),1,"only the active tier is displayed");
+  assert.equal(await tiers.getByRole("tab",{name:"Mid-term",selected:true}).count(),1);
   assert.equal(await page.locator('[data-memory-tier-section=memory] .profile-fragment').count(),2);
-  assert.match(await page.locator('[data-memory-tier-section=cache]').innerText(),/no selected model context/);
-  assert.match(await tiers.locator('[data-memory-tier=disk]').getAttribute("aria-label"),/No accepted Profile card/);
-  await tiers.getByRole("button",{name:/^Disk \/ Long-term/}).press("Enter");
-  assert.equal(await page.locator('[data-memory-tier-section=disk] > h3').evaluate(node=>node===document.activeElement),true);
+  assert.match(await page.locator('[data-memory-tier-section=cache]').textContent(),/no selected model context/);
+  assert.match(await tiers.getByRole("tab",{name:"Long-term"}).getAttribute("title"),/No accepted Profile card/);
+  await tiers.getByRole("tab",{name:"Long-term"}).click();
+  assert.equal(await tiers.getByRole("tab",{name:"Long-term",selected:true}).count(),1);
+  assert.equal(await page.getByRole("tabpanel",{name:"Long-term"}).count(),1);
+  await tiers.getByRole("tab",{name:"Long-term"}).press("ArrowRight");
+  assert.equal(await page.getByRole("tabpanel",{name:"Short-term"}).count(),1);
+  await tiers.getByRole("tab",{name:"Short-term"}).press("End");
+  await tiers.getByRole("tab",{name:"Long-term"}).press("Home");
+  await tiers.getByRole("tab",{name:"Short-term"}).press("ArrowRight");
+  assert.equal(await page.getByRole("tabpanel",{name:"Mid-term"}).count(),1);
   assert.equal(await page.evaluate("__calls.length"),0,"tier navigation is read-only and model-free");
   assert.equal(await page.locator(".profile-fragment").count(),2);
   assert.equal(await page.getByRole("button",{name:"Requirements",exact:true}).count(),1);
@@ -267,6 +323,14 @@ test("production fragment and keyword-cloud renderer filters, links sources, con
   await page.getByRole("button",{name:"Clear filters",exact:true}).click();
   await page.getByRole("button",{name:"Habits",exact:true}).click();
   assert.equal(await page.locator(".profile-fragment").count(),1);
+  await tiers.getByRole("tab",{name:"Short-term"}).click();
+  await pyramid.locator(".profile-memory-dot").nth(1).press("Enter");
+  assert.equal(await page.getByRole("tabpanel",{name:"Mid-term"}).count(),1);
+  assert.equal(await page.locator(".profile-fragment").count(),2,"dot navigation clears filters that could hide its target");
+  assert.equal(await page.locator(".profile-fragment:focus").getAttribute("data-fragment-id"),second.id);
+  assert.equal(await pyramid.locator(".profile-memory-dot[aria-pressed=true]").getAttribute("data-profile-piece"),second.id);
+  assert.equal(await page.evaluate("__calls.length"),0,"inspecting memory dots does not call models or mutate memory");
+  await page.getByRole("button",{name:"Habits",exact:true}).click();
   await page.getByRole("searchbox",{name:"Search Profile fragments"}).fill("focused");
   await page.locator(".profile-evidence summary").click();
   await page.getByRole("button",{name:"Open source Chat",exact:true}).click();
@@ -290,15 +354,56 @@ test("production fragment and keyword-cloud renderer filters, links sources, con
     for (const theme of ["vscode-dark","vscode-light","vscode-high-contrast"]) {
       await page.evaluate(theme=>document.body.className=theme,theme);
       assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
-      assert(await tiers.locator('[data-memory-tier] > span').evaluateAll(nodes=>nodes.every(node=>parseFloat(getComputedStyle(node).fontSize)>=12)));
+      assert(await tiers.getByRole('tab').evaluateAll(nodes=>nodes.every(node=>parseFloat(getComputedStyle(node).fontSize)>=12)));
+      assert(await pyramid.locator(".profile-memory-dot").evaluateAll(nodes=>nodes.every(node=>{
+        const bounds=node.getBoundingClientRect(),layer=node.closest("[data-memory-tier]").getBoundingClientRect();
+        return bounds.width>=24&&bounds.height>=24&&bounds.left>=layer.left&&bounds.right<=layer.right+1;
+      })));
     }
   }
   const user=new PersonaProfileStore(path.join(directory,"host"),knowledgeRoot).save("user",
     {name:"Accepted user",role:"",focus:"",preferences:"Explicitly accepted preference",boundaries:""});
   await page.evaluate(({snapshot,user})=>userProfileOnSnapshot({scope:"Private",fragments:snapshot,user}),{snapshot,user});
-  assert.match(await tiers.locator('[data-memory-tier=disk]').getAttribute("aria-label"),/1 accepted Profile card/);
+  assert.match(await tiers.getByRole("tab",{name:"Long-term"}).getAttribute("title"),/1 accepted Profile card/);
   assert.equal(await page.locator('[data-memory-tier-section=memory] .profile-fragment').count(),1,"accepted preferences do not reclassify observed fragments");
-  await page.locator('.profile-configured-card > summary').click();
+  await tiers.getByRole("tab",{name:"Long-term"}).click();
+  snapshot.revision++;
+  await page.evaluate(({snapshot,user})=>userProfileOnSnapshot({scope:"Private",fragments:snapshot,user}),{snapshot,user});
+  assert.equal(await page.getByRole("tabpanel",{name:"Long-term"}).count(),1,"background refresh preserves selected tab");
+  assert.deepEqual(await page.evaluate('__saved'),{unrelated:'preserved',userProfileTier:'disk'});
+  await page.evaluate(({snapshot,user})=>{
+    userProfileTier=vscode.getState().userProfileTier;userProfileFingerprint='';
+    showUserProfileTab();userProfileOnSnapshot({scope:"Private",fragments:snapshot,user});
+  },{snapshot,user});
+  assert.equal(await page.getByRole("tabpanel",{name:"Long-term"}).count(),1,"reopening restores the saved tab");
+  assert.equal(await pyramid.locator("[data-memory-tier=disk] .profile-memory-dot").getAttribute("data-profile-piece"),user.id);
+  await pyramid.locator("[data-memory-tier=disk] .profile-memory-dot").click();
+  assert.equal(await page.locator(".profile-configured-card").evaluate(node=>node.open&&node===document.activeElement),true);
   assert.match(await page.locator('[data-memory-tier-section=disk]').innerText(),/Explicitly accepted preference/);
+  const many=structuredClone(snapshot);
+  for(let index=0;index<60;index++)many.fragments.push({...structuredClone(second),id:"overflow-fragment-"+index,text:"Evidence-backed fixture "+index});
+  many.revision++;
+  await page.evaluate(({snapshot,user})=>userProfileOnSnapshot({scope:"Private",fragments:snapshot,user}),{snapshot:many,user});
+  const visibleIds=await pyramid.locator("[data-memory-tier=memory] .profile-memory-dot").evaluateAll(nodes=>nodes.map(node=>node.dataset.profilePiece));
+  assert.equal(visibleIds.length,24);assert.equal(new Set(visibleIds).size,24);
+  assert(visibleIds.every(id=>many.fragments.some(fragment=>fragment.id===id)));
+  const more=pyramid.locator("[data-profile-more=memory]");
+  assert.equal(await more.innerText(),"+"+(many.fragments.length-24)+" more");
+  await more.click();
+  assert.equal(await page.locator(".profile-fragment").count(),many.fragments.length,"omitted dots remain inspectable in the tab");
+  for(const width of [320,600,1100]){
+    await page.setViewportSize({width,height:900});
+    assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),"many dots must fit narrow and desktop widths");
+    assert(await pyramid.locator(".profile-memory-dot").evaluateAll(nodes=>nodes.every(node=>{
+      const bounds=node.getBoundingClientRect(),layer=node.closest("[data-memory-tier]").getBoundingClientRect();
+      return bounds.top>=layer.top&&bounds.bottom<=layer.bottom+1;
+    })));
+  }
+  const removedId=many.fragments[0].id;many.fragments.shift();many.revision++;
+  await page.evaluate(({snapshot,user})=>userProfileOnSnapshot({scope:"Private",fragments:snapshot,user}),{snapshot:many,user});
+  assert.equal(await pyramid.locator(`.profile-memory-dot[data-profile-piece="${removedId}"]`).count(),0,"deleted entries lose their dots on refresh");
+  await page.evaluate(snapshot=>userProfileOnSnapshot({scope:"Private",fragments:{...snapshot,revision:snapshot.revision+1,fragments:[],keywords:[]}}),many);
+  assert.equal(await pyramid.locator(".profile-memory-dot").count(),0,"empty stores render no synthetic dots");
+  assert.equal(await pyramid.locator("[data-profile-more]").count(),0);
   assert.deepEqual(errors,[]);
 });

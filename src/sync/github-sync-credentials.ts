@@ -20,7 +20,7 @@ export async function readStoredGitHubSyncCredentials(
   try {
     raw = await new Promise<string | undefined>((resolve, reject) => {
       timer = setTimeout(() => reject(new GitHubSyncCredentialError("CREDENTIAL_READ_TIMEOUT",
-        "VS Code credential storage did not respond within 10 seconds. Reload this window, then retry Sync. GitHub was not contacted.")), timeoutMs);
+        "The executing VS Code host's credential channel did not respond in time. GitHub was not contacted. Automatic retry will prefer another connected compatible host if available; otherwise reopen the executing VS Code window and retry Sync.")), timeoutMs);
       // A late RPC result must not resume a timed-out synchronization.
       Promise.resolve().then(readSecret).then(resolve, reject);
     });
@@ -30,8 +30,8 @@ export async function readStoredGitHubSyncCredentials(
       || error instanceof Error && /^(Canceled|Cancelled)$/i.test(error.message);
     throw new GitHubSyncCredentialError(canceled ? "CREDENTIAL_READ_CANCELED" : "CREDENTIAL_READ_FAILED",
       canceled
-        ? "VS Code canceled credential access. Reload this window, then retry Sync. GitHub was not contacted."
-        : "Could not read VS Code credential storage. Reload this window, then retry Sync. GitHub was not contacted.");
+        ? "The executing VS Code host canceled credential access. Reopen that VS Code window and retry Sync. GitHub was not contacted."
+        : "Could not read the executing VS Code host's credential storage. Reopen that VS Code window and retry Sync. GitHub was not contacted.");
   } finally { clearTimeout(timer); }
   if (!raw) throw new GitHubSyncCredentialError("CREDENTIAL_MISSING",
     `No saved GitHub credential. Use Test Account to reconnect ${target.authentication.expectedLogin}.`);

@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import { validPersonaSnapshot, type PersonaSnapshot } from "./persona-profiles";
 import { classifyTaskProgress, type TaskProgressRecord } from "./task-progress";
-import { validWorkGoal, type ChatWorkGoal } from "./chat-work-goal";
+import { recordWorkGoalTransition, validWorkGoal, type ChatWorkGoal } from "./chat-work-goal";
 import * as path from "path";
 import { createHash, randomUUID } from "crypto";
 import { hostname } from "os";
@@ -265,6 +265,7 @@ export function apiChatContextSummary(message: ChatMessage) {
     learning:message.retrievalLearning ? {
       status:message.retrievalLearning.status, provenance:message.retrievalLearning.provenance,
       judgedSources:message.retrievalLearning.judgedSources, relevantSources:message.retrievalLearning.relevantSources,
+      unknownSources:message.retrievalLearning.unknownSources, selectionApplied:message.retrievalLearning.selectionApplied,
       error:message.retrievalLearning.error, acknowledgment:message.retrievalLearning.acknowledgment,
     } : undefined,
     evidence: "Full source identities, hashes and manifests are retained locally in the Chat retrieval inspector; not included in this summary.",
@@ -1038,7 +1039,7 @@ export class ApiChatStore {
     chat.workspaceNamespace ||= path.basename(path.dirname(file));
     this.rememberQueue(chat);
     if (recoverInterrupted && chat.workGoal?.status === "active") {
-      chat.workGoal.status = "interrupted";
+      chat.workGoal = recordWorkGoalTransition(chat.workGoal, "interrupted", "host_interrupted");
       chat.workGoal.reason = "The previous host stopped before the objective was settled. Explicitly resume and reconcile recorded effects before continuing.";
     }
     for (const message of chat.messages) if (recoverInterrupted && message.status === "streaming") {

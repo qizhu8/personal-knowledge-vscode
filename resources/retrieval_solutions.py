@@ -50,7 +50,13 @@ class RetrievalLearning:
                     PRIMARY KEY(context,query_key));
             """)
             connection.execute("INSERT OR IGNORE INTO settings VALUES ('salt',?)", (secrets.token_hex(32),))
-            connection.execute("INSERT OR IGNORE INTO settings VALUES ('enabled','true')")
+            connection.execute("INSERT OR IGNORE INTO settings VALUES ('enabled','false')")
+            opt_in = connection.execute("SELECT value FROM settings WHERE key='online_learning_opt_in_version'").fetchone()
+            if not opt_in:
+                connection.execute("UPDATE settings SET value='false' WHERE key='enabled'")
+                connection.execute("INSERT INTO settings VALUES ('online_learning_opt_in_version','1')")
+            elif opt_in[0] != "1":
+                raise ValueError("Unsupported online retrieval learning opt-in settings version")
             self.salt = connection.execute("SELECT value FROM settings WHERE key='salt'").fetchone()[0]
             additions = {
                 "models": {"weights": "TEXT NOT NULL DEFAULT '[]'", "revision": "INTEGER NOT NULL DEFAULT 0",
@@ -58,7 +64,7 @@ class RetrievalLearning:
                            "prequential": "TEXT NOT NULL DEFAULT '{}'"},
                 "calls": {"labels": "TEXT", "provenance": "TEXT", "version": "INTEGER NOT NULL DEFAULT 0",
                           "query_features": "TEXT NOT NULL DEFAULT '[]'", "brier": "REAL", "log_loss": "REAL",
-                          "query_key": "TEXT"},
+                          "query_key": "TEXT", "judged": "TEXT"},
             }
             for table, columns in additions.items():
                 existing = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
@@ -235,15 +241,17 @@ class RetrievalLearning:
         evaluated = 0
         connection.execute("UPDATE calls SET brier=NULL,log_loss=NULL WHERE context=?", (context,))
         effective = connection.execute(
-            "SELECT c.id,c.candidates,c.query_features,c.labels,c.provenance FROM calls c "
+            "SELECT c.id,c.candidates,c.query_features,c.labels,c.provenance,c.judged FROM calls c "
             "WHERE c.context=? AND c.labels IS NOT NULL AND NOT EXISTS "
             "(SELECT 1 FROM query_judgments q WHERE q.context=c.context AND q.query_key=c.query_key) "
-            "UNION ALL SELECT call_id,candidates,query_features,labels,'user' FROM query_judgments WHERE context=? "
+            "UNION ALL SELECT call_id,candidates,query_features,labels,'user',NULL FROM query_judgments WHERE context=? "
             "ORDER BY 1", (context, context)).fetchall()
-        for call, serialized, query, labels, provenance in effective:
+        for call, serialized, query, labels, provenance, judged in effective:
             candidates = json.loads(serialized)
             relevant = set(json.loads(labels))
-            ranked = self.ranked(candidates, json.loads(query), weights)
+            judged_ids = set(json.loads(judged)) if judged is not None else None
+            ranked = self.ranked([item for item in candidates if judged_ids is None or item["id"] in judged_ids],
+                                 json.loads(query), weights)
             gradients = []
             brier = loss = 0.0
             for item in ranked:
@@ -271,9 +279,11 @@ class RetrievalLearning:
             connection.execute("UPDATE calls SET brier=?,log_loss=? WHERE id=?",
                                (brier if count else None, loss if count else None, call))
             k, gap = self.gap(ranked)
-            safe = bool(relevant and k and gap >= self.MIN_GAP and relevant.issubset({item["id"] for item in ranked[:k]}))
-            target = max(self.MIN_GAP, gap * .75) if safe else min(.95, max(self.MIN_GAP, gap + .1))
-            threshold = max(self.MIN_GAP, min(.95, (1 - self.THRESHOLD_EWMA) * threshold + self.THRESHOLD_EWMA * target))
+            safe = bool(judged_ids is None and relevant and k and gap >= self.MIN_GAP
+                        and relevant.issubset({item["id"] for item in ranked[:k]}))
+            if judged_ids is None:
+                target = max(self.MIN_GAP, gap * .75) if safe else min(.95, max(self.MIN_GAP, gap + .1))
+                threshold = max(self.MIN_GAP, min(.95, (1 - self.THRESHOLD_EWMA) * threshold + self.THRESHOLD_EWMA * target))
             samples += 1
             streak = streak + 1 if safe else 0
             model_labels += provenance in ("self", "model")
@@ -286,26 +296,38 @@ class RetrievalLearning:
                            (slope, bias, threshold, samples, streak, json.dumps(weights), model_labels,
                             user_labels, json.dumps(metrics), context))
 
-    def feedback(self, receipt, relevant_source_ids, complete, provenance="user"):
+    def feedback(self, receipt, relevant_source_ids, complete, provenance="user", judged_source_ids=None):
         if (not isinstance(receipt, str) or len(receipt) != 48 or
                 any(char not in "0123456789abcdef" for char in receipt)):
             raise ValueError("Invalid retrieval_id")
-        if (complete is not True or not isinstance(relevant_source_ids, list) or
+        partial = judged_source_ids is not None
+        if ((partial and complete is not False or not partial and complete is not True) or not isinstance(relevant_source_ids, list) or
                 not 0 <= len(relevant_source_ids) <= 10000 or
                 any(not isinstance(value, str) or not value or len(value) > 4096 for value in relevant_source_ids)):
-            raise ValueError("Provide relevant_source_ids and complete=true for explicit complete relevance judgments")
+            raise ValueError("Provide relevant_source_ids and complete=true, or complete=false with explicit judged_source_ids")
         if sum(len(value.encode("utf-8")) for value in relevant_source_ids) > self.MAX_LABEL_BYTES:
             raise ValueError("Relevance judgments exceed the bounded label size")
         if provenance not in ("self", "model", "user"):
             raise ValueError("provenance must be model or user (self is a model alias)")
         provenance = "model" if provenance == "self" else provenance
+        if partial and (provenance != "model" or not isinstance(judged_source_ids, list)
+                        or not 1 <= len(judged_source_ids) <= self.MAX_CANDIDATES
+                        or any(not isinstance(value, str) or not value or len(value) > 4096 for value in judged_source_ids)
+                        or len(set(judged_source_ids)) != len(judged_source_ids)
+                        or not set(relevant_source_ids).issubset(judged_source_ids)
+                        or sum(len(value.encode("utf-8")) for value in judged_source_ids) > self.MAX_LABEL_BYTES):
+            raise ValueError("Partial model feedback requires bounded unique judged_source_ids containing all relevant sources")
+        judged = {self.identity(value) for value in judged_source_ids} if partial else None
         relevant = {self.identity(value) for value in relevant_source_ids}
-        digest = self.identity(json.dumps(sorted(relevant)))
+        digest = self.identity(json.dumps([sorted(relevant), sorted(judged)])) if partial else self.identity(json.dumps(sorted(relevant)))
         with self.lock, self.connect() as connection:
             row = connection.execute("SELECT context,candidates,cut,eligible,recall,label_digest,provenance,version,query_key,id,query_features FROM calls WHERE receipt=?", (receipt,)).fetchone()
             if not row:
                 raise ValueError("Unknown or expired retrieval_id; only the latest 512 model calls are retained")
             context, serialized, cut, eligible, previous_recall, previous_digest, previous_provenance, version, query_key, call_id, query_features = row
+            candidates = json.loads(serialized)
+            if judged is not None and not judged.issubset({item["id"] for item in candidates[:cut]}):
+                raise ValueError("Partial model judgments must reference delivered candidates only")
             authority = connection.execute(
                 "SELECT receipt,label_digest FROM query_judgments WHERE context=? AND query_key=?",
                 (context, query_key)).fetchone() if query_key is not None else None
@@ -330,11 +352,11 @@ class RetrievalLearning:
                 raise ValueError("This call is not eligible for relevance calibration")
             if not enabled:
                 raise ValueError("Online retrieval learning is disabled")
-            candidates = json.loads(serialized)
             retained = {item["id"] for item in candidates[:cut]}
-            recall = len(retained & relevant) / len(relevant) if relevant else None
-            connection.execute("UPDATE calls SET recall=?,label_digest=?,labels=?,provenance=?,version=? WHERE receipt=?",
-                               (recall, digest, json.dumps(sorted(relevant)), provenance, version + 1, receipt))
+            recall = len(retained & relevant) / len(relevant) if relevant and not partial else None
+            connection.execute("UPDATE calls SET recall=?,label_digest=?,labels=?,provenance=?,version=?,judged=? WHERE receipt=?",
+                               (recall, digest, json.dumps(sorted(relevant)), provenance, version + 1,
+                                json.dumps(sorted(judged)) if partial else None, receipt))
             if provenance == "user" and query_key is not None:
                 connection.execute(
                     "INSERT INTO query_judgments(context,query_key,receipt,call_id,candidates,query_features,labels,label_digest,version) "
@@ -361,7 +383,7 @@ class RetrievalLearning:
                 "SELECT c.id,c.context,c.milliseconds,c.returned,c.recall,c.success,c.provenance,c.version,c.brier,c.log_loss,"
                 "CASE WHEN c.labels IS NULL THEN 0 WHEN EXISTS(SELECT 1 FROM query_judgments q "
                 "WHERE q.context=c.context AND q.query_key=c.query_key AND q.receipt<>c.receipt) THEN 0 ELSE 1 END "
-                ",c.candidates,c.cut,c.labels FROM calls c ORDER BY c.id DESC LIMIT 256").fetchall()
+                ",c.candidates,c.cut,c.labels,c.judged FROM calls c ORDER BY c.id DESC LIMIT 256").fetchall()
             models = []
             for context, package, corpus, route, slope, bias, threshold, samples, streak, weights, revision, model_labels, user_labels, metrics in connection.execute(
                     "SELECT context,package,corpus,route,slope,bias,threshold,samples,safe_streak,weights,revision,model_labels,user_labels,prequential "
@@ -382,13 +404,15 @@ class RetrievalLearning:
                            "retention_calls": self.RETENTION},
                 "calls": [{"invocation": i, "context": context, "runtime_ms": ms, "returned_count": count,
                            "recall": recall,
-                           "precision": self.precision(candidates, cut, labels),
+                           "precision": self.precision(candidates, cut, labels) if judged is None else None,
+                           "judged_count": len(json.loads(judged)) if judged is not None else None,
+                           "partial": judged is not None,
                            "success": bool(success), "provenance": provenance, "version": version,
                            "prequential_brier": brier, "prequential_log_loss": loss, "training_effective": bool(effective)}
-                          for i, context, ms, count, recall, success, provenance, version, brier, loss, effective, candidates, cut, labels in reversed(calls)],
+                          for i, context, ms, count, recall, success, provenance, version, brier, loss, effective, candidates, cut, labels, judged in reversed(calls)],
                 "retention": "latest 512 model calls locally; latest 256 shown; latest user authority per context+query persists beyond receipt expiry; no query text",
                 "calibration": "sigmoid(slope * normalized_rank_score + bias); relative to each call's highest absolute score",
-                "learning": "complete self/user relevance judgments train ranker and calibrator; latest user overrides same context+normalized query across receipts; legacy without query key uses receipt precedence; embeddings frozen",
+                "learning": "complete judgments or explicitly scoped partial model judgments train ranker/calibrator; unjudged candidates stay unknown; partial judgments cannot certify Recall or a safe truncation cliff; latest user overrides same context+normalized query across receipts; embeddings frozen",
                 "embedding_updated": False}
 
     @staticmethod

@@ -128,7 +128,7 @@ def authoring_contract():
              "note": "action_template_create, action_graph_save and definition edits also submit proposals. action_proposals lists pending reviews."},
             {"operator": "Open Automation > Action Library > Pending operator review > Review in canvas > Validate. No separate manual grant/admission approval. Choose a callable VS Code review model; a passing Agent code review starts consented smoke tests, and only successful tests admit the exact version. Review failure/unavailability blocks execution.",
              "effect": "Validate authorizes this review/test attempt, not production calls. Programs/MCP servers execute trusted host code, not in a sandbox. Pipelines use the same admission gate. Never self-edit policy/admissions."},
-            {"tool": "action_validation_enqueue", "effect": "Direct non-builtin MCP validation returns ACTION_CODE_REVIEW_REQUIRED; hand off to the native Workbench Validate flow.",
+            {"tool": "action_validation_enqueue", "effect": "Direct non-builtin MCP validation returns ACTION_CODE_REVIEW_REQUIRED; the trusted PKM Host automatically prepares submitted Actions in the background. Wait for readiness; do not ask for manual Validate.",
              "note": "Agent model selection and test-effect consent belong to the operator. Do not qualify live endpoints without approval."},
             {"tool": "action_get", "effect": "Inspect availability; qualification pins definition and host environment."},
             {"tool": "action_call", "effect": "Use returned content_hash, validated inputs and a stable idempotency_key."},
@@ -139,7 +139,7 @@ def authoring_contract():
             {"response": {}}, http, ["remote-read"])},
         "limitations": [
             "Examples are returned as definitions, not installed, granted, qualified or invoked.",
-            "The HTTP example has no smoke URL: add an explicitly authorized local fixture example before qualification.",
+            "The HTTP example has no smoke example: it can receive environment-only readiness, but needs an explicitly authorized local fixture example for behavior testing.",
             "Existing CLI identity is that of the execution host account, not necessarily the caller. Never serialize credentials.",
             "Host selection is operator-managed; no per-call remote host routing is provided.",
             "Updates need a higher version and new operator approval. Save changed implementation files at a new versioned path; do not overwrite approved source files.",

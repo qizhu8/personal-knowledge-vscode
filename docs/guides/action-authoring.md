@@ -54,27 +54,21 @@ admission rechecks exact dependency revisions and readiness. No dry-run grants e
 2. Check it, then call `action_register({"definition": ...})`. This submits a
    **proposal**, not a formal library entry. Retain `proposal_id`, `action_id`
    and `content_hash`. The response is `state: "pending_operator_approval"`,
-   `registered: false`, `callable: false`, `next_owner: "operator"`.
+   `registered: false`, `callable: false`, `next_owner: "background"`.
    `action_proposals()` lists pending submissions.
-3. Stop and ask the operator to open **Action Workbench**. Pending proposals appear
-   under **Components > Actions** with **Need Validation** and a highlighted flask.
-   Click the flask to start review-first validation, or double-click the row to
-   inspect it in the right-hand canvas. The
-   right-hand canvas shows purpose, input/output fields, execution commands or
-   composition steps, declared risks, host, version changes and source files.
-   The full JSON and fingerprints are optional **Advanced details**, not the
-   primary review UI. Click **Validate: risks and environment tests**. This
-   requests Agent risk information followed by the declared tests, not immediate
-   admission. Select a callable VS Code review model (model credits may apply).
-   The Agent explains risks, not grants or denies permission. Findings and incomplete
-   assessments are shown for explicit user confirmation before execution.
-4. Review the smoke-effect consent dialog and Agent risk notice. Cancelling either
-   executes nothing. Only passing environment tests admit and
-   qualify the exact version. Test failure preserves the previous
-   approved definition. Validation feedback shows review progress, cancellation,
-   errors or success. Read `action_get` afterwards to inspect readiness.
-   Direct non-builtin MCP validation returns `ACTION_CODE_REVIEW_REQUIRED`:
-   hand off to the Workbench instead of bypassing review or editing local policy.
+3. Wait for automatic preparation by the trusted PKM Extension Host. It discovers
+   submitted revisions in the background, prepares dependencies first and admits
+   successful revisions. No manual Validate, model selection or risk confirmation
+   is required. The legacy wire state `pending_operator_approval` still denotes a
+   pending proposal; it no longer means the operator must approve validation.
+4. Read `action_get` to inspect readiness. **Preparing Actions** in Library and
+   **Preparing** in Workbench show pending work; genuine blockers show their reason.
+   Effectful/program/MCP examples are not executed. Environment-only checks do not
+   certify safety. Explicitly revoked revisions are not re-enabled. Missing
+   dependencies, builds or runtimes must be resolved rather than bypassed.
+   The Host must remain active, trusted and configured for automation.
+   Direct non-builtin MCP validation retains `ACTION_CODE_REVIEW_REQUIRED` for
+   compatibility: wait for background preparation instead of editing local policy.
 5. When availability is `ready`, call:
 
 ```json
@@ -145,40 +139,55 @@ The grant matches both the exact `action_id` and `content_hash`. A grant for
 another revision does not authorize this one. A `pipeline` does not require this
 direct implementation grant, but its executable dependencies still require their
 own authorization and qualification. **Every non-builtin pipeline still requires
-operator admission**, so wrapping a program in a pipeline is not a bypass.
+exact-revision admission**, so wrapping a program in a pipeline is not a bypass.
 `ACTION_ADMISSION_REQUIRED` means formal admission is missing; direct policy
 editing cannot admit a pending proposal.
 
-### Action Library and Operator Review in Workbench
+### Automatic Readiness in Library and Workbench
+
+Creating an Action is sufficient to start preparation: the Extension Host checks
+for pending/non-ready revisions every 15 seconds and retries blocked revisions
+after a minute. Success automatically admits the exact revision. The Library
+refreshes preparation status without submitting tests or running the Action.
+**Retry preparation** is optional recovery, not a required step. Normal manual
+Action execution still requires approval of that invocation.
 
 **Automation > Action Library** (or **PKM: Open Action Library**) opens inside
 the existing PKM extension panel. Its resizable folder tree lists admitted Actions,
-including those needing revalidation, with readable names and readiness badges.
+including those needing environment checks or example tests, with readable names and readiness badges.
 Expand/collapse folders or navigate with arrow keys; search also matches descriptions
 and expands matching paths. Library and Workbench retain their own selection and
 view state. Search and inspect
 without opening Workbench. Ready public Actions support explicitly approved typed
-invocations; Run details can be opened in Workbench. Pending proposals do not appear
-in Library. Select **Open in Workbench** on an Action to explicitly locate it there;
+invocations; Run details can be opened in Workbench. Pending proposals appear in
+the separate read-only **Preparing Actions** section, not the executable catalog.
+Select **Open in Workbench** on an Action to explicitly locate it there;
 an unsaved Workbench draft requires confirmation before replacement.
 
 Open **PKM: Open Action Workbench**. No catalog modal opens automatically, including
-when restoring an older tab. A short next-step notice tells you to click a highlighted
-flask. The left tree includes pending proposals and unapproved definitions under
-**Actions**; every non-ready public Action has a **Need Validation** label and a
-highlighted flask. Pending rows cannot be exported or added to a composition.
+when restoring an older tab. A short notice shows background progress or a blocker.
+The left tree includes pending proposals and unapproved definitions under
+**Actions**, labelled **Preparing** or **Needs attention**. An optional refresh
+icon retries preparation. Pending rows cannot be exported or added to a composition.
 Showing them does not admit or authorize them, and the previous approved version
 remains the executable catalog version until admission succeeds.
 
-Click the flask beside an Action to validate its exact proposal/revision. Double-click
-a pending row to inspect the implementation first. **Review / test Actions** shows
-only next-step guidance initially; the full catalog is under its Advanced disclosure.
+Single-click an Action to select it; double-click or press Enter to open it.
+Drag an Action onto a writable folder header to move it, including while it is
+still preparing. Folder moves persist without changing the definition or its pins.
+System components and the Core folders cannot be reorganized. A ready Action
+dragged onto the canvas instead creates a composition block. Rows use compact,
+single-line names with full identifiers in tooltips; controls appear on hover or
+keyboard focus. Language metadata is shared by pending and admitted revisions.
+
+Double-click a pending row to inspect its implementation or preparation blocker.
+**Action readiness** shows next-step guidance; the full catalog is under its Advanced disclosure.
 Click the toolbar refresh button to fetch newly submitted proposals without reloading
 the VS Code window. The right-hand review canvas shows the execution
 host, inputs, outputs, selected implementation, risks and source files; its
 optional Advanced details includes the full definition, exact revision, policy
-path and source-file fingerprints. Click Validate to start the Agent review/test
-pipeline. Review the referenced source files too;
+path and source-file fingerprints. No review or test submission is required.
+Inspect the referenced source files when needed;
 fingerprints are not a code audit. Programs, build commands and MCP servers run
 with the host's OS permissions and available credentials, not in a sandbox.
 
@@ -187,30 +196,14 @@ files; their review material includes the exact executing handler source and
 is covered by the review snapshot hash. `core.artifact.copy` smoke tests copy a
 reserved fixture artifact created only inside the isolated qualification store.
 
-Clicking an Action's flask first offers **Cancel**, **Validate this action**, and
-**Validate all possible actions**. Cancel (or Escape) executes nothing. The single
-option validates the selected revision; the all option uses the same batch flow
-as **Validate all needed**, including pending proposals and effect confirmation.
-
-**Validate all needed** takes a snapshot of every public **Need Validation** row
-(including pending proposals). Confirm the batch's declared effects and inspect
-exact examples in **Smoke test inputs**, then select one review model. PKM reviews,
-tests and admits each pinned revision independently, sequentially. A failed item
-does not prevent later items from being checked; the final summary lists every
-success and error. Successful admissions are retained, not rolled back when another
-item fails. Cancelling model selection executes nothing. Root/trust changes block
-further execution/admission. Refresh and inspect readiness before retrying an
-interrupted batch; no uncertain smoke execution is replayed automatically.
-During a batch, Workbench displays completed/total progress, the current Action,
-review/test/admission stage and elapsed stage time in one line. Results are
-collapsed by default; expand **Results**, then an individual Action to read its
-complete failure reason. The final line shows passed/failed counts. Review
-has a hard three-minute deadline even if the model provider ignores cancellation;
-the timed-out item fails without smoke execution and the remaining queue continues.
+Optional **Retry preparation** checks each pinned revision independently and
+sequentially. A failed item does not prevent later checks; successful admissions
+remain in place. Root/trust changes block admission. Progress and expandable
+results show each Action's outcome without model-selection or risk dialogs.
 
 Action `dependencies` pins other Actions, not arbitrary Python imports or CLI
 packages. Implementation source/helpers must be included in declared fingerprinted
-files and fit the review limits. Describe required external toolchains explicitly
+files. Describe required external toolchains explicitly
 and pin executable files where available. The Azure DevOps status adapter uses
 core Azure CLI `az rest` GET (no azure-devops extension), a self-contained bounded
 command runner and existing host authentication. Its authoring factory accepts
@@ -222,24 +215,12 @@ path. **Move to** offers all writable folders, including full nested paths.
 Successful creation/moves expand the destination; failures stay visible inside the
 dialog instead of appearing behind it. The Core tree remains read-only.
 
-Clicking Validate is the operator's authorization for this review/test attempt.
-Source and definition are provided to the selected review model as untrusted
-data. The model describes risky operations and uncertainty; its verdict is not
-an execution veto. The user confirms the pinned version, risks, effects and test
-inputs before tests in an inline card inside the Workbench (one card for a whole
-batch: every selected Action is assessed first, then a single **Run all** starts
-the tests). The browser Workbench, which has no progress channel, uses a concise
-native confirmation instead. Unanswered cards expire after 15 minutes and count
-as Cancel. Missing models, timeouts or malformed responses produce an
-explicit incomplete-assessment warning that also requires confirmation, not a
-success-shaped fallback. Source size limits stop preparation instead of truncating it.
-
-Exact bundled core revisions skip the model and run their controlled examples as
-environment self-tests. They still require workspace/effect consent and a passing
-test result. A `core.*` name alone does not qualify for this path. Self-tests cover
-actual execution and output contracts; artifact-copy tests also verify a distinct
-artifact with identical content. Neither a passed test nor user consent certifies
-safety or removes OS permissions, revision, dependency or environment checks.
+Automatic preparation does not send source to a review model, request consent,
+or execute effectful/arbitrary-code examples. It records source fingerprints and
+checks environment/dependencies. Eligible pure builtin/pipeline examples must
+pass controlled execution and output-contract checks. A `core.*` name alone is
+not proof of bundled code. Environment readiness does not certify safety or remove
+normal OS permissions, revision, dependency or invocation checks.
 
 Smoke tests execute in a separate qualification registry, with exact-version
 execution permissions scoped to that registry. The formal registry and previous
@@ -247,7 +228,14 @@ approved version stay unchanged. After passing tests the host rechecks Root and
 workspace trust; admission rechecks source/base/dependencies and environment
 before preserving unrelated policy fields and saving qualification/admission.
 Failed tests retain evidence in the local qualification-attempt directory.
-Tests may still have real effects: a staging registry is not an OS sandbox.
+Actions without examples use environment-only readiness and are not blocked
+solely for lacking a test fixture. Current build, dependency, authorization and
+environment checks still apply at invocation. Examples run only for pure
+built-in/pipeline Actions with eligible nested Actions. Effectful examples and
+arbitrary program/MCP implementations are skipped until an OS-enforced sandbox
+with mock effect boundaries is available; declared effects are not a security
+boundary, and a staging registry or temporary fixture directory is not an OS
+sandbox. Their result is labeled environment-only, not passed tests.
 
 Opening the review canvas never executes anything. **Back to canvas** and
 **Cancel review** preserve the original draft. The detail page retains native

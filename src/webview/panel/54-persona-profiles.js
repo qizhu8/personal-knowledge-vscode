@@ -1,4 +1,6 @@
 let userProfileSnapshot, userProfileFingerprint = '', userProfileQuery = '', userProfileTag = '', userProfileKind = '';
+let userProfileTier = typeof vscode !== 'undefined' ? vscode.getState()?.userProfileTier || 'memory' : 'memory';
+let userProfilePiece = '';
 const userProfileKinds = { habit:'Habits', interest:'Interests', focus:'Focus areas', caution:'Cautions', requirement:'Requirements' };
 function profileElement(tag, className, text) {
   const element = document.createElement(tag);
@@ -18,9 +20,11 @@ function userProfileOnSnapshot(data) {
   const detail = document.getElementById('detail'), fingerprint = JSON.stringify(data);
   if (fingerprint === userProfileFingerprint && detail.querySelector('.user-profile-page')) return;
   if (userProfileSnapshot?.fragments?.knowledgeRoot !== data.fragments?.knowledgeRoot) {
-    userProfileQuery = ''; userProfileTag = ''; userProfileKind = '';
+    userProfileQuery = ''; userProfileTag = ''; userProfileKind = ''; userProfilePiece = '';
   }
+  const focusedPiece = detail.querySelector('.profile-memory-dot:focus')?.dataset.profilePiece;
   const focused = detail.querySelector('#profile-fragment-search') === document.activeElement;
+  const focusedTier = document.activeElement?.getAttribute('role') === 'tab' ? document.activeElement.dataset.profileTier : null;
   const caret = focused ? document.activeElement.selectionStart : null;
   const configuredOpen = detail.querySelector('.profile-configured-card')?.open;
   const evidenceOpen = new Set([...detail.querySelectorAll('.profile-evidence[open]')].map(element => element.closest('[data-fragment-id]').dataset.fragmentId));
@@ -41,20 +45,108 @@ function userProfileOnSnapshot(data) {
     disk:{ summary:data.user ? '1 accepted Profile card' : 'No accepted Profile card',
       detail:'Explicitly maintained preferences with an independent lifetime. Model observations are not automatically promoted here.' },
   };
-  const tiers = profileElement('section', 'profile-memory-tiers');
-  tiers.append(profileElement('h3', '', 'Cache / Memory / Disk'),
-    PkmAgentHarness.memoryTierPyramid(observations, tier => {
-      const heading = page.querySelector(`[data-memory-tier-section="${tier}"] h3`);
-      heading?.focus({ preventScroll:true }); heading?.scrollIntoView({ block:'nearest' });
-    }),
-    profileElement('p', 'profile-muted', 'Logical memory tiers, not age buckets or expiry rules. Saving, retrieval and context selection are distinct operations.'));
-  page.append(tiers);
+  const pieces = {
+    cache:[],
+    memory:snapshot?.schema === 'pkm.user-profile-fragments/v1' ? snapshot.fragments.map(fragment => ({
+      id:fragment.id, kind:fragment.kind,
+      label:userProfileKinds[fragment.kind] + ': ' + fragment.text,
+      detail:'Revision ' + fragment.revision + ' · ' + fragment.evidence.length + ' source excerpts',
+    })) : [],
+    disk:data.user ? [{ id:data.user.id, label:data.user.name, detail:'Accepted Profile card · revision ' + data.user.revision }] : [],
+  };
+  if (!Object.values(pieces).some(entries => entries.some(piece => piece.id === userProfilePiece))) userProfilePiece = '';
+  if (!PkmAgentHarness.memoryTiers.some(tier => tier.id === userProfileTier)) userProfileTier = 'memory';
+  const tabs = profileElement('div', 'profile-memory-tabs');
+  tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Profile knowledge levels');
+  const selectTier = (id, focus = false) => {
+    userProfileTier = id;
+    tabs.querySelectorAll('[role=tab]').forEach(tab => {
+      const selected = tab.dataset.profileTier === id;
+      tab.setAttribute('aria-selected', String(selected)); tab.tabIndex = selected ? 0 : -1;
+      if (selected && focus) tab.focus();
+    });
+    page.querySelectorAll('[role=tabpanel]').forEach(panel => { panel.hidden = panel.dataset.memoryTierSection !== id; });
+  };
+  for (const [index, tier] of PkmAgentHarness.memoryTiers.entries()) {
+    const tab = profileElement('button', 'profile-memory-tab', tier.label);
+    tab.type = 'button'; tab.id = 'profile-tier-tab-' + tier.id; tab.dataset.profileTier = tier.id;
+    tab.title = observations[tier.id].summary + '. ' + tier.meaning;
+    tab.setAttribute('role', 'tab'); tab.setAttribute('aria-controls', 'profile-tier-panel-' + tier.id);
+    const activate = () => {
+      selectTier(tier.id, true);
+      if (typeof vscode !== 'undefined') vscode.setState({ ...(vscode.getState() || {}), userProfileTier });
+    };
+    tab.onclick = activate;
+    tab.onkeydown = event => {
+      const tiers = PkmAgentHarness.memoryTiers;
+      const target = event.key === 'Home' ? 0 : event.key === 'End' ? tiers.length - 1
+        : event.key === 'ArrowRight' ? (index + 1) % tiers.length
+        : event.key === 'ArrowLeft' ? (index + tiers.length - 1) % tiers.length : -1;
+      if (target < 0) return;
+      event.preventDefault(); tabs.children[target].click();
+    };
+    tabs.append(tab);
+  }
+  const overview = profileElement('section', 'profile-memory-overview');
+  overview.setAttribute('aria-label', 'Profile memory pieces');
+  overview.append(profileElement('h3', '', 'Memory pieces'));
+  const pyramid = PkmAgentHarness.memoryTierPyramid(observations);
+  pyramid.classList.add('profile-piece-pyramid');
+  const showPieces = tier => {
+    tabs.querySelector(`[data-profile-tier="${tier}"]`).click();
+    if (tier === 'memory') {
+      userProfileQuery = ''; userProfileTag = ''; userProfileKind = '';
+      const search = page.querySelector('#profile-fragment-search');
+      if (search) search.value = '';
+      renderUserProfileFragments();
+    }
+  };
+  for (const tier of PkmAgentHarness.memoryTiers) {
+    const row = pyramid.querySelector(`[data-memory-tier="${tier.id}"]`);
+    row.removeAttribute('title');
+    const label = profileElement('button', 'profile-piece-tier-label', tier.label);
+    label.type = 'button'; label.onclick = () => showPieces(tier.id);
+    row.querySelector('strong').replaceWith(label);
+    const dots = profileElement('div', 'profile-memory-dots');
+    dots.setAttribute('role', 'group'); dots.setAttribute('aria-label', tier.label + ' entries');
+    for (const piece of pieces[tier.id].slice(0, 24)) {
+      const dot = profileElement('button', 'profile-memory-dot');
+      dot.type = 'button'; dot.dataset.profilePiece = piece.id;
+      if (piece.kind) dot.dataset.kind = piece.kind;
+      dot.title = piece.label + '\n' + piece.detail;
+      dot.setAttribute('aria-label', piece.label + '. ' + piece.detail);
+      dot.setAttribute('aria-pressed', String(userProfilePiece === piece.id));
+      dot.onclick = () => {
+        userProfilePiece = piece.id; showPieces(tier.id);
+        pyramid.querySelectorAll('.profile-memory-dot').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.profilePiece === piece.id)));
+        const target = tier.id === 'disk' ? configured
+          : [...page.querySelectorAll('.profile-fragment')].find(card => card.dataset.fragmentId === piece.id);
+        if (tier.id === 'disk') configured.open = true;
+        if (target) { target.tabIndex = -1; target.focus({ preventScroll:true }); target.scrollIntoView({ block:'nearest' }); }
+      };
+      dots.append(dot);
+    }
+    const omitted = pieces[tier.id].length - 24;
+    if (omitted > 0) {
+      const more = profileElement('button', 'profile-memory-more', '+' + omitted + ' more');
+      more.type = 'button'; more.dataset.profileMore = tier.id;
+      more.setAttribute('aria-label', 'Show all ' + pieces[tier.id].length + ' ' + tier.label + ' entries; ' + omitted + ' dots omitted');
+      more.onclick = () => { showPieces(tier.id); sections[tier.id].focus(); sections[tier.id].scrollIntoView({ block:'nearest' }); };
+      row.querySelector('span').append(document.createTextNode(' · '), more);
+    }
+    if (dots.childElementCount) row.append(dots);
+  }
+  overview.append(pyramid, profileElement('p', 'profile-muted',
+    'Each dot is one real Profile entry. Select a dot to inspect it. Up to 24 dots per level; additional entries stay available in the tab. Short-term has no selected session context, not a confirmed empty memory.'));
+  page.append(overview);
+  page.append(tabs);
   const sections = {};
   for (const tier of PkmAgentHarness.memoryTiers) {
     const section = profileElement('section', 'profile-memory-tier-section');
     section.dataset.memoryTierSection = tier.id;
-    const title = profileElement('h3', '', tier.label + ' / ' + tier.horizon); title.tabIndex = -1;
-    section.append(title, profileElement('p', 'profile-muted', observations[tier.id].detail));
+    section.id = 'profile-tier-panel-' + tier.id; section.setAttribute('role', 'tabpanel');
+    section.setAttribute('aria-labelledby', 'profile-tier-tab-' + tier.id); section.tabIndex = 0;
+    section.append(profileElement('p', 'profile-muted', observations[tier.id].detail));
     sections[tier.id] = section;
   }
   page.append(sections.cache, sections.memory);
@@ -121,12 +213,15 @@ function userProfileOnSnapshot(data) {
   edit.onclick = () => ask('userProfileEdit', {}, edit);
   configured.append(summary, edit, PkmAgentHarness.profileCards(data, false));
   sections.disk.append(configured); page.append(sections.disk);
+  selectTier(userProfileTier);
   detail.replaceChildren(page);
   if (snapshot?.schema === 'pkm.user-profile-fragments/v1') {
     renderUserProfileFragments();
     detail.querySelectorAll('.profile-evidence').forEach(element => { element.open = evidenceOpen.has(element.closest('[data-fragment-id]').dataset.fragmentId); });
   }
   if (focused) { const search = document.getElementById('profile-fragment-search'); search?.focus(); if (caret !== null) search?.setSelectionRange(caret, caret); }
+  else if (focusedTier) tabs.querySelector(`[data-profile-tier="${focusedTier}"]`)?.focus();
+  else if (focusedPiece) [...pyramid.querySelectorAll('.profile-memory-dot')].find(dot => dot.dataset.profilePiece === focusedPiece)?.focus();
 }
 function renderUserProfileFragments() {
   const snapshot = userProfileSnapshot?.fragments, list = document.getElementById('profile-fragment-list');

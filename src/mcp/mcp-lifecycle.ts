@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { createHash, randomUUID } from "crypto";
 import { withCrossProcessLockSync } from "../runtime/cross-process-lock";
+import { normalizeManagedMcpAttribution } from "./mcp-attribution";
 
 export const MCP_LIFECYCLE_SCHEMA = "pkm.mcp.lifecycle/v1";
 export interface ManagedMcpManifest {
@@ -188,11 +189,15 @@ export function managedMcpLifecycleStatus(directory: string, now = Date.now()): 
   const registry = path.join(directory, "instances");
   if (fs.existsSync(registry)) for (const name of fs.readdirSync(registry).filter(name => /^[a-f0-9]{32}\.json$/.test(name))) {
     try {
-      const record = JSON.parse(fs.readFileSync(path.join(registry, name), "utf8"));
+      const filename = path.join(registry, name);
+      const stat = fs.lstatSync(filename);
+      if (!stat.isFile() || stat.size > 256_000) continue;
+      const record = JSON.parse(fs.readFileSync(filename, "utf8"));
       if (record.schema !== MCP_LIFECYCLE_SCHEMA) continue;
+      const attribution = normalizeManagedMcpAttribution(record.attribution);
       const age = now - record.heartbeatAt * 1000;
       const fresh = typeof record.heartbeatAt === "number" && age >= 0 && age < 3_000;
-      instances.push({ ...record, observedState: fresh ? record.phase : "unknown", heartbeatFresh: fresh,
+      instances.push({ ...record, attribution, observedState: fresh ? record.phase : "unknown", heartbeatFresh: fresh,
         completionVerified: fresh && ["drained", "retired"].includes(record.phase)
           && record.inFlight === 0 && record.uncertainCalls === 0 && !record.controlError });
     } catch { instances.push({ instanceId: name.slice(0, -5), observedState: "unknown", completionVerified: false }); }

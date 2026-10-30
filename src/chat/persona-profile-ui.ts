@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { hostname } from "os";
 import * as fs from "fs";
 import * as path from "path";
-import { PersonaProfileStore, PersonaProfile, PersonaFields } from "./persona-profiles";
+import { PersonaProfileStore, PersonaProfile, PersonaFields, PersonaResponseStyle } from "./persona-profiles";
 import type { ApiConversation } from "./api-chat-store";
 
 export async function configurePersonaProfiles(store: PersonaProfileStore, chat: ApiConversation,
@@ -104,6 +104,55 @@ async function editPersonaProfile(store: PersonaProfileStore, kind: "user" | "ag
       validateInput: value => key === "name" && !value.trim() ? "Name is required." : undefined });
     if (value === undefined) return;
     content[key] = value;
+  }
+  const currentStyle = record?.responseStyle;
+  const verbosityChoices = [
+    { label:"No preference", value:"default" },
+    { label:"Concise", value:"concise" },
+    { label:"Detailed", value:"detailed" },
+  ] as const;
+  const terminologyChoices = [
+    { label:"No preference", value:"default" },
+    { label:"Explain specialist terms", value:"explain" },
+    { label:"Use domain terminology", value:"domain" },
+  ] as const;
+  const orderingChoices = [
+    { label:"No preference", value:"default" },
+    { label:"Conclusion first", value:"conclusion-first" },
+    { label:"Evidence first", value:"evidence-first" },
+  ] as const;
+  const verbosity = await vscode.window.showQuickPick(verbosityChoices.map(choice => ({
+    ...choice, picked:choice.value === (currentStyle?.verbosity || "default"),
+  })), {
+    title:`${kind === "user" ? "User" : "Agent"} Profile · response length`,
+    placeHolder:"Explicit presentation preference only; defaults do not change correctness or permission.",
+    ignoreFocusOut:true,
+  });
+  if (!verbosity) return;
+  const terminology = await vscode.window.showQuickPick(terminologyChoices.map(choice => ({
+    ...choice, picked:choice.value === (currentStyle?.terminology || "default"),
+  })), {
+    title:`${kind === "user" ? "User" : "Agent"} Profile · terminology`,
+    placeHolder:"Choose whether to explain terms or use domain terminology.",
+    ignoreFocusOut:true,
+  });
+  if (!terminology) return;
+  const ordering = await vscode.window.showQuickPick(orderingChoices.map(choice => ({
+    ...choice, picked:choice.value === (currentStyle?.ordering || "default"),
+  })), {
+    title:`${kind === "user" ? "User" : "Agent"} Profile · answer order`,
+    placeHolder:"Choose how to order the answer.",
+    ignoreFocusOut:true,
+  });
+  if (!ordering) return;
+  const responseStyle: PersonaResponseStyle = {
+    verbosity:verbosity.value,
+    terminology:terminology.value,
+    ordering:ordering.value,
+  };
+  content.responseStyle = Object.values(responseStyle).every(value => value === "default") ? undefined : responseStyle;
+  if (currentStyle && !content.responseStyle) {
+    await vscode.window.showInformationMessage("Response style controls cleared; no presentation preference will be applied.");
   }
   const saved = store.save(kind, content, record);
   await vscode.window.showInformationMessage(`${saved.name} saved at revision ${saved.revision}. ${kind === "agent" && !record ? "Use Assign Agent Profile to apply it explicitly." : "Applies next attempt / retry."}`);

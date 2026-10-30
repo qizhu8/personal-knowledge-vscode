@@ -1034,7 +1034,8 @@
     if (activity?.retrievalLearning) {
       const learning = activity.retrievalLearning;
       line("Online learning", `${learning.status} · ${learning.provenance} · ${learning.judgedSources} sources`);
-      if (learning.status !== "user-protected" && learning.relevantSourceIds) line("Learning update", learning.relevantSourceIds.join("\n") || "No relevant sources");
+      if (learning.selectionApplied) line("Reference selection", `Pre-answer model filter applied · ${learning.unknownSources || 0} unknown sources remain eligible for context`);
+      if (learning.relevantSourceIds) line(learning.selectionApplied ? "Relevant sources" : "Learning update", learning.relevantSourceIds.join("\n") || "No relevant sources");
       if (learning.error) line("Learning error", learning.error);
       if (learning.acknowledgment) line("Learning update", JSON.stringify(learning.acknowledgment));
     }
@@ -1051,7 +1052,8 @@
       line("Retrieval invocation", `${invocation.requestId} · generation ${invocation.readyGeneration} · ${invocation.retrievalId || t("Not recorded")}`);
       if (invocation.reason) line("Retrieval reason", invocation.reason);
       if (invocation.adaptive) line("Adaptive result count", `${invocation.adaptive.reason} · ${invocation.adaptive.returned_count}/${invocation.adaptive.original_count}`);
-      if (invocation.retrievalId && invocation.modelInvoked && invocation.semanticStatus === "ready") {
+      if (invocation.retrievalId && invocation.modelInvoked && invocation.semanticStatus === "ready"
+        && invocation.onlineLearning?.enabled === true) {
         const review = document.createElement("button");
         review.type = "button"; review.textContent = t("Review relevance");
         review.disabled = state.busy;

@@ -55,6 +55,32 @@ nor does it make external/manual `pip` invocations safe.
 
 ## Admission and bounded draining
 
+New instrumented processes snapshot `pkm.mcp.attribution/v1` launch context into
+their lifecycle status and durable instance record. The native provider reuses
+the registered extension-host identity, editor session, host-registry slot and
+workspace context when available. `hostId` identifies one extension activation
+(the existing registry's random UUID); `extensionHostPid` identifies that
+extension-host process. Neither is a recovered VS Code UI window ID.
+`editorSessionId` is `vscode.env.sessionId`: the API promises a current editor
+session identifier that changes when the editor starts, not a unique identifier
+per window. It must not distinguish multiple windows in an application session.
+`hostSlotId` reuses the registry's `slotId`, a SHA-256 hash of
+`context.storageUri.toString()` or, when storage is unavailable, the editor
+session ID. It correlates workspace/storage slots across host reloads; windows
+using the same storage context may share it. No exact window ID is claimed.
+`workspace` is the workspace-file URI or joined workspace-folder URIs;
+`machine` and `remoteName` describe the launch host when supplied.
+This is caller-reported launch evidence, not
+a verified same-client handshake or proof that the original window is still alive.
+Shared provider/host connections are not attributed to a single Chat. The managed
+Chat connector records a Chat ID only when its caller explicitly provides one;
+the reusable PKM Chat connection therefore has no synthetic conversation identity.
+Standalone launches have unknown window/Chat ownership. Legacy records without
+metadata stay unverified; sibling PIDs and parent PIDs never reconstruct old
+window or conversation IDs. Stale reports display historical launch context,
+not current ownership. Malformed attribution is discarded without changing drain
+or admission behavior.
+
 New instrumented unified processes install `ManagedMcpLifecycle` as outer FastMCP
 middleware. Each actual call checks the shared generation before admission.
 An unchanged API contract permits old processes/windows to keep using their

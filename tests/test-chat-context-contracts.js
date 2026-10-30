@@ -560,18 +560,23 @@ async function transportFixture(t, source, options = {}) {
   return { provider, requests, retrievalQueries, errors, directory };
 }
 
-test("successful Chat self-evaluates relevance, persists feedback and bills the separate no-tool model call; user correction overrides it", async t => {
+test("Chat selects relevance before answering, reuses judgments for feedback and bills one no-tool selector; user correction overrides it", async t => {
   const labels = [], candidate = {id:"online-source", sourceId:"online-source", level:"l1-source", kind:"note",
     label:"Online evidence", sourceUri:"pkm://fixture/online", score:1, method:"synthetic:test", reason:"fixture", selected:false,
     sourceRevision:"1", contentHash:"a".repeat(64), content:"The target sampling upper limit is 1000."};
   const fixture = await transportFixture(t, fixtures.conversation(), {
     candidates:[candidate], invocation:{requestId:"online-query", retrievalId:"online-receipt", requestedRoute:"dual",
-      servedRoute:"lexical+semantic", modelInvoked:true, semanticStatus:"ready", readyGeneration:1, corpusRevision:"fixture"},
+      servedRoute:"lexical+semantic", modelInvoked:true, semanticStatus:"ready", readyGeneration:1, corpusRevision:"fixture",
+      onlineLearning:{enabled:true, applied:false, revision:0, ranker_revision:0, calibrator_revision:0, embedding_updated:false}},
     respond:(payload, round) => {
-      if (!round) return {content:"The upper limit is 1000."};
+      if (round) {
+        assert(payload.messages.some(message => message.content.includes("The target sampling upper limit is 1000.")));
+        return {content:"The upper limit is 1000."};
+      }
       assert(!payload.tools?.length, "the evaluator must not execute tools");
       assert.equal(payload.max_tokens, 1024);
-      assert.match(payload.messages[0].content, /self-evaluator/);
+      assert.match(payload.messages[0].content, /pre-answer relevance selector/);
+      assert.equal(JSON.parse(payload.messages[1].content).answer, undefined);
       return {content:'{"labels":[{"index":0,"relevant":true}]}'};
     },
     usage:round => ({prompt_tokens:round ? 20 : 10, completion_tokens:round ? 3 : 5}),
@@ -583,30 +588,40 @@ test("successful Chat self-evaluates relevance, persists feedback and bills the 
   assert.equal(reply.status, "complete", reply.error);
   assert.equal(reply.content, "The upper limit is 1000.");
   assert.equal(reply.retrievalLearning?.status, "learned", JSON.stringify({learning:reply.retrievalLearning, retrieval:reply.retrieval}));
-  assert.deepEqual(labels, [["online-receipt", ["online-source"], "model"]]);
+  assert.deepEqual(labels, [["online-receipt", ["online-source"], "model", ["online-source"]]]);
+  assert.equal(reply.retrievalLearning.selectionApplied, true);
   assert.equal(fixture.requests.length, 2);
   assert.equal(reply.budgetReceipts.length, 1, "self-evaluation must not overwrite the answer's round ledger");
   assert.equal(reply.auxiliaryModelUsage.length, 1);
   assert.equal(reply.usage.inputTokens, 30); assert.equal(reply.usage.outputTokens, 8);
   assert.equal(fixture.provider.store.load(fixture.provider.chat.id, false).messages.at(-1).retrievalLearning.provenance, "model");
+  let reviewPrompts = 0;
   fixture.provider.requestDecision = async (...args) => {
+    reviewPrompts++;
     await args[7]({complete:true, relevant:[], missed:""});
     return "submit";
   };
   await fixture.provider.handle({type:"reviewRetrieval", chatId:fixture.provider.chat.id, id:reply.id});
   assert.deepEqual(labels.at(-1), ["online-receipt", [], "user"]);
   assert.equal(reply.retrievalLearning.provenance, "user");
+  reply.retrievalActivity.attempts.find(item => item.kind === "knowledge").receipt.invocation.onlineLearning.enabled = false;
+  await assert.rejects(fixture.provider.handle({type:"reviewRetrieval", chatId:fixture.provider.chat.id, id:reply.id}), /online learning enabled/);
+  assert.equal(reviewPrompts, 1, "disabled learning rejects the review before prompting");
   assert.deepEqual(fixture.errors, []);
 });
 
-test("invalid self-evaluation never trains and persists an explicit learning failure without changing the answer", async t => {
+test("invalid pre-answer selection never trains and explicitly retains normal budgeted references", async t => {
   let submissions = 0;
   const fixture = await transportFixture(t, fixtures.conversation(), {
     candidates:[{id:"bad-source", sourceId:"bad-source", kind:"note", label:"Fixture", sourceUri:"pkm://fixture/bad",
       score:1, method:"synthetic:test", reason:"fixture", selected:false, content:"Original evidence"}],
     invocation:{requestId:"bad-query", retrievalId:"bad-receipt", requestedRoute:"dual",
-      servedRoute:"semantic", modelInvoked:true, semanticStatus:"ready", readyGeneration:1, corpusRevision:"fixture"},
-    respond:(_payload, round) => ({content:round ? '{"labels":[]}' : "Answer"}),
+      servedRoute:"semantic", modelInvoked:true, semanticStatus:"ready", readyGeneration:1, corpusRevision:"fixture",
+      onlineLearning:{enabled:true, applied:false, revision:0, ranker_revision:0, calibrator_revision:0, embedding_updated:false}},
+    respond:(payload, round) => {
+      if (round) assert(payload.messages.some(message => message.content.includes("Original evidence")));
+      return {content:round ? "Answer" : '{"labels":[]}'};
+    },
     feedback:async () => {submissions++; return {ok:true};},
   });
   await fixture.provider.send("Compare the evidence");
@@ -618,13 +633,98 @@ test("invalid self-evaluation never trains and persists an explicit learning fai
   assert.equal(submissions, 0);
 });
 
-test("a later model self-evaluation cannot claim to retrain over protected user judgments", async t => {
+test("pre-answer selection removes only explicit negatives, preserves unknowns and does not invent an extra evaluator", async t => {
+  const labels = [];
+  const candidates = ["useful", "irrelevant", "unknown"].map(id => ({
+    id, sourceId:id, level:"l1-source", kind:"note", label:id, sourceUri:`pkm://fixture/${id}`,
+    score:1, method:"synthetic:test", reason:"fixture", selected:false, content:`UNIQUE_EVIDENCE_${id}`,
+  }));
+  const fixture = await transportFixture(t, fixtures.conversation(), {
+    candidates,
+    invocation:{requestId:"selection-query", retrievalId:"selection-receipt", requestedRoute:"dual",
+      servedRoute:"semantic", modelInvoked:true, semanticStatus:"ready", readyGeneration:1, corpusRevision:"fixture",
+      onlineLearning:{enabled:true, applied:false, revision:0, ranker_revision:0, calibrator_revision:0, embedding_updated:false}},
+    respond:(payload, round) => {
+      if (!round) return {content:'{"labels":[{"index":0,"relevant":true},{"index":1,"relevant":false},{"index":2,"relevant":null}]}'};
+      const context = payload.messages.map(message => message.content).join("\n");
+      assert(context.includes("UNIQUE_EVIDENCE_useful"));
+      assert(!context.includes("UNIQUE_EVIDENCE_irrelevant"), "negative source must not reach the answer model");
+      assert(context.includes("UNIQUE_EVIDENCE_unknown"), "unknown source stays eligible for budget planning");
+      return {content:"Answer"};
+    },
+    feedback:async (...args) => {
+      labels.push(args);
+      return {ok:true, revision:1, ranker_revision:1, calibrator_revision:1,
+        provenance:"model", trained:true, model_labels:1, user_labels:0};
+    },
+  });
+  await fixture.provider.send("Compare retrieved evidence");
+  const reply = fixture.provider.chat.messages.at(-1);
+  assert.equal(reply.status, "complete", reply.error);
+  assert.deepEqual(labels, [["selection-receipt", ["useful"], "model", ["useful", "irrelevant"]]]);
+  assert.equal(reply.retrievalLearning.unknownSources, 1);
+  assert.equal(fixture.requests.length, 2, "one selector and one answer, no post-answer evaluator");
+  assert.equal(reply.retrieval.candidates.find(item => item.id === "irrelevant").selected, false);
+  assert.match(reply.retrieval.candidates.find(item => item.id === "irrelevant").reason, /pre-answer model/);
+  const sent = reply.budgetReceipts[0].contextPlan.manifest.flatMap(item => item.referenceIds);
+  assert(!sent.includes("irrelevant"));
+  assert(sent.includes("useful"));
+  assert.deepEqual(fixture.errors, []);
+});
+
+test("all-unknown selection preserves context without submitting empty training labels", async t => {
+  let submissions = 0;
+  const fixture = await transportFixture(t, fixtures.conversation(), {
+    candidates:[{id:"unknown-source", sourceId:"unknown-source", kind:"note", label:"Fixture", sourceUri:"pkm://fixture/unknown",
+      score:1, method:"synthetic:test", reason:"fixture", selected:false, content:"UNKNOWN_CONTEXT"}],
+    invocation:{requestId:"unknown-query", retrievalId:"unknown-receipt", requestedRoute:"dual",
+      servedRoute:"semantic", modelInvoked:true, semanticStatus:"ready", readyGeneration:1, corpusRevision:"fixture",
+      onlineLearning:{enabled:true, applied:false, revision:0, ranker_revision:0, calibrator_revision:0, embedding_updated:false}},
+    respond:(payload, round) => {
+      if (round) assert(payload.messages.some(message => message.content.includes("UNKNOWN_CONTEXT")));
+      return {content:round ? "Answer" : '{"labels":[{"index":0,"relevant":null}]}'};
+    },
+    feedback:async () => { submissions++; },
+  });
+  await fixture.provider.send("Compare evidence");
+  const reply = fixture.provider.chat.messages.at(-1);
+  assert.equal(reply.status, "complete", reply.error);
+  assert.equal(reply.retrievalLearning.status, "selected");
+  assert.equal(reply.retrievalLearning.judgedSources, 0);
+  assert.equal(submissions, 0);
+});
+
+test("feedback failure does not undo a successful pre-answer filter or claim learning succeeded", async t => {
+  const fixture = await transportFixture(t, fixtures.conversation(), {
+    candidates:[{id:"rejected-source", sourceId:"rejected-source", kind:"note", label:"Fixture", sourceUri:"pkm://fixture/rejected",
+      score:1, method:"synthetic:test", reason:"fixture", selected:false, content:"REJECTED_CONTEXT"}],
+    invocation:{requestId:"failure-query", retrievalId:"failure-receipt", requestedRoute:"dual",
+      servedRoute:"semantic", modelInvoked:true, semanticStatus:"ready", readyGeneration:1, corpusRevision:"fixture",
+      onlineLearning:{enabled:true, applied:false, revision:0, ranker_revision:0, calibrator_revision:0, embedding_updated:false}},
+    respond:(payload, round) => {
+      if (round) assert(!payload.messages.some(message => message.content.includes("REJECTED_CONTEXT")));
+      return {content:round ? "Answer" : '{"labels":[{"index":0,"relevant":false}]}'};
+    },
+    feedback:async () => { throw new Error("Worker disabled during selection"); },
+  });
+  await fixture.provider.send("Compare evidence");
+  const reply = fixture.provider.chat.messages.at(-1);
+  assert.equal(reply.status, "complete", reply.error);
+  assert.equal(reply.retrievalLearning.status, "failed");
+  assert.equal(reply.retrievalLearning.selectionApplied, true);
+  assert.match(reply.retrievalLearning.error, /Worker disabled/);
+  assert.equal(reply.retrievalLearning.acknowledgment, undefined);
+  assert.equal(fixture.requests.length, 2);
+});
+
+test("a model selector cannot claim to retrain over protected user judgments", async t => {
   const fixture = await transportFixture(t, fixtures.conversation(), {
     candidates:[{id:"protected-source", sourceId:"protected-source", kind:"note", label:"Fixture", sourceUri:"pkm://fixture/protected",
       score:1, method:"synthetic:test", reason:"fixture", selected:false, content:"Original evidence"}],
     invocation:{requestId:"protected-query", retrievalId:"protected-receipt", requestedRoute:"dual",
-      servedRoute:"semantic", modelInvoked:true, semanticStatus:"ready", readyGeneration:1, corpusRevision:"fixture"},
-    respond:(_payload, round) => ({content:round ? '{"labels":[{"index":0,"relevant":false}]}' : "Answer"}),
+      servedRoute:"semantic", modelInvoked:true, semanticStatus:"ready", readyGeneration:1, corpusRevision:"fixture",
+      onlineLearning:{enabled:true, applied:false, revision:0, ranker_revision:0, calibrator_revision:0, embedding_updated:false}},
+    respond:(_payload, round) => ({content:round ? "Answer" : '{"labels":[{"index":0,"relevant":false}]}'}),
     feedback:async () => ({ok:true, revision:2, ranker_revision:2, calibrator_revision:2,
       provenance:"user", trained:false, ignored:true, reason:"user-precedence", model_labels:0, user_labels:1}),
   });
@@ -634,6 +734,35 @@ test("a later model self-evaluation cannot claim to retrain over protected user 
   assert.equal(reply.retrievalLearning?.status, "user-protected");
   assert.equal(reply.retrievalLearning.acknowledgment.trained, false);
   assert.equal(reply.retrievalLearning.acknowledgment.ranker_revision, 2);
+});
+
+test("disabled or unreported retrieval learning skips automatic self-evaluation and its extra model call", async t => {
+  for (const [label, onlineLearning] of [
+    ["disabled", {enabled:false, applied:false, revision:1, ranker_revision:1, calibrator_revision:1, embedding_updated:false}],
+    ["unreported", undefined],
+  ]) {
+    await t.test(label, async t => {
+      let submissions = 0;
+      const fixture = await transportFixture(t, fixtures.conversation(), {
+        candidates:[{id:"source", sourceId:"source", kind:"note", label:"Fixture", sourceUri:"pkm://fixture/source",
+          score:1, method:"synthetic:test", reason:"fixture", selected:false, content:"Evidence"}],
+        invocation:{requestId:`${label}-query`, retrievalId:`${label}-receipt`, requestedRoute:"dual",
+          servedRoute:"semantic", modelInvoked:true, semanticStatus:"ready", readyGeneration:1, corpusRevision:"fixture",
+          ...(onlineLearning ? {onlineLearning} : {})},
+        respond:(_payload, round) => ({content:round ? '{"labels":[{"index":0,"relevant":true}]}' : "Answer"}),
+        feedback:async () => {submissions++; return {ok:true};},
+      });
+      await fixture.provider.send("Question with retrieved evidence");
+      const reply = fixture.provider.chat.messages.at(-1);
+      assert.equal(reply.status, "complete", reply.error);
+      assert.equal(reply.content, "Answer");
+      assert.equal(fixture.requests.length, 1, "disabled learning must not incur a second model call");
+      assert.equal(reply.auxiliaryModelUsage?.length || 0, 0);
+      assert.equal(reply.retrievalLearning, undefined);
+      assert.equal(submissions, 0);
+      assert.deepEqual(fixture.errors, []);
+    });
+  }
 });
 
 test("debug controller rejects advice-only completion and executes real log/process diagnostics before an explicit outcome", async t => {

@@ -54,16 +54,32 @@ test("retrieval inspector shows actual routing and only explicit reviews, with c
     __state.chat.sessionId="agent_session_"+"a".repeat(32);__state.chat.includeHistory=true;
     const invocation={requestId:"query",requestedRoute:"dual",servedRoute:"lexical+semantic",semanticStatus:"ready",
       modelInvoked:true,retrievalId:"explicit-receipt",readyGeneration:1,corpusRevision:"fixture",
+      onlineLearning:{enabled:true,applied:false,revision:0,ranker_revision:0,calibrator_revision:0,embedding_updated:false},
       adaptive:{reason:"insufficient-feedback",returned_count:2,original_count:2}};
     __state.chat.messages=[{id:"review-reply",role:"assistant",status:"complete",content:"Recorded",
+      retrievalLearning:{status:"learned",provenance:"model",judgedSources:1,unknownSources:1,
+        selectionApplied:true,relevantSourceIds:["selected-reference"]},
       retrieval:{schema:"pkm.chat.retrieval/v1",chatId:__state.chat.id,query:"query",model:"fixture",selectedCount:0,candidates:[],invocation}}];
     window.dispatchEvent(new MessageEvent("message",{data:__state}));
   });
   await page.locator("#memory").click();
   const evidence=page.locator("#retrieval-evidence");
   assert.match(await evidence.innerText(),/dual \/ lexical\+semantic/);
+  assert.match(await evidence.innerText(),/Pre-answer model filter applied · 1 unknown/);
+  assert.match(await evidence.innerText(),/Relevant sources: selected-reference/);
   await evidence.getByRole("button",{name:"Review relevance",exact:true}).click();
   assert(await page.evaluate(()=>__posts.some(message=>message.type==="reviewRetrieval"&&message.id==="review-reply")));
+  await page.evaluate(()=>{
+    __state.chat.messages[0].retrieval.invocation.onlineLearning.enabled=false;
+    window.dispatchEvent(new MessageEvent("message",{data:__state}));
+  });
+  assert.equal(await evidence.getByRole("button",{name:"Review relevance",exact:true}).count(),0,
+    "manual relevance review is unavailable while feedback training is disabled");
+  await page.evaluate(()=>{
+    __state.chat.messages[0].retrieval.invocation.onlineLearning.enabled=true;
+    window.dispatchEvent(new MessageEvent("message",{data:__state}));
+  });
+  assert.equal(await evidence.getByRole("button",{name:"Review relevance",exact:true}).count(),1);
   await evidence.getByRole("button",{name:"Review Task checkpoint",exact:true}).click();
   assert(await page.evaluate(()=>__posts.some(message=>message.type==="taskCheckpoint")));
   await page.evaluate(()=>{

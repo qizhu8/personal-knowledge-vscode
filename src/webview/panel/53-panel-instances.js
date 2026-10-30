@@ -67,7 +67,7 @@ function syncActionLibraryTheme() {
   const frame = embeddedActionViews.actionLibrary.frame;
   if (!frame?.contentWindow) return;
   const style = getComputedStyle(document.documentElement), variables = {};
-  for (const name of ['editor-background','editor-foreground','sideBar-background','descriptionForeground','panel-border','focusBorder','font-size','font-family','input-background','input-foreground','list-hoverBackground','list-activeSelectionBackground','list-activeSelectionForeground','icon-foreground','editorWarning-foreground','testing-iconPassed','errorForeground']) {
+  for (const name of ['editor-background','editor-foreground','editor-font-family','sideBar-background','descriptionForeground','panel-border','focusBorder','font-size','font-family','input-background','input-foreground','input-border','input-placeholderForeground','dropdown-background','dropdown-foreground','dropdown-border','checkbox-background','button-background','button-foreground','button-border','button-hoverBackground','textCodeBlock-background','list-hoverBackground','list-activeSelectionBackground','list-activeSelectionForeground','icon-foreground','editorWarning-foreground','testing-iconPassed','errorForeground']) {
     const key = '--vscode-' + name, value = style.getPropertyValue(key).trim();
     if (value) variables[key] = value;
   }

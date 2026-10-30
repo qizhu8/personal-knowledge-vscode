@@ -65,13 +65,13 @@ their own top-level views. The separate
 Router benchmark measures its lexical synthetic corpus, not the imported model.
 It must not be mistaken for the live model-call chart.
 
-### Call History, Calibration, and Adaptive Result Count
+### Call History, Calibration, and Online Retrieval Learning
 
 The **Collector & Privacy** view keeps its **Router Privacy Statement** directly
 visible, never inside hover details. It discloses search/Skill event payloads,
 hostname/session metadata, the default loopback collector and configurable remote
 receiver, separate local feedback/learning retention, and the limits of deletion.
-Adaptive Result Count is not a collector opt-out and does not erase history.
+Online Retrieval Learning is not a collector opt-out and does not erase history.
 Receiver operators control received copies; this scoped notice is not a
 general privacy policy for separately configured Chat/Sync/sharing services.
 
@@ -177,11 +177,29 @@ corrections recompute the retained stream, not immutable historical quality.
 Search metadata `online_learning` reports `enabled`, `applied`, `revision`,
 `ranker_revision`, `calibrator_revision`, and `embedding_updated: false`.
 
-Adaptive Result Count / online learning defaults on and has an explicit off
-switch (`POST /retrieval-learning` with `{"enabled":false}`). This is also the
+Online retrieval learning defaults off. The Router control is an explicit
+local-worker-wide opt-in (`POST /retrieval-learning` with `{"enabled":true}`);
+turning it off uses `{"enabled":false}`. This is also the
 rollback gate: it restores original scores, ordering and counts, suppresses trained
-reranking, and rejects new training until enabled again; persisted state remains
-available for re-enabling. It never
+reranking, skips Chat's pre-answer relevance-selector call (and its
+additional model usage), and rejects new training until enabled again; persisted
+state remains available for re-enabling. The selector receives a bounded Chat
+query and excerpts for up to eight retrieved sources, before the answer. It
+removes explicit negatives from the answering agent's context; unknowns remain
+eligible for the existing context budget. Its labels also supply feedback, with
+no second post-answer evaluator. This adds usage and latency; net savings and
+retrieval quality still need measurement. Model labels are not human truth.
+
+The internal feedback endpoint accepts scoped model judgments with
+`complete:false`, `provenance:"model"`, `judged_source_ids` and
+`relevant_source_ids` (a subset of judged IDs). Judged IDs must be unique,
+bounded and belong to the call's delivered candidates. Replay trains only that
+subset; oversampled, unknown and unexamined candidates receive no gradient.
+Partial feedback reports no full-call Recall/precision and cannot establish a
+safe truncation cliff. Explicit complete user judgments still supersede model
+labels across receipts. Older workers that do not support partial feedback
+reject it explicitly; Chat reports the error rather than claiming training.
+It never
 raises or globally replaces the caller's limit. The worker preserves internal
 candidate oversampling separately from the delivered limit, so MCP overfetch is
 not mistaken for a request for more results.

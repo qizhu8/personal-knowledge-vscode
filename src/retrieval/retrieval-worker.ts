@@ -170,7 +170,8 @@ export interface RetrievalSolutionCatalog extends RetrievalSolutionStatus {
     stored_calls?: number;
     stored_user_judgments?: number;
     policy?: { minimum_gap: number; retain_probability: number; discard_probability: number; threshold_ewma: number; retention_calls: number };
-    calls: Array<{ invocation: number; context: string; runtime_ms: number; returned_count: number; recall: number | null; precision?: number | null; success: boolean }>;
+    calls: Array<{ invocation: number; context: string; runtime_ms: number; returned_count: number; recall: number | null;
+      precision?: number | null; partial?: boolean; judged_count?: number | null; success: boolean }>;
     models: Array<{ context: string; package_id: string; corpus_revision: string; route: string;
       judged_calls: number; safe_streak: number; minimum_judged_calls?: number;
       calibration_ready?: boolean; state?: "disabled" | "collecting-feedback" | "ready"; threshold: number;
@@ -331,14 +332,22 @@ export class RetrievalWorkerManager {
     return result.learning;
   }
 
-  async submitFeedback(retrievalId: string, relevantSourceIds: string[], provenance: "user" | "model" = "user"): Promise<unknown> {
+  async submitFeedback(retrievalId: string, relevantSourceIds: string[], provenance: "user" | "model" = "user", judgedSourceIds?: string[]): Promise<unknown> {
     if (typeof retrievalId !== "string" || !retrievalId || retrievalId.length > 200
       || !Array.isArray(relevantSourceIds) || relevantSourceIds.length > 10000
       || relevantSourceIds.some(id => typeof id !== "string" || !id || id.length > 4096) || !["user", "model"].includes(provenance)) {
       throw new Error("Invalid explicit retrieval relevance judgments.");
     }
+    if (judgedSourceIds !== undefined && (provenance !== "model" || !Array.isArray(judgedSourceIds)
+      || !judgedSourceIds.length || judgedSourceIds.length > 10000
+      || judgedSourceIds.some(id => typeof id !== "string" || !id || id.length > 4096)
+      || new Set(judgedSourceIds).size !== judgedSourceIds.length
+      || relevantSourceIds.some(id => !judgedSourceIds.includes(id)))) {
+      throw new Error("Invalid partial model relevance judgments.");
+    }
     const result = await this.request<{ ok?: boolean; error?: string }>(await this.ensure(), "/retrieval-feedback", "POST", {
-      retrieval_id: retrievalId, relevant_source_ids: relevantSourceIds, complete: true, provenance,
+      retrieval_id: retrievalId, relevant_source_ids: relevantSourceIds, complete: judgedSourceIds === undefined, provenance,
+      ...(judgedSourceIds ? { judged_source_ids:judgedSourceIds } : {}),
     });
     if (!result || result.ok !== true) throw new Error(typeof result?.error === "string" ? result.error : "Retrieval feedback was not acknowledged.");
     return result;

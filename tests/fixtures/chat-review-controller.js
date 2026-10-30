@@ -7,6 +7,7 @@ module.exports = async function reviewController(ApiChatView, context, nativeCli
   const calls = [], requests = [];
   const invocation = { requestId:"controller-query", requestedRoute:"dual", servedRoute:"lexical+semantic",
     semanticStatus:"ready", modelInvoked:true, readyGeneration:1, corpusRevision:"fixture", retrievalId:"controller-retrieval",
+    onlineLearning:{enabled:true,applied:false,revision:0,ranker_revision:0,calibrator_revision:0,embedding_updated:false},
     adaptive:{enabled:true,applied:false,reason:"insufficient-feedback",original_count:0,returned_count:0,invocation:1} };
   const retrieval = Object.assign(async()=>({candidates:[],invocation}), {
     feedback:async(id, relevant)=>{calls.push({id,relevant});return {ok:true,trained:true,provenance:"user",
@@ -146,6 +147,7 @@ module.exports = async function reviewController(ApiChatView, context, nativeCli
     assert.deepEqual(reply.retrievalActivity.rounds[0].receipt.invocation,invocation);
     assert.deepEqual(provider.store.load(chat.id,false).messages.at(-1).retrieval.invocation,invocation);
     assert.equal(calls.length,0,"automatic retrieval and prompt selection never submit judgments");
+    const savedInvocation=reply.retrievalActivity.attempts.find(item=>item.kind==="knowledge").receipt.invocation;
     const info=request.tools.find(tool=>tool.name==="session_info");
     const snapshot=JSON.parse(await info.execute({},request.signal));
     assert.equal(snapshot.taskCheckpoint.id,checkpoint.id);
@@ -157,6 +159,9 @@ module.exports = async function reviewController(ApiChatView, context, nativeCli
     assert.equal(exact.content,preview.content.slice(3,30));
     await assert.rejects(info.execute({taskInputId:preview.inputId,evidenceCallId:"ambiguous"},request.signal),/must be separate/);
     await assert.rejects(provider.handle({type:"reviewRetrieval",chatId:randomUUID(),id:reply.id}),/unavailable/);
+    savedInvocation.onlineLearning.enabled=false;
+    await assert.rejects(provider.handle({type:"reviewRetrieval",chatId:chat.id,id:reply.id}),/online learning enabled/);
+    savedInvocation.onlineLearning.enabled=true;
     action=provider.handle({type:"reviewRetrieval",chatId:chat.id,id:reply.id});[id]=await pending();
     await decide(id,"cancel");await action;assert.equal(calls.length,0);
     const submit=retrieval.feedback;
