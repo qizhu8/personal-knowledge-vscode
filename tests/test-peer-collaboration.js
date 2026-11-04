@@ -3,7 +3,8 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
-const { randomUUID } = require("node:crypto");
+const { randomUUID, randomBytes, createHash } = require("node:crypto");
+const { PortalFiles } = require("../dist/chatroom/portal-files");
 const { PeerSession } = require("../dist/chatroom/peer-session");
 const { PEER_PROTOCOL, parsePeerPacket, assertPeerEndpoint } = require("../dist/chatroom/peer-protocol");
 const { ChatHub } = require("../dist/chatroom/chatroom-hub");
@@ -21,6 +22,107 @@ async function until(predicate) {
 function packet(operation, pairId, requestId, payload = {}) {
   return { protocol: PEER_PROTOCOL, operation, pairId, requestId, payload };
 }
+
+test("buffered peer sends wait for the write callback and expose transport errors", async () => {
+  const client = new ChatClient({});
+  client.status = "connected";
+  client.opts = { url: "ws://127.0.0.1:1234" };
+  client.participantId = "self";
+  let callback;
+  client.ws = { readyState: 1, bufferedAmount: 0, send(_data, sent) { callback = sent; } };
+  const value = packet("files", randomUUID(), randomUUID(), { kind: "portal-file" });
+  let completed = false;
+  const pending = client.sendPeerAndWait("other", value).then(() => { completed = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(completed, false, "local enqueue must not count as a drained transport");
+  callback();
+  await pending;
+  const failed = client.sendPeerAndWait("other", value);
+  callback(new Error("write failed"));
+  await assert.rejects(failed, /write failed/);
+  client.ws.bufferedAmount = 2 * 1024 * 1024;
+  await assert.rejects(client.sendPeerAndWait("other", value), /busy/);
+  client.status = "disconnected";
+  await assert.rejects(client.sendPeerAndWait("other", value), /disconnected/);
+});
+
+test("stalled peer writes have a bounded timeout", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const client = new ChatClient({});
+  client.status = "connected";
+  client.opts = { url: "ws://127.0.0.1:1234" };
+  client.participantId = "self";
+  client.ws = { readyState: 1, bufferedAmount: 0, send() {} };
+  const rejection = assert.rejects(client.sendPeerAndWait("other", packet("files", randomUUID(), randomUUID())), /timed out/);
+  t.mock.timers.tick(30_000);
+  await rejection;
+});
+
+test("12 MiB approved Portal file survives throttled real WebSocket writes with verified receipt", { timeout: 30000 }, async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pkm-peer-large-file-"));
+  const destination = path.join(directory, "received");
+  await fs.mkdir(destination);
+  const hub = new ChatHub(), secrets = new Map(), clients = [], sessions = [], engines = [], errors = [];
+  hub.configureLifecycle(directory, 1024 * 1024, "fixture-owner", {
+    get: async key => secrets.get(key), store: async (key, value) => { secrets.set(key, value); }, delete: async key => { secrets.delete(key); },
+  });
+  t.after(async () => {
+    engines.forEach(engine => engine.dispose());
+    clients.forEach(client => client.disconnect());
+    await hub.stop();
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+  await hub.start(0);
+  const room = await hub.createRoom("Large file fixture", "fixture-only-secret");
+  for (let index = 0; index < 2; index++) {
+    const client = new ChatClient({
+      onStatus() {}, onPresence() {}, onMessage() {}, onHistory() {}, onFileComplete() {},
+      onPeer: delivery => { void sessions[index].receive(delivery).catch(error => errors.push(error)); },
+    });
+    clients.push(client);
+    client.connect({ url: `ws://127.0.0.1:${hub.port}/${encodeURIComponent(room.room)}`, room: room.room,
+      roomId: room.roomId, user: `File${index}`, token: room.secret, cid: `large-file-${index}`,
+      ...(index === 0 ? { hostToken: room.hostToken } : {}) });
+    await until(() => client.isConnected);
+  }
+  const pairId = randomUUID();
+  let writes = 0, maximumWrites = 0;
+  const send = clients[0].ws.send.bind(clients[0].ws);
+  clients[0].ws.send = (data, callback) => {
+    writes++;
+    maximumWrites = Math.max(maximumWrites, writes);
+    send(data, error => setTimeout(() => { writes--; callback?.(error); }, 2));
+  };
+  for (let index = 0; index < 2; index++) {
+    const session = new PeerSession({
+      roomId: room.roomId, connected: () => clients[index].isConnected,
+      send: (target, value) => clients[index].sendPeerAndWait(target, value),
+      files: payload => engines[index].handle(payload),
+      changed() {}, error: error => errors.push(error),
+    });
+    session.binding = { pairId, peerId: clients[1 - index].participantId, peerName: "fixture",
+      role: index === 0 ? "controller" : "controlled", peerCapabilities: ["files-v1"] };
+    sessions.push(session);
+    engines.push(new PortalFiles({
+      controlled: index === 1, destination, approve: async () => true,
+      send: payload => session.sendFiles(payload),
+    }));
+  }
+  const bytes = randomBytes(12 * 1024 * 1024 + 17);
+  const source = path.join(directory, "candidate.vsix");
+  await fs.writeFile(source, bytes);
+  const result = await (await engines[0].offer([source])).done;
+  assert.equal(result.state, "completed", result.reason);
+  assert.equal(result.verifiedFiles[0].size, bytes.length);
+  assert.equal(result.verifiedFiles[0].sha256, createHash("sha256").update(bytes).digest("hex"));
+  assert.deepEqual(await fs.readFile(path.join(destination, "candidate.vsix")), bytes);
+  assert.equal(maximumWrites, 1, "the entire send chain must await each transport write");
+  assert.deepEqual(errors, []);
+  const extension = await fs.readFile(path.join(__dirname, "../src/extension.ts"), "utf8");
+  assert.match(extension, /packet\.operation === "files"\) return room\.client\.sendPeerAndWait/);
+  assert.match(extension, /send: payload => \{ active\(\); return room\.peer!\.sendFiles\(payload\); \}/);
+});
+
 async function fixture(t, options = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pkm-peer-"));
   const errors = [], pending = [], reviews = [];

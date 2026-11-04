@@ -55,6 +55,31 @@ class SnapshotTest(unittest.TestCase):
         self.assertTrue(result["before_snapshot"])
         self.assertTrue((self.root / ".pkm/state/knowledge-deletions.json").exists())
 
+    def test_scope_excludes_runtime_state_and_preserves_user_git_index(self):
+        runtime = self.root / ".pkm/state/agent-sessions/session.json"
+        runtime.parent.mkdir(parents=True)
+        runtime.write_bytes(b'{"status":"running"}')
+        privacy = self.root / ".pkm/content-privacy.json"
+        privacy.write_bytes(b'{"schema":"fixture"}')
+        groups = self.root / ".pkm/knowledge-groups.json"
+        groups.write_bytes(b'{"groups":[]}')
+        for area in ("papers", "prompts", "scripts"):
+            (self.root / area).mkdir()
+            (self.root / area / "fixture.txt").write_bytes(area.encode())
+        subprocess.run(["git", "-C", str(self.root), "init", "--quiet"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "add", "."], check=True)
+        index = self.root / ".git/index"
+        before = index.read_bytes()
+        snapshot = self.snapshots.create()
+        tree = self.snapshots.git("ls-tree", "-r", "--name-only", snapshot["tag"]).decode().splitlines()
+        self.assertEqual(set(tree), {
+            "skills/Keep.md", "notes/Original.md", "papers/fixture.txt",
+            "prompts/fixture.txt", "scripts/fixture.txt", ".pkm/content-privacy.json",
+        })
+        self.assertEqual(index.read_bytes(), before)
+        self.assertEqual(runtime.read_bytes(), b'{"status":"running"}')
+        self.assertEqual(self.snapshots.repository, self.root / ".pkm/state/knowledge-snapshots/repository.git")
+
     def test_stale_preview_never_mutates(self):
         tag = self.snapshots.create()["tag"]
         (self.root / "notes/Original.md").write_bytes(b"change")

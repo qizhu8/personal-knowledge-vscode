@@ -1,5 +1,254 @@
 # Independent API Chat
 
+## Chat navigation and header actions
+
+The Chat selector follows Chat List group order and the same active-first ordering
+within each group. Worker Chats are indented beneath their parent, even when their
+own placement is Ungroup. Hover an option or the selected name for its full group /
+parent path and status. Collapsed groups remain available; Trash is excluded.
+
+Header commands are tucked behind the right-hand chevron so the selected Chat name
+gets the available width. Hover or focus the chevron, or tap/click it, to reveal the
+horizontal action list over the header without resizing it. Narrow views wrap the
+actions inside the viewport. Tab reaches the commands; Escape returns focus to the
+chevron. Moving away, choosing a command or clicking outside closes the list.
+Status details remain in the status icon tooltip and accessible label.
+
+## Host responsiveness with large histories
+
+Chat lifecycle and context-source checks reuse a validated, persisted snapshot
+while its file identity, size, modification time and change time remain unchanged.
+Snapshots are separate from mutable streaming state. Queue-only reconciliation
+fingerprints the stored history references, not a second serialized copy of the
+entire transcript. A changed or missing Chat file is reloaded or fails explicitly;
+Trash, Task stop/pause, execution context and memory authorization are still
+checked. Explicit history loads continue to validate segment integrity.
+
+This removes repeated full-history work from one-second control polling and
+per-candidate context checks without dropping old messages, weakening conflict
+checks or increasing the disconnected-warning timeout. Load the updated extension
+Host to apply the fix; already running Hosts keep their loaded implementation.
+
+## Standardized capability discovery
+
+The Todo/Memory pilot uses stable logical identities such as `todo.workitem.create`,
+independent of transport names such as the compatible `add_workitem` alias.
+The capability registry derives input contracts from the existing Todo operation
+definitions and supplies version, output envelope, authorization, cancellation,
+CAS/idempotency and execution metadata. Discovery is not authorization: every
+invocation still enters the original target-specific Host/Board checks.
+
+The default **legacy** profile preserves existing tools. Opt into
+`personalKnowledge.apiChatCapabilityProfile: "compact"` to replace only the
+enabled pilot leaves with:
+
+- `capabilities_list`: bounded hierarchical listing and revision-pinned paging.
+- `capabilities_search`: keyword search, returning three complete contracts by
+  default (at most ten). It does not invoke a model.
+- `capabilities_describe`: exact operation schema, version and policy.
+- `capability_read` / `capability_call`: separate read and mutation dispatch.
+
+Calls provide `operation`, `version: 1` and `arguments` matching the discovered
+leaf schema. A read dispatcher rejects mutations. Disabled leaves are not
+discoverable or callable; Plan/Portal/runtime checks remain attached to the
+original leaf. Generic dispatch does not enable concurrent writes, grant user
+authority, accept tasks or automatically retry effects. Unknown identities,
+versions and extra authority fields fail explicitly. Invalid output fails with a
+reconcile warning because a mutation may already have committed.
+
+The generated MCP server exposes the same pilot through these entry points.
+`capabilities_inventory` additionally reports actually exposed tool names,
+read-only hints and serialized schema bytes without executing them. To opt into
+compact MCP exposure, set `PKM_CAPABILITY_PROFILE=compact` in that client's server
+environment and reconnect. This requires FastMCP's public
+`enable(names=..., only=True, components={"tool"})` API; unsupported runtimes fail
+explicitly. Legacy is the default. Compact MCP intentionally exposes only pilot
+entry points plus the version handshake; non-pilot tools require a legacy
+connection. This is not a claim that arbitrary clients support dynamic tool
+loading or automatically recall Memory.
+
+Capabilities have versioned catalog hashes; callers paging a changing catalog
+must restart discovery. No legacy alias is removed in the legacy profile. Future
+breaking contracts need a version/migration rather than silently changing the
+meaning of an existing operation. Tool schema bytes, provider token usage,
+discovery round trips and end-to-end task latency are different measurements.
+Local schema-size tests do not establish live-model speed or quality gains.
+
+Pilot inventory and migration boundaries:
+
+| Surface | Authoritative execution / contract | Current exposure |
+| --- | --- | --- |
+| Todo (29 operations) | Existing Todo definitions, Board commands and actor/CAS/acceptance rules | Native leaves and MCP compatibility tools; compact registry adapters reuse them |
+| Todo UI | Existing local-user Board commands and same domain persistence | Existing UI is unchanged; not a new generic UI mutation endpoint |
+| Explicit Memory (7 operations) | Typed Host service over private Memory Engine; canonical input/output contracts | Native local leaves; external MCP exposes only 4 non-decision operations |
+| Chat topic/summary Memory | Existing ChatMemoryService and authorized context sources | Remains distinct; not reinterpreted as confirmed long-term facts |
+| Action, Recipe, Chat/Agent Session capabilities | Existing domain-specific capability/status contracts | Legacy exposure; not yet migrated into the pilot registry |
+| Knowledge, retrieval and other MCP domains | Existing domain tools | Runtime inventory reports actually exposed tools, not invented availability |
+
+This removes duplicate pilot schema declarations at the adapters, not every
+domain-specific implementation. The fixed native Todo fixture uses one discovery
+tool round followed by one effective read, with zero parameter/selection failures.
+Its HTTP model responses are deterministic fixtures, not a model-quality or
+paid-provider timing benchmark. The local schema regression threshold is compact
+Todo definitions below 40% of legacy bytes; no live speed/cost threshold has been
+accepted. The actual generated stdio-server fixture also inventories its complete
+legacy exposure: 160 tools / 123,601 bytes versus compact's 7 tools / 5,103 bytes.
+Compact hides non-pilot domains; these are not equivalent full-domain catalogs.
+Use runtime inventory for each deployed configuration rather than extrapolating
+either fixture's count.
+
+The local Harness records canonical capability operation/version and catalog
+revision beside original tool evidence. The MCP usage ledger records the actual
+logical leaf identity/version rather than treating generic routing as the
+business operation; it does not duplicate arguments or private Memory text.
+
+### Explicit long-term Memory pilot
+
+Select the `memory_record_*` builtins in Chat Tools, or discover
+`memory.record.*` in compact mode. The Host binds scope to the local owner and
+configured knowledge-root identity; tools cannot choose an account, scope,
+database path or authorization. This pilot does not provide account-wide or
+cross-root recall. Records use the existing private extension-storage Memory
+database, never a synchronized knowledge document.
+
+- `propose` records bounded content and exact `{id, chat, revision, locator}`
+  references as **pending**, using a required operation ID for idempotency.
+- `confirm`, `revise`, and `revoke` require a separate native local human decision
+  showing the exact stored content, sources and expected revision. Allow All is
+  not confirmation. Portal-controlled writes are rejected. Cancellation/runtime
+  state and revision CAS are checked again after the decision.
+- Revision supersedes the old content and creates a new **pending** version;
+  it does not inherit confirmation. Revocation excludes the record from future
+  active search, including after worker restart.
+- `search` returns at most three confirmed-current previews, explicitly marked
+  with truncation, record ID and revision. Use `get` for full text and provenance.
+  Content and aggregate serialized sources are each limited to 4096 UTF-8 bytes.
+  Historical reads report their status; history is not active recall.
+- `audit` provides bounded lifecycle events. MCP exposes only propose/get/search/
+  audit and cannot confirm/revise/revoke or supply Host decision fields.
+
+The private Python worker is a trusted local transport, not an operating-system
+multi-user access-control boundary. Source references are preserved exactly but
+not automatically re-resolved against all external systems. Sensitive content
+must not be proposed. There is no automatic source-deletion cascade, global
+semantic deduplication, or automatic injection into subsequent prompts in this
+pilot. Explicit tool retrieval crosses Chat/process lifetimes; it is not evidence
+that a model applied a fact. Harness projections retain only bounded record IDs,
+revisions and statuses, labelled retrieved/read, with application not observed.
+
+Local executable checks cover native Chat discovery, actual FastMCP dispatch,
+shared durable Memory state, scope isolation, approval denial, revision and
+revocation across fresh workers, and legacy Todo/Plan compatibility. The Todo
+native fixture measures 23,325 legacy schema bytes versus 2,412 compact bytes;
+the combined Todo/Memory native fixture measures 27,318 versus 2,412 bytes.
+The knowledge-tool FastMCP fixture measures 37,094 versus 4,629 bytes. These are
+serialized local fixtures (the latter routes Memory without exposing new top-level
+leaves), not provider token counts or live latency/quality results.
+Real loaded-Host, Copilot and Claude client certification remains separate and
+must not be inferred from these tests.
+
+## Inference effectiveness and convergence
+
+The local Agent Harness exposes **Inference effectiveness** for each attempt, with
+up to 20 recent rounds. It connects existing inference timing, reported usage and
+credits to tool rounds, local scheduling wait and reused reads. Overlapping tool
+intervals are merged, not summed as elapsed wall time. Missing timing remains
+unknown; provider queue time, CPU time and unobserved orchestration gaps are not
+inferred. Tracked invocation user-wait totals can overlap and are not an additional
+wall-clock component. Default diagnostic exports use a compact five-round
+projection; complete receipts remain in local history. No hidden reasoning is
+collected. A new distinct tool result is an observation, not proof of semantic
+progress, successful verification or acceptance.
+
+The Host can run up to four explicitly annotated independent local read/search
+tools concurrently in one model round. HTTP, native VS Code and Copilot SDK
+transports share this scheduling policy. Unannotated tools, programs, writes and
+external MCP/VS Code tools remain exclusive FIFO barriers, including reads queued
+after a write. Results retain call identities and, for batched HTTP/native calls,
+the original call order. Cancellation stops pending tools and preserves completed
+effects; tools already executing may have effects that cannot be undone. Plan
+revision and worker dispatch still stop pending execution. This does not start
+additional Chats or automatically parallelize arbitrary test/build commands.
+
+Repeated `read_file` calls can reference an earlier still-visible result only
+when the Host's current document-content version matches. Changed documents or
+pruned evidence require another read. Mutable search/list/status results are not
+cached. Existing required-fact, source-validation, context-budget and permission
+checks remain in force; content hashing itself has a local cost.
+
+`report_work` accepts an optional contract (`scope`, `nonGoals`, `stopWhen`) and
+phase (`locating`, `implementing`, `verifying`, `delivering`). These persist with the
+existing goal; they are declarations, not additional filesystem permissions.
+Successful delivery requires resolved acceptance, including the original objective
+and current-attempt evidence; blocked/needs-input handoffs remain explicit and
+unfinished. Older reports without a contract remain compatible.
+New requirements still invalidate earlier acceptance.
+
+Three consecutive observed tool rounds without a new successful result, or two
+failed executions of the same command/arguments, request a strategy change.
+Process-heartbeat timestamps and status reporting alone are not new evidence.
+Existing repeated-call, round, active-time and credit guards remain enabled.
+For managed work, the first stall adds one recovery instruction to the next
+round; a second stall disables further tools and allows only an evidence-based
+summary. Ordinary repeated-call reviews outside managed work retain their
+interactive Continue/Summarize/Cancel choices. A stall or exhausted budget never
+marks unresolved work accepted. Thresholds are initial safeguards, not measured
+optimal settings.
+
+Worker assignment accepts optional `writeScope` paths and exclusive `resources`.
+The Host rejects declared overlaps within a dispatch batch and against that
+manager's running assignments, before approval and again before dispatch.
+Undeclared legacy assignments remain compatible. These are local dispatch
+contracts, not OS locks, enforced write permissions or cross-manager/global
+resource locks. Coordinate shared build outputs explicitly.
+
+`read_chat_result` returns readiness and a saved-result version. Final validation
+can require `requireReady: true` and pin `expectedSha256` from the earlier
+handoff. Running, failed, unresolved or changed results are rejected. Wait for
+completion events instead of polling or replaying a worker. A ready reply hash
+does not validate workspace bytes or replace artifact/test acceptance.
+
+Controlled transport, storage and Harness tests cover these mechanisms. They do
+not establish real-model speed/cost improvement or certify Memory write/reload/
+later-turn recall for a live Chat. Those require a separately authorized,
+fixed-task comparison on the loaded Host version; installing source changes does
+not update already running Hosts.
+
+## Plan before implementation
+
+Choose **Plan** in the composer for complex engineering work. Ordinary **Chat**
+keeps its existing behavior; the planning hint is optional and never blocks it.
+Plan mode permits bounded reads, search and clarification, but the Host excludes
+file edits, programs, Actions, external MCP/VS Code tools and execution delegation,
+even under Allow All. User tool selections are not rewritten.
+
+The agent submits a persistent, versioned plan with objective, scope/non-goals,
+investigated facts, open questions, risks, dependency-aware steps and concrete
+verification for every step. Review the complete card, then choose **Approve and
+implement** and confirm the exact version locally. Unresolved questions prevent
+approval. Approval binds the Chat, plan hash, requirements and execution-context
+digest, including attached references, selected knowledge contents and pending images; it does not grant
+tool permissions or certify task completion. Changed attachments require a fresh
+Plan response, not approval of a proposal researched against older inputs.
+
+**Revise plan** or a new message returns approved execution to read-only planning.
+An agent discovering a material scope/approach change must submit a revised plan
+before further implementation; this stops the response and invalidates approval.
+Already assembled tools are checked again at invocation; after submission, even
+queued read-only questions cannot delay review. The Host cannot
+infer every unreported semantic deviation or undo effects completed before revision.
+Plan approvals do not authorize workers, another Chat or a remote execution target.
+
+**Continue approved plan** resumes only in the approved context, with existing
+permissions and budgets. Reconcile completed effects instead of replaying calls.
+Restarting a Host preserves plans but requires local review and reapproval;
+snapshot recovery creates new, unapproved Plan identities rather than transferring
+the original approval. Generated handoff text is not a user-authored Profile source.
+Changes to workspace, account, root or trust require a revised plan in that
+environment. Plan inputs cannot be queued, approved through remote/API requests,
+or used to bypass the boundary via Portal direct commands or incoming file writes.
+Active incoming Portal execution must end before changing workflow mode.
+
 The Chat follows new messages, progress and Portal activity while the reader is
 at the latest content, including delayed content resizing and viewport changes.
 Scrolling up pauses following without pulling the reader out of history;
@@ -108,7 +357,15 @@ disabled. A first send needing PKM tools initializes and waits for the
 configured managed service even when the previously selected Chat was read-only;
 startup failure remains explicit and does not fall back to native confirmation.
 
-MCP discovery has a single 30-second deadline covering connection, all catalog
+Chat first awaits this Host's automatic MCP preparation (runtime dependencies
+and publication of a complete managed generation). Preparation errors remain
+explicit; a change of Knowledge Root, workspace trust, or disposal prevents the
+waiting Chat from launching a connection. Bulk generation copies and hash reads
+use asynchronous I/O under the cross-window lock, so the Host can process
+heartbeats during an upgrade. Preparation and actual discovery timings are
+logged separately.
+
+After preparation, MCP discovery has a single 30-second deadline covering connection, all catalog
 pages and managed identity verification, in addition to per-request timeouts.
 An endless sequence of distinct cursors cannot keep initialization pending.
 Discovery timeout invokes no content tools and does not retry writes.
@@ -197,8 +454,13 @@ A Portal belongs to one specific Chat, not the active Room,
 window or machine. Different Chats can simultaneously control different
 IP/hostname endpoints or be controlled independently. Open the current Chat's
 **Portal** door button; it shows only a closed door before pairing/disconnected
-and an open door while connected. Role-specific wizards remain in status/details,
-not on this two-state button. Chat List has no global Portal button.
+and an open door while connected. The connection alone never changes the Chat's
+wizard or local activity status. Only a live incoming Portal task or direct command
+changes the header to the Portal + controlled-execution scene; awaiting approval
+is labelled separately, and completion, failure, cancellation or revocation restores
+normal Chat status. Historical remote messages/command receipts do not keep that scene
+active. This applies to Chat List roles too, including duplex endpoints whose saved
+pairing role differs from the current request direction. Chat List has no global Portal button.
 **PKM: Portal** asks which Chat owns the connection.
 Agent Sessions passes its native Chat identity. Portal setup and approvals open
 the owning Chat to display local interaction cards; they do not interrupt its
@@ -209,7 +471,8 @@ current model turn or replace history.
 The top-right Chat Portal button shows only an open or closed portal, without
 a wizard or role-specific decoration. Clicking it opens the Portal controls to
 prepare a connection change; it does not immediately disconnect or switch roles.
-Role-specific wizards remain in status and connection details.
+Connection-role wizards remain in connection details; the header reflects current
+execution, independently of the connection button.
 
 1. Choose **Controller** or **Controlled**. No Portal name, create/accept selector
    or endpoint entry is required. **Controller** always generates the code:
@@ -618,8 +881,12 @@ attempt and retains acceptance criteria across follow-ups with History enabled.
 IDs and acceptance state. The model uses `report_work` to record `continue`,
 `resolved`, `blocked` or `needs_input`. Reports must account for every ordered
 source input and cannot remove previously recorded criteria, including the
-original-objective criterion. Continuing requires a concrete next action;
-resolution requires every criterion verified against successful, non-report
+original-objective criterion.
+The tool schema and work context explicitly require copying the existing
+criteria verbatim. A rejected replacement report names the missing criteria
+and leaves the work state unchanged so the agent can submit a corrected list;
+it never auto-adds a verified root criterion or bypasses evidence validation.
+Continuing requires a concrete next action; resolution requires every criterion verified against successful, non-report
 tool calls from the current attempt. A successful diagnostic alone does not
 automatically settle the objective. These are evidence-linked **agent claims**,
 not independent semantic certification.
@@ -974,6 +1241,12 @@ The native control API and `list_chats` return `chatUrl`; use that URL as the
 `chat_id`/`chatId` input to get, send, cancel, or `ask_chat`. Legacy UUID inputs
 remain accepted for compatibility, but are not resource links.
 
+Message headers show the persisted `recordedAt` in the viewer's local timezone,
+including the date and seconds. Hover for the full date and timezone. Assistant
+timestamps mark when the reply record began, not completion; streaming and refresh
+do not reset them. Older messages without a valid recorded timestamp omit the
+time rather than inventing one.
+
 User messages align right and assistant messages align left. A small bottom-right
 token footer appears only when valid reported input/output counts are available.
 Pending or unreported usage and Credits have no placeholder text; each is shown
@@ -1150,11 +1423,23 @@ to move it. **Trash** stays at the bottom and supports restore, permanent delete
 and Empty Trash. Destructive actions require confirmation; Task/Group evidence
 is preserved even when a Chat is permanently deleted.
 The move picker accepts a new name directly and creates that group; selecting an
-existing name reuses it. Permanent deletion completes Memory cleanup before
-removing the recoverable Chat file. Empty Trash attempts each item, reports
-failures explicitly, and leaves failed items in Trash rather than presenting
-a UI-only deletion or silently stopping the remainder. Cross-workspace cleanup
-uses the original Chat's namespace. Successful deletions persist after reopening.
+existing name reuses it. Permanent deletion first writes a recoverable deletion
+intent under `.pkm/state/api-chat-deletions`, then removes the Chat file before
+purging Memory. A physical deletion failure that leaves the Chat file intact
+does not purge Memory: the Chat remains in Trash and can be restored.
+If the Chat file is gone but Memory, endpoint or final storage cleanup fails,
+the intent remains and Trash shows **Permanently deleted; cleanup pending.
+Cannot restore.** Such records are not recoverable Chats. The user can explicitly
+retry deletion cleanup or choose Delete All to retry pending cleanup alongside
+the remaining Trash items. Reopening does not automatically replay cleanup.
+The intent retains the original namespace and history-retention decision, so
+cross-workspace cleanup still works after the Chat file is gone. It is removed
+only after all cleanup succeeds; failures are surfaced and do not silently stop
+the other Empty Trash items. Restoring an intact Chat cancels its prepared intent.
+Per-Chat cross-process locks serialize deletion and cleanup attempts. This is
+restart recovery, not an atomic transaction across the filesystem and Memory DB;
+an interrupted cleanup can require an explicit retry. Existing retained Task and
+worker history is not removed by final cleanup.
 
 Chat List trash/restore/permanent-delete operations, Empty Trash enumeration and
 the deletion cleanup's owning-namespace lookup run in a Node worker. Full-history
@@ -1239,6 +1524,31 @@ Conflicting inputs are rejected. A receipt marked `succeeded` means the
 controller operation returned: inspect `reply.status`, `reply.error` and actual
 tool statuses before claiming a successful model answer. Responses are bounded
 and disclose truncation; unavailable credits remain `null`, not zero.
+
+For bounded automation, pass `hard_tool_round_limit=8` to `api_chat_send`.
+This optional integer (1-1000) limits the main response's tool-capable inference
+rounds for **that send only**. A batch of multiple tool calls is one round;
+goal-correction inferences also consume rounds. It is not a tool-count,
+elapsed-time or credit cap, and does not bound auxiliary context/learning calls.
+Omitting it preserves existing interactive review behavior.
+
+Supporting Hosts advertise `send_limits.hardToolRoundLimit` in capabilities.
+The MCP bridge rejects a limited send to an older Host before submitting it,
+rather than silently running without the limit. The limit participates in
+`command_id` idempotency; changing it requires a new explicit request ID.
+At the boundary no new tool-capable round is admitted. At most one tool-free
+summary retains completed results and states unfinished work. HTTP/native
+transports omit tool definitions for that summary; the SDK stops its
+tool-capable session and uses a fresh session with no available tools.
+Stop still cancels immediately, including during summary.
+
+Inspect `reply.toolRoundLimit` (`limit`, `reached`, and, once reached, `rounds`),
+also retained in local history and Harness diagnostics. A summary is not goal
+acceptance: an unresolved active goal ends interrupted with a failed reply and
+failed send receipt, while retaining the summary and tool evidence. Use
+`api_chat_get` to inspect that attempt. No automatic continuation, retry or
+permission elevation is granted, and subsequent sends, local retries and queued
+requests do not inherit this send's limit.
 
 Mutation requires a trusted filesystem workspace and the existing Chat's
 ownership/permission policy. Busy, paused, foreign-owned and trashed Chats are
@@ -1342,6 +1652,23 @@ but outside-root references still require the Protective boundary grant. These
 are not access to all PKM services or live Broker content; cached Subscription
 reads use the current local snapshot without a remote fetch. Read-only mode
 keeps safe read/question tools, not write/process/MCP/cooperation tools.
+
+`note_todo_read` discovers Notes containing explicit Work Items or reads one exact
+Note slug, including its whole-file CAS digest and this Chat's stable `chat:<id>`
+worker identity. `note_todo_update` executes an approved command against that
+digest; claim, protected edits, evidence, delegated review and reopening use the
+same deterministic implementation as the Note UI and MCP. Workers cannot assign
+themselves user authority or weaken acceptance criteria. Reported Done/Success
+does not accept the result or complete a managed Task. Plan/read-only requests
+advertise only the read tool. Reads are not reused from an earlier tool result
+after a mutation: always obtain the current digest before another command.
+Portal-controlled requests cannot write Work Items; read disclosure still follows
+the existing `pkm-read` boundary. Explicit per-Chat tool selections are preserved;
+enable the new tools in Tools if an older Chat has a restricted selection.
+See [Note Work Items](./note-work-items.md) for the Markdown format and external
+MCP's shared-identity limitation. None of these tools starts an Agent or maintains
+a model-driven polling loop.
+
 PKM supplies its own Session ID and actual tool availability to the model even
 when no tool is selected. Independent Streamable HTTP MCP connections remain
 supported. The Tools tree lists the actual `vscode.lm.tools`
@@ -1590,14 +1917,37 @@ native providers retain **Billing unavailable**; configured direct HTTP prices
 remain separate estimates in their configured currency. Compatible HTTP usage
 with the same explicit Copilot billing field is preserved, never synthesized.
 
+`personalKnowledge.apiChatActivityCreditLimit` defaults to **200 credits per
+submitted Chat message response and its inference rounds; set it to `-1` to
+disable the credit limit. Only reported model credits are counted. Ordinary
+tool execution, including a detached terminal's runtime, is not credit usage;
+model requests made to track that terminal still count. Once reported usage
+reaches the limit, PKM waits at the inference boundary before executing returned
+tools or sending another request. The user can add 50 credits, enter a new total
+limit, make this response unlimited, make this Chat session unlimited, pause,
+or cancel. A custom limit applies only to the current response and does not
+change the setting. Response-level bypass ends with that response. Chat-session
+bypass persists with the Chat across reopen and can be removed in Model Settings.
+If a provider omits credit usage, the receipt remains partial/not-reported and
+the configured limit can only apply to the reported portion; unknown usage is
+never treated as zero.
+
+`personalKnowledge.apiChatActivityReviewMinutes` defaults to **20 active
+minutes**. At the next inference boundary, the user can continue for another
+interval, make this response or Chat session unlimited, keep the request paused,
+or cancel it. Tracked user waits and the lifetime of detached background
+processes are excluded. This is a user-mediated review gate, not an automatic
+failure or inference timeout.
+
 The direct HTTP **First-call estimate** is not a whole-turn cost cap: each tool
 round can resend history and growing tool results, adding input costs even when
 the output allowance is shared. Context bounds each call, not cumulative input.
-The runtime currently enforces eight model rounds, sixteen calls per round, a
-shared output allowance and the request deadline. It does not yet enforce a
-cumulative input/credit cap, general delegated subagents, or context compression.
-Those require separate runtime budgets; a slider or a smaller Output alone cannot
-prevent the multi-round amplification described by the supplied Copilot lesson.
+The runtime separately enforces eight model rounds, sixteen calls per round, a
+shared output allowance, the request deadline and the reported per-activity
+credit review described above. It does not enforce a cumulative input cap,
+general delegated subagent budget or context compression. Those require separate
+runtime budgets; a slider or a smaller Output alone cannot prevent the multi-round
+amplification described by the supplied Copilot lesson.
 
 ## Agent Configuration
 
@@ -1923,10 +2273,15 @@ remain meaningful:
   `background:true`, a required `timeoutSeconds` from 1 to 86,400 and a stable
   `idempotency_key` from 1 to 200 characters. Its lifetime requires a one-time
   approval even under Allow All or remembered program permission. The approved
-  process survives window reload; Chat Stop or `process_cancel` with the
-  original handle cancels it. No shell, credentials or production execution is implied.
+  process survives window reload. Its tool result provides Pause, Resume, Stop
+  and status controls in that Chat. POSIX process groups support verified
+  pause/resume; paused time does not consume the approved active-runtime
+  deadline. Windows currently supports Stop but not reliable process-tree
+  pause/resume. Stop requires explicit confirmation, and Chat Stop cancels all
+  processes owned by the Chat. No shell, credentials or production execution
+  is implied.
 - `process_get`: query the original durable handle in this Chat, including
-  launcher/running/exit/timeout/cancel/storage-limit states. A stale supervisor
+  launcher/running/paused/exit/timeout/cancel/storage-limit states. A stale supervisor
   reports **unknown**, not success or permission to retry. Reusing the exact
   launch key/inputs returns the original record, including after response loss
   or restart. Changed inputs with that key are rejected. It never launches a
@@ -1953,6 +2308,35 @@ remain meaningful:
   report and `pendingInputIds` newer than its cited sources; workers do not become
   user instructions. Reading or restoring a report does not reconcile those
   inputs, authorize effects, or certify acceptance.
+  For acceptance of saved local files, pass `artifactPaths` on validation
+  `start`, for example `[{"path":"src/example.ts","workspace":0}]`, before
+  executing the checks. The Host captures SHA-256, canonical workspace/file
+  identity and filesystem metadata, not model-supplied hashes. Up to 16 regular
+  files are supported, 4 MiB each / 16 MiB total, within filesystem-backed
+  workspaces and the existing file-tool exclusions. Outside-workspace files,
+  sensitive/hidden paths, unsaved editors, symlink escapes and duplicate resolved
+  paths are rejected; hashing is asynchronous, bounded and cancellable.
+  The outcome inherits the exact file list. `complete` rehashes it and requires
+  terminal evidence from this attempt executed after its recorded start.
+  Changed or missing files reject completion without changing report history;
+  record `failed`/`ignored`, then start a fresh check for the revised files.
+  Synchronous Chat and native Session snapshots inspect file identity/metadata,
+  but matching metadata alone is **unchecked**, never proof of current bytes.
+  The read-only asynchronous Harness snapshot request rehashes the latest
+  validation's declared files before displaying it as current. A change,
+  missing file or unavailable host makes that validation stale/unverified in
+  the shared Harness view, including after reload. No artifact contents are
+  synchronously read by the UI snapshot builder; this is a bounded check on
+  snapshot refresh, not a filesystem watcher or automatic test rerun. Inspecting
+  a different machine's receipt cannot certify its files locally; asynchronous
+  rehashing also requires the recorded workspace to be currently open and trusted.
+  The UI shows
+  per-file status and retains the original report unchanged.
+  This binds only declared saved files, not unsaved working copies, every build
+  dependency, deployed artifacts or the semantics of a test. Legacy/non-file
+  validation remains usable but explicitly does not certify file versions.
+  A stale file check does not rewrite managed Task/Recipe completion records;
+  it does prevent displaying that check as current accepted file validation.
 - `ask_user`: native single/multi-choice picker and optional free-text input.
   Inline Chat forms display enumerated choices vertically as radio buttons
   (single choice) or checkboxes (multiple choice), not dropdowns. All options
@@ -2049,6 +2433,74 @@ exactly-once guarantee: previously failed tools may already have changed externa
 state. Clicking Resume authorizes another model attempt and its possible charges;
 normal tool approval rules still apply. No worker is resumed automatically.
 
+Worker result reads select the assistant response by the receipt's current
+activity/attempt, not the first response after the original assignment. Resume
+therefore exposes the continuation's result; while that attempt is running,
+the receipt carries no previous answer, error or truncation flag. Reusing a
+permanent Chat for another assignment does not retarget an earlier receipt or
+make it appear running. Legacy receipts without attempt identities remain
+scoped to the response immediately following their delegated input.
+
+Archived result paging and the local result panel use the same attempt
+selection, including after history/store reload. Conflicting Chat/activity
+identities, ambiguous attempts and missing bound results fail explicitly rather
+than substituting the latest unrelated response. Original messages and failures
+remain intact. This is result identity, not artifact certification: a saved
+parent tool read remains historical evidence and does not by itself prove that
+the worker's files or the parent's acceptance are current.
+
+`read_chat_result` now includes a Host-generated `workerVersion` for results with
+activity/attempt identities. It binds the manager and worker namespaces/Chat IDs,
+receipt, activity, attempt, response identity and status, plus a SHA-256 digest
+of the full saved response, error, tool evidence and Harness reports. Paging
+still returns a version for the full result, not only the requested substring.
+This is not a model-supplied hash or a cryptographic signature.
+
+Parent `record_harness` validation completion and verified `report_work`
+criteria citing `read_chat_result` recheck that version against the saved,
+owned receipt and current worker response before committing. A new attempt,
+changed result, running worker, missing archive, conflicting identity or legacy
+read without a version cannot certify current acceptance. Re-read the terminal
+result and validate it again; these checks never start a model or replay a tool.
+Failed/ignored validation may still preserve the old evidence for diagnosis.
+
+Synchronous Harness snapshots mark cited worker versions unchecked. Chat and
+native Session snapshot readers recheck them against the owning state store,
+including segmented history and archived results. Changed/unavailable/unchecked
+worker evidence returns the shared lifecycle to Check / unverified even when
+the managed Task is completed. This only changes the inspection projection:
+original tool reads, validation reports, work-goal reports and Task/Recipe states
+remain historical and are not rewritten. Inspection refreshes do not watch or
+automatically rerun the worker.
+`session_info.workerEvidence` also reports the current state of cited worker
+evidence; its work-goal and Harness reports are still historical agent reports.
+
+Version verification follows descendant `read_chat_result` calls explicitly
+cited by each selected response's latest validation report or its matching
+work-goal's verified criteria. A changed grandchild therefore invalidates
+ancestor acceptance even when the intermediate response bytes remain unchanged.
+Repair the chain from the changed descendant upward: rereading an unchanged
+intermediate response does not repair its obsolete evidence.
+Matching work-goal acceptance criteria are included in the response version's
+digest as well, so replacing that dependency list invalidates old parent reads.
+
+Each direct result verification is bounded to 32 levels and 256 distinct version
+reads, including the root. Cycles, exceeded limits, missing/foreign/unversioned
+descendants and unavailable archives fail explicitly, never truncate into
+success. Repeated references to the same checked version share the result within
+that traversal and do not create false cycles. Archived intermediate responses
+provide their saved manager receipts for descendant ownership checks even after
+the temporary manager Chat is removed. Verification remains read-only and does
+not rewrite the archived evidence.
+
+This follows only explicitly cited result evidence, not every delegation or
+historical read. It does not check every worker file/dependency, detect unreported
+external changes, or infer semantic correctness from a completed response.
+File acceptance still needs explicit saved-file binding and actual checks.
+Reusing an existing permanent Chat for an unrelated assignment leaves the
+previous receipt scoped to its own saved response. The bounded traversal is not
+a cross-process atomic snapshot or a continuous watcher.
+
 Peers send text to a specific task-tree Chat URL and receive a delivery ID once
 the inbox is saved. Only that message, sender identity and delivery metadata are
 shared; there is no hidden common Memory. A busy recipient queues the message,
@@ -2127,6 +2579,9 @@ The inline Chat card offers all three actions; choose Cancel or Stop to abort.
 Switching Chats hides the card without approving, retargeting or cancelling it.
 `apiChatMaxToolRounds` remains a legacy SDK round-review limit, not
 the native Chat policy.
+The optional Agent-Driven Chat `hard_tool_round_limit` is a separate,
+non-renewable per-send boundary; neither a time-review setting nor Continue
+can extend it. Ordinary interactive Chat behavior is unchanged.
 
 Chat also suspects a loop after the same function returns the same result for
 the same canonical arguments three times without observable progress. Object

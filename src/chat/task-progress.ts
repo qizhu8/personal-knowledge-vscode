@@ -118,7 +118,8 @@ export function classifyTaskProgress(records: readonly TaskProgressRecord[], opt
   const repeats = new Map<string, TaskProgressEvidence[]>(), failures = new Map<string, TaskProgressEvidence[]>();
   const blocked: TaskProgressEvidence[] = [];
   for (const { call, at, index, signature } of calls.values()) {
-    if (at < now - windowMs || index < lastArtifactIndex) continue;
+    // An unfinished invocation has no outcome yet; it cannot prove a repeated no-output attempt.
+    if (call.status === "running" || at < now - windowMs || index < lastArtifactIndex) continue;
     const item: TaskProgressEvidence = { at, kind: "tool-call", key: signature, detail: call.status };
     const group = repeats.get(signature) ?? [];
     group.push(item); repeats.set(signature, group);

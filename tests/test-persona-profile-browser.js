@@ -141,6 +141,7 @@ test("built Projects/Agent and Chat/Automation Profile entries reach native card
   await chatPage.evaluate(() => window.dispatchEvent(new MessageEvent("message", { data:{ type:"showChat" } })));
   uiAction = "edit";
   inputs = ["Browser user", "", "", "BROWSER_USER_EDITED_DURING_BUSY_UI", ""];
+  await chatPage.locator("#chat-actions-toggle").hover();
   await chatPage.getByRole("button", { name:"User / Agent Profiles", exact:true }).click();
   const profileDialog=chatPage.getByRole("dialog",{name:"Current User / Agent Profiles",exact:true});
   await profileDialog.getByText("BROWSER_USER_ONE",{exact:true}).first().waitFor();

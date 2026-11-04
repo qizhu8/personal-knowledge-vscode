@@ -38,6 +38,7 @@ export class ApiChatAgentControl {
     this.write(path.join(this.root, "hosts", this.hostId + ".json"), {
       ...this.metadata, schema: "pkm.api-chat.host/v1", hostId: this.hostId,
       pid: process.pid, updatedAt: Date.now(), operations: API_CHAT_CONTROL_OPERATIONS,
+      sendLimits: { hardToolRoundLimit: { min: 1, max: 1000 } },
       portalRequestDirectory: this.portalRequests,
     });
     this.heartbeatAt = Date.now();

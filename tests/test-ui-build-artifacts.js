@@ -83,17 +83,17 @@ console.log("UI build artifact tests passed");
 
 const chatFixture = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-chat-bundle-"));
 try {
-  for (const name of ["api-chat-tools.js", "api-chat-mcp.js"]) fs.copyFileSync(path.join(root, "dist", name), path.join(chatFixture, name));
-  fs.copyFileSync(path.join(root, "dist", "sync", "github-sync-workbench.js"), path.join(chatFixture, "github-sync-workbench.js"));
+  fs.cpSync(path.join(root, "dist"), path.join(chatFixture, "dist"), { recursive: true });
+  fs.copyFileSync(path.join(root, "package.json"), path.join(chatFixture, "package.json"));
   execFileSync(process.execPath, ["-e", `
     const assert = require("node:assert/strict");
     const Module = require("node:module");
     const original = Module._load;
     Module._load = function(name, ...args) { return name === "vscode" ? {} : original.call(this, name, ...args); };
-    const directory = process.argv[1];
+    const directory = process.argv[1] + "/dist";
     assert.equal(typeof require(directory + "/api-chat-tools.js").createBuiltinTools, "function");
     assert.equal(typeof require(directory + "/api-chat-mcp.js").createVscodeTools, "function");
-    const workbench = require(directory + "/github-sync-workbench.js");
+    const workbench = require(directory + "/sync/github-sync-workbench.js");
     assert.equal(typeof workbench.openGitHubSyncConflictWorkbench, "function");
     assert.equal(workbench.githubSyncWorkbenchComparison("left\\n", "right\\n", "left\\n").blocks[0].remote, "right\\n");
   `, chatFixture], { cwd: chatFixture, env: {}, stdio: "pipe" });

@@ -18,6 +18,73 @@ from action_modules import ModuleRuntime, object_schema
 
 
 class LibraryTests(unittest.TestCase):
+    def test_workbench_notices_fade_after_five_seconds_pause_on_hover_and_focus_and_ignore_unchanged_polling(self):
+        bootstrap = """
+window.__actions=[{action_id:'fixture.blocked',category:'Actions',description:'Needs attention',
+ effects:['pure'],input_schema:{properties:{}},output_schema:{properties:{}},
+ implementations:[],availability:{state:'blocked'},preparation:{state:'blocked',reason:'Fixture readiness reason'}}];
+window.acquireVsCodeApi=()=>({getState:()=>null,setState:()=>{},postMessage:message=>{
+ const result=message.method==='catalog'?{ok:true,actions:__actions,module_sets:[],queue:{jobs:[]}}:{ok:true,runs:[],draft:null};
+ queueMicrotask(()=>window.dispatchEvent(new MessageEvent('message',{data:{requestId:message.requestId,result}})));
+}});
+"""
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(viewport={"width": 1200, "height": 900})
+                errors = []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                page.clock.install(time=0)
+                page.clock.pause_at(1000)
+                page.route("https://action.test/**", lambda route: route.fulfill(content_type="text/html",
+                    body=(ROOT / "resources/action-workbench.html").read_text().replace("<script>", "<script>" + bootstrap, 1)))
+                page.goto("https://action.test/")
+                status = page.locator("#status")
+                notice = page.locator("#workbench-tasks")
+                expect(status).to_have_text("Loaded 1 blocks")
+                expect(notice).to_contain_text("Fixture readiness reason")
+                before = page.locator(".viewport").evaluate("(node)=>node.getBoundingClientRect().height")
+                page.clock.run_for(4999)
+                expect(status).to_be_visible()
+                expect(notice).to_be_visible()
+                notice.hover()
+                page.clock.run_for(10000)
+                expect(notice).to_be_visible()
+                self.assertFalse(notice.evaluate("(node)=>node.classList.contains('notice-fading')"))
+                expect(status).to_be_hidden()
+                page.mouse.move(2, 2)
+                page.clock.run_for(4999)
+                expect(notice).to_be_visible()
+                page.clock.run_for(1)
+                self.assertTrue(notice.evaluate("(node)=>node.classList.contains('notice-fading')"))
+                page.clock.run_for(250)
+                expect(notice).to_be_hidden()
+                self.assertGreater(page.locator(".viewport").evaluate("(node)=>node.getBoundingClientRect().height"), before)
+                page.clock.run_for(15000)
+                expect(notice).to_be_hidden()
+                expect(page.locator("#library-next-step")).to_contain_text("Fixture readiness reason")
+                page.evaluate("async()=>{__actions[0].preparation.reason='Updated blocker';await refresh()}")
+                expect(notice).to_be_visible()
+                expect(notice).to_contain_text("Updated blocker")
+                page.evaluate("status('Fixture explicit error',true)")
+                status.focus()
+                page.clock.run_for(10000)
+                expect(status).to_be_visible()
+                page.locator("#name").focus()
+                page.clock.run_for(4999)
+                expect(status).to_be_visible()
+                page.clock.run_for(1)
+                self.assertTrue(status.evaluate("(node)=>node.classList.contains('notice-fading')"))
+                page.evaluate("status('Replacement notice')")
+                page.clock.run_for(4999)
+                expect(status).to_have_text("Replacement notice")
+                expect(status).to_be_visible()
+                page.clock.run_for(251)
+                expect(status).to_be_hidden()
+                self.assertEqual(errors, [])
+            finally:
+                browser.close()
+
     def test_library_category_tree_search_keyboard_resize_and_restore(self):
         actions = [
             {"action_id": "core.files.copy", "display_name": "Copy artifact", "category": "core/filesystem",

@@ -1,7 +1,9 @@
 (() => {
   const t = text => globalThis.PkmChatText?.(text) || text;
-  window.PkmChatRole = chat => chat?.portal?.binding?.role || (chat?.workerManager || chat?.manager || chat?.messages?.some(message => message.delegations?.length)
+  window.PkmChatRole = chat => chat?.portal?.execution ? "controlled" : (chat?.workerManager || chat?.manager || chat?.messages?.some(message => message.delegations?.length)
     ? "manager" : chat?.workerParentChatId || chat?.workerState?.parentChatId || chat?.parentChatId ? "worker" : undefined);
+  window.PkmChatDisplayStatus = chat => chat?.portal?.execution
+    ? chat.portal.execution.state === "awaiting-approval" ? "awaiting-input" : "running" : chat.status;
   const wizardTemplates = new Map();
   const portalTemplates = new Map();
   // Controller: blue Portal ring on the left, side-profile wizard on the right facing it.
@@ -180,7 +182,8 @@
     const order = [...(saved.chatListOrder || [])];
     const rows = new Map();
     const sections = new Map();
-    const active = chat => ["running", "awaiting-input", "awaiting-result"].includes(chat.status);
+    let pickerGroups = [];
+    const active = chat => ["running", "awaiting-input", "awaiting-result"].includes(window.PkmChatDisplayStatus(chat));
     const reconcile = (parent, children) => {
       for (const [index, child] of children.entries()) if (parent.children[index] !== child) parent.insertBefore(child, parent.children[index] || null);
       while (parent.children.length > children.length) parent.lastElementChild.remove();
@@ -223,6 +226,7 @@
       collapsed,
       order,
       expandedWorkers,
+      get pickerGroups() { return pickerGroups; },
       render(library) {
         if (!library) return;
         const scroll = root.scrollTop;
@@ -281,10 +285,11 @@
             cached = { node, row, open, name, toggle, count, children: childList, menuActions }; rows.set(chat.id, cached);
           }
           const indicator = cached.open.querySelector(".chat-status-indicator");
-          const role = chat.portal?.binding?.role || (children.has(chat.id) ? "manager" : window.PkmChatRole(chat));
-          const key = `${chat.status}:${role}:${trash}:${document.documentElement.lang}`;
+          const role = window.PkmChatRole(chat) || (children.has(chat.id) ? "manager" : undefined);
+          const displayStatus = window.PkmChatDisplayStatus(chat);
+          const key = `${displayStatus}:${role}:${trash}:${document.documentElement.lang}`;
           if (cached.statusKey !== key) {
-            const status = window.PkmChatStatusIndicator(chat.status, role);
+            const status = window.PkmChatStatusIndicator(displayStatus, role);
             if (trash) { status.title = t("In Trash"); status.setAttribute("aria-label", t("In Trash")); }
             if (indicator) indicator.replaceWith(status); else cached.open.prepend(status);
             cached.statusKey = key;
@@ -309,21 +314,32 @@
         };
         const groups = [{ id: "ungroup", name: "Ungroup" }, ...library.groups, { id: "trash", name: "Trash" }];
         const renderedSections = [];
+        pickerGroups = [];
         for (const group of groups) {
           const trash = group.id === "trash";
           const chats = sorted(library.chats.filter(chat => trash ? chat.trashedAt : !chat.trashedAt && !parent(chat) && chat.groupId === group.id));
+          if (!trash && chats.length) {
+            const entries = [];
+            const visit = (chat, ancestors = []) => {
+              const path = [...ancestors, chat.title];
+              entries.push({ chat, depth: ancestors.length, path: path.join(" / ") });
+              for (const child of sorted(children.get(chat.id) || [])) visit(child, path);
+            };
+            for (const chat of chats) visit(chat);
+            pickerGroups.push({ name: group.id === "ungroup" ? t(group.name) : group.name, entries });
+          }
           let section = sections.get(group.id);
           if (!section) { section = document.createElement("details"); sections.set(group.id, section); }
           section.className = `chat-list-group${trash ? " chat-list-trash" : ""}`; section.dataset.groupId = group.id; section.open = !collapsed.has(group.id);
           const summary = document.createElement("summary");
           const icon = document.createElement("span"); icon.className = `codicon codicon-${trash ? "trash" : "folder"}`;
           const title = document.createElement("span"); title.className = "chat-list-group-name"; title.textContent = ["ungroup", "trash"].includes(group.id) ? t(group.name) : group.name;
-          const count = document.createElement("span"); count.className = "chat-list-count"; count.textContent = String(chats.length);
+          const count = document.createElement("span"); count.className = "chat-list-count"; count.textContent = String(chats.length + (trash ? library.deletionCleanups?.length || 0 : 0));
           summary.append(icon, title, count);
           if (trash) {
             const empty = button("clear-all", "Delete All", () => post("emptyTrash"));
             empty.className = "chat-trash-delete-all"; empty.append(document.createTextNode(t("Delete All")));
-            empty.disabled = !chats.length; summary.append(empty);
+            empty.disabled = !chats.length && !library.deletionCleanups?.length; summary.append(empty);
           } else if (group.id !== "ungroup") {
             const actions = [["Rename group", () => post("groupRename", { id: group.id })], ["Delete group", () => post("groupDelete", { id: group.id })]];
             summary.append(button("ellipsis", "Group actions", event => openMenu(event, actions)));
@@ -340,7 +356,16 @@
             event.preventDefault(); const id = event.dataTransfer.getData("application/x-pkm-chat-id");
             if (library.chats.some(chat => chat.id === id && !chat.trashedAt && !parent(chat))) post(trash ? "trashChat" : "moveChat", { id, value: group.id });
           };
-          reconcile(section, [summary, ...chats.map(buildRow)]); renderedSections.push(section);
+          const cleanups = trash ? (library.deletionCleanups || []).map(item => {
+            const row = document.createElement("div"); row.className = "chat-list-row"; row.dataset.deletionCleanup = item.id;
+            const label = document.createElement("span");
+            label.textContent = `${item.title} - ${t("Permanently deleted; cleanup pending. Cannot restore.")}`;
+            const retry = document.createElement("button"); retry.type = "button";
+            retry.textContent = t("Retry deletion cleanup"); retry.onclick = () => post("deleteChat", { id: item.id });
+            row.append(label, retry);
+            return row;
+          }) : [];
+          reconcile(section, [summary, ...chats.map(buildRow), ...cleanups]); renderedSections.push(section);
         }
         reconcile(root, renderedSections);
         for (const id of rows.keys()) if (!ids.has(id)) rows.delete(id);

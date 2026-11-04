@@ -1,4 +1,4 @@
-import type { ApiChatMessage } from "./api-chat-client";
+import type { ApiChatMessage, ChatInputTokenCounter } from "./api-chat-client";
 import { estimateInputTokens } from "./api-chat-models";
 import { createHash } from "crypto";
 import { memoryMatchScore, memoryTerms, toolEvidenceReminder } from "./chat-memory";
@@ -24,6 +24,7 @@ export interface ContextPlanReceipt {
   unresolved: string[];
   manifest: Array<{ role:ApiChatMessage["role"]; hash:string; referenceIds:string[]; callIds:string[] }>;
   toolSchemaHash: string;
+  measuredInput?: { inputTokens: number; countingMethod: "vscode-countTokens-plus-overhead" | "mixed-token-counts-and-byte-bounds" };
   automaticKnowledge?: { inputBudget: number; estimatedBefore: number; estimatedAfter: number; countingMethod: "utf8-byte-upper-bound" };
 }
 
@@ -33,19 +34,34 @@ const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(va
 
 export class ContextCandidateLimitError extends Error {}
 
+export interface ContextTokenMeasurement {
+  messages: ReadonlyMap<ApiChatMessage, { hash: string; tokens: number }>;
+  tools: number;
+}
+
+function contextTokens(messages: ApiChatMessage[], measurement?: ContextTokenMeasurement): number {
+  if (!measurement) return estimateInputTokens(messages);
+  return messages.reduce((total, message) => {
+    const measured = measurement.messages.get(message);
+    return total + (measured?.hash === digest(message) ? measured.tokens : estimateInputTokens([message]) - 32);
+  }, 32);
+}
+
 export function fitChatContext(
   messages: ApiChatMessage[],
   automatic: Map<ApiChatMessage, AutomaticChatContext>,
   inputBudget: number,
   toolSchema: ApiChatMessage[] = [],
-  options: { maxRefinements?: number; maxCandidates?: number; deadlineMs?: number; now?: () => number; query?:string; report?: (receipt:ContextPlanReceipt) => void } = {},
+  options: { maxRefinements?: number; maxCandidates?: number; deadlineMs?: number; now?: () => number; query?:string; measurement?:ContextTokenMeasurement; report?: (receipt:ContextPlanReceipt) => void } = {},
 ): Set<string> {
   const now = options.now || Date.now, started = now();
   const maxRefinements = options.maxRefinements ?? 8, maxCandidates = options.maxCandidates ?? 100, deadline = options.deadlineMs ?? 1000;
   if (!Number.isSafeInteger(maxRefinements) || maxRefinements < 0 || !Number.isSafeInteger(maxCandidates) || maxCandidates < 0
     || !Number.isFinite(deadline) || deadline < 0) throw new Error("Invalid context refinement limits.");
   const mandatory = messages.filter(message => !automatic.has(message));
-  const mandatoryTokens = estimateInputTokens([...mandatory, ...toolSchema]);
+  const cost = (values: ApiChatMessage[]) => contextTokens(values, options.measurement);
+  const schemaTokens = options.measurement?.tools ?? estimateInputTokens(toolSchema) - 32;
+  const mandatoryTokens = cost(mandatory) + schemaTokens;
   if (mandatoryTokens > inputBudget) {
     throw new Error("Context budget exceeded by required input, pinned context or active tool results. Reduce required context or increase the model budget.");
   }
@@ -55,7 +71,7 @@ export function fitChatContext(
   const selected = new Set(mandatory);
   let tokens = mandatoryTokens, refinements = 0, candidates = 0;
   let knowledgeTokens = 32;
-  let stopReason: ContextPlanReceipt["stopReason"] = estimatedBefore <= inputBudget ? "fits" : "selected-subset";
+  let stopReason: ContextPlanReceipt["stopReason"] = cost(messages) + schemaTokens <= inputBudget ? "fits" : "selected-subset";
   const unresolved: string[] = [];
   const groups = new Map<string | ApiChatMessage, ApiChatMessage[]>();
   for (const message of messages) if (automatic.has(message)) {
@@ -69,13 +85,13 @@ export function fitChatContext(
     if (group.some(message => automatic.get(message)!.isCurrent?.() === false)) {
       stopReason = "stale-source"; unresolved.push(...group.flatMap(message => automatic.get(message)!.ids)); continue;
     }
-    const cost = estimateInputTokens(group) - 32;
+    const groupCost = cost(group) - 32;
     const reference = automatic.get(group[0])!;
     const knowledgeCost = estimateInputTokens(knowledgeMessages(group)) - 32;
-    if (tokens + cost <= inputBudget && knowledgeTokens + knowledgeCost <= AUTOMATIC_KNOWLEDGE_INPUT_BUDGET
+    if (tokens + groupCost <= inputBudget && knowledgeTokens + knowledgeCost <= AUTOMATIC_KNOWLEDGE_INPUT_BUDGET
       && !(reference.preferRefinement && reference.refine)) {
       for (const message of group) selected.add(message);
-      tokens += cost; knowledgeTokens += knowledgeCost; continue;
+      tokens += groupCost; knowledgeTokens += knowledgeCost; continue;
     }
     if (!reference.refine) continue;
     const operation = digest(group.map(message => [message, automatic.get(message)!.ids]));
@@ -112,8 +128,8 @@ export function fitChatContext(
     messages.splice(position, 0, ...replacement);
     for (const item of fresh.sort((a, b) => b.reference.priority - a.reference.priority)) {
       if (item.reference.isCurrent?.() === false) { stopReason = "stale-source"; unresolved.push(...item.reference.ids); continue; }
-      const refinedCost = estimateInputTokens([item.message]) - 32;
-      const refinedKnowledgeCost = automatic.get(item.message)?.budget === "knowledge" ? refinedCost : 0;
+      const refinedCost = cost([item.message]) - 32;
+      const refinedKnowledgeCost = automatic.get(item.message)?.budget === "knowledge" ? estimateInputTokens([item.message]) - 32 : 0;
       if (tokens + refinedCost <= inputBudget && knowledgeTokens + refinedKnowledgeCost <= AUTOMATIC_KNOWLEDGE_INPUT_BUDGET) {
         selected.add(item.message); tokens += refinedCost; knowledgeTokens += refinedKnowledgeCost;
       }
@@ -130,6 +146,9 @@ export function fitChatContext(
     manifest:messages.map(message => ({ role:message.role, hash:digest(message), referenceIds:automatic.get(message)?.ids || [],
       callIds:message.tool_calls?.map(call => call.id) || (message.tool_call_id ? [message.tool_call_id] : []) })),
     toolSchemaHash:digest(toolSchema),
+    ...(options.measurement ? { measuredInput:{ inputTokens:cost(messages) + schemaTokens,
+      countingMethod:messages.every(message => options.measurement!.messages.get(message)?.hash === digest(message))
+        ? "vscode-countTokens-plus-overhead" as const : "mixed-token-counts-and-byte-bounds" as const } } : {}),
     ...(knowledgeBefore.length ? { automaticKnowledge:{ inputBudget:AUTOMATIC_KNOWLEDGE_INPUT_BUDGET,
       estimatedBefore:estimateInputTokens(knowledgeBefore), estimatedAfter:estimateInputTokens(knowledgeMessages(messages)),
       countingMethod:"utf8-byte-upper-bound" as const } } : {}),
@@ -155,7 +174,20 @@ export class ChatContextPlanner {
     };
   }
 
-  plan(messages: ApiChatMessage[], inputBudget: number, query: string): { selected:Set<string>; receipt:ContextPlanReceipt } {
+  async measure(messages: ApiChatMessage[], inputBudget: number, counter: ChatInputTokenCounter): Promise<ContextTokenMeasurement | undefined> {
+    const candidates = [...new Set([...this.pool, ...messages])].filter(message => message !== this.ledger && !this.derived.has(message));
+    if (estimateInputTokens([...candidates, ...this.toolSchema]) <= inputBudget) return undefined;
+    const counts = await Promise.all(candidates.map(async message => {
+      const hash = digest(message), tokens = await counter.countMessage(message);
+      if (!Number.isSafeInteger(tokens) || tokens < 0) throw new Error("Input token count is unavailable.");
+      return [message, { hash, tokens }] as const;
+    }));
+    const tools = await counter.countTools();
+    if (!Number.isSafeInteger(tools) || tools < 0) throw new Error("Tool schema token count is unavailable.");
+    return { messages:new Map(counts), tools };
+  }
+
+  plan(messages: ApiChatMessage[], inputBudget: number, query: string, measurement?:ContextTokenMeasurement): { selected:Set<string>; receipt:ContextPlanReceipt } {
     const pool = [...this.pool];
     for (const message of messages) if (message !== this.ledger && !this.derived.has(message) && !pool.includes(message)) pool.push(message);
     const groups: ApiChatMessage[][] = [];
@@ -180,14 +212,14 @@ export class ChatContextPlanner {
       for (const message of group) this.automatic.set(message, { ids, priority, groupId:ids.join("|") });
     }
     const planned = [...pool];
-    if (groups.length > 1 && estimateInputTokens([...pool, ...this.toolSchema]) > inputBudget) {
+    if (groups.length > 1 && contextTokens(pool, measurement) + (measurement?.tools ?? estimateInputTokens(this.toolSchema) - 32) > inputBudget) {
       const calls = groups.slice(0, -1).flatMap(group => group[0].tool_calls!);
       this.ledger = { role:"system", content:toolEvidenceReminder(calls.map(call => ({ id:call.id, name:call.function.name }))) };
       planned.push(this.ledger);
     }
     let receipt:ContextPlanReceipt | undefined;
     const existing = new Set(this.automatic.keys());
-    const selected = fitChatContext(planned, this.automatic, inputBudget, this.toolSchema, { query, report:value => { receipt = value; } });
+    const selected = fitChatContext(planned, this.automatic, inputBudget, this.toolSchema, { query, measurement, report:value => { receipt = value; } });
     for (const message of this.derived) this.automatic.delete(message);
     this.derived = new Set([...this.automatic.keys()].filter(message => !existing.has(message)));
     this.pool.splice(0, this.pool.length, ...pool);

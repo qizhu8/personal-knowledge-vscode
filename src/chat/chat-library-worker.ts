@@ -1,8 +1,17 @@
 import { Worker, isMainThread, parentPort, workerData } from "worker_threads";
 
-export type ChatLibraryWork = "trash" | "restore" | "delete" | "namespace" | "trash-list";
+export type ChatLibraryWork = "trash" | "restore" | "delete" | "prepare-delete" | "delete-prepared" | "finish-delete" | "namespace" | "trash-list";
+export interface ChatDeletionIntent {
+  schema: "pkm.chat-deletion/v1";
+  id: string;
+  namespace: string;
+  title: string;
+  createdAt: string;
+  revision: number;
+  retainedHistory: boolean;
+}
 interface WorkRequest { kind: "pkm-chat-library"; directory: string; namespace: string; operation: ChatLibraryWork; id: string }
-interface WorkResult { namespace?: string; chats?: Array<{ id: string; title: string }> }
+interface WorkResult { namespace?: string; chats?: Array<{ id: string; title: string }>; deletion?: ChatDeletionIntent & { chatPresent: boolean } }
 type WorkReply = { ok: true; result: WorkResult } | { ok: false; error: string };
 
 export function runChatLibraryWork(directory: string, namespace: string, operation: ChatLibraryWork, id: string): Promise<WorkResult> {
@@ -31,8 +40,12 @@ if (!isMainThread && workerData?.kind === "pkm-chat-library") {
       case "trash": store.trashChat(request.id); break;
       case "restore": store.restoreChat(request.id); break;
       case "delete": store.deleteChat(request.id); break;
+      case "prepare-delete": result = { deletion: store.prepareDeletion(request.id) }; break;
+      case "delete-prepared": store.deleteChat(request.id, true); break;
+      case "finish-delete": store.finishDeletion(request.id); break;
       case "namespace": result = { namespace: store.load(request.id, false).workspaceNamespace || store.namespace }; break;
-      case "trash-list": result = { chats: store.list(true).filter(chat => chat.trashedAt).map(({ id, title }) => ({ id, title })) }; break;
+      case "trash-list": result = { chats: [...store.list(true).filter(chat => chat.trashedAt).map(({ id, title }) => ({ id, title })),
+        ...store.pendingDeletionCleanups().map(({ id, title }) => ({ id, title }))] }; break;
       default: throw new Error("Unknown Chat library worker operation.");
     }
     parentPort!.postMessage({ ok: true, result } satisfies WorkReply);

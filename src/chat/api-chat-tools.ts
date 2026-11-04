@@ -9,6 +9,10 @@ import { ApiChatTool } from "./api-chat-client";
 import { QuestionSchema, questionSchema, validateQuestionAnswer } from "./chat-questions";
 import { cancelChatProcess, chatProcessEnvironment, getChatProcess, launchChatProcess, readChatProcessOutput } from "./chat-process-runtime";
 import { diagnosticLogs } from "./chat-diagnostic-logs";
+import { relativeToolPath } from "./tool-paths";
+import { todoApiDefinitions } from "../knowledge/todo-api-contract";
+import { memoryCapabilities } from "../capabilities/memory-contract";
+export { relativeToolPath } from "./tool-paths";
 
 export interface ApiChatEditChange {
   path: string;
@@ -22,7 +26,19 @@ export interface ApiChatEditChange {
   attribution: "exact" | "unknown";
 }
 
+function assertTodoFileEditAllowed(file: string): void {
+  if (path.basename(file).toLowerCase()==="pkm-todo-board.json"
+    || /\.md$/i.test(file) && fs.existsSync(`${file.slice(0,-3)}.assets/pkm-todo-board.json`)) {
+    throw new Error("Todo Boards require structured Todo APIs; direct file editing is not allowed.");
+  }
+}
+
 export const builtinToolCatalog = [
+  ...memoryCapabilities.map(operation => ({ name: operation.transportName, label: operation.transportName.replace(/_/g, " "),
+    permission: operation.authorization })),
+  ...todoApiDefinitions.map(api=>({ name:api.name, label:api.name.replace(/_/g," "), permission:api.readOnly
+    ? "Read-only bounded Todo Board query; never claims work"
+    : "Approved Board-scoped CAS management as this Chat; acceptance requires explicit reviewer delegation" })),
   { name: "read_file", label: "Read files", permission: "Workspace text files" },
   { name: "find_files", label: "Find files", permission: "Workspace file names" },
   { name: "list_directory", label: "List directory", permission: "Read directory names; outside-workspace access follows this Chat's permissions" },
@@ -35,6 +51,8 @@ export const builtinToolCatalog = [
   { name: "spawn_workers", label: "Spawn parallel workers", permission: "Shared task-tree budget; automatic small batches, explicit approval above threshold; child tools retain permissions" },
   { name: "pkm_search", label: "Search PKM knowledge", permission: "Read-only local knowledge and cached subscription titles" },
   { name: "pkm_read", label: "Read PKM knowledge", permission: "Read-only bounded local knowledge and cached subscription content" },
+  { name: "note_todo_read", label: "Read Todo Board / Work Items", permission: "Read-only structured Board / legacy Note Work Items and discovery" },
+  { name: "note_todo_update", label: "Update Note Work Items", permission: "Approved CAS mutation as this Chat's stable worker identity; contract and acceptance protections apply" },
   { name: "memory_read", label: "Read Chat memory", permission: "Read-only memory topics and earlier messages of this Chat only" },
   { name: "replace_text", label: "Edit text", permission: "Shared non-destructive Chat permission; edits remain unsaved" },
   { name: "save_file", label: "Save file", permission: "Shared non-destructive Chat permission; expected content hash required" },
@@ -48,14 +66,6 @@ export const builtinToolCatalog = [
   { name: "run_action", label: "Run or resume an Action", permission: "Approved pinned durable invocation; original Run returns its result to this Chat" },
   { name: "ask_session", label: "Ask a native Session", permission: "Approval required; one idle target per turn; no recursive waking" },
 ];
-
-export function relativeToolPath(value: unknown): string {
-  if (typeof value !== "string" || !value || value.length > 1024 || /[\0:]/.test(value)) throw new Error("Use a workspace-relative path.");
-  const normalized = value.replace(/\\/g, "/");
-  if (normalized.startsWith("/") || normalized.split("/").some(part => !part || part.startsWith(".") || part === "node_modules")) throw new Error("Hidden, excluded or outside-workspace paths are not allowed.");
-  if (/\.(pem|key)$/i.test(normalized) || /(^|\/)(credentials|id_rsa|id_ed25519)(\.|$)/i.test(normalized)) throw new Error("Attach sensitive files explicitly instead of using tools.");
-  return normalized;
-}
 
 function filesystemToolPath(value: unknown): string {
   if (typeof value !== "string" || !value || value.length > 1024 || value.includes("\0")) throw new Error("Provide a bounded filesystem path.");
@@ -436,6 +446,7 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
     definition("replace_text", "Replace a unique exact text match in an existing workspace file. Each edit requires user approval; leaves an unsaved editor change.", { path: { type: "string" }, oldText: { type: "string" }, newText: { type: "string" } }, ["path", "oldText", "newText"], async (args, signal) => {
       if (typeof args.oldText !== "string" || !args.oldText || typeof args.newText !== "string" || args.oldText.length + args.newText.length > 16_000) throw new Error("Provide a non-empty unique match and a bounded replacement.");
       const document = await documentFor(args, signal, "replace_text"); const text = document.getText(); const version = document.version;
+      assertTodoFileEditAllowed(document.uri.fsPath);
       const offset = text.indexOf(args.oldText);
       if (offset < 0 || text.indexOf(args.oldText, offset + 1) >= 0) throw new Error("The old text must match exactly once.");
       const expected = text.slice(0, offset) + args.newText + text.slice(offset + args.oldText.length);
@@ -445,6 +456,7 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
       active(signal);
       if (approval !== "Apply edit") throw new Error("Edit declined by the user.");
       if ((await resolve(args, signal, "replace_text")).fsPath !== document.uri.fsPath) throw new Error("File path changed after approval.");
+      assertTodoFileEditAllowed(document.uri.fsPath);
       if (document.version !== version || document.getText() !== text) throw new Error("File changed after the edit was proposed. Request a new edit.");
       active(signal);
       const edit = new host.WorkspaceEdit(); edit.replace(document.uri, new host.Range(document.positionAt(offset), document.positionAt(offset + args.oldText.length)), args.newText);
@@ -461,6 +473,7 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
     definition("save_file", "Save one existing workspace text document after separate approval. expectedHash must be the SHA-256 afterHash returned by replace_text. Rejects changed content; saving may run editor save actions.", { path: { type: "string" }, expectedHash: { type: "string", pattern: "^[a-f0-9]{64}$" } }, ["path", "expectedHash"], async (args, signal) => {
       if (typeof args.expectedHash !== "string" || !/^[a-f0-9]{64}$/.test(args.expectedHash)) throw new Error("Provide the exact SHA-256 of the edited document.");
       const document = await documentFor(args, signal, "save_file");
+      assertTodoFileEditAllowed(document.uri.fsPath);
       const text = document.getText(); const version = document.version;
       if (createHash("sha256").update(text).digest("hex") !== args.expectedHash) throw new Error("Document content changed; inspect it before requesting a new save.");
       const location = await physicalPath(args, args.path, signal);
@@ -468,6 +481,7 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
       active(signal);
       if (approval !== "Save file") throw new Error("Save declined by the user.");
       if ((await resolve(args, signal, "save_file")).fsPath !== document.uri.fsPath) throw new Error("File path changed after approval.");
+      assertTodoFileEditAllowed(document.uri.fsPath);
       if (document.version !== version || document.getText() !== text) throw new Error("Document changed after the save was proposed. Request a new save.");
       if (!await document.save()) throw new Error("VS Code could not save the document.");
       active(signal);
@@ -477,5 +491,13 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
       return JSON.stringify({ path: filesystemToolPath(args.path), saved: true, afterHash: hash, saveActionsChangedContent: hash !== args.expectedHash });
     }),
   ];
+  const independentReads = new Set(["read_file", "find_files", "list_directory", "search_text"]);
+  for (const tool of tools) {
+    if (independentReads.has(tool.name)) tool.execution = "parallel-read";
+    if (tool.name === "read_file") tool.readVersion = async (args, signal) => {
+      const document = await documentFor(args, signal, "read_file");
+      return textHash(document.getText());
+    };
+  }
   return tools.filter(tool => enabled.includes(tool.name) || tool.name === "portal" && enabled.includes("cross_machine_collaboration"));
 }

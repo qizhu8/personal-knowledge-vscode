@@ -1,4 +1,7 @@
-"""Non-destructive, byte-preserving knowledge recovery through MCP."""
+"""Non-destructive, byte-preserving skills/notes recovery from external evidence.
+
+This does not restore Chat history or other .pkm/state/ runtime data.
+"""
 
 import argparse
 import hashlib

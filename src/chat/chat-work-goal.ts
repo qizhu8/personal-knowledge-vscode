@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "crypto";
 import type { ApiConversation, ChatMessage } from "./api-chat-store";
 import { activeTaskContextCheckpoint } from "./task-context-checkpoint";
+import { assertCurrentWorkerEvidence, type WorkerVersionReader } from "./worker-result-versions";
 
 export interface ChatWorkGoal {
   id: string;
@@ -13,10 +14,12 @@ export interface ChatWorkGoal {
   reason?: string;
   nextAction?: string;
   transitions?: WorkGoalTransition[];
+  contract?: { scope: string[]; nonGoals: string[]; stopWhen: string };
+  phase?: "locating" | "implementing" | "verifying" | "delivering";
 }
 
 export type WorkGoalTransitionReason = "user_delegated" | "user_followup" | "user_answered" | "user_resumed"
-  | "user_paused" | "agent_started_action" | "agent_continue" | "agent_claimed_resolved" | "agent_blocked" | "agent_needs_input"
+  | "user_paused" | "user_superseded" | "agent_started_action" | "agent_continue" | "agent_claimed_resolved" | "agent_blocked" | "agent_needs_input"
   | "execution_cancelled" | "execution_failed" | "host_interrupted";
 export interface WorkGoalTransition {
   at: number;
@@ -33,6 +36,7 @@ export const delegatedWork = /(?:\b(?:please\s+)?(?:debug|investigate|diagnose|f
 export const rootWorkCriterion = "The original user objective and all subsequent requirements are satisfied.";
 const resumeWork = /^\s*(?:continue|resume|继续|恢复)(?:\b|一下|吧|工作|任务|调查|排查|调试|推进|$)/i;
 const explanatory = /^\s*(?:(?:what|why|how|explain|describe)\b|为什么|为何|解释|说明|介绍)/i;
+export const newWorkGoal = /^\s*(?:开始新任务|start a new task)\s*[:：]/i;
 
 export function recordWorkGoalTransition(goal: ChatWorkGoal, status: ChatWorkGoal["status"], reason: WorkGoalTransitionReason,
   inputId = goal.attemptInputId, at = Date.now()): ChatWorkGoal {
@@ -59,30 +63,56 @@ export function validWorkGoal(value: unknown): value is ChatWorkGoal {
     && (goal.status !== "resolved" || goal.acceptance.every(item => item.verified && item.evidenceCallIds.length > 0))
     && (goal.reason === undefined || typeof goal.reason === "string" && goal.reason.length <= 2000)
     && (goal.nextAction === undefined || typeof goal.nextAction === "string" && goal.nextAction.length <= 2000)
+    && (goal.phase === undefined || ["locating", "implementing", "verifying", "delivering"].includes(goal.phase))
+    && (goal.contract === undefined || validWorkContract(goal.contract))
     && (goal.transitions === undefined || Array.isArray(goal.transitions) && goal.transitions.length <= WORK_GOAL_TRANSITION_LIMIT
       && goal.transitions.every(item => item && Number.isSafeInteger(item.at) && item.at >= 0
         && typeof item.inputId === "string" && /^[a-f0-9-]{36}$/.test(item.inputId)
         && typeof item.attemptInputId === "string" && /^[a-f0-9-]{36}$/.test(item.attemptInputId)
         && ["active", "resolved", "blocked", "needs_input", "interrupted", "paused"].includes(item.status)
-        && ["user_delegated", "user_followup", "user_answered", "user_resumed", "user_paused", "agent_started_action", "agent_continue",
+        && ["user_delegated", "user_followup", "user_answered", "user_resumed", "user_paused", "user_superseded", "agent_started_action", "agent_continue",
           "agent_claimed_resolved", "agent_blocked", "agent_needs_input", "execution_cancelled", "execution_failed",
           "host_interrupted"].includes(item.reason)));
 }
 
+function validWorkContract(value: unknown): value is NonNullable<ChatWorkGoal["contract"]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const contract = value as NonNullable<ChatWorkGoal["contract"]>;
+  const list = (items: unknown): items is string[] => Array.isArray(items) && items.length <= 16
+    && items.every(item => typeof item === "string" && !!item.trim() && item.length <= 600);
+  return list(contract.scope) && contract.scope.length > 0 && list(contract.nonGoals)
+    && typeof contract.stopWhen === "string" && !!contract.stopWhen.trim() && contract.stopWhen.length <= 1000;
+}
+
 export function prepareWorkGoal(chat: ApiConversation, inputId: string, text: string, executionDigest: string): void {
+  const startsNewGoal = newWorkGoal.test(text);
+  if (startsNewGoal && chat.workGoal?.inputId !== inputId) {
+    if (!text.replace(newWorkGoal, "").trim()) throw new Error("A new task requires an objective after 'Start a new task:' or '开始新任务：'.");
+    if (chat.workGoal) {
+      const previous = chat.workGoal.status === "active"
+        ? recordWorkGoalTransition(structuredClone(chat.workGoal), "paused", "user_superseded", inputId)
+        : structuredClone(chat.workGoal);
+      (chat.workGoalHistory ||= []).push(previous);
+    }
+    chat.workGoal = recordWorkGoalTransition({ id: randomUUID(), inputId, attemptInputId: inputId,
+      objective: text, executionDigest, status: "active",
+      acceptance: [{ criterion: rootWorkCriterion, verified: false, evidenceCallIds: [] }] },
+    "active", "user_delegated", inputId);
+    return;
+  }
   if (workStop.test(text)) {
     if (chat.workGoal && chat.workGoal.status !== "resolved") {
       chat.workGoal = recordWorkGoalTransition(chat.workGoal, "paused", "user_paused", inputId);
     }
     return;
   }
-  const previous = chat.includeHistory ? chat.workGoal : undefined;
+  const previous = (chat.includeHistory || startsNewGoal && chat.workGoal?.inputId === inputId) ? chat.workGoal : undefined;
   const unfinished = previous && previous.status !== "resolved";
   const answer = unfinished && ["needs_input", "blocked"].includes(previous.status) && !explanatory.test(text);
   const delegation = delegatedWork.test(text) && !explanatory.test(text)
     && !/^\s*(?:please\s+)?(?:explain|describe)\b/i.test(text)
     && !/^\s*(?:帮我|请你|请)?(?:解释|说明|介绍)/.test(text);
-  const explicit = delegation || resumeWork.test(text);
+  const explicit = startsNewGoal || delegation || resumeWork.test(text);
   if (!explicit && !(unfinished && previous.status === "active" && !explanatory.test(text)) && !answer) return;
   if (unfinished) {
     if (previous.executionDigest !== executionDigest) throw new Error("The unfinished goal belongs to another execution context. Resume it in its original context; it was not retargeted.");
@@ -90,6 +120,7 @@ export function prepareWorkGoal(chat: ApiConversation, inputId: string, text: st
     const reason: WorkGoalTransitionReason = ["paused", "interrupted"].includes(previous.status) ? "user_resumed"
       : ["needs_input", "blocked"].includes(previous.status) ? "user_answered" : "user_followup";
     chat.workGoal = recordWorkGoalTransition({ ...previous, attemptInputId: inputId,
+      phase: "locating",
       acceptance: previous.acceptance.map(item => ({ ...item, verified: false, evidenceCallIds: [] })),
       reason: undefined, nextAction: undefined }, "active", reason, inputId);
   } else if (delegation) {
@@ -124,11 +155,14 @@ export function workGoalContext(chat: ApiConversation): string {
 Preserve the ORIGINAL objective and reconcile every later user requirement. A diagnostic subtask or successful tool is not resolution.
 Choose the next authorized action yourself; do not ask the user to supervise ordinary steps. Establish a symptom-level check, investigate, change course when evidence stops improving, implement authorized repairs, and verify against the objective.
 Use report_work to record acceptance criteria and continue/resolved/blocked/needs_input. Resolved requires each criterion verified with actual current-attempt evidence. These remain agent claims, not independent certification.
+At the first report establish a compact contract (scope, nonGoals, stopWhen) and phase (locating, implementing, verifying, delivering). The contract records the existing authorization, never expands it. Advance acceptance with evidence, not narration. Once all required checks pass, report resolved and deliver; do not start optional improvements.
+Batch independent read/search calls in one model response. Only Host-annotated parallel reads overlap; writes, commands and unknown tools are ordered barriers. Do not mix a read that depends on a preceding result into an independent batch. Prepare tests independently, but final validation must use a ready, version-pinned implementation handoff. Do not poll independent workers.
+Copy EVERY existing acceptance criterion verbatim from session_info.workGoal.acceptance, including the original-objective criterion; append new criteria rather than replacing the list. Explicitly report each criterion's verified state and current-attempt evidenceCallIds. Leave unmet criteria unverified; never infer that specific subcriteria automatically verify the original objective.
 If only part is done, record continue with the next action and keep working. For a genuine blocker, name the exact missing input/permission/external result and leave unverified criteria open.
 Cancellation/interruption disarms work: never replay uncertain effects. A resumed attempt must inspect recorded effects before repeating any operation. Existing permission, context, queue, worker and budget guards still apply.`;
 }
 
-export function reportWork(chat: ApiConversation, reply: ChatMessage, args: Record<string, unknown>): string {
+export function reportWork(chat: ApiConversation, reply: ChatMessage, args: Record<string, unknown>, readWorker?: WorkerVersionReader): string {
   const goal = chat.workGoal;
   if (!goal || goal.attemptInputId !== reply.inputId || goal.status === "paused" || goal.status === "interrupted") throw new Error("No active work objective belongs to this attempt.");
   if (!["continue", "resolved", "blocked", "needs_input"].includes(String(args.status))
@@ -137,10 +171,17 @@ export function reportWork(chat: ApiConversation, reply: ChatMessage, args: Reco
     throw new Error("Report an outcome, a concrete reason and all ordered sourceInputIds from session_info.workGoal.");
   }
   const acceptance = args.acceptance;
+  const missingCriteria = goal.acceptance.filter(previous => !Array.isArray(acceptance)
+    || !acceptance.some(item => item && typeof item === "object" && item.criterion === previous.criterion))
+    .map(item => item.criterion);
+  if (missingCriteria.length) {
+    throw new Error(`Reports must preserve existing acceptance criteria verbatim. Missing criteria: ${JSON.stringify(missingCriteria)}. Read session_info.workGoal.acceptance and resubmit the complete list with explicit verified and evidenceCallIds for each item; leave unmet criteria unverified. No work state was changed.`);
+  }
   const candidate: ChatWorkGoal = { ...goal, status: args.status === "continue" ? "active" : args.status as ChatWorkGoal["status"],
-    reason: args.reason, acceptance: acceptance as ChatWorkGoal["acceptance"], nextAction: args.nextAction as string | undefined };
-  if (!validWorkGoal({ ...candidate, status: "active" }) || !candidate.acceptance.length
-    || goal.acceptance.some(previous => !candidate.acceptance.some(item => item.criterion === previous.criterion))) {
+    reason: args.reason, acceptance: acceptance as ChatWorkGoal["acceptance"], nextAction: args.nextAction as string | undefined,
+    ...(args.contract === undefined ? {} : { contract: args.contract as ChatWorkGoal["contract"] }),
+    ...(args.phase === undefined ? {} : { phase: args.phase as ChatWorkGoal["phase"] }) };
+  if (!validWorkGoal({ ...candidate, status: "active" }) || !candidate.acceptance.length) {
     throw new Error("Provide 1–32 unique acceptance criteria; preserve existing criteria and leave unmet ones unverified.");
   }
   if (args.status === "continue" && !candidate.nextAction?.trim()) throw new Error("Continuing work requires the next concrete authorized action.");
@@ -151,8 +192,11 @@ export function reportWork(chat: ApiConversation, reply: ChatMessage, args: Reco
         && !["report_work", "finish_debug", "session_info", "record_harness"].includes(call.name) && typeof call.result === "string"))) {
       throw new Error("Verified acceptance requires unique successful execution/validation call IDs from this attempt, not reports or another attempt.");
     }
+    assertCurrentWorkerEvidence((reply.toolCalls || []).filter(call => item.evidenceCallIds.includes(call.id)), chat.id, readWorker);
   }
   if (args.status === "resolved" && candidate.acceptance.some(item => !item.verified)) throw new Error("The user objective remains open: every acceptance criterion must be verified before resolution.");
+  if (candidate.phase === "delivering" && args.status === "continue") throw new Error("Delivery requires resolved acceptance or a concrete blocked/needs_input handoff, not continued execution.");
+  if (args.status === "resolved") candidate.phase = "delivering";
   const reason: WorkGoalTransitionReason = args.status === "continue" ? "agent_continue"
     : args.status === "resolved" ? "agent_claimed_resolved"
       : args.status === "blocked" ? "agent_blocked" : "agent_needs_input";

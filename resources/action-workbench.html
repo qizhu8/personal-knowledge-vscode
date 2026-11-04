@@ -5,6 +5,7 @@
 .port-row.required{border:1px solid var(--accent);border-radius:3px;margin-bottom:6px}.port-row.optional{border:1px solid var(--muted);border-radius:3px;margin-bottom:6px}.port-row.required input:not([type=checkbox]),.port-row.required select{border-color:var(--accent)}.port-row.optional input:not([type=checkbox]),.port-row.optional select,.pin.optional{border-color:var(--muted)}.field-label{display:flex;align-items:center;gap:5px;flex-wrap:wrap}.field-label input[type=checkbox]{width:14px;margin:0;accent-color:var(--muted)}.pin.compatible{outline:2px solid var(--good);outline-offset:3px}.pin.pending{background:var(--accent)}.connections path.selected{stroke:var(--accent);stroke-width:4}.connections path.ghost{stroke:var(--accent);stroke-dasharray:5 4;pointer-events:none}.connection-tools{display:flex;align-items:center;gap:5px}.connection-label{font-size:11px;max-width:220px;overflow-wrap:anywhere}.block header{flex-wrap:wrap}.block header h3{min-width:0}.compact-port{display:grid;grid-template-columns:1fr;gap:4px;padding:6px 9px;position:relative}.compact-port select{width:100%}.compact-port.output select{text-align:right}.block.collapsed .ports{padding-top:2px}.block.collapsed .state{font-size:10px}.pin{touch-action:none}.connections path:hover{stroke:var(--accent)}
 .tree-cat-hdr{display:flex;align-items:center;gap:6px;padding:5px 10px;cursor:pointer;font-size:11px;font-weight:600;color:var(--accent);border-bottom:1px solid var(--line);user-select:none}.tree-cat-hdr:hover,.li:hover{background:var(--vscode-list-hoverBackground,#333)}.tree-cat-arrow{width:10px;flex-shrink:0;color:var(--muted)}.tree-cat-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tree-cat-count{font-size:10px;color:var(--muted);background:var(--line);border-radius:8px;padding:1px 6px;flex-shrink:0}.li{padding:6px 12px;display:flex;flex-direction:column;gap:2px;border-left:2px solid transparent}.palette-row{grid-template-columns:18px minmax(0,1fr) 28px 28px;border:0;padding:0;min-height:38px}.palette-row strong{font-size:12px}.palette-row small{font-size:10px}.tree-cat-body{min-width:0}.tree-cat .icon{width:26px;height:26px}.tree-cat .li:focus-within{border-left-color:var(--accent)}aside{padding:10px 0}aside .search{width:calc(100% - 20px);margin:0 10px 8px}aside section>h2,aside #sets{margin-left:10px;margin-right:10px}textarea{font:12px/1.5 var(--vscode-editor-font-family,monospace);width:100%;min-height:72px;resize:vertical;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:3px;padding:5px}.port-row.required textarea{border-color:var(--accent)}.component-type{display:flex;align-items:center;gap:8px;padding:6px 9px;font-size:11px}.component-type select{flex:1}.chat-message{padding:8px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.chat-options{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}.chat-options button{white-space:normal;text-align:left;max-width:100%}#action-chat{padding:10px 0}.chat-answer{color:var(--muted);margin-top:6px}.layout>aside>section:first-child{padding-bottom:10px}
 [hidden]{display:none!important}
+.transient-notice{opacity:1;transition:opacity .25s ease;max-height:120px;overflow:auto;flex-shrink:0}.transient-notice.notice-fading{opacity:0}@media(prefers-reduced-motion:reduce){.transient-notice{transition:none}}
 .chat-options{display:grid;min-width:0;border:0;padding:0;margin:8px 0}.chat-options legend{padding:0;margin-bottom:8px}.chat-options label{display:flex;align-items:flex-start;gap:8px;padding:4px 0;cursor:pointer}.chat-options input{flex:0 0 auto;accent-color:var(--accent);margin:4px 0 0}.chat-message>button{margin-right:6px}
 .palette-heading{display:flex;align-items:center;justify-content:space-between;padding:0 10px 8px}
 .palette-title{display:flex;align-items:center;gap:5px;min-width:0;flex-wrap:wrap}
@@ -62,14 +63,14 @@ header.top{flex-shrink:0}
 	.tree-cat .tree-cat-hdr,.tree-cat .cattree-item{padding-left:14px!important}
 	.tree-cat .tree-cat .tree-cat-hdr,.tree-cat .tree-cat .cattree-item{padding-left:20px!important}
 }
-</style></head><body>
+</style></head><body spellcheck="true">
 <header class="top"><h1>Action Workbench</h1><div class="toolbar"><button id="workspace" title="Select working directory" class="icon" aria-label="Select working directory"><span class="codicon codicon-folder-opened" aria-hidden="true"></span></button><button id="open-browser" title="Open in browser" class="icon" aria-label="Open in browser"><span class="codicon codicon-link-external" aria-hidden="true"></span></button><button id="refresh" title="Refresh catalog and validation queue" class="icon" aria-label="Refresh catalog and validation queue"><span class="codicon codicon-refresh"></span></button></div></header>
 <div id="action-find" role="search" hidden><input id="search" class="search" aria-label="Search Actions and Basic Components" placeholder="Search Actions"><button id="close-find" class="icon" title="Close search" aria-label="Close search"><span class="codicon codicon-close"></span></button></div>
 <dialog id="poll-template-dialog"><form id="poll-template-form"><h2>Read-only polling Action</h2>
 <p>A pinned query repeats until its output matches or a limit expires. Creation does not execute the query.</p>
 <label>New Action ID<input id="poll-template-id" required pattern="[a-z][a-z0-9_.-]{2,100}" value="local.poll"></label>
 <label>Ready read-only query<select id="poll-template-query" required></select></label>
-<label>Query inputs (JSON object)<textarea id="poll-template-inputs" required>{}</textarea></label>
+<label>Query inputs (JSON object)<textarea id="poll-template-inputs" spellcheck="false" required>{}</textarea></label>
 <label>Output field<select id="poll-template-field" required></select></label>
 <label>Expected value (JSON)<input id="poll-template-expected" required value="&quot;succeeded&quot;"></label>
 <label>Interval (seconds)<input id="poll-template-interval" type="number" min="0.01" max="300" step="any" required value="30"></label>
@@ -155,7 +156,26 @@ const cancelRunButton=document.createElement('button');cancelRunButton.id='cance
 function updateRunControls(){const qualified=saved&&actions.find(item=>item.action_id===saved.action_id&&item.content_hash===saved.content_hash);byId('run').disabled=startingRun||!!currentRun||(!pendingLaunch&&qualified?.availability.state!=='ready');byId('run').title=pendingLaunch?'Retry the original submission with the same launch key':'Start a new durable Run';cancelRunButton.disabled=!currentRun||cancellingRun===currentRun;cancelRunButton.title=cancellingRun===currentRun?'Cancellation requested; waiting for execution to stop':'Cancel local run; completed effects are not undone'}
 cancelRunButton.onclick=async()=>{const runId=currentRun;if(!runId||cancellingRun===runId)return;cancellingRun=runId;updateRunControls();try{const result=await request('cancel_run',{run_id:runId});if(result.cancel_requested)status('Cancellation requested for '+runId);else cancellingRun=null;await refresh()}catch(error){cancellingRun=null;status(error.message,true)}finally{updateRunControls()}};
 let pendingGraphProposal=initialView?.pendingGraphProposal||null;
-function status(text,bad=false){byId('status').textContent=text;byId('status').className=bad?'bad':''}function persist(){saved=null;pendingGraphProposal=null;saveView();byId('run').disabled=true}function remember(){history.push(structuredClone(graph));if(history.length>50)history.shift()}
+function transientNotice(node){
+ let timer,fadeTimer;
+ const clear=()=>{clearTimeout(timer);clearTimeout(fadeTimer);node.classList.remove('notice-fading')};
+ const held=()=>node.matches(':hover,:focus-within');
+ const schedule=()=>{
+  clear();
+  if(node.hidden||held())return;
+  timer=setTimeout(()=>{
+   if(held())return;
+   node.classList.add('notice-fading');
+   fadeTimer=setTimeout(()=>{if(!held())node.hidden=true},250);
+  },5000);
+ };
+ node.classList.add('transient-notice');node.tabIndex=0;
+ node.addEventListener('mouseenter',clear);node.addEventListener('mouseleave',schedule);
+ node.addEventListener('focusin',clear);node.addEventListener('focusout',schedule);
+ return {show(text,bad=false){clear();node.textContent=text;node.classList.toggle('bad',bad);node.hidden=!text;schedule()}};
+}
+const statusNotice=transientNotice(byId('status'));
+function status(text,bad=false){statusNotice.show(text,bad)}function persist(){saved=null;pendingGraphProposal=null;saveView();byId('run').disabled=true}function remember(){history.push(structuredClone(graph));if(history.length>50)history.shift()}
 let privateAction=null,privateLaunch=initialView?.privateLaunch||null,privateSubmitting=false;
 function renderPrivateParameters(values){
  const panel=byId('private-action-parameters');panel.querySelectorAll('label').forEach(label=>label.remove());
@@ -560,7 +580,10 @@ async function refresh(){
     currentRun=null;cancellingRun=null;saveView();
     document.querySelectorAll('[data-choice]').forEach(control=>control.disabled=true);
    }
-   if(result.state==='outcome_unknown')status('Needs reconciliation: '+selected+'. Inspect the original Run; effects will not be replayed.',true);
+   if(result.state==='outcome_unknown'){
+    const message='Needs reconciliation: '+selected+'. Inspect the original Run; effects will not be replayed.';
+    if(byId('status').textContent!==message)status(message,true);
+   }
   }
   updateRunControls();
   if(byId('status').textContent==='Connecting')status('Loaded '+actions.length+' blocks');
@@ -655,6 +678,8 @@ function workbenchActions(){
 }
 const workbenchTasks=document.createElement('section');workbenchTasks.id='workbench-tasks';workbenchTasks.setAttribute('role','status');
 byId('status').after(workbenchTasks);
+const workbenchTaskNotice=transientNotice(workbenchTasks);
+let workbenchTaskMessage;
 const batchValidateButton=document.createElement('button');batchValidateButton.id='validate-all-actions';batchValidateButton.textContent='Retry preparation';
 workbenchTasks.after(batchValidateButton);
 let batchValidating=false;
@@ -662,8 +687,9 @@ function actionsNeedingValidation(){return workbenchActions().filter(action=>!ac
 function updateWorkbenchTasks(){
  const count=actionsNeedingValidation().length;
  const blocked=workbenchActions().filter(action=>action.preparation?.state==='blocked');
- workbenchTasks.textContent=count?(blocked.length?blocked.length+' Actions need attention. '+blocked.map(action=>action.action_id+': '+action.preparation.reason).join('\n'):count+' Actions are being prepared automatically in the background. You can continue working.'):'Actions are ready. Drag an Action from the left to compose.';
- byId('library-next-step').textContent=workbenchTasks.textContent;
+ const message=count?(blocked.length?blocked.length+' Actions need attention. '+blocked.map(action=>action.action_id+': '+action.preparation.reason).join('\n'):count+' Actions are being prepared automatically in the background. You can continue working.'):'Actions are ready. Drag an Action from the left to compose.';
+ if(message!==workbenchTaskMessage){workbenchTaskMessage=message;workbenchTaskNotice.show(message)}
+ byId('library-next-step').textContent=message;
  batchValidateButton.disabled=!count||batchValidating;
 }
 function showValidationActions(){
@@ -707,6 +733,7 @@ byId('validation-choice-this').onclick=()=>{
 byId('validation-choice-all').onclick=()=>{validationChoiceDialog.close();batchValidateButton.click()};
 validationChoiceDialog.addEventListener('close',()=>{validationChoiceAction=null});
 const validationFeedback=document.createElement('section');validationFeedback.id='validation-feedback';validationFeedback.hidden=true;validationFeedback.setAttribute('role','status');byId('status').after(validationFeedback);
+const validationFeedbackNotice=transientNotice(validationFeedback);
 const batchProgress=document.createElement('section');batchProgress.id='batch-validation-progress';batchProgress.hidden=true;
 batchProgress.innerHTML='<progress id="batch-validation-bar" max="1" value="0" aria-label="Batch validation progress"></progress><span id="batch-validation-stage"></span><details id="batch-validation-details"><summary>Results</summary><ul id="batch-validation-results"></ul></details>';
 validationStyle.textContent+='#batch-validation-progress{padding:8px 12px}#batch-validation-results{max-height:240px;overflow:auto;padding-left:20px}#batch-validation-results pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0}';
@@ -826,7 +853,7 @@ async function validateActionBatch(items){
  finally{clearInterval(heartbeat);batchValidating=false;renderBatchStage();updateWorkbenchTasks()}
 }
 function validationNotice(message,failed=false){
- validationFeedback.hidden=false;validationFeedback.textContent=message;validationFeedback.dataset.failed=String(failed);
+ validationFeedbackNotice.show(message,failed);validationFeedback.dataset.failed=String(failed);
 }
 function showValidationInputs(items){
  byId('validation-input-details').hidden=false;byId('validation-input-details').open=false;

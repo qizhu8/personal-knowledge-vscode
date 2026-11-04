@@ -204,14 +204,21 @@ test("actual Host start/accept uses dedicated transport and leaves Chatroom sele
   const manager = ast.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === "ChatRoomManager");
   let clipboard;
   const errors=[], portalEvents=[];
+  let planning = false, workflowChecks = 0;
+  const assertWorkflow = chatId => {
+    assert.equal(chatId, receiver.id);
+    workflowChecks++;
+    if (planning) throw new Error("Plan cannot authorize a Portal command.");
+  };
   const context = vm.createContext({
-    Map, Set, Date, URL, Promise, process, path, AbortController, setTimeout, clearTimeout, setInterval, clearInterval, ChatHub, ChatClient, PORTAL_TRANSPORT_PATH, PORTAL_GRACE_MS:2500, endpointScope:() => "loopback",
+    Map, Set, Date, URL, Promise, Error, process, path, AbortController, setTimeout, clearTimeout, setInterval, clearInterval, ChatHub, ChatClient, PORTAL_TRANSPORT_PATH, PORTAL_GRACE_MS:2500, endpointScope:() => "loopback",
     randomUUID, os, assertPeerEndpoint, createPortalLink, parsePortalLink, preflightPortalEndpoint, createChatMagicLink, chatInviteMessage, PeerSession,
     PortalPermissions:require("../dist/chatroom/portal-permissions").PortalPermissions,
     parsePortalCommand:require("../dist/chatroom/portal-command").parsePortalCommand,
     executePortalCommand:require("../dist/chatroom/portal-command").executePortalCommand,
     agentSessionProjectStateData:async()=>({}),postToPanel(){},
     getStorePath:() => f.directory, getChatCid:() => "fixturecid", portalChanged() {},
+    portalMutationPolicy:async chatId => assertWorkflow(chatId), portalMutationGuard:assertWorkflow,
     portalLog:(level, message) => portalEvents.push(message), hubLog() {}, portalEvents:[],
     log:{ warn() {}, debug() {},error:message=>errors.push(message) },
     vscode:{ workspace:{ isTrusted:true, getConfiguration:() => ({ get:() => 0 }) },
@@ -257,6 +264,14 @@ test("actual Host start/accept uses dedicated transport and leaves Chatroom sele
   assert.equal(sender.receipts.get(resultId).state, "completed", JSON.stringify(sender.receipts.get(resultId)));
   assert.match(sender.receipts.get(resultId).result.stdout, /HOST_DIRECT_COMMAND/);
   assert.equal(sender.receipts.get(resultId).result.modelCalls, 0);
+  assert(workflowChecks >= 2, "direct commands check workflow before approval and again before execution");
+  planning = true;
+  const planId = sender.submitCommand({ program: process.execPath, arguments: ["-e", "console.log('MUST_NOT_EXECUTE')"], timeoutSeconds: 10 });
+  await until(() => ["completed", "failed", "denied"].includes(sender.receipts.get(planId)?.state));
+  assert.equal(sender.receipts.get(planId).state, "denied", "Plan refusal must produce a terminal receipt instead of hanging");
+  const workflowDenial = "Portal command blocked by Chat workflow: Plan cannot authorize a Portal command.";
+  assert.deepEqual(errors.splice(0), [workflowDenial, workflowDenial], "Plan denial is logged and shown locally; no other error is allowed");
+  planning = false;
   const policy = receiverHost.portalPermissions.get(receiver.id);
   policy.grant({ mode: "scoped", permissions: ["code-execute"], durationMs: 2000 });
   const expiredId = sender.submitCommand({ program: process.execPath, arguments: ["-e", "setInterval(() => {}, 1000)"], timeoutSeconds: 10 });

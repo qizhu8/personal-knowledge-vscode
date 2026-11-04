@@ -13,6 +13,12 @@ Mermaid source can remain fenced in the document or be an attached source file.
 Attaching an image does not automatically make it model-visible or send it to a
 vision API.
 
+`get_skill` includes existing image files from a Skill's owned `.assets` folder
+in `image_assets`, with a ready-to-insert `markdown_reference` for each one.
+Insert that reference into the Skill Markdown to embed the image. These MCP
+fields describe existing files; image bytes must first be added through PKM's
+resource management or another supported import workflow.
+
 Browser Markdown previews (Notes, Skills and Research) fit Mermaid diagrams to their container width by default,
 including side-by-side layouts. Each diagram has independent zoom-in, zoom-out,
 Fit width and 100% controls; enlarged diagrams scroll within their own viewport.
@@ -36,6 +42,56 @@ Text labels remain selectable; links and controls retain their normal behavior.
 Shift-drag retains selection behavior instead of starting a pan.
 
 ## Navigation and operations
+
+PKM browser pages and Extension webviews enable the browser's native spellcheck
+for prose inputs, including Chat, Markdown and Todo details. Code/JSON editors,
+URLs and structured Todo references opt out. Suggestions and underlines depend
+on the browser/VS Code webview's installed dictionaries and spellcheck settings;
+PKM installs no dictionary, service or additional spelling extension.
+
+Standalone browser readers have **Skills / Notes / Research** Library tabs.
+Use the arrow handle centered on the sidebar's right edge to collapse or expand
+navigation. It remains visible while scrolling; collapsing gives space back to
+the article without changing the selected tab or expanded folder state.
+The bottom-left navigation badge identifies the current reader as **Public**
+(Public knowledge only) or **Private** (authenticated Public and Private
+knowledge). It is an indicator, not an access-mode switch.
+Private folders and their documents display the same small lock icon as the
+Extension, including inherited privacy in nested folders. Public content stays
+unlocked even in the Private reader; the Public reader still omits Private content.
+Opening a document selects its content type; switching tabs changes only the
+sidebar, never the article. Each tab retains its expanded folders, sidebar
+scroll position and Research view for the browser session. **Ctrl/Command+F**
+searches the directory; select the appropriate tab to browse its results.
+
+Right-click a Library folder or document and choose **Copy path** to copy its
+canonical `pkm://` URL, matching Navigation Copy Path (for example,
+`pkm://notes/Research/` or `pkm://notes/Research/Topic.md`). Folder URLs end in `/`;
+document URLs include `.md`, with each path segment URL-encoded. Shift+F10 also
+opens this menu. Copy failures show the URL for manual copying.
+
+**Ctrl/Command+G** opens **Go to PKM path** in the browser. Paste a copied Library
+URL to open a document or expand, reveal and focus a folder in the correct tab.
+Only content in the current reader's visible Library can be located; a URL does
+not grant access to private content. Research folders open in Directory view.
+
+Research offers **Directory**, **2D Graph** (Cytoscape), and **3D Graph**
+(ForceGraph3D/WebGL), using the extension's bundled renderers. Citation arrows run
+from the cited parent to the citing child; clicking a node opens its paper.
+Graphs are read-only. Missing libraries or unavailable WebGL produce an explicit
+error; Directory and 2D remain available.
+
+The public gateway filters graph nodes and edges before sending them to the
+browser and counts only visible citations. Private document titles, paths and
+metadata are not included. Live assets pass the same privacy boundary rather
+than being embedded in public HTML. Authenticated private previews retain their
+separate access-controlled scope when navigating to another article.
+
+Dragging content or folders to a new location in native Navigation refreshes the
+knowledge inventory before updating the tree and panel. An older in-flight scan
+cannot count as the refresh for a completed move. If the move succeeds but that
+refresh fails, PKM reports both facts explicitly: refresh Navigation again, do not
+repeat the move.
 
 Expand a document in native Navigation to see its resource folder, then its
 resources. The panel CatTree also exposes that folder. Select a resource to

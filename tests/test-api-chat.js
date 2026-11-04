@@ -26,7 +26,7 @@ const hostLoad = require("child_process").spawnSync(process.execPath, ["-e", `
 `], { encoding: "utf8", timeout: 10_000 });
 assert.strictEqual(hostLoad.status, 0, hostLoad.stderr || String(hostLoad.error || "Chat module failed to load in the extension host"));
 const { streamApiChat, decodeChatImage, toolBudgetSummary } = require("../dist/chat/api-chat-client");
-const { ApiChatStore, agentSessionOrigin, apiChatStatus, apiChatDiagnostics, apiChatHarnessSnapshot, apiChatSessionDiagnostics } = require("../dist/chat/api-chat-store");
+const { ApiChatStore, agentSessionOrigin, apiChatStatus, apiChatDiagnostics, apiChatHarnessSnapshot, apiChatSessionDiagnostics, apiChatContextSummary } = require("../dist/chat/api-chat-store");
 const { modelProfiles, validateBudget, estimateInputTokens, estimateCost, assertModelAvailable, checkReportedOutput, parseThinkingBudget } = require("../dist/chat/api-chat-models");
 const fs = require("fs");
 const os = require("os");
@@ -50,7 +50,10 @@ const base = {
   messages: [{ role: "user", content: "Hello" }], signal: new AbortController().signal,
 };
 
-if (process.argv.includes("--preview") || process.argv.includes("--browser-check")) startPreview();
+if (process.argv.includes("--process-control-only")) {
+  testChatProcessControls().then(() => console.log("Chat process control host tests passed."))
+    .catch(error => { console.error(error); process.exitCode = 1; });
+} else if (process.argv.includes("--preview") || process.argv.includes("--browser-check")) startPreview();
 else (async () => {
   const publicSummaries = [];
   let publicAnswer = "";
@@ -252,6 +255,17 @@ else (async () => {
     assert.strictEqual(contextViewer.load(queuedChat.id, false).queuedInputs.length, 1, "duplicate foreign delivery must be idempotent");
     assert.throws(() => contextViewer.enqueueInput(staleViewerChat, { ...foreignQueuedInput, text: "Retargeted text" }), /different text or execution context/);
     assert.throws(() => contextViewer.enqueueInput(staleViewerChat, { ...foreignQueuedInput, id: require("crypto").randomUUID(), mode: "steer" }), /different execution context/);
+    assert.throws(() => contextViewer.enqueueInput(staleViewerChat, { ...foreignQueuedInput, id: require("crypto").randomUUID(),
+      mode:"steer", text:"Start a new task: Repair another endpoint." }), /separate task/);
+    {
+      const editable = contextStore.create(), id = require("crypto").randomUUID(), token = require("crypto").randomUUID();
+      editable.progress = structuredClone(queuedChat.progress);
+      contextStore.save(editable);
+      const queued = contextStore.enqueueInput(editable, { id, text:"Keep the current goal", mode:"steer", executionContext });
+      contextStore.editQueuedInput(queued, id, "begin", token);
+      assert.throws(() => contextStore.editQueuedInput(queued, id, "save", token, "开始新任务：另一个独立任务。"), /separate task/);
+      assert.strictEqual(contextStore.load(editable.id, false).queuedInputs[0].text, "Keep the current goal");
+    }
     queuedChat.messages[0].content += " output";
     contextStore.save(queuedChat);
     assert.strictEqual(contextViewer.load(queuedChat.id, false).messages[0].content, "partial output");
@@ -616,6 +630,7 @@ else (async () => {
   await testNativeTools();
   await testMcp();
   await testVscodeTools();
+  await testChatProcessControls();
   console.log("API chat transport tests passed: streaming, Azure, validation, redaction, truncation, timeout and cancellation.");
 })().catch(error => { console.error(error); process.exitCode = 1; });
 
@@ -851,6 +866,8 @@ async function testController() {
   const showChatNotification = (kind, title, actions) => new Promise(resolve => chatNotifications.push({ kind, title, actions, resolve }));
   const nativeInvocations = [];
   const managedInvocations = [];
+  let managedConnectionStarts = 0;
+  let discoveryRoot = directory;
   const registeredTools = [{ name: "mcp_pkm_list_notes", description: "List notes" }, { name: "mcp_pkm_list_skills", description: "List skills" }, { name: "foreign_list_notes", description: "Foreign tool" }];
   class MockFileSystemError extends Error { constructor(code) { super(code); this.code = code; } }
   context.globalStorageUri = { fsPath: directory, path: directory };
@@ -862,7 +879,7 @@ async function testController() {
     Module._load = function(name, parent, ...rest) {
       if (parent?.filename.endsWith("api-chat-view.js") && name === "./api-chat-mcp") {
         const mcp = originalLoad.call(this, name, parent, ...rest);
-        mcp.connectManagedChatMcp = async () => ({
+        mcp.connectManagedChatMcp = async () => (++managedConnectionStarts, {
           catalog: registeredTools.filter(tool => tool.name.startsWith("mcp_pkm_")).map(tool => ({ ...tool, managed: true, inputSchema: { type: "object" } })),
           invoke: async (name, input) => { managedInvocations.push({ name, input }); return "managed fixture result"; },
           close: async () => {},
@@ -872,7 +889,7 @@ async function testController() {
       if (parent?.filename.endsWith("api-chat-view.js") && name === "../mcp/mcp") {
         return { ...originalLoad.call(this, name, parent, ...rest), mcpServerDefinitionData: () => ({ command: "fixture", args: [] }) };
       }
-      if (parent?.filename.endsWith("api-chat-view.js") && name === "../knowledge/filestore" || parent?.filename.endsWith("knowledge-reader.js") && name === "../knowledge/filestore") return { getStorePath: () => directory, noteList: () => [{ title: "Selected memory", slug: "note", content: "memory" }], noteGet: () => ({ content: "memory snapshot" }), skillList: () => [{ name: "Selected skill" }], skillGet: () => ({ content: "pkm skill snapshot" }),
+      if (parent?.filename.endsWith("api-chat-view.js") && name === "../knowledge/filestore" || parent?.filename.endsWith("knowledge-reader.js") && name === "../knowledge/filestore") return { getStorePath: () => discoveryRoot, noteList: () => [{ title: "Selected memory", slug: "note", content: "memory" }], noteGet: () => ({ content: "memory snapshot" }), skillList: () => [{ name: "Selected skill" }], skillGet: () => ({ content: "pkm skill snapshot" }),
         paperList: () => [{ title:"Selected research", slug:"research" }],
         paperGet: () => ({ content:"research snapshot", conclusions:["No production writes."], assumptions:["Fixture only."] }) };
       if (parent?.filename.endsWith("knowledge-reader.js") && name === "../knowledge/storage") return {
@@ -945,6 +962,31 @@ async function testController() {
       requests.push({ request, onText, resolve, reject }); started();
     });
     builtin.createBuiltinTools = (...args) => { if (args[2]) approvalCallbacks.push(args[2]); return originalBuiltin(...args); };
+    for (const outcome of ["ready", "failed", "root-changed", "disposed"]) {
+      let releasePreparation;
+      const preparing = new ApiChatView(context, undefined, () => new Promise((resolve, reject) => {
+        releasePreparation = () => outcome === "failed" ? reject(new Error("preparation fixture failed")) : resolve();
+      }));
+      const before = managedConnectionStarts;
+      const discovery = preparing.discoverPkmMcp();
+      assert.strictEqual(preparing.discoverPkmMcp(), discovery, "preparation and discovery are single-flight");
+      await new Promise(resolve => setImmediate(resolve));
+      assert.strictEqual(managedConnectionStarts, before, "the discovery clock and transport cannot start during preparation");
+      assert.strictEqual(preparing.isBusy, true);
+      if (outcome === "root-changed") discoveryRoot = path.join(directory, "changed-root");
+      if (outcome === "disposed") preparing.dispose();
+      releasePreparation();
+      if (outcome === "ready") {
+        await discovery;
+        assert.strictEqual(managedConnectionStarts, before + 1);
+      } else {
+        await assert.rejects(discovery, outcome === "failed" ? /preparation fixture failed/ : /context changed/);
+        assert.strictEqual(managedConnectionStarts, before, "failed or invalidated preparation must not launch a server");
+      }
+      discoveryRoot = directory;
+      preparing.dispose();
+      assert.strictEqual(managedInvocations.length, 0, "preparation cannot invoke content tools");
+    }
     provider = new ApiChatView(context);
     provider.view = { webview: { postMessage: value => {
       posts.push(value);
@@ -1727,8 +1769,27 @@ async function testController() {
     provider.store.startTask(targetChat, "Cooperation target Task");
     provider.chat.builtinTools = ["read_file", "ask_session"];
     const sourceReady = new Promise(resolve => { started = resolve; });
-    const sourceRun = provider.handle({ type: "send", text: "source-only private question" }); await sourceReady;
+    const interval = global.setInterval, lifecycleChecks = [];
+    global.setInterval = (callback, delay, ...args) => {
+      if (delay === 1000) lifecycleChecks.push(callback);
+      return interval(callback, delay, ...args);
+    };
+    let sourceRun;
+    try {
+      sourceRun = provider.handle({ type: "send", text: "source-only private question" });
+      await sourceReady;
+    } finally { global.setInterval = interval; }
     const sourceRequest = requests.at(-1); const sessionTool = sourceRequest.request.tools.find(tool => tool.name === "ask_session");
+    assert.equal(lifecycleChecks.length, 1, "capture the actual one-second running Chat lifecycle check");
+    provider.store.observe(provider.chat);
+    const loadCurrent = provider.store.load;
+    let lifecycleReloads = 0;
+    provider.store.load = function (...args) { lifecycleReloads++; return loadCurrent.apply(this, args); };
+    try {
+      for (let i = 0; i < 10; i++) lifecycleChecks[0]();
+      assert.equal(lifecycleReloads, 0, "running Chat polling and its runnable fence must share unchanged persisted history");
+      assert.equal(sourceRequest.request.signal.aborted, false);
+    } finally { provider.store.load = loadCurrent; }
     assert(sessionTool); assert(sessionTool.parameters.properties.sessionId.enum.includes(targetChat.sessionId));
     const sessionQuestion = { sessionId: targetChat.sessionId, question: "Check parser cancellation" };
     await assert.rejects(sessionTool.execute({ ...sessionQuestion, sessionId: "external-session" }, sourceRequest.request.signal), /advertised/);
@@ -2114,6 +2175,70 @@ async function testController() {
     assert.strictEqual(provider.chat.mcpServers, undefined);
     assert.strictEqual(provider.chat.permissionMode, "protective");
     assert.strictEqual(provider.store.load(previousChat).contextWindow, previousBudget);
+    const planningChat = provider.chat;
+    const goalBeforePlanFixture = planningChat.workGoal;
+    const selectionBeforePlanFixture = planningChat.toolSelection;
+    planningChat.vscodeModelId = nativeClient.vscodeModelProfile(models[0]).id;
+    provider.invalidateModels();
+    await provider.handle({ type:"permissionMode", value:"allow-all" });
+    await provider.handle({ type:"workflowMode", chatId:planningChat.id, value:"plan" });
+    const planStarted = new Promise(resolve => { nativeStarted = resolve; });
+    const planRun = provider.handle({ type:"send", chatId:planningChat.id, text:"Plan a focused endpoint fix without implementation" });
+    await planStarted;
+    const planRequest = nativeRequests.at(-1);
+    assert(!planRequest.request.tools.some(tool => ["run_process", "replace_text", "run_action", "spawn_workers", "record_harness"].includes(tool.name)),
+      "actual provider request must exclude every mutating Plan tool under Allow All");
+    assert(!planRequest.request.tools.some(tool => tool.name.startsWith("mcp_") || tool.name.startsWith("foreign_")));
+    assert.match(planRequest.request.messages[0].content, /Workflow mode: plan/);
+    assert.throws(() => provider.queueInput(planningChat, "Implement without approval", "task"), /cannot be queued/);
+    const planBody = { objective:"Fix the endpoint", scope:["Endpoint only"], nonGoals:["Other endpoints"], facts:["Focused reproduction"], openQuestions:[], risks:["Caller compatibility"],
+      steps:[{ id:"fix", title:"Fix and verify endpoint", dependsOn:[], verification:"Focused test must assert HTTP 200 and exact response body" }], changeReason:"Initial researched plan" };
+    const originalPlanContext = planningChat.context;
+    planningChat.context = [...originalPlanContext, { id:"late-context", label:"Changed requirements", content:"Change another endpoint" }];
+    assert.throws(() => planRequest.request.beforeRound(planRequest.request.messages, 1024), /Requirements changed/);
+    await assert.rejects(planRequest.request.tools.find(tool => tool.name === "submit_plan").execute(planBody, planRequest.request.signal), /Requirements changed/);
+    planningChat.context = originalPlanContext;
+    await planRequest.request.tools.find(tool => tool.name === "submit_plan").execute(planBody, planRequest.request.signal);
+    assert.equal(planRequest.request.afterTools(), true);
+    await assert.rejects(planRequest.request.tools.find(tool => tool.name === "ask_user").execute({ question:"Unnecessary question" }, planRequest.request.signal), /Plan.*submitted/);
+    planRequest.onText("Plan ready for review"); planRequest.resolve(); await planRun;
+    assert.equal(planningChat.progress.status, "complete");
+    const proposal = planningChat.plans.at(-1);
+    assert.equal(planningChat.workflowMode, "plan");
+    assert.throws(() => provider.assertPortalMutationAllowed(planningChat.id), /cannot bypass/);
+    await assert.rejects(provider.executeRemoteTask("Implement without local review", new AbortController().signal, crypto.randomUUID(), planningChat.id), /local user requests only/);
+    await assert.rejects(provider.handle({ type:"approvePlan", chatId:first, id:proposal.id, contentHash:proposal.contentHash }), /idle local|changed|owning/);
+    sessionApproval = "Cancel";
+    await provider.handle({ type:"approvePlan", chatId:planningChat.id, id:proposal.id, contentHash:proposal.contentHash });
+    assert.equal(planningChat.workflowMode, "plan"); assert.equal(proposal.approval, undefined);
+    sessionApproval = "Approve and implement";
+    const implementationStarted = new Promise(resolve => { nativeStarted = resolve; });
+    const implementation = provider.handle({ type:"approvePlan", chatId:planningChat.id, id:proposal.id, contentHash:proposal.contentHash });
+    await implementationStarted;
+    const implementationRequest = nativeRequests.at(-1);
+    assert.equal(planningChat.workflowMode, "execute");
+    assert.equal(planningChat.messages.at(-2).planExecution, proposal.id);
+    assert.equal(planningChat.messages.at(-2).inputOrigin, "agent", "generated handoff text is not a user-authored Profile learning source");
+    assert.match(implementationRequest.request.messages[0].content, /Implement only the approved plan/);
+    const processTool = implementationRequest.request.tools.find(tool => tool.name === "run_process");
+    assert(processTool, "approved implementation retains configured local tools and permissions");
+    await implementationRequest.request.tools.find(tool => tool.name === "submit_plan").execute({ ...planBody, changeReason:"New evidence changes approach" }, implementationRequest.request.signal);
+    await assert.rejects(processTool.execute({ program:"must-not-execute", arguments:[] }, implementationRequest.request.signal), /local approval/);
+    implementationRequest.onText("Revised plan needs review"); implementationRequest.resolve(); await implementation;
+    assert.equal(planningChat.workflowMode, "plan"); assert.equal(planningChat.plans.at(-1).revision, 2);
+    assert.equal(planningChat.progress.status, "complete", "revised-plan review is not a failed or resolved work objective");
+    await assert.rejects(provider.handle({ type:"approvePlan", chatId:planningChat.id, id:proposal.id, contentHash:proposal.contentHash }), /changed/);
+    await provider.handle({ type:"workflowMode", chatId:planningChat.id, value:"chat" });
+    provider.assertPortalMutationAllowed(planningChat.id);
+    planningChat.workGoal = goalBeforePlanFixture;
+    planningChat.toolSelection = selectionBeforePlanFixture;
+    provider.persist(planningChat);
+    sessionApproval = "Ask Session";
+    nativeClient.discoverVscodeModels = async () => models;
+    provider.invalidateModels();
+    picks.push(items => items.find(item => item.id === previousModel));
+    await provider.handle({ type:"chooseModel" });
+    console.log("Plan Host workflow: read-only preparation, local approval, cancellation, revision and Portal fences verified.");
     const freshView = new ApiChatView(context);
     freshView.initialize();
     assert.strictEqual(freshView.settings().selectedProfile.id, previousModel);
@@ -2213,9 +2338,15 @@ async function testController() {
     assert.strictEqual(createdControl.sessionId, null); assert.strictEqual(createdControl.title, "Agent-driven visible Chat");
     assert((await provider.agentControl("list", {})).chats.some(chat => chat.id === createdControl.chatId));
     await assert.rejects(provider.agentControl("create", { title: "No fallback", modelId: "missing-model" }), /unavailable/);
+    for (const hardToolRoundLimit of [null, 0, 1001, 1.5, "2", true]) {
+      const before = provider.store.load(createdControl.chatId, false).messages.length, beforeRequests = nativeRequests.length;
+      await assert.rejects(provider.agentControl("send", { chatId:createdControl.chatId, prompt:"Invalid limit", hardToolRoundLimit }), /tool round limit/);
+      assert.strictEqual(provider.store.load(createdControl.chatId, false).messages.length, before);
+      assert.strictEqual(nativeRequests.length, beforeRequests, "Invalid budgets must be rejected before inference or message creation");
+    }
     const controlledStarted = new Promise(resolve => { nativeStarted = resolve; });
     registeredTools.push({ name: "mcp_pkm_api_chat_send", description: "Programmable Chat send" });
-    const controlledRun = provider.agentControl("send", { chatId: createdControl.chatId, prompt: "Read actual AAGL notes and skills" });
+    const controlledRun = provider.agentControl("send", { chatId: createdControl.chatId, prompt: "Read actual AAGL notes and skills", hardToolRoundLimit: 2 });
     await Promise.race([controlledStarted, controlledRun.then(result => { throw new Error("Agent-controlled send completed without starting the model: " + result.reply?.error); })]);
     assert.strictEqual((await provider.agentControl("get", { chatId: createdControl.chatId })).status, "running");
     await assert.rejects(provider.agentControl("send", { chatId: createdControl.chatId, prompt: "No duplicate" }), /busy/);
@@ -2223,12 +2354,102 @@ async function testController() {
     assert(!nativeRequests.at(-1).request.tools.some(tool => tool.name === "ask_chat"), "Agent-driven turns cannot recursively delegate to Chats");
     const finder = nativeRequests.at(-1).request.tools.find(tool => tool.name === "find_vscode_tools");
     if (finder) assert(!JSON.parse(await finder.execute({ query: "api_chat_send" }, nativeRequests.at(-1).request.signal)).tools.some(tool => tool.name === "mcp_pkm_api_chat_send"), "Agent-driven turns cannot recursively create/send Chats");
+    assert.strictEqual(nativeRequests.at(-1).request.hardToolRoundLimit, 2);
+    nativeRequests.at(-1).request.onHardToolRoundLimit({ limit:2, rounds:2 });
     nativeRequests.at(-1).onText("Actual controller fixture answer"); nativeRequests.at(-1).resolve();
     const controlledResult = await controlledRun; assert.strictEqual(controlledResult.reply.status, "complete");
     assert.strictEqual(controlledResult.reply.content, "Actual controller fixture answer"); assert.strictEqual(controlledResult.reply.credits, null);
+    assert.deepStrictEqual(controlledResult.reply.toolRoundLimit, { limit:2, rounds:2, reached:true });
+    assert.deepStrictEqual(provider.store.load(createdControl.chatId, false).messages.at(-1).toolRoundLimit, controlledResult.reply.toolRoundLimit);
     assert.strictEqual(provider.store.load(createdControl.chatId, false).sessionId, undefined);
+    {
+      const { prepareWorkGoal } = require("../dist/chat/chat-work-goal");
+      const previousReply = provider.chat.messages.at(-1), beforeRequests = nativeRequests.length;
+      const originalInput = provider.chat.messages.find(message => message.role === "user");
+      prepareWorkGoal(provider.chat, originalInput.id, "Please fix this original endpoint.", "a".repeat(64));
+      provider.chat.workGoal.status = "paused";
+      provider.store.save(provider.chat);
+      await assert.rejects(provider.agentControl("send", { chatId:createdControl.chatId, prompt:"Continue" }), /unfinished goal belongs to another execution context/);
+      const failed = provider.store.load(createdControl.chatId, false);
+      const failureReply = failed.messages.at(-1);
+      assert.notStrictEqual(failureReply.id, previousReply.id, "a startup failure cannot reuse the previous successful reply");
+      assert.strictEqual(failureReply.role, "assistant");
+      assert.strictEqual(failureReply.status, "failed");
+      assert.strictEqual(failureReply.progress.attemptId, failed.progress.attemptId);
+      assert.strictEqual(failureReply.inputId, failed.messages.at(-2).id);
+      assert.match(failureReply.error, /another execution context/);
+      assert.strictEqual(failed.workGoal.status, "paused");
+      assert.strictEqual(nativeRequests.length, beforeRequests, "startup failure must not call a model");
+      assert.strictEqual(provider.running.has(createdControl.chatId), false);
+      assert.strictEqual(apiChatHarnessSnapshot(failed).attempts.at(-1).messageId, failureReply.id);
+      const previousGoalId = failed.workGoal.id;
+      const newTaskStarted = new Promise(resolve => { nativeStarted = resolve; });
+      const newTaskRun = provider.agentControl("send", { chatId:createdControl.chatId, prompt:"Start a new task: Repair another endpoint." });
+      await Promise.race([newTaskStarted, newTaskRun.then(() => { throw new Error("Explicit new task did not start its model"); })]);
+      assert.notStrictEqual(provider.chat.workGoal.id, previousGoalId);
+      assert.strictEqual(provider.chat.workGoal.status, "active");
+      assert.strictEqual(provider.chat.workGoalHistory[0].id, previousGoalId);
+      assert.strictEqual(provider.chat.workGoalHistory[0].status, "paused");
+      await assert.rejects(provider.handle({ type:"send", chatId:createdControl.chatId, mode:"steer",
+        submissionId:require("crypto").randomUUID(), text:"Start a new task: Repair a third endpoint." }), /separate task/);
+      const infoTool = nativeRequests.at(-1).request.tools.find(tool => tool.name === "session_info");
+      assert(infoTool);
+      const info = JSON.parse(await infoTool.execute({}, nativeRequests.at(-1).request.signal));
+      assert.strictEqual(info.workGoal.id, provider.chat.workGoal.id);
+      assert.deepStrictEqual(info.workGoal.sourceInputIds, [provider.chat.workGoal.inputId]);
+      const activeRequest = nativeRequests.at(-1).request;
+      activeRequest.messages.push(
+        { role:"assistant", content:"", tool_calls:[{ id:"measured-controller", type:"function", function:{ name:"read_file", arguments:"{}" } }] },
+        { role:"tool", content:"Current source evidence ".repeat(4000), tool_call_id:"measured-controller" });
+      await activeRequest.prepareContext(activeRequest.messages, activeRequest.maxOutputTokens, {
+        countMessage:async () => 64, countTools:async () => 128,
+      });
+      activeRequest.beforeRound(activeRequest.messages, activeRequest.maxOutputTokens);
+      assert(activeRequest.messages.some(message => message.tool_call_id === "measured-controller"), "Host wiring must preserve provider-measured active results");
+      const measuredBudget = provider.chat.messages.at(-1).budgetReceipts.at(-1);
+      assert(measuredBudget.consumed.estimatedInputTokens > measuredBudget.effective.inputBudget);
+      assert(measuredBudget.contextPlan.measuredInput.inputTokens < measuredBudget.effective.inputBudget);
+      assert(provider.store.load(createdControl.chatId, false).messages.at(-1).budgetReceipts.at(-1).contextPlan.measuredInput);
+      assert(apiChatContextSummary(provider.chat.messages.at(-1)).rounds.at(-1).planningInput);
+      await provider.agentControl("cancel", { chatId:createdControl.chatId });
+      const newTaskResult = await newTaskRun;
+      assert.strictEqual(newTaskResult.reply.status, "cancelled");
+      assert.strictEqual(activeRequest.hardToolRoundLimit, undefined, "A later request must not inherit the previous API limit");
+      const limitedGoalStarted = new Promise(resolve => { nativeStarted = resolve; });
+      const limitedGoalRun = provider.agentControl("send", { chatId:createdControl.chatId,
+        prompt:"Start a new task: Repair a bounded endpoint.", hardToolRoundLimit:1 });
+      await limitedGoalStarted;
+      nativeRequests.at(-1).request.onHardToolRoundLimit({ limit:1, rounds:1 });
+      nativeRequests.at(-1).onText("Completed investigation; implementation remains unfinished.");
+      nativeRequests.at(-1).resolve();
+      await assert.rejects(limitedGoalRun, /tool round limit was reached/);
+      const limitedGoal = provider.store.load(createdControl.chatId, false);
+      assert.strictEqual(limitedGoal.messages.at(-1).status, "failed");
+      assert.strictEqual(limitedGoal.workGoal.status, "interrupted", "Budget exhaustion cannot resolve an unfinished goal");
+      assert.match(limitedGoal.messages.at(-1).content, /implementation remains unfinished/);
+      assert.deepStrictEqual(apiChatHarnessSnapshot(limitedGoal).attempts.at(-1).toolRoundLimit, { limit:1, rounds:1, reached:true });
+      delete provider.chat.workGoal;
+      provider.store.save(provider.chat);
+      for (const [texts, expectedCount] of [
+        [["Follow up", "Start a new task: Repair a third endpoint.", "Its requirement"], 1],
+        [["Start a new task: Repair a third endpoint.", "Its requirement", "开始新任务：下一个独立任务。"], 2],
+        [["First requirement", "Second requirement"], 2],
+      ]) {
+        let capturedBatch;
+        const executionContext = provider.captureExecution(provider.chat);
+        const target = { id:createdControl.chatId, progress:{ status:"complete" }, queuedInputs:texts.map(text => ({
+          id:require("crypto").randomUUID(), text, mode:"task", executionContext,
+        })) };
+        const owner = { running:new Map(), queueDrains:new Set(), queueCancelled:new Set(),
+          assertExecution:() => {}, send:async (...args) => { capturedBatch = args[7]; } };
+        await provider.drainQueue.call(owner, target);
+        assert.deepStrictEqual(capturedBatch.map(item => item.text), texts.slice(0, expectedCount), "distinct explicit task boundaries must not be combined into one goal");
+        assert.strictEqual(target.queuedInputs.length, texts.length, "selecting a batch alone does not consume any messages");
+      }
+    }
     const cancellingStarted = new Promise(resolve => { nativeStarted = resolve; });
     const cancellingRun = provider.agentControl("send", { chatId: createdControl.chatId, prompt: "Explicitly cancelled fixture" }); await cancellingStarted;
+    assert.strictEqual(nativeRequests.at(-1).request.hardToolRoundLimit, undefined);
     nativeRequests.at(-1).onText("Preserved partial output");
     await provider.agentControl("cancel", { chatId: createdControl.chatId });
     const cancelledControl = await cancellingRun;
@@ -2429,6 +2650,78 @@ async function testCopilotSdkChannel() {
   assert.equal(receipts[0].provider, "vscode"); assert.equal(receipts[0].countingMethod, "utf8-byte-upper-bound");
   assert.ok(deleted.includes(first.sessionId), "session transcript is deleted after the request");
 
+  {
+    let executed = 0, summaries = 0, finishChecks = 0;
+    const stops = [], limitUsageRounds = [], startSessions = sessions.length;
+    script = async session => {
+      if (!session.config.tools.length) {
+        summaries++;
+        assert.deepStrictEqual(session.config.availableTools, [], "The SDK summary session must expose no tools");
+        assert.match(session.config.systemMessage.content, /tool-call round budget/);
+        assert.match(session.sent[0].prompt, /value 2-b/, "Completed batch results reach the summary");
+        session.emit("assistant.turn_start", { turnId:"summary" });
+        session.emit("assistant.message", { content:"Partial results; more work remains.", toolRequests:[] });
+        session.emit("assistant.usage", { turnId:"summary", inputTokens:20, outputTokens:5 });
+        session.emit("session.idle");
+        return;
+      }
+      for (let turn = 0; turn < 2; turn++) {
+        session.emit("assistant.turn_start", { turnId:`limited-${turn}` });
+        const calls = ["a", "b"].map(key => ({ toolCallId:`${turn}-${key}`, name:"pkm_lookup", arguments:{ key:`${turn + 1}-${key}` } }));
+        session.emit("assistant.message", { content:"", toolRequests:calls });
+        await Promise.all(calls.map(call => session.config.tools[0].handler(call.arguments, { toolCallId:call.toolCallId })));
+        session.emit("assistant.usage", { turnId:`limited-${turn}`, inputTokens:20, outputTokens:5 });
+        if (session.aborted) break;
+      }
+    };
+    await streamCopilotSdkChat(model, { ...request, hardToolRoundLimit:2, loopReviewAfterMs:1800000,
+      tools:[{ ...request.tools[0], execute:async args => { executed++; return `value ${args.key}`; } }],
+      onHardToolRoundLimit: stop => stops.push(stop), onUsage:(_usage, round) => limitUsageRounds.push(round),
+      beforeFinish:() => { finishChecks++; return "Do more work"; },
+    }, () => {}, {}, deps);
+    assert.equal(executed, 4, "A round limit counts batches, not individual tools");
+    assert.equal(summaries, 1); assert.equal(finishChecks, 0, "Goal correction cannot extend a hard-limited summary");
+    assert.deepStrictEqual(stops, [{ limit:2, rounds:2 }]);
+    assert.deepStrictEqual(limitUsageRounds, [0, 1, 2], "The separate summary keeps monotonically increasing usage rounds");
+    assert.equal(sessions.length - startSessions, 2);
+    assert.equal(sessions[startSessions].aborted, 1, "The tool-capable SDK session stops before the next inference");
+  }
+  for (const outcome of ["rogue", "cancel", "goal-only", "stop-failed", "stop-hung"]) {
+    let executions = 0, summaries = 0;
+    const controller = new AbortController();
+    script = async session => {
+      session.emit("assistant.turn_start", { turnId: "0" });
+      if (!session.config.tools.length) {
+        summaries++;
+        if (outcome === "cancel") { controller.abort(); return; }
+        session.emit("assistant.message", outcome === "rogue"
+          ? { content:"", toolRequests:[{ toolCallId:"rogue", name:"pkm_lookup", arguments:{} }] }
+          : { content:"Unresolved; completed results retained.", toolRequests:[] });
+        session.emit("session.idle");
+        return;
+      }
+      if (outcome === "goal-only") {
+        session.emit("assistant.message", { content:"Still investigating.", toolRequests:[] });
+        session.emit("session.idle");
+      } else {
+        if (outcome === "stop-failed") session.abort = async () => { throw new Error("Cannot stop fixture"); };
+        if (outcome === "stop-hung") session.abort = async () => new Promise(() => {});
+        session.emit("assistant.message", { content:"", toolRequests:[{ toolCallId:"allowed", name:"pkm_lookup", arguments:{ key:"a" } }] });
+        await session.config.tools[0].handler({ key:"a" }, { toolCallId:"allowed" });
+      }
+    };
+    const limited = streamCopilotSdkChat(model, { ...request, signal:controller.signal, hardToolRoundLimit:1, timeoutMs:outcome === "stop-hung" ? 50 : undefined,
+      tools:[{ ...request.tools[0], execute:async () => { executions++; return "retained"; } }],
+      beforeFinish:() => "Continue the unmet objective",
+    }, () => {}, {}, deps);
+    if (outcome === "rogue") await assert.rejects(limited, /final summary/);
+    else if (outcome === "cancel") await assert.rejects(limited, /cancelled/);
+    else if (outcome.startsWith("stop-")) await assert.rejects(limited, /Could not confirm stopping/);
+    else await limited;
+    assert.equal(summaries, outcome.startsWith("stop-") ? 0 : 1);
+    assert.equal(executions, outcome === "goal-only" ? 0 : 1);
+  }
+
   script = async session => {
     session.emit("assistant.turn_start", { turnId:"opaque-distinct" });
     session.emit("assistant.message", { messageId:"legitimate-one", content:"repeat", toolRequests:[] });
@@ -2447,6 +2740,27 @@ async function testCopilotSdkChannel() {
   await assert.rejects(streamCopilotSdkChat(model, { ...request, onUsage:() => { throw new Error("Ledger persistence failed"); } },
     () => {}, {}, deps), /Ledger persistence failed/, "SDK listener exceptions must fail the request, not silently lose accounting");
 
+  let independentStarted = 0, releaseIndependent;
+  const independentGate = new Promise(resolve => { releaseIndependent = resolve; });
+  script = async session => {
+    session.emit("assistant.turn_start", { turnId: "parallel-reads" });
+    session.emit("assistant.message", { toolRequests: [
+      { toolCallId: "parallel-one", name: "independent_read", arguments: { index: 1 } },
+      { toolCallId: "parallel-two", name: "independent_read", arguments: { index: 2 } },
+    ] });
+    await Promise.all([1, 2].map(index => session.config.tools[0].handler({ index }, { toolCallId: index === 1 ? "parallel-one" : "parallel-two" })));
+    session.emit("assistant.message", { messageId: "parallel-result", content: "Both read results recorded." });
+    session.emit("session.idle");
+  };
+  const parallelSdk = streamCopilotSdkChat(model, { ...request, tools: [{
+    name: "independent_read", description: "Independent read", parameters: { type: "object" }, execution: "parallel-read",
+    execute: async () => { if (++independentStarted === 2) releaseIndependent(); await independentGate; return "read"; },
+  }] }, () => {}, {}, deps);
+  let parallelDeadline;
+  try { await Promise.race([parallelSdk, new Promise((_, reject) => { parallelDeadline = setTimeout(() => reject(new Error("SDK independent reads did not overlap")), 2000); })]); }
+  finally { clearTimeout(parallelDeadline); releaseIndependent(); }
+  assert.equal(independentStarted, 2);
+
   // afterTools stops the run without asking the model for another turn.
   script = async session => {
     session.emit("assistant.turn_start", { turnId: "0" });
@@ -2455,6 +2769,50 @@ async function testCopilotSdkChannel() {
   };
   await streamCopilotSdkChat(model, { ...request, afterTools: () => true }, () => {}, {}, deps);
   assert.equal(sessions.at(-1).aborted, 1);
+
+  const workflow = require("../dist/chat/chat-plan");
+  const { captureExecutionContext } = require("../dist/chat/execution-context");
+  const execution = captureExecutionContext(crypto.randomUUID(), [], process.cwd(), true, "allow-all");
+  const chat = { id:crypto.randomUUID(), messages:[], context:[], images:[], workflowMode:"plan" };
+  const proposal = { objective:"Fix endpoint", scope:["Endpoint"], nonGoals:[], facts:[], openQuestions:[], risks:[],
+    steps:[{ id:"fix", title:"Fix endpoint", dependsOn:[], verification:"Focused test asserts exact response" }] };
+  const initial = workflow.submitChatPlan(chat, proposal, execution, "Initial");
+  workflow.approveChatPlan(chat, initial.id, initial.contentHash, execution);
+  let writes = 0, questions = 0, revisions = 0, grant;
+  let waiting;
+  const permissionStarted = new Promise(resolve => { waiting = resolve; });
+  const planTools = workflow.gatePlanTools(chat, "execute", execution, [
+    { name:"save_file", description:"Write", parameters:{ type:"object" }, execute:async args => {
+      if (args.pending) { waiting(); await new Promise(resolve => { grant = resolve; }); }
+      writes++; return "written";
+    } },
+    { name:"submit_plan", description:"Revise", parameters:{ type:"object" }, execute:async () => {
+      workflow.submitChatPlan(chat, proposal, execution, "Approach changed"); revisions++; return "submitted";
+    } },
+    { name:"ask_user", description:"Ask", parameters:{ type:"object" }, execute:async () => { questions++; return "answered"; } },
+  ]);
+  script = async session => {
+    const calls = [{ toolCallId:"pending-write", name:"save_file", arguments:{ pending:true } },
+      { toolCallId:"revision", name:"submit_plan", arguments:{} },
+      { toolCallId:"late-write", name:"save_file", arguments:{} },
+      { toolCallId:"late-question", name:"ask_user", arguments:{} }];
+    session.emit("assistant.turn_start", { turnId:"plan-boundaries" });
+    session.emit("assistant.message", { content:"", toolRequests:calls });
+    const batch = Promise.all(calls.map(call => session.config.tools.find(tool => tool.name === call.name).handler(call.arguments, { toolCallId:call.toolCallId })));
+    await permissionStarted;
+    assert.equal(revisions, 0, "SDK handlers must not revise a plan concurrently with a permission wait");
+    assert.equal(writes, 0);
+    grant();
+    await batch;
+  };
+  await streamCopilotSdkChat(model, { ...request, tools:planTools, afterTools:() => revisions > 0 }, () => {}, {}, deps);
+  assert.equal(writes, 1, "only the approved pre-revision write executes");
+  assert.equal(revisions, 1);
+  assert.equal(questions, 0, "queued questions cannot block review after submission");
+  assert.equal(chat.workflowMode, "plan");
+  assert.equal(chat.plans.at(-1).approval, undefined);
+  assert.equal(sessions.at(-1).aborted, 1);
+  assert.equal(sessions.at(-1).sent.length, 1, "no continuation is sent after Plan submission");
 
   // Provider errors are classified without echoing provider text.
   script = async session => { session.emit("assistant.turn_start", { turnId: "0" }); session.emit("session.error", { errorType: "quota", message: "secret provider detail" }); };
@@ -2502,6 +2860,72 @@ async function testVscodeModels() {
   let byteBoundCounts = 0;
   await streamVscodeChat({ ...model, countTokens:async () => { byteBoundCounts++; return 1; } }, { ...request, tools:[] }, () => {}, host);
   assert.equal(byteBoundCounts, 0, "a UTF-8 byte bound that fits the context skips slow tokenizer calls");
+  {
+    const { ChatContextPlanner } = require("../dist/chat/chat-context");
+    const first = [{ role:"assistant", content:"", tool_calls:[{ id:"native-old", type:"function", function:{ name:"read_file", arguments:"{}" } }] },
+      { role:"tool", content:"Retained endpoint evidence ".repeat(1200), tool_call_id:"native-old" }];
+    const latest = [{ role:"assistant", content:"", tool_calls:[{ id:"native-current", type:"function", function:{ name:"read_file", arguments:"{}" } }] },
+      { role:"tool", content:"Current validation evidence ".repeat(1200), tool_call_id:"native-current" }];
+    const initial = [{ role:"user", content:"Fix and test the endpoint" }, ...first, ...latest];
+    const planner = new ChatContextPlanner(initial, new Map(), []);
+    let measured, sent = 0, receipt;
+    const counterCalls = new Map(), activity = [];
+    const nativeModel = { ...model, maxInputTokens:16000,
+      countTokens:async value => {
+        const key = JSON.stringify(value);
+        counterCalls.set(key, (counterCalls.get(key) || 0) + 1);
+        return Math.ceil(Buffer.byteLength(key) / 8);
+      },
+      sendRequest:async prompt => {
+        sent++;
+        const payload = JSON.stringify(prompt);
+        assert(payload.includes("Retained endpoint evidence") && payload.includes("Current validation evidence"),
+          "the native provider receives both already-read tool results without another read");
+        return { stream:(async function* () { yield new TextPart("Verified"); })() };
+      },
+    };
+    await streamVscodeChat(nativeModel, { ...request, messages:initial, contextWindow:16000, tools:[],
+      prepareContext:async (messages, output, counter) => { measured = await planner.measure(messages, 16000 - output, counter); },
+      beforeRound:(messages, output) => { receipt = planner.plan(messages, 16000 - output, "endpoint validation", measured).receipt; },
+      onModelActivity:event => activity.push(event),
+    }, () => {}, host);
+    assert.equal(sent, 1);
+    assert.equal(receipt.omittedIds.length, 0);
+    assert(receipt.estimatedAfter > receipt.inputBudget);
+    assert(receipt.measuredInput.inputTokens < receipt.inputBudget);
+    assert([...counterCalls.values()].every(count => count === 1), "planning and final transport share invocation-local native token counts");
+    assert(activity.some(event => /before selecting evidence/.test(event.label) && event.status === "complete"));
+    let sendsAfterFailure = 0;
+    const failedModel = { ...nativeModel, countTokens:async () => { throw new Error("Fixture tokenizer failure"); },
+      sendRequest:async () => { sendsAfterFailure++; throw new Error("Must not send"); } };
+    await assert.rejects(streamVscodeChat(failedModel, { ...request, messages:initial, tools:[],
+      prepareContext:async (messages, output, counter) => { await planner.measure(messages, 1000, counter); },
+    }, () => {}, host), /Fixture tokenizer failure/);
+    assert.equal(sendsAfterFailure, 0);
+    await assert.rejects(streamVscodeChat({ ...failedModel, countTokens:async () => NaN }, { ...request, messages:initial, tools:[],
+      prepareContext:async (messages, output, counter) => { await planner.measure(messages, 1000, counter); },
+    }, () => {}, host), /token count is unavailable/);
+    assert.equal(sendsAfterFailure, 0);
+    await assert.rejects(streamVscodeChat({ ...nativeModel, sendRequest:failedModel.sendRequest }, { ...request,
+      messages:[{ role:"user", content:"Initially small" }], contextWindow:16000, tools:[],
+      beforeRound:messages => { messages.push({ role:"user", content:"New mandatory content ".repeat(10000) }); },
+    }, () => {}, host), /context budget exceeded/i);
+    assert.equal(sendsAfterFailure, 0, "the final native transport gate still rejects changed oversized payloads");
+    let preparedWithoutTokenizer = false;
+    await streamVscodeChat({ ...nativeModel, countTokens:undefined,
+      sendRequest:async () => ({ stream:(async function* () { yield new TextPart("Conservative fallback"); })() }),
+    }, { ...request, prepareContext:async () => { preparedWithoutTokenizer = true; } }, () => {}, host);
+    assert.equal(preparedWithoutTokenizer, false, "models without a tokenizer retain conservative planning");
+    const controller = new AbortController();
+    const aborted = { ...nativeModel, countTokens:() => new Promise(() => {}) };
+    let started;
+    const ready = new Promise(resolve => { started = resolve; });
+    const waiting = streamVscodeChat(aborted, { ...request, messages:initial, tools:[], signal:controller.signal,
+      prepareContext:async (messages, output, counter) => { started(); await planner.measure(messages, 1000, counter); },
+    }, () => {}, host);
+    await ready; controller.abort();
+    await assert.rejects(waiting, /cancelled/i);
+  }
   // A small context forces precise counting, because the byte bound no longer fits.
   const countedInputModel = { ...model, maxInputTokens:250,
     countTokens: async value => {
@@ -2640,6 +3064,16 @@ async function testVscodeModels() {
   await streamVscodeChat(boundedModel, { ...request, maxToolRounds: 2 }, text => { boundedAnswer += text; }, host);
   assert.strictEqual(boundedRounds, 3); assert.strictEqual(execution - beforeBounded, 2);
   assert.strictEqual(boundedAnswer, "Summary from completed results");
+  boundedRounds = 0; boundedAnswer = "";
+  const beforeHardNative = execution, nativeHardStops = [];
+  await streamVscodeChat(boundedModel, { ...request, maxToolRounds:1, hardToolRoundLimit:2, loopReviewAfterMs:1800000,
+    onHardToolRoundLimit: receipt => nativeHardStops.push(receipt),
+    onToolLoopNotice:async () => { throw new Error("Hard limit must not ask for continuation"); },
+    beforeFinish:() => { throw new Error("No goal correction after the final summary"); },
+  }, text => { boundedAnswer += text; }, host);
+  assert.strictEqual(boundedRounds, 3); assert.strictEqual(execution - beforeHardNative, 2);
+  assert.strictEqual(boundedAnswer, "Summary from completed results");
+  assert.deepStrictEqual(nativeHardStops, [{ limit:2, rounds:2 }]);
   let continuationRounds = 0; const continuationNotices = []; const beforeContinuation = execution;
   const continuationModel = { ...model, sendRequest: async (_messages, options) => ({ stream: (async function* () {
     continuationRounds++;
@@ -2804,6 +3238,31 @@ async function testToolLoop() {
   const { ChatToolLoopGuard, chatToolRoundLimit } = require("../dist/chat/api-chat-client");
   assert.strictEqual(chatToolRoundLimit(), 30);
   const signal = new AbortController().signal;
+  const hardStops = [];
+  const hardGuard = new ChatToolLoopGuard({ maxToolRounds: 1, loopReviewAfterMs: 1800000, hardToolRoundLimit: 2,
+    onToolLoopNotice: async () => { throw new Error("A hard limit cannot be extended by review"); },
+    onHardToolRoundLimit: receipt => hardStops.push(receipt) });
+  await hardGuard.beforeRound(1, signal);
+  assert.strictEqual(hardGuard.summarizing, false);
+  await hardGuard.beforeRound(2, signal);
+  assert.strictEqual(hardGuard.summarizing, true, "Explicit request limits override timed review and cannot be continued");
+  await hardGuard.beforeRound(3, signal);
+  assert.deepStrictEqual(hardStops, [{ limit: 2, rounds: 2 }], "The hard stop is recorded exactly once");
+  for (const limit of [1, 1000]) {
+    const edge = new ChatToolLoopGuard({ hardToolRoundLimit:limit, loopReviewAfterMs:1800000, loopExemptTools:["poll"] });
+    for (let index = 0; index < 3; index++) edge.record(undefined, "poll", "{}", "waiting");
+    await edge.beforeRound(limit - 1, signal); assert.strictEqual(edge.summarizing, false);
+    await edge.beforeRound(limit, signal); assert.strictEqual(edge.summarizing, true, "Polling cannot bypass an exact hard boundary");
+  }
+  const renewed = new ChatToolLoopGuard({ hardToolRoundLimit:2, loopReviewAfterMs:1800000, onToolLoopNotice:async () => "continue" });
+  for (let index = 0; index < 3; index++) renewed.record(undefined, "sample_probe", "{}", "same");
+  await renewed.beforeRound(1, signal); assert.strictEqual(renewed.summarizing, false);
+  await renewed.beforeRound(2, signal); assert.strictEqual(renewed.summarizing, true, "Stall-review continuation cannot renew the hard budget");
+  for (const hardToolRoundLimit of [null, 0, -1, 1001, 1.5, "2", NaN]) {
+    assert.throws(() => new ChatToolLoopGuard({ hardToolRoundLimit }), /tool round limit/);
+  }
+  const abortedHard = new AbortController(); abortedHard.abort();
+  await assert.rejects(hardGuard.beforeRound(3, abortedHard.signal), /cancelled/, "Stop still aborts a final summary");
   let reviewTime = 0;
   const timedNotices = [];
   const timedGuard = new ChatToolLoopGuard({ maxToolRounds: 1, loopReviewAfterMs: 1800000, loopReviewClock: () => reviewTime,
@@ -2879,6 +3338,41 @@ async function testToolLoop() {
   assert.deepStrictEqual(calls, [{ path: "sample.txt" }]); assert.strictEqual(output, "verified");
   assert.deepStrictEqual(stages.map(event => event.status), ["running", "complete"]);
   const budgetTools = tools.map(tool => ({ ...tool, execute: async () => "Independent budget test result" }));
+  {
+    let inferences = 0, executions = 0, summary = "";
+    const stops = [];
+    await streamApiChat({ ...base, tools:[{ ...tools[0], execute:async () => { executions++; return "Completed evidence"; } }],
+      hardToolRoundLimit:2, maxToolRounds:1, loopReviewAfterMs:1800000,
+      onHardToolRoundLimit: receipt => stops.push(receipt),
+      beforeFinish:() => { throw new Error("Summary cannot reopen an unresolved goal"); },
+      fetch:async (_url, options) => {
+        const payload = JSON.parse(options.body); inferences++;
+        if (inferences <= 2) return toolEvents("sample_probe", JSON.stringify({ path:`hard-${inferences}` }));
+        assert.strictEqual(inferences, 3); assert.strictEqual(payload.tools, undefined);
+        assert.match(payload.messages.at(-1).content, /unresolved work/);
+        return events([delta("Evidence retained; unfinished work."), done]);
+      },
+    }, text => { summary += text; });
+    assert.strictEqual(executions, 2); assert.strictEqual(summary, "Evidence retained; unfinished work.");
+    assert.deepStrictEqual(stops, [{ limit:2, rounds:2 }]);
+    let rogueExecutions = 0, rogueInferences = 0;
+    await assert.rejects(streamApiChat({ ...base, hardToolRoundLimit:1, loopReviewAfterMs:1800000,
+      tools:[{ ...tools[0], execute:async () => { rogueExecutions++; return "done"; } }],
+      fetch:async () => { rogueInferences++; return toolEvents("sample_probe"); },
+    }, () => {}), /final summary/);
+    assert.strictEqual(rogueExecutions, 1); assert.strictEqual(rogueInferences, 2);
+    const controller = new AbortController();
+    let cancelExecutions = 0;
+    await assert.rejects(streamApiChat({ ...base, signal:controller.signal, hardToolRoundLimit:1,
+      tools:[{ ...tools[0], execute:async () => { cancelExecutions++; return "done"; } }],
+      fetch:async (_url, options) => {
+        if (JSON.parse(options.body).tools) return toolEvents();
+        controller.abort();
+        return events([delta("Must not finish after Stop"), done]);
+      },
+    }, () => {}), /cancelled/i);
+    assert.strictEqual(cancelExecutions, 1);
+  }
   let perInferenceRounds = 0; const inferenceBudgets = [];
   await streamApiChat({ ...base, tools: budgetTools, maxOutputTokens: 32, beforeRound: (_messages, budget) => inferenceBudgets.push(budget), fetch: async (_url, options) => {
     assert.strictEqual(JSON.parse(options.body).max_completion_tokens, 32);
@@ -2955,6 +3449,16 @@ async function testToolLoop() {
     return ++smallBudgetRounds <= 2 ? toolEvents() : events([delta("done"), done]);
   }, maxOutputTokens: 10 }, () => {});
   assert.strictEqual(calls.length - beforeBudgetLimit, 2, "Two valid inferences may together exceed one inference's configured output budget.");
+  const boundaryOrder = [];
+  let boundaryRounds = 0;
+  await streamApiChat({ ...base, tools: [{ ...tools[0], execute: async () => { boundaryOrder.push("tool"); return "ok"; } }],
+    afterRound: async () => { await new Promise(resolve => setTimeout(resolve, 5)); boundaryOrder.push("review"); },
+    fetch: async () => ++boundaryRounds === 1 ? toolEvents() : events([delta("done"), done]) }, () => {});
+  assert.deepStrictEqual(boundaryOrder, ["review", "tool", "review"], "Activity review must finish after each inference and before pending tool effects or response completion.");
+  let finalRoundReviewed = false;
+  await streamApiChat({ ...base, afterRound: async () => { await new Promise(resolve => setTimeout(resolve, 5)); finalRoundReviewed = true; },
+    fetch: async () => events([delta("done"), done]) }, () => {});
+  assert.equal(finalRoundReviewed, true, "Final inference rounds must also pass through activity review before the response completes.");
   let partialWritingOutput = "";
   await assert.rejects(streamApiChat({ ...base, maxOutputTokens: 1024, fetch: async (_, options) => {
     assert.strictEqual(JSON.parse(options.body).max_completion_tokens, 1024);
@@ -3030,6 +3534,15 @@ async function testNativeTools() {
     const changes = [];
     const tools = createBuiltinTools(["read_file", "find_files", "search_text", "replace_text", "save_file", "run_process"], host, (name, waiting) => approvals.push({ name, waiting }), change => changes.push(change));
     const run = (name, args, signal = new AbortController().signal) => tools.find(tool => tool.name === name).execute(args, signal);
+    fs.mkdirSync(path.join(directory,"Board.assets"));
+    fs.writeFileSync(path.join(directory,"Board.assets/pkm-todo-board.json"),"{}");
+    fs.writeFileSync(path.join(directory,"Board.md"),"# Board");
+    for (const [file,original] of [["Board.assets/pkm-todo-board.json","{}"],["Board.md","# Board"]]) {
+      assert(JSON.parse(await run("read_file",{path:file})).content.includes(original),"Todo files remain viewable");
+      await assert.rejects(run("replace_text",{path:file,oldText:original,newText:"tampered"}),/structured Todo APIs/);
+      await assert.rejects(run("save_file",{path:file,expectedHash:require("node:crypto").createHash("sha256").update(original).digest("hex")}),/structured Todo APIs/);
+      assert.equal(fs.readFileSync(path.join(directory,file),"utf8"),original);
+    }
     assert.strictEqual(JSON.parse(await run("read_file", { path: "nested\\sample.txt", startLine: 2, endLine: 2 })).content, "needle");
     const largeText = Array.from({ length: 4000 }, (_, index) => `line-${index + 1} ${"x".repeat(70)}`).join("\n");
     fs.writeFileSync(path.join(directory, "nested", "large.ts"), largeText);
@@ -3650,6 +4163,7 @@ with sync_playwright() as runtime:
       expect_counts(0, 0)
       deletion.locator("#list-new").click()
       initial = expect_counts(1, 1)["state"]["chat"]["id"]
+      deletion.locator("#chat-actions-toggle").hover()
       deletion.locator("#back").click()
       decision["accept"] = False
       menu(initial, "Move to Trash")
@@ -3663,6 +4177,7 @@ with sync_playwright() as runtime:
       assert expect_counts(1, 1)["state"]["chat"]["id"] == initial
       deletion.locator("#list-new").click()
       current = expect_counts(2, 2)["state"]["chat"]["id"]
+      deletion.locator("#chat-actions-toggle").hover()
       deletion.locator("#back").click()
       menu(initial, "Move to Trash")
       assert expect_counts(1, 2)["state"]["chat"]["id"] == current
@@ -3738,4 +4253,87 @@ function createDeletionPreview() {
     },
     dispose() { for (const controller of controllers) controller.dispose(); fs.rmSync(directory, { recursive: true, force: true }); },
   };
+}
+
+async function testChatProcessControls() {
+  const Module = require("module");
+  const originalLoad = Module._load;
+  const viewPath = require.resolve("../dist/chat/api-chat-view");
+  const originalViewModule = require.cache[viewPath];
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-chat-process-control-"));
+  const posts = [];
+  let confirmStop = false;
+  let provider;
+  let processRecord;
+  let processDirectory;
+  const context = {
+    extensionPath: path.join(__dirname, ".."),
+    globalStorageUri: { fsPath: path.join(directory, "global-storage") },
+    workspaceState: { get: () => undefined, update: async () => {} },
+    subscriptions: [],
+  };
+  fs.mkdirSync(context.globalStorageUri.fsPath, { recursive: true });
+  try {
+    delete require.cache[viewPath];
+    Module._load = function(name, parent, ...rest) {
+      if (parent?.filename.endsWith("api-chat-view.js") && name.endsWith("/filestore")) return { getStorePath: () => directory };
+      if (name === "vscode") return {
+        workspace: { workspaceFolders: [], getConfiguration: () => ({ get: (_key, fallback) => fallback }) },
+        window: { showWarningMessage: async (_message, _options, choice) => confirmStop ? choice : undefined },
+        env: { language: "en" }, extensions: { getExtension: () => undefined },
+      };
+      return originalLoad.call(this, name, parent, ...rest);
+    };
+    const { ApiChatView } = require(viewPath);
+    provider = new ApiChatView(context);
+    provider.view = { webview: { postMessage: message => { posts.push(message); return Promise.resolve(true); } } };
+    await provider.handle({ type:"new" });
+    const chatId = provider.chat.id;
+    processDirectory = path.join(directory, ".pkm", "state", "api-chat-tool-results", chatId);
+    const runtime = require("../dist/chat/chat-process-runtime");
+    processRecord = await runtime.launchChatProcess(processDirectory, "host-process-control", {
+      program:process.execPath, arguments:["-e", "setInterval(() => {}, 1000)"], cwd:directory, timeoutSeconds:60,
+    });
+
+    await assert.rejects(provider.handle({ type:"processControl", chatId:"another-chat", handle:processRecord.handle, operation:"status" }),
+      /selected Chat/);
+    provider.remoteControlledRequests.add(chatId);
+    await assert.rejects(provider.handle({ type:"processControl", chatId, handle:processRecord.handle, operation:"status" }),
+      /owning local Chat/);
+    provider.remoteControlledRequests.delete(chatId);
+    provider.agentControlledRequests.add(chatId);
+    await assert.rejects(provider.handle({ type:"processControl", chatId, handle:processRecord.handle, operation:"status" }),
+      /owning local Chat/);
+    provider.agentControlledRequests.delete(chatId);
+
+    await provider.handle({ type:"processControl", chatId, handle:processRecord.handle, operation:"stop" });
+    assert(["launching", "running", "paused"].includes(runtime.getChatProcess(processDirectory, processRecord.handle).state),
+      "closing the stop confirmation leaves the process running");
+    assert.equal(posts.at(-1).type, "processControlResult");
+    assert.equal(posts.at(-1).operation, "status");
+
+    confirmStop = true;
+    await provider.handle({ type:"processControl", chatId, handle:processRecord.handle, operation:"stop" });
+    assert.equal(posts.at(-1).operation, "stop");
+    assert.match(posts.at(-1).record.detail, /completion is not yet confirmed/);
+    const deadline = Date.now() + 5000;
+    let stopped;
+    do {
+      stopped = runtime.getChatProcess(processDirectory, processRecord.handle);
+      if (stopped.state === "cancelled") break;
+      await new Promise(resolve => setTimeout(resolve, 30));
+    } while (Date.now() < deadline);
+    assert.equal(stopped.state, "cancelled", "the host can verify termination by refreshing the same handle");
+  } finally {
+    Module._load = originalLoad;
+    if (provider) provider.dispose();
+    if (processRecord && processDirectory) {
+      const runtime = require("../dist/chat/chat-process-runtime");
+      const current = runtime.getChatProcess(processDirectory, processRecord.handle);
+      if (["launching", "running", "paused"].includes(current.state)) runtime.cancelChatProcess(processDirectory, processRecord.handle);
+    }
+    if (originalViewModule) require.cache[viewPath] = originalViewModule;
+    else delete require.cache[viewPath];
+    fs.rmSync(directory, { recursive:true, force:true });
+  }
 }

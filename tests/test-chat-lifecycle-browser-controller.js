@@ -169,6 +169,7 @@ module.exports = async function testChatLifecycle(ApiChatView, context, client, 
     assert.equal(provider.portalContext(active).id, active);
     assert.equal(provider.store.list().find(chat => chat.id === active).groupId, "ungroup", "opening a normal Chat Portal does not regroup it");
 
+    await page.locator("#chat-actions-toggle").hover();
     await page.getByRole("button", { name:"Back to Chat List", exact:true }).click();
     const row = page.locator(`[data-node-chat-id="${id}"] > .chat-list-row`);
     confirm(undefined);

@@ -40,8 +40,7 @@ function writeCompatibilityBridges(root) {
     const target = path.join(root, "dist", relocated.replace(/\.ts$/, ".js"));
     if (!fs.existsSync(path.join(root, "src", relocated)) || !fs.existsSync(target)) continue;
     const destination = path.join(root, "dist", original.replace(/\.ts$/, ".js"));
-    if (["api-chat-client.ts", "api-chat-tools.ts", "api-chat-mcp.ts"].includes(original)) fs.copyFileSync(target, destination);
-    else fs.writeFileSync(destination, `module.exports = require(${JSON.stringify("./" + normalized(path.relative(path.dirname(destination), target)))});\n`);
+    fs.writeFileSync(destination, `module.exports = require(${JSON.stringify("./" + normalized(path.relative(path.dirname(destination), target)))});\n`);
   }
 }
 

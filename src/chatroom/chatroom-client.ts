@@ -256,12 +256,28 @@ export class ChatClient {
     return true;
   }
 
-  sendPeer(target: string, packet: PeerPacket): void {
+  sendPeer(target: string, packet: PeerPacket, sent?: (error?: Error) => void): void {
     if (!this.isConnected || !this.opts || !this.ws || this.ws.readyState !== WebSocket.OPEN) throw new Error("Peer is disconnected; no task was sent.");
     assertPeerEndpoint(this.opts.url);
     if (!target || target === this.participantId) throw new Error("Choose another connected participant.");
     if (this.ws.bufferedAmount > 1024 * 1024) throw new Error("Peer connection is busy; no task was sent.");
-    this.ws.send(JSON.stringify({ t: "peer", target, packet: parsePeerPacket(packet) }));
+    this.ws.send(JSON.stringify({ t: "peer", target, packet: parsePeerPacket(packet) }), sent);
+  }
+
+  sendPeerAndWait(target: string, packet: PeerPacket): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Peer send timed out while waiting for transport backpressure.")), 30_000);
+      try {
+        this.sendPeer(target, packet, error => {
+          clearTimeout(timer);
+          if (error) reject(error);
+          else resolve();
+        });
+      } catch (error) {
+        clearTimeout(timer);
+        reject(error);
+      }
+    });
   }
 
   sendAgentState(state: AgentRuntimeState): boolean {
@@ -284,29 +300,39 @@ export class ChatClient {
   }
 
   /** Stream a file to the room (chunked, in-memory, no hub storage). */
-  async sendFile(name: string, mime: string, data: Buffer): Promise<{ ok: boolean; error?: string }> {
+  async sendFile(name: string, mime: string, data: Buffer): Promise<{ ok: boolean; error?: string; file?: FileMeta }> {
     if (!this.isConnected || !this.opts) return { ok: false, error: "not connected" };
     if (data.length > MAX_FILE_BYTES) return { ok: false, error: `file exceeds ${MAX_FILE_BYTES / 1024 / 1024} MB limit` };
+    const socket = this.ws;
+    if (!socket) return { ok:false, error:"not connected" };
+    const room = this.opts.room;
     const fileId = randomBytes(6).toString("hex");
     const meta: FileMeta = { fileId, name, size: data.length, mime };
-    this.send({ t: "file.offer", room: this.opts.room, from: this.opts.user, kind: this.opts.kind ?? "human", file: meta });
+    await this.sendFileFrame(socket, { t: "file.offer", room, from: this.opts.user, kind: this.opts.kind ?? "human", file: meta });
     let seq = 0;
     for (let off = 0; off < data.length; off += CHUNK_BYTES) {
       const slice = data.subarray(off, Math.min(off + CHUNK_BYTES, data.length));
       const last  = off + CHUNK_BYTES >= data.length;
-      this.send({ t: "file.chunk", room: this.opts.room, fileId, seq: seq++, data: slice.toString("base64"), last });
-      await this.drain();
+      await this.sendFileFrame(socket, { t: "file.chunk", room, fileId, seq: seq++, data: slice.toString("base64"), last });
     }
-    return { ok: true };
+    return { ok: true, file: meta };
   }
 
-  // Simple backpressure: yield while the socket send buffer is large.
-  private async drain(): Promise<void> {
-    const ws = this.ws;
-    if (!ws) return;
-    while (ws.bufferedAmount > 4 * 1024 * 1024) {
-      await new Promise(r => setTimeout(r, 20));
-    }
+  private sendFileFrame(socket: WebSocket, frame: Frame): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (this.ws !== socket || socket.readyState !== WebSocket.OPEN || !this.isConnected) {
+        reject(new Error("Room disconnected during file transfer; delivery is not confirmed."));
+        return;
+      }
+      const timer = setTimeout(() => reject(new Error("Room file transfer timed out; delivery is not confirmed.")), 30_000);
+      try {
+        socket.send(JSON.stringify(frame), error => {
+          clearTimeout(timer);
+          if (error) reject(error);
+          else resolve();
+        });
+      } catch (error) { clearTimeout(timer); reject(error); }
+    });
   }
 
   disconnect(): void {

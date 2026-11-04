@@ -46,6 +46,10 @@ for (const [filename, digest] of Object.entries(buildInfo.files)) {
 for (const artifact of REQUIRED_UI_ARTIFACTS) {
   assert(entries.includes(`extension/${artifact}`), `VSIX must include required UI artifact: ${artifact}`);
 }
+assert(entries.includes("extension/dist/chat/chat-plan.js"), "VSIX must include the Plan approval and tool-gating runtime");
+for (const artifact of ["dist/knowledge/todo-board.js", "dist/knowledge/todo-api.js", "dist/knowledge/todo-api-contract.js", "dist/ui/note-todo-browser.js", "dist/ui/note-todo-management.js", "dist/ui/browser-navigation.js", "dist/webview/note-todo.js"]) {
+  assert(entries.includes(`extension/${artifact}`), `VSIX must include Board and browser Library runtime: ${artifact}`);
+}
 for (const artifact of ["dist/retrieval/retrieval-model-environment.js", "resources/retrieval-model-requirements.txt"]) {
   assert(entries.includes(`extension/${artifact}`), `VSIX must include automatic embedding environment setup: ${artifact}`);
 }
@@ -108,7 +112,7 @@ assert(entries.includes("extension/resources/api_chat_control.py"),
   "VSIX must include the Agent-driven Chat MCP transport resource");
 assert(entries.includes("extension/resources/knowledge_recovery.py"),
   "VSIX must include byte-preserving MCP knowledge recovery");
-for (const artifact of ["knowledge_mutations.py", "knowledge_mutations.js", "knowledge_snapshots.py"]) {
+for (const artifact of ["knowledge_mutations.py", "knowledge_mutations.js", "todo_api.py", "capability_api.py", "knowledge_snapshots.py"]) {
   assert(entries.includes(`extension/resources/${artifact}`), `VSIX must include safe knowledge maintenance: ${artifact}`);
 }
 assert(entries.includes("extension/scripts/protected-agent.py"),

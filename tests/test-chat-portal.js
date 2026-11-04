@@ -49,6 +49,8 @@ function managerFixture() {
     },
     portalReviewReceiver: async (chatId, review) => { scope.reviews.push({ chatId, review }); }, reviews: [],
     portalCommandRecorder: undefined,
+    portalMutationPolicy: async chatId => { if (scope.planChats?.has(chatId)) throw new Error("Plan approval is local only."); },
+    portalMutationGuard: chatId => { if (scope.planChats?.has(chatId)) throw new Error("Plan approval is local only."); },
     portalTransferRecorder: async (chatId, status, peerName) => { scope.transferTraces.push({ chatId, status, peerName }); }, transferTraces: [],
     remoteChatExecutor: async (prompt, _signal, requestId, chatId, _observer, source) => {
       scope.executions.push({ prompt, requestId, chatId, source });
@@ -76,6 +78,20 @@ function managerFixture() {
   return { scope, manager };
 }
 
+test("Chat Portal state carries live incoming execution only for its owning Chat", () => {
+  const { scope, manager } = managerFixture();
+  const owner = {id:randomUUID(),label:"Controlled Chat"};
+  const activity = {requestId:randomUUID(),kind:"command",state:"running"};
+  const peer = {binding:{pairId:randomUUID(),peerName:"Controller",role:"controlled"},
+    incomingActivity:activity,receipts:new Map(),observations:new Map()};
+  manager.chatPortals.set(owner.id, {...owner,root:scope.root,external:false,room:{client:{isConnected:true},peer}});
+  assert.deepEqual(manager.portalStatus(owner.id).execution, activity);
+  assert.equal(manager.portalStatus(randomUUID()).execution, undefined, "another Chat never inherits execution");
+  peer.incomingActivity = undefined;
+  assert.equal(manager.portalStatus(owner.id).execution, undefined, "an idle connected Portal has no execution");
+  assert.equal(manager.portalStatus(owner.id).connected, true);
+});
+
 test("Portal file status reaches the bound Chat before the picker, but never invents an external Chat", async () => {
   for (const external of [false, true]) {
     const { scope, manager } = managerFixture();
@@ -84,7 +100,9 @@ test("Portal file status reaches the bound Chat before the picker, but never inv
     const room = { client: { isConnected: true }, peer: { binding, sendFiles() {} } };
     manager.chatPortals.set(owner.id, { ...owner, root: scope.root, external, room });
     let release;
-    scope.vscode.window.showOpenDialog = () => new Promise(resolve => { release = resolve; });
+    let chooserStarted;
+    const choosing = new Promise(resolve => { chooserStarted = resolve; });
+    scope.vscode.window.showOpenDialog = () => new Promise(resolve => { release = resolve; chooserStarted(); });
     const engine = manager.filesForPortal(owner, room);
     try {
       const received = engine.handle({ kind: "portal-file", op: "manifest", transferId: randomUUID(),
@@ -94,6 +112,7 @@ test("Portal file status reaches the bound Chat before the picker, but never inv
         assert.equal(scope.transferTraces[0].chatId, owner.id);
         assert.equal(scope.transferTraces[0].status.state, "awaiting-approval");
       }
+      await choosing;
       release(undefined);
       await received;
       if (!external) assert.equal(scope.transferTraces.at(-1).status.state, "cancelled");
@@ -631,6 +650,8 @@ test("Portal file operation routes a multi-file batch without disconnecting and 
   let local, remote;
   const roomA = { roomId: "files", url: "wss://receiver.example.test:443", client: { isConnected: true, sendPeer: (_target, packet) => void remote.receive({ from: "a", fromName: a.label, packet }) } };
   const roomB = { roomId: "files", url: "wss://sender.example.test:443", client: { isConnected: true, sendPeer: (_target, packet) => void local.receive({ from: "b", fromName: b.label, packet }) } };
+  roomA.client.sendPeerAndWait = async (...args) => { roomA.client.sendPeer(...args); };
+  roomB.client.sendPeerAndWait = async (...args) => { roomB.client.sendPeer(...args); };
   sender.manager.chatPortals.set(a.id, { ...a, root: directory, external: false, room: roomA });
   receiver.manager.chatPortals.set(b.id, { ...b, root: directory, external: false, room: roomB });
   local = sender.manager.ensurePeer(roomA, directory, a); remote = receiver.manager.ensurePeer(roomB, directory, b);
@@ -682,7 +703,7 @@ test("Portal direct command offers Always allow until disconnected and skips lat
     const requestId = randomUUID();
     await sender.manager.portalControl({}, { operation: "command", contextId: a.id, requestId,
       command: { program: "node", arguments: ["-e", "process.stdout.write('ok')"], timeoutSeconds: 30 } }, false);
-    await until(() => ["completed", "failed"].includes(local.receipts.get(requestId)?.state));
+    await until(() => ["completed", "failed", "denied", "cancelled"].includes(local.receipts.get(requestId)?.state));
     return local.receipts.get(requestId);
   };
   const first = await run();
@@ -694,6 +715,11 @@ test("Portal direct command offers Always allow until disconnected and skips lat
   const second = await run();
   assert.equal(second.state, "completed", JSON.stringify(second));
   assert.equal(prompts.length, 1, "Always allow must not prompt again on the same pairing");
+  receiver.scope.planChats = new Set([b.id]);
+  const blocked = await run();
+  assert.notEqual(blocked.state, "completed", "a remembered Portal grant must not bypass Plan mode");
+  assert.match(receiver.scope.errors.join("\n"), /Plan approval is local only/);
+  assert.equal(prompts.length, 1);
   receiver.manager.invalidatePortal(b.id);
   assert.notEqual(receiver.manager.portalPermissions.get(b.id)?.allows("code-execute"), true, "disconnect revokes the grant");
 });

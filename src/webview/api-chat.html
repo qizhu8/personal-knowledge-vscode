@@ -13,22 +13,27 @@
   <link rel="stylesheet" href="{{harnessStyles}}">
   <title>PKM Chat</title>
 </head>
-<body>
+<body spellcheck="true">
   <div id="pkm-chat-loading" class="pkm-chat-loading" role="progressbar" aria-label="Loading PKM Chat"></div>
   <section id="library-view" hidden aria-label="Chat List">
     <header class="toolbar"><strong class="chat-list-heading">Chats</strong><button id="group-new" title="New group" aria-label="New group"><span class="codicon codicon-new-folder"></span></button><button id="list-new" title="New Chat" aria-label="New Chat"><span class="codicon codicon-add"></span></button></header>
     <div id="chat-list"></div>
   </section>
-  <header class="toolbar">
-    <button id="back" title="Back to Chat List" aria-label="Back to Chat List"><span class="codicon codicon-arrow-left"></span></button>
+  <header class="toolbar chat-toolbar">
     <span id="chat-status"></span>
     <select id="chats" aria-label="Chat history"><option>New chat</option></select>
-    <button id="persona-profiles" type="button" title="Inspect or edit User / Agent Profiles (current and historical)" aria-label="User / Agent Profiles">Profiles</button>
-    <button id="copy-chat-id" title="Copy PKM URL" aria-label="Copy PKM URL" disabled><span class="codicon codicon-copy"></span></button>
-    <button id="promote-project" title="Promote Chat to Project (optional)" aria-label="Promote Chat to Project"><span class="codicon codicon-project"></span></button>
-    <button id="rename" title="Rename chat" aria-label="Rename chat"><span class="codicon codicon-edit"></span></button>
-    <button id="task" title="Start Task" aria-label="Start Task"><span class="codicon codicon-checklist"></span></button>
-    <button id="chat-portal" title="Chat Portal: disconnected (closed)" aria-label="Chat Portal" aria-pressed="false"><svg class="portal-door" viewBox="0 0 24 24" aria-hidden="true"><path class="portal-frame" d="M5 21V10a7 7 0 0 1 14 0v11Z"/><path class="portal-leaf" d="M8 20V10a4 4 0 0 1 8 0v10Z"/><circle cx="14" cy="14" r="1"/></svg></button>
+    <div id="chat-header-actions">
+      <button id="chat-actions-toggle" type="button" title="Chat actions" aria-label="Chat actions" aria-expanded="false" aria-controls="chat-actions-panel"><span class="codicon codicon-chevron-left" aria-hidden="true"></span></button>
+      <div id="chat-actions-panel" role="group" aria-label="Chat actions" hidden>
+        <button id="back" title="Back to Chat List" aria-label="Back to Chat List"><span class="codicon codicon-arrow-left"></span></button>
+        <button id="persona-profiles" type="button" title="Inspect or edit User / Agent Profiles (current and historical)" aria-label="User / Agent Profiles">Profiles</button>
+        <button id="copy-chat-id" title="Copy PKM URL" aria-label="Copy PKM URL" disabled><span class="codicon codicon-copy"></span></button>
+        <button id="promote-project" title="Promote Chat to Project (optional)" aria-label="Promote Chat to Project"><span class="codicon codicon-project"></span></button>
+        <button id="rename" title="Rename chat" aria-label="Rename chat"><span class="codicon codicon-edit"></span></button>
+        <button id="task" title="Start Task" aria-label="Start Task"><span class="codicon codicon-checklist"></span></button>
+        <button id="chat-portal" title="Chat Portal: disconnected (closed)" aria-label="Chat Portal" aria-pressed="false"><svg class="portal-door" viewBox="0 0 24 24" aria-hidden="true"><path class="portal-frame" d="M5 21V10a7 7 0 0 1 14 0v11Z"/><path class="portal-leaf" d="M8 20V10a4 4 0 0 1 8 0v10Z"/><circle cx="14" cy="14" r="1"/></svg></button>
+      </div>
+    </div>
   </header>
   <section id="portal-state" aria-label="Portal connection" hidden></section>
   <dialog id="persona-dialog" aria-label="Current User / Agent Profiles">
@@ -58,7 +63,21 @@
   <main id="messages" aria-label="Messages" aria-busy="false" tabindex="0"></main>
   <section id="applied-edits" aria-label="Applied edits" hidden></section>
   <form id="composer">
-    <p id="composer-budget-warning" class="message-status" role="status" hidden></p>
+    <div id="workflow-controls">
+      <label for="workflow-mode">Workflow</label>
+      <select id="workflow-mode" aria-label="Workflow"><option value="chat">Chat</option><option value="plan">Plan</option></select>
+      <button id="planning-advice" type="button" class="composer-help" aria-label="Complex tasks benefit from planning first." aria-describedby="composer-help-tooltip"><span class="codicon codicon-info" aria-hidden="true"></span></button>
+      <button id="composer-budget-warning" type="button" class="composer-help composer-warning" aria-describedby="composer-help-tooltip" hidden><span class="codicon codicon-warning" aria-hidden="true"></span></button>
+    </div>
+    <details id="plan-review" hidden>
+      <summary><span id="plan-label"></span><span id="plan-status" role="status"></span></summary>
+      <div id="plan-body"></div>
+      <div class="plan-actions">
+        <button id="approve-plan" type="button">Approve and implement</button>
+        <button id="execute-plan" type="button" hidden>Continue approved plan</button>
+        <button id="revise-plan" type="button">Revise plan</button>
+      </div>
+    </details>
     <section id="queued-inputs" aria-label="Queued inputs" hidden></section>
     <div id="input-mode" role="radiogroup" aria-label="Running input mode" hidden>
       <button id="steer-mode" type="button" role="radio" aria-checked="true" title="Steer"><span class="codicon codicon-debug-step-over" aria-hidden="true"></span><span>Steer</span></button>
@@ -83,6 +102,7 @@
     </div>
     <section id="advanced-budget" class="advanced-budget chat-settings" aria-label="Model settings" hidden>
       <strong>Model settings</strong>
+      <div id="activity-budget-session" class="settings-row" hidden><span>Activity limits are disabled for this Chat session.</span><button id="reset-activity-budget" type="button">Re-enable activity limits</button></div>
       <button type="button" data-agent-config="profiles">User / Agent Profiles · inspect and edit</button>
       <div id="contexts" class="contexts"></div>
       <button id="diagnostics" type="button" title="Export Chat diagnostics" aria-label="Export Chat diagnostics"><span class="codicon codicon-output"></span></button>
@@ -132,6 +152,7 @@
       <pre id="memory-preview" hidden></pre>
     </section>
   </form>
+  <div id="composer-help-tooltip" role="tooltip" hidden></div>
   <template id="working-cauldron-template">
     <svg class="working-cauldron" viewBox="0 0 96 96" aria-hidden="true" focusable="false">
       <g class="working-steam"><path d="M35 42c-6-5 3-8 0-13-2-4 1-7 4-9"/><path d="M49 41c6-6-3-9 1-15 3-4 0-7-2-10"/><path d="M63 42c-5-5 3-8 0-13-2-3 1-6 3-8"/></g>

@@ -31,7 +31,7 @@ function frontmatter(text: string): Record<string, unknown> {
   return result;
 }
 
-function metadata(area: string, relativePath: string, fullPath: string, stat: fs.Stats, fingerprint: string): any | undefined {
+function metadata(area: string, relativePath: string, fullPath: string, stat: fs.Stats, fingerprint: string, boardStat?: fs.Stats): any | undefined {
   const extension = path.extname(relativePath).toLowerCase();
   const withoutExtension = relativePath.slice(0, relativePath.length - extension.length).replace(/\\/g, "/");
   const category = path.posix.dirname(withoutExtension) === "." ? "" : path.posix.dirname(withoutExtension);
@@ -54,7 +54,8 @@ function metadata(area: string, relativePath: string, fullPath: string, stat: fs
   const title = String(fields.title || fields.name || basename);
   return {
     area, relativePath: relativePath.replace(/\\/g, "/"), fullPath, fingerprint,
-    mtimeMs: stat.mtimeMs, size: stat.size, category, title,
+    mtimeMs: Math.max(stat.mtimeMs, boardStat?.mtimeMs || 0), size: stat.size, category, title,
+    ...(area === "notes" ? { documentKind: boardStat || fields.documentKind === "todo-board" ? "todo-board" : "markdown" } : {}),
     slug: withoutExtension, name: String(fields.name || title), description: String(fields.description || ""),
     type: String(fields.type || "general"), tags: JSON.stringify(Array.isArray(fields.tags) ? fields.tags : []),
     source_project: String(fields.source_project || ""), pinned: fields.pinned === true, extension,
@@ -77,10 +78,12 @@ function walk(area: string, directory: string, relative = ""): void {
     try { stat = fs.statSync(fullPath); } catch { continue; }
     scanned++;
     const key = `${area}/${childRelative.replace(/\\/g, "/")}`;
-    const fingerprint = `${stat.mtimeMs}:${stat.size}`;
+    const boardPath = area === "notes" && /\.md$/i.test(childRelative) ? fullPath.replace(/\.md$/i, ".assets/pkm-todo-board.json") : undefined;
+    const boardStat = boardPath && fs.existsSync(boardPath) ? fs.statSync(boardPath) : undefined;
+    const fingerprint = `${stat.mtimeMs}:${stat.size}${area === "notes" ? `:board-v1:${boardStat?.mtimeMs}:${boardStat?.size}` : ""}`;
     if (previous[key]?.fingerprint === fingerprint) { entries[key] = previous[key]; reused++; }
     else {
-      const item = metadata(area, childRelative, fullPath, stat, fingerprint);
+      const item = metadata(area, childRelative, fullPath, stat, fingerprint, boardStat);
       if (item) { entries[key] = item; batch[key] = item; parsed++; }
     }
     if (scanned % 100 === 0) { parentPort?.postMessage({ event: "progress", scanned, reused, parsed, batch }); batch = {}; }

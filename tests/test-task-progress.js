@@ -62,6 +62,14 @@ test("old repetitions and old artifact hashes do not manufacture current progres
   assert.equal(classifyTaskProgress([call(0, "one"), call(990, "two")], { ...options, now: 1000 }).status, "unknown");
 });
 
+test("unfinished invocations do not count as repeated no-output attempts", () => {
+  const running = repeated({ status: "running" });
+  assert.equal(classifyTaskProgress(running, options).status, "progressing");
+  const records = [call(1, "one"), call(2, "two"), call(3, "three", { status: "running" })];
+  assert.equal(classifyTaskProgress(records, options).status, "progressing", "two terminal attempts plus one unfinished call are below threshold");
+  assert.equal(classifyTaskProgress([...records, call(4, "three")], options).status, "looping", "the terminal snapshot makes the third attempt count exactly once");
+});
+
 test("running and terminal snapshots of one invocation are not repeated calls", () => {
   const records = [call(1, "one", { status: "running" }), call(2, "one"), call(3, "one")];
   assert.equal(classifyTaskProgress(records, options).status, "progressing");

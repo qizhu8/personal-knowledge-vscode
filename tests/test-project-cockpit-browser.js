@@ -131,8 +131,10 @@ const chatFixture = { type: "state", busy: false, approvals: [], chats: [], tool
     await chat.goto("http://cockpit.test/index.html");
     await send(chat, chatFixture);
     await chat.evaluate(() => { document.body.classList.remove("chat-library-visible"); document.getElementById("library-view").hidden = true; });
+    await chat.locator("#chat-actions-toggle").hover();
     await chat.locator("#promote-project").click();
     await panelPage.getByRole("heading", { name: "Research Chat", exact: true }).waitFor();
+    await chat.locator("#chat-actions-toggle").hover();
     await chat.locator("#promote-project").click();
     await queue;
     assert.strictEqual(prompts, 1, "Repeat promotion navigates without another confirmation");

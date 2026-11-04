@@ -254,7 +254,7 @@ os._exit(23)
         replies = [json.loads(line) for line in result.stdout.splitlines()]
         self.assertEqual([r["ok"] for r in replies], [False, False, True, True, True])
         self.assertEqual(replies[-1]["result"]["piece"]["id"], "stdio")
-        self.assertEqual(replies[2]["result"]["schema"], 1)
+        self.assertEqual(replies[2]["result"]["schema"], 2)
 
 
 if __name__ == "__main__":

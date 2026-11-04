@@ -116,6 +116,62 @@ test("failed native preparation or rejected dispatch cannot emit a confirmed-sen
   }
 });
 
+test("native and HTTP stop after Plan submission without executing queued questions or writes", async () => {
+  const workflow = require("../dist/chat/chat-plan");
+  const { captureExecutionContext } = require("../dist/chat/execution-context");
+  const { randomUUID } = require("node:crypto");
+  for (const provider of ["native", "http"]) {
+    const chat = { id:randomUUID(), messages:[], context:[], workflowMode:"plan" };
+    const execution = captureExecutionContext(randomUUID(), [], process.cwd(), true, "allow-all");
+    const body = { objective:"Fix endpoint", scope:["Endpoint"], nonGoals:[], facts:[], openQuestions:[], risks:[],
+      steps:[{ id:"fix", title:"Fix endpoint", dependsOn:[], verification:"Focused test asserts exact response" }] };
+    const first = workflow.submitChatPlan(chat, body, execution, "Initial");
+    workflow.approveChatPlan(chat, first.id, first.contentHash, execution);
+    let dispatches = 0, writes = 0, questions = 0, submitted = false;
+    const tools = workflow.gatePlanTools(chat, "execute", execution, [
+      { name:"submit_plan", description:"Revise", parameters:{ type:"object" }, execute:async () => {
+        workflow.submitChatPlan(chat, body, execution, "Approach changed"); submitted = true; return "submitted";
+      } },
+      { name:"save_file", description:"Write", parameters:{ type:"object" }, execute:async () => { writes++; return "written"; } },
+      { name:"ask_user", description:"Ask", parameters:{ type:"object" }, execute:async () => { questions++; return "answered"; } },
+    ]);
+    const calls = tools.map((tool, index) => ({ index, id:`call-${index}`, type:"function",
+      function:{ name:tool.name, arguments:"{}" } }));
+    const request = { messages:[{ role:"user", content:"Revise the plan" }], tools, signal:new AbortController().signal,
+      contextWindow:32768, maxOutputTokens:1024, afterTools:() => submitted };
+    if (provider === "http") {
+      await streamApiChat({ ...request, provider:"openai-compatible", endpoint:"http://127.0.0.1:1/v1", apiKey:"", model:"fixture",
+        fetch:async () => {
+          dispatches++;
+          return new Response(`data: ${JSON.stringify({ choices:[{ delta:{ tool_calls:calls }, finish_reason:"tool_calls" }] })}\n\ndata: [DONE]\n\n`,
+            { headers:{ "Content-Type":"text/event-stream" } });
+        },
+      }, () => {});
+    } else {
+      const native = { ...host,
+        LanguageModelToolCallPart:class { constructor(callId, name, input) { Object.assign(this, { callId, name, input }); } },
+        LanguageModelToolResultPart:class {},
+        LanguageModelTextPart:class { constructor(value) { this.value = value; } },
+      };
+      const model = { id:"fixture", name:"Fixture", vendor:"copilot", family:"fixture", version:"1", maxInputTokens:32768,
+        capabilities:{ toolCalling:true }, countTokens:async () => 1,
+        sendRequest:async () => {
+          dispatches++;
+          return { stream:(async function* () {
+            for (const call of calls) yield new native.LanguageModelToolCallPart(call.id, call.function.name, {});
+          })() };
+        },
+      };
+      await streamVscodeChat(model, request, () => {}, native);
+    }
+    assert.equal(dispatches, 1, `${provider}: no further inference after submission`);
+    assert.equal(writes, 0);
+    assert.equal(questions, 0);
+    assert.equal(chat.workflowMode, "plan");
+    assert.equal(chat.plans.at(-1).approval, undefined);
+  }
+});
+
 test("inference clock measures only active transport intervals and separates heartbeat from public output", () => {
   const timings = [];
   let now = 100;

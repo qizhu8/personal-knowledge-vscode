@@ -2,7 +2,7 @@
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge Manager",
   "description": "%extension.description%",
-  "version": "4.0.1",
+  "version": "4.0.11",
   "publisher": "Uone",
   "author": {
     "name": "Yu Wang"
@@ -1095,6 +1095,29 @@
           "minimum": 10,
           "maximum": 86400,
           "description": "Model inactivity timeout in seconds (default 30 minutes), not a task duration limit. Model response activity resets the timer, including hidden-thinking/metadata parts exposed by VS Code. Tool execution and waiting for user input do not consume it. Internal work without any provider activity signal cannot reset it. Applies to Chat, workers and background Memory. Existing explicit values are preserved."
+        },
+        "personalKnowledge.apiChatActivityCreditLimit": {
+          "type": "integer",
+          "default": 200,
+          "minimum": -1,
+          "maximum": 1000000000,
+          "description": "Provider-reported Copilot credits allowed per Chat message response and its inference rounds. At the limit, PKM waits before the next inference; the user can add 50 credits, choose a new total, make this response or the whole Chat session unlimited, pause or cancel. -1 disables the credit limit. Missing provider credit reports remain unknown and are surfaced as partial/not-reported."
+        },
+        "personalKnowledge.apiChatCapabilityProfile": {
+          "type": "string",
+          "enum": [
+            "legacy",
+            "compact"
+          ],
+          "default": "legacy",
+          "description": "Chat capability exposure. Legacy preserves individual tools. Compact replaces enabled Todo/Memory pilot tools with bounded hierarchical discovery and read/mutation dispatch; existing leaf permissions and Plan restrictions still apply."
+        },
+        "personalKnowledge.apiChatActivityReviewMinutes": {
+          "type": "integer",
+          "default": 20,
+          "minimum": 1,
+          "maximum": 1440,
+          "description": "Active-minute review interval for one Chat message response. At the next inference boundary, PKM asks whether to continue for another interval, make this response or the whole Chat session unlimited, pause or cancel. Tracked user waits and detached background-process lifetime are excluded."
         },
         "personalKnowledge.chatMemoryModel": {
           "type": "string",

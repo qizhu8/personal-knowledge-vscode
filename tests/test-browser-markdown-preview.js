@@ -73,15 +73,31 @@ const paperFixtures = [
   {slug:"Public/Models/Dense", title:"Dense retrieval", content:"Research body"},
   {slug:"Secret/Research/Private", title:"Private research", content:"Private research body"},
 ];
+const navigationModule = {exports:{}};
+vm.runInNewContext(ts.transpile(fs.readFileSync(path.join(__dirname, "..", "src/ui/browser-navigation.ts"), "utf8"), {module:ts.ModuleKind.CommonJS}), {
+  module:navigationModule, exports:navigationModule.exports,
+});
+const navigationPathModule = {exports:{}};
+vm.runInNewContext(ts.transpile(fs.readFileSync(path.join(__dirname, "..", "src/ui/navigation-path.ts"), "utf8"), {module:ts.ModuleKind.CommonJS}), {
+  module:navigationPathModule, exports:navigationPathModule.exports,
+});
 const readerContext = {
+  navigationItemPath:navigationPathModule.exports.navigationItemPath,
+  browserNoteTodo: require("../dist/ui/note-todo-browser").browserNoteTodo,
+  vscode: { workspace: { isTrusted: true } },
   noteList:() => noteFixtures, skillList:() => skillFixtures, paperList:() => paperFixtures,
+  paperGraph:() => ({ nodes:paperFixtures.map(paper => ({...paper,key:paper.slug})), edges:[] }),
+  noteWorkItemsRead:() => ({items:[]}),
   paperGet:key => { readItems.push(key); return paperFixtures.find(paper => paper.slug === key); },
   noteGet:key => { readItems.push(key); return noteFixtures.find(note => note.slug === key); },
   skillGet:name => { readItems.push(name); return skillFixtures.find(skill => skill.name === name); },
   isContentPathPrivate:(_type, key) => key.startsWith("Secret/"),
   inlineMarkdownAssets:body => body, browserFaviconTag:() => "", katexCssForExport:() => "",
   resolveNoteSlugFromPath:target => target.replace(/\.md$/, ""),
-  require:specifier => { assert.strictEqual(specifier, "./live-markdown"); return require("../dist/live-markdown"); },
+  require:specifier => {
+    if (specifier === "./ui/browser-navigation") return navigationModule.exports;
+    assert.strictEqual(specifier, "./live-markdown"); return require("../dist/live-markdown");
+  },
 };
 vm.createContext(readerContext);
 for (const [first, last] of [
@@ -104,10 +120,10 @@ assert.match(publicReader, /Visible note &lt;safe&gt;/);
 assert.match(publicReader, /aria-current="page"/);
 assert.match(publicReader, /<h2>Research<\/h2>/);
 assert.match(publicReader, /href="\/papers\/Public\/Models\/Dense\.html"/);
-assert.match(publicReader, /class="reader-nav-folder" open><summary>Public<\/summary>/);
+assert.match(publicReader, /class="reader-nav-folder" open data-folder="Public"><summary data-pkm-path="pkm:\/\/notes\/Public\/">Public<\/summary>/);
 assert.doesNotMatch(publicReader, /Secret|Hush|Hidden skill|Private note body|Private skill body|Private research/, "private titles, paths and bodies never enter a public page or navigation payload");
 const paperReader = readerContext.liveMarkdownHtml("papers/Public/Models/Dense", {});
-assert.match(paperReader, /class="reader-nav-folder" open><summary>Models<\/summary>/);
+assert.match(paperReader, /class="reader-nav-folder" open data-folder="Public\/Models"><summary data-pkm-path="pkm:\/\/papers\/Public\/Models\/">Models<\/summary>/);
 assert.match(paperReader, /title="Public\/Models\/Dense" aria-current="page"/);
 assert.match(publicReader, /Cross-link/);
 const beforeDeniedRead = readItems.length;
@@ -124,6 +140,14 @@ const originalSkillGet = readerContext.skillGet;
 readerContext.skillGet = () => ({...skillFixtures[1], name:skillFixtures[0].name});
 assert.strictEqual(readerContext.liveMarkdownHtml("skills/Public/Visible skill", {}), undefined, "a duplicate Skill name cannot route public content to a private file");
 readerContext.skillGet = originalSkillGet;
+const previousPublicContent=noteFixtures[0].content;
+noteFixtures[0].content='~~~pkm-work-item\n'+JSON.stringify({id:"browser-task",title:"Browser task",goal:"Inspect progress",scope:"Browser only",acceptance:["Read-only views"],state:"Planning",evidence:[]})+'\n~~~';
+const todoReader=readerContext.liveMarkdownHtml("notes/Public/Visible",{extensionPath:path.resolve(__dirname,"..")});
+assert.match(todoReader,/aria-label="Note views"/);
+assert.match(todoReader,/noteTodo\.readOnly=true/);
+assert.match(todoReader,/browser-task/);
+assert.doesNotMatch(todoReader,/Private note body|Private skill body/);
+noteFixtures[0].content=previousPublicContent;
 
 async function testReaderNavigationNetwork() {
   const { startLiveMarkdownServer } = require("../dist/knowledge/live-note-server");
@@ -192,6 +216,7 @@ with sync_playwright() as playwright:
         assert search.is_visible()
         research = nav.locator('.reader-nav-group').filter(has=page.get_by_role('heading', name='Research', exact=True))
         assert not research.locator('a').is_visible()
+        nav.get_by_role('tab', name='Research', exact=True).click()
         search.fill('Dense')
         assert research.locator('a').is_visible()
         search.fill('')
@@ -202,6 +227,7 @@ with sync_playwright() as playwright:
         search.fill('Hidden')
         assert nav.locator('a:visible').count() == 0
         search.fill('Visible skill')
+        nav.get_by_role('tab', name='Skills', exact=True).click()
         nav.locator('a:visible').click()
         assert page.locator('.doc-title').inner_text() == 'Visible skill'
         assert page.locator('.reader-sidebar a').count() == 3
@@ -240,7 +266,7 @@ with sync_playwright() as playwright:
             assert abs(article_box['y'] - sidebar_box['y']) <= 1, 'Mobile reader stays side by side'
             assert article_box['x'] >= sidebar_box['x'] + sidebar_box['width'] - 1, 'Article must not overlap navigation'
             expanded_width = article_box['width']
-            page.locator('.reader-sidebar > details > summary').click()
+            page.get_by_role('button', name='Collapse navigation', exact=True).click()
             assert not page.locator('.reader-sidebar nav').is_visible()
             assert page.locator('.wrap').bounding_box()['width'] > expanded_width, 'Collapsing navigation returns its width to the article'
         page.close()

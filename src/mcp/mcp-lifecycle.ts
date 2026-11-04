@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { createHash, randomUUID } from "crypto";
-import { withCrossProcessLockSync } from "../runtime/cross-process-lock";
+import { withCrossProcessLock } from "../runtime/cross-process-lock";
 import { normalizeManagedMcpAttribution } from "./mcp-attribution";
 
 export const MCP_LIFECYCLE_SCHEMA = "pkm.mcp.lifecycle/v1";
@@ -20,24 +20,25 @@ export interface ManagedMcpManifest {
   compatibility?: { protocol: string; components: Record<string, string> };
 }
 
-function copyTree(source: string, destination: string): void {
-  fs.mkdirSync(destination, { recursive: true });
-  for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+async function copyTree(source: string, destination: string): Promise<void> {
+  await fs.promises.mkdir(destination, { recursive: true });
+  for (const entry of await fs.promises.readdir(source, { withFileTypes: true })) {
     if (entry.isSymbolicLink()) throw new Error(`Managed MCP runtime cannot contain symlinks: ${entry.name}`);
     if (entry.isDirectory()) {
-      if (!["__pycache__", ".git"].includes(entry.name)) copyTree(path.join(source, entry.name), path.join(destination, entry.name));
+      if (!["__pycache__", ".git"].includes(entry.name)) await copyTree(path.join(source, entry.name), path.join(destination, entry.name));
     } else if (/\.(js|json|py|template)$/.test(entry.name)) {
-      fs.copyFileSync(path.join(source, entry.name), path.join(destination, entry.name), fs.constants.COPYFILE_EXCL);
+      await fs.promises.copyFile(path.join(source, entry.name), path.join(destination, entry.name), fs.constants.COPYFILE_EXCL);
     }
   }
 }
 
-function fileHashes(directory: string, prefix = ""): Record<string, string> {
+async function fileHashes(directory: string, prefix = ""): Promise<Record<string, string>> {
   const hashes: Record<string, string> = {};
-  for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+  const entries = await fs.promises.readdir(directory, { withFileTypes: true });
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
-    if (entry.isDirectory()) Object.assign(hashes, fileHashes(path.join(directory, entry.name), relative));
-    else if (entry.isFile()) hashes[relative] = createHash("sha256").update(fs.readFileSync(path.join(directory, entry.name))).digest("hex");
+    if (entry.isDirectory()) Object.assign(hashes, await fileHashes(path.join(directory, entry.name), relative));
+    else if (entry.isFile()) hashes[relative] = createHash("sha256").update(await fs.promises.readFile(path.join(directory, entry.name))).digest("hex");
     else throw new Error(`Unsupported managed MCP generation entry: ${relative}`);
   }
   return hashes;
@@ -121,24 +122,24 @@ export function managedMcpApiCompatible(previous: ManagedMcpManifest, next: Mana
 }
 
 /** Publish only a complete generation. The caller holds the cross-window generation lock. */
-export function stageManagedMcpGeneration(
+export async function stageManagedMcpGeneration(
   directory: string, extensionRoot: string,
   versions: { version: string; components: Record<string, string>; runtimeMaintenance?: string },
-  generate: (generationDirectory: string) => void,
-): ManagedMcpManifest {
+  generate: (generationDirectory: string) => void | Promise<void>,
+): Promise<ManagedMcpManifest> {
   const generation = randomUUID();
   const target = path.join(directory, "generations", generation);
-  fs.mkdirSync(target, { recursive: true });
+  await fs.promises.mkdir(target, { recursive: true });
   try {
     const runtime = path.join(target, "runtime");
-    copyTree(path.join(extensionRoot, "dist"), path.join(runtime, "dist"));
-    copyTree(path.join(extensionRoot, "resources"), path.join(runtime, "resources"));
-    fs.copyFileSync(path.join(extensionRoot, "package.json"), path.join(runtime, "package.json"));
-    generate(target);
+    await copyTree(path.join(extensionRoot, "dist"), path.join(runtime, "dist"));
+    await copyTree(path.join(extensionRoot, "resources"), path.join(runtime, "resources"));
+    await fs.promises.copyFile(path.join(extensionRoot, "package.json"), path.join(runtime, "package.json"));
+    await generate(target);
     const manifest: ManagedMcpManifest = {
       schema: MCP_LIFECYCLE_SCHEMA, generation, managedRoot: path.resolve(directory), ...versions,
       extensionVersion: JSON.parse(fs.readFileSync(path.join(runtime, "package.json"), "utf8")).version,
-      runtimeBuild: buildDigest(fileHashes(runtime)),
+      runtimeBuild: buildDigest(await fileHashes(runtime)),
       node: process.execPath,
       enabledFeatureDomains: fs.existsSync(path.join(target, "feature-domains.json"))
         ? JSON.parse(fs.readFileSync(path.join(target, "feature-domains.json"), "utf8")).enabled : [],
@@ -150,12 +151,12 @@ export function stageManagedMcpGeneration(
           return [name, match[1]];
         })),
       },
-      files: fileHashes(target),
+      files: await fileHashes(target),
     };
-    fs.writeFileSync(path.join(target, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+    await fs.promises.writeFile(path.join(target, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n", { flag: "wx", mode: 0o600 });
     return manifest;
   } catch (error) {
-    fs.rmSync(target, { recursive: true, force: true });
+    await fs.promises.rm(target, { recursive: true, force: true });
     throw error;
   }
 }
@@ -176,9 +177,9 @@ export function publishManagedMcpGeneration(directory: string, manifest: Managed
   } finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
 }
 
-export function withManagedMcpGenerationLock<T>(directory: string, operation: () => T): T {
+export function withManagedMcpGenerationLock<T>(directory: string, operation: () => Promise<T>): Promise<T> {
   fs.mkdirSync(directory, { recursive: true });
-  return withCrossProcessLockSync(path.join(directory, ".generation-lock"), "Managed MCP generation", operation);
+  return withCrossProcessLock(path.join(directory, ".generation-lock"), "Managed MCP generation", 2_000, operation);
 }
 
 export function managedMcpLifecycleStatus(directory: string, now = Date.now()): {

@@ -20,6 +20,9 @@ const chat = {
   defaultRecipientCache: null,
   logSnapshotKey: '',
   drafts: {},
+  imageDrafts: {},
+  imageSends: {},
+  imagePreviews: {},
   meetingSummarySelections: {},
   proto: {},   // user -> {state:'standby'|'working'|'engaged'}: live protocol status
   documentListenersBound: false,
@@ -155,7 +158,7 @@ function renderChatroom() {
         <button class="tbtn chat-wide" onclick="chatToggleJoin()">${uiIcon('add', 'Join room')}</button>
         <div id="chat-join" class="chat-join hidden">
         <label class="chat-field-lbl">Hub URL</label>
-        <input id="chat-url" class="chat-in" placeholder="ws://host:port  or  ws://host:port/room" oninput="chatUrlAutoRoom()" title="Address of the hub, e.g. ws://10.0.0.5:7345. You can paste a full room link (ws://host:port/room) and the Room below is filled automatically.">
+        <input id="chat-url" spellcheck="false" class="chat-in" placeholder="ws://host:port  or  ws://host:port/room" oninput="chatUrlAutoRoom()" title="Address of the hub, e.g. ws://10.0.0.5:7345. You can paste a full room link (ws://host:port/room) and the Room below is filled automatically.">
         <label class="chat-field-lbl">Room <span class="chat-muted">(optional — auto-filled from a full room URL)</span></label>
         <input id="chat-room" class="chat-in" placeholder="auto from URL, or e.g. general" title="The room/channel to join. Leave blank if the Hub URL already includes the room (ws://host:port/room). Everyone in the same room shares one conversation.">
         <label class="chat-field-lbl">Your display name</label>
@@ -175,12 +178,12 @@ function renderChatroom() {
         <div id="chat-pane-bar">
           <span id="chat-status-dot" class="chat-dot"></span>
           <span id="chat-pane-title"></span>
+          <button type="button" class="chat-rename-self" onclick="chatRenameSelf()" title="Change your display name in this room" aria-label="Change your display name in this room">${uiIcon('edit')}</button>
           <span style="flex:1"></span>
           <button class="tbtn" id="chat-meeting-summary-btn" onclick="chatToggleMeetingSummary()" title="Open the continuously updated Meeting Summary">Meeting Summary</button>
           <button class="tbtn hidden" id="chat-add-agent-btn" data-pending-label="Summoning a house-elf…" onclick="ask('chatAddManagedAgent',{},this)" title="Add an AI agent managed by this extension">${uiIcon('add', 'Agent')}</button>
-          <button class="tbtn" onclick="chatRenameSelf()" title="Change your display name in this room">${uiIcon('edit', 'Rename me')}</button>
-          <button class="tbtn" onclick="ask('chatShareFile',{})" title="Share a file with the room (peers must be online)">${uiIcon('files', 'Share')}</button>
-          <button class="tbtn" onclick="ask('chatExport',{})" title="Download this room's transcript">${uiIcon('cloud-download', 'Download')}</button>
+          <button class="tbtn" onclick="ask('chatShareFile',{})" title="Share a file with the room (peers must be online)">${uiIcon('files', 'Share File')}</button>
+          <button class="tbtn" onclick="ask('chatExport',{})" title="Export this room's chat history">${uiIcon('cloud-download', 'Chat History')}</button>
           <button class="tbtn" id="chat-leave-btn" onclick="chatLeaveActive()" title="Leave this room">Leave Room</button>
         </div>
         <div id="chat-body">
@@ -231,6 +234,8 @@ function renderChatroom() {
               <p id="chat-receipt-help" role="status" aria-live="polite">Select a template to populate its deterministic contract and response policy.</p>
             </details>
             <div id="chat-quote-bar" class="chat-quote-bar hidden"></div>
+            <div id="chat-image-drafts" class="chat-image-drafts hidden" aria-label="Images to share"></div>
+            <div id="chat-image-status" class="chat-muted" role="status" aria-live="polite"></div>
             <div id="chat-input-row">
               <div id="chat-composer">
                 <div id="chat-recipient-row" title="Recipients. Type @ to add people; use arrows and Backspace/Delete to edit tokens."><span class="chat-recipient-label">To</span><div id="chat-recipient-chips"></div><input id="chat-recipient-input" type="text" autocomplete="off" spellcheck="false" placeholder="@ recipient" aria-label="Add recipients"></div>
@@ -263,6 +268,7 @@ function renderChatroom() {
   const inp = document.getElementById('chat-input');
   inp.addEventListener('keydown', chatInputKeydown);
   inp.addEventListener('input', chatBodyInput);
+  inp.addEventListener('paste', chatPasteImages);
   const recipientInput = document.getElementById('chat-recipient-input');
   recipientInput.addEventListener('input', chatRecipientInputChanged);
   recipientInput.addEventListener('keydown', chatRecipientInputKeydown);
@@ -285,7 +291,7 @@ function chatMeetingSummaryHtml() {
   if (selected) chat.meetingSummarySelections[chat.activeKey || ''] = selected.id;
   const rows = records.map((record, index) => `${index === 0 && meetings.current ? '<div class="chat-meeting-list-label">Current</div>' : index === (meetings.current ? 1 : 0) ? '<div class="chat-meeting-list-label">Earlier</div>' : ''}<button type="button" class="chat-meeting-list-item${record.id === selected?.id ? ' active' : ''}" data-meeting-id="${record.id}" onclick="chatSelectMeetingSummary('${record.id}',this)" ${record.status === 'adjourned' ? `oncontextmenu="chatMeetingContextMenu(event,'${record.id}')" title="Right-click for Meeting actions"` : ''}><strong>${chatMeetingDate(record.startedAt)}</strong><span>${esc(record.title)}</span><small>${record.status === 'active' ? 'In Discussion' : 'Completed'}</small></button>`).join('');
   const trash = meetings.trash || [];
-  const trashHtml = `<details class="chat-meeting-trash"><summary><span>Trash</span><small>${trash.length}</small></summary><div>${trash.length ? trash.map(record => `<div class="chat-meeting-trash-item"><span><strong>${esc(record.title)}</strong><small>${chatMeetingDate(record.deletedAt)}</small></span>${chat.active?.selfHost ? `<span class="chat-meeting-trash-actions"><button type="button" onclick="chatRestoreMeeting('${record.id}',${record.revision})" title="Restore Meeting" aria-label="Restore Meeting">${uiIcon('discard')}</button><button type="button" onclick="chatDeleteMeeting('${record.id}',${record.revision})" title="Delete permanently" aria-label="Delete permanently">${uiIcon('trash')}</button></span>` : ''}</div>`).join('') : '<p>Trash is empty.</p>'}</div></details>`;
+  const trashHtml = `<details id="chat-meeting-trash" class="chat-meeting-trash"><summary><span>Trash</span><small>${trash.length}</small></summary><div>${trash.length ? trash.map(record => `<div class="chat-meeting-trash-item" data-meeting-id="${record.id}"><span><strong>${esc(record.title)}</strong><small>${chatMeetingDate(record.deletedAt)}</small></span>${chat.active?.selfHost ? `<span class="chat-meeting-trash-actions"><button type="button" onclick="chatRestoreMeeting('${record.id}',${record.revision})" title="Restore Meeting" aria-label="Restore Meeting">${uiIcon('discard')}</button><button type="button" onclick="chatDeleteMeeting('${record.id}',${record.revision})" title="Delete permanently" aria-label="Delete permanently">${uiIcon('trash')}</button></span>` : ''}</div>`).join('') : '<p>Trash is empty.</p>'}</div></details>`;
   const empty = `<div class="chat-meeting-empty"><h2>No Meeting yet</h2><p>Send a Discuss message to start a continuously updated Meeting Summary. Ask and Announce never create Meeting state.</p>${chat.active?.selfHost ? '<button type="button" class="tbtn" onclick="chatStartMeeting()">Retry from latest Discuss</button>' : '<small>The Room Host records canonical Meeting state.</small>'}</div>`;
   return `<div class="chat-meeting-workspace"><aside class="chat-meeting-list" aria-label="Meetings">${rows || '<div class="chat-meeting-list-label">No history</div>'}${trashHtml}</aside><div id="chat-meeting-document" class="chat-meeting-document">${selected ? chatMeetingRecordHtml(selected) : empty}</div></div>`;
 }
@@ -310,7 +316,7 @@ function chatMeetingTopicHtml(topic, activeTopicId, depth = 0) {
   const rounds = (topic.rounds || []).map(round => `<article class="chat-meeting-round"><header><strong>Round ${round.number}</strong><small>${round.status}</small></header>${(round.opinions || []).map(opinion => `<div class="chat-meeting-opinion"><b>${esc(opinion.participant)}</b><span>${esc(opinion.text)}</span></div>`).join('')}<div class="chat-meeting-result"><b>Conclusion</b><span class="${round.conclusion ? 'complete' : 'pending'}">${esc(round.conclusion || 'Pending')}</span></div><div class="chat-meeting-result"><b>Next</b><span class="active">${esc(round.next || 'Continue discussion')}</span></div></article>`).join('');
   const work = (topic.workItems || []).length ? topic.workItems.map(item => `<div class="chat-meeting-work"><b>${esc(item.owner || 'Unassigned')}</b><span>${esc(item.objective || '')}</span><em>${esc(item.status || 'Pending Acceptance')}</em></div>`).join('') : '<p class="chat-muted">No WorkItems recorded.</p>';
   const subtopics = (topic.subtopics || []).map(child => chatMeetingTopicHtml(child, activeTopicId, depth + 1)).join('');
-  return `<details class="chat-meeting-topic" ${topic.id === activeTopicId || depth === 0 ? 'open' : ''}><summary><span class="chat-meeting-arrow">${uiIcon('chevron-right')}</span><span><strong>${depth ? 'Subtopic' : 'Topic'} · ${esc(topic.title)}</strong><small>Owner: ${esc(topic.owner)} · Round ${topic.round} ${topic.id === activeTopicId ? '· active DFS node' : ''}</small></span><em class="chat-meeting-state ${topic.status === 'discussing' ? 'active' : topic.status}">${esc(topic.status)}</em></summary><div class="chat-meeting-topic-body"><section class="chat-meeting-branch"><label>Problem statement</label><p>${esc(topic.problemStatement)}</p></section><section class="chat-meeting-branch"><label>Discussion result</label>${rounds}</section><section class="chat-meeting-branch"><label>WorkItems</label>${work}</section>${subtopics ? `<div class="chat-meeting-subtopics"><label>Subtopics</label>${subtopics}</div>` : ''}</div></details>`;
+  return `<details class="chat-meeting-topic" data-topic-id="${encodeURIComponent(topic.id)}" ${topic.id === activeTopicId || depth === 0 ? 'open' : ''}><summary><span class="chat-meeting-arrow">${uiIcon('chevron-right')}</span><span><strong>${depth ? 'Subtopic' : 'Topic'} · ${esc(topic.title)}</strong><small>Owner: ${esc(topic.owner)} · Round ${topic.round} ${topic.id === activeTopicId ? '· active DFS node' : ''}</small></span><em class="chat-meeting-state ${topic.status === 'discussing' ? 'active' : topic.status}">${esc(topic.status)}</em></summary><div class="chat-meeting-topic-body"><section class="chat-meeting-branch"><label>Problem statement</label><p>${esc(topic.problemStatement)}</p></section><section class="chat-meeting-branch"><label>Discussion result</label>${rounds}</section><section class="chat-meeting-branch"><label>WorkItems</label>${work}</section>${subtopics ? `<div class="chat-meeting-subtopics"><label>Subtopics</label>${subtopics}</div>` : ''}</div></details>`;
 }
 
 function chatMeetingRecordHtml(record) {
@@ -358,18 +364,64 @@ function chatDeleteMeeting(meetingId, expectedRevision) {
 
 function chatSelectMeetingSummary(meetingId, button) {
   chat.meetingSummarySelections[chat.activeKey || ''] = meetingId;
-  const documentView = document.getElementById('chat-meeting-document');
-  if (!documentView) return;
-  document.querySelectorAll('.chat-meeting-list-item').forEach(item => item.classList.toggle('active', item === button));
-  documentView.innerHTML = chatHistoricalMeetingSummaryHtml(meetingId);
+  chatPaintMeetingSummary();
 }
 
+// Reconcile only the generated minutes tree; existing disclosures and controls keep their DOM identity.
+function chatPatchMeetingSummary(current, next) {
+  const key = node => node.nodeType === 1 ? node.getAttribute('data-topic-id') || node.getAttribute('data-meeting-id') || node.id : '';
+  const keyed = new Map(Array.from(current.childNodes).filter(node => key(node)).map(node => [key(node), node]));
+  let cursor = current.firstChild;
+  for (const incoming of next.childNodes) {
+    const nodeKey = key(incoming);
+    const existing = nodeKey ? keyed.get(nodeKey) : cursor && !key(cursor) ? cursor : null;
+    if (!existing || existing.nodeType !== incoming.nodeType || existing.nodeName !== incoming.nodeName) {
+      current.insertBefore(incoming.cloneNode(true), cursor);
+      continue;
+    }
+    if (existing !== cursor) current.insertBefore(existing, cursor);
+    if (existing.nodeType === 1) {
+      for (const attribute of Array.from(existing.attributes)) {
+        if (existing.tagName === 'DETAILS' && attribute.name === 'open') continue;
+        if (!incoming.hasAttribute(attribute.name)) existing.removeAttribute(attribute.name);
+      }
+      for (const attribute of incoming.attributes) {
+        if (existing.tagName === 'DETAILS' && attribute.name === 'open') continue;
+        if (existing.getAttribute(attribute.name) !== attribute.value) existing.setAttribute(attribute.name, attribute.value);
+      }
+      chatPatchMeetingSummary(existing, incoming);
+    } else if (existing.nodeValue !== incoming.nodeValue) existing.nodeValue = incoming.nodeValue;
+    cursor = existing.nextSibling;
+  }
+  while (cursor) {
+    const removed = cursor;
+    cursor = cursor.nextSibling;
+    removed.remove();
+  }
+}
+
+const chatMeetingSummaryRenders = new WeakMap();
 function chatPaintMeetingSummary() {
   const body = document.getElementById('chat-meeting-summary-body');
   if (!body) return;
   const meta = document.getElementById('chat-meeting-summary-meta');
-  if (meta) meta.textContent = chatMeetingSummaryMeta();
-  body.innerHTML = chatMeetingSummaryHtml();
+  const metaText = chatMeetingSummaryMeta();
+  if (meta && meta.textContent !== metaText) meta.textContent = metaText;
+  const html = chatMeetingSummaryHtml();
+  const identity = JSON.stringify([chat.activeKey, chat.meetingSummarySelections[chat.activeKey || '']]);
+  const previous = chatMeetingSummaryRenders.get(body);
+  if (previous?.identity === identity && previous.html === html) return;
+  if (previous?.identity === identity) {
+    const scroll = [body, ...body.querySelectorAll('.chat-meeting-list, .chat-meeting-document')]
+      .map(node => ({ node, top:node.scrollTop, left:node.scrollLeft }));
+    const focused = body.contains(document.activeElement) ? document.activeElement : null;
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    chatPatchMeetingSummary(body, template.content);
+    if (focused?.isConnected && document.activeElement !== focused) focused.focus({ preventScroll:true });
+    scroll.forEach(({ node, top, left }) => { node.scrollTop = top; node.scrollLeft = left; });
+  } else body.innerHTML = html;
+  chatMeetingSummaryRenders.set(body, { identity, html });
 }
 
 function chatToggleMeetingSummary(force) {
@@ -425,6 +477,87 @@ function chatRestoreDraft(key = chat.activeKey) {
   chatUpdateDefaultRecipient();
   chatPaintMode();
   chatPaintQuote();
+  chatPaintImageDrafts();
+  chatImageStatus(chat.imageSends[key] ? 'Sending images…' : (chat.imageDrafts[key]?.length ? 'Images stay local until you press Send. Shared with online Room members.' : ''));
+}
+
+function chatImageStatus(message) {
+  const status = document.getElementById('chat-image-status');
+  if (status) status.textContent = message;
+}
+
+async function chatPasteImages(event) {
+  const files = Array.from(event.clipboardData?.items || [])
+    .filter(item => item.kind === 'file' && item.type.startsWith('image/')).map(item => item.getAsFile()).filter(Boolean);
+  if (!files.length) return;
+  event.preventDefault();
+  const key = chat.activeKey;
+  try {
+    if (!key || chat.active?.status !== 'connected' || chat.active?.selfMuted) throw new Error('Join an unmuted Room before pasting images.');
+    if (chat.imageSends[key]) throw new Error('Wait for the current image send to finish.');
+    if ((chat.imageDrafts[key]?.length || 0) + files.length > 4) throw new Error('Attach at most four images.');
+    const images = await Promise.all(files.map(async file => {
+      if (!['image/png','image/jpeg','image/gif','image/webp'].includes(file.type)) throw new Error('Paste a PNG, JPEG, GIF or WebP image.');
+      if (!file.size || file.size > 5 * 1024 * 1024) throw new Error('Pasted images must be at most 5 MB each.');
+      const src = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = reader.onabort = () => reject(new Error('The clipboard image could not be read. Paste again.'));
+        reader.readAsDataURL(file);
+      });
+      return { id:chatMeetingRequestId(), mime:file.type, dataBase64:src.split(',')[1], src };
+    }));
+    if (chat.activeKey !== key) throw new Error('The selected Room changed while reading the clipboard. Paste again in the intended Room.');
+    if (chat.imageSends[key]) throw new Error('Wait for the current image send to finish.');
+    const current = chat.imageDrafts[key] || [];
+    if (current.length + images.length > 4) throw new Error('Attach at most four images.');
+    chat.imageDrafts[key] = [...current, ...images];
+    chatImageStatus('Images stay local until you press Send. Shared with online Room members.');
+    chatPaintImageDrafts();
+  } catch (error) { chatImageStatus(error.message || String(error)); }
+}
+
+function chatPaintImageDrafts() {
+  const container = document.getElementById('chat-image-drafts');
+  if (!container) return;
+  const images = chat.imageDrafts[chat.activeKey] || [];
+  container.classList.toggle('hidden', !images.length);
+  container.replaceChildren(...images.map((image, index) => {
+    const figure = document.createElement('figure');
+    const preview = document.createElement('img');
+    preview.src = image.src;
+    preview.alt = `Pasted image ${index + 1}`;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = 'Remove';
+    remove.setAttribute('aria-label', `Remove pasted image ${index + 1}`);
+    remove.disabled = !!chat.imageSends[chat.activeKey];
+    remove.onclick = () => {
+      chat.imageDrafts[chat.activeKey] = images.filter(item => item.id !== image.id);
+      chatPaintImageDrafts();
+    };
+    figure.append(preview, remove);
+    return figure;
+  }));
+}
+
+function chatOnSendImagesResult(result) {
+  const pending = chat.imageSends[result?.key];
+  if (!pending || pending.requestId !== result.requestId) return;
+  delete chat.imageSends[result.key];
+  if (result.ok) {
+    chat.imageDrafts[result.key] = (chat.imageDrafts[result.key] || []).filter(image => !pending.images.includes(image));
+    const unchanged = JSON.stringify(chat.drafts[result.key]) === JSON.stringify(pending.draft);
+    if (unchanged) {
+      delete chat.drafts[result.key];
+      if (chat.activeKey === result.key && document.getElementById('chat-input')?.value === pending.text) chatClearSentDraft();
+    }
+  }
+  if (chat.activeKey === result.key) {
+    chatImageStatus(result.ok ? 'Images queued to online Room members; delivery is not acknowledged.' : result.error || 'Image send failed; your draft is retained.');
+    chatPaintImageDrafts();
+    chatPaintActive();
+  }
 }
 
 // Drag the divider between the left rail (Hub/Rooms) and the chat pane to resize.
@@ -869,7 +1002,8 @@ function chatStructuredReceipt(recipients) {
 function chatSend() {
   const inp = document.getElementById('chat-input');
   const draft = inp.value;
-  if (!draft.trim()) return;
+  const images = chat.imageDrafts[chat.activeKey] || [];
+  if (chat.imageSends[chat.activeKey] || (!draft.trim() && !images.length)) return;
   const text = draft.trim();
   const recipients = chatComposerRecipientNames(draft);
   const mode = chat.active?.selfHost ? chat.mode : undefined;
@@ -889,7 +1023,23 @@ function chatSend() {
     ? document.getElementById('chat-receipt-reply-policy').value
     : mode === 'announce' ? 'none' : mode === 'discuss' ? 'required' : 'required';
   const discussionLead = mode === 'discuss' ? chatSelectedDiscussionLead() : '';
-  ask('chatSend', { text, mode, replyPolicy, recipients, discussionLead, replyToMessageId: chat.quote?.id || '', collaboration });
+  const payload = { text, mode, replyPolicy, recipients, discussionLead, replyToMessageId: chat.quote?.id || '', collaboration };
+  if (images.length) {
+    const requestId = chatMeetingRequestId();
+    chatCaptureDraft();
+    chat.imageSends[chat.activeKey] = { requestId, text:draft, draft:chat.drafts[chatDraftKey()], images:[...images] };
+    ask('chatSend', { ...payload, key:chat.activeKey, requestId, images:images.map(({ mime, dataBase64 }) => ({ mime, dataBase64 })) });
+    chatImageStatus('Sending images…');
+    document.getElementById('chat-send-btn').disabled = true;
+    chatPaintImageDrafts();
+    return;
+  }
+  ask('chatSend', payload);
+  chatClearSentDraft();
+}
+
+function chatClearSentDraft() {
+  const inp = document.getElementById('chat-input');
   delete chat.drafts[chatDraftKey()];
   chatPreserveReadingLayout(() => {
     inp.value = ''; inp.style.height = 'auto';
@@ -1726,7 +1876,7 @@ function chatPaintActive() {
   if (modeControl) modeControl.classList.toggle('hidden', !a.selfHost);
   chatPaintDiscussionLead();
   if (inp)  { inp.disabled  = !connected || muted; inp.placeholder = muted ? 'You are muted by the host — you can read but not post.' : 'Message the room…  (Enter to send, Shift+Enter for newline)'; }
-  if (sbtn) sbtn.disabled = !connected || muted;
+  if (sbtn) sbtn.disabled = !connected || muted || !!chat.imageSends[chat.activeKey];
   const recipientInput = document.getElementById('chat-recipient-input');
   if (recipientInput) recipientInput.disabled = !connected || muted;
   chatUpdateDefaultRecipient();
@@ -1766,10 +1916,23 @@ function chatPaintActive() {
 function chatAppendFileRow(key, f) {
   const log = document.getElementById('chat-log');
   if (!log) return;
+  if (Array.from(log.querySelectorAll('.chat-file')).some(node => node.dataset.fileId === f.fileId)) return;
   const el = document.createElement('div');
   el.className = 'chat-file';
+  el.dataset.fileId = f.fileId;
   el.innerHTML = `<span>✅ <b>${esc(f.name)}</b> from ${esc(f.from)} received</span>
     <button class="tbtn" onclick="ask('chatSaveFile',{key:'${esc(key)}',fileId:'${esc(f.fileId)}'})">Save…</button>`;
+  if (['image/png','image/jpeg','image/gif','image/webp'].includes(f.mime) && f.size <= 5 * 1024 * 1024) {
+    const previewKey = JSON.stringify([key, f.fileId]);
+    const cached = chat.imagePreviews[previewKey];
+    if (cached?.src) chatRenderFileImage(el, cached.src, f.name);
+    else if (!cached) {
+      chat.imagePreviews[previewKey] = { pending:true };
+      vscode.postMessage({ command:'chatImagePreview', key, fileId:f.fileId });
+    } else if (cached.error) {
+      const error = document.createElement('small'); error.textContent = cached.error; el.append(error);
+    }
+  }
   const shouldFollow = chat.followLatest;
   log.appendChild(el);
   if (shouldFollow) {
@@ -1777,6 +1940,33 @@ function chatAppendFileRow(key, f) {
     requestAnimationFrame(() => chatScrollLatest(log));
   }
   else document.getElementById('chat-jump-latest')?.classList.remove('hidden');
+}
+
+function chatRenderFileImage(row, src, name) {
+  if (row.querySelector('img')) return;
+  const image = document.createElement('img');
+  image.className = 'chat-file-image';
+  image.src = src;
+  image.alt = name || 'Shared image';
+  image.addEventListener('load', () => { if (chat.followLatest) chatScrollLatest(); }, { once:true });
+  image.addEventListener('error', () => {
+    const error = document.createElement('small');
+    error.textContent = 'This image could not be decoded. Use Save to inspect the shared file.';
+    row.append(error);
+  }, { once:true });
+  row.append(image);
+}
+
+function chatOnImagePreview(data) {
+  if (!data || !chat.imagePreviews[JSON.stringify([data.key, data.fileId])]) return;
+  const valid = typeof data.src === 'string' && /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+=*$/.test(data.src);
+  const result = valid ? { src:data.src } : { error:data.error || 'Image preview unavailable.' };
+  chat.imagePreviews[JSON.stringify([data.key, data.fileId])] = result;
+  if (chat.activeKey !== data.key) return;
+  const row = Array.from(document.querySelectorAll('#chat-log .chat-file')).find(node => node.dataset.fileId === data.fileId);
+  if (!row) return;
+  if (result.src) chatRenderFileImage(row, result.src, row.querySelector('b')?.textContent);
+  else { const error = document.createElement('small'); error.textContent = result.error; row.append(error); }
 }
 
 function chatPaintMembers() {
@@ -1791,9 +1981,13 @@ function chatPaintMembers() {
   const here = visibleMembers.filter(m => m.present !== false);
   const gone = visibleMembers.filter(m => m.present === false);
   const attr = (s) => esc(s).replace(/"/g, '&quot;');
+  const meeting = chat.active?.meetings?.current;
+  const leadName = meeting?.status === 'active' ? meeting.lead : '';
+  const leadIcon = (name) => leadName && name.toLocaleLowerCase() === leadName.toLocaleLowerCase()
+    ? `<span class="chat-discussion-lead-icon" role="img" aria-label="Discussion Lead" title="Discussion Lead — summarizes the conversation in the background and maintains Meeting Summary">${uiIcon('notebook')}</span>` : '';
   const row = (m) => {
     const isHere = m.present !== false;
-    const icon = m.host ? '👑' : m.kind === 'agent' ? '🤖' : m.kind === 'browser' ? '🌐' : '👤';
+    const icon = leadIcon(m.user) || (m.host ? '👑' : m.kind === 'agent' ? '🤖' : m.kind === 'browser' ? '🌐' : '👤');
     const how  = m.host ? 'room host' : m.kind === 'agent' ? 'via MCP agent' : m.kind === 'browser' ? 'via browser' : 'via extension';
     const runtimeState = isHere && m.kind === 'agent' ? ((chat.proto && chat.proto[m.user] || {}).state || 'idle') : '';
     const dotK = isHere ? (m.host ? 'host' : m.kind) : 'gone';
@@ -1804,7 +1998,7 @@ function chatPaintMembers() {
     // Non-host viewers see a small greyed muted indicator; the host toggles it below.
     const mut  = (m.muted && !canModerate) ? '<span class="chat-muted-badge" title="muted by the host — can\'t speak">🔇</span>' : '';
     const proto = isHere ? chatProtoBadge((chat.proto && chat.proto[m.user] || {}).state) : '';
-    const tail = `<span class="chat-ago" title="${isHere ? 'Time since last state update' : 'Time since last seen'}">${esc(chatElapsedSeconds(isHere ? m.stateChangedAt || m.lastSeen : m.lastSeen))}</span>`;
+    const tail = m.host ? '' : `<span class="chat-ago" title="${isHere ? 'Time since last state update' : 'Time since last seen'}">${esc(chatElapsedSeconds(isHere ? m.stateChangedAt || m.lastSeen : m.lastSeen))}</span>`;
     const role = m.role ? `<span class="chat-role">${esc(m.role)}</span>` : '';
     const runtimeComment = runtimeState === 'standby' ? 'Standby: actively waiting for a directed message.'
       : runtimeState === 'thinking' || runtimeState === 'working' ? 'Working: processing a delivered message.'
@@ -1843,7 +2037,7 @@ function chatPaintMembers() {
         ? `<span class="chat-proto idle" title="${attr(detail)}">error</span>`
         : chatProtoBadge(runtimeState);
       const role = agent.role ? `<span class="chat-role">${esc(agent.role)}</span>` : '';
-      return `<div class="chat-member" title="${attr(agent.backend)}"><span class="chat-mdot agent state-${runtimeState}"></span><span class="chat-mname"><span class="chat-avatar">${esc(agent.icon || '🤖')}</span><span class="chat-member-name-text">${esc(agent.name)}</span>${stateLabel}${role}</span><span class="chat-mod-actions"><button class="chat-mod" title="Edit profile, name, and role" onclick="ask('chatEditManagedAgent',{id:'${attr(agent.id)}',name:'${attr(agent.name)}',role:'${attr(agent.role || '')}',icon:'${attr(agent.icon || '🤖')}'})">${uiIcon('edit')}</button><button class="chat-mod chat-mod-kick" title="Permanently remove managed agent" onclick="ask('chatRemoveManagedAgent',{id:'${attr(agent.id)}'})">${uiIcon('circle-slash')}</button></span></div>`;
+      return `<div class="chat-member" title="${attr(agent.backend)}"><span class="chat-mdot agent state-${runtimeState}"></span><span class="chat-mname"><span class="chat-avatar">${leadIcon(agent.name) || esc(agent.icon || '🤖')}</span><span class="chat-member-name-text">${esc(agent.name)}</span>${stateLabel}${role}</span><span class="chat-mod-actions"><button class="chat-mod" title="Edit profile, name, and role" onclick="ask('chatEditManagedAgent',{id:'${attr(agent.id)}',name:'${attr(agent.name)}',role:'${attr(agent.role || '')}',icon:'${attr(agent.icon || '🤖')}'})">${uiIcon('edit')}</button><button class="chat-mod chat-mod-kick" title="Permanently remove managed agent" onclick="ask('chatRemoveManagedAgent',{id:'${attr(agent.id)}'})">${uiIcon('circle-slash')}</button></span></div>`;
     }).join('');
   }
   html += here.map(row).join('');

@@ -61,6 +61,17 @@ async function main() {
     assert.strictEqual(restored.snapshot.revision, fourth.revision);
     assert.strictEqual(restored.notes()[0].title, 'Updated Progress');
     assert(fs.existsSync(path.join(state, 'manifest.json')));
+    const store=require("../dist/knowledge/filestore");
+    store.setStorePath(root);
+    store.todoBoardCreate("Project/Board","Board","Project");
+    await manager.refresh();
+    assert.strictEqual(manager.notes().find(note=>note.slug==="Project/Board").documentKind,"todo-board");
+    const boardBefore=manager.entries("notes").find(entry=>entry.slug==="Project/Board").fingerprint;
+    store.noteWorkItemCommand("Project/Board",store.noteWorkItemsRead("Project/Board").digest,{action:"create",item:{
+      id:"task",title:"Task",goal:"Goal",scope:"Fixture",acceptance:["Exact result"],state:"Planning",evidence:[],
+    }},{id:"user:local",role:"user"});
+    await manager.refresh();
+    assert.notStrictEqual(manager.entries("notes").find(entry=>entry.slug==="Project/Board").fingerprint,boardBefore,"authority-only changes invalidate Board inventory even when descriptor is unchanged");
     console.log('knowledge inventory test: persisted manifest, async scan, unchanged reuse, one-file parse, deletion, and restart restore OK');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

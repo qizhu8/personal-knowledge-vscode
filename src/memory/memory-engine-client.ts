@@ -36,6 +36,24 @@ export type MemoryCommand =
   | { method: "overview"; params: { scope: string; limit?: number } }
   | { method: "enforce_capacity"; params: { max_bytes: number; protected?: string[] } }
   | { method: "forget_scope"; params: { scope: string } }
+  | { method: "explicit_get"; params: { memory_id: string; scope: string; revision?: number } }
+  | { method: "explicit_search"; params: { scope: string; query: string; limit?: number } }
+  | { method: "explicit_audit"; params: { scope: string; memory_id: string; after?: number; limit?: number } }
+  | { method: "explicit_propose"; operationId: string; params: {
+      id: string; scope: string; content: string; sources: MemorySourceReference[];
+    } }
+  | { method: "explicit_confirm"; operationId: string; params: {
+      id: string; scope: string; expected_revision: number;
+      host_authorization: { decision_id: string; actor_id: string };
+    } }
+  | { method: "explicit_revise"; operationId: string; params: {
+      id: string; scope: string; expected_revision: number; content: string;
+      sources: MemorySourceReference[]; host_authorization: { decision_id: string; actor_id: string };
+    } }
+  | { method: "explicit_revoke"; operationId: string; params: {
+      id: string; scope: string; expected_revision: number;
+      host_authorization: { decision_id: string; actor_id: string };
+    } }
   | { method: "create"; operationId: string; params: { piece: string; label: string; kind?: MemoryPieceKind; scope?: string } }
   | { method: "append"; operationId: string; params: {
       piece: string; statement_id: string; expected_revision: number; body: string;
@@ -68,6 +86,23 @@ export interface MemoryEngineClientOptions {
 }
 
 type Result = Record<string, unknown> | unknown[];
+export type MemoryEngineErrorCode = "INVALID_ARGUMENT" | "CONFLICT" | "NOT_AVAILABLE" | "ACCESS_DENIED";
+
+export class MemoryEngineRequestError extends Error {
+  constructor(
+    readonly code: MemoryEngineErrorCode,
+    type: string,
+    message: string,
+  ) {
+    super(`Memory Engine ${type}: ${message}`);
+    this.name = "MemoryEngineRequestError";
+  }
+}
+
+const MEMORY_ENGINE_ERROR_CODES = new Set<MemoryEngineErrorCode>([
+  "INVALID_ARGUMENT", "CONFLICT", "NOT_AVAILABLE", "ACCESS_DENIED",
+]);
+
 interface Pending {
   resolve: (value: Result) => void;
   reject: (error: Error) => void;
@@ -136,7 +171,7 @@ export class MemoryEngineClient {
     try {
       const capabilities = await client.request({ method: "capabilities" });
       if (!object(capabilities) || capabilities.module !== "pkm-memory-engine" ||
-          capabilities.protocol !== 1 || capabilities.schema !== 1 || capabilities.identity !== options.identity
+          capabilities.protocol !== 1 || capabilities.schema !== 2 || capabilities.identity !== options.identity
           || capabilities.policy !== MEMORY_POLICY) {
         throw new Error("Memory Engine capabilities or identity mismatch.");
       }
@@ -202,8 +237,12 @@ export class MemoryEngineClient {
       this.pending.delete(reply.id);
       clearTimeout(pending.timer);
       if (reply.ok && (object(reply.result) || Array.isArray(reply.result))) pending.resolve(reply.result);
-      else if (!reply.ok && object(reply.error) && typeof reply.error.message === "string") {
-        pending.reject(new Error(`Memory Engine ${String(reply.error.type)}: ${reply.error.message}`));
+      else if (!reply.ok && object(reply.error) && typeof reply.error.message === "string" &&
+          typeof reply.error.type === "string" && typeof reply.error.code === "string" &&
+          MEMORY_ENGINE_ERROR_CODES.has(reply.error.code as MemoryEngineErrorCode)) {
+        pending.reject(new MemoryEngineRequestError(
+          reply.error.code as MemoryEngineErrorCode, reply.error.type, reply.error.message,
+        ));
       } else {
         pending.reject(new Error("Memory Engine returned an invalid result."));
         this.fail(new Error("Memory Engine protocol result mismatch."));

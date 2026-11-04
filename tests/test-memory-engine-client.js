@@ -103,3 +103,81 @@ test("the Memory Engine protocol writer is UTF-8 even when launched outside the 
     assert.match(result.stdout.toString("utf8"), /记忆/);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
+
+test("Explicit Memory service binds scope and requires Host authorization for state transitions", async () => {
+  const { ExplicitMemoryService } = require("../dist/memory/explicit-memory-service");
+  const { MemoryEngineRequestError } = require("../dist/memory/memory-engine-client");
+  const directory = fs.mkdtempSync(path.join(__dirname, ".explicit-memory-service-"));
+  const options = {
+    extensionRoot: path.resolve(__dirname, ".."),
+    python: process.env.PYTHON || "python3",
+    database: path.join(directory, "memory.sqlite3"),
+    identity: "fixture-account/root",
+  };
+  const scope = { account: "account-1", project: "project-1", repository: "repo-1" };
+  const sources = [{ id: "source-1", chat: "pkm://chats/chat-1", revision: "turn-3", locator: "message#3:1-9" }];
+  const oversizedSources = Array.from({ length: 3 }, (_, index) => ({
+    id: `source-${index}`, chat: "pkm://chats/chat-1", revision: "turn-3", locator: "x".repeat(1500),
+  }));
+  let allowed = false;
+  let client;
+  try {
+    client = await MemoryEngineClient.open(options);
+    const service = new ExplicitMemoryService(client, scope, request => {
+      assert.deepEqual(request.scope, scope);
+      return allowed
+        ? { decisionId: `host-${request.operationId}`, actorId: "native-user-1" }
+        : null;
+    });
+    await assert.rejects(service.propose({ content: "Large references.", sources: oversizedSources }),
+      /exceed 4096 UTF-8 bytes in total/);
+    const proposal = { content: "Remember the SQLite decision.", sources, status: "confirmed" };
+    const pending = await service.propose(proposal, { operationId: "proposal-op-1" });
+    assert.deepEqual(await service.propose(proposal, { operationId: "proposal-op-1" }), pending);
+    assert.equal(pending.status, "pending");
+    assert.equal(pending.sources[0].locator, sources[0].locator);
+    assert.deepEqual(await service.search("SQLite"), []);
+    await assert.rejects(service.confirm(pending.id, pending.revision), /Host did not authorize/);
+    await assert.rejects(service.revise(pending.id, pending.revision, {
+      content: "Updated note.", sources: oversizedSources,
+    }), /exceed 4096 UTF-8 bytes in total/);
+    assert.equal((await service.get(pending.id)).status, "pending");
+
+    allowed = true;
+    const confirmed = await service.confirm(pending.id, pending.revision, { operationId: "confirm-op-1" });
+    assert.deepEqual(await service.confirm(pending.id, pending.revision, { operationId: "confirm-op-1" }), confirmed);
+    assert.equal(confirmed.status, "confirmed");
+    assert.equal(confirmed.revision, 2);
+    await assert.rejects(service.confirm(pending.id, pending.revision), error =>
+      error instanceof MemoryEngineRequestError && error.code === "CONFLICT" &&
+      /Stale explicit-memory revision/.test(error.message));
+    await assert.rejects(service.get("missing-record"), error =>
+      error instanceof MemoryEngineRequestError && error.code === "NOT_AVAILABLE");
+    assert.equal((await service.search("SQLite"))[0].id, pending.id);
+
+    const revised = await service.revise(pending.id, confirmed.revision, {
+      content: "Remember the SQLite WAL decision.", sources,
+    });
+    assert.equal(revised.status, "pending");
+    assert.deepEqual(await service.search("SQLite"), []);
+    const confirmedRevision = await service.confirm(revised.id, revised.revision);
+    const revoked = await service.revoke(confirmedRevision.id, confirmedRevision.revision);
+    assert.equal(revoked.status, "revoked");
+    assert.deepEqual(await service.search("SQLite"), []);
+    assert.deepEqual((await service.audit(pending.id)).events.map(event => event.action),
+      ["proposed", "confirmed", "revised", "confirmed", "revoked"]);
+
+    await client.close();
+    client = await MemoryEngineClient.open(options);
+    const restarted = new ExplicitMemoryService(client, scope, () =>
+      ({ decisionId: "unused", actorId: "native-user-1" }));
+    assert.equal((await restarted.get(pending.id)).status, "revoked");
+    assert.deepEqual(await restarted.search("SQLite"), []);
+    const otherScope = new ExplicitMemoryService(client, { ...scope, repository: "other-repo" },
+      () => ({ decisionId: "unused", actorId: "native-user-1" }));
+    await assert.rejects(otherScope.get(pending.id), /not found/);
+  } finally {
+    if (client) await client.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});

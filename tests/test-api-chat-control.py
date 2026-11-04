@@ -6,6 +6,7 @@ import json
 import pathlib
 import sys
 import tempfile
+import time
 
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
@@ -95,6 +96,9 @@ async def main():
                 capabilities = await call(client, "api_chat_capabilities", {})
                 assert capabilities["hosts"][0]["host_id"] == host_id
                 assert capabilities["hosts"][0]["workspace_paths"] == ["/fixture"]
+                assert capabilities["hosts"][0]["send_limits"]["hardToolRoundLimit"] == {"min": 1, "max": 1000}
+                send_schema = next(tool.inputSchema for tool in catalog if tool.name == "api_chat_send")
+                assert "hard_tool_round_limit" in send_schema["properties"]
                 requests = store / ".pkm/state/api-chat-control/requests" / host_id
                 assert "portal_control" in capabilities["tools"]
                 portal_args = {"host_id": host_id, "operation": "open", "command_id": "portal-once"}
@@ -154,10 +158,29 @@ async def main():
                 assert create_file.read_bytes() == original_bytes
                 await rejected(client, "api_chat_create", {**create_args, "title": "Conflicting input"}, "different request")
                 await rejected(client, "api_chat_create", {**create_args, "command_id": "bad-title", "title": ""}, "title must")
-                send_args = {"host_id": host_id, "chat_id": chat_url, "prompt": "Explicit QA prompt", "command_id": "send-once"}
+                send_args = {"host_id": host_id, "chat_id": chat_url, "prompt": "Explicit QA prompt", "command_id": "send-once", "hard_tool_round_limit": 2}
+                before_invalid = set(requests.glob("*.json"))
+                for invalid in [0, -1, 1001, 1.5, True, "2"]:
+                    await rejected(client, "api_chat_send", {**send_args, "hard_tool_round_limit": invalid}, "hard_tool_round_limit")
+                assert set(requests.glob("*.json")) == before_invalid
+                legacy_id = "00000000-0000-0000-0000-000000000001"
+                legacy_host = {**host_record, "hostId": legacy_id, "updatedAt": time.time() * 1000}
+                legacy_host.pop("sendLimits", None)
+                legacy_file = store / ".pkm/state/api-chat-control/hosts" / f"{legacy_id}.json"
+                legacy_file.write_text(json.dumps(legacy_host), encoding="utf-8")
+                await rejected(client, "api_chat_send", {**send_args, "host_id": legacy_id}, "does not support hard tool round limits")
+                assert not list((requests.parent / legacy_id).glob("*.json")), "Unsupported Hosts must not receive silently unbounded requests"
+                for malformed_limits in [None, "unsupported", {}]:
+                    legacy_host["sendLimits"] = malformed_limits
+                    legacy_file.write_text(json.dumps(legacy_host), encoding="utf-8")
+                    await rejected(client, "api_chat_send", {**send_args, "host_id": legacy_id}, "does not support hard tool round limits")
+                legacy_file.unlink()
                 sending = await call(client, "api_chat_send", send_args)
                 await receipt(client, sending, "running")
+                submitted_send = json.loads((requests / (sending["request_id"] + ".json")).read_text())
+                assert submitted_send["arguments"]["hardToolRoundLimit"] == 2
                 assert (await call(client, "api_chat_send", send_args))["request_id"] == sending["request_id"]
+                await rejected(client, "api_chat_send", {**send_args, "hard_tool_round_limit": 3}, "different request")
                 query = await call(client, "api_chat_get", {"host_id": host_id, "chat_id": chat_url, "command_id": "get-while-running"})
                 observed = await receipt(client, query, "succeeded")
                 assert observed["result"] == {"running": True, "createCalls": 1, "sendCalls": 1}

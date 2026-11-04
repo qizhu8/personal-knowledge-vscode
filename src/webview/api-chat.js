@@ -60,6 +60,8 @@
   const finishedExpanded = new Map();
   const activityFilters = new Map();
   const messageExpanded = new Set(saved.expandedMessageDetails || []);
+  const processStatuses = new Map();
+  let processStatusVersion = 0;
   let state;
   let historyStart = 0;
   let historyPending;
@@ -127,7 +129,8 @@
     element("send").disabled = !!pending || !!state.remoteBusy && !!state.chat.paused || (state.busy ? !element("prompt").value.trim() || !!state.chat.images?.length : !state.chat.paused && (!element("prompt").value.trim() || !element("window").checkValidity() || !element("output").checkValidity() || input + output > window || retired || state.settings.needsModelConnection || (state.settings.provider !== "vscode" && !state.settings.endpoint)));
     const budgetWarning = element("composer-budget-warning");
     budgetWarning.hidden = state.busy || state.chat.paused || input + output <= window;
-    budgetWarning.textContent = budgetWarning.hidden ? "" : t("Estimated input plus reserved output exceeds this context budget. Increase the budget, reduce context/tools, or choose a larger model.");
+    budgetWarning.setAttribute("aria-label", t("Estimated input plus reserved output exceeds this context budget. Increase the budget, reduce context/tools, or choose a larger model."));
+    refreshComposerHelp();
     if (profile?.inputPricePerMillion !== undefined && profile?.outputPricePerMillion !== undefined) {
       const price = (input * profile.inputPricePerMillion + output * profile.outputPricePerMillion) / 1e6;
       element("cost").textContent = `First-call estimate: ${profile.currency} ${price.toFixed(6)}`;
@@ -148,13 +151,42 @@
     return `${usage.inputTokens.toLocaleString()} in / ${usage.outputTokens.toLocaleString()} out tokens`;
   }
   function chatRole(chat = state.chat) {
-    if (chat?.portal?.binding?.role) return chat.portal.binding.role;
     const role = globalThis.PkmChatRole(chat);
     const overviewRole = globalThis.PkmChatRole(state.workerOverview?.nodes.find(node => node.chatId === chat.id));
     return role === "manager" || overviewRole === "manager" ? "manager" : role || overviewRole;
   }
   function toolActivityPresentation(line, body, tool) {
     const info = globalThis.PkmAgentHarness.toolActivityDetails(tool);
+    let process;
+    try { process = JSON.parse(tool.result || ""); } catch {}
+    if (process?.schema === "pkm.chat.process/v1" && /^process_[a-f0-9]{64}$/.test(process.handle)) {
+      const current = processStatuses.get(process.handle) || process;
+      const controls = document.createElement("div"); controls.className = "process-controls";
+      const status = document.createElement("span"); status.textContent = t("Background process: {state}", { state:current.state });
+      if (current.detail) status.title = current.detail;
+      controls.append(status);
+      const addControl = (label, operation, icon) => {
+        const button = iconButton(icon, label, () => {
+          button.disabled = true;
+          post("processControl", { chatId:state.chat.id, handle:process.handle, operation });
+          setTimeout(() => { if (button.isConnected) button.disabled = false; }, 2500);
+        });
+        button.append(document.createTextNode(t(label)));
+        controls.append(button);
+      };
+      if (current.state === "running") {
+        if (state.processControlSupported !== false) addControl("Pause process", "pause", "debug-pause");
+        addControl("Refresh status", "status", "refresh");
+      } else if (current.state === "paused") {
+        if (state.processControlSupported !== false) addControl("Resume process", "resume", "debug-continue");
+        addControl("Refresh status", "status", "refresh");
+      } else if (["launching", "unknown"].includes(current.state)) addControl("Refresh status", "status", "refresh");
+      if (["launching", "running", "paused"].includes(current.state)) addControl("Stop process", "stop", "debug-stop");
+      if (state.processControlSupported === false && ["running", "paused"].includes(current.state)) {
+        const note = document.createElement("span"); note.textContent = t("Pause/resume is not available on this platform."); controls.append(note);
+      }
+      body.append(controls);
+    }
     if (!info) return;
     const targets = document.createElement("span"); targets.className = "activity-targets";
     if (info.paths) {
@@ -601,7 +633,7 @@
     for (const message of state.chat.messages) {
       if (message.recordedAt) flushCommands(message.recordedAt);
       const sleeping = message.id === state.chat.messages.at(-1)?.id && state.chat.workerState?.sleeping;
-      const fingerprint = JSON.stringify([message, state.taskPlan, state.busy, state.chat.paused, pendingUserId, sleeping, chatRole(), document.documentElement.lang]);
+      const fingerprint = JSON.stringify([message, state.taskPlan, state.busy, state.chat.paused, pendingUserId, sleeping, chatRole(), document.documentElement.lang, processStatusVersion]);
       retained.add(message.id);
       const cached = messageNodes.get(message.id);
       if (cached?.fingerprint === fingerprint) { children.push(cached.article); continue; }
@@ -614,7 +646,15 @@
         : message.role === "user" ? t("You") : "PKM";
       if (message.portalSource) article.classList.add("portal-message");
       const model = document.createElement("span"); model.className = "model-name"; model.textContent = message.model || (message.contextLabels || []).join(", "); model.title = model.textContent;
-      header.append(role, model, iconButton("copy", "Copy message", () => post("copy", { id: message.id })));
+      header.append(role, model);
+      if (message.recordedAt && Number.isFinite(Date.parse(message.recordedAt))) {
+        const stamp = document.createElement("time"); stamp.className = "message-time";
+        stamp.dateTime = message.recordedAt; stamp.textContent = workerTime(Date.parse(message.recordedAt));
+        stamp.title = new Intl.DateTimeFormat(document.documentElement.lang || "en",
+          { dateStyle: "full", timeStyle: "long" }).format(new Date(message.recordedAt));
+        header.append(stamp);
+      }
+      header.append(iconButton("copy", "Copy message", () => post("copy", { id: message.id })));
       if (message.retrievalActivity || message.retrieval || message.budgetReceipts?.length) {
         header.append(iconButton("references", "Memory", () => {
           memoryActivityId = message.id; memoryStepId = "latest"; togglePopover("memory", true);
@@ -1173,16 +1213,19 @@
     button.setAttribute("aria-pressed", String(connected));
     button.title = connected ? `Chat Portal: connected (open) · ${portal.binding.role} · ${portal.binding.peerMachine || portal.binding.peerName || ""} · ${portal.binding.peerChatName || ""}`
       : "Chat Portal: disconnected / awaiting pairing (closed)";
-    element("chat-status").classList.toggle("portal-role-active", !!portal?.binding);
+    element("chat-status").classList.toggle("portal-role-active", !!portal?.execution);
     const role = portal?.binding?.role;
-    if (role) {
-      const label = document.createElement("span"); label.textContent = portalHeadline(portal); label.className = "portal-headline";
-      const chatStatus = state.chat.paused ? "paused" : state.chats.find(chat => chat.id === state.chat.id)?.status;
-      const resting = chatStatus === "paused" || chatStatus === "stopped";
-      const scene = resting ? globalThis.PkmChatStatusIndicator(chatStatus, role) : globalThis.PkmChatPortalIcon(connected, role);
-      if (!resting) {
-        scene.setAttribute("role", "img"); scene.setAttribute("aria-label", `${role === "controller" ? "Controller" : "Controlled"} · Portal ${connected ? "open" : "closed"}`);
-      }
+    if (portal?.execution) {
+      const waiting = portal.execution.state === "awaiting-approval";
+      const peer = portal.binding?.peerMachine || portal.binding?.peerName || "peer";
+      const label = document.createElement("span");
+      label.textContent = `${waiting ? "Remote request awaiting approval" : "Controlled execution"} · ${peer}`;
+      label.className = "portal-headline visually-hidden";
+      element("chat-status").title = label.textContent;
+      element("chat-status").setAttribute("aria-label", label.textContent);
+      const scene = globalThis.PkmChatPortalIcon(connected, "controlled");
+      scene.classList.toggle("chat-role-still", waiting);
+      scene.setAttribute("role", "img"); scene.setAttribute("aria-label", label.textContent);
       element("chat-status").replaceChildren(scene, label);
     }
     host.hidden = !portal?.binding && !portal?.pending;
@@ -1299,6 +1342,79 @@
     }
   }
 
+  let composerHelpTarget, composerHelpTimer;
+  const composerHelpTooltip = element("composer-help-tooltip");
+  function hideComposerHelp() {
+    clearTimeout(composerHelpTimer);
+    composerHelpTarget = undefined;
+    composerHelpTooltip.hidden = true;
+  }
+  function refreshComposerHelp() {
+    if (!composerHelpTarget) return;
+    if (composerHelpTarget.hidden) { hideComposerHelp(); return; }
+    composerHelpTooltip.textContent = composerHelpTarget.getAttribute("aria-label");
+    composerHelpTooltip.hidden = false;
+    const anchor = composerHelpTarget.getBoundingClientRect();
+    const box = composerHelpTooltip.getBoundingClientRect();
+    composerHelpTooltip.style.left = `${Math.max(8, Math.min(anchor.left, innerWidth - box.width - 8))}px`;
+    composerHelpTooltip.style.top = `${Math.max(8, Math.min(anchor.top - box.height - 6, innerHeight - box.height - 8))}px`;
+  }
+  const delayComposerHelpHide = () => { composerHelpTimer = setTimeout(hideComposerHelp, 120); };
+  for (const id of ["planning-advice", "composer-budget-warning"]) {
+    const target = element(id);
+    const show = () => { clearTimeout(composerHelpTimer); composerHelpTarget = target; refreshComposerHelp(); };
+    target.addEventListener("mouseenter", show);
+    target.addEventListener("focus", show);
+    target.addEventListener("click", show);
+    target.addEventListener("mouseleave", () => { if (document.activeElement !== target) delayComposerHelpHide(); });
+    target.addEventListener("blur", delayComposerHelpHide);
+  }
+  composerHelpTooltip.addEventListener("mouseenter", () => clearTimeout(composerHelpTimer));
+  composerHelpTooltip.addEventListener("mouseleave", delayComposerHelpHide);
+  document.addEventListener("keydown", event => { if (event.key === "Escape") hideComposerHelp(); });
+  document.addEventListener("scroll", hideComposerHelp, true);
+  window.addEventListener("resize", hideComposerHelp);
+
+  let planFingerprint = "";
+  function renderPlan() {
+    const mode = state.chat.workflowMode || "chat", plan = state.chat.plans?.at(-1);
+    element("workflow-mode").value = mode === "execute" ? "plan" : mode;
+    const held = !!state.busy || !!state.remoteBusy || !!state.portal?.execution || !!state.chat.queuedInputs?.length || !!state.chat.workerState || !!state.decisions?.length;
+    element("workflow-mode").disabled = held;
+    element("planning-advice").hidden = mode !== "chat";
+    refreshComposerHelp();
+    const fingerprint = JSON.stringify([state.chat.id, plan, mode, held, state.planExecutionReady, state.localization?.locale]);
+    if (fingerprint === planFingerprint) return;
+    const changedPlan = element("plan-review").dataset.planHash !== plan?.contentHash;
+    planFingerprint = fingerprint;
+    element("plan-review").hidden = !plan || mode === "chat";
+    if (!plan) return;
+    if (changedPlan) element("plan-review").open = true;
+    element("plan-review").dataset.planHash = plan.contentHash;
+    element("plan-label").textContent = t("Plan revision {revision}", { revision: plan.revision });
+    element("plan-status").textContent = t(plan.openQuestions.length ? "Resolve open questions before approval" : state.planExecutionReady ? "Approved for this execution context" : "Awaiting local review");
+    const body = element("plan-body"); body.replaceChildren();
+    const section = (label, content) => {
+      const heading = document.createElement("h4"); heading.textContent = t(label);
+      const paragraph = document.createElement("p"); paragraph.textContent = content;
+      body.append(heading, paragraph);
+    };
+    section("Objective", plan.objective);
+    for (const [label, key] of [["Scope", "scope"], ["Non-goals", "nonGoals"], ["Facts", "facts"], ["Open questions", "openQuestions"], ["Risks", "risks"]]) {
+      if (plan[key].length) section(label, plan[key].map(item => `- ${item}`).join("\n"));
+    }
+    section("Execution environment", `${plan.context.cwd || plan.context.knowledgeRoot}\n${plan.context.permissionMode}`);
+    section("Revision reason", plan.changeReason);
+    for (const step of plan.steps) {
+      section(`${step.id}: ${step.title}`, `${t("Depends on: {dependencies}", { dependencies: step.dependsOn.join(", ") || t("None") })}\n${t("Verification")}: ${step.verification}`);
+    }
+    element("approve-plan").hidden = !!state.planExecutionReady;
+    element("approve-plan").disabled = held || !!plan.openQuestions.length;
+    element("execute-plan").hidden = !state.planExecutionReady;
+    element("execute-plan").disabled = held;
+    element("revise-plan").disabled = held;
+  }
+
   function render() {
     if (document.visibilityState !== "visible") return;
     element("copy-chat-id").disabled = !state.chat?.id;
@@ -1309,6 +1425,7 @@
     revealWorkerDispatch();
     renderTools();
     renderMemory();
+    element("activity-budget-session").hidden = state.chat.activityBudgetBypass !== "session";
     element("permission-mode").value = state.chat.permissionMode || "protective";
     element("permission-mode").disabled = !!state.remoteBusy;
     const grants = state.chat.permissionGrants?.length || 0;
@@ -1316,19 +1433,27 @@
     element("reset-permissions").disabled = !grants || !!state.remoteBusy;
     library?.render(state.library);
     const chats = element("chats"); chats.replaceChildren();
-    const rank = new Map((library?.order || []).map((id, index) => [id, index]));
-    const active = item => ["running", "awaiting-input", "awaiting-result"].includes(item.status);
-    for (const item of [...state.chats].sort((left, right) => Number(active(right)) - Number(active(left)) || (rank.get(left.id) ?? 0) - (rank.get(right.id) ?? 0))) {
-      const status = globalThis.PkmChatStatusIndicator(item.status, chatRole(item));
-      const option = new Option(item.title, item.id); option.title = `${status.title}: ${item.title}`;
-      option.selected = item.id === state.chat.id; chats.add(option);
-      if (option.selected) { chats.title = option.title; element("chat-status").replaceChildren(status); }
+    const available = new Map(state.chats.map(chat => [chat.id, chat]));
+    const groups = state.library ? library.pickerGroups
+      : [{ name: t("Ungroup"), entries: state.chats.map(chat => ({ chat, depth: 0, path: chat.title })) }];
+    for (const group of groups) {
+      const options = document.createElement("optgroup"); options.label = group.name;
+      for (const { chat, depth, path } of group.entries) {
+        const item = available.get(chat.id);
+        if (!item) continue;
+        const status = globalThis.PkmChatStatusIndicator(globalThis.PkmChatDisplayStatus(item), chatRole(item));
+        const option = new Option(`${"\u00a0\u00a0".repeat(depth)}${depth ? "> " : ""}${item.title}`, item.id);
+        option.title = `${group.name} / ${path} - ${status.title}`;
+        option.selected = item.id === state.chat.id; options.append(option);
+        if (option.selected) { chats.title = option.title; element("chat-status").replaceChildren(status); }
+      }
+      if (options.children.length) chats.append(options);
     }
-    if (state.chat.projection && !state.portal?.binding) {
+    chats.value = state.chat.id;
+    if (state.chat.projection && !state.portal?.execution) {
       const projection = state.chat.projection;
       const status = element("chat-status");
-      status.append(document.createTextNode(` ${projection.objectKind} · ${projection.state}`));
-      status.title = `${projection.state} · Next: ${projection.nextOwner} · ${projection.reason} ${projection.resume}`;
+      status.title = `${projection.objectKind} · ${projection.state} · Next: ${projection.nextOwner} · ${projection.reason} ${projection.resume}`;
       status.setAttribute("aria-label", status.title);
     }
     renderPortal();
@@ -1373,7 +1498,9 @@
     element("options").title = state.chat.context.length ? `Model settings (${state.chat.context.length} attached)` : "Model settings";
     element("send").hidden = false; element("stop").hidden = !state.busy && !state.chat.workerState?.sleeping;
     if (state.remoteBusy) inputMode = "task";
-    element("input-mode").hidden = !state.busy;
+    element("input-mode").hidden = !state.busy || !!state.chat.workflowMode && state.chat.workflowMode !== "chat";
+    renderPlan();
+    if (state.chat.workflowMode && state.chat.workflowMode !== "chat" && state.busy) element("send").disabled = true;
     element("steer-mode").disabled = !!state.remoteBusy;
     element("steer-mode").setAttribute("aria-checked", String(inputMode === "steer"));
     element("task-mode").setAttribute("aria-checked", String(inputMode === "task"));
@@ -1475,6 +1602,12 @@
   }
   window.addEventListener("message", event => {
     const message = event.data;
+    if (message.type === "processControlResult") {
+      if (message.chatId !== state?.chat.id || !message.record || !/^process_[a-f0-9]{64}$/.test(message.record.handle)) return;
+      processStatuses.set(message.record.handle, message.record);
+      processStatusVersion++;
+      renderMessages(); return;
+    }
     if (message.type === "queuedEditRejected") {
       const key = `${message.chatId}:${message.id}`;
       if (message.operation === "beginQueuedEdit") { delete queuedDrafts[key]; queuedEditorNodes.delete(key); }
@@ -1602,6 +1735,7 @@
       } else {
         historyStart = message.history?.start || 0; historyPending = undefined; historyLoaded = false;
       }
+      if (previous !== message.chat.id) { processStatuses.clear(); processStatusVersion++; }
       state = message;
       visualization.setChat(state.chat.id);
       if (previous !== state.chat.id) {
@@ -1755,6 +1889,37 @@
     renderWorkers(); saveDraft();
   };
   library = window.PkmChatLibrary({ post, showChat: () => showScreen("chat"), save: saveDraft, saved });
+  const headerActions = element("chat-header-actions"), actionsPanel = element("chat-actions-panel"), actionsToggle = element("chat-actions-toggle");
+  let restoringActionsFocus = false;
+  function setHeaderActions(open, restoreFocus = false) {
+    actionsPanel.hidden = !open;
+    actionsToggle.setAttribute("aria-expanded", String(open));
+    if (restoreFocus) {
+      restoringActionsFocus = true;
+      actionsToggle.focus({ preventScroll: true });
+      restoringActionsFocus = false;
+    }
+  }
+  headerActions.addEventListener("pointerenter", () => setHeaderActions(true));
+  headerActions.addEventListener("pointerleave", () => {
+    if (!actionsPanel.contains(document.activeElement)) setHeaderActions(false);
+  });
+  headerActions.addEventListener("focusin", () => { if (!restoringActionsFocus) setHeaderActions(true); });
+  headerActions.addEventListener("focusout", event => {
+    if (!headerActions.contains(event.relatedTarget) && !headerActions.matches(":hover")) setHeaderActions(false);
+  });
+  actionsToggle.onclick = () => setHeaderActions(true);
+  actionsPanel.addEventListener("click", event => {
+    if (event.target.closest("button")) setHeaderActions(false, actionsPanel.contains(document.activeElement));
+  });
+  headerActions.addEventListener("keydown", event => {
+    if (event.key === "Escape" && !actionsPanel.hidden) {
+      event.preventDefault(); event.stopPropagation(); setHeaderActions(false, true);
+    }
+  });
+  document.addEventListener("pointerdown", event => {
+    if (!headerActions.contains(event.target)) setHeaderActions(false);
+  });
   element("back").onclick = () => { showScreen("library"); post("libraryRefresh"); };
   showScreen(screen);
   element("task").onclick = () => post(state.chat.sessionId ? "completeTask" : "startTask");
@@ -1770,6 +1935,9 @@
   window.addEventListener("resize", () => { for (const panel of Object.values(popovers)) if (!element(panel).hidden) positionPopover(element(panel)); });
   element("permission-mode").onchange = () => post("permissionMode", { value: element("permission-mode").value });
   element("reset-permissions").onclick = () => post("resetPermissions");
+  element("reset-activity-budget").onclick = () => {
+    if (state?.chat) post("resetActivityBudget", { chatId: state.chat.id });
+  };
   element("diagnostics").onclick = () => post("diagnostics");
   element("persona-profiles").onclick = () => {
     element("persona-content").textContent = "Loading current Profiles...";
@@ -1873,6 +2041,15 @@
   element("tool-rounds").onchange = event => { if (event.target.checkValidity()) post("toolRounds", { maxToolRounds: Number(event.target.value) }); else event.target.reportValidity(); };
   element("history").onchange = event => post("history", { value: event.target.checked });
   element("prompt").oninput = saveDraft;
+  element("workflow-mode").onchange = event => post("workflowMode", { chatId: state.chat.id, value: event.target.value });
+  element("revise-plan").onclick = () => post("workflowMode", { chatId: state.chat.id, value: "plan" });
+  for (const [id, type] of [["approve-plan", "approvePlan"], ["execute-plan", "executePlan"]]) {
+    element(id).onclick = () => {
+      const plan = state.chat.plans?.at(-1);
+      if (!plan || element(id).disabled) return;
+      post(type, { chatId: state.chat.id, id: plan.id, contentHash: plan.contentHash });
+    };
+  }
   for (const mode of ["steer", "task"]) element(`${mode}-mode`).onclick = () => {
     inputMode = mode; saveDraft(); render();
   };

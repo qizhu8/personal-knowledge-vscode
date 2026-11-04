@@ -1,7 +1,7 @@
 import { createServer, Server } from "http";
 import { createHash } from "crypto";
-import { existsSync, readFileSync, statSync } from "fs";
-import { extname, resolve, sep } from "path";
+import { existsSync, readFileSync, realpathSync, statSync } from "fs";
+import { extname, relative as relativePath, resolve, sep } from "path";
 
 function liveRefreshScript(version: string): string {
   return `<script data-pkm-live-refresh>
@@ -90,6 +90,8 @@ export async function startLiveMarkdownServer(
     identity?: Record<string, string | number | boolean>;
     favicon?: Buffer;
     mermaid?: { library: Buffer; renderer: Buffer };
+    graph?: { cytoscape: Buffer; forcegraph3d: Buffer };
+    manageTodo?: (documentPath: string, message: Record<string, unknown>) => unknown;
   } = {},
 ): Promise<LiveMarkdownServer> {
   const roots = assetRoots.map(item => ({ prefix: item.prefix.replace(/^\/+|\/+$/g, ""), root: resolve(item.root) }))
@@ -112,6 +114,48 @@ export async function startLiveMarkdownServer(
         if (queryAuthorized) res.setHeader("Set-Cookie", `${cookieName}=${accessToken}; HttpOnly; SameSite=Strict; Path=/`);
       }
       const pathname = decodeURIComponent(requestUrl.pathname);
+      if (pathname === "/_pkm/todo" && req.method === "POST") {
+        const origin = req.headers.origin;
+        if (!accessToken || !options.manageTodo || req.headers["x-pkm-todo"] !== "1"
+          || !origin || new URL(origin).host !== req.headers.host
+          || req.headers["content-type"] !== "application/json") {
+          res.writeHead(403); res.end("Authenticated same-origin Todo management required"); return;
+        }
+        const chunks: Buffer[] = [];
+        let size = 0;
+        req.on("data", (chunk: Buffer) => {
+          size += chunk.length;
+          if (size <= 65536) chunks.push(chunk);
+        });
+        req.on("error", error => {
+          if (!res.headersSent) res.writeHead(400, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+          res.end(JSON.stringify({ error: `Todo request failed: ${error.message}` }));
+        });
+        req.on("end", () => {
+          try {
+            if (size > 65536) throw new Error("Todo request exceeds 64 KiB.");
+            const input: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+            if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Invalid Todo request.");
+            const request = input as Record<string, unknown>;
+            if (typeof request.documentPath !== "string" || !request.message || typeof request.message !== "object" || Array.isArray(request.message)) throw new Error("Invalid Todo request.");
+            const result = options.manageTodo!(request.documentPath, request.message as Record<string, unknown>);
+            res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+            res.end(JSON.stringify(result));
+          } catch (error) {
+            res.writeHead(400, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+            res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+          }
+        });
+        return;
+      }
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        res.writeHead(405, { Allow: "GET, HEAD" }); res.end("Read-only preview"); return;
+      }
+      if (options.graph && (pathname === "/_pkm/cytoscape.js" || pathname === "/_pkm/forcegraph3d.js")) {
+        res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff" });
+        res.end(req.method === "HEAD" ? undefined : pathname === "/_pkm/cytoscape.js" ? options.graph.cytoscape : options.graph.forcegraph3d);
+        return;
+      }
       if (pathname === "/favicon.ico" && options.favicon) {
         res.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "public, max-age=86400" });
         res.end(options.favicon); return;
@@ -145,9 +189,15 @@ export async function startLiveMarkdownServer(
       if (!file.startsWith(mapping.root + sep) || !existsSync(file) || statSync(file).isDirectory()) {
         res.writeHead(404); res.end("Not found"); return;
       }
+      const actualRoot = realpathSync(mapping.root);
+      const actualFile = realpathSync(file);
+      const actualRoute = "/" + [mapping.prefix, relativePath(actualRoot, actualFile).split(sep).join("/")].filter(Boolean).join("/");
+      if (!actualFile.startsWith(actualRoot + sep) || (options.authorizePath && !options.authorizePath(actualRoute))) {
+        res.writeHead(404); res.end("Not found"); return;
+      }
       const ext = extname(file).slice(1).toLowerCase();
       res.writeHead(200, { "Content-Type": mimeByExt[ext] || "application/octet-stream", "Cache-Control": "no-store" });
-      res.end(readFileSync(file));
+      res.end(req.method === "HEAD" ? undefined : readFileSync(actualFile));
     } catch { res.writeHead(500); res.end("Preview error"); }
   });
   await new Promise<void>((resolveStarted, reject) => {

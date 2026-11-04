@@ -13,6 +13,10 @@ const node = process.execPath;
 const python = process.env.PYTHON || "python";
 
 const groups = {
+  "note-todo": [[node, "--test", "tests/test-note-work-items.js", "tests/test-note-work-item-lifecycle.js",
+    "tests/test-note-user-stories.js", "tests/test-note-todo-tools.js", "tests/test-note-todo-host.js", "tests/test-note-todo-browser.js",
+    "tests/test-note-todo-browser-preview.js", "tests/test-todo-board.js", "tests/test-todo-board-browser.js", "tests/test-todo-management.js", "tests/test-todo-api.js", "tests/test-browser-markdown-preview.js", "tests/test-browser-library.js"],
+    [python, "-B", "tests/test-todo-api-mcp.py"], [python, "-B", "tests/test-capability-mcp.py"], [node, "--test", "tests/test-capability-registry.js", "tests/test-capability-native.js", "tests/test-capability-memory.js"]],
   "action-builtins": [[python, "-B", "tests/test-action-builtins.py"]],
   "action-component-languages": [[python, "-B", "tests/test-action-component-languages.py"]],
   "action-authoring": [[python, "-B", "tests/test-action-authoring.py"]],
@@ -27,9 +31,9 @@ const groups = {
     [node, "tests/test-action-library-review-browser.js"], [node, "tests/test-action-library-run-browser.js"]],
   "portal-lifecycle": [[node, "--test", "--test-concurrency=2", "tests/test-peer-collaboration.js", "tests/test-portal-direct-command.js", "tests/test-portal-command-activity.js", "tests/test-portal-files.js", "tests/test-chat-portal.js", "tests/test-portal-attempts.js", "tests/test-portal-duplex.js", "tests/test-portal-endpoint-store.js"], [python, "-B", "tests/test-api-chat-control.py"]],
   "chat-accounting": [[node, "scripts/run-memory-engine-tests.js"]],
-  "chat-retrieval": [[node, "--test", "tests/test-chat-retrieval-integration.js", "tests/test-chat-online-learning.js", "tests/test-knowledge-source-ranges.js", "tests/test-chat-work-goal.js",
+  "chat-retrieval": [[node, "--test", "tests/test-inference-effectiveness.js", "tests/test-chat-retrieval-integration.js", "tests/test-chat-online-learning.js", "tests/test-knowledge-source-ranges.js", "tests/test-chat-work-goal.js",
     "tests/test-api-chat.js", "tests/test-copilot-sdk-responsiveness.js", "tests/test-chat-activity-browser.js"]],
-  "stability": [[node, "--test", "tests/test-mcp-lifecycle.js", "tests/test-chat-managed-mcp.js", "tests/test-sync-drain-barrier.js",
+  "stability": [[node, "--test", "tests/test-mcp-lifecycle.js", "tests/test-chat-managed-mcp.js", "tests/test-integration-upgrade.js", "tests/test-sync-drain-barrier.js",
     "tests/test-mcp-warning-boundary.js", "tests/test-pkm-service-compatibility.js",
     "tests/test-background-processes.js", "tests/test-background-processes-windows.js"],
     [node, "tests/test-mcp-version-ui.js"], [python, "-B", "tests/test-mcp-lifecycle.py"],
@@ -37,6 +41,7 @@ const groups = {
   "retrieval-setup": [[node, "--test", "tests/test-retrieval-model-setup.js", "tests/test-retrieval-materialization.js"], [python, "-B", "tests/test-retrieval-default-model.py"], [python, "-B", "tests/test-retrieval-learning.py"],
     [node, "tests/test-skill-router-ui.js"], [node, "tests/test-retrieval-solutions-browser.js"]],
   "core-and-sync": [[node, "tests/test-pkm-p0.js"], [node, "tests/test-github-sync-remote-authority.js"], [node, "tests/test-github-sync-ui.js"],
+    [node, "--test", "tests/test-navigation-drag-refresh.js", "tests/test-knowledge-inventory.js"],
     [node, "--test", "tests/test-github-sync-scheduler.js", "tests/test-github-sync-coordinator.js",
       "tests/test-github-sync-feedback.js", "tests/test-github-sync-recovery.js", "tests/test-pkm-service-integration.js",
       "tests/test-github-sync-credential-routing.js"]],
@@ -45,9 +50,10 @@ const groups = {
     "tests/test-portal-files.js", "tests/test-portal-resume.js", "tests/test-chat-stored-rooms-ui.js", "tests/test-portal-connections.js", "tests/test-portal-connections-browser.js",
     "tests/test-github-sync-credentials.js", "tests/test-retained-jsonl-log.js", "tests/test-chat-context-contracts.js", "tests/test-chat-workers.js",
     "tests/test-chat-history-storage.js", "tests/test-chat-process-runtime.js", "tests/test-chat-process-tools.js", "tests/test-chat-budget-ledger.js",
-    "tests/test-chat-transport-receipts.js", "tests/test-chat-harness-records.js"]],
+    "tests/test-chat-transport-receipts.js", "tests/test-chat-harness-records.js", "tests/test-validation-artifacts.js", "tests/test-worker-result-versions.js", "tests/test-chat-plan.js",
+    "tests/test-chat-library-actions.js", "tests/test-chat-memory-delete-recovery.js"]],
   "mcp-and-webview": [[node, "tests/test-mcp-stdio-smoke.js"], [node, "tests/test-native-mcp-remote-location.js"],
-    [node, "tests/test-webview-restoration.js"], [node, "tests/test-ui-build-artifacts.js"], [node, "tests/test-browser-markdown-preview.js"],
+    [node, "tests/test-webview-restoration.js"], [node, "tests/test-ui-build-artifacts.js"], [node, "tests/test-native-spellcheck.js"], [node, "tests/test-browser-markdown-preview.js"],
     [node, "--test", "tests/test-user-profile-fragments.js", "tests/test-persona-profile-ui.js", "tests/test-persona-profile-browser.js"]],
 };
 

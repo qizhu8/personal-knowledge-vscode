@@ -593,6 +593,7 @@ class ChatUiTests(unittest.TestCase):
                                          ['16px', '24px', '24px', '24px', '16px', '16px', '16px', '16px'])
                         long_text = '\n\n'.join(f'History paragraph {index}: retained Chat result.' for index in range(150))
                         long_chat = {**idle, 'chat': {**idle['chat'], 'messages': [{'id': 'long_reply', 'role': 'assistant', 'status': 'complete', 'content': long_text}]}}
+                        page.locator('#chat-actions-toggle').hover()
                         page.locator('#back').click()
                         page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", long_chat)
                         page.locator('.chat-list-open').click()
@@ -602,6 +603,7 @@ class ChatUiTests(unittest.TestCase):
                         refreshed = {**long_chat, 'chat': {**long_chat['chat'], 'messages': [{**long_chat['chat']['messages'][0], 'content': long_text + '\n\nNew result.'}]}}
                         page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", refreshed)
                         self.assertEqual(page.locator('#messages').evaluate('node=>node.scrollTop'), 80)
+                        page.locator('#chat-actions-toggle').hover()
                         page.locator('#back').click()
                         page.locator('.chat-list-open').click()
                         self.assertTrue(page.locator('#messages').evaluate('node=>node.scrollHeight-node.scrollTop-node.clientHeight<2'))
@@ -627,6 +629,7 @@ class ChatUiTests(unittest.TestCase):
                         expect(page.locator('#messages')).not_to_contain_text('Buffered while hidden.')
                         page.evaluate("() => {delete document.visibilityState;document.dispatchEvent(new Event('visibilitychange'));}")
                         expect(page.locator('#messages')).to_contain_text('Buffered while hidden. Streamed while hidden.')
+                        page.locator('#chat-actions-toggle').hover()
                         page.locator('#back').click()
                         previous_message = page.locator('#messages .message').element_handle()
                         for _ in range(5):

@@ -5,7 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, execFileSync } = require("node:child_process");
 const { setTimeout: delay } = require("node:timers/promises");
-const { launchChatProcess, getChatProcess, cancelChatProcess, cancelAllChatProcesses, readChatProcessOutput } = require("../dist/chat/chat-process-runtime");
+const { launchChatProcess, getChatProcess, pauseChatProcess, resumeChatProcess, cancelChatProcess, cancelAllChatProcesses, readChatProcessOutput } = require("../dist/chat/chat-process-runtime");
 
 async function wait(root, handle, predicate, milliseconds = 8000) {
   const deadline = Date.now() + milliseconds;
@@ -23,7 +23,7 @@ async function fixture(fn) {
     const directory = path.join(root, "processes");
     for (const handle of fs.existsSync(directory) ? fs.readdirSync(directory) : []) {
       const record = getChatProcess(root, handle);
-      if (["launching", "running"].includes(record.state)) {
+      if (["launching", "running", "paused"].includes(record.state)) {
         cancelChatProcess(root, handle);
         await wait(root, handle, value => !["launching", "running"].includes(value.state));
       }
@@ -90,6 +90,27 @@ test("explicit cancellation, approved deadline and failed executable retain dist
   const failed = await launchChatProcess(root, "missing", { ...spec(root, ""), program: path.join(root, "no-executable") });
   const failure = await wait(root, failed.handle, terminal);
   assert.equal(failure.state, "failed"); assert.match(failure.detail, /launch failed/);
+}));
+
+test("POSIX pause and resume suspend the full process group and paused time does not consume its deadline", { skip:process.platform === "win32" }, async () => fixture(async root => {
+  const child = "setInterval(()=>require('fs').appendFileSync('ticks','c'),30)";
+  const parent = `require('child_process').spawn(process.execPath,['-e',${JSON.stringify(child)}],{stdio:'inherit'});setInterval(()=>require('fs').appendFileSync('ticks','p'),30)`;
+  const process = await launchChatProcess(root, "pause-resume", spec(root, parent, 2));
+  await wait(root, process.handle, record => record.state === "running");
+  await delay(120);
+  pauseChatProcess(root, process.handle);
+  const paused = await wait(root, process.handle, record => record.state === "paused");
+  const pausedTicks = fs.readFileSync(path.join(root, "ticks"), "utf8").length;
+  assert.ok(paused.pausedAt);
+  await delay(2300);
+  assert.equal(fs.readFileSync(path.join(root, "ticks"), "utf8").length, pausedTicks, "Neither the parent nor its descendant runs while paused");
+  assert.equal(getChatProcess(root, process.handle).state, "paused", "The supervisor heartbeat continues while the process group is paused");
+  resumeChatProcess(root, process.handle);
+  assert.equal((await wait(root, process.handle, record => record.state === "running")).state, "running");
+  await delay(120);
+  assert.ok(fs.readFileSync(path.join(root, "ticks"), "utf8").length > pausedTicks);
+  cancelChatProcess(root, process.handle);
+  assert.equal((await wait(root, process.handle, terminal)).state, "cancelled");
 }));
 
 test("Chat Stop cancels every running background process of that Chat and skips finished ones", async () => fixture(async root => {

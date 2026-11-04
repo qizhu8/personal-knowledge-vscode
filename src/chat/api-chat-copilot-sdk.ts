@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { ChatToolScheduler } from "./chat-tool-execution";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -225,7 +226,7 @@ export async function discoverCopilotSdkModels(host: typeof vscode = vscode, sig
   }
 }
 
-type CopilotSdkChatRequest = Pick<ApiChatRequest, "messages" | "signal" | "timeoutMs" | "maxOutputTokens" | "thinkingBudget" | "maxToolRounds" | "loopReviewAfterMs" | "loopReviewClock" | "loopExemptTools" | "onToolLoopNotice" | "contextWindow" | "tools" | "onTool" | "beforeRound" | "beforeFinish" | "automaticKnowledge" | "onTransportPrepared" | "onTransportSent" | "afterTools" | "onStage" | "onModelActivity" | "onUsage" | "onUsageMetadata" | "onInferenceTiming" | "onOutputBudgetWarning" | "onThinking">;
+type CopilotSdkChatRequest = Pick<ApiChatRequest, "messages" | "signal" | "timeoutMs" | "maxOutputTokens" | "thinkingBudget" | "maxToolRounds" | "hardToolRoundLimit" | "onHardToolRoundLimit" | "loopReviewAfterMs" | "loopReviewClock" | "loopExemptTools" | "onToolLoopNotice" | "contextWindow" | "tools" | "onTool" | "beforeRound" | "afterRound" | "beforeFinish" | "automaticKnowledge" | "onTransportPrepared" | "onTransportSent" | "afterTools" | "onStage" | "onModelActivity" | "onUsage" | "onUsageMetadata" | "onInferenceTiming" | "onOutputBudgetWarning" | "onThinking">;
 
 /** The runtime keeps no PKM history: each request is a fresh session seeded with a transcript of earlier turns. */
 export function copilotSdkPrompt(messages: ApiChatMessage[]): { system: string; prompt: string; images: NonNullable<ApiChatMessage["images"]> } {
@@ -261,6 +262,11 @@ function usageFromEvent(data: Record<string, unknown>): ChatTokenUsage | undefin
 
 export async function streamCopilotSdkChat(model: CopilotSdkModel, request: CopilotSdkChatRequest, onText: (text: string) => void,
   host: typeof vscode = vscode, deps: CopilotSdkDeps = defaultDeps(host)): Promise<void> {
+  return streamCopilotSdkSession(model, request, onText, host, deps, false);
+}
+
+async function streamCopilotSdkSession(model: CopilotSdkModel, request: CopilotSdkChatRequest, onText: (text: string) => void,
+  host: typeof vscode, deps: CopilotSdkDeps, summaryOnly: boolean): Promise<void> {
   const { signal } = request;
   const loop = new ChatToolLoopGuard(request);
   const clock = new ChatInferenceClock("vscode", request.onInferenceTiming);
@@ -301,7 +307,7 @@ export async function streamCopilotSdkChat(model: CopilotSdkModel, request: Copi
     if (!Number.isSafeInteger(remaining) || remaining < 1) throw new CopilotSdkChatError("Choose a positive per-inference output token budget.");
     const messages = [...request.messages];
     await loop.beforeRound(0, signal);
-    try { request.beforeRound?.(messages, remaining); }
+    try { await request.beforeRound?.(messages, remaining); }
     catch (error) { throw new CopilotSdkChatError(error instanceof Error ? error.message : "Context budget exceeded."); }
     const { system, prompt, images } = copilotSdkPrompt(messages);
     if (images.length && !model.capabilities.imageInput) throw new CopilotSdkChatError("This Copilot SDK model does not accept image input. Select a vision-capable model.");
@@ -339,18 +345,35 @@ export async function streamCopilotSdkChat(model: CopilotSdkModel, request: Copi
     const seenEvents = new Set<string>();
     const turnRounds = new Map<string, number>();
     let lastAssistant: { text: string; calls: number } | undefined;
-    let toolQueue: Promise<unknown> = Promise.resolve();
+    const toolQueue = new ChatToolScheduler();
     const names = new Set(tools.map(tool => tool.name));
-    const runTool = async (name: string, args: unknown, callId: string, turn: number): Promise<string> => {
+    const stopForHardLimit = async () => {
+      stopped = true;
+      clearTimeout(timer);
+      const stopping = new AbortController();
+      const cancelStop = () => stopping.abort();
+      signal.addEventListener("abort", cancelStop, { once:true });
+      if (signal.aborted) cancelStop();
+      const stopTimer = setTimeout(cancelStop, Math.min(request.timeoutMs ?? 5000, 5000));
+      try { await abortable(session!.abort(), stopping.signal); }
+      catch (error) {
+        stopped = false;
+        if (signal.aborted) throw error;
+        throw new CopilotSdkChatError("Could not confirm stopping the tool-capable SDK session at its round limit. Completed results were preserved; no summary session was started.");
+      } finally { clearTimeout(stopTimer); signal.removeEventListener("abort", cancelStop); }
+      settle?.();
+    };
+    const runTool = async (name: string, args: unknown, callId: string, turn: number, queuedMs: number): Promise<string> => {
+      if (stopped) return JSON.stringify({ error: "Not executed: the request has stopped." });
       const tool = tools.find(item => item.name === name);
       const arguments_ = JSON.stringify(args ?? {});
-      const event: ApiChatToolEvent = { id: callId, name: tool?.label || name, arguments: arguments_, status: "running" };
+      const event: ApiChatToolEvent = { id: callId, name: tool?.label || name, arguments: arguments_, status: "running", round: turn, queuedMs };
       if (summaryTurn !== undefined && turn > summaryTurn) {
         stopSession();
         finish(new CopilotSdkChatError("The model requested more tools during the final summary. Completed results were preserved; no additional tool was executed."));
         return JSON.stringify({ error: "Not executed." });
       }
-      await loop.beforeRound(turn + 1, signal);
+      await loop.beforeRound(request.hardToolRoundLimit === undefined ? turn + 1 : turn, signal);
       let result: string;
       if (loop.summarizing) {
         result = JSON.stringify({ error: "Not executed: tool-loop continuation was not approved; use completed results." });
@@ -361,39 +384,45 @@ export async function streamCopilotSdkChat(model: CopilotSdkModel, request: Copi
         }
       } else {
         request.onTool?.(event);
-        const reused = loop.reuse(name, arguments_, messages);
-        if (reused) {
-          result = reused.result;
-          request.onTool?.({ ...event, status: "complete", result });
-          loop.record(tool, name, arguments_, reused.original);
-        } else {
-          let succeeded = false;
-          try {
-            if (!tool) throw new Error("This tool is not enabled for the request.");
-            if (!args || typeof args !== "object" || Array.isArray(args) || arguments_.length > 32_000) throw new Error("Invalid tool arguments.");
+        let version: string | undefined;
+        let reused: ReturnType<typeof loop.reuse>;
+        let succeeded = false;
+        try {
+          if (!tool) throw new Error("This tool is not enabled for the request.");
+          if (!args || typeof args !== "object" || Array.isArray(args) || arguments_.length > 32_000) throw new Error("Invalid tool arguments.");
+          version = await tool.readVersion?.(args as Record<string, unknown>, signal);
+          reused = loop.reuse(name, arguments_, messages, version);
+          if (reused) result = reused.result;
+          else {
             result = await abortable(Promise.resolve().then(() => tool.execute(args as Record<string, unknown>, signal)), signal);
             if (typeof result !== "string" || result.length > 16_000) throw new Error("Tool result exceeded the local limit.");
-            succeeded = true;
-            request.onTool?.({ ...event, status: "complete", result });
-          } catch (error) {
-            if (signal.aborted) throw new CopilotSdkChatError("Request cancelled.");
-            result = JSON.stringify({ error: error instanceof Error ? error.message : "Tool failed." });
-            request.onTool?.({ ...event, status: "failed", result });
           }
-          loop.remember(name, arguments_, callId, result, succeeded);
-          loop.record(tool, name, arguments_, result);
+          succeeded = true;
+          request.onTool?.({ ...event, status: "complete", result, ...(reused ? { reused: true } : {}) });
+        } catch (error) {
+          if (signal.aborted) throw new CopilotSdkChatError("Request cancelled.");
+          result = JSON.stringify({ error: error instanceof Error ? error.message : "Tool failed." });
+          request.onTool?.({ ...event, status: "failed", result });
         }
+        if (!reused) loop.remember(name, arguments_, callId, result, succeeded, version);
+        loop.record(tool, name, arguments_, reused?.original ?? result, succeeded);
       }
       messages.push({ role: "tool", content: result, tool_call_id: callId });
-      if (--pendingCalls === 0 && !loop.summarizing && request.afterTools?.()) { stopped = true; stopSession(); settle?.(); }
+      if (--pendingCalls === 0 && !loop.summarizing) {
+        if (request.afterTools?.()) { stopped = true; stopSession(); settle?.(); }
+        else if (request.hardToolRoundLimit !== undefined && turn + 1 >= request.hardToolRoundLimit) {
+          await loop.beforeRound(turn + 1, signal);
+          await stopForHardLimit();
+        }
+      }
       return result;
     };
     const sdkTools = tools.map(tool => runtime.sdk.defineTool(tool.name, {
       description: tool.description, parameters: tool.parameters, skipPermission: true, defer: "never", overridesBuiltInTool: true,
       handler: (args: unknown, invocation: { toolCallId: string }) => {
         const turn = round;
-        const next = toolQueue.then(() => runTool(tool.name, args, invocation.toolCallId, turn));
-        toolQueue = next.catch(() => undefined);
+        const queuedAt = Date.now();
+        const next = toolQueue.schedule(tool, signal, () => runTool(tool.name, args, invocation.toolCallId, turn, Math.max(0, Date.now() - queuedAt)));
         return next.catch(error => { finish(error instanceof Error ? error : new Error(String(error))); stopSession(); return JSON.stringify({ error: "Not executed." }); });
       },
     }));
@@ -412,6 +441,7 @@ export async function streamCopilotSdkChat(model: CopilotSdkModel, request: Copi
     const settled = () => new Promise<void>(resolve => { settle = resolve; if (failure || stopped) resolve(); });
     let idle = settled();
     session.on(event => {
+      if (stopped && event.type !== "assistant.usage") return;
       const data = event.data || {};
       // Sub-agent events are not part of PKM's single-agent transcript.
       if (data.parentToolCallId) return;
@@ -424,6 +454,7 @@ export async function streamCopilotSdkChat(model: CopilotSdkModel, request: Copi
         case "assistant.turn_start": {
           clock.finish("interrupted");
           round++;
+          if (summaryOnly && round > 0) throw new CopilotSdkChatError("The model continued beyond the final summary. Completed results were preserved; no additional tool was executed.");
           if (typeof data.turnId === "string") turnRounds.set(data.turnId, round);
           turnBytes = 0; thinkingBytes = 0;
           activity();
@@ -469,6 +500,7 @@ export async function streamCopilotSdkChat(model: CopilotSdkModel, request: Copi
           if (completedMessages.has(messageId)) break;
           completedMessages.add(messageId);
           const requests = Array.isArray(data.toolRequests) ? data.toolRequests as Array<{ toolCallId?: string; name?: string; arguments?: unknown }> : [];
+          if (summaryOnly && requests.length) throw new CopilotSdkChatError("The model requested more tools during the final summary. Completed results were preserved; no additional tool was executed.");
           if (content && !streamedMessages.has(messageId)) onText(content);
           if (!content && !requests.length) break;
           if (requests.length) {
@@ -483,7 +515,7 @@ export async function streamCopilotSdkChat(model: CopilotSdkModel, request: Copi
           break;
         }
         case "assistant.usage": {
-          activity();
+          if (!stopped) activity();
           const usage = usageFromEvent(data);
           request.onUsageMetadata?.(!!usage);
           if (!usage) break;
@@ -526,13 +558,35 @@ export async function streamCopilotSdkChat(model: CopilotSdkModel, request: Copi
     request.onTransportSent?.(transport);
     activity();
     await session.send({ prompt, ...(images.length ? { attachments: images.map(image => ({ type: "blob", data: image.dataBase64, mimeType: image.mimeType, displayName: image.label })) } : {}) });
+    const summarizeHardLimit = async () => {
+      clearTimeout(timer);
+      clock.finish("stream-ended");
+      // SDK sessions cannot remove their tools mid-run; use one fresh, tool-free summary session.
+      await streamCopilotSdkSession(model, { ...request, messages: [...messages, { role: "system", content: toolBudgetSummary }],
+        tools: [], hardToolRoundLimit: undefined, onHardToolRoundLimit: undefined, beforeFinish: undefined, afterTools: undefined,
+        onUsage: (usage, summaryRound) => request.onUsage?.(usage, round + 1 + (summaryRound || 0)),
+      }, onText, host, deps, true);
+    };
     while (true) {
       await idle;
       if (failure) throw failure;
-      if (stopped) return;
+      if (stopped) {
+        if (loop.summarizing && request.hardToolRoundLimit !== undefined) {
+          await toolQueue.drain();
+          await summarizeHardLimit();
+        }
+        return;
+      }
+      await request.afterRound?.(Math.max(0, round));
       if (!lastAssistant || !lastAssistant.text && !lastAssistant.calls) throw new CopilotSdkChatError("The model returned an empty response.");
       const continuation = summaryTurn === undefined && request.beforeFinish?.();
       if (!continuation) return;
+      if (request.hardToolRoundLimit !== undefined && round + 1 >= request.hardToolRoundLimit) {
+        await loop.beforeRound(round + 1, signal);
+        await stopForHardLimit();
+        await summarizeHardLimit();
+        return;
+      }
       messages.push({ role: "system", content: continuation });
       lastAssistant = undefined;
       idle = settled();

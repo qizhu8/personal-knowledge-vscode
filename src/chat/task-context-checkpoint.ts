@@ -27,7 +27,7 @@ export function taskContextInputs(chat: ApiConversation): ChatMessage[] {
     && message.role === "user" && !message.workerEventIds?.length && !message.portalReview);
 }
 
-function digest(inputs: ChatMessage[]): string {
+export function taskContextInputDigest(inputs: ChatMessage[]): string {
   return createHash("sha256").update(JSON.stringify(inputs.map(message =>
     [message.id, message.taskId, message.content, message.portalSource || null]))).digest("hex");
 }
@@ -54,7 +54,7 @@ export function activeTaskContextCheckpoint(chat: ApiConversation): TaskContextC
   if (!item || item.revokedAt) return undefined;
   if (!validTaskContextCheckpoint(item, chat.id)) throw new Error("The Task context checkpoint is invalid.");
   const inputs = taskContextInputs(chat).slice(0, item.sourceInputIds.length);
-  if (JSON.stringify(inputs.map(input => input.id)) !== JSON.stringify(item.sourceInputIds) || digest(inputs) !== item.sourceDigest) {
+  if (JSON.stringify(inputs.map(input => input.id)) !== JSON.stringify(item.sourceInputIds) || taskContextInputDigest(inputs) !== item.sourceDigest) {
     throw new Error("Checkpoint source inputs changed or are missing. Revoke or review the checkpoint before continuing.");
   }
   return item;
@@ -66,7 +66,7 @@ export function createTaskContextCheckpoint(chat: ApiConversation, summary: stri
   const inputs = taskContextInputs(chat);
   const item: TaskContextCheckpoint = {
     schema: "pkm.chat.task-context-checkpoint/v1", id: randomUUID(), chatId: chat.id, taskId: chat.sessionId,
-    approvedAt: new Date().toISOString(), summary, sourceInputIds: inputs.map(input => input.id), sourceDigest: digest(inputs),
+    approvedAt: new Date().toISOString(), summary, sourceInputIds: inputs.map(input => input.id), sourceDigest: taskContextInputDigest(inputs),
     previousTaskReportId: currentTaskReport(chat)?.id || null,
   };
   if (!validTaskContextCheckpoint(item, chat.id)) throw new Error("Review 1-10,000 Task inputs and provide a nonempty constraint summary of at most 4,000 characters.");

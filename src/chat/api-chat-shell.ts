@@ -63,6 +63,8 @@ export function renderApiChat(view: vscode.WebviewView, context: vscode.Extensio
 export function registerApiChatShell(context: vscode.ExtensionContext, load: () => Promise<ApiChatView>): {
   readonly isBusy: boolean;
   portalChatBindings(): Promise<Array<{ id: string; title: string }>>;
+  preparePortalMutationPolicy(chatId: string): Promise<void>;
+  assertPortalMutationAllowed(chatId: string): void;
   executeRemoteTask(prompt: string, signal: AbortSignal, requestId: string, chatId: string, observer?: import("../chatroom/portal-runtime").PortalObserver, source?: import("../chatroom/portal-runtime").PortalSource, profileSnapshot?: import("./persona-profiles").PersonaSnapshot): Promise<unknown>;
   readPortalTaskAttempts(chatId: string, requestId: string, replyId?: string): Promise<import("./portal-task-attempts").PortalTaskAttempts | undefined>;
   reviewPortalProfiles(chatId: string): Promise<import("./persona-profiles").PersonaSnapshot | undefined>;
@@ -131,6 +133,11 @@ export function registerApiChatShell(context: vscode.ExtensionContext, load: () 
     readPortalTaskAttempts: async (chatId, requestId, replyId) => (await getBackend()).readPortalTaskAttempts(chatId, requestId, replyId),
     receivePortalReview: async (chatId, review) => (await getBackend()).receivePortalReview(chatId, review),
     portalChatBindings: async () => (await getBackend()).portalChatBindings(),
+    preparePortalMutationPolicy: async chatId => (await getBackend()).assertPortalMutationAllowed(chatId),
+    assertPortalMutationAllowed: chatId => {
+      if (!backend) throw new Error("The Chat workflow policy has not loaded. Retry this explicitly authorized operation.");
+      backend.assertPortalMutationAllowed(chatId);
+    },
     recordPortalCommand: async (chatId, activity) => (await getBackend()).recordPortalCommand(chatId, activity),
     recordPortalTransfer: async (chatId, status, peerName) => (await getBackend()).recordPortalTransfer(chatId, status, peerName),
     executeRemoteTask: async (prompt, signal, requestId, chatId, observer, source, profileSnapshot) => (await getBackend()).executeRemoteTask(prompt, signal, requestId, chatId, observer, source, profileSnapshot),

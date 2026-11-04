@@ -3,6 +3,7 @@ import { imageSize } from "image-size";
 import { createHash } from "crypto";
 import { ChatTokenUsage, ThinkingBudget, checkReportedOutput, reportedReasoningTokens, reportedCopilotUsage } from "./api-chat-models";
 import { ChatInferenceClock, ChatInferenceTiming } from "./chat-inference-timing";
+import { executeChatToolBatch } from "./chat-tool-execution";
 
 export interface ChatImage { label: string; mimeType: "image/png" | "image/jpeg"; dataBase64: string; }
 
@@ -30,9 +31,11 @@ export interface ApiChatTool {
   description: string;
   parameters: Record<string, unknown>;
   execute: (arguments_: Record<string, unknown>, signal: AbortSignal) => Promise<string>;
+  execution?: "parallel-read";
+  readVersion?: (arguments_: Record<string, unknown>, signal: AbortSignal) => Promise<string>;
 }
-export interface ApiChatToolEvent { id: string; name: string; arguments: string; status: "running" | "complete" | "failed"; result?: string; }
-export interface ChatToolLoopNotice { reason: "round-limit" | "stalled"; rounds: number; limit: number; tool?: string; repeats?: number; }
+export interface ApiChatToolEvent { id: string; name: string; arguments: string; status: "running" | "complete" | "failed"; result?: string; round?: number; queuedMs?: number; reused?: boolean; }
+export interface ChatToolLoopNotice { reason: "round-limit" | "stalled" | "no-progress" | "repeated-failure"; rounds: number; limit: number; tool?: string; repeats?: number; }
 export type ChatToolLoopDecision = "continue" | "summarize" | "cancel";
 export const chatInferenceOutputByteLimit = 100_000;
 
@@ -59,6 +62,11 @@ export interface ChatModelActivity {
   operation: "inference" | "token-count" | "model-access";
   label: string;
   status: "running" | "complete" | "failed";
+}
+
+export interface ChatInputTokenCounter {
+  countMessage: (message: ApiChatMessage) => Promise<number>;
+  countTools: () => Promise<number>;
 }
 
 export interface ApiChatRequest {
@@ -91,12 +99,17 @@ export interface ApiChatRequest {
   fetch?: typeof fetch;
   tools?: ApiChatTool[];
   maxToolRounds?: number;
+  /** Non-renewable request limit; the next inference may only summarize without tools. */
+  hardToolRoundLimit?: number;
+  onHardToolRoundLimit?: (receipt: { limit: number; rounds: number }) => void;
   loopReviewAfterMs?: number;
   loopReviewClock?: () => number;
   loopExemptTools?: string[];
   onToolLoopNotice?: (notice: ChatToolLoopNotice, signal: AbortSignal) => Promise<ChatToolLoopDecision>;
   onTool?: (event: ApiChatToolEvent) => void;
-  beforeRound?: (messages: ApiChatMessage[], outputTokens: number) => void;
+  beforeRound?: (messages: ApiChatMessage[], outputTokens: number) => void | Promise<void>;
+  afterRound?: (round: number) => void | Promise<void>;
+  prepareContext?: (messages: ApiChatMessage[], outputTokens: number, counter: ChatInputTokenCounter) => Promise<void>;
   automaticKnowledge?: { inputBudget: number; includes: (message: ApiChatMessage) => boolean };
   onTransportPrepared?: (receipt: ChatTransportReceipt) => void;
   onTransportSent?: (receipt: ChatTransportReceipt) => void;
@@ -113,8 +126,9 @@ export function chatToolRoundLimit(value = 30): number {
 
 export const toolBudgetSummary = "The tool-call round budget or repeated-call review stopped further tool execution. Give the best answer from completed tool results without calling more tools. Clearly state any unresolved work; do not claim it succeeded.";
 export const defaultLoopExemptTools = ["wait", "sleep", "poll", "core.sleep", "mcp_pkm_chat_standby", "mcp_pkm_api_chat_request_get", "mcp_pkm_recipe_run_progress"];
-/** Pure reads whose identical repeat within one request can point to the earlier, still-visible result. */
-export const reusableReadOnlyTools = new Set(["pkm_search", "pkm_read", "read_file", "find_files", "list_directory", "search_text", "find_vscode_tools", "find_actions", "memory_read", "session_info", "list_chats"]);
+const readOnlyToolNames = new Set(["read_file", "find_files", "list_directory", "search_text", "find_vscode_tools"]);
+/** File reads have a Host content-version check; mutable search/list snapshots are not reusable. */
+export const reusableReadOnlyTools = new Set(["read_file"]);
 
 function stableToolValue(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableToolValue).join(",")}]`;
@@ -127,13 +141,22 @@ export class ChatToolLoopGuard {
   private readonly observed = new Map<string, { signature: string; repeats: number }>();
   private readonly recent: Array<{ key: string; name: string }> = [];
   private stalled?: { tool: string; repeats: number };
-  private readonly reads = new Map<string, { callId: string; result: string }>();
+  private readonly reads = new Map<string, { callId: string; result: string; version?: string }>();
+  private failure?: { key: string; tool: string; repeats: number };
+  private readonly failures = new Map<string, { key: string; tool: string; repeats: number }>();
+  private readonly roundResults = new Set<string>();
+  private readonly seenResults = new Set<string>();
+  private currentRound = -1;
+  private staleRounds = 0;
+  private roundObserved = false;
+  private review?: Promise<void>;
   summarizing = false;
   readonly limit: number;
   private reviewStartedAt: number;
 
-  constructor(private readonly request: Pick<ApiChatRequest, "maxToolRounds" | "loopExemptTools" | "onToolLoopNotice" | "loopReviewAfterMs" | "loopReviewClock">, private readonly now: () => number = request.loopReviewClock || Date.now) {
+  constructor(private readonly request: Pick<ApiChatRequest, "maxToolRounds" | "hardToolRoundLimit" | "onHardToolRoundLimit" | "loopExemptTools" | "onToolLoopNotice" | "loopReviewAfterMs" | "loopReviewClock">, private readonly now: () => number = request.loopReviewClock || Date.now) {
     this.limit = chatToolRoundLimit(request.maxToolRounds);
+    if (request.hardToolRoundLimit !== undefined) chatToolRoundLimit(request.hardToolRoundLimit);
     this.boundary = this.limit;
     if (request.loopReviewAfterMs !== undefined && (!Number.isFinite(request.loopReviewAfterMs) || request.loopReviewAfterMs < 0)) throw new Error("Choose a non-negative loop review interval.");
     this.reviewStartedAt = now();
@@ -145,30 +168,50 @@ export class ChatToolLoopGuard {
   }
 
   /** Returns a short pointer when an identical read already succeeded and its result is still in the prompt. */
-  reuse(name: string, arguments_: string, messages: ApiChatMessage[]): { result: string; original: string } | undefined {
+  reuse(name: string, arguments_: string, messages: ApiChatMessage[], version?: string): { result: string; original: string } | undefined {
     const key = this.readKey(name, arguments_);
     const earlier = key === undefined ? undefined : this.reads.get(key);
-    if (!earlier || !messages.some(message => message.role === "tool" && message.tool_call_id === earlier.callId && message.content === earlier.result)) return undefined;
+    if (!earlier || earlier.version !== version || !messages.some(message => message.role === "tool" && message.tool_call_id === earlier.callId && message.content === earlier.result)) return undefined;
     return { original:earlier.result, result:JSON.stringify({ reused:true, sameAsToolCall:earlier.callId,
       note:"Identical read-only call already returned this result earlier in this request and nothing has been modified since. Use that result; do not repeat this call." }) };
   }
 
   /** Remembers successful pure reads; any other tool may change state, so earlier reads stop being reusable. */
-  remember(name: string, arguments_: string, callId: string, result: string, succeeded: boolean): void {
+  remember(name: string, arguments_: string, callId: string, result: string, succeeded: boolean, version?: string): void {
     const key = this.readKey(name, arguments_);
     if (key === undefined) { this.reads.clear(); return; }
-    if (succeeded) this.reads.set(key, { callId, result });
+    if (succeeded) this.reads.set(key, { callId, result, version });
   }
 
-  record(tool: ApiChatTool | undefined, name: string, arguments_: string, result: string): void {
+  record(tool: ApiChatTool | undefined, name: string, arguments_: string, result: string, succeeded = true): void {
     const exempt = this.request.loopExemptTools ?? defaultLoopExemptTools;
     if (exempt.includes(name) || tool?.label && exempt.includes(tool.label)) return;
     let parsedArguments: unknown = arguments_;
     let parsedResult: unknown = result;
     try { parsedArguments = JSON.parse(arguments_); } catch {}
     try { parsedResult = JSON.parse(result); } catch {}
+    if (parsedResult && typeof parsedResult === "object" && !Array.isArray(parsedResult)) {
+      const observed = parsedResult as Record<string, unknown>;
+      if (observed.error || observed.ok === false || typeof observed.exitCode === "number" && observed.exitCode !== 0
+        || ["failed", "cancelled", "timed-out", "output-limit"].includes(String(observed.state))) succeeded = false;
+      if (["process_get", "run_process"].includes(name) && observed.schema === "pkm.chat.process/v1") {
+        const { updatedAt, ...stable } = observed;
+        parsedResult = stable;
+      }
+    }
     const key = createHash("sha256").update(stableToolValue([name, parsedArguments])).digest("hex");
     const signature = createHash("sha256").update(stableToolValue(parsedResult)).digest("hex");
+    if (!["session_info", "report_work", "record_harness", "list_chats", "list_workers"].includes(name)) {
+      this.roundObserved = true;
+      const evidence = readOnlyToolNames.has(name) || tool?.execution === "parallel-read"
+        ? `${name}:${signature}` : `${name}:${key}:${signature}`;
+      if (succeeded && !this.seenResults.has(evidence)) this.roundResults.add(evidence);
+      if (!succeeded) {
+        this.failures.set(key, { key, tool: name, repeats: (this.failures.get(key)?.repeats || 0) + 1 });
+        if (this.failures.size > 24) this.failures.delete(this.failures.keys().next().value!);
+      } else this.failures.delete(key);
+      this.failure = [...this.failures.values()].find(item => item.repeats >= 2);
+    }
     const previous = this.observed.get(key);
     if (previous && previous.signature !== signature) {
       for (let index = this.recent.length - 1; index >= 0; index--) if (this.recent[index].key === key) this.recent.splice(index, 1);
@@ -187,11 +230,30 @@ export class ChatToolLoopGuard {
 
   async beforeRound(rounds: number, signal: AbortSignal): Promise<void> {
     if (signal.aborted) throw new Error("Request cancelled.");
+    if (this.review) return this.review;
     if (this.summarizing) return;
+    if (rounds > this.currentRound) {
+      if (this.currentRound >= 0 && this.roundObserved) this.staleRounds = this.roundResults.size ? 0 : this.staleRounds + 1;
+      for (const result of this.roundResults) this.seenResults.add(result);
+      if (this.seenResults.size > 2048) this.seenResults.clear();
+      this.roundResults.clear(); this.roundObserved = false; this.currentRound = rounds;
+    }
+    if (this.request.hardToolRoundLimit !== undefined && rounds >= this.request.hardToolRoundLimit) {
+      this.summarizing = true;
+      this.request.onHardToolRoundLimit?.({ limit: this.request.hardToolRoundLimit, rounds });
+      return;
+    }
     const notice: ChatToolLoopNotice | undefined = this.request.loopReviewAfterMs === undefined && rounds >= this.boundary
       ? { reason:"round-limit", rounds, limit:this.limit }
-      : this.stalled ? { reason:"stalled", rounds, limit:this.limit, ...this.stalled } : undefined;
+      : this.failure && this.failure.repeats >= 2 ? { reason:"repeated-failure", rounds, limit:this.limit, ...this.failure }
+      : this.stalled ? { reason:"stalled", rounds, limit:this.limit, ...this.stalled }
+      : this.staleRounds >= 3 ? { reason:"no-progress", rounds, limit:this.limit, repeats:this.staleRounds } : undefined;
     if (!notice) return;
+    this.review = this.decide(notice, rounds, signal);
+    try { await this.review; } finally { this.review = undefined; }
+  }
+
+  private async decide(notice: ChatToolLoopNotice, rounds: number, signal: AbortSignal): Promise<void> {
     let cancel: () => void = () => {};
     const aborted = new Promise<never>((_, reject) => { cancel = () => reject(new Error("Request cancelled.")); signal.addEventListener("abort", cancel, { once: true }); });
     let decision: ChatToolLoopDecision;
@@ -204,6 +266,8 @@ export class ChatToolLoopGuard {
     else if (decision === "continue") {
       if (rounds >= this.boundary) this.boundary = rounds + this.limit;
       this.observed.clear(); this.recent.length = 0; this.stalled = undefined;
+      this.staleRounds = 0; this.failure = undefined;
+      this.failures.clear();
       this.reviewStartedAt = this.now();
     } else throw new Error("Invalid tool-loop decision; no further tool was executed.");
   }
@@ -272,7 +336,7 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
     if (controller.signal.aborted) throw new Error("Request cancelled.");
     const outputTokens = request.maxOutputTokens;
     if (outputTokens !== undefined && (!Number.isSafeInteger(outputTokens) || outputTokens < 1)) throw new Error("Choose a positive per-inference output token budget.");
-    request.beforeRound?.(messages, outputTokens || 0);
+    await request.beforeRound?.(messages, outputTokens || 0);
     request.onStage?.("connecting");
     activity();
     const payload = {
@@ -337,6 +401,7 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
     clearTimeout(timer);
     inferenceClock.finish("stream-ended");
     if (!finishReason) throw new Error("The response ended before completion.");
+    await request.afterRound?.(round);
     const toolCalls = [...calls.values()];
     if (outputTokens !== undefined && measuredUsage) checkReportedOutput(measuredUsage, outputTokens, request.thinkingBudget);
     if (finishReason === "stop") {
@@ -359,53 +424,7 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
       callIds.add(call.id);
     }
     messages.push({ role: "assistant", content: responseText, tool_calls: toolCalls });
-    for (const call of toolCalls) {
-      await checkLoop(round);
-      if (!call.id || !call.function.name) throw new Error("Invalid tool call.");
-      if (controller.signal.aborted) throw new Error("Request cancelled.");
-      const event: ApiChatToolEvent = { id: call.id, name: request.tools.find(tool => tool.name === call.function.name)?.label || call.function.name, arguments: call.function.arguments, status: "running" };
-      if (loop.summarizing) {
-        const result = JSON.stringify({ error: "Not executed: tool-loop continuation was not approved; use completed results." });
-        request.onTool?.({ ...event, status: "failed", result });
-        messages.push({ role: "tool", content: result, tool_call_id: call.id });
-        continue;
-      }
-      request.onTool?.(event);
-      let result: string;
-      const reused = loop.reuse(call.function.name, call.function.arguments, messages);
-      if (reused) {
-        request.onTool?.({ ...event, status: "complete", result: reused.result });
-        loop.record(request.tools.find(item => item.name === call.function.name), call.function.name, call.function.arguments, reused.original);
-        messages.push({ role: "tool", content: reused.result, tool_call_id: call.id });
-        continue;
-      }
-      let succeeded = false;
-      try {
-        const tool = request.tools.find(item => item.name === call.function.name);
-        if (!tool) throw new Error("This tool is not enabled for the request.");
-        const arguments_ = JSON.parse(call.function.arguments);
-        if (!arguments_ || typeof arguments_ !== "object" || Array.isArray(arguments_)) throw new Error("Tool arguments must be an object.");
-        result = await new Promise<string>((resolve, reject) => {
-          const cancelTool = () => reject(new Error("Request cancelled."));
-          controller.signal.addEventListener("abort", cancelTool, { once: true });
-          Promise.resolve().then(() => {
-            if (controller.signal.aborted) throw new Error("Request cancelled.");
-            return tool.execute(arguments_, controller.signal);
-          }).then(resolve, reject).finally(() => controller.signal.removeEventListener("abort", cancelTool));
-          if (controller.signal.aborted) cancelTool();
-        });
-        if (typeof result !== "string" || result.length > 16_000) throw new Error("Tool result exceeded the local limit.");
-        succeeded = true;
-        request.onTool?.({ ...event, status: "complete", result });
-      } catch (error) {
-        if (controller.signal.aborted) throw new Error("Request cancelled.");
-        result = JSON.stringify({ error: error instanceof Error ? error.message : "Tool failed." });
-        request.onTool?.({ ...event, status: "failed", result });
-      }
-      loop.remember(call.function.name, call.function.arguments, call.id, result, succeeded);
-      loop.record(request.tools.find(item => item.name === call.function.name), call.function.name, call.function.arguments, result);
-      messages.push({ role: "tool", content: result, tool_call_id: call.id });
-    }
+    await executeChatToolBatch(toolCalls, request, messages, loop, controller.signal, round);
     if (request.afterTools?.()) return;
     }
   } catch (error) {

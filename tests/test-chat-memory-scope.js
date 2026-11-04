@@ -137,6 +137,38 @@ test("History off, exclusions, Trash and changed source bytes invalidate prepare
   assert.deepEqual(recallScopedChatMemory(store, owner, "research").references, []);
 });
 
+test("memory freshness checks reuse unchanged history and revalidate source bytes and owner grants", t => {
+  const { root, store, owner, addWorker } = fixture(t);
+  const worker = addWorker(owner, "worker");
+  owner.messages = [{ id: randomUUID(), role: "user", status: "complete", content: "x".repeat(600_000) }];
+  worker.messages.push({ id: randomUUID(), role: "assistant", status: "complete", content: "y".repeat(600_000) });
+  store.save(owner);
+  store.save(worker);
+  const reference = recallScopedChatMemory(store, owner, "research checksum").references[0];
+  assert(reference && reference.isCurrent());
+  const read = fs.readFileSync;
+  let segmentReads = 0;
+  fs.readFileSync = function (file, ...args) {
+    if (String(file).endsWith(".bin")) segmentReads++;
+    return read.call(this, file, ...args);
+  };
+  try {
+    for (let i = 0; i < 20; i++) assert(reference.isCurrent());
+    assert.equal(segmentReads, 0, "each candidate freshness check must not unpack the same histories again");
+  } finally { fs.readFileSync = read; }
+  const other = new ApiChatStore(root, store.namespace);
+  const changed = other.load(worker.id, false);
+  changed.messages[0].content = "research corrected";
+  other.save(changed);
+  assert.equal(reference.isCurrent(), false);
+  const next = recallScopedChatMemory(store, owner, "research").references[0];
+  assert(next && next.isCurrent());
+  const currentOwner = other.load(owner.id, false);
+  currentOwner.includeHistory = false;
+  other.save(currentOwner);
+  assert.equal(next.isCurrent(), false, "History revocation must apply even when source bytes are unchanged");
+});
+
 test("30-day boundary, expansion and clear only affect derived recall, never original history", t => {
   const { store, owner } = fixture(t);
   const now = Date.now(), cutoff = now - 30 * 86400000;

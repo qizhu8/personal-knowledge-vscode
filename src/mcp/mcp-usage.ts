@@ -84,23 +84,35 @@ function addEvent(summary: McpUsageDomainSummary, event: any): void {
   summary.reportedOutputTokens += Number(event.reportedTokens?.output) || 0;
 }
 
-export function mcpUsageSummary(storeRoot: string, maximumEvents = 1000): {
+export async function mcpUsageSummary(storeRoot: string, maximumEvents = 1000): Promise<{
   sessions: McpUsageSessionSummary[];
   measurementNote: string;
-} {
+}> {
   const eventDirectory = path.join(storeRoot, ".pkm", "state", "mcp-usage", "events");
-  if (!fs.existsSync(eventDirectory)) {
-    return { sessions: [], measurementNote: "Tool calls, payload bytes, elapsed time, success, and result counts are observed. Token equivalents are estimates unless the runtime reports token usage." };
+  let names: string[];
+  try {
+    names = await fs.promises.readdir(eventDirectory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    names = [];
   }
-  const files = fs.readdirSync(eventDirectory)
-    .filter(name => name.endsWith(".json"))
-    .map(name => ({ name, mtime: fs.statSync(path.join(eventDirectory, name)).mtimeMs }))
+  const candidates: { name: string; mtime: number }[] = [];
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    try {
+      const stat = await fs.promises.stat(path.join(eventDirectory, name));
+      if (stat.isFile()) candidates.push({ name, mtime: stat.mtimeMs });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  const files = candidates
     .sort((left, right) => right.mtime - left.mtime)
     .slice(0, Math.max(1, maximumEvents));
   const sessions = new Map<string, McpUsageSessionSummary>();
   for (const file of files) {
     try {
-      const event = JSON.parse(fs.readFileSync(path.join(eventDirectory, file.name), "utf8"));
+      const event = JSON.parse(await fs.promises.readFile(path.join(eventDirectory, file.name), "utf8"));
       const sessionId = String(event.sessionId || "unknown");
       let session = sessions.get(sessionId);
       if (!session) {
@@ -112,7 +124,9 @@ export function mcpUsageSummary(storeRoot: string, maximumEvents = 1000): {
       session.domains[domain] ||= emptySummary();
       addEvent(session.domains[domain], event);
       if (String(event.occurredAt || "") > session.lastUsedAt) session.lastUsedAt = String(event.occurredAt);
-    } catch { /* ignore incomplete best-effort observation files */ }
+    } catch (error) {
+      if (!(error instanceof SyntaxError) && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
   }
   return {
     sessions: [...sessions.values()].sort((left, right) => right.lastUsedAt.localeCompare(left.lastUsedAt)).slice(0, 12),

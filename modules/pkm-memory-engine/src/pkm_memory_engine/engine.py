@@ -14,7 +14,9 @@ from typing import Generator
 
 
 class MemoryError(ValueError):
-    pass
+    def __init__(self, message: str, code: str = "INVALID_ARGUMENT") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def digest(value: object) -> str:
@@ -99,6 +101,25 @@ SCHEMA = [
 KINDS = {"piece", "message", "topic", "project"}
 RELATIONS = {"abstracts", "part_of", "clarifies", "revises", "supersedes",
              "addresses", "implements", "verifies"}
+EXPLICIT_MEMORY_SCHEMA = [
+    """CREATE TABLE explicit_memories(
+        id TEXT PRIMARY KEY, scope TEXT NOT NULL, revision INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending','confirmed','revoked')),
+        created_at REAL NOT NULL, updated_at REAL NOT NULL)""",
+    """CREATE TABLE explicit_memory_revisions(
+        memory_id TEXT NOT NULL REFERENCES explicit_memories(id),
+        revision INTEGER NOT NULL, content TEXT NOT NULL, sources TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending','confirmed','superseded','revoked')),
+        created_at REAL NOT NULL, operation_id TEXT NOT NULL,
+        PRIMARY KEY(memory_id,revision))""",
+    """CREATE TABLE explicit_memory_events(
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT, memory_id TEXT NOT NULL,
+        scope TEXT NOT NULL, revision INTEGER NOT NULL, action TEXT NOT NULL,
+        status TEXT NOT NULL, actor TEXT NOT NULL, decision_id TEXT,
+        operation_id TEXT NOT NULL, created_at REAL NOT NULL)""",
+    "CREATE INDEX explicit_memory_scope_status ON explicit_memories(scope,status,updated_at)",
+    "CREATE INDEX explicit_memory_audit ON explicit_memory_events(scope,memory_id,sequence)",
+]
 
 
 class Engine:
@@ -122,7 +143,7 @@ class Engine:
             self.db.execute("PRAGMA synchronous=FULL")
             with self._transaction():
                 version = self.db.execute("PRAGMA user_version").fetchone()[0]
-                if version not in (0, 1):
+                if version not in (0, 1, 2):
                     raise MemoryError(f"Unsupported memory schema {version}; database was not replaced.")
                 if version == 0:
                     existing = self.db.execute(
@@ -134,6 +155,11 @@ class Engine:
                     self.db.execute("CREATE TABLE metadata(identity TEXT NOT NULL)")
                     self.db.execute("INSERT INTO metadata VALUES(?)", (identity,))
                     self.db.execute("PRAGMA user_version=1")
+                    version = 1
+                if version == 1:
+                    for statement in EXPLICIT_MEMORY_SCHEMA:
+                        self.db.execute(statement)
+                    self.db.execute("PRAGMA user_version=2")
                 if self.db.execute("SELECT identity FROM metadata").fetchone()[0] != identity:
                     raise MemoryError("Database account/root identity mismatch.")
             mode = self.db.execute("PRAGMA journal_mode=WAL").fetchone()[0]
@@ -202,7 +228,7 @@ class Engine:
 
     def capabilities(self) -> dict:
         return {"module": "pkm-memory-engine", "version": "0.2.0", "policy": "pkm-memory-policy/1",
-                "protocol": 1, "schema": 1, "identity": self.identity,
+                "protocol": 1, "schema": 2, "identity": self.identity,
                 "sqlite": sqlite3.sqlite_version, "embedding_encoding": "float32-le",
                 "model_calls": "caller-executed", "source_acl": "trusted-host-adapter-required",
                 "reconciliation": dict(self.reconciliation)}
@@ -212,7 +238,11 @@ class Engine:
         handlers = {"create": self._create, "append": self._append, "link": self._link,
                     "summary_commit": self._summary_commit, "embedding_put": self._embedding_put,
                     "touch": self._touch, "evict": self._evict, "purge_chat": self._purge_chat,
-                    "lease_acquire": self._lease_acquire, "lease_release": self._lease_release}
+                    "lease_acquire": self._lease_acquire, "lease_release": self._lease_release,
+                    "explicit_propose": lambda p: self._explicit_propose(p, operation_id),
+                    "explicit_confirm": lambda p: self._explicit_confirm(p, operation_id),
+                    "explicit_revise": lambda p: self._explicit_revise(p, operation_id),
+                    "explicit_revoke": lambda p: self._explicit_revoke(p, operation_id)}
         if method not in handlers:
             raise MemoryError(f"Unsupported mutation {method}.")
         request_hash = digest([method, params])
@@ -220,12 +250,193 @@ class Engine:
             old = self.db.execute("SELECT * FROM operations WHERE id=?", (operation_id,)).fetchone()
             if old:
                 if old["request_hash"] != request_hash:
-                    raise MemoryError("Operation ID reused with different input.")
+                    raise MemoryError("Operation ID reused with different input.", "CONFLICT")
                 return json.loads(old["result"])
             result = handlers[method](params)
             self.db.execute("INSERT INTO operations VALUES(?,?,?)",
                             (operation_id, request_hash, json.dumps(result, allow_nan=False)))
             return result
+
+    @staticmethod
+    def _explicit_keys(params: dict, expected: set[str]) -> None:
+        if set(params) != expected:
+            raise MemoryError(f"Expected exactly these explicit-memory fields: {', '.join(sorted(expected))}.")
+
+    @staticmethod
+    def _explicit_sources(value: object) -> list[dict]:
+        if not isinstance(value, list) or not 1 <= len(value) <= 32:
+            raise MemoryError("Explicit memory needs 1..32 exact source references.")
+        sources = []
+        for source in value:
+            if not isinstance(source, dict) or set(source) != {"id", "chat", "revision", "locator"}:
+                raise MemoryError("Invalid explicit-memory source reference.")
+            sources.append({
+                "id": text(source["id"], "source id", 256),
+                "chat": text(source["chat"], "source chat", 1024),
+                "revision": text(source["revision"], "source revision", 256),
+                "locator": text(source["locator"], "source locator", 2048),
+            })
+        if len(json.dumps(sources, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > 4096:
+            raise MemoryError("Explicit-memory source references exceed 4096 UTF-8 bytes in total.")
+        return sources
+
+    @staticmethod
+    def _explicit_authorization(value: object) -> tuple[str, str]:
+        if not isinstance(value, dict) or set(value) != {"decision_id", "actor_id"}:
+            raise MemoryError("A Host-authorized decision is required.", "ACCESS_DENIED")
+        return (text(value["decision_id"], "Host decision id", 256),
+                text(value["actor_id"], "Host actor id", 256))
+
+    def _explicit_event(self, memory_id: str, scope: str, revision: int, action: str,
+                        status: str, actor: str, decision_id: str | None,
+                        operation_id: str, now: float) -> None:
+        self.db.execute(
+            """INSERT INTO explicit_memory_events
+               (memory_id,scope,revision,action,status,actor,decision_id,operation_id,created_at)
+               VALUES(?,?,?,?,?,?,?,?,?)""",
+            (memory_id, scope, revision, action, status, actor, decision_id, operation_id, now))
+        self._change(f"explicit_memory_{action}", memory_id)
+
+    def _explicit_create_revision(self, memory_id: str, revision: int, content: str,
+                                  sources: list[dict], status: str, operation_id: str,
+                                  now: float) -> None:
+        self.db.execute(
+            """INSERT INTO explicit_memory_revisions
+               (memory_id,revision,content,sources,status,created_at,operation_id)
+               VALUES(?,?,?,?,?,?,?)""",
+            (memory_id, revision, content, json.dumps(sources, ensure_ascii=False),
+             status, now, operation_id))
+
+    def _explicit_record(self, row: sqlite3.Row, version: sqlite3.Row | None = None) -> dict:
+        version = version or self.db.execute(
+            "SELECT * FROM explicit_memory_revisions WHERE memory_id=? AND revision=?",
+            (row["id"], row["revision"])).fetchone()
+        if version is None:
+            raise MemoryError("Explicit memory revision is missing.", "NOT_AVAILABLE")
+        return {
+            "id": row["id"], "scope": row["scope"], "revision": version["revision"],
+            "current_revision": row["revision"], "status": version["status"],
+            "current_status": row["status"], "content": version["content"],
+            "sources": json.loads(version["sources"]), "created_at": row["created_at"],
+            "updated_at": row["updated_at"], "revision_created_at": version["created_at"],
+        }
+
+    def _explicit_propose(self, p: dict, operation_id: str) -> dict:
+        self._explicit_keys(p, {"id", "scope", "content", "sources"})
+        memory_id = text(p["id"], "memory id", 256)
+        scope = text(p["scope"], "scope", 1024)
+        content = text(p["content"], "memory content", 4096)
+        sources = self._explicit_sources(p["sources"])
+        now = time.time()
+        self.db.execute(
+            "INSERT INTO explicit_memories VALUES(?,?,1,'pending',?,?)",
+            (memory_id, scope, now, now))
+        self._explicit_create_revision(memory_id, 1, content, sources, "pending", operation_id, now)
+        self._explicit_event(memory_id, scope, 1, "proposed", "pending", "caller", None, operation_id, now)
+        return self._explicit_record(self.db.execute(
+            "SELECT * FROM explicit_memories WHERE id=?", (memory_id,)).fetchone())
+
+    def _explicit_owned(self, memory_id: object, scope: object, expected_revision: object) -> sqlite3.Row:
+        row = self.db.execute("SELECT * FROM explicit_memories WHERE id=? AND scope=?",
+                              (text(memory_id, "memory id", 256), text(scope, "scope", 1024))).fetchone()
+        if row is None:
+            raise MemoryError("Explicit memory not found in this scope.", "NOT_AVAILABLE")
+        if row["revision"] != integer(expected_revision, "expected_revision", 1):
+            raise MemoryError("Stale explicit-memory revision.", "CONFLICT")
+        return row
+
+    def _explicit_transition(self, p: dict, operation_id: str, action: str,
+                             new_status: str, content: str | None = None,
+                             sources: list[dict] | None = None) -> dict:
+        decision_id, actor_id = self._explicit_authorization(p["host_authorization"])
+        row = self._explicit_owned(p["id"], p["scope"], p["expected_revision"])
+        if row["status"] == "revoked":
+            raise MemoryError("Revoked explicit memory cannot be changed.", "CONFLICT")
+        old = self.db.execute(
+            "SELECT content,sources FROM explicit_memory_revisions WHERE memory_id=? AND revision=?",
+            (row["id"], row["revision"])).fetchone()
+        if old is None:
+            raise MemoryError("Explicit memory revision is missing.", "NOT_AVAILABLE")
+        if row["status"] == "confirmed" and action == "confirmed":
+            raise MemoryError("Explicit memory is already confirmed.", "CONFLICT")
+        content = content if content is not None else old["content"]
+        sources = sources if sources is not None else json.loads(old["sources"])
+        now = time.time()
+        revision = row["revision"] + 1
+        self.db.execute(
+            "UPDATE explicit_memory_revisions SET status='superseded' WHERE memory_id=? AND revision=?",
+            (row["id"], row["revision"]))
+        self.db.execute("UPDATE explicit_memories SET revision=?,status=?,updated_at=? WHERE id=?",
+                        (revision, new_status, now, row["id"]))
+        self._explicit_create_revision(row["id"], revision, content, sources, new_status, operation_id, now)
+        self._explicit_event(row["id"], row["scope"], revision, action, new_status,
+                             actor_id, decision_id, operation_id, now)
+        return self._explicit_record(self.db.execute(
+            "SELECT * FROM explicit_memories WHERE id=?", (row["id"],)).fetchone())
+
+    def _explicit_confirm(self, p: dict, operation_id: str) -> dict:
+        self._explicit_keys(p, {"id", "scope", "expected_revision", "host_authorization"})
+        return self._explicit_transition(p, operation_id, "confirmed", "confirmed")
+
+    def _explicit_revise(self, p: dict, operation_id: str) -> dict:
+        self._explicit_keys(p, {"id", "scope", "expected_revision", "content", "sources",
+                                "host_authorization"})
+        content = text(p["content"], "memory content", 4096)
+        sources = self._explicit_sources(p["sources"])
+        return self._explicit_transition(p, operation_id, "revised", "pending", content, sources)
+
+    def _explicit_revoke(self, p: dict, operation_id: str) -> dict:
+        self._explicit_keys(p, {"id", "scope", "expected_revision", "host_authorization"})
+        return self._explicit_transition(p, operation_id, "revoked", "revoked")
+
+    def explicit_get(self, memory_id: str, scope: str, revision: int | None = None) -> dict:
+        row = self.db.execute("SELECT * FROM explicit_memories WHERE id=? AND scope=?",
+                              (text(memory_id, "memory id", 256), text(scope, "scope", 1024))).fetchone()
+        if row is None:
+            raise MemoryError("Explicit memory not found in this scope.", "NOT_AVAILABLE")
+        version = None
+        if revision is not None:
+            integer(revision, "revision", 1)
+            version = self.db.execute(
+                "SELECT * FROM explicit_memory_revisions WHERE memory_id=? AND revision=?",
+                (row["id"], revision)).fetchone()
+            if version is None:
+                raise MemoryError("Explicit memory revision not found.", "NOT_AVAILABLE")
+        return self._explicit_record(row, version)
+
+    def explicit_search(self, scope: str, query: str, limit: int = 20) -> list[dict]:
+        scope = text(scope, "scope", 1024)
+        query = text(query, "query", 512)
+        integer(limit, "limit", 1, 20)
+        rows = self.db.execute(
+            """SELECT m.*,r.content,r.sources,r.created_at AS revision_created_at
+               FROM explicit_memories m JOIN explicit_memory_revisions r
+                 ON r.memory_id=m.id AND r.revision=m.revision
+               WHERE m.scope=? AND m.status='confirmed'
+                 AND instr(lower(r.content),lower(?))>0
+               ORDER BY m.updated_at DESC,m.id LIMIT ?""",
+            (scope, query, limit)).fetchall()
+        return [{
+            "id": row["id"], "scope": row["scope"], "revision": row["revision"],
+            "current_revision": row["revision"], "status": row["status"],
+            "current_status": row["status"], "content": row["content"],
+            "sources": json.loads(row["sources"]), "created_at": row["created_at"],
+            "updated_at": row["updated_at"], "revision_created_at": row["revision_created_at"],
+        } for row in rows]
+
+    def explicit_audit(self, scope: str, memory_id: str, after: int = 0, limit: int = 50) -> dict:
+        scope = text(scope, "scope", 1024)
+        memory_id = text(memory_id, "memory id", 256)
+        integer(after, "after")
+        integer(limit, "limit", 1, 100)
+        if not self.db.execute("SELECT 1 FROM explicit_memories WHERE id=? AND scope=?",
+                               (memory_id, scope)).fetchone():
+            raise MemoryError("Explicit memory not found in this scope.", "NOT_AVAILABLE")
+        rows = [dict(row) for row in self.db.execute(
+            """SELECT sequence,revision,action,status,actor,decision_id,operation_id,created_at
+               FROM explicit_memory_events WHERE scope=? AND memory_id=? AND sequence>?
+               ORDER BY sequence LIMIT ?""", (scope, memory_id, after, limit))]
+        return {"events": rows, "next": rows[-1]["sequence"] if len(rows) == limit else None}
 
     def _piece(self, piece_id: str) -> sqlite3.Row:
         row = self.db.execute("SELECT * FROM pieces WHERE id=?", (text(piece_id, "piece"),)).fetchone()

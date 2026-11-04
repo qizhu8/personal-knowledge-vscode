@@ -6,6 +6,85 @@ const { chromium } = require(process.env.PKM_PLAYWRIGHT_PATH || "playwright");
 const { themes, applyTheme } = require("./ui-theme-fixtures");
 
 const webview = path.join(process.env.PKM_ACTIVITY_EXTENSION_ROOT || path.join(__dirname, ".."), "dist", "webview");
+test("Plan review is readable, context-bound, keyboard-accessible and safe on narrow themed views", async t => {
+  const { page, errors } = await open(t, 320);
+  await page.evaluate(() => {
+    __state.chat.workflowMode = "plan";
+    __state.chat.plans = [{ id:"22222222-2222-4222-8222-222222222222", revision:1, contentHash:"a".repeat(64),
+      objective:"Inspect <script>untrusted plan text</script>", scope:["Focused endpoint only"], nonGoals:["Other endpoints"],
+      facts:["Reproduction exists"], openQuestions:[], risks:["Compatibility"], context:{ cwd:"/workspace", permissionMode:"allow-all" },
+      changeReason:"Initial investigated plan", steps:[{ id:"fix", title:"Fix endpoint", dependsOn:[], verification:"Assert HTTP 200 and exact response" }] }];
+    window.dispatchEvent(new MessageEvent("message", { data:__state }));
+  });
+  assert(await page.locator("#plan-review").isVisible());
+  assert.match(await page.locator("#plan-body").textContent(), /HTTP 200 and exact response/);
+  assert.equal(await page.locator("#plan-body script").count(), 0);
+  await page.locator("#approve-plan").focus(); await page.keyboard.press("Enter");
+  assert.deepEqual(await page.evaluate(() => __posts.find(post => post.type === "approvePlan")), {
+    type:"approvePlan", chatId, id:"22222222-2222-4222-8222-222222222222", contentHash:"a".repeat(64),
+  });
+  await page.evaluate(() => {
+    __state.busy = true;
+    window.dispatchEvent(new MessageEvent("message", { data:__state }));
+  });
+  assert(await page.locator("#workflow-mode").isDisabled());
+  assert(await page.locator("#send").isDisabled());
+  assert(await page.locator("#input-mode").isHidden());
+  for (const theme of Object.keys(themes)) {
+    await applyTheme(page, theme);
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  }
+  await page.evaluate(() => { document.documentElement.dir = "rtl"; });
+  assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await page.evaluate(() => {
+    __state.busy = false;
+    __state.chat.id = "33333333-3333-4333-8333-333333333333";
+    __state.chat.plans = []; __state.chat.workflowMode = undefined;
+    window.dispatchEvent(new MessageEvent("message", { data:__state }));
+  });
+  assert(await page.locator("#plan-review").isHidden());
+  assert.equal(await page.locator("#workflow-mode").inputValue(), "chat");
+  assert.deepEqual(errors, []);
+});
+test("message timestamps show persisted local dates and remain stable during streaming and refresh", async t => {
+  const { page, errors } = await open(t, 390);
+  const sent = "2026-10-29T23:59:58.000Z", replied = "2026-10-30T00:00:02.000Z";
+  await page.evaluate(({ sent, replied }) => {
+    __state.busy = true;
+    __state.chat.messages = [
+      { id:"timestamp-user", role:"user", content:"When was this sent?", recordedAt:sent },
+      { id:"timestamp-reply", role:"assistant", content:"Streaming", recordedAt:replied, status:"streaming" },
+      { id:"timestamp-legacy", role:"user", content:"Legacy message without a timestamp" },
+      { id:"timestamp-invalid", role:"assistant", content:"Invalid legacy timestamp", recordedAt:"invalid" },
+    ];
+    window.dispatchEvent(new MessageEvent("message", { data:__state }));
+  }, { sent, replied });
+  assert.equal(await page.locator(".message-time").count(), 2);
+  for (const [id, at] of [["timestamp-user", sent], ["timestamp-reply", replied]]) {
+    const time = page.locator(`[data-message-id="${id}"] > .message-header time`);
+    assert.equal(await time.getAttribute("datetime"), at);
+    const expected = await page.evaluate(at => ({
+      text: new Intl.DateTimeFormat(document.documentElement.lang || "en", {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",second:"2-digit"}).format(new Date(at)),
+      title: new Intl.DateTimeFormat(document.documentElement.lang || "en", {dateStyle:"full",timeStyle:"long"}).format(new Date(at)),
+    }), at);
+    assert.equal(await time.textContent(), expected.text);
+    assert.equal(await time.getAttribute("title"), expected.title);
+    assert.match(expected.title, /2026/);
+    assert(await time.isVisible());
+  }
+  const before = await page.locator(".message-time").allTextContents();
+  await page.evaluate(id => {
+    window.dispatchEvent(new MessageEvent("message", { data:{type:"delta",chatId:id,id:"timestamp-reply",text:" more"} }));
+    window.dispatchEvent(new MessageEvent("message", { data:structuredClone(__state) }));
+  }, chatId);
+  assert.deepEqual(await page.locator(".message-time").allTextContents(), before);
+  for (const theme of Object.keys(themes)) {
+    await applyTheme(page, theme);
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  }
+  assert.deepEqual(errors, []);
+});
+
 test("Portal setup stays on one local Chat card, hides redundant direction and masks private links without saving them",async t=>{
   const {page,errors}=await open(t,390);
   await page.evaluate(()=>{
@@ -610,16 +689,158 @@ test("historical retrieval inspector separates recall, prepared and accepted rou
   assert.deepEqual(errors, []);
 });
 const chatId = "11111111-1111-4111-8111-111111111111";
+for (const width of [1280, 390, 280]) test(`permanently deleted Chats show pending cleanup without restore or automatic replay (${width}px)`, async t => {
+  const { page, errors } = await open(t, width);
+  await page.evaluate(() => {
+    __state = structuredClone(__state);
+    __state.chat = null;
+    __state.library.chats = [];
+    __state.library.deletionCleanups = [{ id:"22222222-2222-4222-8222-222222222222", title:"Deleted fixture " + "x".repeat(150), createdAt:"2026-11-02T00:00:00Z" }];
+    window.dispatchEvent(new MessageEvent("message", { data:__state }));
+  });
+  const trash = page.locator('[data-group-id="trash"]');
+  if (!await trash.evaluate(node => node.open)) await trash.locator("summary").click();
+  assert.match(await trash.innerText(), /Permanently deleted; cleanup pending. Cannot restore./);
+  assert.equal(await trash.locator(".chat-list-count").textContent(), "1");
+  assert.equal(await trash.getByRole("button", { name:"Restore Chat", exact:true }).count(), 0);
+  assert.equal(await trash.getByRole("button", { name:"Delete All", exact:true }).isDisabled(), false);
+  assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), "pending cleanup and retry must fit narrow windows");
+  assert.equal(await page.evaluate(() => __posts.filter(item => ["deleteChat","emptyTrash"].includes(item.type)).length), 0);
+  await trash.getByRole("button", { name:"Retry deletion cleanup", exact:true }).click();
+  assert.deepEqual(await page.evaluate(() => __posts.filter(item => item.type === "deleteChat")),
+    [{ type:"deleteChat", id:"22222222-2222-4222-8222-222222222222" }]);
+  assert.deepEqual(errors, []);
+});
+
 test("Profiles action fits its button without spilling into adjacent toolbar controls", async t => {
   const { page } = await open(t);
   for (const width of [320, 360, 1280]) {
     await page.setViewportSize({ width, height:900 });
+    await page.locator("#chat-actions-toggle").hover();
     const size = await page.getByRole("button", { name:"User / Agent Profiles", exact:true }).evaluate(element => ({
       client:element.clientWidth, content:element.scrollWidth,
     }));
     assert(size.content <= size.client, `Profiles label overflows at ${width}px: ${JSON.stringify(size)}`);
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
   }
+});
+
+test("Chat picker mirrors groups and nested workers, including collapsed groups and duplicate titles", async t => {
+  const { page, errors } = await open(t, 390);
+  await page.evaluate(id => {
+    const chats = [
+      { id, title:"Same title", groupId:"pkm", status:"idle" },
+      { id:"worker", title:"Worker", groupId:"ungroup", status:"running", workerParentChatId:id, workerTreeId:"tree" },
+      { id:"grandchild", title:"Nested worker", groupId:"ungroup", status:"idle", workerParentChatId:"worker", workerTreeId:"tree" },
+      { id:"other", title:"Same title", groupId:"research", status:"idle" },
+      { id:"ungrouped", title:"Ungrouped Chat", groupId:"ungroup", status:"idle" },
+      { id:"deleted", title:"Deleted Chat", groupId:"pkm", status:"idle", trashedAt:"2026-11-04T00:00:00Z" },
+    ];
+    chats[0].workerTreeId = "tree";
+    __state.chats = chats.filter(chat => !chat.trashedAt);
+    __state.library = { groups:[{ id:"pkm", name:"PKM" },{ id:"research", name:"Research <script>" }], chats };
+    __state.chat.title = "Same title";
+    window.dispatchEvent(new MessageEvent("message", { data:__state }));
+  }, chatId);
+  const groups = await page.locator("#chats").evaluate(node => [...node.children].map(group => ({
+    label:group.label, options:[...group.children].map(option => ({ id:option.value, label:option.textContent, title:option.title })),
+  })));
+  assert.deepEqual(groups.map(group => group.label), ["Ungroup", "PKM", "Research <script>"]);
+  assert.deepEqual(groups[1].options.map(option => option.id), [chatId, "worker", "grandchild"]);
+  assert.equal(groups[1].options[1].label, "\u00a0\u00a0> Worker");
+  assert.equal(groups[1].options[2].label, "\u00a0\u00a0\u00a0\u00a0> Nested worker");
+  assert.match(groups[1].options[2].title, /PKM \/ Same title \/ Worker \/ Nested worker/);
+  assert.equal(await page.locator("#chats").inputValue(), chatId);
+  assert.match(await page.locator("#chats").getAttribute("title"), /PKM \/ Same title/);
+  assert.equal(await page.locator("#chats script").count(), 0);
+  assert.equal(await page.locator('#chats option[value="deleted"]').count(), 0);
+  await page.locator("#chat-actions-toggle").hover();
+  await page.locator("#back").click();
+  await page.locator('[data-group-id="pkm"] > summary').click();
+  await page.locator('[data-chat-id="other"]').click();
+  await page.evaluate(() => {
+    window.dispatchEvent(new MessageEvent("message", { data:__state }));
+  });
+  assert.equal(await page.locator('#chats optgroup[label="PKM"] option').count(), 3, "collapsed groups remain switchable");
+  await page.selectOption("#chats", "grandchild");
+  assert.deepEqual(await page.evaluate(() => __posts.filter(post => post.type === "select").at(-1)), { type:"select", id:"grandchild" });
+  await page.evaluate(() => {
+    __state.library.groups[0].name = "Renamed group";
+    __state.library.chats.find(chat => chat.id === "other").groupId = "pkm";
+    window.dispatchEvent(new MessageEvent("message", { data:__state }));
+  });
+  assert.equal(await page.locator('#chats optgroup[label="Renamed group"] option[value="other"]').count(), 1);
+  assert.equal(await page.evaluate(() => __posts.some(post => post.type === "send")), false);
+  assert.deepEqual(errors, []);
+});
+
+for (const width of [280, 390, 1280]) test(`Chat header actions overlay leftward without shrinking the title (${width}px)`, async t => {
+  const { page, errors } = await open(t, width);
+  const toggle = page.locator("#chat-actions-toggle"), panel = page.locator("#chat-actions-panel");
+  await page.evaluate(() => {
+    __state.chat.title = __state.chats[0].title = __state.library.chats[0].title = "A long Chat name with important requirements";
+    __state.chat.projection = { objectKind:"Run", state:"Completed", nextOwner:"user", reason:"Finished", resume:"Continue" };
+    window.dispatchEvent(new MessageEvent("message", { data:__state }));
+  });
+  assert(await panel.isHidden());
+  assert.equal(await page.locator(".chat-toolbar > button").count(), 0, "all header commands are tucked into the action drawer");
+  const before = await page.locator("#chats").boundingBox();
+  assert(before.width >= width - 72, "the selector should own almost all header width");
+  const header = await page.locator(".chat-toolbar").boundingBox();
+  assert(header.height <= 44, "the header stays a single compact row");
+  await toggle.hover();
+  assert(await panel.isVisible());
+  assert.equal(await toggle.getAttribute("aria-expanded"), "true");
+  assert.equal((await page.locator("#chats").boundingBox()).width, before.width);
+  await panel.evaluate(node => Promise.all(node.getAnimations().map(animation => animation.finished)));
+  const bounds = await panel.boundingBox(), arrow = await toggle.boundingBox();
+  assert(bounds.x >= 0 && bounds.x + bounds.width <= arrow.x + 1, "the drawer expands left within the viewport");
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2, { steps:10 });
+  assert(await panel.isVisible(), "moving from the arrow onto commands must not close the drawer");
+  await page.mouse.move(10, 300);
+  assert(await panel.isHidden());
+  await toggle.focus();
+  assert(await panel.isVisible(), "keyboard focus opens the commands");
+  await page.keyboard.press("Tab");
+  assert.equal(await page.locator("#back").evaluate(node => node === document.activeElement), true);
+  await page.keyboard.press("Escape");
+  assert(await panel.isHidden());
+  assert.equal(await toggle.evaluate(node => node === document.activeElement), true);
+  await page.keyboard.press("Enter");
+  assert(await panel.isVisible(), "click/touch/Enter can open without hovering");
+  await page.locator("#copy-chat-id").click();
+  assert(await panel.isHidden());
+  assert.equal(await page.evaluate(() => __posts.filter(post => post.type === "copyChatId").length), 1);
+  await toggle.hover();
+  await page.locator("#prompt").click();
+  assert(await panel.isHidden(), "clicking outside collapses the drawer");
+  if (process.env.PKM_HEADER_SCREENSHOT) {
+    await page.screenshot({ path:`${process.env.PKM_HEADER_SCREENSHOT}-${width}-collapsed.png` });
+    await toggle.hover();
+    await panel.evaluate(node => Promise.all(node.getAnimations().map(animation => animation.finished)));
+    await page.screenshot({ path:`${process.env.PKM_HEADER_SCREENSHOT}-${width}-expanded.png` });
+  }
+  await page.evaluate(() => {
+    __state.portal = { connected:true, binding:{ role:"controlled", peerName:"A very long remote machine name" },
+      execution:{ state:"running" } };
+    window.dispatchEvent(new MessageEvent("message", { data:__state }));
+  });
+  assert((await page.locator("#chats").boundingBox()).width >= width - 80, "remote execution status stays compact too");
+  assert.match(await page.locator("#chat-status").getAttribute("title"), /Controlled execution/);
+  for (const theme of Object.keys(themes)) {
+    await applyTheme(page, theme);
+    await toggle.hover();
+    assert(await panel.isVisible());
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  }
+  await page.evaluate(() => { document.documentElement.dir = "rtl"; });
+  await page.mouse.move(10, 300); await toggle.hover();
+  await panel.evaluate(node => Promise.all(node.getAnimations().map(animation => animation.finished)));
+  const rtl = await panel.boundingBox(), rtlArrow = await toggle.boundingBox();
+  assert(rtl.x >= rtlArrow.x + rtlArrow.width - 1 && rtl.x + rtl.width <= width + 1);
+  await page.emulateMedia({ reducedMotion:"reduce" });
+  assert.equal(await panel.evaluate(node => getComputedStyle(node).animationName), "none");
+  assert.deepEqual(errors, []);
 });
 
 async function open(t, width = 1280, restored, fakeClock = false) {
@@ -667,6 +888,49 @@ async function open(t, width = 1280, restored, fakeClock = false) {
   await page.locator("#prompt").waitFor({ state:"visible" });
   return { page, errors };
 }
+
+test("background-process controls follow the reported state and ignore results for another Chat", async t => {
+  const { page, errors } = await open(t, 1280, undefined, true);
+  const handle = `process_${"a".repeat(64)}`;
+  await page.evaluate(handle => {
+    window.__state.chat.messages = [{ id:"process-message", role:"assistant", status:"complete", content:"Started",
+      toolCalls:[{ id:"process-call", name:"run_process", status:"complete", result:JSON.stringify({
+        schema:"pkm.chat.process/v1", handle, state:"running",
+      }) }] }];
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  }, handle);
+  const chatId = await page.evaluate(() => window.__state.chat.id);
+  const activity = page.locator('[data-message-id="process-message"] > .activity');
+  if (!await activity.evaluate(node => node.open)) await activity.locator(":scope > summary").click();
+  const tool = activity.locator(".tool-call");
+  if (!await tool.evaluate(node => node.open)) await tool.locator(":scope > summary").click();
+  const controls = tool.locator(".process-controls");
+  assert.match(await controls.innerText(), /Background process: running/);
+  const pause = controls.getByRole("button", { name:"Pause process", exact:true });
+  await pause.click();
+  assert.equal(await pause.isDisabled(), true);
+  assert.deepEqual(await page.evaluate(() => __posts.at(-1)), { type:"processControl", chatId, handle, operation:"pause" });
+  await page.clock.fastForward(2500);
+  assert.equal(await pause.isDisabled(), false, "a missing or delayed host response must not permanently disable a control");
+  await page.evaluate(({ handle, chatId }) => window.dispatchEvent(new MessageEvent("message", { data:{
+    type:"processControlResult", chatId, operation:"pause",
+    record:{ schema:"pkm.chat.process/v1", handle, state:"paused" },
+  } })), { handle, chatId });
+  assert.match(await controls.innerText(), /Background process: paused/);
+  assert.equal(await controls.getByRole("button", { name:"Pause process", exact:true }).count(), 0);
+  const resume = controls.getByRole("button", { name:"Resume process", exact:true });
+  assert(await resume.isVisible());
+  await page.evaluate(({ handle }) => window.dispatchEvent(new MessageEvent("message", { data:{
+    type:"processControlResult", chatId:"another-chat", operation:"status",
+    record:{ schema:"pkm.chat.process/v1", handle, state:"completed" },
+  } })), { handle });
+  assert.match(await controls.innerText(), /Background process: paused/, "another Chat cannot change this process display");
+  await resume.click();
+  assert.deepEqual(await page.evaluate(() => __posts.at(-1)), { type:"processControl", chatId, handle, operation:"resume" });
+  assert(await controls.getByRole("button", { name:"Stop process", exact:true }).isVisible(),
+    "the host owns the explicit confirmation before stopping");
+  assert.deepEqual(errors, []);
+});
 
 for (const width of [1280,390,280]) test(`Model settings keep text and controls separate and explain History without changing its behavior (${width}px)`, async t=>{
   const {page,errors}=await open(t,width);
@@ -864,8 +1128,11 @@ test("upward mouse wheel is not pulled back to the bottom by streaming updates",
   const bottom = await messages.evaluate(node => node.scrollTop);
   assert(bottom > 200, "fixture must have a scrollable message area");
   await messages.hover();
+  // Composer layout can settle after hover; measure from actual wheel delivery.
+  await messages.evaluate(node => node.addEventListener("wheel", () => { window.__wheelTop = node.scrollTop; }, { once:true }));
   await page.mouse.wheel(0, -40);
-  await page.waitForFunction(top => document.getElementById("messages").scrollTop < top - 10, bottom);
+  await page.waitForFunction(() => Number.isFinite(window.__wheelTop)
+    && document.getElementById("messages").scrollTop < window.__wheelTop - 10);
   const before = await messages.evaluate(node => node.scrollTop);
   await page.evaluate(id => window.dispatchEvent(new MessageEvent("message", { data:{
     type:"delta", chatId:id, id:"scroll-reply", text:"Additional output",
@@ -910,6 +1177,7 @@ test("upward wheel retrieves earlier messages even when the current page cannot 
 test("Chat List has no global Portal entry and keeps the draft without submitting", async t => {
   const { page, errors } = await open(t);
   await page.locator("#prompt").fill("Keep my unsent draft");
+  await page.locator("#chat-actions-toggle").hover();
   await page.getByRole("button", { name:"Back to Chat List", exact:true }).click();
   assert.equal(await page.locator("#peer-collaboration").count(), 0);
   const posts = await page.evaluate(() => window.__posts);
@@ -925,6 +1193,7 @@ test("current Chat Portal keeps the draft and binds the exact Chat without openi
   await page.locator("#prompt").fill("Continue testing Windows");
   assert.equal(await page.locator("#chat-portal .portal-closed").count(), 1);
   assert.equal(await page.locator("#chat-portal .portal-side-wizard").count(), 0);
+  await page.locator("#chat-actions-toggle").hover();
   await page.getByRole("button", { name: "Chat Portal", exact: true }).click();
   const posts = await page.evaluate(() => window.__posts);
   assert.deepEqual(posts.filter(item => item.type === "peerCollaboration"), [{ type: "peerCollaboration", chatId }]);
@@ -944,6 +1213,7 @@ test("Chat List hides chat-specific Portal details across updates and restores t
       window.dispatchEvent(new MessageEvent("message", { data: window.__state }));
     });
     assert(await page.locator("#portal-state").isVisible());
+    await page.locator("#chat-actions-toggle").hover();
     await page.locator("#back").click();
     assert(await page.locator("#library-view").isVisible());
     assert.equal(await page.locator("#portal-state").isVisible(), false);
@@ -1026,7 +1296,7 @@ test("Portal roles, permission matrix and truthful remote snapshots render witho
     window.__state.chat.messages = [{ id:"remote-source", role:"user", content:"Diagnose Sync", portalSource:{ hostname:"linux-controller", endpoint:"wss://linux-controller:7345", chatName:"Build and test", participantId:"peer" } }];
     window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
   });
-  assert.match(await page.locator("#chat-status").innerText(), /Controlling DESKTOP-56TITCC · Windows Sync/);
+  assert.doesNotMatch(await page.locator("#chat-status").innerText(), /Controlling|Controlled/);
   assert.equal(await page.locator("#chat-portal .portal-open").count(), 1);
   assert.equal(await page.locator("#chat-portal .portal-side-wizard, #chat-portal .pixel-wizard-frame").count(), 0);
   assert.equal(await page.locator("#chat-portal .portal-ring").getAttribute("cx"), "12");
@@ -1034,6 +1304,7 @@ test("Portal roles, permission matrix and truthful remote snapshots render witho
   assert.equal(await page.locator("#portal-details").isVisible(),false);
   assert.equal(await page.locator("#portal-state").innerText(),"Portal Connected - Permission scoped");
   assert(await page.locator("#portal-state").evaluate(node=>node.getBoundingClientRect().height<=34),"connection summary must occupy one line");
+  await page.locator("#chat-actions-toggle").hover();
   await page.locator("#chat-portal").click();
   assert.deepEqual(await page.evaluate(() => window.__posts.filter(item => item.type === "peerCollaboration")), [{ type: "peerCollaboration", chatId }],
     "clicking an open Portal opens its controls rather than immediately disconnecting");
@@ -1047,7 +1318,7 @@ test("Portal roles, permission matrix and truthful remote snapshots render witho
   assert(scene.wizardLeft >= scene.ringRight - 0.5, "the controller wizard stands right of the Portal ring");
   assert.equal(scene.facing, "toward-portal");
   assert.equal(scene.stroke, "rgb(62, 166, 255)", "the open Portal is a blue ring of light");
-  assert.equal(await page.locator("#chat-status .portal-open .portal-side-wizard").count(), 1, "top-left status shows the wizard beside the open Portal");
+  assert.equal(await page.locator("#chat-status .portal-open .portal-side-wizard").count(), 0, "an outgoing task and historical incoming message must not replace local Chat status");
   assert.equal(await page.locator("#portal-state .portal-side-wizard").getAttribute("data-chat-role"), "controller");
   assert.match(await page.locator("#portal-state").innerText(), /Windows Sync/);
   assert.match(await page.locator("#portal-state").innerText(), /Waiting for remote authorization: Run powershell.exe/);
@@ -1058,6 +1329,7 @@ test("Portal roles, permission matrix and truthful remote snapshots render witho
   assert.match(await page.locator("#portal-state table").innerText(), /file-transfer.*EACH batch/s);
   await page.evaluate(() => {
     window.__state.portal.binding.role = "controlled";
+    window.__state.portal.execution = { requestId:"active-command", kind:"command", state:"running" };
     window.__state.portal.observations[0].visibility = "restricted";
     window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
   });
@@ -1084,6 +1356,78 @@ test("Portal roles, permission matrix and truthful remote snapshots render witho
     window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
   });
   assert.match(await page.locator("#messages").innerText(), /PKM · Portal status event/);
+  assert.deepEqual(errors, []);
+});
+
+test("Portal connectivity stays independent of local wizard states and only live incoming execution overrides them", async t => {
+  const { page, errors } = await open(t, 390);
+  await page.evaluate(() => {
+    __state.portal = { connected:true, binding:{role:"controlled",peerName:"Controller fixture"}, receipts:[] };
+    __state.chat.portalCommands = [{requestId:"old",role:"controlled",state:"running",program:"cmd",arguments:[],peerName:"old peer"}];
+    __state.chat.messages = [{id:"old-remote",role:"user",content:"Old remote task",portalSource:{hostname:"old-controller"}}];
+  });
+  for (const [status, indicator] of [["running","running"],["completed","completed"],["stopped","stopped"],["paused","paused"],["failed","failed"],["awaiting-input","waiting-input"]]) {
+    await page.evaluate(status => {
+      __state.chats[0].status = status;
+      __state.chats[0].portal = __state.portal;
+      __state.library.chats = __state.chats;
+      window.dispatchEvent(new MessageEvent("message", {data:__state}));
+    }, status);
+    assert.equal(await page.locator("#chat-status > .chat-status-indicator").getAttribute("data-state"), indicator);
+    assert.equal(await page.locator("#chat-status .portal-scene").count(), 0, "idle Portal and persisted command history cannot impersonate current work");
+    assert.equal(await page.locator("#chat-portal .portal-open").count(), 1);
+    assert.equal(await page.evaluate(() => PkmChatRole(__state.chats[0])), undefined);
+  }
+  for (const [key, role] of [["workerManager","manager"],["workerParentChatId","worker"]]) {
+    await page.evaluate(key => {
+      __state.chat[key] = __state.chats[0][key] = "fixture";
+      window.dispatchEvent(new MessageEvent("message", {data:__state}));
+    }, key);
+    assert.equal(await page.locator("#chat-status > .chat-status-indicator").getAttribute("data-chat-role"), role);
+    assert.equal(await page.locator(".chat-list-open .chat-status-indicator").getAttribute("data-chat-role"), role);
+    await page.evaluate(key => { delete __state.chat[key]; delete __state.chats[0][key]; }, key);
+  }
+  await page.evaluate(() => {
+    __state.portal.binding.role = "controller";
+    __state.portal.execution = {requestId:"live",kind:"task",state:"awaiting-approval"};
+    window.dispatchEvent(new MessageEvent("message", {data:__state}));
+  });
+  assert.match(await page.locator("#chat-status").innerText(), /Remote request awaiting approval/);
+  assert.equal(await page.locator("#chat-status .portal-side-wizard").getAttribute("data-chat-role"), "controlled", "duplex direction comes from execution, not saved pairing role");
+  await page.evaluate(() => {
+    __state.portal.execution.state = "running";
+    __state.portal.execution.kind = "command";
+    window.dispatchEvent(new MessageEvent("message", {data:__state}));
+  });
+  assert.match(await page.locator("#chat-status").innerText(), /Controlled execution/);
+  assert.equal(await page.evaluate(() => PkmChatDisplayStatus(__state.chats[0])), "running");
+  await page.evaluate(() => {
+    __ownerChat = __state.chat;
+    __ownerPortal = __state.portal;
+    const portal = {connected:true,binding:{role:"controlled",peerName:"Other peer"}};
+    __state.chat = {...__state.chat,id:"22222222-2222-4222-8222-222222222222",messages:[]};
+    const item = {...__state.chats[0],id:__state.chat.id,status:"paused",portal};
+    __state.chats.push(item);
+    __state.portal = portal;
+    window.dispatchEvent(new MessageEvent("message", {data:__state}));
+  });
+  assert.equal(await page.locator("#chat-status .portal-scene").count(), 0, "another connected Chat does not inherit incoming execution");
+  assert.equal(await page.locator('#chat-status > [data-state="paused"]').count(), 1);
+  assert.equal(await page.locator('.chat-list-open .chat-status-indicator[data-chat-role="controlled"]').count(), 1, "the running owner's list status stays controlled while another Chat is open");
+  await page.evaluate(() => {
+    __state.chat = __ownerChat;
+    __state.portal = __ownerPortal;
+    delete __state.portal.execution;
+    __state.chats[0].status = "paused";
+    window.dispatchEvent(new MessageEvent("message", {data:__state}));
+  });
+  assert.equal(await page.locator("#chat-status > .chat-status-indicator").getAttribute("data-state"), "paused");
+  assert.equal(await page.locator("#chat-status .portal-scene").count(), 0);
+  assert.equal(await page.locator("#chat-portal .portal-open").count(), 1);
+  for (const theme of Object.keys(themes)) {
+    await applyTheme(page, theme);
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  }
   assert.deepEqual(errors, []);
 });
 
@@ -1234,7 +1578,7 @@ test("paused wizards take a tea break, animate gently, honor reduced motion and 
     }, role);
     const indicator = page.locator("#chat-status .wizard-on-break");
     assert.equal(await indicator.getAttribute("data-state"), "paused");
-    assert.match(await indicator.getAttribute("aria-label"), new RegExp(`${role}.*Paused`, "i"));
+    assert.equal(await indicator.getAttribute("aria-label"), "Paused", "a connected Portal does not change the local wizard role");
     assert.equal(await page.locator("#chat-portal .portal-open").count(), 1,
       "pausing changes the Chat status, not the Portal connection");
   }
@@ -1244,7 +1588,8 @@ test("paused wizards take a tea break, animate gently, honor reduced motion and 
     window.dispatchEvent(new MessageEvent("message", {data:window.__state}));
   });
   assert.equal(await page.locator("#chat-status .wizard-on-break").count(), 0);
-  assert.equal(await page.locator("#chat-status .portal-open").count(), 1, "resuming restores the Portal status scene");
+  assert.equal(await page.locator("#chat-status .portal-open").count(), 0, "resuming local work does not imply remote control");
+  assert.equal(await page.locator('#chat-status > [data-state="running"]').count(), 1);
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth+1));
   assert.deepEqual(errors, []);
 });
@@ -1277,21 +1622,67 @@ test("old cancelled responses show an understandable stopped notice, not an erro
   assert.deepEqual(errors, []);
 });
 
-test("an over-budget composer explains why Send is disabled and clears the warning after correction", async t => {
-  const { page, errors } = await open(t);
+test("composer advice and budget details use compact hover/focus tooltips without reserving warning rows", async t => {
+  const { page, errors } = await open(t, 320);
+  const tooltip = page.locator("#composer-help-tooltip");
+  const advice = page.locator("#planning-advice");
+  const warning = page.locator("#composer-budget-warning");
+  await page.locator("#prompt").fill("Small request");
+  await page.mouse.move(0, 0);
+  const before = await page.locator("#composer").boundingBox();
+  assert.equal(await advice.innerText(), "");
+  assert.equal(await tooltip.isVisible(), false);
+  await advice.hover();
+  await tooltip.waitFor({ state:"visible" });
+  assert.match(await tooltip.innerText(), /Complex tasks benefit/);
+  await page.keyboard.press("Escape");
+  assert.equal(await tooltip.isVisible(), false);
   await page.evaluate(() => {
     window.__state.settings.inputBaseTokens = 17000;
     window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
   });
-  await page.locator("#prompt").fill("Small request");
   assert.equal(await page.locator("#send").isDisabled(), true);
-  assert.match(await page.locator("#composer-budget-warning").innerText(), /exceeds this context budget/);
+  assert.equal(await warning.innerText(), "");
+  const after = await page.locator("#composer").boundingBox();
+  assert.equal(after.height, before.height, "a persistent budget warning must not add composer height");
+  await warning.hover();
+  await tooltip.waitFor({ state:"visible" });
+  assert.match(await tooltip.innerText(), /exceeds this context budget/);
+  assert.equal(await page.locator("#composer").evaluate(node => node.innerText.includes("Estimated input plus")), false);
+  await page.mouse.move(0, 0);
+  await tooltip.waitFor({ state:"hidden" });
+  await warning.focus();
+  await tooltip.waitFor({ state:"visible" });
+  await page.keyboard.press("Escape");
+  assert.equal(await tooltip.isVisible(), false);
+  await warning.blur();
+  await warning.focus();
+  await tooltip.waitFor({ state:"visible" });
+  for (const theme of Object.keys(themes)) {
+    await applyTheme(page, theme);
+    const bounds = await tooltip.boundingBox();
+    assert(bounds.x >= 0 && bounds.x + bounds.width <= 320, "hover details fit the narrow viewport");
+  }
+  await page.evaluate(() => { document.documentElement.dir = "rtl"; });
+  await warning.focus();
+  assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   await page.evaluate(() => {
     window.__state.settings.inputBaseTokens = 100;
     window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
   });
   assert.equal(await page.locator("#composer-budget-warning").isVisible(), false);
+  assert.equal(await tooltip.isVisible(), false, "correcting the budget dismisses stale open details");
   assert.equal(await page.locator("#send").isEnabled(), true);
+  await page.evaluate(localization => {
+    window.__state.localization = localization;
+    window.__state.settings.inputBaseTokens = 17000;
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  }, { locale:"zh-hans", english:JSON.parse(fs.readFileSync(path.join(__dirname, "../resources/locales/en.json"))).strings,
+    strings:JSON.parse(fs.readFileSync(path.join(__dirname, "../resources/locales/zh-hans.json"))).strings });
+  await warning.focus();
+  await tooltip.waitFor({ state:"visible" });
+  assert.equal(await tooltip.innerText(), await warning.getAttribute("aria-label"));
+  assert(!/Estimated input/.test(await tooltip.innerText()), "the warning remains localized in hover details");
   assert.equal(await page.evaluate(() => window.__posts.filter(message => message.type === "send").length), 0);
   assert.deepEqual(errors, []);
 });
@@ -1507,7 +1898,7 @@ for (const width of [1280, 390, 320]) test(`activity rows contain their own deta
 test("a bound, running controlled Chat with Portal list items opens the Portal in both corners", async t => {
   const { page, errors } = await open(t, 390);
   await page.evaluate(() => {
-    const portal = { connected:true, binding:{ role:"controlled", pairId:"pair", peerName:"linux-controller", peerMachine:"br1u42", peerChatName:"Portal: windows debug", peerCapabilities:["observations-v1", "files-v1", "resume-v1"] } };
+    const portal = { connected:true, execution:{requestId:"remote-task",kind:"task",state:"running"}, binding:{ role:"controlled", pairId:"pair", peerName:"linux-controller", peerMachine:"br1u42", peerChatName:"Portal: windows debug", peerCapabilities:["observations-v1", "files-v1", "resume-v1"] } };
     const item = { ...window.__state.chats[0], title:"Diagnose GitHub Sync failures on this Windows machine, read-only", status:"running", portal };
     Object.assign(window.__state, { busy:true, portal:{ ...portal, endpoint:"ws://localhost:37009", permissions:{ grants:[], effective:{} }, observations:[], transfers:[], receipts:[] },
       chats:[item], library:{ groups:[], chats:[item] } });
@@ -1521,7 +1912,7 @@ test("a bound, running controlled Chat with Portal list items opens the Portal i
   assert.equal(await page.locator("#chat-portal").getAttribute("data-connection"), "connected");
   assert.equal(await page.locator("#chat-portal .portal-open").count(), 1);
   assert.equal(await page.locator("#chat-status .portal-open .portal-side-wizard").count(), 1);
-  assert.match(await page.locator("#chat-status").innerText(), /Controlled by br1u42 · Portal: windows debug/);
+  assert.match(await page.locator("#chat-status").innerText(), /Controlled execution · br1u42/);
   assert.doesNotMatch(await page.locator("#portal-state").innerText(), /Disconnected \/ unknown|Awaiting peer/);
 });
 

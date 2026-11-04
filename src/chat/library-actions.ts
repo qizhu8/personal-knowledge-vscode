@@ -26,9 +26,19 @@ async function chooseChatGroup(store: ApiChatStore, host: Pick<typeof vscode, "w
 }
 
 export async function handleChatLibraryAction(message: { type?: string; id?: string; value?: string | boolean }, store: ApiChatStore,
-  host: Pick<typeof vscode, "window">, isRunning: (id: string) => boolean, forget: (id: string) => void, deleted?: (id: string) => void | Promise<void>,
+  host: Pick<typeof vscode, "window">, isRunning: (id: string) => boolean, forget: (id: string) => void, deleted?: (id: string, namespace: string) => void | Promise<void>,
   removed?: (id: string) => void | Promise<void>): Promise<void> {
   const id = String(message.id);
+  const deleteOne = (chatId: string) => store.withDeletionLock(chatId, async () => {
+    if (isRunning(chatId)) throw new Error("Stop the running Chat before permanently deleting it.");
+    const intent = await store.prepareLibraryDeletion(chatId);
+    if (intent.chatPresent) await store.libraryMutation("delete-prepared", chatId);
+    // The intent survives until every cleanup step succeeds. Never purge Memory while a Chat is recoverable.
+    await deleted?.(chatId, intent.namespace);
+    await removed?.(chatId);
+    forget(chatId);
+    await store.libraryMutation("finish-delete", chatId);
+  });
   switch (message.type) {
     case "groupCreate": {
       const name = await host.window.showInputBox({ title: "New Chat group", ignoreFocusOut: true });
@@ -59,24 +69,30 @@ export async function handleChatLibraryAction(message: { type?: string; id?: str
     }
     case "restoreChat": await store.libraryMutation("restore", id); return;
     case "deleteChat": {
-      const choice = await host.window.showWarningMessage("Permanently delete this Chat? Task Session evidence is preserved.", { modal: true }, "Delete permanently");
-      if (choice === "Delete permanently") {
-        if (!store.library.read().placements[id]?.trashedAt) throw new Error("Move this Chat to Trash before permanently deleting it.");
-        if (isRunning(id)) throw new Error("Stop the running Chat before permanently deleting it.");
-        await deleted?.(id); await store.libraryMutation("delete", id); await removed?.(id); forget(id);
-      } return;
+      const pending = store.pendingDeletionCleanups().some(item => item.id === id);
+      const label = pending ? "Retry deletion cleanup" : "Delete permanently";
+      const choice = await host.window.showWarningMessage(pending
+        ? "This Chat is permanently deleted and cannot be restored. Retry its pending Memory and endpoint cleanup?"
+        : "Permanently delete this Chat? Task Session evidence is preserved. If later cleanup fails, the Chat cannot be restored; cleanup remains available in Trash.",
+      { modal: true }, label);
+      if (choice === label) {
+        try { await deleteOne(id); }
+        catch (error) {
+          throw new Error(`Chat deletion did not finish. Inspect Trash and pending deletion cleanup before explicitly retrying: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      return;
     }
     case "emptyTrash": {
-      const choice = await host.window.showWarningMessage("Permanently delete all Chats in Trash? Task Session evidence is preserved.", { modal: true }, "Empty Trash");
+      const choice = await host.window.showWarningMessage("Permanently delete all Chats in Trash and retry pending cleanup? Task Session evidence is preserved. Chats already deleted cannot be restored.", { modal: true }, "Empty Trash");
       if (choice === "Empty Trash") {
         const failures: string[] = [];
         for (const item of await store.trashList()) {
           try {
-            if (isRunning(item.id)) throw new Error("Stop the running Chat before permanently deleting it.");
-            await deleted?.(item.id); await store.libraryMutation("delete", item.id); await removed?.(item.id); forget(item.id);
+            await deleteOne(item.id);
           } catch (error) { failures.push(`${item.title} (${item.id}): ${error instanceof Error ? error.message : String(error)}`); }
         }
-        if (failures.length) throw new Error(`Some Chats could not be deleted and remain in Trash:\n${failures.join("\n")}`);
+        if (failures.length) throw new Error(`Some deletions did not finish. Chats not deleted remain in Trash; already deleted Chats have pending cleanup and cannot be restored:\n${failures.join("\n")}`);
       }
       return;
     }

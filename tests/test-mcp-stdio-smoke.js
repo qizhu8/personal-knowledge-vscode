@@ -22,7 +22,7 @@ try {
   const moduleDirectory = path.join(root, "module");
   const store = path.join(root, "store");
   const subscriptionCache = path.join(root, "subscriptions");
-  const retrievalState = path.join(root, "retrieval");
+  const retrievalState = path.join(root, "private", "retrieval", "fixture");
   const environmentsRegistry = path.join(root, "environments", "registry.json");
   fs.mkdirSync(moduleDirectory, { recursive: true });
   fs.mkdirSync(store, { recursive: true });
@@ -63,7 +63,7 @@ try {
   for (const name of ["recipe_runtime.py", "action_runtime.py", "action_modules.py", "action_authoring.py", "action_monitoring.py", "action_azuredevops.py", "action_run_store.py", "action_recovery.py", "action_components.py", "recipe_health.py", "agent_session_runtime.py", "api_chat_control.py", "mcp_call_guard.py", "diagnostic_log.py"]) {
     fs.copyFileSync(path.join(repositoryRoot, "resources", name), path.join(moduleDirectory, name));
   }
-  for (const name of ["knowledge_recovery.py", "knowledge_mutations.py", "knowledge_mutations.js", "knowledge_snapshots.py", "asset_classification.py", "asset_classification.js"]) {
+  for (const name of ["knowledge_recovery.py", "knowledge_mutations.py", "knowledge_mutations.js", "todo_api.py", "capability_api.py", "knowledge_snapshots.py", "asset_classification.py", "asset_classification.js"]) {
     fs.copyFileSync(path.join(repositoryRoot, "resources", name), path.join(moduleDirectory, name));
   }
 
@@ -156,8 +156,8 @@ class RetrievalBridge:
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
-        state = pathlib.Path(sys.argv[1]).parent / "retrieval"
-        state.mkdir()
+        state = pathlib.Path(${JSON.stringify(retrievalState)})
+        state.mkdir(parents=True)
         (state / "worker.json").write_text(json.dumps({"port": self.server.server_port, "token": "local-stdio-fixture"}))
         return self
 
@@ -357,6 +357,9 @@ async def main(bridge):
                     version["skill_discovery_tool"],
                 ]
                 required_read_only = [
+                    "list_boards", "get_board", "list_workitems", "get_workitem",
+                    "list_userstories", "get_userstory", "list_agents",
+                    "list_workitem_history", "list_board_changes",
                     "check_version",
                     "check_chat_version",
                     *discovery_names,
@@ -378,6 +381,28 @@ async def main(bridge):
                 ]
                 missing = sorted(set(required_read_only) - set(by_name))
                 assert not missing, ("advertised tools missing from tools/list", missing)
+                inventory = (await client.call_tool("capabilities_inventory", {"limit": 50})).structured_content
+                assert inventory["total"] == len(by_name), inventory
+                assert inventory["schemaBytes"] > 0
+                print(json.dumps({"pilot": "generated-unified-mcp", "exposedTools": inventory["total"],
+                                  "schemaBytes": inventory["schemaBytes"], "measurement": "actual exposed fixture schemas"}))
+                proposal = (await client.call_tool("capability_call", {
+                    "operation": "memory.record.propose", "version": 1,
+                    "arguments": {"content": "Generated MCP uses private Memory storage.", "operation_id": "smoke-memory",
+                                  "sources": [{"id": "smoke-input", "chat": "smoke", "revision": "r1", "locator": "message/input"}]}
+                })).structured_content["result"]
+                assert proposal["status"] == "pending"
+                private_database = pathlib.Path(${JSON.stringify(path.join(root, "private", "memory"))}) / (hashlib.sha256(str(pathlib.Path(${JSON.stringify(store)})).encode()).hexdigest()[:24] + ".sqlite3")
+                assert private_database.is_file(), private_database
+                assert not list(pathlib.Path(${JSON.stringify(store)}).rglob("*.sqlite3")), "Memory leaked into synchronized knowledge"
+                try:
+                    await client.call_tool("capability_call", {
+                        "operation": "memory.record.confirm", "version": 1,
+                        "arguments": {"id": proposal["id"], "expected_revision": 1, "operation_id": "fake-local-decision"}})
+                except ToolError as error:
+                    assert "NOT_AVAILABLE" in str(error)
+                else:
+                    raise AssertionError("Generated MCP exposed native local decision")
                 for name in required_read_only:
                     annotations = by_name[name].annotations
                     assert annotations is not None and annotations.readOnlyHint is True, (
@@ -400,18 +425,34 @@ async def main(bridge):
                     for advertised_tool in payload.get("tools", payload.get("chat_tools", [])):
                         assert advertised_tool in by_name, (name, advertised_tool)
 
+        compact_transport = StdioTransport(
+            sys.executable, [str(module_directory / "server.py")], cwd=str(module_directory),
+            env={**os.environ, "PKM_CAPABILITY_PROFILE": "compact"}, log_file=log)
+        async with Client(compact_transport, timeout=3, init_timeout=3) as client:
+            compact_tools = {tool.name for tool in await client.list_tools()}
+            assert compact_tools == {"capabilities_inventory", "capabilities_list", "capabilities_search",
+                                     "capabilities_describe", "capability_read", "capability_call", "check_version"}, compact_tools
+            compact_inventory = (await client.call_tool("capabilities_inventory", {})).structured_content
+            assert compact_inventory["schemaBytes"] < inventory["schemaBytes"] * 0.4
+            recalled = (await client.call_tool("capability_read", {
+                "operation": "memory.record.get", "version": 1, "arguments": {"id": proposal["id"]}})).structured_content["result"]
+            assert recalled["revision"] == proposal["revision"] and recalled["status"] == "pending"
+            print(json.dumps({"pilot": "generated-unified-mcp-compact", "exposedTools": compact_inventory["total"],
+                              "schemaBytes": compact_inventory["schemaBytes"], "measurement": "actual exposed fixture schemas; nonpilot domains hidden"}))
+
 
 with RetrievalBridge() as bridge:
     asyncio.run(main(bridge))
 `;
   const smokePath = path.join(root, "smoke.py");
   fs.writeFileSync(smokePath, smokeTest);
-  execFileSync(process.env.PYTHON || "python", [smokePath, moduleDirectory], {
+  const smokeOutput = execFileSync(process.env.PYTHON || "python", [smokePath, moduleDirectory], {
     cwd: repositoryRoot,
     encoding: "utf8",
     timeout: 30000,
     stdio: ["ignore", "pipe", "pipe"],
   });
+  process.stdout.write(smokeOutput);
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }

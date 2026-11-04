@@ -19,6 +19,7 @@ const parts = [
   "16-portal-connections.js",
   "20-knowledge.js",
   "21-search.js",
+  "22-note-todo.js",
   "30-environments.js",
   "40-servers.js",
   "45-subscriptions.js",
@@ -36,6 +37,7 @@ const bundle = parts
   .join("");
 
 fs.writeFileSync(path.join(outputDir, "panel.js"), bundle);
+fs.copyFileSync(path.join(sourceDir, "22-note-todo.js"), path.join(outputDir, "note-todo.js"));
 fs.writeFileSync(path.join(outputDir, "standalone-mermaid.js"),
   fs.readFileSync(path.join(root, "src", "webview", "components", "media-zoom.js"), "utf8") + "\n"
   + fs.readFileSync(path.join(root, "src", "webview", "standalone-mermaid.js"), "utf8"));

@@ -91,6 +91,8 @@ export interface PortalFilesOptions {
   /** Idle timeout per transfer, reset on progress (default 10 minutes). */
   timeoutMs?: number;
   onStatus?: PortalStatusCallback;
+  /** Recheck Host policy before incoming temporary-file creation, writes and publication. */
+  assertActive?: () => void;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -325,6 +327,7 @@ export class PortalFiles {
     if (session.state !== "awaiting-approval") return;
     if (!approved) return this.end(id, "cancelled", "Declined by the receiving user.");
     try {
+      this.options.assertActive?.();
       verifyDirectory(session.destination!);
       for (const [index, file] of manifest.files.entries()) {
         const target = path.join(destination, file.name);
@@ -344,6 +347,7 @@ export class PortalFiles {
   private async receive(id: string, session: Incoming, item: Record<string, unknown>): Promise<void> {
     if (session.state !== "transferring") return;
     try {
+      this.options.assertActive?.();
       if (item.op === "chunk") {
         const current = session.files.findIndex(f => !f.verified);
         const { index, offset, data } = item;

@@ -2,7 +2,8 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { activeHarnessBinding, assertHarnessRecipeBinding, validateHarnessReport, createHarnessReportTool, currentHarnessTask, currentHarnessTaskState } = require("../dist/chat/chat-harness-records");
 const { build } = require("../src/webview/agent-harness");
-const { ApiChatStore, apiChatHarnessSnapshot } = require("../dist/chat/api-chat-store");
+const { ApiChatStore, apiChatHarnessSnapshot, apiChatSessionHarnessSnapshot } = require("../dist/chat/api-chat-store");
+const { ChatHistoryStorage } = require("../dist/chat/chat-history-storage");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -168,6 +169,80 @@ test("validation can report semantic failure despite successful dispatch and ret
     evidenceCallIds:["test-call","successful-call"], reason:"First failure retained for comparison; retry was checked separately." });
   assert.deepEqual(reply.harnessReports.map(report => report.status), ["start","failed","start","complete"]);
   assert.equal(reply.toolCalls[0].status, "failed");
+});
+
+test("validation binds its start to source inputs and cannot certify newer user requirements", () => {
+  const { chat, reply } = fixture();
+  const start = commit(chat, reply, { kind:"validation", stepId:"check", status:"start", summary:"Check original requirements" });
+  assert.deepEqual(start.sourceInputIds, ["input"]);
+  chat.messages.push({ id:"steer", role:"user", taskId:"task", inputKind:"steer", content:"Also test the new requirement.", status:"complete" });
+  const outcome = { kind:"validation", stepId:"check", status:"complete", summary:"Original check passed",
+    evidenceCallIds:["test-call"], reason:"Expected negative test" };
+  const before = JSON.stringify(reply.harnessReports);
+  assert.throws(() => commit(chat, reply, outcome), /source inputs changed/);
+  assert.throws(() => commit(chat, reply, { ...outcome, sourceInputIds:["input", "steer"] }), /source inputs changed/);
+  assert.equal(JSON.stringify(reply.harnessReports), before);
+  commit(chat, reply, { kind:"validation", stepId:"check", status:"failed", summary:"Old check does not cover steering", evidenceCallIds:["test-call"] });
+  commit(chat, reply, { kind:"validation", stepId:"check", status:"start", summary:"Check revised requirements" });
+  const accepted = commit(chat, reply, { ...outcome, summary:"Revised check passed" });
+  assert.deepEqual(accepted.sourceInputIds, ["steer"]);
+  commit(chat, reply, { kind:"validation", stepId:"mutated-input", status:"start", summary:"Check exact input bytes" });
+  chat.messages[0].content = "Changed requirements with the same input ID";
+  assert.throws(() => commit(chat, reply, { ...outcome, stepId:"mutated-input" }), /source inputs changed/);
+  reply.progress.attemptId = "new-attempt";
+  assert.throws(() => commit(chat, reply, { ...outcome, stepId:"mutated-input" }), /recorded start/);
+});
+
+test("validation outcomes inherit the recorded Recipe binding and cannot replace it", () => {
+  const { chat, reply } = fixture();
+  commit(chat, reply, { kind:"validation", stepId:"check", status:"start", summary:"Check pinned stage",
+    recipeRunId:"recipe_run_original", recipeStageId:"test" });
+  const outcome = { kind:"validation", stepId:"check", status:"complete", summary:"Check passed",
+    evidenceCallIds:["test-call"], reason:"Expected negative test" };
+  assert.throws(() => commit(chat, reply, { ...outcome, recipeRunId:"recipe_run_different", recipeStageId:"test" }), /Recipe binding/);
+  assert.throws(() => commit(chat, reply, { ...outcome, recipeRunId:"recipe_run_original", recipeStageId:"deploy" }), /Recipe binding/);
+  assert.equal(commit(chat, reply, outcome).binding.recipeRunId, "recipe_run_original");
+});
+
+test("stored Harness snapshots do not accept validation for obsolete or unbound source inputs", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-validation-sources-"));
+  try {
+    const { chat, reply } = fixture();
+    chat.sessionId = `agent_session_${"a".repeat(32)}`;
+    for (const message of chat.messages) message.taskId = chat.sessionId;
+    const storage = new ChatHistoryStorage(directory);
+    commit(chat, reply, { kind:"validation", stepId:"check", status:"start", summary:"Check" });
+    const validation = commit(chat, reply, { kind:"validation", stepId:"check", status:"complete",
+      summary:"Check passed", evidenceCallIds:["test-call"], reason:"Expected negative test" });
+    reply.status = "complete"; reply.progress.status = "complete";
+    const lifecycle = value => build({ sessionId:chat.sessionId, origin:"pkm-native", status:"completed", todos:[],
+      harness:apiChatHarnessSnapshot(value) }).lifecycle;
+    assert.equal(lifecycle(chat).current, "end");
+    chat.messages.push({ id:"worker", role:"user", taskId:chat.sessionId, workerEventIds:["worker"], content:"Worker update", status:"complete" },
+      { id:"portal", role:"user", taskId:chat.sessionId, portalReview:{ id:"r" }, content:"Remote review", status:"complete" });
+    assert.equal(lifecycle(chat).current, "end", "worker and Portal events are not new user requirements");
+    chat.messages.push({ id:"steer", role:"user", taskId:chat.sessionId, inputKind:"steer", content:"Also check the changed requirement", status:"complete" });
+    const filename = path.join(directory, "snapshot.json");
+    const packed = storage.pack({ ...chat, version:1, id:"11111111-1111-4111-8111-111111111111" });
+    fs.writeFileSync(filename, JSON.stringify({ schema:"pkm.agent.session/v1", sessionId:chat.sessionId,
+      origin:"pkm-native", runtimeOwner:"pkm", hostKind:"pkm", nativeChat:packed }));
+    const record = JSON.parse(fs.readFileSync(filename, "utf8"));
+    const sessionSnapshot = apiChatSessionHarnessSnapshot(record, chat.sessionId, directory);
+    for (const snapshot of [apiChatHarnessSnapshot(chat), apiChatHarnessSnapshot(storage.unpack(record.nativeChat)), sessionSnapshot]) {
+      const state = build({ sessionId:chat.sessionId, origin:"pkm-native", status:"completed", todos:[], harness:snapshot }).lifecycle;
+      assert.deepEqual([state.current, state.outcome], ["check", "unverified"]);
+      assert.match(state.reason, /source input/i);
+    }
+    chat.messages = chat.messages.filter(message => message.id !== "steer");
+    const original = chat.messages[0].content;
+    chat.messages[0].content = "Edited requirement, same source identity";
+    assert.equal(lifecycle(chat).outcome, "unverified");
+    chat.messages[0].content = original;
+    delete validation.sourceInputIds;
+    assert.equal(lifecycle(chat).outcome, "unverified", "legacy validation without source identity cannot prove current acceptance");
+    validation.sourceInputIds = ["input"]; validation.attemptId = "foreign-attempt";
+    assert.equal(lifecycle(chat).outcome, "unverified");
+  } finally { fs.rmSync(directory, { recursive:true, force:true }); }
 });
 
 test("nested Steps retain ownership and distinct retries; finishing a child restores its active parent", () => {

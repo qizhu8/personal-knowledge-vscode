@@ -255,6 +255,81 @@ test("CTX-M12: rolling back a prepared but uncommitted plan does not retain remo
   assert.equal(accepted.filter(message => message.content === "Accepted replacement").length, 1);
 });
 
+test("native measured planning retains fitting tool evidence before byte estimates can evict it", async () => {
+  const first = tools("first", "alpha ".repeat(1200)), second = tools("second", "beta ".repeat(1200));
+  const messages = [required(), ...first, ...second], automatic = new Map();
+  const schema = [{ role:"system", content:"tool schema ".repeat(500) }];
+  const planner = new ChatContextPlanner(messages, automatic, schema);
+  let measurements = 0;
+  const counter = {
+    countMessage:async message => { measurements++; return Math.ceil(Buffer.byteLength(JSON.stringify(message)) / 6) + 32; },
+    countTools:async () => 400,
+  };
+  const measured = await planner.measure(messages, 4096, counter);
+  assert(measured, "byte overflow must be measured before dropping evidence");
+  const result = planner.plan(messages, 4096, "alpha beta", measured);
+  assert(messages.includes(first[1]) && messages.includes(second[1]));
+  assert.equal(result.receipt.stopReason, "fits");
+  assert.equal(result.receipt.omittedIds.length, 0);
+  assert(result.receipt.estimatedAfter > 4096, "byte estimates remain estimates, not measured token usage");
+  assert(result.receipt.measuredInput.inputTokens <= 4096);
+  assert.equal(result.receipt.measuredInput.countingMethod, "vscode-countTokens-plus-overhead");
+  const calls = measurements;
+  assert.equal(await planner.measure(messages, 100000, counter), undefined);
+  assert.equal(measurements, calls, "a fitting byte bound must not invoke a tokenizer");
+  assert.deepEqual(result.receipt.manifest.map(item => item.hash), messages.map(hash));
+});
+
+test("measured planning still rejects required overflow and atomically evicts genuinely oversized old evidence", async () => {
+  const messages = [required(), ...tools("first", "old ".repeat(3000)), ...tools("second", "current evidence")];
+  const planner = new ChatContextPlanner(messages, new Map(), []);
+  const countMessage = async message => Math.ceil(Buffer.byteLength(JSON.stringify(message)) / 2) + 32;
+  const measurement = await planner.measure(messages, 1500, { countMessage, countTools:async () => 0 });
+  const result = planner.plan(messages, 1500, "current", measurement);
+  assert(!messages.some(message => message.tool_call_id === "first"));
+  assert(messages.some(message => message.tool_call_id === "second"));
+  assert(result.receipt.measuredInput.inputTokens <= 1500);
+  const pinned = [{ role:"user", content:"x".repeat(10000) }];
+  const mandatory = new ChatContextPlanner(pinned, new Map(), []);
+  const cost = await mandatory.measure(pinned, 1000, { countMessage, countTools:async () => 0 });
+  assert.throws(() => mandatory.plan(pinned, 1000, "", cost), /required input/);
+  await assert.rejects(mandatory.measure(pinned, 1000, { countMessage:async () => NaN, countTools:async () => 0 }), /token count/);
+  await assert.rejects(mandatory.measure(pinned, 1000, { countMessage:async () => { throw new Error("Tokenizer unavailable"); }, countTools:async () => 0 }), /Tokenizer unavailable/);
+});
+
+test("changed or newly inserted context uses labeled conservative bounds instead of stale measured counts", async () => {
+  const prompt = required(), messages = [prompt, ...tools("current", "evidence ".repeat(1200))];
+  const planner = new ChatContextPlanner(messages, new Map(), []);
+  const counter = { countMessage:async () => 64, countTools:async () => 0 };
+  const measured = await planner.measure(messages, 1000, counter);
+  messages.push({ role:"user", content:"New steering" });
+  const result = planner.plan(messages, 1000, "current", measured);
+  assert.equal(result.receipt.measuredInput.countingMethod, "mixed-token-counts-and-byte-bounds");
+  assert(result.receipt.measuredInput.inputTokens > 32 + messages.length * 32);
+  const stale = await planner.measure(messages, 1000, counter);
+  prompt.content = "Changed mandatory input ".repeat(500);
+  assert.throws(() => planner.plan(messages, 1000, "current", stale), /required input/);
+});
+
+test("native measured planning retains evidence across rounds without widening automatic knowledge limits", async () => {
+  const knowledge = reference("Automatic knowledge ".repeat(1000), "knowledge", 50);
+  knowledge.reference.budget = "knowledge";
+  const messages = [required(), knowledge.message], automatic = new Map([[knowledge.message, knowledge.reference]]);
+  const planner = new ChatContextPlanner(messages, automatic, []);
+  const counter = { countMessage:async () => 64, countTools:async () => 0 };
+  for (let round = 0; round < 6; round++) {
+    messages.push(...tools(`round-${round}`, "Source evidence ".repeat(1000)));
+    const measured = await planner.measure(messages, 2000, counter);
+    const result = planner.plan(messages, 2000, "source evidence", measured);
+    assert.equal(messages.filter(message => message.role === "tool").length, round + 1);
+    assert(!messages.includes(knowledge.message));
+    assert(result.receipt.omittedIds.includes("knowledge"));
+    assert.equal(result.receipt.automaticKnowledge.inputBudget, 8000);
+    assert.equal(result.receipt.automaticKnowledge.estimatedAfter, 32);
+    assert(!result.receipt.omittedIds.some(id => id.startsWith("tool:")));
+  }
+});
+
 test("refined projections use the current query, do not duplicate whole sources, and have bounded lifetime", () => {
   const queries = [];
   const entry = reference("Long source ".repeat(1000), "source", 1, query => {

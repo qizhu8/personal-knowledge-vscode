@@ -22,7 +22,7 @@
 <link rel="stylesheet" href="%%PANEL_CSS%%">
 <link rel="stylesheet" href="%%AGENT_HARNESS_CSS%%">
 </head>
-<body>
+<body spellcheck="true">
 <div id="topbar" hidden>
   <strong>Personal Knowledge</strong>
   <button id="open-pkm-chat-button" type="button" class="topbar-help-button" onclick="ask('openApiChat')" title="PKM Chat" aria-label="PKM Chat"><span class="codicon codicon-comment-discussion" aria-hidden="true"></span></button>
@@ -188,7 +188,7 @@
         <input id="pf-tags" placeholder="tags, comma-sep" style="flex:1.5">
       </div>
       <div class="form-row">
-        <input id="pf-url" placeholder="Remote URL (arXiv / DOI / link)" style="flex:2">
+        <input id="pf-url" spellcheck="false" placeholder="Remote URL (arXiv / DOI / link)" style="flex:2">
         <button class="tbtn" onclick="document.getElementById('pf-file-input').click()"><span class="codicon codicon-cloud-upload" aria-hidden="true"></span> Upload file</button>
         <span id="pf-file-label" style="font-size:11px;color:var(--muted);align-self:center"></span>
         <input type="file" id="pf-file-input" style="display:none" onchange="uploadPaperFile(this)">

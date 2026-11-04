@@ -35,6 +35,11 @@ const sources = {
 };
 
 const first = createRetrievalSnapshot(sources);
+const boardSources={...sources,notes:[{...sources.notes[0],documentKind:"todo-board",boardDigest:"a".repeat(64),content:"Historical task falsely says Done"}]};
+const boardDocument=createRetrievalSnapshot(boardSources).documents.find(item=>item.content_type==="note");
+assert(!boardDocument.body.includes("falsely says Done"),"retrieval must not present historical Markdown as authoritative Board state");
+assert(boardDocument.body.includes("note_work_items")&&boardDocument.body.includes("note_work_item_command"));
+assert.notStrictEqual(boardDocument.source_revision,createRetrievalSnapshot({...boardSources,notes:[{...boardSources.notes[0],boardDigest:"b".repeat(64)}]}).documents.find(item=>item.content_type==="note").source_revision);
 const second = createRetrievalSnapshot({ ...sources, subscriptionGroups: [...groups].reverse() });
 assert.strictEqual(first.documents.length, 9, "local Skill/Note/Research/Script/Recipe plus all three Brokers must share one index");
 assert.strictEqual(first.corpus_revision, second.corpus_revision, "corpus revision must not depend on input ordering");

@@ -112,16 +112,46 @@ iterations are noted separately. There is no additional large lifecycle ring or
 duplicate Last recorded / Run summary. Exactly one stage is current, chosen only
 from recorded evidence:
 
-- Live attempt with a started validation report → Evaluate.
-- Dependency wait, awaiting result, or non-terminal referenced Action Run →
-  Monitor.
+- A non-terminal Action Run explicitly recorded in the latest attempt's
+  `toolCalls.actionRunIds` keeps that attempt live at Monitor/waiting, even after
+  the assistant reply and its validation report complete. Only those references
+  count; unrelated Runs, older attempts and implicitly included child Runs do
+  not block End. Duplicate references count once. Snapshot projection extracts
+  references from full structured tool results and reads current durable Run
+  states, including after stored Chat/Session reload; previews are not authority.
+- Otherwise, a live attempt with a started validation report → Evaluate.
+- Dependency wait or awaiting result → Monitor.
 - Task/planning report started, or planning without calls/outputs → Configure.
 - Any other live attempt → Run. A user wait keeps the stage and adds
   "Waiting for you".
-- Finished: completed managed Task or passed validation → End; failed
-  validation → Meets goals? (failed); failed/interrupted/cancelled attempt →
-  Run (failed); a reply that finished without validation stops at Meets goals?
-  marked "done, not validated" and End stays dark.
+- Finished, with no referenced non-terminal Run: completed managed Task or
+  passed validation → End; failed validation → Meets goals? (failed);
+  failed/interrupted/cancelled attempt → Run with its real outcome. Earlier
+  validation complete must not overwrite those attempt outcomes, and a live
+  Run must not resurrect them. Explicit managed Task completion retains its
+  existing authority. A reply finished without validation stops at Meets goals?
+  marked "done, not validated" and End stays dark. Run termination (including
+  failure/cancellation) alone never creates a validation pass or Task success.
+
+Validation starts capture the latest original user-input identity and a digest
+of the current Task's user inputs, using the same input selection and hashing
+as Task context checkpoints. Worker events and Portal review records are not
+new user requirements. An outcome inherits its start's source identities,
+digest and Recipe Run/Stage; it cannot switch bindings or complete a validation
+from another attempt. Changed inputs require closing the old check as failed
+or ignored and starting a new validation. A same-ID content edit also invalidates
+the old check. Reports and failed evidence remain available for inspection.
+
+The production Chat/Session snapshot carries the current source identity and
+digest. When that context is available, lifecycle acceptance requires matching
+Task/attempt/source bindings; legacy reports without those bindings remain
+visible but cannot prove current acceptance. A new input arriving after a
+completed validation returns the lifecycle to Check/unverified, including after
+history reload, refresh or remount. A fresh validation can restore End.
+Explicit managed Task completion retains its separate authority. This binds
+validation to user requirements and its recorded Recipe stage, not to hashes
+of all mutable output artifacts; complete artifact-version and multi-level
+worker authority acceptance remain open under HAR-02.
 
 Earlier stages are visited; Monitor/Evaluate passed without evidence are
 skipped. Selecting a stage lists its recorded items and opens their records.

@@ -37,10 +37,39 @@ scoring proposal or authorize automatic retries.
   distinct-call/activity signals do not certify acceptance or decide the next
   action. Changing a query can avoid identical-call detection without making
   useful progress.
+  Running invocations do not contribute to repeated no-output or failure
+  thresholds: they have no outcome yet. A running-to-terminal snapshot of the
+  same call identity contributes once, and genuinely repeated terminal calls
+  still trigger the existing loop threshold. Distinct tool activity remains
+  an observation, not proof of artifact progress or task acceptance.
 - The inspected model failure/cancellation path records failure and preserves
   prior effects, but does not itself schedule a reconciled goal continuation.
   This is appropriate for uncertain effects; recovery needs explicit ownership
   and admission, not blind replay.
+
+### Bounded manager requests
+
+The first three-Chat parallel trial exceeded prompt-only round targets and
+external cancellation truncated two reports. Explicit API sends can now carry
+a non-renewable `hard_tool_round_limit` (1-1000). The shared execution guard
+applies it independently of timed review and Continue decisions, then permits
+at most one tool-free summary. SDK transport first confirms stopping its
+tool-capable session, then creates a tool-free summary session; failure to stop
+prevents that summary session from starting.
+
+The limit and observed boundary are persisted with the reply and exposed in
+API/Harness diagnostics. Open goals remain interrupted rather than accepted;
+Stop, errors and provider output/context limits still take precedence. Separate
+activity review gates apply per submitted Chat response: 200 reported Copilot
+credits by default and a 20-minute active-time review interval. Detached
+background-process lifetime and non-inference tool work are not Copilot credit
+usage; model inference used to track a process still is. At a gate, the user can
+raise the response limit, bypass limits for that response or the whole Chat
+session, pause, or cancel. Session bypass is persisted with the Chat and can be
+reset in Model Settings. Missing provider usage remains unknown, never zero.
+These gates do not add a cumulative input cap, progress evaluator or automatic
+scheduler. Local fake provider/controller tests are not live SDK or
+installed-build acceptance.
 
 ### Reference comparison
 

@@ -18,13 +18,13 @@ function scopedSource(source: ApiConversation, owner: ApiConversation): ApiConve
     memoryPolicy:{ ...sourcePolicy, recallDays:policy.recallDays, ...(clearedAt ? { clearedAt } : {}) } };
 }
 
-export function scopedMemorySegment(store: ApiChatStore, owner: ApiConversation, identity: string) {
+export function scopedMemorySegment(store: ApiChatStore, owner: ApiConversation, identity: string, knownSource?: ApiConversation) {
   if (!owner.includeHistory) return undefined;
   const separator = identity.indexOf("@");
   const sourceId = separator < 0 ? owner.id : identity.slice(0, separator);
   const segmentId = separator < 0 ? identity : identity.slice(separator + 1);
   if (sourceId !== owner.id && !store.memorySourceIds(owner).includes(sourceId)) return undefined;
-  const source = store.loadMemorySource(owner, sourceId);
+  const source = store.loadMemorySource(owner, sourceId, knownSource);
   if (!source?.includeHistory) return undefined;
   const scoped = scopedSource(source, owner);
   const messages = scoped.messages.filter(message => segmentId.startsWith(`${message.id}:`));
@@ -61,7 +61,7 @@ export function recallScopedChatMemory(store: ApiChatStore, owner: ApiConversati
         reason:"Authorized source Chat evidence; untrusted and subject to the consumer's recall window.", content:segment.content },
       isCurrent:() => {
         const currentOwner = store.loadMemorySource(owner, owner.id);
-        return !!currentOwner && !!scopedMemorySegment(store, currentOwner, `${source.id}@${segment.id}`);
+        return !!currentOwner && !!scopedMemorySegment(store, currentOwner, `${source.id}@${segment.id}`, source);
       },
     });
   }

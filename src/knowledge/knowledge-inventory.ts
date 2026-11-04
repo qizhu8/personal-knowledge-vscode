@@ -9,6 +9,7 @@ export interface KnowledgeInventoryEntry {
   name: string; description: string; type: string; tags: string; source_project: string; extension: string;
   knowledgeId?: string; knowledgeRevision?: number; aliases?: string[];
   pinned?: boolean;
+  documentKind?: "markdown" | "todo-board";
 }
 export interface KnowledgeInventorySnapshot {
   schema: 1; root: string; revision: string; updatedAt: string;
@@ -33,6 +34,7 @@ export class KnowledgeInventoryManager {
   notes(): any[] {
     return this.entries("notes").filter(entry => entry.extension === ".md").map(entry => ({
       slug: entry.slug, title: entry.title, description: entry.description, type: entry.type,
+      documentKind: entry.documentKind || "markdown",
       tags: entry.tags, pinned: false, category: entry.category,
       knowledgeId: entry.knowledgeId, revision: entry.knowledgeRevision, aliases: entry.aliases || [],
       created_at: new Date(entry.mtimeMs).toISOString(), updated_at: new Date(entry.mtimeMs).toISOString(),
@@ -91,11 +93,14 @@ export class KnowledgeInventoryManager {
     return result;
   }
 
-  refresh(onProgress?: (progress: { scanned: number; reused: number; parsed: number; batchCount: number }) => void): Promise<KnowledgeInventorySnapshot> {
-    if (this.refreshPromise) return this.refreshPromise;
+  refresh(onProgress?: (progress: { scanned: number; reused: number; parsed: number; batchCount: number }) => void, afterMutation = false): Promise<KnowledgeInventorySnapshot> {
+    // A scan started before a mutation may already have read the old paths.
+    if (this.refreshPromise) return afterMutation
+      ? this.refreshPromise.then(() => this.refresh(onProgress))
+      : this.refreshPromise;
     this.folderCache.clear();
-    this.refreshPromise = this.refreshInner(onProgress);
-    return this.refreshPromise.finally(() => { this.refreshPromise = undefined; });
+    this.refreshPromise = this.refreshInner(onProgress).finally(() => { this.refreshPromise = undefined; });
+    return this.refreshPromise;
   }
 
   private refreshInner(onProgress?: (progress: { scanned: number; reused: number; parsed: number; batchCount: number }) => void): Promise<KnowledgeInventorySnapshot> {
@@ -118,6 +123,7 @@ export class KnowledgeInventoryManager {
         };
         this.writeSnapshot(snapshot);
         this.snapshotValue = snapshot;
+        this.folderCache.clear();
         resolve(snapshot);
       });
       worker.once("error", reject);

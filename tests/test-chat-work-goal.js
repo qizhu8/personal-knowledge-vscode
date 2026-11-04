@@ -88,6 +88,37 @@ test("updates cannot silently remove criteria or ignore newer user input", () =>
   assert.throws(() => reportWork(chat, reply, stale), /all ordered sourceInputIds/);
 });
 
+test("a rejected replacement report names missing criteria and permits an explicit evidence-checked correction", () => {
+  const { chat, reply } = fixture();
+  const extra = "Deliver an isolated red regression, not a production repair.";
+  reportWork(chat, reply, report(chat, { status:"continue", nextAction:"Run the isolated reproduction.", acceptance:[
+    { criterion:rootWorkCriterion, verified:false, evidenceCallIds:[] },
+    { criterion:extra, verified:false, evidenceCallIds:[] },
+  ] }));
+  const before = structuredClone(chat.workGoal);
+  assert.throws(() => reportWork(chat, reply, report(chat, { acceptance:[
+    { criterion:"The reproduction was delivered.", verified:true, evidenceCallIds:["probe"] },
+  ] })), error => {
+    assert.match(error.message, /preserve existing acceptance criteria verbatim/);
+    assert(error.message.includes(rootWorkCriterion));
+    assert(error.message.includes(extra));
+    assert.match(error.message, /session_info.workGoal.acceptance/);
+    return true;
+  });
+  assert.deepEqual(chat.workGoal, before);
+  assert(workGoalContext(chat).includes("Copy EVERY existing acceptance criterion verbatim"));
+  const corrected = report(chat, { acceptance:[
+    { criterion:rootWorkCriterion, verified:true, evidenceCallIds:["probe"] },
+    { criterion:extra, verified:true, evidenceCallIds:["probe"] },
+  ] });
+  corrected.acceptance[0].evidenceCallIds = ["missing-evidence"];
+  assert.throws(() => reportWork(chat, reply, corrected), /execution\/validation/);
+  assert.deepEqual(chat.workGoal, before);
+  corrected.acceptance[0].evidenceCallIds = ["probe"];
+  assert.equal(JSON.parse(reportWork(chat, reply, corrected)).recorded, true);
+  assert.equal(chat.workGoal.status, "resolved");
+});
+
 test("pause and interruption require explicit resumption and never retarget", () => {
   for (const status of ["paused", "interrupted"]) {
     const { chat } = fixture();
@@ -97,6 +128,99 @@ test("pause and interruption require explicit resumption and never retarget", ()
     assert.throws(() => prepareWorkGoal(chat, randomUUID(), "Continue", "b".repeat(64)), /another execution context/);
     prepareWorkGoal(chat, randomUUID(), "Continue", digest);
     assert.equal(chat.workGoal.status, "active");
+  }
+});
+
+test("only an explicit new-task command replaces a goal, preserving its unsettled history", () => {
+  for (const status of ["active", "paused", "interrupted", "blocked", "needs_input"]) {
+    const { chat } = fixture();
+    chat.workGoal.status = status;
+    const previous = structuredClone(chat.workGoal), id = randomUUID();
+    const text = "开始新任务：修复另一个独立的回归。";
+    chat.messages.push({ id, role:"user", content:text, status:"complete" });
+    prepareWorkGoal(chat, id, text, "b".repeat(64));
+    assert.notEqual(chat.workGoal.id, previous.id);
+    assert.equal(chat.workGoal.inputId, id);
+    assert.equal(chat.workGoal.attemptInputId, id);
+    assert.equal(chat.workGoal.executionDigest, "b".repeat(64));
+    assert.equal(chat.workGoal.status, "active");
+    assert.equal(chat.workGoalHistory.length, 1);
+    const archived = chat.workGoalHistory[0];
+    assert.equal(archived.id, previous.id);
+    assert.equal(archived.objective, previous.objective);
+    assert.equal(archived.executionDigest, previous.executionDigest);
+    assert.deepEqual(archived.acceptance, previous.acceptance);
+    assert.equal(archived.status, status === "active" ? "paused" : status);
+    assert(validWorkGoal(archived));
+    assert(validWorkGoal(chat.workGoal));
+    assert.deepEqual(workGoalInputs(chat), [id]);
+    assert(!workGoalContext(chat).includes(previous.objective));
+    assert.throws(() => prepareWorkGoal(chat, randomUUID(), "Continue", digest), /another execution context/);
+    assert.equal(chat.workGoalHistory.length, 1, "failed resume does not archive or replace anything");
+  }
+});
+
+test("new-task commands are anchored and require a concrete objective", () => {
+  for (const text of ["Start a new task: Repair the second endpoint.", "开始新任务：修复独立回归。"]) {
+    const chat = { includeHistory:false, messages:[] }, id = randomUUID();
+    prepareWorkGoal(chat, id, text, digest);
+    assert.equal(chat.workGoal.inputId, id);
+    assert.equal(chat.workGoal.status, "active");
+  }
+  for (const text of ["Start a new task:", "开始新任务："]) {
+    const { chat } = fixture(), previous = structuredClone(chat.workGoal);
+    assert.throws(() => prepareWorkGoal(chat, randomUUID(), text, digest), /requires an objective/);
+    assert.deepEqual(chat.workGoal, previous);
+    assert.equal(chat.workGoalHistory, undefined);
+  }
+  for (const text of ["The note says 'Start a new task: fix this endpoint.'",
+    "请解释“开始新任务：”是什么意思。", "> 开始新任务：修复问题。"]) {
+    const { chat } = fixture(), previous = structuredClone(chat.workGoal);
+    chat.workGoal.status = "paused";
+    prepareWorkGoal(chat, randomUUID(), text, digest);
+    assert.equal(chat.workGoal.id, previous.id, text);
+    assert.equal(chat.workGoalHistory, undefined, text);
+  }
+});
+
+test("successive new tasks preserve resolved evidence and History off never injects old objectives", () => {
+  const { chat, reply } = fixture();
+  reportWork(chat, reply, report(chat));
+  const original = structuredClone(chat.workGoal);
+  chat.includeHistory = false;
+  for (const objective of ["Start a new task: Repair another endpoint.", "开始新任务：修复第三个问题。"]) {
+    const id = randomUUID();
+    chat.messages.push({ id, role:"user", content:objective, status:"complete" });
+    prepareWorkGoal(chat, id, objective, digest);
+    const context = workGoalContext(chat);
+    assert(context.includes(objective), "the explicitly delegated current task remains available with History off");
+    for (const archived of chat.workGoalHistory) assert(!context.includes(archived.objective));
+    assert.deepEqual(workGoalInputs(chat), [id]);
+  }
+  assert.equal(chat.workGoalHistory.length, 2);
+  assert.deepEqual(chat.workGoalHistory[0], original, "a completed goal retains its evidence, not a synthetic new completion");
+  assert.equal(chat.workGoalHistory[1].status, "paused");
+  assert.equal(chat.workGoalHistory[1].transitions.at(-1).reason, "user_superseded");
+});
+
+test("retrying the same explicit new-task input resumes its goal without another archival or retargeting", () => {
+  for (const includeHistory of [true, false]) {
+    const { chat } = fixture(), inputId = randomUUID(), text = "Start a new task: Repair another endpoint.";
+    chat.includeHistory = includeHistory;
+    chat.messages.push({ id:inputId, role:"user", content:text, status:"complete" });
+    prepareWorkGoal(chat, inputId, text, "b".repeat(64));
+    const id = chat.workGoal.id;
+    chat.workGoal.status = "interrupted";
+    chat.workGoal.acceptance[0].verified = true;
+    chat.workGoal.acceptance[0].evidenceCallIds = ["old-probe"];
+    assert.throws(() => prepareWorkGoal(chat, inputId, text, digest), /another execution context/);
+    prepareWorkGoal(chat, inputId, text, "b".repeat(64));
+    assert.equal(chat.workGoal.id, id);
+    assert.equal(chat.workGoal.status, "active");
+    assert.equal(chat.workGoalHistory.length, 1);
+    assert.equal(chat.workGoal.transitions.at(-1).reason, "user_resumed");
+    assert.equal(chat.workGoal.acceptance[0].verified, false);
+    assert.deepEqual(chat.workGoal.acceptance[0].evidenceCallIds, []);
   }
 });
 

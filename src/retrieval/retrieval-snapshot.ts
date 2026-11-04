@@ -245,6 +245,9 @@ export function createRetrievalSnapshot(sources: RetrievalSnapshotSources): Retr
   }
   for (const note of sources.notes) {
     const key = String(note.slug || "").replace(/\.md$/i, "");
+    const noteBody = note.documentKind === "todo-board"
+      ? `Todo Board: ${String(note.title || key)}\nUse note_work_items with slug ${JSON.stringify(key)} to read current tasks and their digest. Use note_work_item_command to modify them; Markdown is not task authority.\nBoard digest: ${String(note.boardDigest || "read with note_work_items")}`
+      : String(note.content || "");
     if (!key) continue;
     const knowledgeId = /^knowledge_[a-f0-9]{24}$/.test(String(note.knowledgeId || "")) ? String(note.knowledgeId) : "";
     const legacyUri = `pkm://notes/${uriPath(key)}`;
@@ -252,11 +255,11 @@ export function createRetrievalSnapshot(sources: RetrievalSnapshotSources): Retr
     documents.push({
       skill_id: `note:${key}`,
       source_id: sourceId,
-      source_revision: sourceRevision(note.revision, createHash("sha256").update(String(note.content || "")).digest("hex")),
+      source_revision: sourceRevision(note.documentKind === "todo-board" ? undefined : note.revision, createHash("sha256").update(noteBody).digest("hex")),
       ...(knowledgeId ? { knowledge_id: knowledgeId } : {}),
       title: String(note.title || key.split("/").pop() || key),
       description: String(note.description || note.type || ""),
-      body: String(note.content || ""),
+      body: noteBody,
       content_type: "note",
       source_uri: knowledgeId ? `pkm://knowledge/${knowledgeId}` : legacyUri,
       metadata: {

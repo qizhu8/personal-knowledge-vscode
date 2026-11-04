@@ -5,7 +5,7 @@
 import { browserFaviconTag } from "../ui/browser-branding";
 
 export function browserViewHtml(): string {
-  return `<!doctype html><html><head><meta charset="utf-8">
+  return `<!doctype html><html spellcheck="true"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 ${browserFaviconTag("/favicon.ico")}
 <title>PKM Agent Room</title>
@@ -55,7 +55,7 @@ ${browserFaviconTag("/favicon.ico")}
   <span id="dot"></span>
   <span id="roomlabel" style="display:none;font-weight:600;color:#4ea1ff"></span>
   <input id="name" placeholder="your name" style="width:130px">
-  <textarea id="invite" placeholder="paste the complete Magic Message" oninput="authorizeMagicMessage()"></textarea>
+  <textarea id="invite" spellcheck="false" placeholder="paste the complete Magic Message" oninput="authorizeMagicMessage()"></textarea>
   <button id="go" onclick="toggleConn()">Join</button>
   <span id="status" style="color:#888;font-size:12px"></span>
 </header>

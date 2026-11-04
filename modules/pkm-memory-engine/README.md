@@ -36,9 +36,10 @@ return the stored result, conflicting reuse fails. Source IDs must name immutabl
 message/tool revisions and exact section locators.
 
 The package can be built with standard Python packaging tools through
-[pyproject.toml](./pyproject.toml). Database schema 1 and protocol 1 are checked
-independently of package version. Unsupported versions fail without replacing
-the database. Backups use the SQLite backup API.
+[pyproject.toml](./pyproject.toml). Database schema 2 and protocol 1 are checked
+independently of package version. Schema 1 databases migrate in place to schema
+2; unsupported versions fail without replacing the database. Backups use the
+SQLite backup API.
 
 ## Delivered scope
 
@@ -52,6 +53,10 @@ the database. Backups use the SQLite backup API.
 - Durable, revision-checked, bounded active-reader leases respected by eviction.
 - Source-contribution purge, ancestor summary removal and deleted-Chat tombstones.
 - Durable change stream and idempotent mutation receipts without source text.
+- Explicit long-term memory pilot: scoped propose/get/search/revise/revoke,
+  Host-authorized confirmation decisions, immutable revision history, CAS,
+  idempotent operation IDs, and confirmed-only search. Source references are
+  exact and capped at 4096 UTF-8 bytes serialized per record revision.
 - Resumable `turn_begin` / `turn_continue` / `turn_commit` policy: model-driven
   intent association, append-only statement extraction and on-demand summaries.
   Model requests are returned to the caller, never executed inside the module.
@@ -105,6 +110,14 @@ duplicating statements; a reader spanning an external commit retains one coheren
 SQLite snapshot. These are local storage guarantees, not evidence of Windows UI
 refresh, cross-store recovery or physical power-loss durability.
 
+The regular `npm run test:memory-engine` gate also runs real Chat/Memory
+deletion-recovery tests. Isolated processes exit after the Chat file
+is permanently removed, both before and after the Memory purge. An already-open
+reader observes the committed result; a fresh Host retains the deletion intent
+until an explicitly confirmed cleanup retry completes. Failed physical deletion
+still permits restoring the Chat with its Memory intact. These tests cover the
+Chat-file/SQLite boundary, not OS power loss or packaged-host acceptance.
+
 The Visualization window's Memory panel now uses `ChatMemoryService.inspect`
 to display actual stored abstraction levels, scoped relationships, revisions,
 summary validity and paged statement provenance, alongside attempt-context
@@ -125,7 +138,7 @@ a model, generates a summary or executes an Action on its own.
 Model job deduplication/leases, summary source-by-source claim coverage,
 retrieval publication, host active-request lease coordination,
 physical-space reclamation, cross-store delete recovery, source reconstruction,
-live migrations and the four Agent Sessions views remain integration work.
+future live migrations and the four Agent Sessions views remain integration work.
 Real-model multi-turn quality/latency, packaged-host behavior, long-running
 failure/recovery and complete UI receipt delivery remain acceptance work.
 The host must acquire/release or renew storage leases around active context

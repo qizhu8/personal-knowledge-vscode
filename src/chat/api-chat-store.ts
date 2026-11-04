@@ -1,16 +1,19 @@
 import * as fs from "fs";
 import { validPersonaSnapshot, type PersonaSnapshot } from "./persona-profiles";
 import { classifyTaskProgress, type TaskProgressRecord } from "./task-progress";
-import { recordWorkGoalTransition, validWorkGoal, type ChatWorkGoal } from "./chat-work-goal";
+import { newWorkGoal, recordWorkGoalTransition, validWorkGoal, type ChatWorkGoal } from "./chat-work-goal";
+import { chatEffectiveness, chatEffectivenessSummary } from "./chat-effectiveness";
+import { capabilityObservations } from "../capabilities/observations";
+import { validWorkerScope } from "./worker-scope";
 import * as path from "path";
 import { createHash, randomUUID } from "crypto";
 import { hostname } from "os";
 import { agentSessionGroup } from "../agent-sessions/agent-session-lifecycle";
 import { decodeChatImage } from "./api-chat-client";
 import { ChatLibrary } from "./chat-library";
-import { runChatLibraryWork, type ChatLibraryWork } from "./chat-library-worker";
+import { runChatLibraryWork, type ChatLibraryWork, type ChatDeletionIntent } from "./chat-library-worker";
 import { validChatRetrievalReceipt, validChatRetrievalActivity } from "./chat-retrieval";
-import { withCrossProcessLockSync } from "../runtime/cross-process-lock";
+import { withCrossProcessLock, withCrossProcessLockSync } from "../runtime/cross-process-lock";
 import { chatPkmUrl, parsePkmLocator } from "../knowledge/knowledge-locator";
 import { ChatExecutionContext, validExecutionContext } from "./execution-context";
 import { accountMcpIdentity } from "../mcp/mcp-account-binding";
@@ -24,15 +27,20 @@ import { recordBaselineEvent, BaselineEventKind } from "../runtime/pkm-baseline"
 import { recordedActionReferences } from "../runtime/native-harness-actions";
 import { agentSnapshotRecovery, AgentSnapshotContents, AgentSnapshotSummary } from "../agent-sessions/agent-snapshots";
 import { assertHarnessRecipeBinding, currentHarnessTaskState, HarnessBinding } from "./chat-harness-records";
+import { validationArtifactState, verifyValidationArtifacts } from "./validation-artifacts";
+import { citedWorkerEvidence, readWorkerResultVersion, verifyWorkerEvidenceState, workerEvidenceState } from "./worker-result-versions";
 import { copilotCreditSummary } from "./api-chat-models";
-import { validTaskContextCheckpoint, type TaskContextCheckpoint } from "./task-context-checkpoint";
+import { validTaskContextCheckpoint, taskContextInputs, taskContextInputDigest, type TaskContextCheckpoint } from "./task-context-checkpoint";
 import { validPortalTaskLink, type PortalTaskLink } from "./portal-task-attempts";
 import { validPortalCommandRecords } from "./portal-command-activity";
 import { validPortalTransferRecords } from "./portal-transfer-activity";
+import { currentChatPlan, submitChatPlan, validChatPlans, type ChatPlan, type ChatWorkflowMode } from "./chat-plan";
 
 export interface ChatContext { id: string; label: string; content: string; }
 export interface QueuedChatInput { id: string; text: string; mode: "steer" | "task"; editToken?: string; attemptId?: string; executionContext?: ChatExecutionContext; portalReview?: PortalReview; }
 export interface ChatDelegation {
+  writeScope?: string[];
+  resources?: string[];
   id: string;
   chatId: string;
   chatUrl: string;
@@ -114,6 +122,7 @@ export interface ChatMemoryRecord {
   error?: string;
 }
 export interface ChatMessage {
+  planExecution?: string;
   profileContext?: PersonaSnapshot;
   profileRequirementRecall?: import("./user-profile-fragments").ProfileRequirementRecall;
   id: string;
@@ -126,6 +135,7 @@ export interface ChatMessage {
   planning?: ChatPlanningReceipt;
   harnessReports?: import("./chat-harness-records").HarnessReport[];
   budgetReceipts?: import("./chat-harness-records").HarnessBudgetReceipt[];
+  toolRoundLimit?: { limit: number; reached: boolean; rounds?: number };
   invocationBudgets?: import("./chat-budget-ledger").ChatInvocationBudget[];
   publicOutputSegments?: Array<{ round:number; start:number; end:number; hasToolCalls?:boolean }>;
   reasoningSummaries?: Array<{ round: number; text: string }>;
@@ -162,9 +172,12 @@ export interface ChatMessage {
   outputBudgetWarning?: string;
   changes?: import("./api-chat-tools").ApiChatEditChange[];
   toolCalls?: Array<{ id: string; name: string; arguments: string; status: "running" | "complete" | "failed"; result?: string;
+    round?: number; queuedMs?: number; reused?: boolean;
     harnessBinding?: import("./chat-harness-records").HarnessBinding; startedAt?: number; finishedAt?: number }>;
 }
 export interface ApiConversation {
+  workflowMode?: ChatWorkflowMode;
+  plans?: ChatPlan[];
   agentProfileId?: string;
   version: 1;
   revision?: number;
@@ -174,6 +187,7 @@ export interface ApiConversation {
   title: string;
   customTitle?: boolean;
   paused?: boolean;
+  activityBudgetBypass?: "session";
   permissionMode?: "protective" | "ask" | "read-only" | "allow-all";
   permissionGrants?: string[];
   permissionContextId?: string;
@@ -185,6 +199,7 @@ export interface ApiConversation {
   queuedInputs?: QueuedChatInput[];
   debugRequest?: { inputId: string; status: "investigating" | "completed" | "blocked" | "needs_input"; goal: string; reason?: string; evidenceCallIds?: string[] };
   workGoal?: ChatWorkGoal;
+  workGoalHistory?: ChatWorkGoal[];
   taskContextCheckpoints?: TaskContextCheckpoint[];
   memoryTasks?: Array<{ id: string; title: string; createdAt: string }>;
   context: ChatContext[];
@@ -238,6 +253,7 @@ export function apiChatContextSummary(message: ChatMessage) {
     rounds: budgets.slice(-5).map(budget => ({
       round: budget.round, status: budget.status,
       estimatedInputTokens: budget.consumed.estimatedInputTokens,
+      planningInput: budget.contextPlan?.measuredInput,
       transportInputTokens: budget.transport?.inputTokens,
       countingMethod: budget.transport?.countingMethod || budget.countingMethod,
       transportAutomaticKnowledge: budget.transport?.automaticKnowledge ? {
@@ -316,6 +332,7 @@ export function apiChatDiagnostics(chat: ApiConversation) {
       outputCharacters: message.content.length, imageCount: message.images?.length || 0,
       reportedTokenUsage: tokenUsage(message.usage), usageMetadata: usageMetadata(message.usageMetadata),
       reportedCredits: apiChatCreditUsage(message),
+      effectiveness: chatEffectivenessSummary(message),
       context: apiChatContextSummary(message),
       tools: (message.toolCalls || []).slice(0, 128).map(tool => ({ name: tool.name, status: tool.status })),
       progress: progress(message.progress),
@@ -364,6 +381,10 @@ export function apiChatSessionDiagnostics(record: Record<string, unknown>, sessi
 }
 
 export function apiChatHarnessSnapshot(chat: ApiConversation, fullResults = false) {
+  const sourceInputs = taskContextInputs(chat);
+  const validationContext = sourceInputs.length ? {
+    sourceInputId:sourceInputs[sourceInputs.length - 1].id, sourceInputDigest:taskContextInputDigest(sourceInputs),
+  } : undefined;
   const phase = (run?: ApiChatProgress) => {
     const current = run?.steps[run.steps.length - 1];
     const label = current?.label || "";
@@ -376,6 +397,7 @@ export function apiChatHarnessSnapshot(chat: ApiConversation, fullResults = fals
     return { kind, label: label || (run?.status === "running" ? "Preparing request" : run?.status || "Idle"), status: current?.status || run?.status || "idle" };
   };
   let input: ChatMessage | undefined;
+  const latestReply = [...chat.messages].reverse().find(message => message.role === "assistant");
   const attempts = chat.messages.flatMap(message => {
     if (message.role === "user") input = message;
     if (message.role !== "assistant") return [];
@@ -391,7 +413,10 @@ export function apiChatHarnessSnapshot(chat: ApiConversation, fullResults = fals
       attempt: message.progress?.attempt, retryOf: message.progress?.retryOf, retryReason:message.progress?.retryReason,
       harnessReports:message.harnessReports,
       budgetReceipts:message.budgetReceipts,
+      toolRoundLimit:message.toolRoundLimit,
       invocationBudgets:message.invocationBudgets,
+      effectiveness:chatEffectiveness(message),
+      capabilityInvocations: capabilityObservations(message),
       response: message.content,
       publicOutputs:message.publicOutputSegments?.map(segment => ({
         ...segment, text:message.content.slice(segment.start, segment.end),
@@ -451,6 +476,9 @@ export function apiChatHarnessSnapshot(chat: ApiConversation, fullResults = fals
         purposeEvidence: "associated-input",
       })),
       validation: {
+        ...(message === latestReply ? { workerState:workerEvidenceState(citedWorkerEvidence(chat, message), chat.id), artifactState:validationArtifactState(
+          [...message.harnessReports || []].reverse().find(report => report.kind === "validation")?.artifactVersions) } : {}),
+        ...(message.taskId === chat.sessionId && validationContext ? { sourceContext:validationContext } : {}),
         responseStatus: message.status,
         error: (message.error || "").slice(0, 2_000),
         outputBudgetWarning: (message.outputBudgetWarning || "").slice(0, 1_000),
@@ -471,6 +499,9 @@ export function apiChatHarnessSnapshot(chat: ApiConversation, fullResults = fals
     currentProblemSource: latestUser?.workerEventIds?.length ? "worker-event" : latestUser?.inputKind || "user-input",
     ...(taskWorkingState ? { taskWorkingState } : {}),
     ...(chat.workGoal ? { workGoal: chat.workGoal } : {}),
+    ...(chat.workflowMode && chat.workflowMode !== "chat" ? { planWorkflow: {
+      mode: chat.workflowMode, plan: currentChatPlan(chat), approvalIsNotPermissionOrCompletion: true,
+    } } : {}),
     waiting: current.kind === "waiting" ? { kind: /answer|approval|input/i.test(current.label) ? "user" : "dependency", detail: current.label } : undefined,
     queuedInputs: (chat.queuedInputs || []).map(input => ({ id: input.id, mode: input.mode, text: input.text, ...(input.editToken ? { editToken: input.editToken } : {}) })),
     attempts,
@@ -483,6 +514,19 @@ export function apiChatSessionHarnessSnapshot(record: Record<string, unknown>, s
   const chat = stored ? new ChatHistoryStorage(stateDirectory || "").unpack(stored) : undefined;
   if (!/^agent_session_[a-f0-9]{32}$/.test(sessionId) || record.schema !== "pkm.agent.session/v1" || record.sessionId !== sessionId || agentSessionOrigin(record).origin !== "pkm-native" || record.hostKind !== "pkm" || chat?.version !== 1 || chat.sessionId !== sessionId || !Array.isArray(chat.messages)) throw new Error("A matching PKM-native Session record is required.");
   return apiChatHarnessSnapshot(chat, fullResults);
+}
+
+export async function verifyHarnessArtifacts(snapshot: ReturnType<typeof apiChatHarnessSnapshot>, roots: readonly string[],
+  signal = new AbortController().signal, stateDirectory?: string) {
+  const latest = snapshot.attempts[snapshot.attempts.length - 1];
+  const report = [...latest?.harnessReports || []].reverse().find(report => report.kind === "validation");
+  if (latest && report?.artifactVersions) {
+    latest.validation.artifactState = await verifyValidationArtifacts(report.artifactVersions, signal, roots);
+  }
+  if (signal.aborted) throw new Error("Request cancelled.");
+  if (latest && stateDirectory) latest.validation.workerState = verifyWorkerEvidenceState(latest.validation.workerState,
+    version => readWorkerResultVersion(stateDirectory, version));
+  return snapshot;
 }
 
 export function apiChatStatus(chat: ApiConversation, running = chat.progress?.status === "running", awaitingInput = chat.progress?.steps[chat.progress.steps.length - 1]?.status === "waiting"): ApiChatStatus {
@@ -524,9 +568,10 @@ export class ApiChatStore {
   private readonly history: ChatHistoryStorage;
   private readonly queueSnapshots = new WeakMap<ApiConversation, { fingerprint: string; inputs: QueuedChatInput[] }>();
 
-  private rememberQueue(chat: ApiConversation): void {
-    const { revision, updatedAt, queuedInputs, ...state } = chat;
-    this.queueSnapshots.set(chat, { fingerprint: JSON.stringify(state), inputs: JSON.parse(JSON.stringify(queuedInputs || [])) });
+  private rememberQueue(chat: ApiConversation, stored: StoredChat): void {
+    const { revision, updatedAt, queuedInputs, ...state } = stored;
+    this.queueSnapshots.set(chat, { fingerprint: createHash("sha256").update(JSON.stringify(state)).digest("hex"),
+      inputs: JSON.parse(JSON.stringify(queuedInputs || [])) });
   }
 
   private reconcileQueue(chat: ApiConversation, current: ApiConversation): void {
@@ -538,18 +583,18 @@ export class ApiChatStore {
       if (input.editToken || previous?.text !== input.text) throw new Error("Queued input was edited before consumption. It remains queued; finish editing before continuing.");
     }
     if ((current.revision || 0) === (chat.revision || 0)) return;
-    const { revision, updatedAt, queuedInputs, ...state } = current;
-    if (!snapshot || JSON.stringify(state) !== snapshot.fingerprint || current.progress?.status !== "running"
+    const persisted = this.queueSnapshots.get(current);
+    if (!snapshot || !persisted || persisted.fingerprint !== snapshot.fingerprint || current.progress?.status !== "running"
       || !chat.progress?.attemptId || current.progress.attemptId !== chat.progress.attemptId
       || current.progress.ownerPid !== process.pid || current.progress.ownerHost !== hostname()) return;
-    const merged = (queuedInputs || []).filter(input => !removed.has(input.id));
+    const merged = (current.queuedInputs || []).filter(input => !removed.has(input.id));
     for (const input of local.filter(input => !snapshot.inputs.some(item => item.id === input.id))) {
       if (!merged.some(item => item.id === input.id)) merged.push(input);
     }
     if (merged.length > 20) throw new Error("The Chat already has 20 queued inputs.");
     chat.queuedInputs = merged;
     chat.revision = current.revision;
-    this.queueSnapshots.set(chat, { fingerprint: JSON.stringify(state), inputs: JSON.parse(JSON.stringify(queuedInputs || [])) });
+    this.queueSnapshots.set(chat, persisted);
   }
 
   constructor(private readonly stateDirectory: string, readonly namespace: string, private readonly baselineEnabled: () => boolean = () => false,
@@ -610,10 +655,11 @@ export class ApiChatStore {
     });
   }
 
-  loadMemorySource(owner: ApiConversation, id: string): ApiConversation | undefined {
+  loadMemorySource(owner: ApiConversation, id: string, knownSource?: ApiConversation): ApiConversation | undefined {
     if (this.library.read().placements[id]?.trashedAt) return undefined;
     let source:ApiConversation | undefined;
-    try { source = this.load(id, false); }
+    try { source = id === owner.id ? this.observe(owner)
+      : knownSource?.id === id ? this.observe(knownSource) : this.load(id, false); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     const policy = memoryPolicy(owner);
     const explicit = policy.grants.some(grant => grant.chatIds.includes(id));
@@ -702,6 +748,11 @@ export class ApiChatStore {
           if (Array.isArray(message.toolCalls)) message.toolCalls = message.toolCalls.map((call: any) => call.status === "running" ? { ...call, status: "failed", result: call.result || "Interrupted before the Snapshot was recovered." } : call);
           return message as ChatMessage;
         });
+        if (native.plans !== undefined) {
+          if (!validChatPlans(native.plans, native.id)) throw new Error("Unsupported snapshot Plan history.");
+          for (const plan of native.plans) submitChatPlan(chat, plan, plan.context, `Recovered snapshot Plan revision ${plan.revision}; local review is required.`);
+          chat.workflowMode = native.workflowMode === "chat" || native.workflowMode === undefined ? "chat" : "plan";
+        }
       }
       this.save(chat);
       this.startTask(chat, title);
@@ -825,7 +876,7 @@ export class ApiChatStore {
     this.validateImages(chat);
     const file = this.file(chat.id);
     if (!fs.existsSync(file) && chat.revision !== undefined) throw new Error("This Chat was deleted in another window. Choose another Chat.");
-    const previousChat = fs.existsSync(file) ? this.load(chat.id, false) : undefined;
+    const previousChat = fs.existsSync(file) ? this.observe(chat) : undefined;
     if (chat.agentProfileId !== undefined && (typeof chat.agentProfileId !== "string" || !/^[a-f0-9-]{36}$/.test(chat.agentProfileId))) throw new Error("Invalid Agent Profile assignment.");
     const previousProfiles = new Map(previousChat?.messages.filter(message => message.profileContext).map(message => [message.id, message.profileContext]));
     for (const message of chat.messages) {
@@ -850,7 +901,7 @@ export class ApiChatStore {
     const snapshot = this.history.pack({ ...chat, revision }, { status: apiChatStatus(chat), workerManager: chat.messages.some(message => !!message.delegations?.length) });
     this.write(file, snapshot); chat.revision = revision;
     this.measureTransition(previousChat, chat);
-    this.rememberQueue(chat);
+    this.rememberQueue(chat, snapshot);
     this.write(groupPath, { ...previousGroup, schema: "pkm.agent.group/v1", groupId: group.groupId,
       hostKind: "pkm", hostSessionId: chat.id, title: chat.title, deletedAt: undefined, createdAt: previousGroup.createdAt || chat.createdAt, updatedAt: chat.updatedAt });
     if (!chat.sessionId) return;
@@ -917,6 +968,24 @@ export class ApiChatStore {
   }
 
   private readonly loadedFiles = new WeakMap<ApiConversation, { file: string; stamp: string }>();
+  private readonly observations = new WeakMap<ApiConversation, { file: string; stamp: string; chat: ApiConversation }>();
+
+  /** Persisted read-only state, never the controller's mutable streaming object. Revalidate on every observation. */
+  observe(chat: ApiConversation): ApiConversation {
+    const file = this.file(chat.id);
+    const stamp = ApiChatStore.fileStamp(file);
+    const cached = this.observations.get(chat);
+    if (stamp && cached?.file === file && cached.stamp === stamp) return cached.chat;
+    this.observations.delete(chat);
+    const current = this.load(chat.id, false);
+    const validated = this.loadedFiles.get(current);
+    if (validated) {
+      const observation = { ...validated, chat: current };
+      this.observations.set(chat, observation);
+      this.observations.set(current, observation);
+    }
+    return current;
+  }
 
   reloadIfChanged(chat: ApiConversation): ApiConversation {
     const previous = this.loadedFiles.get(chat);
@@ -932,7 +1001,8 @@ export class ApiChatStore {
   load(id: string, recoverInterrupted = true): ApiConversation {
     const file = this.file(id);
     const before = !recoverInterrupted ? ApiChatStore.fileStamp(file) : undefined;
-    const chat = this.history.unpack(JSON.parse(fs.readFileSync(file, "utf8")) as StoredChat);
+    const stored = JSON.parse(fs.readFileSync(file, "utf8")) as StoredChat;
+    const chat = this.history.unpack(stored);
     const contextsValid = (items: ChatContext[]) => Array.isArray(items) && items.every(item => item && typeof item.id === "string" && typeof item.label === "string" && typeof item.content === "string");
     const progressValid = (run: ApiChatProgress) => run && Number.isFinite(run.startedAt) && (run.finishedAt === undefined || Number.isFinite(run.finishedAt)) && ["running", "complete", "cancelled", "failed"].includes(run.status) && typeof run.model === "string"
       && (run.executionContext === undefined || validExecutionContext(run.executionContext))
@@ -951,11 +1021,16 @@ export class ApiChatStore {
         && (step.toolCallId === undefined || typeof step.toolCallId === "string" && step.toolCallId.length > 0 && step.toolCallId.length <= 200));
     const changesValid = (items: NonNullable<ChatMessage["changes"]>) => Array.isArray(items) && items.length <= 4096 && items.every(item => item && typeof item.path === "string" && item.path.length <= 4096 && Number.isSafeInteger(item.workspace) && item.workspace >= 0 && typeof item.appliedAt === "string" && Number.isFinite(Date.parse(item.appliedAt)) && /^[a-f0-9]{64}$/.test(item.beforeHash) && /^[a-f0-9]{64}$/.test(item.afterHash) && item.saved === false && ["exact", "unknown"].includes(item.attribution) && (item.attribution !== "exact" || Number.isSafeInteger(item.added) && item.added! >= 0 && Number.isSafeInteger(item.removed) && item.removed! >= 0));
     if (!chat || chat.version !== 1 || chat.id !== id || chat.sessionId !== undefined && !/^agent_session_[a-f0-9]{32}$/.test(chat.sessionId) || typeof chat.title !== "string" || typeof chat.updatedAt !== "string" || !Number.isFinite(Date.parse(chat.updatedAt)) || typeof chat.createdAt !== "string" || !Number.isFinite(Date.parse(chat.createdAt)) || typeof chat.includeHistory !== "boolean" || !Array.isArray(chat.messages) || !contextsValid(chat.context)
+      || chat.activityBudgetBypass !== undefined && chat.activityBudgetBypass !== "session"
       || chat.memoryPolicy !== undefined && !validMemoryPolicy(chat.memoryPolicy)
+      || chat.workflowMode !== undefined && !["chat", "plan", "execute"].includes(chat.workflowMode)
+      || chat.plans !== undefined && !validChatPlans(chat.plans, chat.id)
+      || chat.workflowMode === "execute" && !chat.plans?.[chat.plans.length - 1]?.approval
       || chat.taskContextCheckpoints !== undefined && (!Array.isArray(chat.taskContextCheckpoints) || chat.taskContextCheckpoints.length > 128
         || chat.taskContextCheckpoints.some(item => !validTaskContextCheckpoint(item, chat.id)))
       || chat.agentProfileId !== undefined && (typeof chat.agentProfileId !== "string" || !/^[a-f0-9-]{36}$/.test(chat.agentProfileId))
       || chat.messages.some(message => !message || typeof message.id !== "string" || typeof message.content !== "string" || !["user", "assistant"].includes(message.role) || !["complete", "streaming", "cancelled", "failed", "interrupted"].includes(message.status)
+        || message.planExecution !== undefined && (typeof message.planExecution !== "string" || !/^[a-f0-9-]{36}$/.test(message.planExecution))
         || message.recordedAt !== undefined && (typeof message.recordedAt !== "string" || !Number.isFinite(Date.parse(message.recordedAt)))
         || message.executionContext !== undefined && !validExecutionContext(message.executionContext)
         || message.profileContext !== undefined && !validPersonaSnapshot(message.profileContext)
@@ -991,10 +1066,14 @@ export class ApiChatStore {
           || record.activityId !== undefined && !/^[a-f0-9-]{36}$/.test(record.activityId)
           || record.attemptId !== undefined && !/^[a-f0-9-]{36}$/.test(record.attemptId)
           || record.temporary !== undefined && typeof record.temporary !== "boolean"
+          || !validWorkerScope(record)
           || record.archived !== undefined && typeof record.archived !== "boolean"))
         || message.outputBudgetWarning !== undefined && (typeof message.outputBudgetWarning !== "string" || message.outputBudgetWarning.length > 1024)
         || message.unattributedFileChanges !== undefined && typeof message.unattributedFileChanges !== "boolean"
-        || message.toolCalls && (!Array.isArray(message.toolCalls) || message.toolCalls.some(tool => !tool || typeof tool.id !== "string" || typeof tool.name !== "string" || typeof tool.arguments !== "string" || !["running", "complete", "failed"].includes(tool.status) || tool.result !== undefined && typeof tool.result !== "string")))
+        || message.toolCalls && (!Array.isArray(message.toolCalls) || message.toolCalls.some(tool => !tool || typeof tool.id !== "string" || typeof tool.name !== "string" || typeof tool.arguments !== "string" || !["running", "complete", "failed"].includes(tool.status) || tool.result !== undefined && typeof tool.result !== "string"
+          || tool.round !== undefined && (!Number.isSafeInteger(tool.round) || tool.round < 0)
+          || tool.queuedMs !== undefined && (!Number.isSafeInteger(tool.queuedMs) || tool.queuedMs < 0)
+          || tool.reused !== undefined && typeof tool.reused !== "boolean")))
       || chat.agentContext && Object.values(chat.agentContext).some(items => !contextsValid(items))
       || chat.modelProvider !== undefined && !["vscode", "openai-compatible", "azure-openai"].includes(chat.modelProvider)
       || chat.revision !== undefined && (!Number.isSafeInteger(chat.revision) || chat.revision < 0)
@@ -1002,6 +1081,9 @@ export class ApiChatStore {
       || chat.customTitle !== undefined && typeof chat.customTitle !== "boolean"
       || chat.queuedInputs !== undefined && (!Array.isArray(chat.queuedInputs) || chat.queuedInputs.length > 20 || chat.queuedInputs.some(input => !input || typeof input.id !== "string" || !/^[a-f0-9-]{36}$/.test(input.id) || typeof input.text !== "string" || !input.text.trim() || input.text.length > 16_000 || !["steer", "task"].includes(input.mode) || input.editToken !== undefined && (typeof input.editToken !== "string" || !/^[a-f0-9-]{36}$/.test(input.editToken)) || input.attemptId !== undefined && (typeof input.attemptId !== "string" || input.attemptId.length > 80) || input.executionContext !== undefined && !validExecutionContext(input.executionContext) || input.portalReview !== undefined && !validPortalReview(input.portalReview)) || new Set(chat.queuedInputs.map(input => input.id)).size !== chat.queuedInputs.length)
       || chat.workGoal !== undefined && !validWorkGoal(chat.workGoal)
+      || chat.workGoalHistory !== undefined && (!Array.isArray(chat.workGoalHistory)
+        || chat.workGoalHistory.some(goal => !validWorkGoal(goal) || goal.status === "active" || goal.id === chat.workGoal?.id)
+        || new Set(chat.workGoalHistory.map(goal => goal.id)).size !== chat.workGoalHistory.length)
       || chat.debugRequest !== undefined && (!chat.debugRequest || typeof chat.debugRequest.inputId !== "string"
         || !["investigating", "completed", "blocked", "needs_input"].includes(chat.debugRequest.status)
         || typeof chat.debugRequest.goal !== "string" || chat.debugRequest.goal.length > 16_000
@@ -1037,7 +1119,7 @@ export class ApiChatStore {
       || chat.mcpServers && (!Array.isArray(chat.mcpServers) || chat.mcpServers.some(server => !server || typeof server.id !== "string" || typeof server.label !== "string" || typeof server.url !== "string" || typeof server.enabled !== "boolean" || !Array.isArray(server.tools) || server.tools.some(name => typeof name !== "string")))
       || chat.progress && !progressValid(chat.progress)) throw new Error("Unsupported chat history format.");
     chat.workspaceNamespace ||= path.basename(path.dirname(file));
-    this.rememberQueue(chat);
+    this.rememberQueue(chat, { ...stored, workspaceNamespace: chat.workspaceNamespace });
     if (recoverInterrupted && chat.workGoal?.status === "active") {
       chat.workGoal = recordWorkGoalTransition(chat.workGoal, "interrupted", "host_interrupted");
       chat.workGoal.reason = "The previous host stopped before the objective was settled. Explicitly resume and reconcile recorded effects before continuing.";
@@ -1173,6 +1255,7 @@ export class ApiChatStore {
       if (input.portalReview !== undefined && !validPortalReview(input.portalReview)) throw new Error("Invalid Portal status event.");
       if (input.editToken !== undefined) throw new Error("New queued messages cannot claim an editor.");
       this.assertExecutionContext(input.executionContext);
+      if (input.mode === "steer" && newWorkGoal.test(input.text)) throw new Error("A new task must be submitted as a separate task, not as steering.");
       if (current.paused && !input.portalReview) throw new Error("This Chat is paused. Resume it before sending another request.");
       if (input.mode === "steer" && (current.progress?.status !== "running" || current.progress.executionContext?.digest !== input.executionContext.digest)) throw new Error("Steering belongs to a different execution context. Submit a separate task instead.");
       const prior = current.queuedInputs?.find(item => item.id === input.id) || current.messages.find(message => message.submissionId === input.id);
@@ -1206,6 +1289,7 @@ export class ApiChatStore {
         if (input.editToken !== token) throw new Error("The queued editor changed. Reopen the message before saving.");
         if (operation === "save") {
           if (typeof text !== "string" || !text.trim() || text.length > 16_000) throw new Error("Enter a queued message up to 16,000 characters.");
+          if (input.mode === "steer" && newWorkGoal.test(text)) throw new Error("A new task must be submitted as a separate task, not as steering.");
           input.text = text;
         }
         delete input.editToken;
@@ -1214,7 +1298,7 @@ export class ApiChatStore {
       this.saveUnlocked(current, false);
       chat.queuedInputs = current.queuedInputs;
       chat.revision = current.revision;
-      this.rememberQueue(chat);
+      this.queueSnapshots.set(chat, this.queueSnapshots.get(current)!);
       return current;
     });
   }
@@ -1222,7 +1306,7 @@ export class ApiChatStore {
   assertRunnable(chat: ApiConversation, ownedAttemptId?: string, executionContext?: ChatExecutionContext): void {
     this.assertAvailable(chat);
     if (executionContext) this.assertExecutionContext(executionContext);
-    const current = this.load(chat.id, false);
+    const current = this.observe(chat);
     if (ownedAttemptId && current.progress?.attemptId === ownedAttemptId) this.reconcileQueue(chat, current);
     if ((current.revision || 0) !== (chat.revision || 0)) throw new Error("This Chat changed in another window. Reopen it before sending a request.");
     if ((current.progress?.status === "running" || current.messages.some((message: ChatMessage) => message.status === "streaming")) && (!ownedAttemptId || current.progress?.attemptId !== ownedAttemptId)) throw new Error("This Chat is already running. Wait for its owning window to finish.");
@@ -1331,6 +1415,78 @@ export class ApiChatStore {
     return result.namespace;
   }
 
+  async prepareLibraryDeletion(id: string): Promise<ChatDeletionIntent & { chatPresent: boolean }> {
+    const result = await runChatLibraryWork(this.stateDirectory, this.namespace, "prepare-delete", id);
+    if (!result.deletion) throw new Error("Chat library worker did not return the deletion intent.");
+    return result.deletion;
+  }
+
+  async withDeletionLock<T>(id: string, action: () => Promise<T>): Promise<T> {
+    return withCrossProcessLock(`${this.deletionFile(id)}.lock`, "Chat deletion", 2000, action);
+  }
+
+  private deletionFile(id: string): string {
+    if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error("Invalid Chat deletion identity.");
+    return path.join(this.stateDirectory, "api-chat-deletions", `${id}.json`);
+  }
+
+  private deletionIntent(id: string): ChatDeletionIntent | undefined {
+    const file = this.deletionFile(id);
+    let raw: string;
+    try { raw = fs.readFileSync(file, "utf8"); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+    const intent = JSON.parse(raw) as ChatDeletionIntent;
+    if (!intent || intent.schema !== "pkm.chat-deletion/v1" || intent.id !== id || !/^[a-f0-9]{16}$/.test(intent.namespace)
+      || typeof intent.title !== "string" || typeof intent.createdAt !== "string" || !Number.isFinite(Date.parse(intent.createdAt))
+      || !Number.isSafeInteger(intent.revision) || intent.revision < 0 || typeof intent.retainedHistory !== "boolean") {
+      throw new Error(`Invalid Chat deletion intent for ${id}; preserve it for recovery.`);
+    }
+    return intent;
+  }
+
+  pendingDeletionCleanups(): Array<{ id: string; title: string; createdAt: string }> {
+    const directory = path.join(this.stateDirectory, "api-chat-deletions");
+    if (!fs.existsSync(directory)) return [];
+    return fs.readdirSync(directory).filter(name => /^[a-f0-9-]{36}\.json$/.test(name)).flatMap(name => {
+      const intent = this.deletionIntent(name.slice(0, -5));
+      return intent && !fs.existsSync(this.file(intent.id)) ? [{ id: intent.id, title: intent.title, createdAt: intent.createdAt }] : [];
+    });
+  }
+
+  prepareDeletion(id: string): ChatDeletionIntent & { chatPresent: boolean } {
+    return withCrossProcessLockSync(path.join(this.stateDirectory, "api-chats", "chats.lock"), "Chat history", () => {
+      const previous = this.deletionIntent(id);
+      if (!fs.existsSync(this.file(id))) {
+        if (!previous) throw new Error("No Chat or pending deletion cleanup exists for this identity.");
+        return { ...previous, chatPresent: false };
+      }
+      if (!this.library.read().placements[id]?.trashedAt) throw new Error("Move this Chat to Trash before permanently deleting it.");
+      const chat = this.load(id, false);
+      if (chat.progress?.status === "running" || chat.messages.some(message => message.status === "streaming")) throw new Error("Stop the running Chat before permanently deleting it.");
+      const intent: ChatDeletionIntent = { schema: "pkm.chat-deletion/v1", id, namespace: chat.workspaceNamespace || this.namespace,
+        title: chat.title, revision: chat.revision || 0, createdAt: new Date().toISOString(),
+        retainedHistory: (chat.memoryTasks || []).some(task => /^agent_session_[a-f0-9]{32}$/.test(task.id)
+          && ["agent-sessions", "agent-sessions-trash"].some(directory => fs.existsSync(path.join(this.stateDirectory, directory, `${task.id}.json`))))
+          || !!(chat.workerActivity?.receiptId && this.hasWorkerResult(chat.workerActivity.receiptId)) };
+      this.write(this.deletionFile(id), intent);
+      return { ...intent, chatPresent: true };
+    });
+  }
+
+  finishDeletion(id: string): void {
+    withCrossProcessLockSync(path.join(this.stateDirectory, "api-chats", "chats.lock"), "Chat history", () => {
+      const intent = this.deletionIntent(id);
+      if (!intent) throw new Error("No pending Chat deletion cleanup exists.");
+      if (fs.existsSync(this.file(id))) throw new Error("Chat still exists; deletion cleanup cannot be completed.");
+      this.library.forget(id);
+      if (!intent.retainedHistory) this.history.remove(id);
+      fs.unlinkSync(this.deletionFile(id));
+    });
+  }
+
   trashChat(id: string): void {
     withCrossProcessLockSync(path.join(this.stateDirectory, "api-chats", "chats.lock"), "Chat history", () => {
       const chat = this.load(id, false);
@@ -1339,10 +1495,16 @@ export class ApiChatStore {
     });
   }
 
-  deleteChat(id: string): void {
+  deleteChat(id: string, prepared = false): void {
     withCrossProcessLockSync(path.join(this.stateDirectory, "api-chats", "chats.lock"), "Chat history", () => {
       if (!this.library.read().placements[id]?.trashedAt) throw new Error("Move this Chat to Trash before permanently deleting it.");
       const chat = this.load(id, false);
+      if (prepared) {
+        const intent = this.deletionIntent(id);
+        if (!intent || intent.revision !== (chat.revision || 0) || intent.namespace !== (chat.workspaceNamespace || this.namespace)) {
+          throw new Error("Chat deletion intent changed. Inspect the Chat before explicitly retrying.");
+        }
+      }
       if (chat.progress?.status === "running" || chat.messages.some(message => message.status === "streaming")) throw new Error("Stop the running Chat before permanently deleting it.");
       const group = agentSessionGroup({ sessionId: "", hostKind: "pkm", hostSessionId: id });
       const groupPath = path.join(this.stateDirectory, "agent-groups", `${group.groupId}.json`);
@@ -1359,7 +1521,10 @@ export class ApiChatStore {
 
   restoreChat(id: string): void {
     withCrossProcessLockSync(path.join(this.stateDirectory, "api-chats", "chats.lock"), "Chat history", () => {
-      this.load(id, false); this.library.restore(id);
+      this.load(id, false);
+      const intent = this.deletionIntent(id);
+      if (intent) fs.unlinkSync(this.deletionFile(id));
+      this.library.restore(id);
     });
   }
 
@@ -1393,6 +1558,7 @@ export function apiChatGroupSnapshots(stateDirectory: string) {
   return store.list(true).map(chat => ({
     groupId: agentSessionGroup({ sessionId: "", hostKind: "pkm", hostSessionId: chat.id }).groupId,
     hostKind: "pkm", hostSessionId: chat.id, title: chat.title, deletedAt: chat.trashedAt,
+    chatUrl: chat.workspaceNamespace ? chatPkmUrl(chat.workspaceNamespace, chat.id) : undefined,
     libraryGroupId: groups.has(chat.groupId) ? chat.groupId : "ungroup",
     libraryGroupTitle: groups.get(chat.groupId) || "Ungroup",
     workerParentChatId: chat.workerParentChatId,

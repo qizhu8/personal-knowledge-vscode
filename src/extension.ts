@@ -36,6 +36,7 @@ import {
   knowledgeMoveToTrash, knowledgeTrashList, knowledgeTrashRestore, knowledgeTrashDelete, knowledgeTrashEmpty, KnowledgeTrashArea,
   noteList, noteSearch, noteGet, noteUpsert, noteDelete, slugExists, noteMove, noteMoveFolder, noteSetPinned, noteFolderPins, noteSetFolderPinned,
   noteExport, noteImport, saveNoteAsset,
+  noteWorkItemsRead, noteWorkItemCommand, noteWorkItemNotes, todoBoardCreate, todoBoardConversionPreview, todoBoardConvert, todoBoardGrantWorker,
   paperList, paperSearch, paperGet, paperUpsert, paperDelete, paperMoveAllToTrash,
   migrateLegacyMyIdeasFolder,
   paperFacets, paperGraph, savePaperFile,
@@ -67,6 +68,7 @@ import { PortalEndpointStore, portalEndpointAllowsExternalAccess, type PortalEnd
 import { PortalPermissions, PORTAL_PERMISSION_DIMENSIONS } from "./chatroom/portal-permissions";
 import { toolPermissionScope } from "./chat/permissions";
 import { PortalFiles, PortalTransferStatus } from "./chatroom/portal-files";
+import { chatroomImageMime, decodeChatroomImages, MAX_CHATROOM_IMAGE_BYTES } from "./chatroom/chatroom-images";
 import { MeetingStateStore, MeetingRoomSnapshot } from "./chatroom/meeting-state";
 import { ChatMeetingLifecycle, isFinalLeadSummary } from "./chatroom/chat-meeting-lifecycle";
 import { messageAddressesManagedAgent } from "./chatroom/chat-managed-agent-routing";
@@ -93,7 +95,9 @@ import { createHash, randomBytes, randomUUID } from "crypto";
 import { createSyncMagicCode, parseSyncMagicCode } from "./sync/sync-magic-code";
 import { createChatMagicLink, chatInviteMessage } from "./chatroom/chat-magic-link";
 import { startLiveMarkdownServer } from "./knowledge/live-note-server";
+import { manageBrowserTodo } from "./ui/note-todo-management";
 import { browserFaviconTag, browserIconBuffer, ensureBrowserFavicon } from "./ui/browser-branding";
+import { browserNoteTodo } from "./ui/note-todo-browser";
 import { managedEnvironmentsRoot } from "./runtime/environment-paths";
 import { defaultKnowledgeGitignore } from "./runtime/root-storage-policy";
 import { NavigationStatus, summarizeChatNavigation, summarizeServerNavigation } from "./ui/navigation-status";
@@ -117,7 +121,7 @@ import { createNativeHarnessServer } from "./runtime/native-harness-server";
 import { readHarnessActions } from "./runtime/native-harness-actions";
 import { projectCockpits } from "./workflows/project-cockpit";
 import { handleProjectCockpitRequest, promoteChatProject, actionRunProject } from "./workflows/project-cockpit-host";
-import { agentSessionOrigin, apiChatGroupSnapshots, apiChatSessionHarnessSnapshot } from "./chat/api-chat-store";
+import { agentSessionOrigin, apiChatGroupSnapshots, apiChatSessionHarnessSnapshot, verifyHarnessArtifacts } from "./chat/api-chat-store";
 import {
   cancelMcpPythonScan, combinedMcpRegistry,
   configuredMcpFeatureDomains, detectMcpPython, ensureMcpRuntime, generateMcpServer, MCP_FEATURE_DOMAINS, McpFeatureDomain,
@@ -484,6 +488,8 @@ async function nativeHarnessRequest(method: string, params: Record<string, unkno
     const directory = path.join(getStorePath(), ".pkm", "state");
     const snapshot = agentSessionSnapshots(currentProjectStore().list().recipes, path.join(directory, "agent-sessions"), sessionId)[0];
     if (!snapshot) throw new Error("The native Session could not be read.");
+    if (snapshot.harness) snapshot.harness = await verifyHarnessArtifacts(snapshot.harness,
+      vscode.workspace.isTrusted === false ? [] : (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.fsPath), undefined, directory);
     const references = (snapshot.harness as ReturnType<typeof apiChatSessionHarnessSnapshot> | undefined)?.attempts
       .flatMap(attempt => attempt.toolCalls.flatMap(call => call.actionRunIds)) || [];
     return { ...snapshot, memoryStoreReader:true, profileReader:true, ...readHarnessActions(directory, references, filename => agentSessionJsonCache.read<unknown>(filename)) };
@@ -706,7 +712,7 @@ function cachedMcpRuntimeStatus(): ReturnType<typeof mcpRuntimeStatus> {
   return value;
 }
 
-function mcpPanelStatusData(traceId = "", includeUsage = true): object {
+function mcpPanelStatusData(traceId = ""): object {
   const trace = { traceId, surface: "mcp" };
   const info = loadProfiler.measure("host.mcp.status", trace, () => mcpStatus());
   const python = loadProfiler.measure("host.mcp.python", trace, () => detectMcpPython());
@@ -746,10 +752,7 @@ function mcpPanelStatusData(traceId = "", includeUsage = true): object {
     mcpPython: python,
     mcpRuntime: runtime,
     featureDomains: mcpFeatureDomainState(),
-    usage: includeUsage
-      ? loadProfiler.measure("host.mcp.usage", trace,
-        () => activeStorePath ? mcpUsageSummary(activeStorePath) : { sessions: [], measurementNote: "Configure a Knowledge Root to observe MCP usage." })
-      : { sessions: [], deferred: true, measurementNote: "Usage evidence is loaded only when requested." },
+    usage: { sessions: [], deferred: true, measurementNote: "Usage evidence is loaded only when requested." },
     skillRouters: [
       { id: "exact", name: "Exact", kind: "Deterministic", version: "1", status: "active", description: "Hard exact constraints and identifier matches." },
       { id: "bm25", name: "BM25", kind: "Lexical", version: "academic-k1=0.9-b=0.4", status: "active", description: "Frozen relevance ranking across the typed Subscriber index." },
@@ -1070,7 +1073,7 @@ function invalidatePendingSubscriptionGroupLists(): void {
   for (const session of [panels.staging, ...panels.instances.values()]) session.listRequests.clear();
 }
 
-function refreshKnowledgeInventory(context: vscode.ExtensionContext): Promise<void> {
+function refreshKnowledgeInventory(context: vscode.ExtensionContext, afterMutation = false): Promise<void> {
   if (!knowledgeInventory) return Promise.resolve();
   const startedAt = Date.now();
   inventoryTask.running({ detail: "Scanning files" });
@@ -1082,12 +1085,15 @@ function refreshKnowledgeInventory(context: vscode.ExtensionContext): Promise<vo
     if (progress.batchCount) {
       postToPanel({ command: "inventoryBatch", data: { count: progress.batchCount, scanned: progress.scanned } });
     }
-  }).then(snapshot => {
+  }, afterMutation).then(snapshot => {
     if (performanceStateDir) recordPerformanceMetric(performanceStateDir, "inventory.refresh_ms", Date.now() - startedAt, snapshot.stats.scanned);
     log.info(`knowledge inventory ready revision=${snapshot.revision.slice(0, 12)} scanned=${snapshot.stats.scanned} reused=${snapshot.stats.reused} parsed=${snapshot.stats.parsed} removed=${snapshot.stats.removed}`);
     _treeProvider?.refresh();
     postToPanel({ command: "inventoryReady", data: { revision: snapshot.revision, stats: snapshot.stats } });
-  }).catch(error => log.warn(`knowledge inventory refresh failed: ${(error as Error).message}`))
+  }).catch(error => {
+    log.warn(`knowledge inventory refresh failed: ${(error as Error).message}`);
+    if (afterMutation) throw error;
+  })
     .finally(() => inventoryTask.idle());
 }
 
@@ -3448,7 +3454,7 @@ async function startPublicContentGatewayAt(context: vscode.ExtensionContext, por
     documentPath => liveMarkdownHtml(documentPath, context, false),
     MIME_BY_EXT,
     { listenHost: "0.0.0.0", port, authorizePath: publicContentRouteAllowed, identity, favicon: browserIconBuffer(),
-      mermaid: await browserMermaidResources(context) },
+      mermaid: await browserMermaidResources(context), graph: await browserGraphResources(context) },
   );
   publicContentServer = started.server;
   publicContentActivePort = port;
@@ -3531,12 +3537,14 @@ function rewriteLiveNoteLinks(markdown: string, slug: string, includePrivate = f
 }
 
 function liveMarkdownNavigation(documentPath: string, includePrivate: boolean): string {
+  const { browserResearchGraph, browserNavigationRuntime, browserPrivacyLock } = require("./ui/browser-navigation") as typeof import("./ui/browser-navigation");
   const esc = (value: unknown) => String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   const groups = [
     { label:"Notes", type:"notes" as const, kind:"note" as const, items:(noteList(undefined, 100000, true) as any[]).map(note => ({key:String(note.slug || ""), title:String(note.title || note.slug || "")})) },
     { label:"Skills", type:"skills" as const, kind:"skill" as const, items:(skillList() as any[]).map(skill => ({key:[skill.category, skill.name].filter(Boolean).join("/"), title:String(skill.name || "")})) },
     { label:"Research", type:"papers" as const, kind:"paper" as const, items:paperList().map(paper => ({key:paper.slug, title:paper.title || paper.slug})) },
   ];
+  const activeTab = documentPath.startsWith("skills/") ? "skills" : documentPath.startsWith("papers/") ? "papers" : "notes";
   const sections = groups.map(group => {
     const items = group.items.filter(item => item.key && (includePrivate || !isContentPathPrivate(group.type, item.key)))
       .sort((left, right) => left.key.localeCompare(right.key));
@@ -3554,17 +3562,37 @@ function liveMarkdownNavigation(documentPath: string, includePrivate: boolean): 
       const folders = [...folder.folders].map(([name, child]) => {
         const segments = [...parent, name];
         const active = documentPath.startsWith(`${group.type}/${segments.join("/")}/`);
-        return `<details class="reader-nav-folder"${active ? " open" : ""}><summary>${esc(name)}</summary><div class="reader-nav-children">${renderFolder(child, segments)}</div></details>`;
+        const locator = navigationItemPath({ nodeType:`${group.kind}-folder`, nodeData:{ relPath:segments.join("/") } });
+        const privacy = isContentPathPrivate(group.type, segments.join("/")) ? browserPrivacyLock : "";
+        return `<details class="reader-nav-folder"${active ? " open" : ""} data-folder="${esc(segments.join("/"))}"><summary data-pkm-path="${esc(locator)}">${esc(name)}${privacy}</summary><div class="reader-nav-children">${renderFolder(child, segments)}</div></details>`;
       }).join("");
       return folders + folder.items.map(item => {
         const active = documentPath === `${group.type}/${item.key}`;
-        return `<a class="reader-nav-item" href="${esc(markdownPreviewPath(group.kind, item.key))}" title="${esc(item.key)}"${active ? ' aria-current="page"' : ''}><span>${esc(item.title)}</span></a>`;
+        const locator = navigationItemPath({ nodeType:group.kind, nodeData:{ relPath:`${item.key}.md` } });
+        const privacy = isContentPathPrivate(group.type, item.key) ? browserPrivacyLock : "";
+        return `<a class="reader-nav-item" data-pkm-path="${esc(locator)}" href="${esc(markdownPreviewPath(group.kind, item.key))}" title="${esc(item.key)}"${active ? ' aria-current="page"' : ''}><span class="reader-nav-title">${esc(item.title)}</span>${privacy}</a>`;
       }).join("");
     };
     const links = renderFolder(root, []);
-    return `<section class="reader-nav-group"><h2>${group.label}</h2>${links || '<p class="reader-nav-empty">No content</p>'}</section>`;
+    const directory = links || '<p class="reader-nav-empty">No content</p>';
+    return `<section class="reader-nav-group" role="tabpanel" id="library-${group.type}" aria-labelledby="tab-${group.type}" data-library-panel="${group.type}"${activeTab !== group.type ? " hidden" : ""}><h2>${group.label}</h2>${group.type === "papers" ? `<div class="reader-graph-tools" aria-label="Research view"><button type="button" data-graph-view="directory" aria-pressed="true">Directory</button><button type="button" data-graph-view="2d" aria-pressed="false">2D Graph</button><button type="button" data-graph-view="3d" aria-pressed="false">3D Graph</button></div><div class="reader-research-directory">${directory}</div><p class="reader-graph-status" role="status" hidden></p><div class="reader-graph-canvas" hidden></div>` : directory}</section>`;
   }).join("");
-  return `<aside class="reader-sidebar" aria-label="Knowledge navigation"><details open><summary>Library</summary><label class="reader-search"><input type="search" aria-label="Search Notes, Skills and Research" placeholder="Search library" oninput="const query=this.value.toLocaleLowerCase();const sidebar=this.closest('aside');sidebar.querySelectorAll('.reader-nav-item').forEach(item=>{item.hidden=!item.textContent.toLocaleLowerCase().includes(query)&&!item.title.toLocaleLowerCase().includes(query)});sidebar.querySelectorAll('.reader-nav-folder').forEach(folder=>{if(query){if(!('searchOpen' in folder.dataset))folder.dataset.searchOpen=String(folder.open);folder.hidden=!folder.querySelector('.reader-nav-item:not([hidden])');if(!folder.hidden)folder.open=true}else{folder.hidden=false;if('searchOpen' in folder.dataset){folder.open=folder.dataset.searchOpen==='true';delete folder.dataset.searchOpen}}});sidebar.querySelectorAll('.reader-nav-group').forEach(group=>{group.hidden=!!query&&!group.querySelector('.reader-nav-item:not([hidden])')})"></label><nav>${sections}</nav></details></aside>`;
+  const tabs = [...groups].sort((a, b) => ["skills", "notes", "papers"].indexOf(a.type) - ["skills", "notes", "papers"].indexOf(b.type)).map(group =>
+    `<button type="button" role="tab" id="tab-${group.type}" aria-controls="library-${group.type}" data-library-tab="${group.type}" aria-selected="${activeTab === group.type}">${group.label}</button>`).join("");
+  const graph = browserResearchGraph(paperGraph({ limit: 100000 }), key => includePrivate || !isContentPathPrivate("papers", key));
+  const accessLabel = includePrivate ? "Private" : "Public";
+  const accessDescription = includePrivate ? "Authenticated view: Public and Private knowledge" : "Public knowledge only";
+  const accessBadge = `<footer class="reader-access" data-access="${includePrivate ? "private" : "public"}" aria-label="${accessDescription}" title="${accessDescription}"><span class="reader-access-dot" aria-hidden="true"></span><span class="reader-access-label">${accessLabel}</span></footer>`;
+  return `<aside class="reader-sidebar" aria-label="Knowledge navigation"><details open><summary>Library</summary><label class="reader-search"><input type="search" aria-label="Search Notes, Skills and Research" placeholder="Search current library tab" oninput="const query=this.value.toLocaleLowerCase();const sidebar=this.closest('aside');sidebar.querySelectorAll('.reader-nav-item').forEach(item=>{item.hidden=!item.textContent.toLocaleLowerCase().includes(query)&&!item.title.toLocaleLowerCase().includes(query)});sidebar.querySelectorAll('.reader-nav-folder').forEach(folder=>{if(query){if(!('searchOpen' in folder.dataset))folder.dataset.searchOpen=String(folder.open);folder.hidden=!folder.querySelector('.reader-nav-item:not([hidden])');if(!folder.hidden)folder.open=true}else{folder.hidden=false;if('searchOpen' in folder.dataset){folder.open=folder.dataset.searchOpen==='true';delete folder.dataset.searchOpen}}})"></label><div class="reader-tabs" role="tablist" aria-label="Library tabs">${tabs}</div><nav>${sections}</nav></details>${accessBadge}</aside>${browserNavigationRuntime(activeTab, graph)}`;
+}
+
+async function browserGraphResources(context: vscode.ExtensionContext): Promise<{ cytoscape: Buffer; forcegraph3d: Buffer }> {
+  const directory = path.join(context.extensionPath, "dist", "webview");
+  const [cytoscape, forcegraph3d] = await Promise.all([
+    fs.promises.readFile(path.join(directory, "cytoscape.js")),
+    fs.promises.readFile(path.join(directory, "forcegraph3d.js")),
+  ]);
+  return { cytoscape, forcegraph3d };
 }
 
 async function browserMermaidResources(context: vscode.ExtensionContext): Promise<{ library: Buffer; renderer: Buffer }> {
@@ -3606,9 +3634,11 @@ function liveMarkdownHtml(documentPath: string, context: vscode.ExtensionContext
     ? `<pre><code>${String(item.content || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</code></pre>`
     : renderMarkdown(markdown);
   return buildStandaloneNoteHtml({
+    liveBrowser: true,
     title: item.title || item.name || item.file, slug: item.slug || item._key || item.path, category: item.category,
     tags: Array.isArray(item.tags) ? JSON.stringify(item.tags) : item.tags || "[]",
-    noteType: kind, updatedAt: item.updated_at, bodyHtml,
+    noteType: kind, updatedAt: item.updated_at,
+    bodyHtml: kind === "note" ? browserNoteTodo(bodyHtml, item.content || "", item.slug, item.title || item.slug, context.extensionPath, item.documentKind === "todo-board" ? noteWorkItemsRead(item.slug) : undefined, true, includePrivate && vscode.workspace.isTrusted !== false && !/^system(?:\/|$)/i.test(item.slug)) : bodyHtml,
     description: item.description, sourceProject: item.source_project,
     authors: item.authors, year: item.year, publisher: item.publisher, url: item.url,
     navigationHtml:liveMarkdownNavigation(documentPath, includePrivate),
@@ -3617,7 +3647,7 @@ function liveMarkdownHtml(documentPath: string, context: vscode.ExtensionContext
 
 async function openLiveMarkdownPreview(kind: "note" | "skill" | "paper" | "script", key: string, context: vscode.ExtensionContext): Promise<boolean> {
   const privacyType = `${kind}s` as PrivacyContentType;
-  if (!isContentPathPrivate(privacyType, key)) {
+  if (!(kind === "note" && noteGet(key)?.documentKind === "todo-board") && !isContentPathPrivate(privacyType, key)) {
     await ensurePublicContentGateway(context);
     return vscode.env.openExternal(vscode.Uri.parse(stablePublicContentUrl(kind, key)));
   }
@@ -3632,7 +3662,9 @@ async function openLiveMarkdownPreview(kind: "note" | "skill" | "paper" | "scrip
       ],
       documentPath => liveMarkdownHtml(documentPath, context, true),
       MIME_BY_EXT,
-      { accessToken, favicon: browserIconBuffer(), mermaid: await browserMermaidResources(context) },
+      { accessToken, favicon: browserIconBuffer(), mermaid: await browserMermaidResources(context), graph: await browserGraphResources(context),
+        manageTodo: (documentPath, message) => manageBrowserTodo(documentPath, message, vscode.workspace.isTrusted !== false,
+          currentProjectStore().list().projects.map(project=>({ projectId: project.projectId, name: project.name }))) },
     );
     liveNoteServer = started.server;
     liveNoteBaseUrl = await vscode.env.asExternalUri(vscode.Uri.parse(`${started.localBaseUrl}?_pkm_token=${encodeURIComponent(accessToken)}`));
@@ -3750,7 +3782,8 @@ function buildStandaloneNoteHtml(msg: any, katexCss = "", faviconHref = ""): str
   let tags: string[] = [];
   try { tags = JSON.parse(msg.tags || "[]"); } catch { tags = []; }
   const title = String(msg.title || msg.slug || "Note");
-  const body = inlineMarkdownAssets(String(msg.bodyHtml || ""), String(msg.area || "notes"), String(msg.category || ""));
+  // Live resources must pass the gateway's privacy check rather than being embedded.
+  const body = msg.liveBrowser ? String(msg.bodyHtml || "") : inlineMarkdownAssets(String(msg.bodyHtml || ""), String(msg.area || "notes"), String(msg.category || ""));
   const metaBits = [
     msg.noteType ? `<span class="pill type">${esc(msg.noteType)}</span>` : "",
     msg.category ? `<span class="pill cat">${esc(msg.category)}</span>` : "",
@@ -3768,7 +3801,7 @@ function buildStandaloneNoteHtml(msg: any, katexCss = "", faviconHref = ""): str
   const navigation = String(msg.navigationHtml || "");
 
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" spellcheck="true">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -3846,6 +3879,7 @@ h1.doc-title{font-size:28px;line-height:1.25;margin:0 0 12px;color:#0b1220}
 @media(max-width:700px){.reader-layout{grid-template-columns:140px minmax(0,1fr)}.reader-sidebar{padding:8px 6px}.reader-layout .wrap{padding:20px 12px}}
 @media print{.reader-sidebar{display:none}.reader-layout{display:block}}
 ${katexCss}
+${navigation ? (require("./ui/browser-navigation") as typeof import("./ui/browser-navigation")).browserNavigationStyles : ""}
 </style>
 </head>
 <body>
@@ -4285,6 +4319,11 @@ function knowledgeContentUri(area: KnowledgeMarkdownArea, key: string): vscode.U
 }
 
 async function openStoreMarkdown(area: KnowledgeMarkdownArea, key: string): Promise<void> {
+  if (area === "notes" && noteGet(key)?.documentKind === "todo-board") {
+    if (!chatCtx) throw new Error("PKM is not initialized.");
+    openInPanel(chatCtx, "note", key);
+    return;
+  }
   const doc = await vscode.workspace.openTextDocument(knowledgeContentUri(area, key));
   await vscode.window.showTextDocument(doc, { preview: false });
 }
@@ -5123,7 +5162,7 @@ class ChatRoomManager {
     read_file: "files-read", find_files: "files-read", search_text: "files-read", list_directory: "files-read",
     replace_text: "files-write", save_file: "files-write", run_process: "code-execute",
     run_process_background: "code-execute", process_cancel: "code-execute", process_get: "progress-read", process_output: "progress-read",
-    pkm_search: "pkm-read", pkm_read: "pkm-read", memory_read: "chat-read", list_chats: "chat-read",
+    pkm_search: "pkm-read", pkm_read: "pkm-read", note_todo_read: "pkm-read", memory_read: "chat-read", list_chats: "chat-read",
     session_info: "progress-read", record_harness: "progress-read", find_actions: "pkm-read",
   };
 
@@ -5421,7 +5460,7 @@ class ChatRoomManager {
       ...(external && this.externalAuthorized(id) ? { externalAuthorization: { expiresAt: Number.isFinite(external.expiresAt) ? external.expiresAt : null } } : {}),
       endpoint: room?.url, endpointScope: endpointScope(room?.url),
       ...(binding?.peerEndpoint ? { peerEndpoint: binding.peerEndpoint, peerEndpointScope: endpointScope(binding.peerEndpoint) } : {}),
-      binding: room?.peer?.binding, switchPending: room?.peer?.swapPending,
+      binding: room?.peer?.binding, execution: room?.peer?.incomingActivity, switchPending: room?.peer?.swapPending,
       observations: room?.peer ? [...room.peer.observations.values()] : [],
       transfers: [...(this.portalTransfers.get(id)?.values() || [])],
       receipts: room?.peer ? [...room.peer.receipts.values()].map(({ requestId, state, error }) => ({ requestId, state, error })) : [] };
@@ -5653,6 +5692,18 @@ class ChatRoomManager {
         return result;
       },
       approveCommand: async (name, command, requestId) => {
+        const chatId = this.endpointChatId(owner.id) || (!this.chatPortals.get(owner.id)?.external ? owner.id : undefined);
+        if (chatId) {
+          try {
+            if (!portalMutationPolicy) throw new Error("The local Chat workflow policy is unavailable.");
+            await portalMutationPolicy(chatId);
+          } catch (error) {
+            const message = `Portal command blocked by Chat workflow: ${error instanceof Error ? error.message : String(error)}`;
+            log.error(message);
+            void vscode.window.showErrorMessage(message);
+            return false;
+          }
+        }
         if (this.endpoint(owner.id) && (!this.endpoint(owner.id)!.acceptsIncoming || this.endpoint(owner.id)!.deleted || this.endpointSuspended.has(owner.id))) return false;
         const epoch = this.portalEpochs.get(owner.id) || 0;
         const policy = this.portalPermissions.get(owner.id);
@@ -5689,6 +5740,11 @@ class ChatRoomManager {
         return false;
       },
       executeCommand: async (command, signal, requestId) => {
+        const chatId = this.endpointChatId(owner.id) || (!this.chatPortals.get(owner.id)?.external ? owner.id : undefined);
+        if (chatId) {
+          if (!portalMutationGuard) throw new Error("The local Chat workflow policy is unavailable.");
+          portalMutationGuard(chatId);
+        }
         const approved = this.portalCommandApprovals.get(`${owner.id}:${requestId}`);
         this.portalCommandApprovals.delete(`${owner.id}:${requestId}`);
         if (!approved || approved.epoch !== (this.portalEpochs.get(owner.id) || 0)) throw new Error("Portal command authorization was revoked.");
@@ -5715,6 +5771,7 @@ class ChatRoomManager {
       connected: () => room.client.isConnected && vscode.workspace.isTrusted && peerRoot === getStorePath(),
       send: (target, packet) => {
         if (!vscode.workspace.isTrusted || getStorePath() !== peerRoot) throw new Error("Portal workspace or Knowledge Root changed; pair again.");
+        if (packet.operation === "files") return room.client.sendPeerAndWait(target, packet);
         room.client.sendPeer(target, packet);
       },
       approvePair: async name => this.portalConfirm(owner, `Allow ${name} to control this machine?`,
@@ -5861,23 +5918,41 @@ class ChatRoomManager {
     const active = () => {
       if ((this.portalEpochs.get(owner.id) || 0) !== epoch || room.peer?.binding !== binding || !room.client.isConnected || root !== getStorePath() || !vscode.workspace.isTrusted) throw new Error("Portal changed; file batch is not authorized.");
     };
+    const guard = () => {
+      active();
+      const chatId = this.endpointChatId(owner.id) || (!this.chatPortals.get(owner.id)?.external ? owner.id : undefined);
+      if (chatId) {
+        if (!portalMutationGuard) throw new Error("The local Chat workflow policy is unavailable.");
+        portalMutationGuard(chatId);
+      }
+    };
+    const preparePolicy = async () => {
+      active();
+      const chatId = this.endpointChatId(owner.id) || (!this.chatPortals.get(owner.id)?.external ? owner.id : undefined);
+      if (chatId) {
+        if (!portalMutationPolicy) throw new Error("The local Chat workflow policy is unavailable.");
+        await portalMutationPolicy(chatId);
+      }
+      guard();
+    };
     let lastTransferPublish = 0;
     const lastChatPublish = new Map<string, number>();
     const files = new PortalFiles({
+      assertActive: guard,
       controlled: () => binding.role === "controlled",
-      send: payload => { active(); room.peer!.sendFiles(payload); },
+      send: payload => { active(); return room.peer!.sendFiles(payload); },
       destination: async () => {
-        active();
+        await preparePolicy();
         const selected = await vscode.window.showOpenDialog({ title: `Save Portal files from ${binding.peerName} (never auto-install)`, canSelectMany: false, canSelectFolders: true, canSelectFiles: false });
-        active();
+        guard();
         return selected?.[0]?.fsPath;
       },
       approve: async batch => {
-        active();
+        await preparePolicy();
         const allowed = await this.portalConfirm(owner, `Permit file batch ${batch.direction === "incoming" ? "from" : "to"} ${binding.peerMachine || binding.peerName}?`,
           `Chat: ${owner.label}\nPeer: ${binding.peerChatName || binding.peerName} · ${room.url}\nDirection: ${batch.direction}\nTotal: ${batch.totalBytes} bytes\nDestination: ${batch.destination || "remote user-selected directory"}\n${batch.files.map((file, index) => `${file.name} · ${file.size} bytes · SHA-256 ${file.sha256}${batch.sources?.[index] ? `\nSource: ${batch.sources[index]}` : ""}`).join("\n")}\n\nOnly this immutable batch. No overwrite, execution, installation or reload. Allow All never skips controlled-side file-transfer approval.`,
           "Permit this batch");
-        active();
+        guard();
         return allowed;
       },
       onStatus: status => {
@@ -6254,7 +6329,7 @@ class ChatRoomManager {
         selfHost: active.selfHost, selfMuted: active.selfMuted,
         hasRoomKey: !!this.getRoomKey(active.room),
         agentStates: active.agentStates,
-        files: [...active.files.values()].map(f => ({ fileId: f.meta.fileId, name: f.meta.name, from: f.from, size: f.meta.size })),
+        files: [...active.files.values()].map(f => ({ fileId: f.meta.fileId, name: f.meta.name, from: f.from, size: f.meta.size, mime:f.meta.mime })),
         meetings: active.selfHost && this.meetingStore ? this.meetingStore.snapshot(this.meetingRoomId(active)) : active.meetings,
       } : null,
       hubRunning: !!this.hub?.isRunning,
@@ -6814,7 +6889,7 @@ class ChatRoomManager {
 
   private onFileReceived(rc: RoomConn, meta: FileMeta, from: string, data: Buffer): void {
     rc.files.set(meta.fileId, { meta, from, data });
-    postToPanel({ command: "chatFileReady", data: { key: rc.key, fileId: meta.fileId, name: meta.name, from, size: meta.size } });
+    postToPanel({ command: "chatFileReady", data: { key: rc.key, fileId: meta.fileId, name: meta.name, from, size: meta.size, mime:meta.mime } });
     if (rc.key === this.activeKey) this.push();
     log.action("chat.fileReceived", { room: rc.room, name: meta.name, size: meta.size });
   }
@@ -6871,6 +6946,27 @@ class ChatRoomManager {
 
   /** Your current display name in the active room ("" if none). */
   get selfName(): string { return this.activeRoom?.user ?? ""; }
+
+  async sendImages(key: string, images: unknown, message: Parameters<ChatClient["sendText"]>): Promise<void> {
+    const rc = this.rooms.get(key);
+    if (!rc || key !== this.activeKey || !rc.client.isConnected) throw new Error("The selected Room changed or disconnected. Send again in the intended Room.");
+    if (rc.selfMuted) throw new Error("You are muted by the host and cannot share images.");
+    const decoded = decodeChatroomImages(images);
+    for (const image of decoded) {
+      const result = await rc.client.sendFile(image.name, image.mime, image.data);
+      if (!result.ok || !result.file) throw new Error(result.error || "Image transfer was not queued.");
+      this.onFileReceived(rc, result.file, rc.user, image.data);
+    }
+    if (message[0].trim() && !rc.client.sendText(...message)) throw new Error("Images were queued, but the message could not be sent. Check the connection before retrying.");
+  }
+
+  imagePreview(key: string, fileId: string): string {
+    const file = this.rooms.get(key)?.files.get(fileId);
+    if (!file) throw new Error("This image is no longer available. Shared files are live-only.");
+    const mime = chatroomImageMime(file.data);
+    if (!mime || mime !== file.meta.mime || file.data.length > MAX_CHATROOM_IMAGE_BYTES) throw new Error("This file is not a supported image preview (maximum 5 MB).");
+    return `data:${mime};base64,${file.data.toString("base64")}`;
+  }
 
   async sendFileToActive(): Promise<void> {
     const rc = this.activeRoom;
@@ -7183,6 +7279,8 @@ let remoteTaskAttemptsReader: ((chatId: string, requestId: string, replyId?: str
 let portalProfileReview: ((chatId: string) => Promise<PersonaSnapshot | undefined>) | undefined;
 let portalChatContext: ((chatId?: string, label?: string) => Promise<{ id: string; label: string }>) | undefined;
 let portalChooseContext: (() => Promise<{ id: string; label: string } | undefined>) | undefined;
+let portalMutationGuard: ((chatId: string) => void) | undefined;
+let portalMutationPolicy: ((chatId: string) => Promise<void>) | undefined;
 let portalChatBindingsReader: (() => Promise<Array<{ id: string; title: string }>>) | undefined;
 let portalInteraction: ((chatId: string, interaction: import("./chat/portal-interaction").PortalInteraction, current: () => boolean) => Promise<import("./chat/portal-interaction").PortalInteractionAnswer | undefined>) | undefined;
 let portalReviewReceiver: ((chatId: string, review: PortalReview) => Promise<void>) | undefined;
@@ -9203,8 +9301,28 @@ async function handleMessage(
       const finalTopicSummary = msg.finalTopicSummary === true;
       const collaboration = msg.collaboration && typeof msg.collaboration === "object"
         ? msg.collaboration as CollaborationMessageMetadata : undefined;
+      if (msg.images !== undefined) {
+        try {
+          await getChatMgr().sendImages(String(msg.key || ""), msg.images, [
+            String(msg.text || ""), responseRequired, replyPolicy, mode, recipients, replyToMessageId, discussionLead, finalTopicSummary, collaboration,
+          ]);
+          respond({ command:"chatSendImagesResult", data:{ key:msg.key, requestId:msg.requestId, ok:true } });
+        } catch (error) {
+          respond({ command:"chatSendImagesResult", data:{ key:msg.key, requestId:msg.requestId, ok:false, error:error instanceof Error ? error.message : String(error) } });
+        }
+        break;
+      }
       const ok = getChatMgr().send((msg.text || "").toString(), responseRequired, replyPolicy, mode, recipients, replyToMessageId, discussionLead, finalTopicSummary, collaboration);
       if (!ok) getChatMgr().push();
+      break;
+    }
+
+    case "chatImagePreview": {
+      try {
+        respond({ command:"chatImagePreview", data:{ key:msg.key, fileId:msg.fileId, src:getChatMgr().imagePreview(String(msg.key || ""), String(msg.fileId || "")) } });
+      } catch (error) {
+        respond({ command:"chatImagePreview", data:{ key:msg.key, fileId:msg.fileId, error:error instanceof Error ? error.message : String(error) } });
+      }
       break;
     }
 
@@ -10654,7 +10772,13 @@ async function handleMessage(
       } else if (area === "notes") {
         const slug = (category ? `${category}/` : "") + title.trim();
         if (noteGet(slug)) { vscode.window.showWarningMessage(`Note already exists: ${slug}`); break; }
-        noteUpsert({ slug, title: title.trim(), content: "", type: "general", tags: [], category });
+        const documentKind = await vscode.window.showQuickPick([
+          { label: "Markdown", description: "Free-form Note; checkboxes are not managed tasks", value: "markdown" },
+          { label: "Todo Board", description: "Structured Stories and tasks; managed through UI / MCP commands", value: "todo-board" },
+        ], { placeHolder: "Choose document type" });
+        if (!documentKind) break;
+        if (documentKind.value === "todo-board") todoBoardCreate(slug, title.trim(), category);
+        else noteUpsert({ slug, title: title.trim(), content: "", type: "general", tags: [], category });
         gitCommit(`add(note): ${slug}`);
         await openStoreMarkdown("notes", slug);
       } else if (area === "papers") {
@@ -10696,6 +10820,88 @@ async function handleMessage(
       respond({ command: "saved" });
       const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(full));
       await vscode.window.showTextDocument(doc, { preview: false });
+      break;
+    }
+
+    case "todoBoardGrantWorker": {
+      try {
+        if (vscode.workspace.isTrusted === false) throw new Error("Worker access requires a trusted workspace.");
+        const actorId = String(msg.actorId || ""), slug = String(msg.slug || "");
+        const choice = await vscode.window.showWarningMessage(
+          `Copy worker access for ${actorId} on “${slug}”? Share it only with that Agent. It can act as this worker on this Board, not as a user. This replaces any previous token for this Agent.`,
+          { modal: true }, "Copy Worker Token");
+        if (choice !== "Copy Worker Token") break;
+        const token = todoBoardGrantWorker(slug, String(msg.expectedDigest || ""), actorId);
+        await vscode.env.clipboard.writeText(token);
+        vscode.window.showInformationMessage("Board-scoped worker token copied. Keep it private; pass it as worker_token to note_work_item_command. Reload the Board before the next change.");
+      } catch (error) {
+        vscode.window.showErrorMessage(`Worker access failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      break;
+    }
+
+    case "todoBoardConvert": {
+      try {
+        if (vscode.workspace.isTrusted === false) throw new Error("Todo Board conversion requires a trusted workspace.");
+        const slug = String(msg.slug || "");
+        const preview = todoBoardConversionPreview(slug);
+        const stories = preview.items.filter(item => item.kind === "UserStory").length;
+        const choice = await vscode.window.showWarningMessage(
+          `Convert “${slug}” to a Todo Board? Import ${stories} Stories and ${preview.items.length - stories} tasks, preserving IDs, states, evidence and history. Original Markdown is retained as historical source, not live task data. Future edits use Board UI / MCP commands.`,
+          { modal: true }, "Convert to Todo Board");
+        if (choice !== "Convert to Todo Board") break;
+        todoBoardConvert(slug, preview.digest);
+        gitCommit(`convert(todo-board): ${slug}`);
+        _treeProvider?.refresh();
+        const note = noteGet(slug);
+        respond({ command: "detail", data: { ...note, note_type: note.type, type: "note" } });
+        respond({ command: "saved" });
+      } catch (error) {
+        vscode.window.showErrorMessage(`Todo Board conversion failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      break;
+    }
+
+    case "noteTodoRead":
+    case "noteTodoCommand": {
+      const slug = typeof msg.slug === "string" ? msg.slug : "";
+      try {
+        if (!slug) throw new Error("Choose an existing Note.");
+        if (vscode.workspace.isTrusted === false) throw new Error("Work Items require a trusted workspace.");
+        const projects = currentProjectStore().list().projects.map(project => ({ projectId: project.projectId, name: project.name }));
+        if (msg.command === "noteTodoCommand") {
+          if (typeof msg.expectedDigest !== "string") throw new Error("Read the Note before modifying Work Items.");
+          const item = msg.operation && typeof msg.operation === "object" && "item" in msg.operation ? msg.operation.item : undefined;
+          if (item && typeof item === "object" && "projectId" in item && item.projectId !== undefined
+            && !projects.some(project => project.projectId === item.projectId)) throw new Error("Choose an existing Project or clear the Project assignment.");
+          noteWorkItemCommand(slug, msg.expectedDigest, msg.operation, { id: "user:local", role: "user" });
+        }
+        const snapshot = noteWorkItemsRead(slug);
+        const note = noteGet(slug);
+        if (!note) throw new Error("Note is no longer available. Reload the library before continuing.");
+        const chats = apiChatGroupSnapshots(path.join(getStorePath(), ".pkm", "state"))
+          .filter(chat => !chat.deletedAt).map(chat => ({ id: chat.hostSessionId, title: chat.title || chat.hostSessionId, chatUrl: chat.chatUrl }));
+        respond({ command: "noteTodoResult", data: { slug, requestId: msg.requestId, snapshot, content: note.content, projects, chats, documentKind: note.documentKind } });
+        if (msg.command === "noteTodoCommand") _treeProvider?.refresh();
+      } catch (error) {
+        respond({ command: "noteTodoResult", data: { slug, requestId: msg.requestId, error: error instanceof Error ? error.message : String(error) } });
+      }
+      break;
+    }
+
+    case "noteTodoProject": {
+      const projectId = typeof msg.projectId === "string" ? msg.projectId : "";
+      try {
+        if (vscode.workspace.isTrusted === false) throw new Error("Work Items require a trusted workspace.");
+        if (!currentProjectStore().list().projects.some(project => project.projectId === projectId)) throw new Error("Project not found.");
+        const discovery = noteWorkItemNotes("", 1000);
+        if (discovery.truncated) throw new Error("Too many Work Item Notes for a complete Project timeline. Narrow the knowledge collection before loading.");
+        const records = discovery.notes.flatMap(note => noteWorkItemsRead(note.slug).items.filter(item => item.projectId === projectId)
+          .map(item => ({ slug: note.slug, item })));
+        respond({ command: "noteTodoProjectResult", data: { projectId, requestId: msg.requestId, records } });
+      } catch (error) {
+        respond({ command: "noteTodoProjectResult", data: { projectId, requestId: msg.requestId, error: error instanceof Error ? error.message : String(error) } });
+      }
       break;
     }
 
@@ -11006,7 +11212,11 @@ async function handleMessage(
       // Build a self-contained HTML document from the webview-rendered body and
       // either open it in the default browser or save it to a file.
       try {
-        const doc = buildStandaloneNoteHtml(msg, katexCssForExport(context));
+        const note = msg.area === "notes" ? noteGet(String(msg.slug || "")) : undefined;
+        const exported = note?.documentKind === "todo-board" ? {
+          ...msg, bodyHtml: browserNoteTodo("", "", note.slug, note.title, context.extensionPath, noteWorkItemsRead(note.slug), false),
+        } : msg;
+        const doc = buildStandaloneNoteHtml(exported, katexCssForExport(context));
         const safe = safeFilePart(String(msg.title || msg.slug || "note")) || "note";
         if (msg.mode === "browser") {
           const opened = await openHtmlInBrowser(doc);
@@ -11091,7 +11301,8 @@ async function handleMessage(
             const doc = buildStandaloneNoteHtml({
               title: note.title || f.slug, slug: f.slug, category: note.category || "",
               tags: note.tags || "[]", noteType: note.type || "general",
-              updatedAt: note.updated_at || "", bodyHtml: f.bodyHtml || "",
+              updatedAt: note.updated_at || "", bodyHtml: note.documentKind === "todo-board"
+                ? browserNoteTodo("", "", note.slug, note.title, context.extensionPath, noteWorkItemsRead(note.slug), false) : f.bodyHtml || "",
             }, katexCssForExport(context));
             fs.writeFileSync(path.join(dir, String(f.filename)), doc, "utf-8");
           }
@@ -12337,7 +12548,7 @@ async function handleMessage(
     }
 
     case "checkMcp": {
-      respond({ command: "mcpStatus", data: mcpPanelStatusData(String(msg.profileRequestId || ""), false) });
+      respond({ command: "mcpStatus", data: mcpPanelStatusData(String(msg.profileRequestId || "")) });
       await maintainPkmIntegration(context);
       respond({ command: "mcpCheckComplete", data: {
         state: integrationMaintenanceState,
@@ -12348,12 +12559,22 @@ async function handleMessage(
 
     case "refreshMcpUsage": {
       const activeStorePath = _storeReady ? getStorePath() : "";
-      respond({
-        command: "mcpUsage",
-        data: activeStorePath
-          ? mcpUsageSummary(activeStorePath)
-          : { sessions: [], measurementNote: "Configure a Knowledge Root to observe MCP usage." },
-      });
+      const startedAt = performance.now();
+      try {
+        const usage = activeStorePath
+          ? await mcpUsageSummary(activeStorePath)
+          : { sessions: [], measurementNote: "Configure a Knowledge Root to observe MCP usage." };
+        respond({
+          command: "mcpUsage",
+          data: { ...usage, storePath: activeStorePath },
+        });
+      } finally {
+        loadProfiler.record("host.mcp.usage", {
+          traceId: String(msg.profileRequestId || ""),
+          surface: "mcp",
+          durationMs: Math.round(performance.now() - startedAt),
+        });
+      }
       break;
     }
 
@@ -12615,7 +12836,7 @@ async function handleMessage(
         }
         const info = preview
           ? { serverPath: mcpStatus().serverPath, configSnippet: combinedMcpRegistry() }
-          : generateMcpServer(context);
+          : await generateMcpServer(context);
         if (!preview) refreshMcpDefinitions();
         respond({ command: "mcpGenerated", data: { ...info, preview } });
         if (!preview) vscode.window.setStatusBarMessage("$(check) MCP server created", 4000);
@@ -12635,7 +12856,7 @@ async function handleMessage(
         }
         const info = preview
           ? { serverPath: mcpStatus().serverPath, configSnippet: combinedMcpRegistry() }
-          : generateMcpServer(context);
+          : await generateMcpServer(context);
         if (!preview) refreshMcpDefinitions();
         respond({ command: "mcpGenerated", data: { ...info, preview } });
         if (!preview) vscode.window.setStatusBarMessage("$(check) Unified PKM MCP server created", 4000);
@@ -12811,7 +13032,7 @@ function openMcpSetup(context: vscode.ExtensionContext, highlightRegenerate = fa
 
 async function regenerateMcpServerCode(context: vscode.ExtensionContext): Promise<void> {
   try {
-    const info = generateMcpServer(context);
+    const info = await generateMcpServer(context);
     refreshMcpDefinitions();
     _treeProvider?.refresh();
     postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() });
@@ -12891,7 +13112,7 @@ function maintainPkmIntegration(context: vscode.ExtensionContext): Promise<void>
     } else if (!server.current) {
       activePanel()?.webview.postMessage({ command: "loadingProgress", data: { stage: "mcp", percent: 48, message: "Updating MCP server code…" } });
       log.info("automatically updating generated MCP server code");
-      generateMcpServer(context);
+      await generateMcpServer(context);
     }
     refreshMcpDefinitions();
     if (!(await mcpRuntimeStatusAsync()).healthy || !mcpStatus().current) {
@@ -13596,8 +13817,9 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
     for (const n of node.items.sort((a: any, b: any) => (b.updated_at || "").localeCompare(a.updated_at || ""))) {
       const relativePath = `${n.slug}.md`;
       const item = new PkTreeItem(n.title, 'note', vscode.TreeItemCollapsibleState.Collapsed, { key: n.slug, relPath: relativePath });
+      if (n.documentKind === "todo-board") item.iconPath = new vscode.ThemeIcon("project");
       item.description = relativePath.split("/").pop() || relativePath;
-      item.tooltip = `${n.title}\nnotes/${relativePath}`;
+      item.tooltip = `${n.documentKind === "todo-board" ? "Todo Board · " : ""}${n.title}\nnotes/${relativePath}`;
       item.command = { command: 'personalKnowledge.openNote', title: 'Open', arguments: [n.slug] };
       out.push(item);
     }
@@ -13713,7 +13935,7 @@ class PkTreeProvider implements vscode.TreeDataProvider<PkTreeItem> {
       out.push(item);
     }
     for (const s of node.items.sort((a: any, b: any) => a.file.localeCompare(b.file))) {
-      const item = new PkTreeItem(s.file, 'script-file', vscode.TreeItemCollapsibleState.None, { key: s.path });
+      const item = new PkTreeItem(s.file, 'script-file', vscode.TreeItemCollapsibleState.None, { key: s.path, relPath: s.path });
       item.description = s.lang;
       item.command = { command: 'personalKnowledge.openScript', title: 'Open', arguments: [s.path] };
       out.push(item);
@@ -13799,6 +14021,11 @@ class PkTreeDragAndDropController implements vscode.TreeDragAndDropController<Pk
     const result = storeEntryMove(source.area, source.relPath, destination.relPath);
     if (!result.ok) { vscode.window.showWarningMessage(result.error || "Move failed."); return; }
     gitCommit(`move(${source.area}): ${source.relPath} -> ${result.newPath}`);
+    try { await refreshKnowledgeInventory(this.context, true); }
+    catch (error) {
+      vscode.window.showErrorMessage(`Moved to ${result.newPath}, but Navigation refresh failed. Do not repeat the move; refresh Navigation to retry: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
     _treeProvider?.refresh();
     postToPanel({ command: "reloaded" });
     vscode.window.setStatusBarMessage(`$(move) Moved to ${result.newPath}`, 3000);
@@ -14148,7 +14375,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   try {
     apiChat = registerApiChatShell(context, async () => {
       const { registerApiChat } = await import("./chat/api-chat-view");
-      return registerApiChat(context, createChatKnowledgeRetriever(() => retrievalWorker, currentRetrievalSnapshot), false);
+      return registerApiChat(context, createChatKnowledgeRetriever(() => retrievalWorker, currentRetrievalSnapshot), false, async () => {
+        await maintainPkmIntegration(context);
+        if (integrationMaintenanceState !== "ready") {
+          throw new Error(`PKM MCP preparation ${integrationMaintenanceState}: ${integrationMaintenanceError}`);
+        }
+      });
     });
     portalChatContext = (chatId, label) => {
       if (!apiChat) throw new Error("PKM Chat is unavailable.");
@@ -14177,6 +14409,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     };
     portalReviewReceiver = (chatId, review) => apiChat!.receivePortalReview(chatId, review);
     portalCommandRecorder = (chatId, activity) => apiChat!.recordPortalCommand(chatId, activity);
+    portalMutationGuard = chatId => apiChat!.assertPortalMutationAllowed(chatId);
+    portalMutationPolicy = chatId => apiChat!.preparePortalMutationPolicy(chatId);
     portalTransferRecorder = (chatId, status, peerName) => apiChat!.recordPortalTransfer(chatId, status, peerName);
   } catch (error) {
     log.error(`PKM Chat initialization failed: ${error instanceof Error ? error.stack || error.message : String(error)}`);
@@ -14605,9 +14839,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       openInPanel(context, "subscriptionItem", String(key || ""), false, type);
     }),
 
-    vscode.commands.registerCommand("personalKnowledge.refreshTree", () => {
+    vscode.commands.registerCommand("personalKnowledge.refreshTree", async () => {
       log.action("command.refreshTree");
-      treeProvider.refresh();
+      try {
+        await refreshKnowledgeInventory(context, true);
+        treeProvider.refresh();
+        postToPanel({ command: "reloaded" });
+      } catch (error) {
+        vscode.window.showErrorMessage(`Navigation refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }),
 
     vscode.commands.registerCommand("personalKnowledge.classifyAssets", reviewAssetClassification),
@@ -14924,7 +15164,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!title?.trim()) return;
       const key = (cat ? cat + "/" : "") + title.trim();
       if (noteGet(key)) { vscode.window.showWarningMessage(`Note already exists: ${key}`); return; }
-      noteUpsert({ slug: key, title: title.trim(), content: "", type: "general", tags: [], category: cat } as any);
+      const documentKind = await vscode.window.showQuickPick(["Markdown", "Todo Board"], { placeHolder: "Choose document type" });
+      if (!documentKind) return;
+      if (documentKind === "Todo Board") todoBoardCreate(key, title.trim(), cat);
+      else noteUpsert({ slug: key, title: title.trim(), content: "", type: "general", tags: [], category: cat });
       gitCommit(`add(note): ${title.trim()}`);
       treeProvider.refresh();
       await openStoreMarkdown("notes", key);
@@ -15066,8 +15309,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     vscode.commands.registerCommand("personalKnowledge.addNote", async () => {
       if (!(await ensureSetup(context))) return;
-      const p = getOrCreatePanel(context);
-      p.webview.postMessage({ command: "focusNoteForm" });
+      openPanelTab(context, "notes");
+      void vscode.commands.executeCommand("personalKnowledge.addNoteHere");
     }),
 
     vscode.commands.registerCommand("personalKnowledge.saveSkill", async () => {
@@ -15257,7 +15500,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const previous = configuration.get<string>("mcpServerPath", "");
       await configuration.update("mcpServerPath", chosen, vscode.ConfigurationTarget.Global);
       try {
-        generateMcpServer(context);
+        await generateMcpServer(context);
       } catch (error: any) {
         await configuration.update("mcpServerPath", previous || undefined, vscode.ConfigurationTarget.Global);
         refreshMcpDefinitions();

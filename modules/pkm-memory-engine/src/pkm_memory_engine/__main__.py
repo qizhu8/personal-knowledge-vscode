@@ -26,7 +26,8 @@ def main() -> None:
     reads = {"capabilities": engine.capabilities, "read": engine.read, "neighbors": engine.neighbors,
              "sources": engine.sources, "changes": engine.changes, "embedding": engine.embedding,
              "pieces": engine.pieces, "children": engine.children, "parents": engine.parents,
-             "usage": engine.usage}
+             "usage": engine.usage, "explicit_get": engine.explicit_get,
+             "explicit_search": engine.explicit_search, "explicit_audit": engine.explicit_audit}
     policy = {"turn_begin": memory.turn_begin, "turn_continue": memory.turn_continue,
               "turn_abort": memory.turn_abort,
               "turn_commit": memory.turn_commit, "turn_receipt": memory.turn_receipt,
@@ -58,7 +59,8 @@ def main() -> None:
                 response = {"id": request_id, "ok": True, "result": result}
             except (ValueError, sqlite3.Error, KeyError, TypeError, OverflowError) as error:
                 response = {"id": request_id, "ok": False,
-                            "error": {"type": type(error).__name__, "message": str(error)}}
+                            "error": {"type": type(error).__name__, "code": getattr(error, "code", "INVALID_ARGUMENT"),
+                                      "message": str(error)}}
             _emit(response, allow_nan=False, ensure_ascii=False)
     finally:
         engine.close()

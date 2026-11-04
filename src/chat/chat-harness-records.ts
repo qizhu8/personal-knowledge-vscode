@@ -1,7 +1,9 @@
 import { randomUUID } from "crypto";
 import type { ApiChatTool } from "./api-chat-client";
 import type { ApiConversation, ChatMessage, ChatPlanningReceipt } from "./api-chat-store";
-import { activeTaskContextCheckpoint, currentTaskReport } from "./task-context-checkpoint";
+import { activeTaskContextCheckpoint, currentTaskReport, taskContextInputs, taskContextInputDigest } from "./task-context-checkpoint";
+import { validationArtifactPaths, type ValidationArtifactPath, type ValidationArtifactVersion } from "./validation-artifacts";
+import { assertCurrentWorkerEvidence } from "./worker-result-versions";
 
 export interface HarnessBinding { recipeRunId?: string; recipeStageId?: string; stepId?: string; parentStepId?: string; stepAttemptId?: string; }
 export interface HarnessBudgetReceipt {
@@ -34,6 +36,9 @@ export interface HarnessReport {
   completed?: string[];
   openQuestions?: string[];
   sourceInputIds?: string[];
+  sourceInputDigest?: string;
+  artifactVersions?: ValidationArtifactVersion[];
+  artifactEvidenceOffset?: number;
   summary?: string;
   status?: "start" | "complete" | "failed" | "ignored";
   reason?: string;
@@ -88,8 +93,12 @@ export function validateHarnessReport(chat: ApiConversation, reply: ChatMessage,
   const kinds = ["task", "planning", "step", "validation"] as const;
   if (!kinds.includes(args.kind as typeof kinds[number])) throw new Error("Choose task, planning, step or validation.");
   const kind = args.kind as typeof kinds[number];
-  const allowed = ["kind", "recipeRunId", "recipeStageId", "stepId", "parentStepId", "goal", "constraints", "acceptance", "completed", "openQuestions", "sourceInputIds", "summary", "status", "reason", "evidenceCallIds", "supersedes", "possibilities"];
+  const allowed = ["kind", "recipeRunId", "recipeStageId", "stepId", "parentStepId", "goal", "constraints", "acceptance", "completed", "openQuestions", "sourceInputIds", "summary", "status", "reason", "evidenceCallIds", "supersedes", "possibilities", "artifactPaths"];
   if (Object.keys(args).some(key => !allowed.includes(key))) throw new Error("Unknown Harness report field.");
+  if (args.artifactPaths !== undefined) {
+    if (kind !== "validation" || args.status !== "start") throw new Error("Only validation start may declare artifactPaths; outcomes inherit the recorded files.");
+    validationArtifactPaths(args.artifactPaths);
+  }
   const binding: HarnessBinding = {
     recipeRunId:optional(args.recipeRunId, "recipeRunId", 200),
     recipeStageId:optional(args.recipeStageId, "recipeStageId", 200),
@@ -161,7 +170,42 @@ export function validateHarnessReport(chat: ApiConversation, reply: ChatMessage,
     report.status = args.status as HarnessReport["status"];
     if (!binding.stepId) throw new Error("Step and validation reports require a stable stepId.");
     if (!report.summary) throw new Error("Step and validation reports require a summary.");
-    const preceding = [...reply.harnessReports || []].reverse().find(previous => previous.kind === kind && previous.binding.stepId === binding.stepId);
+    const preceding = [...reply.harnessReports || []].reverse().find(previous => previous.kind === kind && previous.binding.stepId === binding.stepId
+      && (kind !== "validation" || previous.attemptId === report.attemptId && previous.taskId === report.taskId));
+    if (kind === "validation") {
+      const inputs = taskContextInputs(chat), latestInput = inputs[inputs.length - 1];
+      if (report.status === "start") {
+        if (!latestInput) throw new Error("Validation requires an original user source input in this task.");
+        report.sourceInputIds ??= [latestInput.id];
+        if (!report.sourceInputIds.includes(latestInput.id)) throw new Error("Validation must reference the latest user source input.");
+        report.sourceInputDigest = taskContextInputDigest(inputs);
+      } else if (preceding) {
+        if (binding.recipeRunId && (binding.recipeRunId !== preceding.binding.recipeRunId || binding.recipeStageId !== preceding.binding.recipeStageId)) {
+          throw new Error("A validation outcome cannot change its recorded Recipe binding.");
+        }
+        binding.recipeRunId = preceding.binding.recipeRunId;
+        binding.recipeStageId = preceding.binding.recipeStageId;
+        if (report.sourceInputIds && JSON.stringify(report.sourceInputIds) !== JSON.stringify(preceding.sourceInputIds)) {
+          throw new Error("Validation source inputs changed; finish the previous check and start a new validation.");
+        }
+        report.sourceInputIds = preceding.sourceInputIds && [...preceding.sourceInputIds];
+        report.sourceInputDigest = preceding.sourceInputDigest;
+        report.artifactVersions = preceding.artifactVersions;
+        report.artifactEvidenceOffset = preceding.artifactEvidenceOffset;
+        if (report.status === "complete" && report.artifactVersions && evidence.some(call =>
+          !Number.isSafeInteger(report.artifactEvidenceOffset) || report.artifactEvidenceOffset! < 0
+          || (reply.toolCalls || []).indexOf(call) < report.artifactEvidenceOffset!
+          || !reply.toolCalls?.includes(call) || call.name === "record_harness"
+          || !Number.isFinite(call.startedAt) || call.startedAt! < preceding.at
+          || !Number.isFinite(call.finishedAt) || call.finishedAt! < call.startedAt!)) {
+          throw new Error("File-version validation requires evidence executed in this attempt after its recorded start; run the check again.");
+        }
+        if (report.status === "complete" && (!latestInput || !report.sourceInputIds?.includes(latestInput.id)
+          || report.sourceInputDigest !== taskContextInputDigest(inputs))) {
+          throw new Error("Validation source inputs changed; record the old check as failed or ignored and start a new validation.");
+        }
+      }
+    }
     if (kind === "step") {
       if (preceding) {
         if (report.status !== "start" && binding.recipeRunId && (binding.recipeRunId !== preceding.binding.recipeRunId || binding.recipeStageId !== preceding.binding.recipeStageId)) throw new Error("A Step outcome cannot change its recorded Recipe binding.");
@@ -203,17 +247,21 @@ export function validateHarnessReport(chat: ApiConversation, reply: ChatMessage,
   return report;
 }
 
-export function createHarnessReportTool(chat: ApiConversation, reply: ChatMessage, commit: (report: HarnessReport) => void): ApiChatTool {
+export function createHarnessReportTool(chat: ApiConversation, reply: ChatMessage, commit: (report: HarnessReport) => void,
+  captureArtifacts?: (paths: ValidationArtifactPath[], signal: AbortSignal) => Promise<ValidationArtifactVersion[]>,
+  verifyEvidence?: (calls: NonNullable<ChatMessage["toolCalls"]>) => void): ApiChatTool {
   const string = { type:"string", maxLength:4000 };
   const array = { type:"array", maxItems:64, items:string };
   return {
     name:"record_harness",
-    description:"Record explicit public task state, planning summaries, Step lifecycle or validation evidence for this attempt. Not hidden reasoning. Does not execute an Action, alter Recipe authority or complete a managed Task. Use sourceInputIds from session_info for task reports, including the latest user input; updates must supersede the latest task report ID. Reconcile newer user requirements instead of replaying old summaries. Use unambiguous terminal evidenceCallIds with available results for validation. A complete validation citing failed calls requires a reason explaining the expected failure or superseding successful evidence; tool completion alone never proves acceptance. Report Recipe Run/Stage together when known. Nest Steps with a stable parentStepId; start the parent first and finish children before completing it. Plans are optional: direct execution is allowed. Report ignored with its reason; report a new start for each attempt. Preserve prior failed evidence.",
+    description:"Record explicit public task state, planning summaries, Step lifecycle or validation evidence for this attempt. Not hidden reasoning. Does not execute an Action, alter Recipe authority or complete a managed Task. Use sourceInputIds from session_info for task reports, including the latest user input; updates must supersede the latest task report ID. Reconcile newer user requirements instead of replaying old summaries. Validation start captures current user-input content and the latest source identity (or explicit sourceInputIds including it); outcomes inherit that source and Recipe binding. If inputs change, finish the old check as failed/ignored and start a new validation. Use unambiguous terminal evidenceCallIds with available results for validation. A complete validation citing failed calls requires a reason explaining the expected failure or superseding successful evidence; tool completion alone never proves acceptance. Report Recipe Run/Stage together when known. Nest Steps with a stable parentStepId; start the parent first and finish children before completing it. Plans are optional: direct execution is allowed. Report ignored with its reason; report a new start for each attempt. Preserve prior failed evidence.",
     parameters:{ type:"object", additionalProperties:false, required:["kind"], properties:{
       kind:{ type:"string", enum:["task", "planning", "step", "validation"] },
       recipeRunId:string, recipeStageId:string, stepId:string, parentStepId:string, goal:string,
       constraints:array, acceptance:array, completed:array, openQuestions:array, sourceInputIds:array,
       summary:string, status:{ type:"string", enum:["start","complete","failed","ignored"] },
+      artifactPaths:{ type:"array", minItems:1, maxItems:16, description:"Validation start only: workspace-relative files to bind to Host-computed SHA-256 versions. Outcomes inherit them. Default workspace index is 0; no model-supplied hashes.",
+        items:{ type:"object", additionalProperties:false, required:["path"], properties:{ path:{ type:"string", maxLength:1024 }, workspace:{ type:"integer", minimum:0 } } } },
       reason:string, evidenceCallIds:array, supersedes:string,
       possibilities:{ type:"array", maxItems:128, items:{ type:"object", additionalProperties:false, required:["id","label","status"], properties:{
         id:string, parentId:string, label:string, summary:string,
@@ -223,9 +271,31 @@ export function createHarnessReportTool(chat: ApiConversation, reply: ChatMessag
     } },
     async execute(args, signal) {
       if (signal.aborted) throw new Error("Request cancelled.");
-      const report = validateHarnessReport(chat, reply, args);
+      let report = validateHarnessReport(chat, reply, args);
+      const files = args.artifactPaths !== undefined ? validationArtifactPaths(args.artifactPaths)
+        : report.kind === "validation" && report.status === "complete" ? report.artifactVersions : undefined;
+      if (files) {
+        if (!captureArtifacts) throw new Error("This Host cannot capture validation artifact versions.");
+        const versions = await captureArtifacts(files.map(({ path, workspace }) => ({ path, workspace })), signal);
+        const current = validateHarnessReport(chat, reply, args);
+        if (current.sourceInputDigest !== report.sourceInputDigest) throw new Error("Validation source inputs changed while capturing artifacts; start a new check.");
+        if (report.status === "complete" && (versions.length !== report.artifactVersions?.length || versions.some((version, index) => {
+          const previous = report.artifactVersions![index];
+          return version.root !== previous.root || version.resolvedPath !== previous.resolvedPath || version.sha256 !== previous.sha256 || version.host !== previous.host;
+        }))) throw new Error("Validation artifacts changed since start; record failed/ignored and start a new check for the current files.");
+        report = { ...current, artifactVersions:versions, ...(current.status === "start"
+          ? { at:Date.now(), artifactEvidenceOffset:reply.toolCalls?.length || 0 } : {}) };
+      }
+      if (signal.aborted) throw new Error("Request cancelled.");
+      if (report.kind === "validation" && report.status === "complete") {
+        const evidence = chat.messages.filter(message => message.role === "assistant" && message.taskId === reply.taskId)
+          .flatMap(message => message.toolCalls || []).filter(call => report.evidenceCallIds?.includes(call.id));
+        if (verifyEvidence) verifyEvidence(evidence);
+        else assertCurrentWorkerEvidence(evidence, chat.id);
+      }
       commit(report);
       return JSON.stringify({ ok:true, reportId:report.id, source:report.source, binding:report.binding,
+        ...(report.artifactVersions ? { artifactVersions:report.artifactVersions } : {}),
         effect:"Recorded observation only; original creation receipts may attach Recipe ownership. Managed Task/Recipe execution and completion authority unchanged." });
     },
   };

@@ -163,9 +163,86 @@ print(json.dumps({"generation": Path(__file__).parent.name, "runtime": (Path(__f
     }));
 }
 
-test("immutable runtime survives extension removal and launcher follows only committed generation", t => {
+test("generation uses async bulk I/O, yields to heartbeats and holds ownership through awaited work", async t => {
+  const { managed, extension } = fixture(t);
+  const copy = fs.copyFileSync, read = fs.readFileSync;
+  fs.copyFileSync = () => { throw new Error("Bulk copies must not block the Host"); };
+  fs.readFileSync = (filename, ...args) => {
+    if (/[\\/](filestore|helper)\.js$/.test(String(filename))) throw new Error("Bulk hashing must not block the Host");
+    return read(filename, ...args);
+  };
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  const first = lifecycle.withManagedMcpGenerationLock(managed, () =>
+    lifecycle.stageManagedMcpGeneration(managed, extension, versions, async directory => {
+      entered();
+      await gate;
+      fs.writeFileSync(path.join(directory, "server.py"), "pass\n");
+    }));
+  let second;
+  try {
+    await started;
+    let heartbeat = false, acquired = false;
+    second = lifecycle.withManagedMcpGenerationLock(managed, async () => { acquired = true; });
+    await new Promise(resolve => setImmediate(() => { heartbeat = true; resolve(); }));
+    assert.equal(heartbeat, true);
+    assert.equal(acquired, false, "another operation cannot enter while the generator is suspended");
+    assert.equal(lifecycle.readManagedMcpManifest(managed), undefined, "staging cannot publish a partial runtime");
+    release();
+    const manifest = await first;
+    await second;
+    assert.equal(acquired, true);
+    assert.equal(Object.keys(manifest.files).length, 4);
+    assert.equal(lifecycle.readManagedMcpManifest(managed), undefined);
+  } finally {
+    release();
+    await Promise.allSettled([first, second]);
+    fs.copyFileSync = copy;
+    fs.readFileSync = read;
+  }
+});
+
+test("async generation rejects symlinks and removes only its incomplete generation", async t => {
+  const { managed, extension } = fixture(t);
+  const first = await stage(managed, extension);
+  lifecycle.publishManagedMcpGeneration(managed, first);
+  fs.symlinkSync(path.join(extension, "resources"), path.join(extension, "dist", "linked"), "junction");
+  await assert.rejects(stage(managed, extension), /cannot contain symlinks/);
+  assert.deepEqual(fs.readdirSync(path.join(managed, "generations")), [first.generation]);
+  assert.equal(lifecycle.readManagedMcpManifest(managed).generation, first.generation);
+});
+
+test("generation refuses configuration changes both before generation and after async hashing", async t => {
+  const { managed, extension } = fixture(t);
+  let changed = false, phase = "generate", published = false;
+  const mcp = sourceModule("src/mcp/mcp.ts", {
+    vscode: { workspace: { getConfiguration: () => ({ get: (name, fallback) =>
+      name === "mcpServerPath" ? changed ? `${managed}-changed` : managed : fallback }) } },
+    "../knowledge/filestore": { getStorePath: () => path.join(extension, changed ? "changed-store" : "store") },
+    "../servers/pyenvs": { pyenvList: () => [] },
+    "./mcp-lifecycle": { ...lifecycle,
+      withManagedMcpGenerationLock: async (_directory, operation) => operation(),
+      stageManagedMcpGeneration: async (_directory, _extension, _versions, generate) => {
+        changed = true;
+        if (phase === "generate") await generate("unused");
+        return {};
+      },
+      publishManagedMcpGeneration: () => { published = true; },
+    },
+  });
+  const context = { extensionPath: extension, globalStorageUri: { fsPath: path.join(extension, "storage") } };
+  for (phase of ["generate", "hash"]) {
+    changed = false;
+    await assert.rejects(mcp.generateMcpServer(context), /configuration or workspace trust changed/);
+    assert.equal(published, false);
+    assert.equal(fs.existsSync(path.join(managed, "server.py")), false);
+  }
+});
+
+test("immutable runtime survives extension removal and launcher follows only committed generation", async t => {
   const { root, managed, extension } = fixture(t);
-  const first = stage(managed, extension);
+  const first = await stage(managed, extension);
   assert.equal(first.runtimeBuild, lifecycle.bundledMcpBuildIdentity(extension));
   assert.equal(lifecycle.readManagedMcpManifest(managed), undefined);
   fs.writeFileSync(path.join(managed, "server.py"), lifecycle.managedMcpLauncher(first));
@@ -176,9 +253,9 @@ test("immutable runtime survives extension removal and launcher follows only com
   fs.writeFileSync(path.join(managed, "runtime-maintenance.json"), "{}");
   assert.throws(launch, /maintenance/);
   fs.unlinkSync(path.join(managed, "runtime-maintenance.json"));
-  assert.throws(() => stage(managed, extension, true), /generation failed/);
+  await assert.rejects(stage(managed, extension, true), /generation failed/);
   assert.equal(launch().generation, first.generation, "failed generation must preserve predecessor");
-  const second = stage(managed, extension);
+  const second = await stage(managed, extension);
   assert.equal(launch().generation, first.generation, "staging is not publication");
   lifecycle.publishManagedMcpGeneration(managed, second);
   fs.renameSync(extension, path.join(root, "removed-extension"));
@@ -190,9 +267,9 @@ test("immutable runtime survives extension removal and launcher follows only com
   assert.throws(launch, /integrity mismatch/);
 });
 
-test("successor handshake requires actual version, schemas, generation and Skill/Chat tools", t => {
+test("successor handshake requires actual version, schemas, generation and Skill/Chat tools", async t => {
   const { managed, extension } = fixture(t);
-  const manifest = stage(managed, extension);
+  const manifest = await stage(managed, extension);
   const tools = ["check_version", "mcp_lifecycle_status", "mcp_lifecycle_quiesce", "add_skill", "update_skill", "delete_skill",
     "knowledge_file_trash", "chat_capabilities", "chat_join", "chat_standby", "chat_post"];
   const version = { ...versions, capabilities: ["managed-lifecycle-v1"], enabled_feature_domains: ["knowledge", "automation"] };
@@ -212,7 +289,7 @@ test("successor handshake requires actual version, schemas, generation and Skill
 
 test("connected handshake rejects control changes and discovery failure without replay", async t => {
   const { managed, extension } = fixture(t);
-  const first = stage(managed, extension), second = stage(managed, extension);
+  const first = await stage(managed, extension), second = await stage(managed, extension);
   lifecycle.publishManagedMcpGeneration(managed, first);
   const tools = ["check_version", "mcp_lifecycle_status", "mcp_lifecycle_quiesce", "add_skill", "update_skill", "delete_skill",
     "knowledge_file_trash", "chat_capabilities", "chat_join", "chat_standby", "chat_post"];
@@ -233,9 +310,9 @@ test("connected handshake rejects control changes and discovery failure without 
   assert.equal((await lifecycle.handshakeManagedMcpConnection(managed, () => new Promise(() => {}), tools, 10)).state, "reconnect-required");
 });
 
-test("compatible publication preserves legacy admission while new launchers select the latest runtime", t => {
+test("compatible publication preserves legacy admission while new launchers select the latest runtime", async t => {
   const { managed, extension } = fixture(t);
-  const first = stage(managed, extension), second = stage(managed, extension);
+  const first = await stage(managed, extension), second = await stage(managed, extension);
   lifecycle.publishManagedMcpGeneration(managed, first);
   lifecycle.publishManagedMcpGeneration(managed, second);
   const baseline = JSON.parse(fs.readFileSync(path.join(managed, "active-generation.json"), "utf8"));
@@ -269,9 +346,9 @@ test("bounded drain waits for real zero calls and never equates missing/uncertai
   }), 10, 1)).state, "action-required");
 });
 
-test("registry observations never claim a client is ready or stale writes drained", t => {
+test("registry observations never claim a client is ready or stale writes drained", async t => {
   const { managed, extension } = fixture(t);
-  const manifest = stage(managed, extension);
+  const manifest = await stage(managed, extension);
   lifecycle.publishManagedMcpGeneration(managed, manifest);
   const directory = path.join(managed, "instances");
   fs.mkdirSync(directory);
@@ -305,11 +382,11 @@ test("actual generated unified FastMCP performs Skill writes from owned runtime 
     "../knowledge/filestore": { getStorePath: () => store },
     "../servers/pyenvs": { pyenvList: () => [] },
   });
-  const generated = mcp.generateMcpServer({ extensionPath: extension, globalStorageUri: { fsPath: path.join(root, "storage") } });
+  const generated = await mcp.generateMcpServer({ extensionPath: extension, globalStorageUri: { fsPath: path.join(root, "storage") } });
   const manifest = lifecycle.readManagedMcpManifest(path.dirname(generated.serverPath));
   assert(manifest.runtimeBuild);
   fs.writeFileSync(path.join(extension, "package.json"), '{"version":"4.0.0"}');
-  assert.throws(() => mcp.generateMcpServer({ extensionPath: extension, globalStorageUri: { fsPath: path.join(root, "storage") } }), /Refusing to downgrade managed MCP generation/);
+  await assert.rejects(mcp.generateMcpServer({ extensionPath: extension, globalStorageUri: { fsPath: path.join(root, "storage") } }), /Refusing to downgrade managed MCP generation/);
   fs.writeFileSync(path.join(extension, "package.json"), '{"version":"5.0.0"}');
   fs.renameSync(extension, path.join(root, "removed-extension"));
   const script = `

@@ -39,7 +39,7 @@ export interface PeerSessionOptions {
   /** True when this side, as controller, starts a review automatically when the controlled side reports progress. */
   autoReview?(): boolean;
   connected(): boolean;
-  send(target: string, packet: PeerPacket): void;
+  send(target: string, packet: PeerPacket): void | Promise<void>;
   approvePair(peerName: string): Promise<boolean>;
   /** Explicit local consent before roles flip; `role` is this side's role after the switch. */
   approveSwap(peerName: string, role: PeerBinding["role"]): Promise<boolean>;
@@ -63,6 +63,7 @@ export interface PeerSessionOptions {
 }
 interface TaskRecord {
   fingerprint: string;
+  kind: "task" | "command";
   receipt: PeerReceipt;
 }
 function receiptState(value: unknown): value is PeerReceipt["state"] {
@@ -76,6 +77,15 @@ export class PeerSession {
   readonly receipts = new Map<string, PeerReceipt>();
   readonly observations = new Map<string, PortalObservation>();
   readonly incomingReceipts = new Map<string, PeerReceipt>();
+  get incomingActivity(): { requestId: string; kind: "task" | "command"; state: "awaiting-approval" | "running" } | undefined {
+    for (const requestId of this.processing) {
+      const task = this.tasks.get(requestId);
+      if (task?.receipt.state === "awaiting-approval" || task?.receipt.state === "running") {
+        return { requestId, kind: task.kind, state: task.receipt.state };
+      }
+    }
+    return undefined;
+  }
   private endpointState?: PortalEndpointIdentity;
   private publishedEndpoint?: PortalEndpointIdentity;
   private sessionNonce = randomUUID();
@@ -359,10 +369,10 @@ export class PeerSession {
     this.send(binding.peerId, "observe", binding.pairId, observation.requestId, { observation });
   }
 
-  sendFiles(payload: Record<string, unknown>): void {
+  sendFiles(payload: Record<string, unknown>): void | Promise<void> {
     if (!this.binding || this.closed) throw new Error("Files require a live paired Portal.");
     if (!this.binding.peerCapabilities?.includes("files-v1")) throw new Error("The remote Host does not advertise approved file transfers. Upgrade both Hosts and pair again; no file bytes were sent.");
-    this.send(this.binding.peerId, "files", this.binding.pairId, randomUUID(), payload);
+    return this.send(this.binding.peerId, "files", this.binding.pairId, randomUUID(), payload);
   }
 
   revoke(): void {
@@ -626,7 +636,7 @@ export class PeerSession {
     const controller = new AbortController();
     this.active.set(packet.requestId, controller);
     try {
-      let record: TaskRecord = { fingerprint, receipt: { requestId: packet.requestId, state: "awaiting-approval" } };
+      let record: TaskRecord = { fingerprint, kind: direct ? "command" : "task", receipt: { requestId: packet.requestId, state: "awaiting-approval" } };
       if (previous) {
         this.reply(binding, packet.requestId, previous.receipt);
         return;
@@ -635,7 +645,7 @@ export class PeerSession {
       this.tasks.set(packet.requestId, record);
       const publishReceipt = (receipt: PeerReceipt): void => {
         if (this.duplex && epoch !== this.epoch) return;
-        record = { fingerprint, receipt };
+        record = { fingerprint, kind: direct ? "command" : "task", receipt };
         if (command) this.notifyCommand(binding, command, receipt);
         if (this.binding !== binding || this.closed) return;
         this.tasks.set(packet.requestId, record);
@@ -754,7 +764,7 @@ export class PeerSession {
     return { ...(Array.isArray(payload.capabilities) ? { peerCapabilities: payload.capabilities.filter((value): value is string => typeof value === "string") } : {}), ...(typeof payload.chatId === "string" ? { peerChatId: payload.chatId } : {}), ...(typeof payload.machine === "string" ? { peerMachine: payload.machine } : {}),
       ...(typeof payload.chatName === "string" ? { peerChatName: payload.chatName } : {}), ...(typeof payload.endpoint === "string" ? { peerEndpoint: payload.endpoint } : {}) };
   }
-  private send(target: string, operation: PeerPacket["operation"], pairId: string, requestId: string, payload: Record<string, unknown>): void {
+  private send(target: string, operation: PeerPacket["operation"], pairId: string, requestId: string, payload: Record<string, unknown>): void | Promise<void> {
     if (this.duplex && !["pair", "paired", "pair-rejected", "endpoint-state", "revoke"].includes(operation)) {
       // Denials acknowledge packets without granting permission or requiring a completed handshake.
       const context = operation === "receipt" && payload.state === "denied"
@@ -762,7 +772,7 @@ export class PeerSession {
         : this.persistentContext();
       payload = { ...payload, persistent: context };
     }
-    this.options.send(target, { protocol: PEER_PROTOCOL, operation, pairId, requestId, payload });
+    return this.options.send(target, { protocol: PEER_PROTOCOL, operation, pairId, requestId, payload });
   }
   private clear(): void {
     this.epoch++;

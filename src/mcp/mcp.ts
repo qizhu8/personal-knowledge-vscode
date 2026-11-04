@@ -536,7 +536,7 @@ async function ensureMcpRuntimeFiles(context: vscode.ExtensionContext): Promise<
     validation = validateMcpPython(mcpRuntimePythonPath());
     if (validation.error) throw new Error(validation.error);
   }
-  generateMcpServer(context);
+  await generateMcpServer(context);
   const requirements = path.join(managedMcpServerDirectory(), "requirements.txt");
   const pipInstall = (args: string[]) => new Promise<void>((resolve, reject) => execFile(validation.path, ["-m", "pip", "install", ...args], {
     timeout: 600000, maxBuffer: 1 << 24, windowsHide: process.platform === "win32",
@@ -705,9 +705,16 @@ export function mcpStatus(): McpServerStatus {
   };
 }
 
-export function generateMcpServer(context: vscode.ExtensionContext): { serverPath: string; configSnippet: string } {
+export async function generateMcpServer(context: vscode.ExtensionContext): Promise<{ serverPath: string; configSnippet: string }> {
   const directory = managedMcpServerDirectory();
-  return withManagedMcpGenerationLock(directory, () => {
+  const source = () => JSON.stringify([getStorePath(), managedMcpServerDirectory(), mcpRuntimePath(),
+    configuredMcpFeatureDomains(), vscode.workspace.isTrusted]);
+  const expectedSource = source();
+  const assertSource = () => {
+    if (source() !== expectedSource) throw new Error("PKM configuration or workspace trust changed during MCP preparation; no generation was published.");
+  };
+  return withManagedMcpGenerationLock(directory, async () => {
+    assertSource();
     const previous = readManagedMcpManifest(directory);
     if (fs.existsSync(path.join(directory, "active-generation.json")) && !previous) {
       throw new Error("Managed MCP generation ownership is unreadable. Preserve existing generations and repair the control file explicitly before upgrading.");
@@ -716,15 +723,17 @@ export function generateMcpServer(context: vscode.ExtensionContext): { serverPat
     if (previous && (compareVersionOrder(previous.extensionVersion, extensionVersion) || 0) > 0) {
       throw new Error(`Refusing to downgrade managed MCP generation from extension ${previous.extensionVersion} using ${extensionVersion}. Upgrade this extension window before regenerating.`);
     }
-    const manifest = stageManagedMcpGeneration(directory, context.extensionPath, {
+    const manifest = await stageManagedMcpGeneration(directory, context.extensionPath, {
       version: UNIFIED_MCP_VERSION,
       components: { knowledge: KNOWLEDGE_MCP_VERSION, chat: CHAT_MCP_VERSION, recipes: RECIPE_MCP_VERSION, agent_sessions: AGENT_SESSION_MCP_VERSION },
       runtimeMaintenance: `${mcpRuntimePath()}.pkm-maintenance.json`,
     }, target => {
+      assertSource();
       const snapshotContext: vscode.ExtensionContext = Object.create(context);
       Object.defineProperty(snapshotContext, "extensionPath", { value: path.join(target, "runtime") });
       generateMcpServerFiles(snapshotContext, target);
     });
+    assertSource();
     const serverPath = path.join(directory, "server.py");
     const temporary = `${serverPath}.${manifest.generation}.tmp`;
     try {
@@ -786,7 +795,7 @@ function generateMcpServerFiles(context: vscode.ExtensionContext, mcpDir: string
   fs.copyFileSync(path.join(context.extensionPath, "resources", "agent_session_runtime.py"), agentSessionRuntimePy);
   fs.copyFileSync(path.join(context.extensionPath, "resources", "api_chat_control.py"), path.join(mcpDir, "api_chat_control.py"));
   fs.copyFileSync(path.join(context.extensionPath, "resources", "knowledge_recovery.py"), path.join(mcpDir, "knowledge_recovery.py"));
-  for (const resource of ["knowledge_mutations.py", "knowledge_mutations.js", "knowledge_snapshots.py", "asset_classification.py", "asset_classification.js"]) {
+  for (const resource of ["knowledge_mutations.py", "knowledge_mutations.js", "todo_api.py", "capability_api.py", "knowledge_snapshots.py", "asset_classification.py", "asset_classification.js"]) {
     fs.copyFileSync(path.join(context.extensionPath, "resources", resource), path.join(mcpDir, resource));
   }
   fs.copyFileSync(path.join(context.extensionPath, "resources", "mcp_call_guard.py"), callGuardPy);
@@ -815,7 +824,7 @@ time, falling back to substring matching when FTS5 is unavailable.
 Install:  pip install fastmcp
 Run:      python server.py
 """
-import inspect, json, re, sqlite3, datetime, hashlib, uuid, os, socket, time, urllib.request, urllib.parse
+import inspect, json, re, sqlite3, datetime, hashlib, uuid, os, socket, time, urllib.request, urllib.parse, mimetypes
 from pathlib import Path
 
 SERVER_VERSION = "${UNIFIED_MCP_VERSION}"
@@ -906,7 +915,12 @@ def diagnostics_latest(limit: int = 100) -> dict:
 _AGENT_SESSION_TOOLS = {}
 if "knowledge" in _FEATURE_DOMAINS:
   register_knowledge_recovery_tools(mcp, STORE)
-  register_knowledge_mutation_tools(mcp, STORE, _KNOWLEDGE_NODE, _KNOWLEDGE_EXTENSION)
+  import sys
+  register_knowledge_mutation_tools(mcp, STORE, _KNOWLEDGE_NODE, _KNOWLEDGE_EXTENSION, {
+    "python": sys.executable, "extensionRoot": str(_KNOWLEDGE_EXTENSION),
+    "database": str(RETRIEVAL_STATE.parent.parent / "memory" / (hashlib.sha256(str(STORE).encode("utf-8")).hexdigest()[:24] + ".sqlite3")),
+    "identity": "pkm-chat:" + str(STORE),
+  })
   register_knowledge_snapshot_tools(mcp, STORE, _KNOWLEDGE_NODE, _KNOWLEDGE_EXTENSION)
   register_asset_classification_tools(mcp, STORE, _KNOWLEDGE_NODE, _KNOWLEDGE_EXTENSION)
 if "automation" in _FEATURE_DOMAINS:
@@ -1493,6 +1507,13 @@ def _record_tool_usage(tool_name, arguments, result, duration_ms, success, attri
       "estimatedTokenEquivalent": (input_bytes + output_bytes + 3) // 4,
       "reportedTokens": reported,
     }
+    if tool_name in {"capability_read", "capability_call"} and isinstance(plain_arguments, dict):
+      operation = plain_arguments.get("operation")
+      version = plain_arguments.get("version")
+      if isinstance(operation, str) and re.fullmatch(r"[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*){2}", operation):
+        event["capabilityOperation"] = operation
+      if type(version) is int and version > 0:
+        event["capabilityVersion"] = version
     if attribution:
       event["agentSessionId"] = attribution["agentSessionId"]
       event["todoId"] = attribution["todoId"]
@@ -1641,7 +1662,10 @@ def _mtime(p):
 # ── Notes ────────────────────────────────────────────────────────────────────
 def _note(p, key):
     fm, body = _parse(p.read_text(encoding="utf-8"))
+    board_file = p.with_name(p.stem + ".assets") / "pkm-todo-board.json"
+    is_board = fm.get("documentKind") == "todo-board" or board_file.exists()
     return {"slug": key, "title": fm.get("title") or _name_of(key),
+            "documentKind": "todo-board" if is_board else "markdown",
             "type": fm.get("type") or "general", "tags": fm.get("tags") or [],
             "category": _cat_of(key), "content": body, "updated_at": _mtime(p),
             "read_only": _mcp_system_path(p)}
@@ -1688,7 +1712,37 @@ def _skill(p, key):
       "recipe_hint": str(fm.get("recipe_hint") or ""),
       "related_skills": _arr(fm.get("related_skills")),
       "priority": _skill_priority(fm.get("priority")),
-      "content": body, "updated_at": _mtime(p), "read_only": _mcp_system_path(p)}
+      "content": body, "updated_at": _mtime(p), "read_only": _mcp_system_path(p), "_path": p}
+
+
+def _skill_image_assets(row):
+  skill_path = row.get("_path")
+  if not isinstance(skill_path, Path):
+    return []
+  assets_root = skill_path.with_name(skill_path.stem + ".assets")
+  if assets_root.is_symlink():
+    raise ValueError("Skill image resource directory must be a non-symlink directory.")
+  if not assets_root.exists():
+    return []
+  if not assets_root.is_dir():
+    raise ValueError("Skill image resource directory must be a non-symlink directory.")
+  image_extensions = {".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".webp"}
+  assets = []
+  def walk(directory):
+    for entry in sorted(directory.iterdir(), key=lambda item: item.name.casefold()):
+      if entry.is_symlink():
+        raise ValueError("Symbolic links are not allowed in Skill image resources.")
+      if entry.is_dir():
+        walk(entry)
+      elif entry.is_file() and entry.suffix.lower() in image_extensions:
+        relative = entry.relative_to(skill_path.parent).as_posix()
+        reference = "/".join(urllib.parse.quote(part, safe="") for part in relative.split("/"))
+        alt = entry.stem.replace("[", "&#91;").replace("]", "&#93;")
+        assets.append({"path": relative, "markdown_reference": "![{}]({})".format(alt, reference),
+          "media_type": mimetypes.guess_type(entry.name)[0] or "application/octet-stream",
+          "size_bytes": entry.stat().st_size})
+  walk(assets_root)
+  return assets
 
 
 def _all_skills():
@@ -2209,13 +2263,20 @@ def search_skills(query: str, limit: int = 20, detail: str = "legacy", route: st
 
 @_feature_tool("knowledge", "skillRouter", read_only=True)
 def get_skill(id: str = "", interaction_id: str = "", name: Optional[str] = None) -> str:
-  """Read a Skill by stable source_id, skill_id or exact name; the old name parameter remains accepted."""
+  """Read a Skill and return ready-to-insert Markdown references for its existing image assets when available."""
   key, error = _knowledge_read_key(id, name)
   if error:
     return error
   if _canonical_knowledge_id(key):
     result = json.loads(get_knowledge(key, content_type_filter=["skill"]))
     if result.get("ok"):
+      row = None
+      for candidate in (result.get("skill_id"), result.get("source_uri")):
+        row = _skill_by_id(str(candidate or "").removeprefix("skill:"))
+        if row:
+          break
+      result["image_assets"] = _skill_image_assets(row) if row else []
+      result["image_reference_format"] = "Embed image_assets[].markdown_reference in Skill Markdown; references are relative to the Skill file and point to existing assets. This tool does not upload image bytes."
       _collector_post("skill_load", interaction_id or str(uuid.uuid4()), {"skill": {
           "content_hash": result.get("content_hash"), "source": (result.get("provenance") or {}).get("provider"),
           "read_only": bool(result.get("read_only"))}})
@@ -2229,7 +2290,9 @@ def get_skill(id: str = "", interaction_id: str = "", name: Optional[str] = None
              "category": r["category"], "tags": r["tags"], "updated_at": r["updated_at"],
              "priority": r.get("priority", "normal"),
              "source": r.get("source", "local"), "read_only": r.get("read_only", False),
-             "provenance": r.get("provenance"), "linkage": _skill_linkage(r)}
+             "provenance": r.get("provenance"), "linkage": _skill_linkage(r),
+             "image_assets": _skill_image_assets(r),
+             "image_reference_format": "Embed image_assets[].markdown_reference in Skill Markdown; references are relative to the Skill file and point to existing assets. This tool does not upload image bytes."}
   _collector_post("skill_load", interaction_id or str(uuid.uuid4()), {"skill": {
        "content_hash": result["content_hash"], "source": result["source"],
        "read_only": result["read_only"]}})
@@ -2243,7 +2306,7 @@ def list_notes(type: Optional[str] = None) -> str:
     if type and type != "all":
         rows = [r for r in rows if r["type"] == type]
     rows.sort(key=lambda r: r["updated_at"], reverse=True)
-    return json.dumps([{"slug": r["slug"], "title": r["title"], "type": r["type"],
+    return json.dumps([{"slug": r["slug"], "title": r["title"], "type": r["type"], "documentKind": r["documentKind"],
                         "category": r["category"], "updated_at": r["updated_at"]} for r in rows[:50]])
 
 
@@ -2289,6 +2352,9 @@ def get_note(id: str = "", slug: Optional[str] = None) -> str:
   r = _note_get(key)
   if not r:
     return f"Note '{key}' not found. Use list_notes or search_notes to find it."
+  if r["documentKind"] == "todo-board":
+    return json.dumps({"slug": r["slug"], "title": r["title"], "documentKind": "todo-board",
+                      "message": "Use note_work_items to read authoritative items and note_work_item_command to modify them. Markdown is not task authority."})
   return json.dumps({"slug": r["slug"], "content_hash": _note_hash(r), "title": r["title"], "content": r["content"],
                      "type": r["type"], "tags": r["tags"], "category": r["category"],
                      "read_only": r.get("read_only", False), "updated_at": r["updated_at"],
@@ -2661,6 +2727,9 @@ def get_subscribed_content_by_path(pkm_path: str) -> str:
 if "automation" in _FEATURE_DOMAINS:
   from chat_server import mcp as chat_mcp
   mcp.mount(chat_mcp)
+
+from capability_api import apply_capability_profile
+apply_capability_profile(mcp)
 
 if __name__ == "__main__":
     import asyncio

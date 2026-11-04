@@ -21,6 +21,55 @@ function message(content, extra = {}) {
   return { id: randomUUID(), role: "assistant", content, status: "complete", ...extra };
 }
 
+test("Chat-session activity-budget bypass survives reload and rejects invalid values", t => {
+  const { store, chat, directory } = fixture(t);
+  chat.activityBudgetBypass = "session";
+  store.save(chat);
+  assert.equal(new ApiChatStore(directory, store.namespace).load(chat.id, false).activityBudgetBypass, "session");
+
+  const broken = store.create();
+  broken.activityBudgetBypass = "permanent";
+  store.save(broken);
+  assert.throws(() => new ApiChatStore(directory, store.namespace).load(broken.id, false), /Unsupported chat history/);
+});
+
+test("effectiveness metadata, task contracts and declared worker scopes survive reload with strict optional validation", t => {
+  const { store, chat, directory } = fixture(t);
+  const input = message("Start a new task: implement the fixture.", { role: "user" });
+  chat.includeHistory = true;
+  chat.messages = [input];
+  prepareWorkGoal(chat, input.id, input.content, "a".repeat(64));
+  chat.workGoal.contract = { scope: ["src/fixture.ts"], nonGoals: ["No installation"], stopWhen: "Tests pass" };
+  chat.workGoal.phase = "verifying";
+  const workerId = randomUUID();
+  chat.messages.push(message("Local verification", { inputId: input.id,
+    toolCalls: [{ id: "read", name: "read_file", arguments: "{}", result: "data", status: "complete", round: 2, queuedMs: 3, reused: true }],
+    delegations: [{ id: randomUUID(), chatId: workerId, chatUrl: `pkm://chats/${store.namespace}/${workerId}`,
+      status: "complete", writeScope: ["tests/fixture.js"], resources: ["build-output"] }] }));
+  store.save(chat);
+  const restored = new ApiChatStore(directory, store.namespace).load(chat.id, false);
+  assert.deepEqual(restored.workGoal.contract, chat.workGoal.contract);
+  assert.equal(restored.workGoal.phase, "verifying");
+  assert.deepEqual(restored.messages.at(-1).toolCalls, chat.messages.at(-1).toolCalls);
+  assert.deepEqual(restored.messages.at(-1).delegations, chat.messages.at(-1).delegations);
+  const changes = [
+    copy => { copy.messages.at(-1).toolCalls[0].round = -1; },
+    copy => { copy.messages.at(-1).toolCalls[0].queuedMs = "unknown"; },
+    copy => { copy.messages.at(-1).toolCalls[0].reused = 1; },
+    copy => { copy.messages.at(-1).delegations[0].writeScope = ["../outside"]; },
+    copy => { copy.messages.at(-1).delegations[0].resources = ["build", "build"]; },
+    copy => { copy.workGoal.contract.stopWhen = ""; },
+    copy => { copy.workGoal.phase = "accepted"; },
+  ];
+  for (const change of changes) {
+    const broken = store.create();
+    broken.messages = structuredClone(chat.messages);
+    broken.workGoal = structuredClone(chat.workGoal);
+    change(broken); store.save(broken);
+    assert.throws(() => new ApiChatStore(directory, store.namespace).load(broken.id, false), /Unsupported chat history/);
+  }
+});
+
 test("host recovery disarms persisted root work and preserves uncertain effects without replay", t => {
   const { store, chat, directory } = fixture(t);
   const input = message("Please fix this broken fixture.", { role:"user" });
@@ -62,6 +111,30 @@ test("stored goal claims reject missing root acceptance and unverified resolutio
     const broken = store.create();
     broken.messages = [input];
     broken.workGoal = { ...goal, status:"resolved", acceptance };
+    store.save(broken);
+    assert.throws(() => new ApiChatStore(directory, store.namespace).load(broken.id, false), /Unsupported chat history/);
+  }
+});
+
+test("explicit task switches retain validated goal history through durable reload without injecting it", t => {
+  const { store, chat, directory } = fixture(t);
+  chat.includeHistory = true;
+  const first = message("Please fix this original endpoint.", { role:"user" });
+  chat.messages.push(first);
+  prepareWorkGoal(chat, first.id, first.content, "a".repeat(64));
+  const original = structuredClone(chat.workGoal);
+  const next = message("Start a new task: Repair another endpoint.", { role:"user" });
+  chat.messages.push(next);
+  prepareWorkGoal(chat, next.id, next.content, "b".repeat(64));
+  store.save(chat);
+  const restored = new ApiChatStore(directory, store.namespace).load(chat.id, false);
+  assert.equal(restored.workGoal.inputId, next.id);
+  assert.equal(restored.workGoalHistory[0].id, original.id);
+  assert.equal(restored.workGoalHistory[0].status, "paused");
+  assert.deepEqual(restored.workGoalHistory[0].acceptance, original.acceptance);
+  for (const history of [[null], [restored.workGoalHistory[0], restored.workGoalHistory[0]], [restored.workGoal]]) {
+    const broken = store.create();
+    Object.assign(broken, { workGoal:restored.workGoal, workGoalHistory:history });
     store.save(broken);
     assert.throws(() => new ApiChatStore(directory, store.namespace).load(broken.id, false), /Unsupported chat history/);
   }
@@ -166,6 +239,92 @@ test("unchanged selected Chat refresh reuses validated history and detects anoth
     assert(refreshed.revision > selected.revision);
     assert.equal(store.reloadIfChanged(refreshed), refreshed);
   } finally { fs.readFileSync = original; }
+});
+
+test("control observations reuse persisted history without trusting mutable streaming state", t => {
+  const { directory, store, chat, file } = fixture(t);
+  chat.messages = [message("x".repeat(2_000_000), { status: "streaming" })];
+  chat.progress = { attemptId: randomUUID(), status: "running", model: "fixture", startedAt: Date.now(),
+    ownerPid: process.pid, ownerHost: os.hostname(), steps: [] };
+  store.save(chat);
+  const observed = store.observe(chat);
+  chat.messages[0].content = "Unsaved streaming output";
+  chat.paused = true;
+  assert.equal(observed.paused, undefined);
+  assert.equal(observed.messages[0].content.length, 2_000_000);
+  chat.paused = false;
+  const read = fs.readFileSync;
+  let segmentReads = 0, metadataReads = 0;
+  fs.readFileSync = function (target, ...args) {
+    if (String(target).endsWith(".bin")) segmentReads++;
+    if (target === file) metadataReads++;
+    return read.call(this, target, ...args);
+  };
+  try {
+    for (let i = 0; i < 100; i++) {
+      assert.equal(store.observe(chat), observed);
+      store.assertRunnable(chat, chat.progress.attemptId);
+    }
+    assert.equal(segmentReads, 0, "unchanged lifecycle checks must not read or parse history segments");
+    assert.equal(metadataReads, 0, "unchanged observations need only file-stamp validation");
+  } finally { fs.readFileSync = read; }
+  const other = new ApiChatStore(directory, store.namespace);
+  const changed = other.load(chat.id, false);
+  changed.permissionMode = "read-only";
+  other.save(changed);
+  assert.equal(store.observe(chat).permissionMode, "read-only");
+  assert.throws(() => store.assertRunnable(chat, chat.progress.attemptId), /changed in another window/);
+  fs.unlinkSync(file);
+  assert.throws(() => store.observe(chat), /ENOENT/, "deletion must never return the cached snapshot");
+});
+
+test("warm control observations still enforce Trash and stopped Task authority", t => {
+  const { directory, store, chat } = fixture(t);
+  store.startTask(chat, "Control authority");
+  store.observe(chat);
+  store.assertRunnable(chat);
+  const other = new ApiChatStore(directory, store.namespace);
+  other.library.trash(chat.id);
+  assert.throws(() => store.assertRunnable(chat), /Trash/);
+  other.library.restore(chat.id);
+  const file = path.join(directory, "agent-sessions", `${chat.sessionId}.json`);
+  const session = JSON.parse(fs.readFileSync(file, "utf8"));
+  fs.writeFileSync(file, JSON.stringify({ ...session, status: "stopped" }));
+  assert.throws(() => store.assertRunnable(chat), /stopped/);
+  fs.writeFileSync(file, JSON.stringify({ ...session, nativeChat: { ...session.nativeChat, paused: true } }));
+  assert.throws(() => store.assertRunnable(chat), /paused/);
+});
+
+test("queue fingerprints use committed segment references instead of serializing inflated history", t => {
+  const { directory, store, chat } = fixture(t);
+  chat.messages = [message("x".repeat(2_000_000), { status: "streaming" })];
+  chat.progress = { attemptId: randomUUID(), status: "running", model: "fixture", startedAt: Date.now(),
+    ownerPid: process.pid, ownerHost: os.hostname(), steps: [] };
+  store.save(chat);
+  const stringify = JSON.stringify;
+  let fullHistorySerializations = 0;
+  JSON.stringify = function (value, ...args) {
+    if (value?.messages?.some?.(item => item.content?.length >= 2_000_000)) fullHistorySerializations++;
+    return stringify.call(this, value, ...args);
+  };
+  try { store.load(chat.id, false); }
+  finally { JSON.stringify = stringify; }
+  assert.equal(fullHistorySerializations, 0, "loading a segmented Chat must not serialize its inflated messages");
+  const other = new ApiChatStore(directory, store.namespace);
+  const input = { id: randomUUID(), mode: "task", text: "Foreign queued input" };
+  const foreign = other.load(chat.id, false);
+  foreign.queuedInputs = [input];
+  other.save(foreign);
+  store.assertRunnable(chat, chat.progress.attemptId);
+  assert.deepEqual(chat.queuedInputs, [input]);
+  chat.messages[0].content += " more output";
+  store.save(chat);
+  assert.deepEqual(other.load(chat.id, false).queuedInputs, [input]);
+  const changed = other.load(chat.id, false);
+  changed.messages[0].content += " changed elsewhere";
+  other.save(changed);
+  assert.throws(() => store.assertRunnable(chat, chat.progress.attemptId), /changed in another window/,
+    "history changes must not be mistaken for queue-only edits");
 });
 
 test("large legacy Chat migrates on save without a cumulative limit or lost evidence", t => {
@@ -299,6 +458,46 @@ test("permanent deletion reclaims unowned segments but keeps completed Task evid
   assert.equal(apiChatSessionDiagnostics(session, sessionId, directory).attempts[0].outputCharacters, 600_000);
 });
 
+test("journal finalization after reopening preserves completed Task history", async t => {
+  const { directory, store, chat } = fixture(t);
+  store.startTask(chat, "Retained deletion evidence");
+  chat.messages = [message("z".repeat(600_000))];
+  store.save(chat);
+  const sessionId = chat.sessionId;
+  store.completeTask(chat);
+  store.trashChat(chat.id);
+  assert.equal((await store.prepareLibraryDeletion(chat.id)).retainedHistory, true);
+  await store.libraryMutation("delete-prepared", chat.id);
+  const reopened = new ApiChatStore(directory, store.namespace);
+  assert.equal(reopened.pendingDeletionCleanups()[0].id, chat.id);
+  await reopened.libraryMutation("finish-delete", chat.id);
+  assert.deepEqual(reopened.pendingDeletionCleanups(), []);
+  const session = JSON.parse(fs.readFileSync(path.join(directory, "agent-sessions", `${sessionId}.json`)));
+  assert.equal(apiChatSessionDiagnostics(session, sessionId, directory).attempts[0].outputCharacters, 600_000);
+});
+
+test("journal finalization preserves a worker archive left before interrupted Chat removal", async t => {
+  const { directory, store, chat, file } = fixture(t);
+  const receiptId = randomUUID();
+  chat.messages = [message("worker evidence ".repeat(50_000))];
+  chat.workerActivity = { id:randomUUID(), managerChatId:randomUUID(), treeId:randomUUID(), receiptId, temporary:true, state:"completed" };
+  store.save(chat);
+  const unlink = fs.unlinkSync;
+  fs.unlinkSync = function(target) {
+    if (target === file) throw new Error("Injected archive removal interruption");
+    return unlink.call(this, target);
+  };
+  try { assert.throws(() => store.archiveWorker(chat, { id:receiptId }), /archive removal interruption/); }
+  finally { fs.unlinkSync = unlink; }
+  store.trashChat(chat.id);
+  assert.equal((await store.prepareLibraryDeletion(chat.id)).retainedHistory, true);
+  await store.libraryMutation("delete-prepared", chat.id);
+  const reopened = new ApiChatStore(directory, store.namespace);
+  await reopened.libraryMutation("finish-delete", chat.id);
+  assert.deepEqual(reopened.workerResult(receiptId).chat.messages, chat.messages);
+  assert.deepEqual(reopened.pendingDeletionCleanups(), []);
+});
+
 test("controller publishes only a recent page and rejects cross-Chat or stale history requests", async t => {
   const { store, chat } = fixture(t);
   chat.messages = Array.from({ length: 151 }, (_, index) => message(`${index}:` + "x".repeat(40_000)));
@@ -319,6 +518,19 @@ test("controller publishes only a recent page and rejects cross-Chat or stale hi
   provider.dispatchWorkerEvents = () => {};
   provider.settings = () => ({});
   provider.toolGroups = () => [{ tools: [] }];
+  const automatic = new Map();
+  provider.requestMessages(chat, "Check the latest dialogue", automatic);
+  assert.equal(automatic.size, 8);
+  assert([...automatic.values()].every(reference => reference.isCurrent()));
+  const loadChat = store.load;
+  let candidateReloads = 0;
+  store.load = function (...args) { candidateReloads++; return loadChat.apply(this, args); };
+  try {
+    for (let round = 0; round < 3; round++) {
+      assert([...automatic.values()].every(reference => reference.isCurrent()));
+    }
+    assert.equal(candidateReloads, 0, "actual context candidate checks must share the validated persisted history");
+  } finally { store.load = loadChat; }
   provider.requestMessages = () => [];
   provider.workerOverview = () => ({ nodes: [] });
   provider.publish();
@@ -348,6 +560,19 @@ test("controller publishes only a recent page and rejects cross-Chat or stale hi
   await assert.rejects(provider.handle({ type: "historyPage", chatId: randomUUID(), id: before }), /selected Chat changed/);
   await assert.rejects(provider.handle({ type: "historyPage", chatId: chat.id, id: randomUUID() }), /cursor is stale/);
   assert.equal(store.load(chat.id, false).revision, chat.revision, "Browsing history must not persist or dispatch an inference");
+  const deleted = store.create();
+  store.trashChat(deleted.id);
+  await store.prepareLibraryDeletion(deleted.id);
+  await store.libraryMutation("delete-prepared", deleted.id);
+  provider.publish();
+  assert.deepEqual(posts.at(-1).library.deletionCleanups.map(item => item.id), [deleted.id]);
+  store.trashChat(chat.id);
+  provider.publish();
+  assert.equal(posts.at(-1).chat, null);
+  assert.deepEqual(posts.at(-1).library.deletionCleanups.map(item => item.id), [deleted.id]);
+  await store.libraryMutation("finish-delete", deleted.id);
+  provider.publish();
+  assert.deepEqual(posts.at(-1).library.deletionCleanups, []);
 });
 
 test("image safety remains per message rather than imposing a cumulative history cutoff", t => {

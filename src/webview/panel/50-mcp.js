@@ -36,7 +36,12 @@ function showMcpTab() {
 }
 
 function mcpOnStatus(data) {
+  const previous = mcpStatusCache;
   mcpStatusCache = data || {};
+  if (mcpStatusCache.usage?.deferred && previous?.usage && !previous.usage.deferred
+      && previous.store?.path === mcpStatusCache.store?.path) {
+    mcpStatusCache.usage = previous.usage;
+  }
   mcpStatusUpdatedAt = Date.now();
   loadProfilingEnabled = !!data?.loadProfiling?.enabled;
   updateGlobalMcpWarning(mcpStatusCache);
@@ -45,6 +50,7 @@ function mcpOnStatus(data) {
 
 function mcpOnUsage(data) {
   if (!mcpStatusCache) return;
+  if (data?.storePath !== undefined && data.storePath !== (mcpStatusCache.store?.path || '')) return;
   mcpStatusCache.usage = data || {};
   if (state.tab === 'mcp') renderMcpPane(mcpStatusCache);
 }

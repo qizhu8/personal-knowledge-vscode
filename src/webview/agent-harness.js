@@ -449,6 +449,20 @@
       if (attempt.retryOf) group.edges.push({ from:attempt.retryOf, to:attempt.attemptId || attempt.messageId, kind:'retry' });
       add(a, 'input', 'Input', 'Associated input', 'recorded', { text:attempt.associatedProblem, source:attempt.problemSource }, { executable:false });
       const reportSteps = new Map(), reports = list(attempt.harnessReports);
+      if (list(attempt.capabilityInvocations).length) {
+        const capabilities = graph(key('capability-invocations', attempt.messageId), 'Capability invocations', a.id);
+        add(a, 'capability-invocations', 'Capabilities', 'Versioned leaf operations', 'recorded',
+          { note:'Original tool receipts retain arguments/results. Invocation success is not task acceptance.' }, { child:capabilities.id, executable:false });
+        for (const invocation of attempt.capabilityInvocations) add(capabilities, invocation.callId, 'Capability',
+          invocation.operation || 'Unknown operation', invocation.status, invocation, { executable:false });
+      }
+      if (attempt.effectiveness?.schema === 'pkm.chat.effectiveness/v1') {
+        const effectiveness = graph(key('effectiveness', attempt.messageId), 'Inference effectiveness', a.id);
+        add(a, 'effectiveness', 'Inference effectiveness', 'Timing, reuse and observed results', 'recorded',
+          attempt.effectiveness, { child:effectiveness.id, executable:false });
+        for (const round of list(attempt.effectiveness.rounds)) add(effectiveness, String(round.round), 'Inference round',
+          `Round ${round.round}: ${round.novelResults} novel results`, round.status, round, { executable:false });
+      }
       if (attempt.memory?.accounting) {
         const memory = graph(key('memory-accounting', attempt.messageId), 'Independent Memory inference accounting', a.id);
         const recordedMemory = add(a, 'memory-accounting', 'Memory accounting', 'Memory preparation accounting', attempt.memory.error ? 'failed' : 'recorded', {
@@ -636,13 +650,27 @@
     const harness = session.harness || {}, attempts = list(harness.attempts);
     const attempt = attempts.at(-1);
     const reports = list(attempt?.harnessReports), calls = list(attempt?.toolCalls);
-    const validation = [...reports].reverse().find(report => report.kind === 'validation');
+    const recordedValidation = [...reports].reverse().find(report => report.kind === 'validation');
+    const sourceContext = attempt?.validation?.sourceContext;
+    const artifactState = attempt?.validation?.artifactState;
+    const artifactsCurrent = !recordedValidation?.artifactVersions
+      || artifactState?.status === 'unchanged';
+    const workerState = attempt?.validation?.workerState;
+    const workersCurrent = !workerState || workerState.status === 'unchanged';
+    const validation = recordedValidation && (!sourceContext
+      || recordedValidation.attemptId === attempt.attemptId && recordedValidation.taskId === attempt.taskId
+        && list(recordedValidation.sourceInputIds).includes(sourceContext.sourceInputId)
+        && recordedValidation.sourceInputDigest === sourceContext.sourceInputDigest)
+      && (recordedValidation.status !== 'complete' || artifactsCurrent && workersCurrent) ? recordedValidation : undefined;
     const setup = [...reports].reverse().find(report => report.kind === 'task' || report.kind === 'planning');
-    const referenced = calls.flatMap(call => list(call.actionRunIds)).map(id => actions.get(id)).filter(Boolean);
+    const referenced = [...new Set(calls.flatMap(call => list(call.actionRunIds)))].map(id => actions.get(id)).filter(Boolean);
     const backgroundRuns = referenced.filter(run => !terminal(run.state) && !['cancelled', 'submitted-and-closed'].includes(run.state));
     const state = harness.state || session.status || 'unknown';
+    // A delivered reply does not finish its explicitly referenced durable execution.
+    // Do not resurrect failed/stopped attempts or infer acceptance from Run termination.
+    const stopped = ['failed', 'interrupted', 'cancelled'].includes(attempt?.status);
     const live = liveStatuses.has(attempt?.status)
-      || (['awaiting-input', 'awaiting-result'].includes(state) && !['failed', 'interrupted', 'cancelled'].includes(attempt?.status))
+      || (!stopped && (backgroundRuns.length > 0 || ['awaiting-input', 'awaiting-result'].includes(state)))
       || (!attempt && state === 'running');
     const waitingUser = harness.waiting?.kind === 'user' || state === 'awaiting-input';
     const outputs = list(attempt?.publicOutputs);
@@ -652,7 +680,7 @@
     if (!attempt) { current = 'configure'; outcome = live ? 'running' : 'pending'; reason = 'No Harness attempt recorded yet.'; }
     else if (live) {
       outcome = waitingUser ? 'waiting' : 'running';
-      if (validation?.status === 'start') { current = 'evaluate'; reason = validation.summary || 'Validation report started.'; }
+      if (validation?.status === 'start' && !backgroundRuns.length) { current = 'evaluate'; reason = validation.summary || 'Validation report started.'; }
       else if (harness.waiting?.kind === 'dependency' || state === 'awaiting-result' || backgroundRuns.length) {
         current = 'monitor'; outcome = 'waiting';
         reason = harness.waiting?.detail || (backgroundRuns.length ? `${backgroundRuns.length} referenced Action Run(s) not terminal.` : 'Awaiting a background result.');
@@ -660,7 +688,7 @@
         current = 'configure'; reason = setup?.summary || harness.currentPhase?.label || 'Preparing the request.';
       } else { current = 'run'; reason = harness.currentPhase?.label || 'Agent executing.'; }
       if (waitingUser) reason = `Waiting for you: ${harness.waiting?.detail || 'input or approval'}`;
-    } else if (taskAccepted || validation?.status === 'complete') {
+    } else if (taskAccepted && artifactsCurrent && workersCurrent || validation?.status === 'complete' && !['failed', 'interrupted', 'cancelled'].includes(attempt.status)) {
       current = 'end'; outcome = 'complete'; check = 'passed';
       reason = taskAccepted ? 'Managed Task completed.' : validation.summary || 'Validation report passed with recorded evidence.';
     } else if (validation?.status === 'failed') {
@@ -670,7 +698,11 @@
       reason = attempt.validation?.error || `Attempt ${attempt.status}.`;
     } else {
       current = 'check'; outcome = 'unverified'; check = 'unverified';
-      reason = 'Response delivered; no validation was recorded, so goals are not confirmed.';
+      reason = !workersCurrent ? 'Worker evidence changed or is unavailable; read and validate the current worker result again.'
+        : recordedValidation && !validation
+        ? !artifactsCurrent ? 'Recorded validation artifacts changed or are unavailable; validate the current saved files again.'
+          : 'Recorded validation does not match the current attempt and source inputs; validate the current requirements again.'
+        : 'Response delivered; no validation was recorded, so goals are not confirmed.';
     }
     const index = stageIds.indexOf(current);
     const usage = attempt?.validation?.reportedUsage;
@@ -704,6 +736,12 @@
         ['Validation reports', String(reports.filter(report => report.kind === 'validation').length)],
         ['Latest', validation ? `${validation.status}: ${validation.summary || ''}` : 'none recorded'],
         ['Evidence calls', validation ? String(list(validation.evidenceCallIds).length) : '0'],
+        ['Saved file versions', recordedValidation?.artifactVersions
+          ? artifactState?.status || 'not inspected on this host' : 'not bound; file versions are not certified'],
+        ...list(artifactState?.files).map(file => [file.path || 'Artifact', `${file.status}: ${file.reason || ''}`]),
+        ['Worker result versions', workerState?.status || 'no worker result evidence cited'],
+        ...list(workerState?.workers).map(worker => [worker.version?.receiptId || 'Worker evidence',
+          `${worker.status}: ${worker.reason || worker.version?.attemptId || ''}`]),
       ],
       check:[
         ['Meets goals?', { passed:'yes (recorded)', failed:'no - iterate', unverified:'not validated', pending:'not decided yet' }[check]],

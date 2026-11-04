@@ -562,7 +562,7 @@ function projectCheckpointControls(item) {
   if (!cp || cp.state !== 'waiting' || !cp.proposal_digest || !/^action_run_[0-9a-f]{32}$/.test(item.sourceId)
     || cp.trigger?.kind && cp.trigger.kind !== 'human') return '';
   return `<form class="cockpit-checkpoint-form" data-run-id="${esc(item.sourceId)}" data-checkpoint-id="${esc(cp.checkpoint_id)}" data-digest="${esc(cp.proposal_digest)}" onsubmit="projectCheckpointSubmit(event)">
-    <label>Answer JSON${cp.presentation === 'choice' ? ' (choice schema)' : ''}<textarea name="answer" aria-label="Checkpoint answer JSON" maxlength="65536" placeholder="Enter JSON matching the displayed answer_schema"></textarea></label>
+    <label>Answer JSON${cp.presentation === 'choice' ? ' (choice schema)' : ''}<textarea name="answer" spellcheck="false" aria-label="Checkpoint answer JSON" maxlength="65536" placeholder="Enter JSON matching the displayed answer_schema"></textarea></label>
     <button class="tbtn" type="submit" value="answer">Submit exact answer</button>
     <label><input type="checkbox" name="confirm">I intend to cancel the entire Run, not answer this checkpoint.</label>
     <button class="tbtn" type="submit" value="cancel">Cancel Run</button>
@@ -3324,7 +3324,7 @@ function projectGanttBody(project, threads) {
     <label class="wide">Dependencies<select id="gantt-dependencies" multiple size="${Math.min(5, Math.max(2, tasks.length))}">${tasks.filter(task => task.taskId !== selectedGanttTaskId).map(task => `<option value="${esc(task.taskId)}" ${(draft.dependencyIds || []).includes(task.taskId) ? 'selected' : ''}>${esc(task.title)}</option>`).join('')}</select><small>Use Ctrl/Cmd or Shift to select multiple tasks.</small></label>
     <footer><button class="pk-button primary" type="submit" data-pending-label="Saving…">${selected ? 'Update task' : 'Create task'}</button></footer>
   </form>`;
-  return `<div class="gantt-workspace">${timeline}<div class="gantt-table-wrap">${tasks.length ? `<table class="gantt-table"><caption class="sr-only">Gantt tasks for ${esc(project.name)}</caption><thead><tr><th>Task</th><th>Scope</th><th>Dates</th><th>Status</th><th>Owners</th><th>Depends on</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table>` : ''}</div>${form}</div>`;
+  return `<div class="gantt-workspace"><section class="project-note-todo-section"><header><h3>Note Work Items</h3><button type="button" class="tbtn" onclick="noteTodoProjectLoad('${esc(project.projectId)}')">Load / refresh Note timeline</button></header><div id="project-note-todos" data-project-id="${esc(project.projectId)}"><p>On-demand projection of Work Items explicitly assigned to this Project. No duplicate Gantt task state.</p></div></section>${timeline}<div class="gantt-table-wrap">${tasks.length ? `<table class="gantt-table"><caption class="sr-only">Gantt tasks for ${esc(project.name)}</caption><thead><tr><th>Task</th><th>Scope</th><th>Dates</th><th>Status</th><th>Owners</th><th>Depends on</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table>` : ''}</div>${form}</div>`;
 }
 
 function projectSectionBody(project, threads, recipes) {

@@ -246,7 +246,7 @@ function updatePaperChrome() {
 
 function addCurrentKnowledge() {
   if (state.tab === 'skills') ask('createKnowledgeItem', { area: 'skills' });
-  else if (state.tab === 'notes') toggleNoteForm();
+  else if (state.tab === 'notes') ask('createKnowledgeItem', { area:'notes' });
   else if (state.tab === 'papers') openPaperForm();
 }
 // Return to the plain list/detail view (hide paper form + graph).
@@ -732,7 +732,7 @@ function noteFilename(note) {
 function noteLi(r, q, indent) {
   const filename = noteFilename(r);
   return `<div class="li nt-${r.type}${r.pinned ? ' nt-pinned' : ''}" data-note-slug="${esc(r.slug)}" data-note-pinned="${r.pinned ? '1' : ''}" style="padding-left:${indent}px" onclick="openItem('note','${esc(r.slug)}')" title="notes/${esc(r.slug)}.md">
-    <div class="li-name"><span class="pc-star${r.pinned ? ' on' : ''}" onclick="event.stopPropagation();toggleNotePin('${esc(r.slug)}',${r.pinned ? 'false' : 'true'})" title="${r.pinned ? 'Unpin' : 'Pin to top of folder'}">${uiIcon(r.pinned ? 'pinned' : 'pin')}</span> ${ICON[r.type]||uiIcon('note')} ${privacyLock(r.isPrivate)}${hl(r.title, q)}${brokerShareMarker(r.brokerShares)}${typeof githubSyncFileMarker === 'function' ? githubSyncFileMarker('notes', r.slug) : ''}</div>
+    <div class="li-name"><span class="pc-star${r.pinned ? ' on' : ''}" onclick="event.stopPropagation();toggleNotePin('${esc(r.slug)}',${r.pinned ? 'false' : 'true'})" title="${r.pinned ? 'Unpin' : 'Pin to top of folder'}">${uiIcon(r.pinned ? 'pinned' : 'pin')}</span> ${r.documentKind==='todo-board'?uiIcon('project','Todo Board'):ICON[r.type]||uiIcon('note')} ${privacyLock(r.isPrivate)}${hl(r.title, q)}${brokerShareMarker(r.brokerShares)}${typeof githubSyncFileMarker === 'function' ? githubSyncFileMarker('notes', r.slug) : ''}</div>
     <div class="li-meta">${hl(filename, q)} · ${(r.updated_at||'').slice(0,10)}</div>
   </div>${markdownAssetFolder('notes', r.slug + '.md', indent)}`;
 }
@@ -1564,7 +1564,8 @@ function markdownToolbar(data) {
     <button class="tbtn" style="font-size:11px" onclick="copyDetailUrl()" title="Copy PKM URL">${uiIcon('link', 'Copy PKM URL')}</button>
     ${type === 'note' ? `<button class="tbtn" style="font-size:11px" onclick="exportMarkdown('linkedSave')" title="Save this Note and its linked Notes as a shareable site">${uiIcon('package', 'Site')}</button>` : ''}
     <button class="tbtn" style="font-size:11px" onclick="exportMarkdown('file')" title="Download as a self-contained HTML file">${uiIcon('cloud-download', 'Download')}</button>
-    <button class="tbtn" style="font-size:11px" onclick="openMarkdownItem('${area}', '${esc(category)}', '${esc(key)}')">${uiIcon('edit', 'Edit Content')}</button>
+    ${data.documentKind==='todo-board'?'':`<button class="tbtn" style="font-size:11px" onclick="openMarkdownItem('${area}', '${esc(category)}', '${esc(key)}')">${uiIcon('edit', 'Edit Content')}</button>`}
+    ${type==='note'&&data.documentKind!=='todo-board'?'<button class="tbtn" onclick="ask(\'todoBoardConvert\',{slug:currentDetail.slug})">Convert to Todo Board</button>':''}
     <button class="tbtn" style="font-size:11px" onclick="editMarkdownMetadataItem('${area}', '${esc(category)}', '${esc(key)}')">${uiIcon('settings-gear', 'Edit Metadata')}</button>`;
 }
 
@@ -1587,6 +1588,7 @@ function copyDetailUrl() {
 }
 
 function renderDetail(data) {
+  if (noteTodoDetailRefresh(data)) return;
   if (data?.type === 'script' && currentDetail?.type === 'script'
       && data.path === currentDetail.path && document.getElementById('se-script')) {
     currentDetail = data;
@@ -1667,7 +1669,11 @@ function renderDetail(data) {
       <div class="meta-grid">
         <span class="ml">Description</span><span class="mv meta-value"><span>${esc(data.description||'—')}</span><button class="meta-edit" onclick="editCurrentMetadata('description')" title="Edit description">✎</button></span>
       </div>
-      <hr class="div"><div class="prose">${safeMarked(data.content||'', data.category, 'notes')}</div>`;
+      ${data.documentKind==='todo-board'?'<p class="note-todo-notice">Todo Board · managed through commands, not Markdown editing.</p>':''}
+      <nav class="note-todo-tabs" aria-label="Note views">${(data.documentKind==='todo-board'?[['table','Table'],['board','Board'],['timeline','Timeline']]:[['markdown','Markdown'],['table','Todo Table'],['board','Board'],['timeline','Timeline']]).map(([view,label])=>`<button type="button" class="tbtn" data-note-view="${view}" onclick="noteTodoShow('${view}')">${label}</button>`).join('')}</nav>
+      <div id="note-todo" class="hidden"></div>
+      <hr class="div"><div id="note-markdown" class="prose ${data.documentKind==='todo-board'?'hidden':''}">${data.documentKind==='todo-board'?'':safeMarked(data.content||'', data.category, 'notes')}</div>`;
+    noteTodoMount(data);
 
   } else if (data.type === 'paper') {
     currentDetail = data;
@@ -1753,7 +1759,7 @@ function renderDetail(data) {
         <section class="prompt-workspace-panel prompt-dataset-panel ${promptWorkspaceTab==='dataset'?'active':''}" data-prompt-panel="dataset">
           <div class="prompt-variable-summary"><div><strong>Jinja variables</strong><span>Hover a variable to inspect its closed version ranges.</span></div><div id="prompt-variable-coverage"></div></div>
           <div class="prompt-dataset-bar"><strong>Test Dataset</strong><span id="prompt-dataset-status">No Dataset</span><span class="prompt-dataset-spacer"></span><input id="prompt-dataset-file" type="file" accept=".json,.jsonl,.ndjson,application/json" onchange="promptLoadDatasetFile(this)"><button type="button" class="tbtn" onclick="promptDatasetAddRow()">${uiIcon('add', 'Add Row')}</button><button type="button" class="tbtn" onclick="document.getElementById('prompt-dataset-file').click()">${uiIcon('folder-opened', 'Load')}</button><button type="button" class="tbtn" onclick="promptToggleDatasetPaste()">Paste</button><div id="prompt-dataset-controls" class="prompt-dataset-controls hidden"><button id="prompt-dataset-prev" type="button" onclick="promptDatasetMove(-1)" title="Previous Dataset row" aria-label="Previous Dataset row">${uiIcon('chevron-left')}</button><span id="prompt-dataset-position"></span><button id="prompt-dataset-next" type="button" onclick="promptDatasetMove(1)" title="Next Dataset row" aria-label="Next Dataset row">${uiIcon('chevron-right')}</button><button type="button" onclick="promptClearDataset()" title="Clear Dataset" aria-label="Clear Dataset">${uiIcon('trash')}</button></div></div>
-          <div id="prompt-dataset-paste" class="prompt-dataset-paste hidden"><textarea id="prompt-dataset-text" rows="5" placeholder='[{"AdAsset":"Example ad","Src":"Landing page text"}]' aria-label="JSON or JSONL Dataset"></textarea><div><button type="button" class="tbtn" onclick="promptToggleDatasetPaste()">Cancel</button><button type="button" class="tbtn primary" onclick="promptCommitPastedDataset()">Use Dataset</button></div></div>
+          <div id="prompt-dataset-paste" class="prompt-dataset-paste hidden"><textarea id="prompt-dataset-text" spellcheck="false" rows="5" placeholder='[{"AdAsset":"Example ad","Src":"Landing page text"}]' aria-label="JSON or JSONL Dataset"></textarea><div><button type="button" class="tbtn" onclick="promptToggleDatasetPaste()">Cancel</button><button type="button" class="tbtn primary" onclick="promptCommitPastedDataset()">Use Dataset</button></div></div>
           <div id="prompt-dataset-table" class="prompt-dataset-table"><div class="prompt-dataset-empty">Load or paste JSON/JSONL to create Dataset rows.</div></div>
         </section>
       </div>`;
@@ -1899,7 +1905,7 @@ function startEditScript() {
   document.getElementById('detail').innerHTML = `
     <div class="d-title">${uiIcon('edit')} Edit: <span style="color:var(--accent)">${esc(d.file)}</span></div>
     ${detailPathHtml(d)}
-    <textarea id="se-script" style="width:100%;height:calc(100vh - 200px);background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:10px;font-size:12px;font-family:var(--vscode-editor-font-family);resize:none;outline:none;line-height:1.5">${esc(d.content||'')}</textarea>
+    <textarea id="se-script" spellcheck="false" style="width:100%;height:calc(100vh - 200px);background:var(--input);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:10px;font-size:12px;font-family:var(--vscode-editor-font-family);resize:none;outline:none;line-height:1.5">${esc(d.content||'')}</textarea>
     <div class="form-actions" style="margin-top:8px">
       <button class="tbtn" onclick="cancelScriptEdit()">Cancel</button>
       <button class="tbtn" style="border-color:var(--accent)" onclick="submitScriptEdit()">${uiIcon('save', 'Save')}</button>
@@ -2441,6 +2447,7 @@ function confirmDeleteSkill(btn) {
 
 // ── Note edit ─────────────────────────────────────────────────────────────
 function editNote(data) {
+  if (data.documentKind==='todo-board') { renderDetail(data); return; }
   document.getElementById('note-form-title').textContent = 'Edit Note';
   document.getElementById('note-title').value   = data.title || '';
   document.getElementById('note-content').value  = data.content || '';

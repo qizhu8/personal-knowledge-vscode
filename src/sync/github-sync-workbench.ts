@@ -121,7 +121,7 @@ export function escapeGitHubSyncWorkbenchHtml(value: string): string {
 
 export function renderGitHubSyncWorkbenchHtml(webview: vscode.Webview, scriptUri: vscode.Uri, nonce: string): string {
   const esc = escapeGitHubSyncWorkbenchHtml;
-  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+  return `<!DOCTYPE html><html lang="en" spellcheck="true"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${esc(webview.cspSource)} data:; style-src 'nonce-${esc(nonce)}'; script-src 'nonce-${esc(nonce)}'; connect-src 'none';">
 <title>GitHub Sync conflict workbench</title>

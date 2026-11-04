@@ -7,6 +7,9 @@ import time
 import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
+from typing import Annotated
+
+from pydantic import Field
 
 from agent_session_runtime import _atomic_write, _file_lock
 
@@ -109,7 +112,11 @@ def _submit(root, host_id, operation, arguments, command_id):
             if _read(destination).get("payloadHash") != digest:
                 raise ValueError("This command_id already belongs to a different request; no action was repeated.")
             return _receipt(root, host_id, request_id)
-        _host(root, host_id)
+        host = _host(root, host_id)
+        if operation == "send" and "hardToolRoundLimit" in arguments:
+            limits = host.get("sendLimits")
+            if not isinstance(limits, dict) or limits.get("hardToolRoundLimit") != {"min": 1, "max": 1000}:
+                raise ValueError("This Host does not support hard tool round limits. Upgrade the Host; no request was sent.")
         _atomic_write(destination, {**payload, "schema": "pkm.api-chat.request/v1", "hostId": host_id,
                       "requestId": request_id, "payloadHash": digest, "status": "queued",
                       "createdAt": time.time() * 1000, "expiresAt": time.time() * 1000 + 30000})
@@ -128,6 +135,7 @@ def register_api_chat_tools(mcp, store):
                 record = _host(root, path.stem)
                 hosts.append({"host_id": record["hostId"], "workspace_paths": record.get("workspacePaths", []),
                               "machine": record.get("machine"), "build": record.get("build"),
+                              "send_limits": record.get("sendLimits", {}),
                               "operations": record.get("operations", [])})
             except (OSError, ValueError, TypeError):
                 continue
@@ -156,12 +164,18 @@ def register_api_chat_tools(mcp, store):
         return _submit(root, host_id, "create", {"title": title, "modelId": model_id}, command_id)
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
-    def api_chat_send(host_id: str, chat_id: str, prompt: str, command_id: str) -> dict:
-        """Send an explicit prompt to a chatUrl from api_chat_list (legacy UUID accepted) through its owning Host; can incur model/tool charges. Returns a request_id, never auto-retries, resumes or changes permissions."""
+    def api_chat_send(host_id: str, chat_id: str, prompt: str, command_id: str,
+                      hard_tool_round_limit: Annotated[int, Field(strict=True, ge=1, le=1000)] | None = None) -> dict:
+        """Send an explicit prompt through its owning Host; can incur model/tool charges. Optional hard_tool_round_limit (1-1000) bounds tool-capable inference rounds for this send only, then permits one tool-free summary; it is not a tool-count, time or credit cap. Requires a supporting Host, never silently ignored. Returns a request_id, never auto-retries or changes permissions. On supporting Hosts, begin the prompt with 'Start a new task: <objective>' to create a new goal while preserving the previous goal. Failed sends must be inspected, never replayed automatically."""
         chat_id = _chat_locator(chat_id)
         if not prompt.strip() or len(prompt) > 16000:
             raise ValueError("prompt must contain 1-16000 characters.")
-        return _submit(root, host_id, "send", {"chatId": chat_id, "prompt": prompt}, command_id)
+        arguments = {"chatId": chat_id, "prompt": prompt}
+        if hard_tool_round_limit is not None:
+            if type(hard_tool_round_limit) is not int or not 1 <= hard_tool_round_limit <= 1000:
+                raise ValueError("hard_tool_round_limit must be an integer from 1-1000.")
+            arguments["hardToolRoundLimit"] = hard_tool_round_limit
+        return _submit(root, host_id, "send", arguments, command_id)
 
     @mcp.tool(annotations={"readOnlyHint": True})
     def api_chat_get(host_id: str, chat_id: str, command_id: str = "") -> dict:

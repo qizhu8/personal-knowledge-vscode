@@ -12,14 +12,22 @@ import { getStorePath } from "../knowledge/filestore";
 import { listAgentSnapshots, readAgentSnapshotContents } from "../agent-sessions/agent-snapshots";
 import { detectMcpPython, warmMcpPythonProbes, mcpServerDefinitionData, managedMcpServerDirectory, readManagedMcpManifest } from "../mcp/mcp";
 import { ApiChatMessage, streamApiChat, chatToolRoundLimit, defaultLoopExemptTools, ChatToolLoopNotice, ChatToolLoopDecision } from "./api-chat-client";
-import { ApiChatStore, ApiConversation, ApiChatStatus, ApiChatProgress, ChatMessage, ChatDelegation, apiChatStatus, apiChatProjection, apiChatDiagnostics, apiChatContextSummary, apiChatCreditUsage, chatHistoryPage, apiChatHarnessSnapshot, settleProgressSteps } from "./api-chat-store";
+import { ApiChatStore, ApiConversation, ApiChatStatus, ApiChatProgress, ChatMessage, ChatDelegation, apiChatStatus, apiChatProjection, apiChatDiagnostics, apiChatContextSummary, apiChatCreditUsage, chatHistoryPage, apiChatHarnessSnapshot, verifyHarnessArtifacts, settleProgressSteps } from "./api-chat-store";
 import { BaselineEventKind, recordBaselineEvent } from "../runtime/pkm-baseline";
 import { modelProfiles, assertModelAvailable, estimateInputTokens, validateBudget, estimateCost, ChatModelProfile, ChatTokenUsage, parseThinkingBudget } from "./api-chat-models";
 import { createChatBudgetLedger, recordChatBudgetTransport, recordChatBudgetUsage, chatBudgetUsage, recordChatBudgetRuntime, recordChatInferenceTiming, recordChatWorkerBudget, recordChatProcessBudget, recordChatInvocationBudget, type ChatInvocationBudget } from "./chat-budget-ledger";
-import { cancelAllChatProcesses, isChatProcessRecord } from "./chat-process-runtime";
-import { abortable, builtinToolCatalog, createBuiltinTools } from "./api-chat-tools";
+import { cancelAllChatProcesses, cancelChatProcess, getChatProcess, isChatProcessRecord, pauseChatProcess, resumeChatProcess } from "./chat-process-runtime";
+import { abortable, builtinToolCatalog, createBuiltinTools, relativeToolPath } from "./api-chat-tools";
+import { captureValidationArtifacts } from "./validation-artifacts";
 import { QuestionSchema, questionSchema, validateQuestionAnswer } from "./chat-questions";
 import { createChatActionTools } from "./chat-actions";
+import { createNoteTodoTools } from "./note-todo-tools";
+import { capabilityTools } from "./capability-tools";
+import { CapabilityError, todoCapabilities } from "../capabilities/registry";
+import { memoryCapabilities } from "../capabilities/memory-contract";
+import { createExplicitMemoryTools } from "./explicit-memory-tools";
+import { executeMemoryOperation } from "../capabilities/memory-operations";
+import { todoReadApiNames } from "../knowledge/todo-api-contract";
 import { actionRequest } from "../ui/action-browser";
 import { connectApiChatMcp, connectManagedChatMcp, ManagedChatMcp, mcpUrl, ApiChatMcpServer, vscodeToolCatalog, createVscodeTools, groupVscodeTools, pkmToolSets } from "./api-chat-mcp";
 import { assertVscodeModelCallable, discoverVscodeModels, isVscodeModelAccessError, streamVscodeChat, vscodeModelProfile, VscodeChatModel } from "./api-chat-vscode";
@@ -33,7 +41,7 @@ import { chatMemoryTree, chatMemorySegments, readChatToolEvidence, retrieveChatM
 import { ChatMemoryService, chatMemoryScope, messageRevision, MemoryContextBlock, MemoryModelError, MemoryModelRequest, MemoryModelResult } from "../memory/chat-memory-service";
 import { memoryPolicy, validMemoryPolicy } from "./chat-memory-policy";
 import { recallScopedChatMemory, scopedMemorySegment } from "./chat-memory-scope";
-import { ChatContextPlanner, AutomaticChatContext, ContextCandidateLimitError, AUTOMATIC_KNOWLEDGE_INPUT_BUDGET } from "./chat-context";
+import { ChatContextPlanner, AutomaticChatContext, ContextCandidateLimitError, AUTOMATIC_KNOWLEDGE_INPUT_BUDGET, type ContextTokenMeasurement } from "./chat-context";
 import { guardRetrievalCandidates } from "../retrieval/retrieval-provider";
 import { passageReferenceGroup, refineRuleCandidates } from "../retrieval/retrieval-passages";
 import { workerLimits, workerIsDescendant, WorkerEvent, WorkerPhase, WorkerDecisionReason } from "./worker-tree";
@@ -42,6 +50,8 @@ import { knowledgeCandidatePriority, parseRetrievalSelection, requireLearningAck
 import { handleChatLibraryAction } from "./library-actions";
 import { hostname } from "os";
 import { activeHarnessBinding, assertHarnessRecipeBinding, createHarnessReportTool, currentHarnessTask, currentHarnessTaskState, HarnessBinding } from "./chat-harness-records";
+import { assertCurrentWorkerEvidence, citedWorkerEvidence, delegationReply, readWorkerResultVersion, workerEvidenceState, workerResultVersion, workerHandoff } from "./worker-result-versions";
+import { assertIndependentWorkerScopes, workerScope, type WorkerScope } from "./worker-scope";
 import { toolPermissionScope } from "./permissions";
 import { chatToolGroups, selectChatTools } from "./tool-selection";
 import { ApiChatAgentControl } from "./agent-control";
@@ -51,10 +61,11 @@ import { chatPkmUrl, parsePkmLocator } from "../knowledge/knowledge-locator";
 import { captureExecutionContext, ChatExecutionContext, validExecutionContext } from "./execution-context";
 import { readHarnessActions } from "../runtime/native-harness-actions";
 import { JsonFileCache } from "../runtime/json-file-cache";
-import { prepareWorkGoal, recordWorkGoalTransition, reportWork, workEvidenceKey, workGoalContext, workGoalInputs, workStop } from "./chat-work-goal";
+import { newWorkGoal, prepareWorkGoal, recordWorkGoalTransition, reportWork, workEvidenceKey, workGoalContext, workGoalInputs, workStop } from "./chat-work-goal";
 import { activeTaskContextCheckpoint, createTaskContextCheckpoint, readTaskContextInput, taskContextInputs } from "./task-context-checkpoint";
 import { portalTaskAttempts, portalTaskReplyLink, type PortalTaskAttempts } from "./portal-task-attempts";
 import { recordPortalCommand, type PortalCommandActivity } from "./portal-command-activity";
+import { approveChatPlan, assertChatPlanExecution, assertPlanResearchSource, chatPlanExecutionError, chatPlanPrompt, currentChatPlan, gatePlanTools, planReadTools, planSourceDigest, submitChatPlan } from "./chat-plan";
 import { recordPortalTransfer } from "./portal-transfer-activity";
 import type { PortalTransferStatus } from "../chatroom/portal-files";
 
@@ -92,8 +103,8 @@ async function portalToolResource(roots: readonly vscode.Uri[], tool: string, ar
   try { return await fs.promises.realpath(resolved); } catch { return resolved; }
 }
 
-export function registerApiChat(context: vscode.ExtensionContext, retrieval?: ChatKnowledgeRetriever, registerView = true): ApiChatView {
-  const provider = new ApiChatView(context, retrieval);
+export function registerApiChat(context: vscode.ExtensionContext, retrieval?: ChatKnowledgeRetriever, registerView = true, prepareMcp?: () => Promise<void>): ApiChatView {
+  const provider = new ApiChatView(context, retrieval, prepareMcp);
   if (registerView) registerApiChatHost(context, (operation, args) => provider.agentControl(operation, args), () => provider.isBusy);
   context.subscriptions.push(provider,
     ...(registerView ? [
@@ -174,7 +185,8 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     return { dispose: () => { this.recordListeners.delete(entry); } };
   };
 
-  constructor(private readonly extension: vscode.ExtensionContext, private readonly retrieval?: ChatKnowledgeRetriever) {
+  constructor(private readonly extension: vscode.ExtensionContext, private readonly retrieval?: ChatKnowledgeRetriever,
+    private readonly prepareMcp?: () => Promise<void>) {
     extension.subscriptions?.push(onPortalChanged(() => {
       if (this.disposed || !this.store) return;
       try { this.publish(); } catch (error) { this.notify(error); }
@@ -185,6 +197,14 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
 
   portalChatBindings(): Array<{ id: string; title: string }> {
     return this.openStore().list().map(chat => ({ id: chat.id, title: chat.title }));
+  }
+
+  assertPortalMutationAllowed(chatId: string): void {
+    const store = this.openStore(), cached = this.chats.get(chatId);
+    const chat = cached ? this.running.has(chatId) ? cached : store.reloadIfChanged(cached) : store.resolveChat(chatId);
+    this.chats.set(chat.id, chat);
+    if (this.chat?.id === chat.id) this.chat = chat;
+    if (chat.workflowMode && chat.workflowMode !== "chat") throw new Error("This Chat has a reviewed Plan workflow. Remote commands and file writes cannot bypass its local plan approval.");
   }
 
   private personaStore(): PersonaProfileStore {
@@ -570,13 +590,21 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     if (operation === "send") {
       const prompt = typeof args.prompt === "string" ? args.prompt : "";
       if (!prompt.trim() || prompt.length > 16_000) throw new Error("A prompt from 1 to 16,000 characters is required.");
+      if (args.hardToolRoundLimit !== undefined && typeof args.hardToolRoundLimit !== "number") throw new Error("Choose a tool round limit of 1-1000.");
+      const hardToolRoundLimit = args.hardToolRoundLimit === undefined ? undefined : chatToolRoundLimit(args.hardToolRoundLimit);
       if (this.running.has(id) || this.queueDrains.has(id)) throw new Error("This Chat is busy; no request was queued or retried.");
       this.assertRunnable(chat);
       this.chats.set(id, chat); this.chat = chat; await this.extension.workspaceState.update("apiChat.active", id);
       if (!this.view?.visible) await vscode.commands.executeCommand("personalKnowledge.apiChat.focus");
       if (this.running.has(id) || this.queueDrains.has(id)) throw new Error("This Chat became busy; no request was queued or retried.");
+      const previousReplyId = [...chat.messages].reverse().find(message => message.role === "assistant")?.id;
       this.agentControlledRequests.add(id);
-      try { await this.send(prompt, chat); }
+      try {
+        await this.send(prompt, chat, undefined, undefined, undefined, undefined, undefined, undefined, undefined, hardToolRoundLimit);
+        const reply = [...chat.messages].reverse().find(message => message.role === "assistant");
+        if (!reply || reply.id === previousReplyId) throw new Error("This send produced no new reply. Inspect the Chat's current attempt before sending again; the previous reply is not its result.");
+        if (reply.status === "failed" || reply.status === "interrupted") throw new Error(reply.error || `The requested Chat attempt ${reply.status}. Inspect its recorded results before sending again.`);
+      }
       finally { this.agentControlledRequests.delete(id); }
     }
     if (operation === "cancel") {
@@ -591,6 +619,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         credits: apiChatCreditUsage(reply).credits ?? null, creditsStatus: apiChatCreditUsage(reply).status,
         creditUsage: apiChatCreditUsage(reply),
         context: apiChatContextSummary(reply),
+        toolRoundLimit: reply.toolRoundLimit || null,
         tools: (reply.toolCalls || []).map(tool => ({ name: tool.name, status: tool.status, ...(tool.name === "invoke_vscode_tool" ? { nativeTool: (() => { try { return String(JSON.parse(tool.arguments).name || ""); } catch { return ""; } })() } : {}) })) } : null };
   }
 
@@ -1214,10 +1243,11 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     this.store = store;
     {
       const libraryRoot = path.join(getStorePath(), ".pkm", "state", "api-chats");
-      this.libraryWatcher = createBoundedFileWatcher([libraryRoot], {
+      const deletionRoot = path.join(getStorePath(), ".pkm", "state", "api-chat-deletions");
+      this.libraryWatcher = createBoundedFileWatcher([libraryRoot, deletionRoot], {
         toEvent: filename => filename,
         accept: filename => filename === path.join(libraryRoot, "library.json") || /^[a-f0-9-]{36}\.json$/.test(path.basename(filename)),
-        descend: directory => directory === libraryRoot || /^[a-f0-9]{16}$/.test(path.relative(libraryRoot, directory)),
+        descend: directory => directory === libraryRoot || directory === deletionRoot || /^[a-f0-9]{16}$/.test(path.relative(libraryRoot, directory)),
         onError: error => this.notify(error),
       });
       const changed = () => {
@@ -1235,6 +1265,14 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
 
   private settings(chat = this.chat) {
     const cfg = vscode.workspace.getConfiguration("personalKnowledge");
+    const activityCreditLimit = cfg.get<number>("apiChatActivityCreditLimit", 200);
+    if (!Number.isSafeInteger(activityCreditLimit) || activityCreditLimit < -1 || activityCreditLimit > 1_000_000_000) {
+      throw new Error("Choose an activity credit limit from -1 to 1,000,000,000.");
+    }
+    const activityReviewMinutes = cfg.get<number>("apiChatActivityReviewMinutes", 20);
+    if (!Number.isSafeInteger(activityReviewMinutes) || activityReviewMinutes < 1 || activityReviewMinutes > 1440) {
+      throw new Error("Choose an activity review interval of 1-1440 minutes.");
+    }
     const provider = chat?.modelProvider || cfg.get<"vscode" | "openai-compatible" | "azure-openai">("apiChatProvider", "openai-compatible");
     const defaultModel = cfg.get<string>("aiModel", "gpt-4o-mini");
     const available = provider === "vscode" ? this.vscodeModels.map(vscodeModelProfile) : [];
@@ -1255,6 +1293,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
       models: cfg.get<string[]>("apiChatModels", []), apiVersion: cfg.get<string>("aiAzureApiVersion", "2024-06-01"),
       timeoutMs: Math.min(86400, Math.max(10, cfg.get<number>("apiChatTimeoutSeconds", 1800))) * 1000,
       loopReviewAfterMs: Math.min(1440, Math.max(1, cfg.get<number>("apiChatLoopReviewMinutes", 30))) * 60_000,
+      activityCreditLimit, activityReviewMs: activityReviewMinutes * 60_000,
       maxToolRounds: chatToolRoundLimit(cfg.get<number>("apiChatMaxToolRounds", 30)),
       loopExemptTools: cfg.get<string[]>("apiChatLoopExemptTools", defaultLoopExemptTools),
     };
@@ -1298,25 +1337,36 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
 
   private discoverPkmMcp(): Promise<void> {
     if (this.pkmMcpDiscovery) return this.pkmMcpDiscovery;
-    const generation = readManagedMcpManifest(managedMcpServerDirectory())?.generation;
-    if (generation && this.managedMcp?.root === getStorePath()
-      && this.managedMcp.connection.generation === generation && !this.managedMcp.controller.signal.aborted) return Promise.resolve();
     this.pkmMcpDiscovery = (async () => {
       if (vscode.workspace.isTrusted === false) throw new Error("PKM tools require a trusted workspace.");
       const root = getStorePath();
       if (!root) throw new Error("Configure the Knowledge Root before using PKM tools.");
-      if (this.managedMcp) {
-        const old = this.managedMcp;
-        await old.connection.close();
-        old.controller.abort();
-        this.managedMcp = undefined;
-      }
       const controller = new AbortController();
       this.discoveries.add(controller);
       try {
+        const preparationStarted = Date.now();
+        await this.prepareMcp?.();
+        chatStartupTrace?.(`PKM MCP preparation: elapsedMs=${Date.now() - preparationStarted}`);
+        const assertContext = () => {
+          if (this.disposed || controller.signal.aborted || getStorePath() !== root || !this.trustedWorkspace()) {
+            throw new Error("PKM context changed during tool discovery.");
+          }
+        };
+        assertContext();
+        const generation = readManagedMcpManifest(managedMcpServerDirectory())?.generation;
+        if (generation && this.managedMcp?.root === root
+          && this.managedMcp.connection.generation === generation && !this.managedMcp.controller.signal.aborted) return;
+        if (this.managedMcp) {
+          const old = this.managedMcp;
+          await old.connection.close();
+          old.controller.abort();
+          this.managedMcp = undefined;
+        }
+        assertContext();
+        const discoveryStarted = Date.now();
         const launch = mcpServerDefinitionData();
         const connection = await connectManagedChatMcp(launch, controller.signal, managedMcpServerDirectory());
-        if (this.disposed || getStorePath() !== root || !this.trustedWorkspace()) {
+        if (this.disposed || controller.signal.aborted || getStorePath() !== root || !this.trustedWorkspace()) {
           await connection.close();
           controller.abort();
           throw new Error("PKM context changed during tool discovery.");
@@ -1327,6 +1377,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
           return invoke(name, input, signal);
         };
         this.managedMcp = { root, connection, controller };
+        chatStartupTrace?.(`PKM MCP discovery: elapsedMs=${Date.now() - discoveryStarted} tools=${connection.catalog.length}`);
         this.publish();
       } finally { this.discoveries.delete(controller); }
     })().finally(() => { this.pkmMcpDiscovery = undefined; });
@@ -1374,7 +1425,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
       const live = this.chats.get(item.id);
       const portal = portalState(item.id);
       return { ...(live && this.running.has(item.id) ? { ...item, title: live.title, status: apiChatStatus(live, true, this.awaitingInput.has(item.id)),
-        workerManager: live.messages.some(message => message.delegations?.length) } : item), portal: portal && { connected: portal.connected, binding: portal.binding, resumable: portal.resumable } };
+        workerManager: live.messages.some(message => message.delegations?.length) } : item), portal: portal && { connected: portal.connected, binding: portal.binding, execution: portal.execution, resumable: portal.resumable } };
     });
     const available = all.filter(item => !item.trashedAt);
     const listedAt = Date.now();
@@ -1401,7 +1452,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     if (this.view?.visible === false) { tracePublish(); return; }
     if (!this.chat) {
       void this.view?.webview.postMessage({ type: "state", localization, chat: null, chats: [],
-        library: { groups: this.store.library.read().groups, chats: all }, busy: false, remoteBusy: false });
+        library: { groups: this.store.library.read().groups, chats: all, deletionCleanups: this.store.pendingDeletionCleanups() }, busy: false, remoteBusy: false });
       tracePublish();
       return;
     }
@@ -1409,7 +1460,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     const toolGroups = this.toolGroups(this.chat);
     const builtinNames = toolGroups[0].tools.filter(tool => tool.enabled).map(tool => tool.name);
     const history = chatHistoryPage(this.chat);
-    void this.view?.webview.postMessage({ type: "state", portal: portalState(this.chat.id), localization, toolGroups, taskPlan: this.store.taskPlan(this.chat), history: { start: history.start, total: history.total }, workerOverview: this.workerOverview(this.chat, all), memoryTree: chatMemoryTree(this.chat),
+    void this.view?.webview.postMessage({ type: "state", portal: portalState(this.chat.id), localization, toolGroups, taskPlan: this.store.taskPlan(this.chat), planExecutionReady: this.planExecutionReady(this.chat), processControlSupported:process.platform !== "win32", history: { start: history.start, total: history.total }, workerOverview: this.workerOverview(this.chat, all), memoryTree: chatMemoryTree(this.chat),
       decisions: [
         ...[...this.decisions.entries()].filter(([, item]) => item.chat.id === this.chat!.id).map(([id, item]) => ({ id, title: item.title, detail: item.detail, choices: item.choices, form: item.form })),
         ...[...this.portalDecisions.entries()].filter(([, item]) => item.chatId === this.chat!.id).map(([id, { interaction }]) => ({
@@ -1422,7 +1473,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
       projection: apiChatProjection(this.chat, [...this.approvals.values()].some(item => item.chat.id === this.chat!.id)),
       agentContext: Object.fromEntries(Object.entries(this.chat.agentContext || {}).map(([kind, entries]) => [kind, entries.map(({ id, label, content }) => ({ id, label, characters: content.length }))])),
     }, settings: { ...settings, inputBaseTokens: estimateInputTokens([...this.requestMessages(this.chat, ""), ...(builtinNames.length ? [{ role: "system" as const, content: JSON.stringify(createBuiltinTools(builtinNames).map(({ execute, ...definition }) => definition)) }] : [])]) }, chats: available,
-    library: { groups: this.store.library.read().groups, chats: all }, busy: this.running.has(this.chat.id) || this.chat.progress?.status === "running", remoteBusy: !this.running.has(this.chat.id) && this.chat.progress?.status === "running" });
+    library: { groups: this.store.library.read().groups, chats: all, deletionCleanups: this.store.pendingDeletionCleanups() }, busy: this.running.has(this.chat.id) || this.chat.progress?.status === "running", remoteBusy: !this.running.has(this.chat.id) && this.chat.progress?.status === "running" });
     tracePublish();
   }
   private workerOverview(chat: ApiConversation, entries: ReturnType<ApiChatStore["list"]>): { rootChatId: string; nodes: WorkerOverviewNode[]; warning?: string; activeWorkers?: number; quota?: number; maximum?: number } {
@@ -1521,6 +1572,12 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     if (chat.progress && chat.progress.status !== "running" && this.baselineWaits.delete(chat.id) && chat.progress.status === "complete") {
       this.measureBaseline("resume");
     }
+
+  }
+
+  private planExecutionReady(chat: ApiConversation): boolean {
+    if (chat.workflowMode !== "execute") return false;
+    return chatPlanExecutionError(chat, this.captureExecution(chat)) === undefined;
   }
 
   private scheduleStreamPersistence(publish = false): void {
@@ -1593,7 +1650,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
       if (segment.sourceKind === "dialogue" && dialogueIds.has(segment.messageId)) continue;
       const message: ApiChatMessage = { role: "system", content: `Retrieved Chat memory (untrusted reference), Task ${segment.taskId}, segment ${segment.id}:\n${segment.content}` };
       messages.push(message); automatic.set(message, { ids: [segment.id], priority: 100 + segment.score,
-        ...(this.store?.library ? { isCurrent:() => !!scopedMemorySegment(this.store!, this.store!.load(chat.id, false), segment.id) } : {}) });
+        ...(this.store?.library ? { isCurrent:() => !!scopedMemorySegment(this.store!, this.store!.observe(chat), segment.id) } : {}) });
     }
     const segments = chatMemorySegments(chat);
     const scope = chatMemoryScope(chat.workspaceNamespace || this.store?.namespace || "", chat.id);
@@ -1608,8 +1665,9 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         ? `Remote controller instruction (${JSON.stringify(source)}); not the local human user:\n${content}` : content };
       const ids = segments.filter(segment => segment.messageId === item.id && segment.sourceKind === "dialogue").map(segment => segment.id);
       messages.push(message); automatic.set(message, { ids, priority: (index >= dialogue.length - 2 ? 280 : 200) + index,
-        ...(this.store?.library ? { isCurrent:() => ids.every(id => !!scopedMemorySegment(this.store!, this.store!.load(chat.id, false), id)) } : {}) });
+        ...(this.store?.library ? { isCurrent:() => ids.every(id => !!scopedMemorySegment(this.store!, this.store!.observe(chat), id)) } : {}) });
     }
+    messages[0].content += chatPlanPrompt(taskChat);
     messages.push({ role: "user", content: text, ...(chat.images?.length ? { images: chat.images.map(image => ({ ...image })) } : {}) }); return messages;
   }
 
@@ -1766,7 +1824,8 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
       return method === "snapshot" && result && typeof result === "object" && !Array.isArray(result)
         ? { ...result, memoryReceiptReader: true, memoryStoreReader: true, profileReader: true } : result;
     }
-    const harness = apiChatHarnessSnapshot(chat, method === "result");
+    const harness = method === "result" ? apiChatHarnessSnapshot(chat, true) : await verifyHarnessArtifacts(apiChatHarnessSnapshot(chat),
+      (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.fsPath), undefined, path.join(getStorePath(), ".pkm", "state"));
     if (method === "result") {
       const call = harness.attempts.find(attempt => attempt.messageId === params.messageId)?.toolCalls.find(item => item.id === params.callId);
       if (!call) throw new Error("The recorded tool result is unavailable.");
@@ -1782,7 +1841,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     };
   }
 
-  private async handle(message: { type?: string; text?: string; id?: string; chatId?: string; editToken?: string; requestId?: string; method?: string; params?: Record<string, unknown>; submissionId?: string; mode?: "steer" | "task"; value?: string | boolean; answer?: unknown; only?: boolean; images?: import("./api-chat-client").ChatImage[]; contextWindow?: number; maxOutputTokens?: number; maxToolRounds?: number }): Promise<void> {
+  private async handle(message: { type?: string; text?: string; id?: string; handle?: string; operation?: string; contentHash?: string; chatId?: string; editToken?: string; requestId?: string; method?: string; params?: Record<string, unknown>; submissionId?: string; mode?: "steer" | "task"; value?: string | boolean; answer?: unknown; only?: boolean; images?: import("./api-chat-client").ChatImage[]; contextWindow?: number; maxOutputTokens?: number; maxToolRounds?: number }): Promise<void> {
     if (this.disposed || !message || typeof message !== "object") return;
     if (message.type === "chatVisibility") {
       this.viewingChatId = message.value === true && typeof message.chatId === "string" ? message.chatId : undefined;
@@ -1798,6 +1857,42 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
       throw new Error("Create or select a Chat first.");
     }
     switch (message.type) {
+      case "workflowMode": {
+        if (message.chatId !== chat.id || message.value !== "chat" && message.value !== "plan") throw new Error("Choose Chat or Plan in the intended Chat.");
+        if ([...this.decisions.values()].some(decision => decision.chat.id === chat.id)) throw new Error("Finish or cancel the pending local decision before changing workflow mode.");
+        if (this.running.has(chat.id) || chat.progress?.status === "running" || chat.queuedInputs?.length || chat.workerState
+          || this.agentControlledRequests.has(chat.id) || this.remoteControlledRequests.has(chat.id)
+          || portalState(chat.id)?.execution) throw new Error("Stop active work and drain queued inputs before changing workflow mode. Worker workflows cannot be changed here.");
+        if (chat.workflowMode === "execute" && message.value === "chat") throw new Error("Return to Plan and review the execution scope before leaving a reviewed workflow.");
+        chat.workflowMode = message.value;
+        const plan = currentChatPlan(chat);
+        if (plan) delete plan.approval;
+        this.persist(chat); this.publish(); break;
+      }
+      case "approvePlan":
+      case "executePlan": {
+        if (message.chatId !== chat.id || this.running.has(chat.id) || chat.progress?.status === "running" || chat.queuedInputs?.length
+          || chat.workerState || this.remoteControlledRequests.has(chat.id) || this.agentControlledRequests.has(chat.id)) throw new Error("Plan approval and handoff require the idle local owning Chat.");
+        const plan = currentChatPlan(chat);
+        if (!plan || plan.id !== message.id || plan.contentHash !== message.contentHash) throw new Error("The plan changed. Review its current version.");
+        if (message.type === "approvePlan") {
+          const context = this.captureExecution(chat);
+          const answer = await this.requestDecision(chat, "Approve and implement",
+            `${JSON.stringify(plan, null, 2)}\n\nExecution environment: ${context.cwd || context.knowledgeRoot}; permissions: ${context.permissionMode}.\nApprove this exact version. Existing tool permissions and budgets remain in force; approval is not proof of task completion.`,
+            [{ value: "approve", label: "Approve and implement" }, { value: "cancel", label: "Cancel" }]);
+          if (answer !== "approve") break;
+          this.assertRunnable(chat, undefined, context);
+          if (chat.queuedInputs?.length) throw new Error("The Chat queued work during plan review.");
+          this.assertExecution(chat, context);
+          approveChatPlan(chat, plan.id, plan.contentHash, context);
+          try { this.persist(chat); }
+          catch (error) { delete plan.approval; chat.workflowMode = "plan"; throw error; }
+          this.publish();
+        } else assertChatPlanExecution(chat, this.captureExecution(chat));
+        await this.send(`Implement approved plan ${plan.id}, revision ${plan.revision}. Follow its scope, dependencies and verification. Reconcile completed effects before continuing; do not replay operations merely because this is a new response.`, chat,
+          undefined, undefined, undefined, undefined, undefined, undefined, plan.id);
+        break;
+      }
       case "portalDecision": {
         const pending = this.portalDecisions.get(message.id || "");
         if (!pending || pending.chatId !== chat.id) throw new Error("This Portal decision is not pending in the selected Chat.");
@@ -2025,10 +2120,45 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         const slot = treeId ? this.store!.workerTrees.members(treeId).find(slot => slot.receiptId === message.id) : undefined;
         if (!record?.archived && !slot?.released || slot && !this.store!.workerTrees.contains(treeId!, chat.id)) throw new Error("This archived receipt is not available to this Chat.");
         const archive = this.store!.workerResult(message.id);
-        const reply = [...archive.chat.messages].reverse().find(item => item.role === "assistant");
+        if (archive.chat.workerActivity?.managerChatId !== (slot?.parentChatId || chat.id)) throw new Error("Archived worker belongs to a different manager.");
+        const reply = this.delegationReply(record || { id:slot!.receiptId, chatId:slot!.chatId, chatUrl:"", status:"complete" }, archive.chat, true);
         void this.view?.webview.postMessage({ type: "workerArchive", chatId: chat.id, receiptId: message.id, title: archive.chat.title,
           answer: reply?.content.slice(0, 12000) || "", error: reply?.error, truncated: (reply?.content.length || 0) > 12000,
           tools: archive.chat.messages.flatMap(item => item.toolCalls || []).map(tool => ({ name: tool.name, status: tool.status })) });
+        break;
+      }
+      case "processControl": {
+        if (message.chatId !== chat.id || typeof message.handle !== "string" || !/^process_[a-f0-9]{64}$/.test(message.handle)
+          || !["status", "pause", "resume", "stop"].includes(String(message.operation))) {
+          throw new Error("Choose a valid process belonging to the selected Chat.");
+        }
+        if (this.remoteControlledRequests.has(chat.id) || this.agentControlledRequests.has(chat.id)) {
+          throw new Error("Background process controls are available only in the owning local Chat.");
+        }
+        this.store!.assertAvailable(chat);
+        const directory = path.join(getStorePath(), ".pkm", "state", "api-chat-tool-results", chat.id);
+        const operation = message.operation as "status" | "pause" | "resume" | "stop";
+        let record = getChatProcess(directory, message.handle);
+        if (operation === "pause") {
+          record = pauseChatProcess(directory, record.handle);
+          if (record.state === "running") await new Promise(resolve => setTimeout(resolve, 250));
+          record = getChatProcess(directory, record.handle);
+        } else if (operation === "resume") {
+          record = resumeChatProcess(directory, record.handle);
+          if (record.state === "paused") await new Promise(resolve => setTimeout(resolve, 250));
+          record = getChatProcess(directory, record.handle);
+        } else if (operation === "stop") {
+          if (!["launching", "running", "paused"].includes(record.state)) throw new Error(`This process is not running (current state: ${record.state}).`);
+          const choice = await vscode.window.showWarningMessage("Stop this background process and its descendants?",
+            { modal:true, detail:`Process handle: ${record.handle}\nProgram: ${record.spec.program}\nThis cannot undo effects already produced.` }, "Stop process");
+          if (choice !== "Stop process") {
+            void this.view?.webview.postMessage({ type:"processControlResult", chatId:chat.id, operation:"status", record });
+            break;
+          }
+          this.store!.assertAvailable(chat);
+          record = cancelChatProcess(directory, record.handle);
+        }
+        void this.view?.webview.postMessage({ type:"processControlResult", chatId:chat.id, operation, record });
         break;
       }
       case "workerResume":
@@ -2046,6 +2176,11 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         break;
       case "resetPermissions":
         this.store!.assertAvailable(chat); chat.permissionGrants = []; this.persist(chat); this.publish(); break;
+      case "resetActivityBudget":
+        if (message.chatId !== chat.id) throw new Error("Select the intended Chat before resetting its activity limits.");
+        this.store!.assertAvailable(chat);
+        delete chat.activityBudgetBypass;
+        this.persist(chat); this.publish(); break;
       case "libraryRefresh": this.publish(); break;
       case "groupCreate": case "groupRename": case "groupDelete": case "moveChat":
       case "trashChat": case "restoreChat": case "deleteChat": case "emptyTrash": {
@@ -2053,10 +2188,9 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         let cleanupMs = 0;
         try {
           await handleChatLibraryAction(message, this.store!, vscode, id => this.running.has(id), id => { this.chats.delete(id); },
-            // Complete Memory cleanup before removing the recoverable Chat.
-            async id => {
+            async (id, namespace) => {
               const cleanupStarted = Date.now();
-              try { await this.chatMemory().forget(chatMemoryScope(await this.store!.memoryNamespace(id), id)); }
+              try { await this.chatMemory().forget(chatMemoryScope(namespace, id)); }
               finally { cleanupMs += Date.now() - cleanupStarted; }
             }, portalChatRemoved);
         } finally {
@@ -2229,6 +2363,14 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         if (message.chatId !== undefined && message.chatId !== chat.id) throw new Error("The selected Chat changed; your draft was not sent.");
         if (message.submissionId !== undefined && (typeof message.submissionId !== "string" || !/^[a-f0-9-]{36}$/.test(message.submissionId))) throw new Error("Invalid message submission identity.");
         if (message.mode !== undefined && !["steer", "task"].includes(message.mode)) throw new Error("Choose steer or a new task.");
+        if (chat.workflowMode && chat.workflowMode !== "chat") {
+          if (this.running.has(chat.id) || chat.progress?.status === "running" || chat.queuedInputs?.length) throw new Error("Wait for this Plan response or stop it before adding requirements. Plan inputs are not queued.");
+          if (chat.workflowMode === "execute") {
+            chat.workflowMode = "plan";
+            const plan = currentChatPlan(chat); if (plan) delete plan.approval;
+            this.persist(chat);
+          }
+        }
         if (message.submissionId && chat.messages.some(item => item.submissionId === message.submissionId)) {
           if (!chat.messages.some(item => item.submissionId === message.submissionId && item.content === String(message.text || ""))) throw new Error("Submission identity was already used with different text.");
           void this.view?.webview.postMessage({ type: "sendAccepted", chatId: chat.id, submissionId: message.submissionId }); break;
@@ -2473,28 +2615,35 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     chat.context = next; this.persist(chat); this.publish();
   }
 
+  private delegationReply(record: ChatDelegation, target: ApiConversation, archived = false): ChatMessage | undefined {
+    return delegationReply(record, target, archived);
+  }
+
   private refreshDelegation(record: ChatDelegation): void {
-    if (record.archived) return;
     if (record.temporary !== false && this.store!.hasWorkerResult(record.id)) {
       const archived = this.store!.workerResult(record.id).chat;
-      if (archived.id !== record.chatId || archived.workerActivity?.receiptId !== record.id) throw new Error("Archived worker identity conflicts with its receipt.");
-      const reply = [...archived.messages].reverse().find(message => message.role === "assistant");
+      const reply = this.delegationReply(record, archived, true);
       record.status = reply?.status === "complete" ? "complete" : reply?.status === "cancelled" ? "cancelled" : "failed";
       record.phase = record.status;
       record.answer = reply?.content.slice(0, 12000) || "";
       record.error = reply?.error;
+      record.truncated = (reply?.content.length || 0) > 12000;
       return;
     }
+    if (record.archived) throw new Error("Archived worker result is unavailable.");
     if (record.status !== "running" && !record.treeId) return;
     const target = this.running.has(record.chatId) ? this.chats.get(record.chatId)! : this.store!.load(record.chatId, false);
     if (!this.running.has(record.chatId)) this.store!.recoverAbandoned(target);
-    let index = target.messages.length - 1;
-    while (index >= 0 && target.messages[index].delegationId !== record.id) index--;
-    const answer = index < 0 ? undefined : target.messages[index + 1];
-    if (record.treeId && (target.workerState?.sleeping || target.progress?.status === "running")) {
-      record.status = "running"; return;
+    const answer = this.delegationReply(record, target);
+    const current = target.workerActivity?.receiptId === record.id
+      || !target.workerActivity && (!record.attemptId || target.progress?.attemptId === record.attemptId);
+    if ((current && record.treeId && (target.workerState?.sleeping || target.progress?.status === "running"))
+      || answer?.status === "streaming") {
+      record.status = "running";
+      delete record.answer; delete record.error; delete record.truncated;
+      return;
     }
-    if (!answer || answer.role !== "assistant" || answer.status === "streaming") return;
+    if (!answer) return;
     record.status = answer.status === "complete" ? "complete" : answer.status === "cancelled" ? "cancelled" : "failed";
     record.answer = answer.content.slice(0, 12_000);
     record.truncated = answer.content.length > 12_000;
@@ -2758,6 +2907,8 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
   }
 
   private queueInput(chat: ApiConversation, text: string, mode: "steer" | "task", submissionId: string = randomUUID()): void {
+    if (chat.workflowMode && chat.workflowMode !== "chat") throw new Error("Plan workflow inputs require an idle Chat and cannot be queued by another controller.");
+    if (mode === "steer" && newWorkGoal.test(text)) throw new Error("A new task must be submitted as a separate task, not as steering.");
     if (!this.running.has(chat.id) && chat.progress?.status === "running") {
       Object.assign(chat, this.store!.enqueueInput(chat, { id: submissionId, text, mode, executionContext: this.captureExecution(chat) }));
       this.pendingForeignInputs.set(submissionId, { chatId: chat.id, predecessorAttemptId: chat.progress?.attemptId });
@@ -2794,14 +2945,15 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
       }
       if (!input.executionContext) throw new Error("This legacy queued input has no sending-window context. Remove it and submit it again explicitly.");
       this.assertExecution(chat, input.executionContext);
-      const batch = chat.queuedInputs.map(item => ({ ...item }));
+      const nextGoal = chat.queuedInputs.findIndex((item, index) => index > 0 && newWorkGoal.test(item.text));
+      const batch = chat.queuedInputs.slice(0, nextGoal < 0 ? undefined : nextGoal).map(item => ({ ...item }));
       if (batch.some(item => item.executionContext?.digest !== input.executionContext!.digest || !!item.portalReview !== !!input.portalReview)
         || input.portalReview && batch.length > 1) throw new Error("Queued messages have different execution/Portal contexts. Review the queue before combining them; nothing was consumed.");
       await this.send(input.text, chat, undefined, undefined, input.id, undefined, undefined, batch);
     } finally { this.queueDrains.delete(chat.id); this.queueCancelled.delete(chat.id); }
   }
 
-  private async send(text: string, chat = this.chat!, parent?: { signal: AbortSignal; sessionId?: string; chatId?: string; delegationId?: string; portalTask?: { requestId: string; replyId: string } }, retry?: { replyId: string; inputId: string; images?: import("./api-chat-client").ChatImage[] }, submissionId?: string, workerEvents?: string[], continuationContext?: string, queuedBatch?: import("./api-chat-store").QueuedChatInput[]): Promise<void> {
+  private async send(text: string, chat = this.chat!, parent?: { signal: AbortSignal; sessionId?: string; chatId?: string; delegationId?: string; portalTask?: { requestId: string; replyId: string } }, retry?: { replyId: string; inputId: string; images?: import("./api-chat-client").ChatImage[] }, submissionId?: string, workerEvents?: string[], continuationContext?: string, queuedBatch?: import("./api-chat-store").QueuedChatInput[], approvedPlanId?: string, hardToolRoundLimit?: number): Promise<void> {
     if (parent?.signal.aborted) throw new Error("Request cancelled before dispatch.");
     const fixtureRetrieval = this.acceptanceRetrieval?.get(chat.id);
     const retrieval = fixtureRetrieval || this.retrieval;
@@ -2811,6 +2963,14 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     const queuedInput = chat.queuedInputs?.find(input => input.id === submissionId);
     if (queuedInput && (!queuedInput.executionContext || queuedInput.text !== text)) throw new Error("Queued input requires its original sending-window context and text. Submit it again explicitly.");
     const executionContext = queuedInput?.executionContext || this.captureExecution(chat);
+    const workflowMode = chat.workflowMode || "chat";
+    if (workflowMode !== "chat" && (parent || workerEvents || queuedInput || this.agentControlledRequests.has(chat.id) || this.remoteControlledRequests.has(chat.id))) throw new Error("Reviewed Plan workflows accept local user requests only; remote and worker requests cannot change or approve them.");
+    if (workflowMode === "execute") {
+      assertChatPlanExecution(chat, executionContext);
+      const retryPlanId = retry && chat.messages.find(message => message.id === retry.inputId)?.planExecution;
+      if ((approvedPlanId || retryPlanId) !== currentChatPlan(chat)?.id) throw new Error("Use the approved plan handoff, or return to Plan to revise requirements.");
+      approvedPlanId ||= retryPlanId;
+    }
     if (chat.workerState) {
       chat.workerState.executionContext = executionContext;
       chat.workerState.sleeping = false;
@@ -2859,7 +3019,8 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     if (settings.provider !== "vscode" && !settings.endpoint) throw new Error("Configure an API endpoint using the settings button.");
     const draftImages = chat.images;
     const retryInputIndex = retry ? chat.messages.findIndex(message => message.id === retry.inputId) : -1;
-    const sourceChat = { ...chat, messages: retry ? chat.messages.slice(0, retryInputIndex) : [...chat.messages] };
+    const sourceChat = { ...chat, ...(workflowMode === "plan" ? { context:structuredClone(chat.context), agentContext:structuredClone(chat.agentContext) } : {}),
+      messages: retry ? chat.messages.slice(0, retryInputIndex) : [...chat.messages] };
     const automatic = new Map<ApiChatMessage, AutomaticChatContext>();
     let knowledge: ChatRetrievalCandidate[] = [];
     const requirementCandidates: ChatRetrievalCandidate[] = [];
@@ -2892,7 +3053,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     const memoryDuration = Date.now() - memoryStarted;
     const inputImages = messages[messages.length - 1].images;
     const contextLabels = chat.context.map(item => item.label);
-    const readOnly = chat.permissionMode === "read-only";
+    const readOnly = chat.permissionMode === "read-only" || workflowMode === "plan";
     const agentControlled = this.agentControlledRequests.has(chat.id);
     const needsManagedTools = !readOnly && this.managedMcp?.root !== getStorePath()
       && this.toolGroups(chat).some(group => group.id.startsWith("vscode:") && group.tools.some(tool => tool.enabled && /^mcp_pkm_/.test(tool.name)));
@@ -2917,11 +3078,13 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     }
     const cooperationTool = (name: string) => /(?:api_chat_(?:capabilities|models|list|create|send|get|cancel|request_get)|portal_control)$/.test(name);
     const groups = this.toolGroups(chat);
-    const toolNames = groups[0].tools.filter(tool => tool.enabled).map(tool => tool.name).filter(name =>
+    const toolNames = [...new Set([...groups[0].tools.filter(tool => tool.enabled).map(tool => tool.name),
+      ...(workflowMode !== "chat" ? ["ask_user", "session_info"] : [])])].filter(name =>
+      (workflowMode !== "plan" || planReadTools.has(name)) &&
       (name !== "record_harness" || !!chat.sessionId)
       && (!this.remoteControlledRequests.has(chat.id) || !["spawn_workers", "ask_chat", "ask_session", "list_chats", "cross_machine_collaboration"].includes(name))
       && (!(parent || agentControlled) || !["ask_session", "ask_chat"].includes(name))
-      && (!readOnly || ["read_file", "find_files", "search_text", "list_directory", "diagnostic_logs", "ask_user", "session_info", "record_harness", "list_chats", "pkm_search", "pkm_read", "memory_read", "process_get", "process_output"].includes(name)));
+      && (!readOnly || [...memoryCapabilities.filter(operation => operation.readOnly).map(operation => operation.transportName), ...todoReadApiNames, "read_file", "find_files", "search_text", "list_directory", "diagnostic_logs", "ask_user", "session_info", "record_harness", "list_chats", "pkm_search", "pkm_read", "note_todo_read", "memory_read", "process_get", "process_output"].includes(name)));
     const mcpServers = readOnly ? [] : (chat.mcpServers || []).map(server => ({ ...server, tools: groups.find(group => group.id === `mcp:${server.id}`)!.tools.filter(tool => tool.enabled).map(tool => tool.name).filter(name => !(parent || agentControlled) || !cooperationTool(name)) })).filter(server => server.enabled && server.tools.length);
     const registeredTools = readOnly ? [] : groups.filter(group => group.id.startsWith("vscode:")).flatMap(group => group.tools.filter(tool => tool.enabled).map(tool => tool.name)).filter(name => !(parent || agentControlled) || !cooperationTool(name));
     if (registeredTools.some(name => /^mcp_pkm_/.test(name)) && this.managedMcp?.root !== getStorePath()) {
@@ -3028,6 +3191,146 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
       const last = chat.progress!.steps[chat.progress!.steps.length - 1];
       if (last?.status === "waiting") { last.status = "complete"; last.finishedAt = Date.now(); this.persist(chat); this.publish(); }
     };
+    let activityCreditLimit = settings.activityCreditLimit;
+    let nextActivityReviewAt = settings.activityReviewMs;
+    let responseBudgetBypass = false;
+    let pendingActivityBudgetReview: Promise<void> | undefined;
+    let creditAccountingWarningShown = false;
+    const activityBudgetBypassed = () => responseBudgetBypass || chat.activityBudgetBypass === "session";
+    const showActivityPrompt = async (title: string, detail: string, choices: string[]) => {
+      stage(title, true);
+      try {
+        return await abortable(Promise.resolve(vscode.window.showWarningMessage(title,
+          { modal: true, detail }, ...choices)), controller.signal);
+      } finally { settleWaiting(); }
+    };
+    const pauseAtBoundary = async (detail: string) => {
+      const choice = await this.requestDecision(chat, "Activity paused",
+        `${detail}\nThe same activity is being held before another inference. Resume it here or cancel the activity.`,
+        [{ value: "resume", label: "Resume activity" }, { value: "cancel", label: "Cancel activity" }],
+        controller.signal, controller.signal);
+      if (choice !== "resume") {
+        controller.abort();
+        throw new Error("Activity cancelled while paused; completed tool effects were preserved.");
+      }
+    };
+    const enforceActivityCreditLimit = (): Promise<void> | undefined => {
+      if (activityBudgetBypassed() || activityCreditLimit === -1 || !reply) return;
+      const usage = apiChatCreditUsage(reply);
+      if (!usage.totalNanoAiu) {
+        if (settings.provider === "vscode" && usage.totalCalls && !creditAccountingWarningShown) {
+          creditAccountingWarningShown = true;
+          void Promise.resolve(vscode.window.showWarningMessage("The activity credit limit cannot be enforced exactly because this provider did not report Copilot credit usage. The receipt remains not-reported; unknown usage is not treated as zero."))
+            .then(undefined, error => this.notify(error, { chatId: chat.id }));
+        }
+        return;
+      }
+      const usedNanoAiu = BigInt(usage.totalNanoAiu);
+      if (usage.status !== "reported" && usage.totalCalls && !creditAccountingWarningShown) {
+        creditAccountingWarningShown = true;
+        void Promise.resolve(vscode.window.showWarningMessage("The activity has partial Copilot credit reports. Its configured credit limit applies only to reported usage; unknown usage is not treated as zero."))
+          .then(undefined, error => this.notify(error, { chatId: chat.id }));
+      }
+      if (usedNanoAiu < BigInt(activityCreditLimit) * 1_000_000_000n) return;
+      return (async () => {
+        while (usedNanoAiu >= BigInt(activityCreditLimit) * 1_000_000_000n) {
+          const usedCredits = usage.credits || "unknown";
+          const qualifier = usage.status === "reported" ? "" : "At least ";
+          const choice = await showActivityPrompt("Activity credit limit reached",
+            `${qualifier}${usedCredits} Copilot credits have been reported for this activity; the current total limit is ${activityCreditLimit}. No further inference or pending tool will start until you choose an action.`,
+            ["Continue (+50 credits)", "Set new total limit", "Unlimited for this response", "Unlimited for this Chat session", "Pause", "Cancel activity"]);
+          if (choice === "Unlimited for this response") {
+            responseBudgetBypass = true;
+            return;
+          }
+          if (choice === "Unlimited for this Chat session") {
+            chat.activityBudgetBypass = "session";
+            this.persist(chat); this.publish();
+            return;
+          }
+          if (choice === "Continue (+50 credits)") {
+            if (activityCreditLimit > Number.MAX_SAFE_INTEGER - 50) throw new Error("The activity credit limit cannot be increased safely.");
+            activityCreditLimit += 50;
+            continue;
+          }
+          if (choice === "Set new total limit") {
+            stage("Waiting for a new activity credit limit", true);
+            let value: string | undefined;
+            try {
+              value = await abortable(Promise.resolve(vscode.window.showInputBox({
+                title: "Set activity credit limit", prompt: `Enter the new total credit limit; -1 means unlimited. Current reported usage: ${usedCredits}.`,
+                value: String(activityCreditLimit), ignoreFocusOut: false,
+                validateInput: input => {
+                  if (!/^-?\d+$/.test(input)) return "Enter a whole number from -1 to 1,000,000,000.";
+                  const parsed = Number(input);
+                  if (!Number.isSafeInteger(parsed) || parsed < -1 || parsed > 1_000_000_000) return "Enter a whole number from -1 to 1,000,000,000.";
+                  if (parsed !== -1 && BigInt(parsed) * 1_000_000_000n <= usedNanoAiu) return "Choose a limit above the credits already reported.";
+                  return undefined;
+                },
+              })), controller.signal);
+            } finally { settleWaiting(); }
+            if (value !== undefined) {
+              const parsed = Number(value);
+              if (!Number.isSafeInteger(parsed) || parsed < -1 || parsed > 1_000_000_000
+                || parsed !== -1 && BigInt(parsed) * 1_000_000_000n <= usedNanoAiu) {
+                throw new Error("Choose a valid activity credit limit above the reported usage, or -1 for unlimited.");
+              }
+              activityCreditLimit = parsed;
+              continue;
+            }
+          }
+          if (choice === "Pause" || choice === undefined) {
+            await pauseAtBoundary(`Credit use is ${qualifier}${usedCredits} against a ${activityCreditLimit}-credit limit.`);
+            continue;
+          }
+          controller.abort();
+          throw new Error("Activity cancelled at the credit limit; completed tool effects were preserved.");
+        }
+      })();
+    };
+    const enforceActivityTimeReview = (): Promise<void> | undefined => {
+      if (activityBudgetBypassed()) return;
+      const activeMs = reviewClock.now() - startedAt;
+      if (activeMs < nextActivityReviewAt) return;
+      const interval = settings.activityReviewMs;
+      const minutes = Math.ceil(interval / 60_000);
+      return (async () => {
+        const choice = await showActivityPrompt("Activity review interval reached",
+          `This activity has used ${Math.floor(activeMs / 60_000)} active minutes. Tracked user waits and detached background-process lifetime are excluded.`,
+          [`Continue for ${minutes} more active minutes`, "Unlimited for this response", "Unlimited for this Chat session", "Pause", "Cancel activity"]);
+        if (choice === "Unlimited for this response") {
+          responseBudgetBypass = true;
+          return;
+        }
+        if (choice === "Unlimited for this Chat session") {
+          chat.activityBudgetBypass = "session";
+          this.persist(chat); this.publish();
+          return;
+        }
+        if (choice === `Continue for ${minutes} more active minutes`) {
+          nextActivityReviewAt = reviewClock.now() - startedAt + interval;
+          return;
+        }
+        if (choice === "Pause" || choice === undefined) {
+          await pauseAtBoundary(`Activity reached its ${minutes}-minute active-time review interval.`);
+          nextActivityReviewAt = reviewClock.now() - startedAt + interval;
+          return;
+        }
+        controller.abort();
+        throw new Error("Activity cancelled at the active-time review; completed tool effects were preserved.");
+      })();
+    };
+    const enforceActivityBudget = (): Promise<void> | undefined => {
+      if (pendingActivityBudgetReview) return pendingActivityBudgetReview;
+      const creditReview = enforceActivityCreditLimit();
+      const review = creditReview ? creditReview.then(() => enforceActivityTimeReview()) : enforceActivityTimeReview();
+      if (!review) return undefined;
+      const pending = review.finally(() => {
+        if (pendingActivityBudgetReview === pending) pendingActivityBudgetReview = undefined;
+      });
+      pendingActivityBudgetReview = pending;
+      return pending;
+    };
     const modelActivity = (event: ChatModelActivity): void => {
       if (controller.signal.aborted) return;
       if (event.status === "running") stage(event.label, false, { category:event.operation === "inference" ? "llm" : "info", operation:event.operation });
@@ -3041,7 +3344,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     };
     const lifecycleTimer = setInterval(() => {
       try {
-        const current = this.store!.load(chat.id, false);
+        const current = this.store!.observe(chat);
         const control = chat.workerActivity ? this.store!.workerControl(chat.workerActivity) : undefined;
         const stop = control?.stopRequested || current.workerActivity?.stopRequested;
         if (current.workerActivity?.id === chat.workerActivity?.id && stop) {
@@ -3071,6 +3374,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     }, 1000);
     const inputId = retry?.inputId || randomUUID();
     const initialWorkGoal = chat.workGoal && structuredClone(chat.workGoal);
+    const initialWorkGoalHistory = chat.workGoalHistory && structuredClone(chat.workGoalHistory);
     const memoryTurn = `${inputId}:${chat.progress.attemptId || randomUUID()}`;
     let queuedInputsCommitted = false, queuedTransportSent = false;
     try {
@@ -3083,7 +3387,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         }
       }
       if (!chat.messages.length && !chat.customTitle) chat.title = text.trim().slice(0, 65);
-      if (!retry) chat.messages.push({ id: inputId, recordedAt:new Date().toISOString(), executionContext, taskId: chat.sessionId, role: "user", content: text, status: "complete", inputOrigin:parent || workerEvents || this.agentControlledRequests.has(chat.id) || this.remoteControlledRequests.has(chat.id) || queuedInput?.portalReview ? "agent" : "local-user", contextLabels, ...(this.remoteSources.get(chat.id) ? { portalSource: { ...this.remoteSources.get(chat.id)! } } : {}), ...(queuedInput?.portalReview ? { portalReview: queuedInput.portalReview } : {}), ...(workerEvents ? { workerEventIds: workerEvents } : {}), ...(submissionId ? { submissionId } : {}), ...(queuedInput ? { inputKind: queuedInput.mode } : {}), ...(parent ? { fromSessionId: parent.sessionId, fromChatId: parent.chatId, delegationId: parent.delegationId } : workerEvents && chat.workerState?.receiptId ? { delegationId: chat.workerState.receiptId, fromChatId: chat.workerState.parentChatId } : {}), ...(inputImages?.length ? { images: inputImages } : {}) });
+      if (!retry) chat.messages.push({ id: inputId, recordedAt:new Date().toISOString(), executionContext, taskId: chat.sessionId, role: "user", content: text, status: "complete", ...(approvedPlanId ? { planExecution: approvedPlanId } : {}), inputOrigin:approvedPlanId || parent || workerEvents || this.agentControlledRequests.has(chat.id) || this.remoteControlledRequests.has(chat.id) || queuedInput?.portalReview ? "agent" : "local-user", contextLabels, ...(this.remoteSources.get(chat.id) ? { portalSource: { ...this.remoteSources.get(chat.id)! } } : {}), ...(queuedInput?.portalReview ? { portalReview: queuedInput.portalReview } : {}), ...(workerEvents ? { workerEventIds: workerEvents } : {}), ...(submissionId ? { submissionId } : {}), ...(queuedInput ? { inputKind: queuedInput.mode } : {}), ...(parent ? { fromSessionId: parent.sessionId, fromChatId: parent.chatId, delegationId: parent.delegationId } : workerEvents && chat.workerState?.receiptId ? { delegationId: chat.workerState.receiptId, fromChatId: chat.workerState.parentChatId } : {}), ...(inputImages?.length ? { images: inputImages } : {}) });
       if (queuedBatch && queuedBatch.length > 1) {
         const last = messages.pop();
         if (last?.role !== "user" || last.content !== text) throw new Error("Queued request context changed before dispatch.");
@@ -3097,9 +3401,11 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
       }
       const explicitDebug = /(?:\b(?:please\s+)?(?:debug|investigate|diagnose)\s+(?:this|the|my|our)\b|(?:帮|去|开始|继续).{0,24}(?:debug|调试|排查)|(?:debug|调试|排查).{0,16}(?:吧|一下))/i.test(text);
       const stopDebug = /^\s*(?:(?:please\s+)?(?:stop|pause)(?:\s+(?:(?:the|this|current)\s+)?(?:debugging|investigating|diagnosing|work|investigation))?(?:\s+(?:now|for now))?|(?:don't|do not)\s+(?:debug|investigate|diagnose)(?:\s+(?:this|it))?|(?:请|先)?(?:停止|暂停)(?:当前|这次|本次)?(?:调试|排查|调查|debug)?|(?:请)?(?:别查|不要(?:继续)?(?:排查|调试|调查|debug)))(?:[.!。！,，;；\n]|$)/i.test(text);
-      if (registeredTools.length || mcpServers.length
-        || toolNames.some(name => ["read_file", "find_files", "search_text", "diagnostic_logs", "run_process", "list_directory", "write_file", "apply_patch", "spawn_workers"].includes(name))) {
-        prepareWorkGoal(chat, inputId, text, executionContext.digest);
+      if (workflowMode !== "plan" && (registeredTools.length || mcpServers.length
+        || toolNames.some(name => ["read_file", "find_files", "search_text", "diagnostic_logs", "run_process", "list_directory", "write_file", "apply_patch", "spawn_workers"].includes(name)))) {
+        if (!retry && approvedPlanId && chat.messages.filter(message => message.planExecution === approvedPlanId).length === 1) delete chat.workGoal;
+        prepareWorkGoal(chat, inputId, approvedPlanId ? `Implement the approved plan: ${currentChatPlan(chat)!.objective}` : text, executionContext.digest);
+        if (newWorkGoal.test(text)) delete chat.debugRequest;
       }
       if (stopDebug && chat.workGoal && chat.workGoal.status !== "resolved" && chat.workGoal.status !== "paused") {
         chat.workGoal = recordWorkGoalTransition(chat.workGoal, "paused", "user_paused", inputId);
@@ -3116,9 +3422,11 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         queuedInputsCommitted = true;
       }
       if (!parent && !retry && !queuedInput) { const submitted = new Set(draftImages || []); chat.images = (chat.images || []).filter(image => !submitted.has(image)); }
+      const workflowSourceDigest = workflowMode === "plan" ? planSourceDigest({ ...chat, context:sourceChat.context, agentContext:sourceChat.agentContext, images:[] }) : undefined;
       const replyId = parent?.portalTask?.replyId || randomUUID();
       const portalTask = portalTaskReplyLink(replyId, parent?.portalTask?.requestId, retry ? predecessor : undefined);
       reply = { id: replyId, recordedAt:new Date().toISOString(), inputId:retry?.inputId || chat.messages[chat.messages.length - 1]?.id, taskId: chat.sessionId,
+        ...(hardToolRoundLimit !== undefined ? { toolRoundLimit: { limit: hardToolRoundLimit, reached: false } } : {}),
         ...(portalTask ? { portalTask } : {}),
         retrieval: retrievalReceipt, role: "assistant", content: "", status: "streaming", progress: chat.progress, model: settings.provider === "vscode" ? settings.selectedProfile.label : settings.model, contextWindow: settings.contextWindow, maxOutputTokens: settings.maxOutputTokens, currency: settings.selectedProfile.currency }; chat.messages.push(reply);
       if (chat.workGoal?.attemptInputId === inputId) chat.workGoal.attemptInputId = reply.inputId!;
@@ -3343,10 +3651,13 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         if (result.state !== "succeeded" || typeof result.output?.value?.alias !== "string") throw new Error("Joining cancelled: a user-confirmed Chatroom alias is required.");
         return { ...input, name: result.output.value.alias };
       };
-      const dispatchBatch = async (tasks: Array<{ title: string; question: string }>, signal: AbortSignal, targets?: ApiConversation[], rationale = "", permissionChecked = false) => {
+      const dispatchBatch = async (tasks: Array<{ title: string; question: string } & WorkerScope>, signal: AbortSignal, targets?: ApiConversation[], rationale = "", permissionChecked = false) => {
         if (signal.aborted) throw new Error("Request cancelled.");
         if (vscode.workspace.isTrusted === false || chat.permissionMode === "read-only") throw new Error("Delegation requires a trusted, tool-enabled Chat.");
         const config = vscode.workspace.getConfiguration("personalKnowledge");
+        const checkScopes = () => assertIndependentWorkerScopes(tasks,
+          chat.messages.flatMap(message => message.delegations || []).filter(record => record.status === "running"));
+        checkScopes();
         const limits = workerLimits(config.get<number>("apiChatAutomaticWorkers", 3), config.get<number>("apiChatMaximumWorkers", 10));
         const treeId = chat.workerActivity?.treeId || chat.workerState?.treeId || this.store!.workerTrees.create(chat.id);
         const pendingEvents = triggeringEvents;
@@ -3375,6 +3686,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
           + "\nExisting history, model and permission configuration are retained. New requests incur model costs; busy activities are never replaced.", signal)) throw new Error("Existing Chat delegation declined.");
         this.assertExecution(chat, executionContext);
         if (targets) for (const target of targets) this.assertRunnable(target);
+        checkScopes();
         const slots = this.store!.workerTrees.reserve(treeId, chat.id, tasks.map(task => task.title), limits, approvedTotal, targets?.map(target => target.id));
         chat.workerState ||= { treeId, executionContext, sleeping: false, stopped: false, events: [] };
         const batchId = randomUUID(); const dispatchedAt = Date.now();
@@ -3382,6 +3694,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
           id: slot.receiptId, chatId: slot.chatId, chatUrl: chatPkmUrl(targets?.[index].workspaceNamespace || this.store!.namespace, slot.chatId),
           treeId, phase: "running", status: "running", title: tasks[index].title, question: tasks[index].question,
           dispatchedAt, batchId, temporary: !targets, activityId: randomUUID(),
+          ...workerScope(tasks[index]),
         }));
         reply!.delegations = [...(reply!.delegations || []), ...records];
         spawnedWorkers = true; this.persist(chat);
@@ -3395,7 +3708,11 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
             target.workerActivity = { id: record.activityId!, managerChatId: chat.id, treeId, receiptId: record.id,
               temporary: !targets, state: "pending" };
             this.persist(target); this.chats.set(target.id, target);
-            void this.send(tasks[index].question, target, { signal: new AbortController().signal, sessionId: chat.sessionId, chatId: chat.id, delegationId: record.id })
+            const scope = workerScope(tasks[index]);
+            const question = scope.writeScope || scope.resources
+              ? `${tasks[index].question}\nDeclared ownership (not permission): ${JSON.stringify(scope)}. Do not write outside this scope or acquire shared build resources assigned elsewhere. Report a precise blocker if the task needs a changed assignment.`
+              : tasks[index].question;
+            void this.send(question, target, { signal: new AbortController().signal, sessionId: chat.sessionId, chatId: chat.id, delegationId: record.id })
               .catch(error => this.failWorker(chat.id, record.id, error))
               .catch(error => this.notify(error, { chatId: chat.id }));
           } catch (error) { this.failWorker(chat.id, record.id, error); }
@@ -3405,6 +3722,16 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
           workers: records.map(record => ({ receiptId: record.id, activityId: record.activityId, chatUrl: record.chatUrl, status: record.status, temporary: record.temporary })),
           manager: "sleep-after-dispatch", wakePolicy: "actionable-activity-events" });
       };
+      tools.push(...createNoteTodoTools({
+        actorId: `chat:${chat.id}`,
+        assertActive: () => this.assertExecution(chat, executionContext),
+        approve: async (write, detail, signal) => {
+          if (vscode.workspace.isTrusted === false) throw new Error("Work Items require a trusted workspace.");
+          if (write && this.remoteControlledRequests.has(chat.id)) throw new Error("Portal-controlled requests cannot modify Note Work Items. Use the local Note UI or a local Chat.");
+          if (!write && this.remoteControlledRequests.has(chat.id) && portalToolAllowed(chat.id, "note_todo_read")) return true;
+          return requestToolPermission(write ? "note-work-item-write" : "read-only", write ? "Update Note Work Items?" : "Read Note Work Items?", detail, signal);
+        },
+      }).filter(tool => toolNames.includes(tool.name)));
       for (const name of ["pkm_search", "pkm_read"].filter(name => toolNames.includes(name))) tools.push({
         name, description: name === "pkm_search" ? "Read-only keyword search of PKM note, skill, research, script, recipe and cached subscription titles/categories, not full text. Exact title mentions rank first even with extra query terms. Returns at most 12 identities. Subscription results come only from the current local retrieval snapshot; never fetch remote content." : "Read-only PKM knowledge by an exact identity returned by pkm_search OR a canonical sourceId already supplied in automatically retrieved references. Do not search again merely to translate a known sourceId. Default reads return sourceId, a body revision/contentHash handle and an explicit preview range. For evidence beyond the preview, supply both handle fields and a half-open start/end UTF-16 range, at most 4,000 characters. Research includes original body followed by conclusions, implementation and assumptions, matching retrieval source text. Cached subscriptions remain read-only and do not fetch remote content. Ranges are exact, never silently shortened. Scripts and Recipes are read, never executed. Small Recipes retain complete structured definitions; large Recipes return pinned JSON text previews and exact source ranges, not executable fragments.",
         parameters: { type: "object", properties: { kind: { type: "string", enum: [...CHAT_KNOWLEDGE_KINDS] }, [name === "pkm_search" ? "query" : "id"]: { type: "string", maxLength: name === "pkm_search" ? 512 : 2048 },
@@ -3434,7 +3761,10 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
       if (toolNames.includes("spawn_workers")) tools.push({
         name: "spawn_workers",
         description: "Batch ALL currently ready independent sibling tasks in ONE tasks array for TEMPORARY workers. Prefer assign_workers when existing idle Chats suit the work. Temporary workers have isolated context and are archived/destroyed after terminal resolution. Quota is reusable concurrent tree-wide capacity, not lifetime spawn count. Explain rationale for capacity expansion. Dispatch ends this model turn; the manager sleeps until completion, a blocker, failure, suspected loop or runtime-limit event. Ordinary progress never wakes it. Never create replacements to bypass a failed, blocked or looping activity. No automatic retries or Tasks.",
-        parameters: { type: "object", properties: { rationale: { type: "string", maxLength: 1000 }, tasks: { type: "array", minItems: 1, maxItems: 1000, items: { type: "object", properties: { title: { type: "string", maxLength: 120 }, question: { type: "string", maxLength: 4000 } }, required: ["title", "question"], additionalProperties: false } } }, required: ["tasks"], additionalProperties: false },
+        parameters: { type: "object", properties: { rationale: { type: "string", maxLength: 1000 }, tasks: { type: "array", minItems: 1, maxItems: 1000, items: { type: "object", properties: { title: { type: "string", maxLength: 120 }, question: { type: "string", maxLength: 4000 },
+          writeScope: { type: "array", maxItems: 16, items: { type: "string", maxLength: 256 }, description: "Owned workspace-relative files/directories. Overlap with siblings or active declared scopes is rejected." },
+          resources: { type: "array", maxItems: 16, items: { type: "string", maxLength: 256 }, description: "Exclusive shared resources, e.g. build-output. Conflicts prevent dispatch, not queue/retry." },
+        }, required: ["title", "question"], additionalProperties: false } } }, required: ["tasks"], additionalProperties: false },
         execute: async (args, signal) => {
           if (signal.aborted) throw new Error("Request cancelled.");
           if (!Array.isArray(args.tasks) || !args.tasks.length || args.tasks.length > 1000) throw new Error("Choose a non-empty bounded worker task batch.");
@@ -3442,7 +3772,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
             if (!task || typeof task !== "object" || !("title" in task) || !("question" in task)
               || typeof task.title !== "string" || !task.title.trim() || task.title.length > 120
               || typeof task.question !== "string" || !task.question.trim() || task.question.length > 4000) throw new Error("Each worker needs a title (1-120 characters) and question (1-4000 characters).");
-            return { title: task.title, question: task.question };
+            return { title: task.title, question: task.question, ...workerScope(task) };
           });
           if (args.rationale !== undefined && (typeof args.rationale !== "string" || args.rationale.length > 1000)) throw new Error("Choose a bounded capacity rationale.");
           return dispatchBatch(tasks, signal, undefined, typeof args.rationale === "string" ? args.rationale : "");
@@ -3452,6 +3782,8 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
             name: "assign_workers", description: "Batch focused activities to EXISTING idle Chats discovered through list_chats. Preserve each Chat's user group, model, history and permissions; record this manager as the activity source, not a permanent owner. Busy or unresolved activities cannot be replaced. Counts against reusable concurrent tree quota, not lifetime assignments. Dispatch all ready tasks in one call, then sleep. Requires normal delegation permission and separate approval only if quota increases.",
             parameters: { type: "object", properties: { rationale: { type: "string", maxLength: 1000 }, tasks: { type: "array", minItems: 1, maxItems: 1000, items: { type: "object", properties: {
               chatUrl: { type: "string", maxLength: 100 }, title: { type: "string", maxLength: 120 }, question: { type: "string", maxLength: 4000 },
+              writeScope: { type: "array", maxItems: 16, items: { type: "string", maxLength: 256 } },
+              resources: { type: "array", maxItems: 16, items: { type: "string", maxLength: 256 } },
             }, required: ["chatUrl", "title", "question"], additionalProperties: false } } }, required: ["tasks"], additionalProperties: false },
             execute: async (args, signal) => {
               if (!Array.isArray(args.tasks) || !args.tasks.length || args.tasks.length > 1000) throw new Error("Choose a bounded existing-worker batch.");
@@ -3459,7 +3791,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
                 if (!item || typeof item !== "object" || !("chatUrl" in item) || typeof item.chatUrl !== "string" || item.chatUrl.length > 100
                   || !("title" in item) || typeof item.title !== "string" || !item.title.trim() || item.title.length > 120
                   || !("question" in item) || typeof item.question !== "string" || !item.question.trim() || item.question.length > 4000) throw new Error("Each assignment needs an existing Chat URL, title and question.");
-                return { chatUrl: item.chatUrl, title: item.title, question: item.question };
+                return { chatUrl: item.chatUrl, title: item.title, question: item.question, ...workerScope(item) };
               });
               const targets = tasks.map(task => this.store!.resolveChat(task.chatUrl));
               if (new Set(targets.map(target => target.id)).size !== targets.length) throw new Error("Assign each Chat at most one activity per batch.");
@@ -3577,7 +3909,10 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
       });
       if (toolNames.some(name => ["ask_chat", "ask_session", "spawn_workers"].includes(name)) || chat.messages.some(message => message.delegations?.length)) tools.push({
         name: "read_chat_result", description: "Read one previously approved delegation by receiptId. Returns its saved status and bounded answer immediately. Never waits, starts a model, retries, or repeatedly polls. Running means the child is independent; return control to the user until its result arrives.",
-        parameters: { type: "object", properties: { receiptId: { type: "string", maxLength: 36 }, offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 1, maximum: 12000 } }, required: ["receiptId"], additionalProperties: false },
+        parameters: { type: "object", properties: { receiptId: { type: "string", maxLength: 36 }, offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 1, maximum: 12000 },
+          requireReady: { type: "boolean", description: "Reject running, failed or unresolved results before final validation." },
+          expectedSha256: { type: "string", pattern: "^[a-f0-9]{64}$", description: "Pin the workerVersion.sha256 from a ready handoff; reject changed results." },
+        }, required: ["receiptId"], additionalProperties: false },
         execute: async (args, signal) => {
           if (signal.aborted) throw new Error("Request cancelled.");
           const record = chat.messages.flatMap(message => message.delegations || []).find(record => record.id === args.receiptId);
@@ -3585,13 +3920,15 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
           this.refreshDelegation(record); this.persist(chat); this.publish();
           if (record.archived) {
             const archive = this.store!.workerResult(record.id);
-            const reply = [...archive.chat.messages].reverse().find(message => message.role === "assistant");
+            const reply = this.delegationReply(record, archive.chat, true);
             const offset = args.offset ?? 0; const limit = args.limit ?? 12000;
             if (!Number.isSafeInteger(offset) || Number(offset) < 0 || !Number.isSafeInteger(limit) || Number(limit) < 1 || Number(limit) > 12000) throw new Error("Choose a non-negative result offset and a limit from 1 to 12,000.");
             const answer = reply?.content || "";
-            return JSON.stringify({ ...record, answer: answer.slice(Number(offset), Number(offset) + Number(limit)), totalCharacters: answer.length, nextOffset: Number(offset) + Number(limit) < answer.length ? Number(offset) + Number(limit) : null });
+            return JSON.stringify({ ...record, ...workerHandoff(chat, record, archive.chat, args.requireReady, args.expectedSha256, true),
+              answer: answer.slice(Number(offset), Number(offset) + Number(limit)), totalCharacters: answer.length, nextOffset: Number(offset) + Number(limit) < answer.length ? Number(offset) + Number(limit) : null });
           }
-          return JSON.stringify(record);
+          const target = this.running.has(record.chatId) ? this.chats.get(record.chatId)! : this.store!.load(record.chatId, false);
+          return JSON.stringify({ ...record, ...workerHandoff(chat, record, target, args.requireReady, args.expectedSha256) });
         },
       });
       let attempted = false;
@@ -3698,19 +4035,27 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
             coveredInputs:checkpoint.sourceInputIds.length, readOriginals:"Use checkpointAfter to page input identities and taskInputId for exact source reads." } : undefined,
           reportIds:chat.messages.filter(message => message.taskId === reply?.taskId).flatMap(message => message.harnessReports || []).map(report => ({ id:report.id, kind:report.kind })),
           taskWorkingState:currentHarnessTaskState(chat),
+          workerEvidence:workerEvidenceState(citedWorkerEvidence(chat, reply!), chat.id,
+            version => readWorkerResultVersion(path.join(getStorePath(), ".pkm", "state"), version)),
           workGoal: chat.workGoal && chat.includeHistory ? { ...chat.workGoal, sourceInputIds: workGoalInputs(chat) }
             : chat.workGoal?.attemptInputId === reply?.inputId ? { ...chat.workGoal, sourceInputIds: workGoalInputs(chat) } : undefined,
           modelId: profile.id, provider: settings.provider, permissionMode: chat.permissionMode || "ask", tools: tools.map(tool => tool.name), extensionHost: { ...loadedExtensionBuild, pid: process.pid, nodeVersion: process.version, vscodeVersion: vscode.version } });
       } });
       const workActive = chat.workGoal?.status === "active" && chat.workGoal.attemptInputId === reply.inputId;
       if (workActive) {
-        tools.push({ name: "report_work", description: "Report the ORIGINAL user objective's acceptance and next action, not merely the latest diagnostic subtask. Get exact sourceInputIds and current evidence IDs from session_info. Continue choosing authorized steps until the objective is verified or genuinely blocked. This does not grant permissions, certify semantic correctness, or complete a managed Task.",
+        tools.push({ name: "report_work", description: "Report the ORIGINAL user objective's acceptance and next action, not merely the latest diagnostic subtask. Copy EVERY existing acceptance criterion verbatim from session_info.workGoal.acceptance, including the original-objective criterion; append new criteria, never replace existing ones. Explicitly set verified and current-attempt evidenceCallIds for each; leave unmet criteria unverified. Get exact sourceInputIds and current evidence IDs from session_info. Continue choosing authorized steps until the objective is verified or genuinely blocked. This does not grant permissions, certify semantic correctness, or complete a managed Task.",
           parameters: { type: "object", additionalProperties: false, required: ["status", "reason", "sourceInputIds", "acceptance"], properties: {
             status: { type: "string", enum: ["continue", "resolved", "blocked", "needs_input"] },
             reason: { type: "string", minLength: 1, maxLength: 2000 },
             nextAction: { type: "string", maxLength: 2000 },
+            phase: { type: "string", enum: ["locating", "implementing", "verifying", "delivering"] },
+            contract: { type: "object", additionalProperties: false, required: ["scope", "nonGoals", "stopWhen"], properties: {
+              scope: { type: "array", minItems: 1, maxItems: 16, items: { type: "string", minLength: 1, maxLength: 600 } },
+              nonGoals: { type: "array", maxItems: 16, items: { type: "string", minLength: 1, maxLength: 600 } },
+              stopWhen: { type: "string", minLength: 1, maxLength: 1000 },
+            } },
             sourceInputIds: { type: "array", maxItems: 64, items: { type: "string" } },
-            acceptance: { type: "array", minItems: 1, maxItems: 32, items: { type: "object", additionalProperties: false,
+            acceptance: { type: "array", description: "Complete list: preserve every session_info.workGoal.acceptance criterion verbatim, including the original-objective criterion; append new criteria only. Each item requires explicit verification and evidence, not inferred completion.", minItems: 1, maxItems: 32, items: { type: "object", additionalProperties: false,
               required: ["criterion", "verified", "evidenceCallIds"], properties: {
                 criterion: { type: "string", minLength: 1, maxLength: 1000 }, verified: { type: "boolean" },
                 evidenceCallIds: { type: "array", maxItems: 32, items: { type: "string" } },
@@ -3719,7 +4064,8 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
             if (signal.aborted) throw new Error("Request cancelled.");
             this.assertRunnable(chat, chat.progress?.attemptId, executionContext);
             const previous = chat.workGoal;
-            const result = reportWork(chat, reply!, args);
+            const result = reportWork(chat, reply!, args,
+              version => readWorkerResultVersion(path.join(getStorePath(), ".pkm", "state"), version));
             const previousDebug = chat.debugRequest;
             if (chat.debugRequest?.inputId === inputId && chat.workGoal) chat.debugRequest = {
               ...chat.debugRequest, status: chat.workGoal.status === "resolved" ? "completed"
@@ -3782,16 +4128,104 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
           else if (report.kind === "step" && report.status === "start") activeBinding = { ...report.binding };
           else if (report.kind === "step") activeBinding = activeHarnessBinding(reply!);
           this.publish();
+        }, async (files, signal) => {
+          this.assertRunnable(chat, reply!.progress?.attemptId, executionContext);
+          if (vscode.workspace.isTrusted === false) throw new Error("Validation artifacts require a trusted workspace.");
+          const dirtyPaths = async () => Promise.all(vscode.workspace.textDocuments.filter(document =>
+            document.isDirty && ["file", "vscode-remote"].includes(document.uri.scheme)).map(async document => {
+            try { return await fs.promises.realpath(document.uri.fsPath); }
+            catch (error) {
+              if ((error as NodeJS.ErrnoException).code === "ENOENT") return document.uri.fsPath;
+              throw error;
+            }
+          }));
+          const dirty = await dirtyPaths();
+          for (const file of files) {
+            const root = executionRoots[file.workspace];
+            if (!root || !["file", "vscode-remote"].includes(root.scheme)) throw new Error("Choose a filesystem-backed artifact workspace.");
+            const target = await fs.promises.realpath(path.resolve(root.fsPath, relativeToolPath(file.path)));
+            if (dirty.includes(target)) {
+              throw new Error("Save the artifact before validating its on-disk version.");
+            }
+          }
+          const versions = await captureValidationArtifacts(files, executionRoots.map(root => root.fsPath), signal, relativeToolPath);
+          const dirtyAfter = await dirtyPaths();
+          if (versions.some(version => dirtyAfter.includes(version.resolvedPath))) throw new Error("Save the artifact before validating its on-disk version.");
+          this.assertRunnable(chat, reply!.progress?.attemptId, executionContext);
+          return versions;
+        }, calls => {
+          this.assertRunnable(chat, reply!.progress?.attemptId, executionContext);
+          assertCurrentWorkerEvidence(calls, chat.id,
+            version => readWorkerResultVersion(path.join(getStorePath(), ".pkm", "state"), version));
         }));
         messages[0].content += `\nrecord_harness is available for explicit public task/constraint/plan/Step/validation reports. Current inputId: ${reply.inputId}; attemptId: ${chat.progress.attemptId}. Record task state from user inputs and actual evidence; supersede older reports when requirements change. Refining a plan is optional. If using Steps, report start before calls, then complete/failed/ignored with reason/evidence. Report a Recipe Run/Stage only when its identity is known. Reporting does not execute automation or certify managed Task completion.`;
+        messages[0].content += "\nFor saved local-file acceptance, declare artifactPaths on validation start before executing the checks. The Host hashes those workspace files; completion rehashes the same paths and requires current-attempt evidence executed after start. If files change, report failed/ignored and start a new check, never reuse the old passing report. Validation without artifactPaths does not certify any file version.";
+        messages[0].content += "\nWorker result evidence must include the Host workerVersion from read_chat_result. Validation and report_work recheck that receipt's current attempt and saved result, recursively checking descendant reads cited by its validation or verified work-goal criteria. Old, running, unversioned, cyclic or over-limit evidence cannot certify acceptance. Repair stale evidence from the changed descendant upward, then read and validate the parent again; rereading an unchanged intermediate result is insufficient. This checks recorded result identities, not worker files or semantic correctness.";
       }
+      let planSubmitted = false;
+      if (workflowMode !== "chat") {
+        tools.push({ name: "get_plan", description: "Read the current structured Plan and its local approval status. Reading never approves or executes.",
+          parameters: { type: "object", properties: {}, additionalProperties: false },
+          execute: async () => JSON.stringify({ mode: chat.workflowMode, plan: currentChatPlan(chat) || null }) });
+        tools.push({ name: "submit_plan", description: "Submit a researched Plan or material revision for user review. This revokes execution approval and stops this response. Never implement after submitting. Open questions block approval; facts must be supported by investigation. Every step needs a unique id, dependencies and concrete verification.",
+          parameters: { type: "object", properties: {
+            objective: { type: "string", maxLength: 2000 },
+            ...Object.fromEntries(["scope", "nonGoals", "facts", "openQuestions", "risks"].map(key => [key, { type: "array", maxItems: 12, items: { type: "string", maxLength: 600 } }])),
+            steps: { type: "array", minItems: 1, maxItems: 16, items: { type: "object", properties: {
+              id: { type: "string", pattern: "^[a-z][a-z0-9-]{0,39}$" }, title: { type: "string", maxLength: 200 },
+              dependsOn: { type: "array", items: { type: "string" } }, verification: { type: "string", maxLength: 600 },
+            }, required: ["id", "title", "dependsOn", "verification"], additionalProperties: false } },
+            changeReason: { type: "string", maxLength: 1000 },
+          }, required: ["objective", "scope", "nonGoals", "facts", "openQuestions", "risks", "steps", "changeReason"], additionalProperties: false },
+          execute: async args => {
+            const previous = chat.plans;
+            const plan = submitChatPlan(chat, args, executionContext, args.changeReason);
+            try { this.persist(chat); }
+            catch (error) {
+              chat.plans = previous; chat.workflowMode = "plan";
+              const prior = currentChatPlan(chat); if (prior) delete prior.approval;
+              controller.abort(); throw error;
+            }
+            planSubmitted = true; this.publish();
+            return JSON.stringify({ id: plan.id, revision: plan.revision, contentHash: plan.contentHash, status: "awaiting-local-review" });
+          } });
+      }
+      const explicitMemoryContext = () => {
+        const python = detectMcpPython();
+        if (!python.valid) throw new Error(`Explicit Memory requires a configured Python runtime: ${python.error}`);
+        const root = getStorePath(), database = this.memoryDatabasePath();
+        fs.mkdirSync(path.dirname(database), { recursive: true });
+        return { root, options: { python: python.path, database, extensionRoot: this.extension.extensionPath, identity: `pkm-chat:${root}` } };
+      };
+      tools.push(...createExplicitMemoryTools({
+        enabled: toolNames,
+        context: explicitMemoryContext,
+        assertActive: () => this.assertExecution(chat, executionContext),
+        approve: async (write, detail, signal) => {
+          if (write && this.remoteControlledRequests.has(chat.id)) throw new CapabilityError("ACCESS_DENIED", "Portal-controlled requests cannot mutate explicit Memory; use a local Chat.");
+          return requestToolPermission(write ? "explicit-memory-write" : "read-only", write ? "Propose or manage Memory?" : "Read explicit Memory?", detail, signal);
+        },
+        authorize: async (request, signal) => {
+          const context = explicitMemoryContext();
+          const current = await executeMemoryOperation(context.options, context.root, "memory_record_get", { id: request.recordId });
+          if (current.current_revision !== request.expectedRevision) throw new CapabilityError("CONFLICT", "Memory changed before local review. Reload the exact record.");
+          const decision = await this.requestDecision(chat, `Memory ${request.action}: review exact record`,
+            JSON.stringify({ scope: request.scope, id: request.recordId, revision: request.expectedRevision,
+              storedContent: current.content, storedSources: current.sources, newContent: request.content, newSources: request.sources }),
+            [{ value: "approve-memory", label: `Approve Memory ${request.action}` }, { value: "cancel", label: "Cancel" }],
+            signal, controller.signal);
+          return decision === "approve-memory" ? { decisionId: randomUUID(), actorId: "user:local" } : null;
+        },
+      }));
+      const gatedTools = gatePlanTools(chat, workflowMode, executionContext, tools, workflowSourceDigest);
+      tools.splice(0, tools.length, ...gatedTools);
       for (const tool of tools) {
         const execute = tool.execute;
         tool.execute = async (args, signal) => {
           if (signal.aborted || controller.signal.aborted) throw new Error("Request cancelled.");
           this.assertExecution(chat, executionContext);
           if (this.remoteControlledRequests.has(chat.id)
-            && ["read_file", "find_files", "search_text", "list_directory", "diagnostic_logs", "session_info", "record_harness", "pkm_search", "pkm_read", "memory_read", "find_actions", "process_get", "process_output"].includes(tool.name)) {
+            && [...memoryCapabilities.filter(operation => operation.readOnly).map(operation => operation.transportName), ...todoReadApiNames, "read_file", "find_files", "search_text", "list_directory", "diagnostic_logs", "session_info", "record_harness", "pkm_search", "pkm_read", "note_todo_read", "memory_read", "find_actions", "process_get", "process_output"].includes(tool.name)) {
             if (!portalToolAllowed(chat.id, tool.name, await portalToolResource(executionRoots, tool.name, args)) && !await requestToolPermission(`remote:${tool.name}`, `Remote task: allow ${tool.name}?`, JSON.stringify(args), signal, false, true)) {
               throw new Error("Remote tool request declined by the user.");
             }
@@ -3800,6 +4234,9 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
           return execute(args, signal);
         };
       }
+      const capabilityProfile = vscode.workspace.getConfiguration("personalKnowledge").get<string>("apiChatCapabilityProfile", "legacy");
+      if (!["legacy", "compact"].includes(capabilityProfile)) throw new Error("Choose a supported Chat capability profile: legacy or compact.");
+      if (capabilityProfile === "compact") tools.splice(0, tools.length, ...capabilityTools(tools, [...todoCapabilities, ...memoryCapabilities], true));
       messages[0].content += `\nAdvertised tools for this request: ${tools.map(tool => tool.name).join(", ") || "none"}. Permission mode: ${executionContext.permissionMode}.`;
       const toolSchema: ApiChatMessage[] = tools.length ? [{ role: "system", content: JSON.stringify(tools.map(({ execute, ...definition }) => definition)) }] : [];
       chat.progress.tools = tools.map(tool => tool.name);
@@ -3902,14 +4339,23 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         this.persist(chat); this.publish();
       }
       const contextPlanner = new ChatContextPlanner(messages, automatic, toolSchema);
+      let contextMeasurement: ContextTokenMeasurement | undefined;
       if (controller.signal.aborted) throw new Error("Request cancelled.");
       this.assertRunnable(chat, chat.progress?.attemptId, executionContext);
       this.persist(chat); this.publish();
       let debugRecoveryUsed = false;
       let workEvidence = reply ? workEvidenceKey(reply) : "";
       let workStaleEndings = 0;
+      let convergenceReplans = 0;
+      let convergenceInstruction: string | undefined;
       const request = { ...settings, loopReviewClock: reviewClock.now,
+        hardToolRoundLimit,
+        onHardToolRoundLimit: (receipt: { limit: number; rounds: number }) => {
+          reply!.toolRoundLimit = { ...receipt, reached: true };
+          this.persist(chat); this.publish();
+        },
         beforeFinish: () => {
+          if (chat.workflowMode === "plan" || planSubmitted) return undefined;
           if (workActive && chat.workGoal?.status === "active") {
             const evidence = workEvidenceKey(reply!);
             workStaleEndings = evidence === workEvidence ? workStaleEndings + 1 : 0;
@@ -3923,8 +4369,20 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
           return "The debug request is still open. Do not end with suggestions or another summary. Use the enabled read/search/process tools to inspect the actual evidence within existing permissions, then call finish_debug. If genuinely blocked or awaiting user input, call finish_debug with that precise reason. This continuation grants no new permissions or authority to repeat side effects.";
         },
         onModelActivity: modelActivity,
-        afterTools: () => spawnedWorkers,
+        afterTools: () => spawnedWorkers || planSubmitted,
         onToolLoopNotice: async (notice: ChatToolLoopNotice, signal: AbortSignal): Promise<ChatToolLoopDecision> => {
+          if (notice.reason === "no-progress" || notice.reason === "repeated-failure" || notice.reason === "stalled" && workActive) {
+            const detail = `Inference convergence stop: ${notice.reason}; round ${notice.rounds}, repeats ${notice.repeats || 0}. Completed evidence is retained; no acceptance was granted.`;
+            stage(detail);
+            reply!.outputBudgetWarning = detail;
+            if (convergenceReplans++ === 0) {
+              convergenceInstruction = `${detail}\nOne recovery is allowed: change strategy, use the already visible evidence, or report a concrete blocker with report_work. Do not retry the same failed operation or repeat reads. If acceptance is already satisfied, report resolved and deliver. A second stall ends tool execution.`;
+              this.persist(chat); this.publish();
+              return "continue";
+            }
+            this.persist(chat); this.publish();
+            return "summarize";
+          }
           const continuation = `Continue (${settings.loopReviewAfterMs / 60_000} more active minutes)`;
           const title = notice.reason === "round-limit" ? `Chat completed ${notice.rounds} tool rounds. Continue?` : `Possible tool loop: ${notice.tool} returned the same result for the same arguments ${notice.repeats} times. Continue?`;
           try {
@@ -3987,6 +4445,12 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
           reply!.estimatedCost = estimateCost(settings.selectedProfile, reply!.usage.inputTokens, reply!.usage.outputTokens);
           this.persist(chat);
           this.publish();
+          const review = enforceActivityBudget();
+          if (review) void review.catch(error => {
+            if (controller.signal.aborted) return;
+            controller.abort();
+            this.notify(error, { chatId: chat.id });
+          });
         },
         onUsageMetadata: (valid: boolean) => {
           if (this.running.get(chat.id) !== controller) return;
@@ -4012,11 +4476,21 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         },
         tools,
         automaticKnowledge: { inputBudget:AUTOMATIC_KNOWLEDGE_INPUT_BUDGET, includes:(message:ApiChatMessage) => automatic.get(message)?.budget === "knowledge" },
+        prepareContext: async (roundMessages: ApiChatMessage[], output: number, counter: import("./api-chat-client").ChatInputTokenCounter) => {
+          contextMeasurement = await contextPlanner.measure(roundMessages, settings.contextWindow - output, counter);
+        },
+        afterRound: () => enforceActivityBudget(),
         beforeRound: (roundMessages: ApiChatMessage[], output: number) => {
+          if (convergenceInstruction) {
+            roundMessages.push({ role: "system", content: convergenceInstruction });
+            convergenceInstruction = undefined;
+          }
+          const prepareRound = () => {
           if (controller.signal.aborted) throw new Error("Request cancelled.");
           this.assertExecution(chat, executionContext);
           this.assertRunnable(chat, chat.progress?.attemptId, executionContext);
-          const steering = chat.queuedInputs?.some(input => input.editToken || input.mode === "task") ? [] : (chat.queuedInputs || []).filter(input => input.mode === "steer" && input.attemptId === chat.progress?.attemptId && input.executionContext?.digest === executionContext.digest);
+          if (workflowSourceDigest) assertPlanResearchSource(chat, workflowSourceDigest);
+          const steering = chat.queuedInputs?.some(input => input.editToken || input.mode === "task" || newWorkGoal.test(input.text)) ? [] : (chat.queuedInputs || []).filter(input => input.mode === "steer" && input.attemptId === chat.progress?.attemptId && input.executionContext?.digest === executionContext.digest);
           const additions = steering.map(input => {
             if (!steeringMessages.has(input.id)) steeringMessages.set(input.id, { role:"user", content:input.text });
             return steeringMessages.get(input.id)!;
@@ -4059,12 +4533,14 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
             const query = [...steering.map(input => input.text), ...chat.messages.filter(message =>
               message.taskId === chat.sessionId && message.role === "user" && message.inputKind === "steer").map(message => message.content).reverse(),
               currentHarnessTask(chat)?.goal, text].filter(Boolean).join("\n");
-            const plan = contextPlanner.plan(planned, settings.contextWindow - output, query);
+            const measurement = contextMeasurement;
+            contextMeasurement = undefined;
+            const plan = contextPlanner.plan(planned, settings.contextWindow - output, query, measurement);
             if (profileContext && !plan.receipt.manifest.some(message => message.hash === profileContext.messageHash)) {
               throw new Error("Required Profile snapshot is missing from the prepared model context. Nothing was dispatched.");
             }
             const selected = plan.selected;
-            validateBudget(profile, settings.contextWindow, output, [...planned, ...toolSchema]);
+            validateBudget(profile, settings.contextWindow, output, measurement ? [] : [...planned, ...toolSchema]);
             const previousQueue = chat.queuedInputs, previousMessages = [...chat.messages], previousBudgets = reply!.budgetReceipts;
             const previousActivity = structuredClone(reply!.retrievalActivity!), previousRetrieval = reply!.retrieval;
             updateReceipt(selected);
@@ -4101,6 +4577,9 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
             publicOutputRound++;
             this.publish();
           } catch (error) { chat.workGoal = previousWorkGoal; rollbackPlan(); throw error; }
+          };
+          const gate = enforceActivityBudget();
+          return gate ? gate.then(prepareRound) : prepareRound();
         },
         onTransportPrepared: (transport: import("./api-chat-client").ChatTransportReceipt) => {
           if (controller.signal.aborted) throw new Error("Request cancelled.");
@@ -4185,8 +4664,11 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
       await abortable(nativeModel ? streamVscodeChat(nativeModel, request, onText)
         : streamApiChat({ ...request, provider: settings.provider === "azure-openai" ? "azure-openai" : "openai-compatible" }, onText), controller.signal);
       if (controller.signal.aborted) throw new Error("Request cancelled.");
-      if (workActive && chat.workGoal?.status === "active") throw new Error("The user objective remains open; the response or tool budget ended without verified acceptance or a concrete blocker.");
-      if (!workActive && debugActive && chat.debugRequest?.status === "investigating") throw new Error("Debugging remains incomplete; the response or tool budget ended before an evidence-backed outcome or concrete blocker was recorded.");
+      if (reply.toolRoundLimit?.reached && (workActive && chat.workGoal?.status === "active" || debugActive && chat.debugRequest?.status === "investigating")) {
+        throw new Error("The request's tool round limit was reached. The final summary and completed tool results were preserved; the objective remains unresolved. Inspect them before explicitly starting another request.");
+      }
+      if (!planSubmitted && workflowMode !== "plan" && workActive && chat.workGoal?.status === "active") throw new Error("The user objective remains open; the response or tool budget ended without verified acceptance or a concrete blocker.");
+      if (!planSubmitted && workflowMode !== "plan" && !workActive && debugActive && chat.debugRequest?.status === "investigating") throw new Error("Debugging remains incomplete; the response or tool budget ended before an evidence-backed outcome or concrete blocker was recorded.");
       reply.status = "complete";
       chat.progress.status = "complete";
       if (chat.workerState) chat.workerState.sleeping = chat.messages.some(message => message.delegations?.some(record => record.treeId && record.status === "running"));
@@ -4206,6 +4688,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         if (reply) delete reply.inputId;
         if (chat.debugRequest?.inputId === inputId) delete chat.debugRequest;
         chat.workGoal = initialWorkGoal;
+        chat.workGoalHistory = initialWorkGoalHistory;
       }
       if (!controller.signal.aborted && isVscodeModelAccessError(error)) {
         stage("Rechecking VS Code model access", false, { category:"info", operation:"model-access" });
@@ -4228,8 +4711,18 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
           ? "Response stopped. Earlier tool actions were not undone. Review their results before retrying."
           : "Response stopped. You can send a new message or retry this response.";
       const failure = lifecycleError || (controller.signal.aborted ? stopped : error instanceof Error ? error.message : "Request failed.");
-      if (reply) { reply.status = chat.progress.status === "cancelled" ? "cancelled" : "failed"; reply.error = failure; }
-      else if (chat.progress.status !== "cancelled") this.notify(new Error(failure), { chatId: chat.id });
+      if (!reply) {
+        const replyId = parent?.portalTask?.replyId || randomUUID();
+        const portalTask = portalTaskReplyLink(replyId, parent?.portalTask?.requestId, retry ? predecessor : undefined);
+        reply = { id: replyId, recordedAt:new Date().toISOString(), executionContext,
+          ...(chat.messages.some(message => message.id === inputId && message.role === "user") ? { inputId } : {}),
+          ...(portalTask ? { portalTask } : {}),
+          taskId:chat.sessionId, role:"assistant", content:"", status:"failed",
+          model:settings.provider === "vscode" ? settings.selectedProfile.label : settings.model, progress:chat.progress };
+        chat.messages.push(reply);
+      }
+      reply.status = chat.progress.status === "cancelled" ? "cancelled" : "failed";
+      reply.error = failure;
     } finally {
       for (const [id] of invocationStarts) finishInvocation(id, controller.signal.aborted ? "cancelled" : "interrupted",
         "The request ended without an observed invocation result. Execution or remote side effects may already have occurred; termination is not confirmed.");

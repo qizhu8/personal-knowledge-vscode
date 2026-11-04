@@ -166,6 +166,11 @@ an unsaved Workbench draft requires confirmation before replacement.
 
 Open **PKM: Open Action Workbench**. No catalog modal opens automatically, including
 when restoring an older tab. A short notice shows background progress or a blocker.
+Status, readiness summaries and validation feedback fade after five seconds and
+release canvas space. Hover or keyboard focus keeps a notice visible; leaving it
+starts a new five-second countdown. Unchanged background refreshes do not restore
+dismissed notices. Readiness reasons remain in the Library and Action details;
+approval controls and active validation progress do not auto-dismiss.
 The left tree includes pending proposals and unapproved definitions under
 **Actions**, labelled **Preparing** or **Needs attention**. An optional refresh
 icon retries preparation. Pending rows cannot be exported or added to a composition.

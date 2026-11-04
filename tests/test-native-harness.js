@@ -417,6 +417,109 @@ test("live overview follows the deepest recorded active node and only explicit b
   assert.deepEqual(live.path.slice(-2).map(item => item.title), ["ask_user", "Result pending"], "a streaming attempt resolves to its running tool call");
 });
 
+test("terminal attempt outcomes cannot be overwritten by an earlier successful validation, including after reload", () => {
+  for (const status of ["failed", "cancelled", "interrupted"]) {
+    const data = fixture();
+    Object.assign(data, { status, todos:[], runs:[], actionRuns:[] });
+    data.harness = { state:status, attempts:[{
+      messageId:"terminal-attempt", attemptId:"terminal", status, toolCalls:[],
+      harnessReports:[{ id:"earlier-validation", kind:"validation", status:"complete",
+        summary:"Earlier checks passed", evidenceCallIds:["earlier-call"], binding:{} }],
+      validation:{ error:`Attempt ${status} after validation` },
+    }] };
+    for (const snapshot of [data, JSON.parse(JSON.stringify(data))]) {
+      const lifecycle = build(snapshot).lifecycle;
+      assert.equal(lifecycle.current, "run", `${status} must not reach End`);
+      assert.equal(lifecycle.outcome, status);
+      assert.notEqual(lifecycle.check, "passed");
+      assert.equal(lifecycle.stages.find(stage => stage.id === "end").status, "pending");
+      assert.match(lifecycle.reason, new RegExp(status));
+    }
+    data.status = "completed";
+    data.todos = [{ id:"managed-task", status:"complete" }];
+    assert.equal(build(data).lifecycle.current, "end", "explicit managed Task completion retains its existing authority");
+  }
+});
+
+test("completed attempts monitor only their explicit non-terminal Action references through stored snapshots", t => {
+  const directory = temporary(t), storage = new ChatHistoryStorage(directory);
+  const oldId = `action_run_${"e".repeat(32)}`, otherId = `action_run_${"f".repeat(32)}`;
+  const saveRun = (id, state) => {
+    const folder = path.join(directory, "actions", "runs", id);
+    fs.mkdirSync(folder, { recursive:true });
+    fs.writeFileSync(path.join(folder, "run.json"), JSON.stringify({
+      schema:"pkm.action.run/v1", run_id:id, action_id:"fixture.script", state,
+    }));
+  };
+  const call = (id, run) => ({ id, name:"run_action", status:"complete", arguments:"{}",
+    // The reference is extracted from the full structured result, not a truncated preview.
+    result:JSON.stringify({ padding:"x".repeat(2100), run_id:run }) });
+  const chat = { version:1, id:"11111111-1111-4111-8111-111111111111", sessionId,
+    title:"Action lifecycle", createdAt:"now", updatedAt:"now", context:[], includeHistory:true, messages:[
+      { id:"u", role:"user", status:"complete", content:"Validate the result" },
+      { id:"old", role:"assistant", status:"complete", content:"Earlier work", toolCalls:[call("old-call", oldId)] },
+      { id:"latest", role:"assistant", status:"complete", content:"Checks passed", toolCalls:[call("current-call", actionId)],
+        harnessReports:[{ id:"v", kind:"validation", status:"complete", summary:"Recorded checks passed",
+          evidenceCallIds:["current-call"], binding:{} }] },
+    ] };
+  saveRun(oldId, "running"); saveRun(otherId, "running");
+  const snapshots = () => {
+    const packed = storage.pack(chat, { status:"completed", workerManager:false });
+    const record = { schema:"pkm.agent.session/v1", sessionId, origin:"pkm-native", runtimeOwner:"pkm", hostKind:"pkm", nativeChat:packed };
+    const filename = path.join(directory, "session.json");
+    fs.writeFileSync(filename, JSON.stringify(record));
+    const project = harness => ({ origin:"pkm-native", sessionId, status:harness.state, todos:[], runs:[], harness,
+      ...readHarnessActions(directory, harness.attempts.flatMap(attempt => attempt.toolCalls.flatMap(call => call.actionRunIds))) });
+    return [project(apiChatHarnessSnapshot(chat)), project(apiChatSessionHarnessSnapshot(JSON.parse(fs.readFileSync(filename, "utf8")), sessionId, directory))];
+  };
+  const latest = chat.messages.at(-1);
+  for (const state of ["running", "waiting"]) {
+    saveRun(actionId, state);
+    for (const data of snapshots()) {
+      assert.deepEqual(data.harness.attempts.at(-1).toolCalls[0].actionRunIds, [actionId]);
+      assert(!data.actionRuns.some(run => run.runId === otherId));
+      const l = build(data).lifecycle;
+      assert.deepEqual([l.current, l.outcome, l.live], ["monitor", "waiting", true], state);
+      assert.notEqual(l.check, "passed");
+      assert.equal(l.stages.find(stage => stage.id === "end").items[0][1], "not reached");
+      assert.match(l.reason, /1 referenced Action Run/);
+      data.harness.attempts.at(-1).toolCalls.push(data.harness.attempts.at(-1).toolCalls[0]);
+      data.harness.attempts.at(-1).harnessReports = [{ kind:"validation", status:"start", binding:{} }];
+      const evaluating = build(data).lifecycle;
+      assert.deepEqual([evaluating.current, evaluating.outcome], ["monitor", "waiting"], "unfinished Action takes precedence over started validation");
+      assert.match(evaluating.reason, /1 referenced Action Run/, "duplicate references count only once");
+    }
+    for (const status of ["failed", "cancelled", "interrupted"]) {
+      latest.status = status;
+      for (const data of snapshots()) {
+        const l = build(data).lifecycle;
+        assert.deepEqual([l.current, l.outcome, l.live], ["run", status, false]);
+      }
+    }
+    latest.status = "complete";
+  }
+  for (const state of ["succeeded", "failed", "cancelled", "submitted-and-closed", "ignored"]) {
+    saveRun(actionId, state);
+    for (const data of snapshots()) {
+      assert.equal(build(data).lifecycle.current, "end", "explicit validation retains authority; old running Run does not block");
+      delete data.harness.attempts.at(-1).harnessReports;
+      assert.equal(build(data).lifecycle.outcome, "unverified", "Run termination alone never validates the goal");
+      data.todos = [{ todoId:"task", status:"complete" }];
+      assert.equal(build(data).lifecycle.current, "end", "managed Task completion retains authority");
+    }
+  }
+  saveRun(actionId, "running");
+  for (const data of snapshots()) {
+    data.todos = [{ todoId:"task", status:"complete" }];
+    assert.equal(build(data).lifecycle.current, "monitor", "accepted Task must still wait for explicitly referenced live execution");
+    data.harness.attempts.at(-1).toolCalls = [];
+    assert.equal(build(data).lifecycle.current, "end", "unreferenced current and old Runs do not block");
+    data.todos = [];
+    delete data.harness.attempts.at(-1).harnessReports;
+    assert.equal(build(data).lifecycle.outcome, "unverified", "ordinary unvalidated completion is unchanged");
+  }
+});
+
 test("lifecycle ring highlights only the stage supported by recorded evidence", () => {
   const variant = (attempt, harness = {}, extra = {}) => {
     const data = fixture();

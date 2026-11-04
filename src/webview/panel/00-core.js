@@ -1244,6 +1244,10 @@ window.addEventListener('message', e => {
   else if (command === 'chatMessage'){ chatOnMessage(data); }
   else if (command === 'chatAgentState'){ chatOnAgentState(data); }
   else if (command === 'chatFileReady') { chatOnFileReady(data); }
+  else if (command === 'noteTodoResult') { noteTodoResult(data); }
+  else if (command === 'noteTodoProjectResult') { noteTodoProjectResult(data); }
+  else if (command === 'chatImagePreview') { chatOnImagePreview(data); }
+  else if (command === 'chatSendImagesResult') { chatOnSendImagesResult(data); }
   else if (command === 'chatToast')  { chatToast(data && data.error); }
   else if (command === 'chatAddManagedAgentProgress') { updateLoadingProgress({ stage:'agent', percent:data?.percent || 20, message:data?.message || 'Summoning a house-elf…' }); }
   else if (command === 'chatAddManagedAgentResult') { finishAction('chatAddManagedAgent'); finishLoadingProgress(); if (data?.error) chatToast(data.error); }

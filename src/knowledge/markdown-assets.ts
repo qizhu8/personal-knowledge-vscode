@@ -36,6 +36,9 @@ function importMarkdownAssetBundleUnlocked(root: string, value: unknown, documen
       throw new Error("Invalid Markdown bundle resource.");
     }
     const areaRoot = path.resolve(root, entry.type);
+    if (path.posix.basename(entry.path).toLowerCase() === "pkm-todo-board.json") {
+      throw new Error("Todo Board authority must be imported as an explicit Board document, not a generic asset.");
+    }
     const original = checkedMarkdownPath(areaRoot, entry.path);
     const allowed = documents.filter(document => document.area === entry.type).some(document =>
       entry.path.startsWith(markdownAssetDirectory(document.path) + "/")
@@ -176,6 +179,9 @@ export function assertMarkdownAssetsUnshared(areaRoot: string, documentPath: str
 }
 
 export function assertMarkdownResourceTreeUnshared(areaRoot: string, resourcePath: string, documentPath = "", container?: string): void {
+  if (path.posix.basename(resourcePath).toLowerCase() === "pkm-todo-board.json") {
+    throw new Error("Todo Board authority is managed with its document, not as an editable/deletable asset.");
+  }
   const reference = markdownResourceReferrer(areaRoot, resourcePath, documentPath, container);
   if (reference) throw new Error(`Resource is shared by ${reference}. Update its references before moving or deleting ${resourcePath}.`);
 }
@@ -243,6 +249,7 @@ export function saveMarkdownAsset(root: string, area: MarkdownAssetArea, documen
 }
 
 function saveMarkdownAssetUnlocked(root: string, area: MarkdownAssetArea, documentPath: string, name: string, content: Buffer): string {
+  if (name.toLowerCase() === "pkm-todo-board.json") throw new Error("Todo Board data is reserved. Use Work Item commands.");
   if (!content.length) throw new Error("A Markdown asset cannot be empty.");
   if (!name || path.basename(name) !== name || /[\\/:*?"<>|\u0000-\u001f]/.test(name) || name.startsWith(".")) {
     throw new Error("Choose a resource filename without path separators or reserved characters.");
@@ -429,6 +436,7 @@ export function listedMarkdownAssets(
     if (!reference) continue;
     const fullPath = path.resolve(documentDirectory, reference);
     const relativePath = path.relative(areaRoot, fullPath).replace(/\\/g, "/");
+    if (path.posix.basename(relativePath).toLowerCase() === "pkm-todo-board.json") continue;
     if (!relativePath || relativePath.startsWith("../") || path.isAbsolute(relativePath)
       || !relativePath.split("/").some(isMarkdownAssetDirectory)) continue;
     if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) continue;

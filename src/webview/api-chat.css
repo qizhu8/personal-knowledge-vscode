@@ -3,6 +3,20 @@ html[dir="rtl"] pre, html[dir="rtl"] code, html[dir="rtl"] .retrieval-flow {
 	direction: ltr;
 	unicode-bidi: isolate;
 }
+#workflow-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#workflow-mode { max-width: 110px; color: var(--vscode-dropdown-foreground); background: var(--vscode-dropdown-background); border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border)); }
+.composer-help { color: var(--vscode-descriptionForeground); }
+.composer-warning { color: var(--vscode-editorWarning-foreground, #cca700); }
+.composer-help:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+#composer-help-tooltip { position: fixed; z-index: 1000; box-sizing: border-box; max-width: min(340px, calc(100vw - 16px)); max-height: calc(100vh - 16px); overflow: auto; padding: 8px 10px; border: 1px solid var(--vscode-editorHoverWidget-border, var(--vscode-panel-border)); border-radius: 4px; background: var(--vscode-editorHoverWidget-background, var(--vscode-editor-background, #252526)); color: var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground)); box-shadow: 0 2px 8px var(--vscode-widget-shadow, #0006); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+#plan-review { min-width: 0; border-inline-start: 3px solid var(--vscode-focusBorder); padding-inline: 8px; }
+#plan-review summary { cursor: pointer; padding-block: 5px; }
+#plan-status { color: var(--vscode-descriptionForeground); margin-inline-start: 8px; font-size: 11px; }
+#plan-body { max-height: 25vh; overflow: auto; overflow-wrap: anywhere; white-space: pre-wrap; }
+#plan-body h4, #plan-body p { margin-block: 5px; }
+.plan-actions { display: flex; gap: 6px; flex-wrap: wrap; padding-block: 6px; }
+.plan-actions button { height: auto; min-height: 28px; white-space: normal; }
+#workflow-mode:focus-visible, #plan-review summary:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
 #memory-panel { max-height: 32vh; overflow-y: auto; }
 #memory-panel .settings-row { flex-wrap: wrap; gap: 8px; }
 #memory-panel .settings-row > * { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
@@ -37,6 +51,15 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-
 button:disabled { opacity: .45; cursor: default; }
 [hidden] { display: none !important; }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; padding: 6px 8px; gap: 4px; border-bottom: 1px solid var(--vscode-panel-border, #ffffff18); }
+.chat-toolbar { position: relative; flex-wrap: nowrap; flex-shrink: 0; min-width: 0; }
+#chat-header-actions { position: relative; flex: 0 0 28px; }
+#chat-actions-toggle .codicon { transition: transform 140ms ease; }
+#chat-actions-toggle[aria-expanded="true"] .codicon { transform: rotate(180deg); }
+#chat-actions-panel { position: absolute; z-index: 100; inset-block-start: -4px; inset-inline-end: 28px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; width: max-content; max-width: calc(100vw - 44px); padding: 4px; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, #ffffff30)); border-radius: 5px; background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background, #202020)); box-shadow: 0 4px 12px var(--vscode-widget-shadow, #0006); animation: chat-actions-reveal 120ms ease-out; }
+@keyframes chat-actions-reveal { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; transform: translateX(0); } }
+html[dir="rtl"] #chat-actions-toggle .codicon { transform: rotate(180deg); }
+html[dir="rtl"] #chat-actions-toggle[aria-expanded="true"] .codicon { transform: none; }
+@media (prefers-reduced-motion: reduce) { #chat-actions-panel { animation: none; } #chat-actions-toggle .codicon { transition: none; } }
 select { min-width: 0; max-width: 100%; padding: 4px; border: 1px solid transparent; background: var(--vscode-dropdown-background, #292929); border-radius: 4px; }
 #chats { flex: 1; width: 0; }
 #persona-profiles { width: auto; padding: 0 6px; }
@@ -90,8 +113,8 @@ select { min-width: 0; max-width: 100%; padding: 4px; border: 1px solid transpar
 @keyframes working-cauldron-rock { 0%, 100% { transform: rotate(-7deg); } 50% { transform: rotate(7deg); } }
 .chat-backgrounded .working-cauldron { animation-play-state: paused; }
 @media (prefers-reduced-motion: reduce) { .working-cauldron { animation: none; } }
-#chat-status { display: flex; align-items: center; flex: 0 0 16px; }
-#chat-status.portal-role-active { flex:0 1 auto; min-width:0; font-size:11px; display:inline-flex; align-items:center; gap:4px; }
+#chat-status { display: flex; align-items: center; flex: 0 0 auto; }
+#chat-status.portal-role-active { min-width:0; }
 #chat-status .portal-headline { max-width:42ch; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 #portal-state { position:relative; padding:2px 8px; min-width:0; flex-shrink:0; border-bottom:1px solid var(--vscode-panel-border); background:var(--vscode-editor-inactiveSelectionBackground); }
 #portal-state .portal-compact { display:block; width:100%; height:26px; padding:0; border:0; background:transparent; color:inherit; text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -163,6 +186,9 @@ select { min-width: 0; max-width: 100%; padding: 4px; border: 1px solid transpar
 .chat-list-count { color: var(--vscode-descriptionForeground, #aaa); font-size: 11px; font-variant-numeric: tabular-nums; }
 .chat-list-row { display: flex; align-items: center; min-width: 0; padding-left: 20px; border-radius: 4px; }
 .chat-list-row:hover { background: var(--vscode-list-hoverBackground, #ffffff12); }
+.chat-list-row[data-deletion-cleanup] { flex-wrap: wrap; gap: 8px; padding-block: 6px; }
+.chat-list-row[data-deletion-cleanup] > span { flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; }
+.chat-list-row[data-deletion-cleanup] > button { max-width: 100%; height: auto; white-space: normal; }
 .chat-list-open { display: flex; flex: 1; align-items: center; justify-content: flex-start; min-width: 0; width: 0; height: auto; min-height: 34px; gap: 8px; padding: 6px 4px; text-align: left; }
 .chat-list-open strong { width: 100%; overflow-wrap: anywhere; font-weight: 400; }
 .chat-list-open small { color: var(--vscode-descriptionForeground, #aaa); font-size: 10px; }
@@ -180,6 +206,8 @@ select { min-width: 0; max-width: 100%; padding: 4px; border: 1px solid transpar
 .message-header { display: flex; align-items: center; gap: 8px; color: var(--vscode-descriptionForeground, #aaa); font-size: 12px; }
 .message-header strong { color: var(--vscode-foreground, #ddd); }
 .message-header .model-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.message > .message-header { flex-wrap: wrap; }
+.message-time { font-size: 10px; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--vscode-descriptionForeground, #aaa); }
 .content { overflow-wrap: anywhere; line-height: 1.55; }
 .user .content { white-space: pre-wrap; }
 .delegation-result { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--vscode-panel-border, #ffffff18); }
@@ -343,6 +371,9 @@ textarea { resize: vertical; min-height: 72px; max-height: 230px; width: 100%; p
 .activity-filter select { background:var(--vscode-input-background,#222); color:var(--vscode-input-foreground,#ddd); border:1px solid var(--vscode-input-border,#444); border-radius:3px; font:inherit; }
 .activity-event { min-width:0; }
 .activity-event-detail { color:var(--vscode-foreground,#ddd); }
+.process-controls { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:6px 0; }
+.process-controls button { display:inline-flex; align-items:center; gap:4px; width:auto; min-height:26px; padding:3px 6px; }
+.process-controls > span { color:var(--vscode-descriptionForeground,#aaa); font-size:11px; }
 .activity-targets { display:flex; align-items:center; gap:6px; min-width:0; max-width:55%; flex-wrap:wrap; color:var(--vscode-foreground,#ddd); }
 .workflow-event-line:has(.activity-targets) .activity-label { flex:0 1 auto; }
 .workflow-event-line:has(.activity-targets) .elapsed { margin-left:auto; }

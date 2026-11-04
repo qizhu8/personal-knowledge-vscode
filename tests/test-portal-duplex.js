@@ -35,7 +35,7 @@ async function fixture(t, options = {}) {
         side.runs.push({ prompt, signal, requestId, chatId: side.local.chatId });
         return options.execute ? options.execute(id, signal, requestId) : { content: prompt };
       },
-      approveCommand: async () => { side.approvals++; return true; },
+      approveCommand: async () => { side.approvals++; return options.approveCommand ? options.approveCommand(id) : true; },
       executeCommand: async (command, signal, requestId) => {
         side.runs.push({ command, signal, requestId });
         return options.command ? options.command(id, signal, requestId) : { state: "complete", exitCode: 0, stdout: id };
@@ -73,6 +73,52 @@ async function fixture(t, options = {}) {
 
 const command = { program: "node", arguments: ["--version"], timeoutSeconds: 10 };
 const terminal = (side, id, state) => side.session.receipts.get(id)?.state === state;
+
+test("incoming activity follows live request direction, approval and completion, not the saved role or history", async t => {
+  let permit, finish;
+  const f = await fixture(t, { enabled: true,
+    approveCommand: () => new Promise(resolve => { permit = resolve; }),
+    command: () => new Promise(resolve => { finish = resolve; }),
+  });
+  assert.equal(f.a.session.incomingActivity, undefined);
+  assert.equal(f.b.session.incomingActivity, undefined);
+  const requestId = f.b.session.submitCommand(command);
+  await until(() => permit);
+  assert.equal(f.a.session.binding.role, "controller", "saved duplex role need not match current execution direction");
+  assert.deepEqual(f.a.session.incomingActivity, { requestId, kind: "command", state: "awaiting-approval" });
+  assert.equal(f.b.session.incomingActivity, undefined, "outgoing requests must not make the sender controlled");
+  permit(true);
+  await until(() => finish);
+  assert.deepEqual(f.a.session.incomingActivity, { requestId, kind: "command", state: "running" });
+  finish({ state: "complete", exitCode: 0 });
+  await until(() => terminal(f.b, requestId, "completed"));
+  assert.equal(f.a.session.incomingActivity, undefined);
+  assert.equal(f.a.session.incomingReceipts.get(requestId).state, "completed", "history is retained without keeping the execution indicator active");
+});
+
+test("incoming model activity clears after rejection, failure, cancellation and revocation", async t => {
+  for (const outcome of ["denied", "failed", "cancelled", "revoked"]) {
+    let finish;
+    const f = await fixture(t, { enabled: true,
+      approve: () => outcome !== "denied",
+      execute: (_side, signal) => new Promise((resolve, reject) => {
+        finish = () => outcome === "failed" ? reject(new Error("fixture failure")) : resolve({ content: "done" });
+        signal.addEventListener("abort", () => resolve({ content: "aborted" }), { once: true });
+      }),
+    });
+    const requestId = f.a.session.submit("remote model task");
+    if (outcome === "denied") await until(() => terminal(f.a, requestId, "denied"));
+    else {
+      await until(() => finish);
+      assert.deepEqual(f.b.session.incomingActivity, { requestId, kind: "task", state: "running" });
+      if (outcome === "revoked") f.b.session.revoke();
+      else if (outcome === "cancelled") f.a.session.cancel(requestId);
+      else finish();
+      await until(() => f.b.session.incomingActivity === undefined);
+    }
+    assert.equal(f.b.session.incomingActivity, undefined, outcome);
+  }
+});
 
 test("persistent-v1 requires confirmed state; both directions are disabled by default with explicit denials", async t => {
   const f = await fixture(t, { unconfirmed: true });

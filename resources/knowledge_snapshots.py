@@ -1,4 +1,8 @@
-"""Private, immutable Git snapshots of active knowledge, managed through MCP."""
+"""Private, immutable Git snapshots of active knowledge, managed through MCP.
+
+This is not a runtime-state backup. Only AREAS and content-privacy.json are
+captured; the private Git repository itself lives under .pkm/state/.
+"""
 import argparse
 import asyncio
 import contextlib
@@ -329,7 +333,7 @@ def register_knowledge_snapshot_tools(mcp, store, node=None, extension_root=None
 
     @mcp.tool(annotations={"readOnlyHint": False})
     def knowledge_snapshot_create(reason: str = "manual") -> dict:
-        """Create a byte-verified private Git snapshot tag without committing code, changing the working index or pushing."""
+        """Snapshot active knowledge and privacy config in private Git, without changing the user's index or pushing. Excludes runtime state, Chat history, Actions and Recipes."""
         return snapshots.create(reason)
 
     @mcp.tool(annotations={"readOnlyHint": False})

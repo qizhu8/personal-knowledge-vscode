@@ -75,7 +75,8 @@ class KnowledgeRecoveryTest(unittest.TestCase):
 
     def test_reject_unsafe_paths_and_symlinks(self):
         for relative in ["skills/../escape", "papers/outside.md", "notes/.git/config",
-                         "notes/.trash/entry", "skills/C:\\escape", "notes//empty"]:
+                         "notes/.trash/entry", "skills/C:\\escape", "notes//empty",
+                         ".pkm/state/agent-sessions/session.json"]:
             with self.subTest(relative=relative):
                 self.plan["files"][0]["path"] = relative
                 self.write_plan()

@@ -25,10 +25,10 @@ try {
   ({ captureExecutionContext } = require("../dist/chat/execution-context"));
 } finally { Module._load = originalLoad; }
 
-async function until(predicate, label) {
+async function until(predicate, label, diagnose) {
   const deadline = Date.now() + 4000;
   while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error(`Timed out: ${label}`);
+    if (Date.now() >= deadline) throw new Error(`Timed out: ${label}${diagnose ? `; ${JSON.stringify(diagnose())}` : ""}`);
     await new Promise(resolve => setTimeout(resolve, 5));
   }
 }
@@ -69,7 +69,8 @@ async function harness(t, respond) {
   provider.requestPermission = async (_chat, _scope, _title, _detail, _signal, _local, once) => { if (once) approvals.push({ once }); return !once; };
   const profile = { id: "fixture", model: "fixture", label: "Fixture", status: "active", contextWindow: 32768, maxOutputTokens: 1024, currency: "USD", includeUsage: false, outputTokenParameter: "max_tokens" };
   provider.settings = () => ({ provider: "openai-compatible", endpoint: `http://127.0.0.1:${server.address().port}/v1`, selectedProfile: profile, profiles: [profile],
-    model: profile.model, contextWindow: profile.contextWindow, maxOutputTokens: 1024, timeoutMs: 10000, maxToolRounds: 10, loopReviewAfterMs: 60000 });
+    model: profile.model, contextWindow: profile.contextWindow, maxOutputTokens: 1024, timeoutMs: 10000, maxToolRounds: 10, loopReviewAfterMs: 60000,
+    activityCreditLimit: -1, activityReviewMs: 20 * 60_000 });
   t.after(async () => {
     provider.dispose();
     await until(() => provider.running.size === 0, "cancelled workers finish");
@@ -80,6 +81,170 @@ async function harness(t, respond) {
   });
   return { provider, root, requests, approvals, errors, privateDirectory };
 }
+
+test("worker result refresh selects the resumed attempt, clears old payload while running, and preserves earlier assignments", async t => {
+  const { provider, root } = await harness(t, (_payload, res) => answer(res, "No model expected"));
+  const receiptId = randomUUID(), activityId = randomUUID(), oldAttempt = randomUUID(), attemptId = randomUUID();
+  const target = fixtures.conversation({
+    workerActivity: { id:activityId, receiptId, managerChatId:root.id, treeId:randomUUID(), temporary:false, state:"completed", attemptId },
+    progress: { attemptId, status:"complete", startedAt:1, model:"fixture", steps:[] },
+    messages: [
+      { id:randomUUID(), role:"user", content:"Assignment", status:"complete", delegationId:receiptId },
+      { id:randomUUID(), role:"assistant", content:"Old partial result", status:"failed",
+        error:"Old failure", progress:{ attemptId:oldAttempt, status:"failed", startedAt:1, model:"fixture", steps:[] } },
+      { id:randomUUID(), role:"user", content:"Resume the same assignment", status:"complete" },
+      { id:randomUUID(), role:"assistant", content:"Current result", status:"complete",
+        progress:{ attemptId, status:"complete", startedAt:2, model:"fixture", steps:[] } },
+    ],
+  });
+  provider.store.save(target);
+  const record = { id:receiptId, chatId:target.id, chatUrl:`pkm://chats/${fixtures.namespace}/${target.id}`,
+    treeId:target.workerActivity.treeId, activityId, attemptId:oldAttempt, temporary:false, status:"failed",
+    answer:"Old partial result", error:"Old failure", truncated:true };
+  provider.refreshDelegation(record);
+  assert.equal(record.answer, "Current result");
+  assert.equal(record.status, "complete");
+  assert.equal(record.attemptId, attemptId);
+  assert.equal(record.error, undefined);
+  assert.equal(record.truncated, false);
+
+  target.progress.status = "running"; target.messages.at(-1).status = "streaming";
+  target.workerActivity.state = "running";
+  provider.store.save(target);
+  provider.refreshDelegation(record);
+  assert.equal(record.status, "running");
+  assert.equal(record.answer, undefined, "pending results must not carry a previous terminal answer");
+  assert.equal(record.error, undefined);
+  assert.equal(record.truncated, undefined);
+
+  target.progress.status = "complete"; target.messages.at(-1).status = "complete";
+  target.workerActivity.state = "completed";
+  provider.store.save(target);
+  provider.refreshDelegation(record);
+  const nextAttempt = randomUUID();
+  target.workerActivity = { ...target.workerActivity, id:randomUUID(), receiptId:randomUUID(), attemptId:nextAttempt, state:"running" };
+  target.progress = { ...target.progress, attemptId:nextAttempt, status:"running" };
+  target.messages.push({ id:randomUUID(), role:"assistant", content:"Unrelated new assignment", status:"streaming",
+    progress:{ ...target.progress } });
+  provider.store.save(target);
+  provider.refreshDelegation(record);
+  assert.equal(record.status, "complete", "reusing a permanent Chat must not retarget an earlier receipt");
+  assert.equal(record.answer, "Current result");
+  assert.equal(record.attemptId, attemptId);
+});
+
+test("archived worker paging and the local result panel select the receipt attempt after store reload", { timeout: 10000 }, async t => {
+  const receiptId = randomUUID(), attemptId = randomUUID();
+  let result;
+  const { provider, root, requests } = await harness(t, (payload, res) => {
+    if (payload.messages.at(-1).role === "tool") {
+      result = JSON.parse(payload.messages.at(-1).content);
+      answer(res, "Read without dispatching a worker");
+    } else tool(res, "read_chat_result", { receiptId, offset:8, limit:7, requireReady:true });
+  });
+  const currentAnswer = "Current durable worker answer";
+  const target = fixtures.conversation({
+    workerActivity:{ id:randomUUID(), receiptId, attemptId, managerChatId:root.id, treeId:randomUUID(), temporary:true, state:"completed" },
+    progress:{ attemptId, status:"complete", startedAt:1, model:"fixture", steps:[] },
+    messages:[
+      { id:randomUUID(), role:"assistant", content:"Original failed answer", status:"failed",
+        progress:{ attemptId:randomUUID(), status:"failed", startedAt:1, model:"fixture", steps:[] } },
+      { id:randomUUID(), role:"assistant", content:currentAnswer, status:"complete",
+        progress:{ attemptId, status:"complete", startedAt:2, model:"fixture", steps:[] } },
+      { id:randomUUID(), role:"assistant", content:"Unrelated later conversation", status:"complete",
+        progress:{ attemptId:randomUUID(), status:"complete", startedAt:3, model:"fixture", steps:[] } },
+    ],
+  });
+  provider.store.save(target);
+  const record = { id:receiptId, chatId:target.id, chatUrl:`pkm://chats/${fixtures.namespace}/${target.id}`, status:"complete",
+    activityId:target.workerActivity.id, attemptId, temporary:true };
+  provider.store.archiveWorker(target, record);
+  record.archived = true;
+  root.messages.push({ id:randomUUID(), role:"assistant", content:"Assignment", status:"complete", delegations:[record] });
+  provider.store.save(root);
+  provider.store = new ApiChatStore(provider.store.stateDirectory, fixtures.namespace);
+  await provider.send("Read the archived worker", root);
+  assert.equal(result.answer, currentAnswer.slice(8, 15));
+  assert.equal(result.attemptId, attemptId);
+  assert.equal(result.totalCharacters, currentAnswer.length);
+  assert.equal(result.nextOffset, 15);
+  assert.equal(result.workerVersion?.schema, "pkm.chat.worker-version/v1", "result reads need a Host version for parent acceptance");
+  assert.equal(result.workerVersion.attemptId, attemptId);
+  assert.equal(result.ready, true, "final validation uses an actually completed handoff after reload");
+  assert.equal(requests.length, 2, "reading must not start a child model");
+  assert.equal(provider.store.workerResult(receiptId).chat.messages.at(-1).content, "Unrelated later conversation");
+  const posts = [];
+  provider.view = { webview:{ postMessage:message => { posts.push(message); return Promise.resolve(true); } } };
+  await provider.handle({ type:"workerArchive", id:receiptId, chatId:root.id });
+  assert.equal(posts.at(-1).answer, currentAnswer);
+  provider.view = undefined;
+});
+
+test("overlapping declared worker ownership is rejected before any child dispatch", { timeout: 10000 }, async t => {
+  let result;
+  const { provider, root, requests } = await harness(t, (payload, res) => {
+    if (payload.messages.at(-1).role === "tool") {
+      result = JSON.parse(payload.messages.at(-1).content);
+      answer(res, "Blocked conflicting work; no completion claim.");
+    } else tool(res, "spawn_workers", { tasks: [
+      { title: "First writer", question: "Edit source", writeScope: ["src/shared.ts"], resources: ["build"] },
+      { title: "Competing writer", question: "Edit same source", writeScope: ["src/shared.ts"], resources: ["build"] },
+    ] });
+  });
+  await provider.send("Check conflicting assignments", root);
+  assert.match(result.error, /overlap/);
+  assert.equal(requests.length, 2, "rejected ownership must not create worker inference requests");
+  assert.equal(provider.store.load(root.id, false).messages.flatMap(message => message.delegations || []).length, 0);
+});
+
+test("managed repeated failures permit one replan then stop without accepting unresolved work", { timeout: 10000 }, async t => {
+  const missingReceipt = randomUUID();
+  const fixture = await harness(t, (payload, res) => {
+    if (payload.tools?.length) tool(res, "read_chat_result", { receiptId: missingReceipt });
+    else answer(res, "No ready worker result exists; the objective remains unresolved.");
+  });
+  await fixture.provider.send("Please implement the fixture.", fixture.root);
+  const saved = fixture.provider.store.load(fixture.root.id, false), reply = saved.messages.at(-1);
+  assert.equal(fixture.requests.length, 5, "two failures, one strategy change, two failures, then one tool-free summary");
+  assert(fixture.requests[2].messages.some(message => message.role === "system" && message.content.includes("One recovery is allowed")));
+  assert(!fixture.requests.at(-1).tools, "the second stall cannot launch more tools");
+  assert.match(reply.outputBudgetWarning, /repeated-failure/);
+  assert.equal(reply.toolCalls.length, 4);
+  assert(reply.toolCalls.every(call => call.status === "failed"));
+  assert.equal(saved.workGoal.status, "interrupted");
+  assert(saved.workGoal.acceptance.every(item => !item.verified));
+  assert.match(reply.error, /objective remains open/);
+});
+
+test("worker result identities fail explicitly and legacy assignments stay scoped to their input", async t => {
+  const { provider, root } = await harness(t, (_payload, res) => answer(res, "No model expected"));
+  const receiptId = randomUUID(), activityId = randomUUID(), attemptId = randomUUID();
+  const record = { id:receiptId, chatId:randomUUID(), chatUrl:"", status:"complete", activityId, attemptId };
+  const target = fixtures.conversation({ id:record.chatId,
+    workerActivity:{ id:activityId, receiptId, attemptId, managerChatId:root.id, treeId:randomUUID(), temporary:true, state:"completed" },
+    progress:{ attemptId, status:"complete", startedAt:1, model:"fixture", steps:[] }, messages:[] });
+  assert.throws(() => provider.delegationReply(record, { ...target, id:randomUUID() }, true), /identity/);
+  assert.throws(() => provider.delegationReply({ ...record, activityId:randomUUID() }, target, true), /different activity/);
+  assert.throws(() => provider.delegationReply(record, { ...target, workerActivity:{ ...target.workerActivity, receiptId:randomUUID() } }, true), /identity/);
+  assert.throws(() => provider.delegationReply(record, target, true), /attempt is unavailable/);
+  assert.throws(() => provider.delegationReply(record, target), /attempt is unavailable/);
+  const reply = { id:randomUUID(), role:"assistant", content:"Bound result", status:"complete", progress:{ ...target.progress } };
+  target.messages = [reply, { ...reply, id:randomUUID() }];
+  assert.throws(() => provider.delegationReply(record, target), /ambiguous/);
+  const legacy = { id:receiptId, chatId:target.id, chatUrl:"", status:"running" };
+  target.workerActivity = undefined;
+  target.progress = undefined;
+  target.messages = [
+    { id:randomUUID(), role:"user", content:"Old assignment", status:"complete", delegationId:receiptId },
+    { id:randomUUID(), role:"assistant", content:"Legacy scoped answer", status:"complete" },
+    { id:randomUUID(), role:"user", content:"Unrelated", status:"complete", delegationId:randomUUID() },
+    { id:randomUUID(), role:"assistant", content:"Unrelated result", status:"complete" },
+  ];
+  assert.equal(provider.delegationReply(legacy, target).content, "Legacy scoped answer");
+  target.messages.splice(1, 1);
+  assert.equal(provider.delegationReply(legacy, target), undefined, "missing legacy answer cannot borrow another input's response");
+  assert.throws(() => provider.refreshDelegation({ ...legacy, archived:true }), /archive.*unavailable/i);
+});
 
 test("unconfigured private Host Profiles preserve real manager/worker dispatch without creating cards or injecting persona context", async t => {
   let workerGate;
@@ -198,6 +363,12 @@ test("manager resumes a failed worker from recorded progress without replacing h
   assert.equal(current.workerActivity.id, failedWorker.workerActivity.id);
   assert.notEqual(current.workerActivity.attemptId, failedRecord.attemptId);
   assert.equal(current.workerActivity.receiptId, failedRecord.id);
+  const pendingRecord = record();
+  provider.refreshDelegation(pendingRecord);
+  assert.equal(pendingRecord.status, "running");
+  assert.equal(pendingRecord.attemptId, current.workerActivity.attemptId);
+  assert.equal(pendingRecord.answer, undefined, "a real resumed worker must not expose its original partial answer as current");
+  assert.equal(pendingRecord.error, undefined);
   assert.equal(provider.chat.id, fixture.root.id, "manager view must not be retargeted to the worker");
   assert.equal(provider.store.workerTrees.count(treeId), count);
   assert.equal(fixture.approvals.length, 0, "Resume reuses the existing occupied worker slot");
@@ -213,6 +384,8 @@ test("manager resumes a failed worker from recorded progress without replacing h
   assert.equal(archive.messages.at(-1).content, "Continued from saved evidence");
   assert.equal(archive.messages.flatMap(message => message.toolCalls || []).length, 1, "Resume never replays previously recorded tool calls itself");
   assert.equal(record().archived, true);
+  assert.equal(record().answer, "Continued from saved evidence");
+  assert.equal(record().error, undefined);
   await assert.rejects(provider.handle({ type: "workerResume", id: failedRecord.id, value: archive.workerActivity.attemptId }), /does not own/);
   assert.deepEqual(fixture.errors, []);
 });
@@ -460,14 +633,20 @@ test("ordinary lifecycle updates never wake; real permission episodes wake once 
     });
     target = fixture.provider.store.create();
     target.messages.push({ id: randomUUID(), role: "user", content: "HISTORICAL_USER_CONTEXT", status: "complete" });
-    target.permissionMode = "allow-all"; fixture.provider.store.save(target);
+    target.permissionMode = "allow-all"; target.builtinTools = ["list_chats"]; target.vscodeTools = [];
+    fixture.provider.store.save(target);
     const groupId = fixture.provider.store.library.createGroup("Existing group");
     fixture.provider.store.library.move(target.id, groupId);
     await fixture.provider.send("ASSIGN", fixture.root);
-    await until(() => fixture.provider.running.size === 0 && fixture.requests.length >= 3, "existing activity resolved");
+    await until(() => fixture.provider.running.size === 0 && fixture.requests.length >= 3, "existing activity resolved", () => ({
+      requests: fixture.requests.map(request => ({ last: request.messages.at(-1), tools: request.tools?.map(tool => tool.function.name) })),
+      running: [...fixture.provider.running.keys()], errors: fixture.errors.map(error => error.message),
+      state: fixture.provider.store.load(fixture.root.id, false).workerState,
+    }));
     let saved = fixture.provider.store.load(target.id, false);
     assert(saved.messages.some(message => message.content === "HISTORICAL_USER_CONTEXT"));
     assert(saved.messages.some(message => message.fromChatId === fixture.root.id && message.delegationId));
+    assert.deepEqual(saved.builtinTools, ["list_chats"], "assignment preserves the existing Chat's explicit tool selection");
     assert.equal(saved.workerActivity, undefined);
     assert.equal(saved.workerState, undefined, "Assignment is not permanent ownership");
     assert.equal(fixture.provider.store.library.read().placements[target.id].groupId, groupId);

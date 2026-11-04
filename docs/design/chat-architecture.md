@@ -106,6 +106,20 @@ no acceptance confirmation remains prepared/failed, not proof that no network
 bytes were transmitted. Memory rounds retain the matching phase and selected
 identities, separate from input-token estimates and reported usage.
 
+For native VS Code models with `countTokens`, a candidate set exceeding the
+conservative byte bound is measured before context selection, not only after
+tool evidence has already been dropped. Planning and final transport use the
+same native message conversion and invocation-local token cache. Unchanged
+messages use measured costs plus framing overhead; newly generated or changed
+messages fall back to conservative byte bounds, explicitly labeled as mixed
+counting in `contextPlan.measuredInput` and the public `planningInput` summary.
+The byte estimates remain separate from this planning cost, final transport
+counts, and provider-reported usage. Final payload validation, model/output
+limits, atomic tool pairs, source revalidation and the independent 8K automatic
+knowledge byte bound remain enforced. Models without a tokenizer, HTTP and SDK
+retain conservative planning. Tokenizer errors and cancellation fail explicitly
+before dispatch; they do not authorize a larger budget or automatic replay.
+
 All windows sharing a Knowledge Root enumerate its existing Chat partitions.
 Conversation writes compare revisions under a common process lock. Library
 updates use a separate atomic file and lock. Trash/delete acquire the conversation
@@ -126,12 +140,56 @@ does not execute Recipes, migrate storage or expose arbitrary filesystem paths.
 Chat Trash removes conversation records only; Task and Group evidence remain owned
 by the Session runtime.
 
+## Explicit work-goal boundaries and send failures
+
+Composer planning advice and budget explanations occupy compact icons in the
+Workflow row, not persistent text rows. Their localized details appear in an
+overlay on hover, keyboard focus or click; Escape dismisses it. Budget correction
+removes the warning and any stale tooltip without changing the Send budget guard.
+
+The composer and programmable Chat API share the same explicit text command:
+start a message with `Start a new task: <objective>` or
+`开始新任务：<objective>`. An empty objective is rejected. Quoted commands,
+ordinary follow-ups and `Continue` do not silently replace a goal. This is a
+deliberate command, not a broader natural-language intent classifier.
+
+An explicit new task creates a new goal bound to the current execution context.
+The prior goal is retained in `workGoalHistory` with its original identity,
+objective, execution digest and acceptance evidence. An active prior goal is
+paused with a `user_superseded` transition; other statuses, including genuine
+resolved evidence, are preserved. Archival is not completion. Goal history is
+validated on durable reload, never injected as current acceptance requirements,
+and does not reactivate old objectives with History off. History off still
+allows the explicitly delegated current task. Ordinary resume retains the
+existing cross-execution-context rejection; new-task commands do not change
+permissions, Plan approvals or managed Task completion authority.
+Retry of the same new-task input resumes that goal, clears stale acceptance
+evidence and retains the original execution-context check; it does not archive
+the goal again. This also applies with History off.
+
+A new-task command cannot be submitted or edited into active steering. Queue it
+as a separate task or stop the current response first. Queued batches stop at
+the next explicit new-task boundary, so distinct goals are not combined.
+
+Failures after an attempt starts but before its normal reply is created receive
+their own durable failed/cancelled assistant record, linked to the current
+attempt and input when present. They have no invented model usage or credits.
+Programmable sends reject failed/interrupted attempts and never return an older
+reply as the new send's result. The request receipt records failure; a read-only
+Chat get exposes the recorded attempt and error. Cancellation still preserves
+partial output. Neither failure nor an uncertain receipt authorizes replay.
+
 ## Verification
 
 `tests/test-api-chat.js` covers shared partitions, stale writes, actual two-process
 contention, live/dead request owners, Group/Task independence, knowledge approvals,
 transport/tool guards and acceptance failure isolation. Its scripted acceptance
 regression executes an unchanged Node fixture but is not a real model E2E run.
+It also exercises pre-model goal-context rejection, failure persistence and
+propagation, explicit cross-context new tasks, current goal inspection and
+queue/steering task boundaries. `tests/test-chat-work-goal.js` and
+`tests/test-chat-history-storage.js` cover goal archival, source-input boundaries,
+History off and durable validation.
 
 `tests/test-agent-session-lifecycle.js` covers Session lifecycle behavior.
 Packaging requires every Chat UI asset and isolated bundled dependency loading.

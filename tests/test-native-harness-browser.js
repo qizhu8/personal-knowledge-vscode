@@ -6,6 +6,301 @@ const { createNativeHarnessServer } = require("../dist/runtime/native-harness-se
 const { fixture, sessionId } = require("./native-harness-fixture");
 const { createChatBudgetLedger, recordChatBudgetUsage, recordChatBudgetRuntime } = require("../dist/chat/chat-budget-ledger");
 const { themes, applyTheme } = require("./ui-theme-fixtures");
+test("changed descendant versions demote ancestor acceptance across browser refresh/remount until the chain revalidates", async t => {
+  const fs = require("node:fs"), os = require("node:os"), { randomUUID } = require("node:crypto");
+  const { ApiChatStore, apiChatHarnessSnapshot, verifyHarnessArtifacts } = require("../dist/chat/api-chat-store");
+  const { workerResultVersion, readWorkerResultVersion, assertCurrentWorkerEvidence } = require("../dist/chat/worker-result-versions");
+  const { createHarnessReportTool } = require("../dist/chat/chat-harness-records");
+  const fixtures = require("./fixtures/chat-context");
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-worker-evidence-browser-"));
+  t.after(() => fs.rmSync(directory, { recursive:true, force:true }));
+  const store = new ApiChatStore(directory, fixtures.namespace), manager = fixtures.conversation({ sessionId });
+  const reply = { id:randomUUID(), role:"assistant", taskId:sessionId, content:"Parent accepted",
+    status:"streaming", progress:{ attemptId:randomUUID(), status:"running", startedAt:1, model:"fixture", steps:[] }, toolCalls:[] };
+  manager.messages = [{ id:randomUUID(), role:"user", taskId:sessionId, status:"complete", content:"Accept worker output" }, reply];
+  const attemptId = randomUUID(), receiptId = randomUUID(), activityId = randomUUID();
+  const worker = fixtures.conversation({
+    workerActivity:{ id:activityId, receiptId, attemptId, managerChatId:manager.id, treeId:randomUUID(), temporary:false, state:"completed" },
+    progress:{ attemptId, status:"complete", startedAt:1, model:"fixture", steps:[] },
+    messages:[{ id:randomUUID(), role:"assistant", content:"First result", status:"complete",
+      progress:{ attemptId, status:"complete", startedAt:1, model:"fixture", steps:[] } }],
+  });
+  const record = { id:receiptId, chatId:worker.id, chatUrl:`pkm://chats/${fixtures.namespace}/${worker.id}`,
+    activityId, attemptId, status:"complete", temporary:false };
+  reply.delegations = [record]; store.save(worker); store.save(manager);
+  const childAttempt = randomUUID(), childReceipt = randomUUID(), childActivity = randomUUID();
+  const child = fixtures.conversation({
+    workerActivity:{ id:childActivity, receiptId:childReceipt, attemptId:childAttempt, managerChatId:worker.id,
+      treeId:randomUUID(), temporary:false, state:"completed" },
+    progress:{ attemptId:childAttempt, status:"complete", startedAt:1, model:"fixture", steps:[] },
+    messages:[{ id:randomUUID(), role:"assistant", content:"Grandchild result", status:"complete",
+      progress:{ attemptId:childAttempt, status:"complete", startedAt:1, model:"fixture", steps:[] } }],
+  });
+  const childRecord = { id:childReceipt, chatId:child.id, chatUrl:`pkm://chats/${fixtures.namespace}/${child.id}`,
+    activityId:childActivity, attemptId:childAttempt, status:"complete", temporary:false };
+  worker.messages[0].delegations = [childRecord]; store.save(child);
+  const refreshChild = () => {
+    const id = randomUUID();
+    (worker.messages[0].toolCalls ||= []).push({ id, name:"read_chat_result", status:"complete", arguments:"{}",
+      result:JSON.stringify({ workerVersion:workerResultVersion(worker, childRecord, child) }) });
+    (worker.messages[0].harnessReports ||= []).push({ kind:"validation", status:"complete", evidenceCallIds:[id] });
+    store.save(worker);
+  };
+  refreshChild();
+  const tool = createHarnessReportTool(manager, reply, report => {
+    (reply.harnessReports ||= []).push(report); store.save(manager);
+  }, undefined, calls => assertCurrentWorkerEvidence(calls, manager.id, version => readWorkerResultVersion(directory, version)));
+  const validate = async () => {
+    reply.status = "streaming"; reply.progress.status = "running";
+    await tool.execute({ kind:"validation", stepId:"worker-check", status:"start", summary:"Read worker result" }, new AbortController().signal);
+    const callId = randomUUID();
+    reply.toolCalls.push({ id:callId, name:"read_chat_result", arguments:"{}", status:"complete",
+      result:JSON.stringify({ workerVersion:workerResultVersion(manager, record, worker) }) });
+    await tool.execute({ kind:"validation", stepId:"worker-check", status:"complete",
+      summary:"Current worker checked", evidenceCallIds:[callId] }, new AbortController().signal);
+    reply.status = "complete"; reply.progress.status = "complete";
+  };
+  await validate();
+  const browser = await chromium.launch({ headless:true }); t.after(() => browser.close());
+  const page = await browser.newPage({ viewport:{ width:1100, height:900 } });
+  const errors = []; page.on("pageerror", error => errors.push(error.message));
+  await page.setContent('<main id="host"></main>');
+  await page.addStyleTag({ path:path.join(__dirname, "../src/webview/agent-harness.css") });
+  await page.addScriptTag({ path:path.join(__dirname, "../src/webview/agent-harness.js") });
+  const render = async remount => {
+    const initial = { ...fixture(), status:"completed", todos:[{ status:"succeeded" }], runs:[], actionRuns:[],
+      harness:await verifyHarnessArtifacts(apiChatHarnessSnapshot(manager), [], undefined, directory) };
+    await page.evaluate(({ initial, remount }) => {
+      if (remount) {
+        window.controller?.dispose();
+        window.controller = PkmAgentHarness.mount(document.getElementById("host"), { initial, request:async () => initial });
+      } else window.controller.update(initial, true);
+      window.controller.showLifecycle();
+    }, { initial, remount });
+  };
+  await render(true);
+  const end = page.locator('.pkm-harness-stage[data-stage="end"]');
+  assert.equal(await end.getAttribute("data-status"), "complete");
+  const unchangedIntermediate = JSON.stringify(worker.messages);
+  child.messages[0].content = "Changed grandchild result"; store.save(child);
+  for (const remount of [false, true]) {
+    await render(remount);
+    assert.equal(await end.getAttribute("data-status"), "pending");
+    assert.equal(await page.locator('.pkm-harness-stage[data-stage="check"]').getAttribute("data-status"), "unverified");
+    await page.locator('.pkm-harness-stage[data-stage="evaluate"]').click();
+    const inspector = await page.locator(".pkm-harness-inspector").innerText();
+    assert.match(inspector, /Worker result versions/); assert.match(inspector, /descendant.*stale/);
+    assert.equal(await page.getByText("accepted", { exact:true }).count(), 0);
+  }
+  assert.equal(JSON.stringify(worker.messages), unchangedIntermediate);
+  refreshChild(); await validate(); await render(false);
+  assert.equal(await end.getAttribute("data-status"), "complete");
+  assert.deepEqual(errors, []);
+});
+
+test("changed saved artifacts remove accepted End across browser refresh and remount", async t => {
+  const fs = require("node:fs"), os = require("node:os");
+  const { apiChatHarnessSnapshot, verifyHarnessArtifacts } = require("../dist/chat/api-chat-store");
+  const { captureValidationArtifacts } = require("../dist/chat/validation-artifacts");
+  const { createHarnessReportTool } = require("../dist/chat/chat-harness-records");
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-artifact-browser-"));
+  t.after(() => fs.rmSync(directory, { recursive:true, force:true }));
+  const file = path.join(directory, "output.txt");
+  fs.writeFileSync(file, "first");
+  const reply = { id:"reply", role:"assistant", taskId:sessionId, status:"streaming", content:"Checked",
+    progress:{ attemptId:"attempt", status:"running", steps:[] },
+    toolCalls:[{ id:"check", name:"test", arguments:"{}", status:"complete", result:"Passed" }] };
+  const chat = { id:"fixture", sessionId, messages:[
+    { id:"input", role:"user", taskId:sessionId, status:"complete", content:"Check saved file" }, reply,
+  ] };
+  const tool = createHarnessReportTool(chat, reply, report => (reply.harnessReports ||= []).push(report),
+    (files, signal) => captureValidationArtifacts(files, [directory], signal, value => {
+      assert.equal(value, "output.txt"); return value;
+    }));
+  const validate = async () => {
+    reply.status = "streaming"; reply.progress.status = "running";
+    await tool.execute({ kind:"validation", stepId:"check", status:"start", summary:"Check saved file",
+      artifactPaths:[{ path:"output.txt" }] }, new AbortController().signal);
+    const callId = `check-${reply.toolCalls.length}`;
+    reply.toolCalls.push({ id:callId, name:"test", arguments:"{}", status:"complete", result:"Passed",
+      startedAt:Date.now(), finishedAt:Date.now() });
+    await tool.execute({ kind:"validation", stepId:"check", status:"complete", summary:"Saved file checked",
+      evidenceCallIds:[callId] }, new AbortController().signal);
+    reply.status = "complete"; reply.progress.status = "complete";
+  };
+  await validate();
+  const browser = await chromium.launch({ headless:true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport:{ width:1100, height:900 } });
+  const errors = []; page.on("pageerror", error => errors.push(error.message));
+  await page.setContent('<main id="host"></main>');
+  await page.addStyleTag({ path:path.join(__dirname, "../src/webview/agent-harness.css") });
+  await page.addScriptTag({ path:path.join(__dirname, "../src/webview/agent-harness.js") });
+  const render = async remount => {
+    const data = { ...fixture(), status:"completed", todos:[], runs:[], actionRuns:[], harness:await verifyHarnessArtifacts(apiChatHarnessSnapshot(chat), [directory]) };
+    await page.evaluate(({ initial, remount }) => {
+      if (remount) {
+        window.controller?.dispose();
+        window.controller = PkmAgentHarness.mount(document.getElementById("host"), { initial, request:async () => initial });
+      } else window.controller.update(initial, true);
+      window.controller.showLifecycle();
+    }, { initial:data, remount });
+  };
+  await render(true);
+  const end = page.locator('.pkm-harness-stage[data-stage="end"]');
+  assert.equal(await end.getAttribute("data-status"), "complete");
+  fs.writeFileSync(file, "second");
+  for (const remount of [false, true]) {
+    await render(remount);
+    assert.equal(await end.getAttribute("data-status"), "pending");
+    const check = page.locator('.pkm-harness-stage[data-stage="check"]');
+    assert.equal(await check.getAttribute("data-status"), "unverified");
+    await page.locator('.pkm-harness-stage[data-stage="evaluate"]').click();
+    assert.match(await page.locator(".pkm-harness-inspector").innerText(), /output.txt/);
+    assert.equal(await page.getByText("accepted", { exact:true }).count(), 0);
+  }
+  await validate();
+  await render(false);
+  assert.equal(await end.getAttribute("data-status"), "complete");
+  assert.deepEqual(errors, []);
+});
+
+test("terminal attempts never render an accepted End from an earlier validation", async t => {
+  const browser = await chromium.launch({ headless:true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport:{ width:1100, height:900 } });
+  const errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  await page.setContent('<main id="host"></main>');
+  await page.addStyleTag({ path:path.join(__dirname, "../src/webview/agent-harness.css") });
+  await page.addScriptTag({ path:path.join(__dirname, "../src/webview/agent-harness.js") });
+  for (const status of ["failed", "cancelled", "interrupted"]) {
+    const data = fixture();
+    Object.assign(data, { status, todos:[], runs:[], actionRuns:[] });
+    data.harness = { state:status, attempts:[{
+      messageId:"terminal-attempt", attemptId:"terminal", status, toolCalls:[],
+      harnessReports:[{ id:"earlier-validation", kind:"validation", status:"complete",
+        summary:"Earlier checks passed", evidenceCallIds:["earlier-call"], binding:{} }],
+      validation:{ error:`Attempt ${status} after validation` },
+    }] };
+    await page.evaluate(initial => {
+      window.controller?.dispose();
+      window.controller = PkmAgentHarness.mount(document.getElementById("host"), { initial, request:async () => initial });
+      window.controller.showLifecycle();
+    }, data);
+    const run = page.locator('.pkm-harness-stage[data-stage="run"]');
+    await run.waitFor();
+    assert.equal(await run.getAttribute("data-status"), status);
+    assert.equal(await run.getAttribute("aria-current"), "step");
+    const end = page.locator('.pkm-harness-stage[data-stage="end"]');
+    assert.equal(await end.getAttribute("data-status"), "pending");
+    assert.equal(await end.getAttribute("aria-current"), null);
+    assert.equal(await page.getByText("accepted", { exact:true }).count(), 0);
+  }
+  assert.deepEqual(errors, []);
+});
+
+test("completed reply monitors its referenced Action until terminal across refresh and remount", async t => {
+  const { apiChatHarnessSnapshot } = require("../dist/chat/api-chat-store");
+  const { actionId } = require("./native-harness-fixture");
+  const browser = await chromium.launch({ headless:true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport:{ width:1100, height:900 } });
+  const errors = []; page.on("pageerror", error => errors.push(error.message));
+  await page.setContent('<main id="host"></main>');
+  await page.addStyleTag({ path:path.join(__dirname, "../src/webview/agent-harness.css") });
+  await page.addScriptTag({ path:path.join(__dirname, "../src/webview/agent-harness.js") });
+  const chat = { version:1, id:"fixture-chat", sessionId, title:"Wait for Action", messages:[
+    { id:"u", role:"user", status:"complete", content:"Check the result" },
+    { id:"m", role:"assistant", status:"complete", content:"Validation recorded",
+      toolCalls:[{ id:"call", name:"run_action", status:"complete", arguments:"{}", result:JSON.stringify({ run_id:actionId }) }],
+      harnessReports:[{ id:"v", kind:"validation", status:"complete", summary:"Checks passed", evidenceCallIds:["call"], binding:{} }] },
+  ] };
+  const data = { ...fixture(), status:"completed", todos:[], runs:[], harness:apiChatHarnessSnapshot(chat) };
+  const render = async (state, remount = false) => {
+    data.actionRuns[0].state = state;
+    await page.evaluate(({ initial, remount }) => {
+      if (remount) {
+        window.controller?.dispose();
+        window.controller = PkmAgentHarness.mount(document.getElementById("host"), { initial, request:async () => initial });
+      } else window.controller.update(initial, true);
+      window.controller.showLifecycle();
+    }, { initial:JSON.parse(JSON.stringify(data)), remount });
+  };
+  const stage = id => page.locator(`.pkm-harness-stage[data-stage="${id}"]`);
+  for (const [state, remount] of [["running", true], ["waiting", false], ["waiting", true]]) {
+    await render(state, remount);
+    assert.equal(await stage("monitor").getAttribute("data-status"), "waiting");
+    assert.equal(await stage("monitor").getAttribute("aria-current"), "step");
+    assert.equal(await stage("end").getAttribute("data-status"), "pending");
+    await stage("end").click();
+    assert.equal(await page.getByText("accepted", { exact:true }).count(), 0);
+    await stage("monitor").click();
+    assert.match(await page.locator(".pkm-harness-inspector").innerText(), new RegExp(`fixture.script: ${state}`));
+  }
+  await render("succeeded");
+  assert.equal(await stage("end").getAttribute("data-status"), "complete");
+  await stage("end").click();
+  assert.equal(await page.getByText("accepted", { exact:true }).count(), 1);
+  delete data.harness.attempts[0].harnessReports;
+  await render("succeeded", true);
+  assert.equal(await stage("check").getAttribute("data-status"), "unverified");
+  assert.equal(await stage("end").getAttribute("data-status"), "pending");
+  assert.equal(await page.getByText("accepted", { exact:true }).count(), 0);
+  assert.deepEqual(errors, []);
+});
+
+test("changed user requirements invalidate accepted End across refresh and remount", async t => {
+  const { apiChatHarnessSnapshot } = require("../dist/chat/api-chat-store");
+  const { validateHarnessReport } = require("../dist/chat/chat-harness-records");
+  const browser = await chromium.launch({ headless:true }); t.after(() => browser.close());
+  const page = await browser.newPage({ viewport:{ width:1100, height:900 } });
+  const errors = []; page.on("pageerror", error => errors.push(error.message));
+  await page.setContent('<main id="host"></main>');
+  await page.addStyleTag({ path:path.join(__dirname, "../src/webview/agent-harness.css") });
+  await page.addScriptTag({ path:path.join(__dirname, "../src/webview/agent-harness.js") });
+  const reply = { id:"reply", role:"assistant", taskId:sessionId, content:"Checked", status:"streaming",
+    progress:{ attemptId:"attempt", status:"running", startedAt:1, model:"fixture", steps:[] },
+    toolCalls:[{ id:"check", name:"test", arguments:"{}", status:"complete", result:"Tests passed" }] };
+  const chat = { id:"fixture", sessionId, messages:[
+    { id:"input", role:"user", taskId:sessionId, content:"Check original requirements", status:"complete" }, reply,
+  ] };
+  const report = args => (reply.harnessReports ||= []).push(validateHarnessReport(chat, reply, args));
+  const validate = () => {
+    reply.progress.status = "running";
+    report({ kind:"validation", stepId:"check", status:"start", summary:"Check current requirements" });
+    report({ kind:"validation", stepId:"check", status:"complete", summary:"Current checks passed", evidenceCallIds:["check"] });
+    reply.status = "complete"; reply.progress.status = "complete";
+  };
+  const render = async remount => {
+    const initial = { ...fixture(), status:"completed", todos:[], runs:[], actionRuns:[], harness:apiChatHarnessSnapshot(chat) };
+    await page.evaluate(({ initial, remount }) => {
+      if (remount) {
+        window.controller?.dispose();
+        window.controller = PkmAgentHarness.mount(document.getElementById("host"), { initial, request:async () => initial });
+      } else window.controller.update(initial, true);
+      window.controller.showLifecycle();
+    }, { initial:JSON.parse(JSON.stringify(initial)), remount });
+  };
+  validate(); await render(true);
+  const end = page.locator('.pkm-harness-stage[data-stage="end"]');
+  assert.equal(await end.getAttribute("data-status"), "complete");
+  chat.messages.push({ id:"steer", role:"user", taskId:sessionId, inputKind:"steer",
+    content:"Also validate the updated requirement", status:"complete" });
+  for (const remount of [false, true]) {
+    await render(remount);
+    const check = page.locator('.pkm-harness-stage[data-stage="check"]');
+    assert.equal(await check.getAttribute("data-status"), "unverified");
+    assert.equal(await check.getAttribute("aria-current"), "step");
+    assert.equal(await end.getAttribute("data-status"), "pending");
+    await end.click();
+    assert.equal(await page.getByText("accepted", { exact:true }).count(), 0);
+  }
+  validate(); await render(false);
+  assert.equal(await end.getAttribute("data-status"), "complete");
+  assert.deepEqual(errors, []);
+});
+
 test("Dashboard inspects current User and Chat-assigned Agent Profiles separately from historical snapshots without inference", async t => {
   const browser = await chromium.launch({headless:true}); t.after(() => browser.close());
   const page = await browser.newPage({viewport:{width:390,height:1000}});

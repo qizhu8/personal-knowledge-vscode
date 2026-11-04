@@ -10,9 +10,11 @@ export interface ChatProcessRecord {
   schema: "pkm.chat.process/v1";
   handle: string;
   spec: ChatProcessSpec;
-  state: "launching" | "running" | "complete" | "failed" | "cancelled" | "timed-out" | "output-limit" | "unknown";
+  state: "launching" | "running" | "paused" | "complete" | "failed" | "cancelled" | "timed-out" | "output-limit" | "unknown";
   createdAt: number;
   updatedAt: number;
+  pausedAt?: number;
+  pausedMs?: number;
   runnerPid?: number;
   childPid?: number;
   exitCode?: number | null;
@@ -26,9 +28,12 @@ export function isChatProcessRecord(value: unknown): value is ChatProcessRecord 
   if (!value || typeof value !== "object") return false;
   const record = value as Partial<ChatProcessRecord>, spec = record.spec;
   return record.schema === "pkm.chat.process/v1" && typeof record.handle === "string" && /^process_[a-f0-9]{64}$/.test(record.handle)
-    && typeof record.state === "string" && ["launching", "running", "complete", "failed", "cancelled", "timed-out", "output-limit", "unknown"].includes(record.state)
+    && typeof record.state === "string" && ["launching", "running", "paused", "complete", "failed", "cancelled", "timed-out", "output-limit", "unknown"].includes(record.state)
     && typeof record.updatedAt === "number" && Number.isFinite(record.updatedAt)
     && typeof record.createdAt === "number" && Number.isFinite(record.createdAt)
+    && (record.pausedAt === undefined || typeof record.pausedAt === "number" && Number.isFinite(record.pausedAt))
+    && (record.pausedMs === undefined || Number.isSafeInteger(record.pausedMs) && record.pausedMs >= 0)
+    && (record.state !== "paused" || typeof record.pausedAt === "number")
     && typeof record.stdoutBytes === "number" && Number.isSafeInteger(record.stdoutBytes) && record.stdoutBytes >= 0
     && typeof record.stderrBytes === "number" && Number.isSafeInteger(record.stderrBytes) && record.stderrBytes >= 0
     && !!spec && typeof spec.program === "string" && !!spec.program && !spec.program.includes("\0") && spec.program.length <= 1024
@@ -86,10 +91,57 @@ function loadRecord(directory: string): ChatProcessRecord {
 
 export function getChatProcess(root: string, handle: string): ChatProcessRecord {
   const record = loadRecord(processDirectory(root, handle));
-  if (["launching", "running"].includes(record.state) && Date.now() - record.updatedAt > 10000) {
+  if (["launching", "running", "paused"].includes(record.state) && Date.now() - record.updatedAt > 10000) {
     return { ...record, state: "unknown", detail: "The process supervisor heartbeat is stale. Execution may still have effects; do not relaunch or signal a historical PID." };
   }
   return record;
+}
+
+function writeProcessControl(directory: string, action: "pause" | "resume"): void {
+  const control = path.join(directory, "control.json");
+  try {
+    if (fs.lstatSync(control).isSymbolicLink()) throw new Error("Process control evidence cannot be a symbolic link.");
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  const temporary = path.join(directory, `${randomUUID()}.control.tmp`);
+  try {
+    fs.writeFileSync(temporary, JSON.stringify({ action, requestId:randomUUID(), issuedAt:Date.now() }), { flag:"wx", mode:0o600 });
+    fs.renameSync(temporary, control);
+  } finally { fs.rmSync(temporary, { force:true }); }
+}
+
+function latestProcessControl(directory: string): { action: "pause" | "resume"; requestId: string; issuedAt: number } | undefined {
+  const control = path.join(directory, "control.json");
+  try {
+    if (fs.lstatSync(control).isSymbolicLink()) throw new Error("Process control evidence cannot be a symbolic link.");
+    const value: unknown = JSON.parse(fs.readFileSync(control, "utf8"));
+    if (!value || typeof value !== "object") throw new Error("Invalid process control evidence.");
+    const item = value as { action?: unknown; requestId?: unknown; issuedAt?: unknown };
+    if ((item.action !== "pause" && item.action !== "resume") || typeof item.requestId !== "string"
+      || typeof item.issuedAt !== "number" || !Number.isFinite(item.issuedAt)) throw new Error("Invalid process control evidence.");
+    return item as { action: "pause" | "resume"; requestId: string; issuedAt: number };
+  } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+}
+
+export function pauseChatProcess(root: string, handle: string): ChatProcessRecord {
+  if (process.platform === "win32") throw new Error("Reliable process-tree pause is not available on Windows yet.");
+  const directory = processDirectory(root, handle);
+  const record = getChatProcess(root, handle);
+  const control = latestProcessControl(directory);
+  if (record.state === "paused" && control?.action !== "resume" || record.state === "running" && control?.action === "pause") return record;
+  if (record.state !== "running" && record.state !== "paused") throw new Error(record.state === "unknown" ? record.detail : `Only a running process can be paused (current state: ${record.state}).`);
+  writeProcessControl(directory, "pause");
+  return { ...record, detail:"Pause requested; query this handle until the supervisor confirms the process tree is paused." };
+}
+
+export function resumeChatProcess(root: string, handle: string): ChatProcessRecord {
+  if (process.platform === "win32") throw new Error("Reliable process-tree resume is not available on Windows yet.");
+  const directory = processDirectory(root, handle);
+  const record = getChatProcess(root, handle);
+  const control = latestProcessControl(directory);
+  if (record.state === "running" && control?.action !== "pause" || record.state === "paused" && control?.action === "resume") return record;
+  if (record.state !== "paused" && record.state !== "running") throw new Error(record.state === "unknown" ? record.detail : `Only a paused process can be resumed (current state: ${record.state}).`);
+  writeProcessControl(directory, "resume");
+  return { ...record, detail:"Resume requested; query this handle until the supervisor confirms the process tree is running." };
 }
 
 export async function launchChatProcess(root: string, key: string, spec: ChatProcessSpec): Promise<ChatProcessRecord> {
@@ -130,7 +182,7 @@ export async function launchChatProcess(root: string, key: string, spec: ChatPro
 export function cancelChatProcess(root: string, handle: string): ChatProcessRecord {
   const directory = processDirectory(root, handle);
   const record = getChatProcess(root, handle);
-  if (!["launching", "running"].includes(record.state)) {
+  if (!["launching", "running", "paused"].includes(record.state)) {
     if (record.state === "unknown") throw new Error(record.detail);
     return record;
   }
@@ -151,7 +203,7 @@ export function cancelAllChatProcesses(root: string, startedBefore = Infinity): 
       const record = getChatProcess(root, handle);
       if (record.createdAt > startedBefore) continue;
       if (record.state === "unknown") throw new Error(record.detail || "Process termination cannot be confirmed.");
-      if (!["launching", "running"].includes(record.state)) continue;
+      if (!["launching", "running", "paused"].includes(record.state)) continue;
       cancelChatProcess(root, handle); cancelled.push(handle);
     } catch (error) { errors.push(`${handle}: ${error instanceof Error ? error.message : String(error)}`); }
   }
@@ -214,6 +266,9 @@ async function supervise(directory: string): Promise<void> {
       let stopping: ChatProcessRecord["state"] | undefined;
       let termination: Promise<void> | undefined;
       let completed = false;
+      let appliedControlId = "";
+      let pausedAt: number | undefined;
+      let pausedMs = 0;
       const persist = () => { record.updatedAt = Date.now(); writeChatProcessRecord(directory, record); };
       const stop = (state: ChatProcessRecord["state"], detail: string) => {
         if (stopping || completed) return;
@@ -247,7 +302,40 @@ async function supervise(directory: string): Promise<void> {
           persist();
           heartbeatFailures = 0;
           if (fs.existsSync(path.join(directory, "cancel"))) stop("cancelled", "Explicit process cancellation requested.");
-          else if (Date.now() - started >= record.spec.timeoutSeconds * 1000) stop("timed-out", "Approved process deadline reached.");
+          else {
+            const control = latestProcessControl(directory);
+            if (control && control.requestId !== appliedControlId) {
+              appliedControlId = control.requestId;
+              if (control.action === "pause" && record.state === "running" && child.pid) {
+                try {
+                  process.kill(-child.pid, "SIGSTOP");
+                  pausedAt = Date.now(); record.pausedAt = pausedAt; record.pausedMs = pausedMs;
+                  record.state = "paused"; record.detail = "The process group is paused; the supervisor remains active.";
+                  persist();
+                } catch (error) {
+                  record.state = "unknown";
+                  record.detail = `Process-tree pause could not be confirmed: ${error instanceof Error ? error.message : String(error)}`;
+                  persist();
+                }
+              } else if (control.action === "resume" && record.state === "paused" && child.pid) {
+                try {
+                  process.kill(-child.pid, "SIGCONT");
+                  if (pausedAt !== undefined) pausedMs += Date.now() - pausedAt;
+                  pausedAt = undefined; delete record.pausedAt; record.pausedMs = pausedMs;
+                  record.state = "running"; record.detail = "The process group is running.";
+                  persist();
+                } catch (error) {
+                  record.state = "unknown";
+                  record.detail = `Process-tree resume could not be confirmed: ${error instanceof Error ? error.message : String(error)}`;
+                  persist();
+                }
+              } else if (control.action !== "pause" && control.action !== "resume") {
+                throw new Error("Invalid process control request.");
+              }
+            }
+            const activeElapsedMs = Date.now() - started - pausedMs - (pausedAt === undefined ? 0 : Date.now() - pausedAt);
+            if (activeElapsedMs >= record.spec.timeoutSeconds * 1000) stop("timed-out", "Approved active-runtime deadline reached; paused time was excluded.");
+          }
         } catch (error) {
           if (++heartbeatFailures >= 5) stop("unknown", `Supervisor evidence failed: ${error instanceof Error ? error.message : String(error)}`);
         }

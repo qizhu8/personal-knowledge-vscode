@@ -25,7 +25,10 @@ globalThis.integration = () => ({ state: integrationMaintenanceState, error: int
 
 async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-integration-upgrade-"));
-  const model = { serverCurrent: false, healthy: true, newer: false, pythonValid: true, fail: false };
+  const model = { serverCurrent: false, healthy: true, newer: false, pythonValid: true, fail: false, holdGenerate: true };
+  let releaseGeneration, enterGeneration;
+  const generationGate = new Promise(resolve => { releaseGeneration = resolve; });
+  const generationStarted = new Promise(resolve => { enterGeneration = resolve; });
   const calls = { generate: 0, repair: 0, refresh: 0, retrieval: 0, dialogs: 0, probes: 0 };
   const registries = [];
   const host = () => {
@@ -48,8 +51,9 @@ async function main() {
         model.healthy = true;
         model.serverCurrent = true;
       },
-      generateMcpServer: () => {
+      generateMcpServer: async () => {
         calls.generate++;
+        if (model.holdGenerate) { enterGeneration(); await generationGate; }
         if (model.fail) throw new Error("fixture generation failed");
         model.serverCurrent = true;
       },
@@ -71,8 +75,17 @@ async function main() {
   try {
     const first = host();
     const running = first.maintain({});
-    assert(["running", "ready"].includes(first.integration().state), "A synchronous code-only upgrade may already be ready");
+    assert.equal(first.integration().state, "running");
     assert.strictEqual(first.maintain({}), running, "Duplicate checks in one Host share one background job");
+    let completed = false;
+    void running.then(() => { completed = true; });
+    await generationStarted;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(completed, false, "maintenance must await generation before health checks or terminal readiness");
+    assert.equal(first.integration().state, "running");
+    assert.equal(registries[0].snapshot().tasks.length, 1);
+    model.holdGenerate = false;
+    releaseGeneration();
     await running;
     assert.equal(first.integration().state, "ready", first.integration().error);
     assert.equal(calls.generate, 1);

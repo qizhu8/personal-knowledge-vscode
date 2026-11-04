@@ -14,6 +14,8 @@ import {
   existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, rmSync, renameSync, cpSync,
 } from "fs";
 import { createHash, randomBytes } from "crypto";
+import { commandNoteWorkItem, NoteWorkItem, readNoteWorkItems, upsertNoteWorkItem, WorkItemActor } from "./note-work-items";
+import { commandTodoBoard, readTodoBoard, serializeTodoBoard, todoBoardFilename, todoBoardWorkers } from "./todo-board";
 import { compileKnowledgeLinksV1, nextKnowledgeIdentity, readKnowledgeIdentity } from "./knowledge-contracts";
 import { KnowledgeSyncDeletionRecord, knowledgeDeletionFile, readKnowledgeSyncDeletions, withKnowledgeDeletionJournal } from "./knowledge-deletion-journal";
 export type { KnowledgeSyncDeletionRecord } from "./knowledge-deletion-journal";
@@ -157,7 +159,22 @@ function recordKnowledgeTrashDeletion<T>(
 }
 
 export function writeKnowledgeMarkdown(area: "notes" | "skills" | "papers", relativePath: string, previousPath: string | undefined, content: string): void {
-  return withMarkdownAssetMutation(getStorePath(), () => writeKnowledgeMarkdownUnlocked(area, relativePath, previousPath, content));
+  return withMarkdownAssetMutation(getStorePath(), () => {
+    if (area === "notes") {
+      if ([relativePath, previousPath].some(value => value?.split("/").pop()?.toLowerCase() === todoBoardFilename)) {
+        throw new Error("Todo Board data requires Work Item commands.");
+      }
+      const full = checkedMarkdownPath(notesRoot(), previousPath || relativePath);
+      const before = existsSync(full) ? readFileSync(full, "utf8") : "";
+      const old = parseFrontmatter(before), next = parseFrontmatter(content);
+      const board = existsSync(todoBoardPath(previousPath || relativePath)) || old.fm.documentKind === "todo-board";
+      if (board && (next.fm.documentKind !== "todo-board" || next.body !== old.body)) {
+        throw new Error("Todo Boards cannot be edited as Markdown. Use the Board UI or Work Item commands.");
+      }
+      if (!board && next.fm.documentKind === "todo-board") throw new Error("Use Todo Board creation or the explicit conversion command.");
+    }
+    writeKnowledgeMarkdownUnlocked(area, relativePath, previousPath, content);
+  });
 }
 
 function writeKnowledgeMarkdownUnlocked(area: "notes" | "skills" | "papers", relativePath: string, previousPath: string | undefined, content: string): void {
@@ -431,10 +448,15 @@ function nameOf(keyPath: string): string {
 
 // ── Notes ───────────────────────────────────────────────────────────────────
 function notesRoot(): string { return join(_store, "notes"); }
+function todoBoardPath(relative: string): string {
+  return checkedMarkdownPath(notesRoot(), `${markdownAssetDirectory(relative)}/${todoBoardFilename}`);
+}
 const noteMetadataCache = new Map<string, { fingerprint: string; row: any }>();
 
 function noteFromFile(f: MdFile, includeContent = true): any {
-  const fingerprint = `${f.mtime}:${f.size}`;
+  const boardFile = todoBoardPath(f.rel);
+  const boardStat = existsSync(boardFile) ? statSync(boardFile) : undefined;
+  const fingerprint = `${f.mtime}:${f.size}:${boardStat?.mtimeMs}:${boardStat?.size}`;
   if (!includeContent) {
     const cached = noteMetadataCache.get(f.full);
     if (cached?.fingerprint === fingerprint) return { ...cached.row };
@@ -447,13 +469,15 @@ function noteFromFile(f: MdFile, includeContent = true): any {
     title: fm.title || nameOf(key),
     description: fm.description || "",
     type: fm.type || "general",
+    documentKind: boardStat || fm.documentKind === "todo-board" ? "todo-board" : "markdown",
+    ...(boardStat ? { boardDigest: createHash("sha256").update(readFileSync(boardFile)).digest("hex") } : {}),
     tags: JSON.stringify(asArray(fm.tags)),
     pinned: fm.pinned === true,
     links: Array.isArray(fm.links) ? fm.links : [],
     category: catOf(key),
     ...(includeContent ? { content: body } : {}),
     created_at: fm.created || new Date(f.mtime).toISOString(),
-    updated_at: new Date(f.mtime).toISOString(),
+    updated_at: new Date(Math.max(f.mtime, boardStat?.mtimeMs || 0)).toISOString(),
   };
   if (!includeContent) noteMetadataCache.set(f.full, { fingerprint, row });
   return row;
@@ -487,6 +511,202 @@ export function noteGet(slug: string): any {
   return noteFromFile({ full, rel: slug + ".md", mtime: st.mtimeMs, size: st.size });
 }
 
+export function noteWorkItemsRead(slug: string): ReturnType<typeof readNoteWorkItems> {
+  const full = checkedMarkdownPath(notesRoot(), slug + ".md");
+  const markdown = readFileSync(full, "utf8");
+  const boardFile = todoBoardPath(slug + ".md");
+  if (existsSync(boardFile) || parseFrontmatter(markdown).fm.documentKind === "todo-board") {
+    return readTodoBoard(readFileSync(boardFile, "utf8"));
+  }
+  return readNoteWorkItems(markdown);
+}
+
+export function todoBoardCreate(slug: string, title: string, category = ""): ReturnType<typeof readNoteWorkItems> {
+  return withMarkdownAssetMutation(getStorePath(), () => {
+    if (!title?.trim()) throw new Error("Todo Board title is required.");
+    const relative = slug + ".md";
+    if (relative.split("/")[0].toLowerCase() === "system") throw new Error("System Notes are read-only.");
+    const full = checkedMarkdownPath(notesRoot(), relative), boardFile = todoBoardPath(relative);
+    if (existsSync(full) || existsSync(boardFile)) throw new Error("A Note or Todo Board already exists at this path.");
+    if (catOf(slug) !== safeCategory(category) || nameOf(slug) !== safeName(title)) throw new Error("Choose a valid Board title and category matching its path.");
+    const identity = nextKnowledgeIdentity(undefined, "note", slug, slug);
+    const descriptor = serializeFrontmatter({
+      ...identity, title: title.trim(), type: "todo", documentKind: "todo-board", tags: [], created: now(),
+    }, "");
+    persistTodoBoard(boardFile, serializeTodoBoard([]));
+    try { writeKnowledgeMarkdownUnlocked("notes", relative, undefined, descriptor); }
+    catch (error) { rmSync(boardFile); throw error; }
+    return noteWorkItemsRead(slug);
+  });
+}
+
+function persistTodoBoard(full: string, source: string): void {
+  mkdirSync(resolve(full, ".."), { recursive: true });
+  const temporary = full + "." + randomBytes(8).toString("hex") + ".tmp";
+  try {
+    writeFileSync(temporary, source, { flag: "wx" });
+    renameSync(temporary, full);
+  } finally { if (existsSync(temporary)) rmSync(temporary); }
+}
+
+export function todoBoardConversionPreview(slug: string): { digest: string; items: ReturnType<typeof readNoteWorkItems>["items"] } {
+  const full = checkedMarkdownPath(notesRoot(), slug + ".md");
+  if (noteGet(slug)?.documentKind === "todo-board") throw new Error("This Note is already a Todo Board.");
+  return readNoteWorkItems(readFileSync(full, "utf8"));
+}
+
+export function todoBoardConvert(slug: string, expectedDigest: string): ReturnType<typeof readNoteWorkItems> {
+  return withMarkdownAssetMutation(getStorePath(), () => {
+    if (slug.split("/")[0].toLowerCase() === "system") throw new Error("System Notes are read-only.");
+    const preview = todoBoardConversionPreview(slug);
+    if (preview.digest !== expectedDigest) throw new Error("Note changed since the conversion preview. Preview again.");
+    if (!preview.items.length) throw new Error("No structured Work Items to import. Create an empty Todo Board instead.");
+    const relative = slug + ".md", full = checkedMarkdownPath(notesRoot(), relative);
+    const original = readFileSync(full, "utf8"), parsed = parseFrontmatter(original);
+    const boardFile = todoBoardPath(relative);
+    // Keep the entire original document as migration history, never as live task authority.
+    persistTodoBoard(boardFile, serializeTodoBoard(preview.items));
+    try {
+      writeKnowledgeMarkdownUnlocked("notes", relative, relative, serializeFrontmatter({ ...parsed.fm, documentKind: "todo-board" }, parsed.body));
+    } catch (error) { rmSync(boardFile); throw error; }
+    return noteWorkItemsRead(slug);
+  });
+}
+
+export function todoBoardGrantWorker(slug: string, expectedDigest: string, actorId: string): string {
+  return withMarkdownAssetMutation(getStorePath(), () => {
+    if (slug.split("/")[0].toLowerCase() === "system") throw new Error("System Notes are read-only.");
+    if (!/^external:(?:copilot|claude|other):[a-zA-Z0-9_-]{1,80}$/.test(actorId)) throw new Error("Choose a bounded external Agent identity.");
+    const full = checkedMarkdownPath(notesRoot(), slug + ".md");
+    if (!existsSync(full)) throw new Error("Todo Board is no longer available.");
+    const boardFile = todoBoardPath(slug + ".md"), source = readFileSync(boardFile, "utf8"), snapshot = readTodoBoard(source);
+    if (snapshot.digest !== expectedDigest) throw new Error("Todo Board changed. Reload before issuing worker access.");
+    if (!snapshot.items.some(item => item.ownerId === actorId)) throw new Error("Assign a Work Item to this Agent before issuing worker access.");
+    const token = randomBytes(32).toString("hex");
+    persistTodoBoard(boardFile, serializeTodoBoard(snapshot.items, {
+      ...todoBoardWorkers(source), [actorId]: createHash("sha256").update(token).digest("hex"),
+    }));
+    return token;
+  });
+}
+
+export function noteWorkItemExternalCommand(slug: string, expectedDigest: string, command: unknown, workerToken?: string): ReturnType<typeof readNoteWorkItems> {
+  return noteWorkItemCommand(slug, expectedDigest, command, { id: noteWorkItemExternalActor(slug, workerToken), role: "worker" });
+}
+
+export function noteWorkItemExternalActor(slug: string, workerToken?: string): string {
+  let actorId = "mcp:external";
+  if (workerToken !== undefined) {
+    if (typeof workerToken !== "string" || !/^[a-f0-9]{64}$/.test(workerToken)) throw new Error("Invalid Board worker token.");
+    const full = checkedMarkdownPath(notesRoot(), slug + ".md");
+    if (!existsSync(full)) throw new Error("Todo Board is no longer available.");
+    const source = readFileSync(todoBoardPath(slug + ".md"), "utf8");
+    readTodoBoard(source);
+    const hash = createHash("sha256").update(workerToken).digest("hex");
+    const found = Object.entries(todoBoardWorkers(source)).find(([, candidate]) => candidate === hash);
+    if (!found) throw new Error("Worker token is invalid for this Board or has been rotated.");
+    actorId = found[0];
+  }
+  return actorId;
+}
+
+export function noteWorkItemNotes(query = "", limit = 20): { notes: { slug: string; title: string; count: number; digest?: string; error?: string }[]; truncated: boolean } {
+  if (typeof query !== "string" || !Number.isInteger(limit) || limit < 1 || limit > 1000) throw new Error("Work Item discovery requires a query and limit between 1 and 1000.");
+  const rows: { slug: string; title: string; count: number; digest?: string; error?: string }[] = [];
+  const needle = query.trim().toLowerCase();
+  for (const note of noteList(undefined, Number.MAX_SAFE_INTEGER)) {
+    if (needle && ![note.slug, note.title, note.description].some(value => String(value).toLowerCase().includes(needle))) continue;
+    try {
+      const read = noteWorkItemsRead(note.slug);
+      if (read.items.length || note.documentKind === "todo-board") rows.push({ slug:note.slug, title:note.title, count:read.items.filter(item=>!item.deletedAt).length, digest:read.digest });
+    } catch (error) {
+      rows.push({ slug:note.slug, title:note.title, count:0, error:error instanceof Error ? error.message : String(error) });
+    }
+    if (rows.length > limit) break;
+  }
+  return { notes:rows.slice(0, limit), truncated:rows.length > limit };
+}
+
+interface ActiveAgentWorkItem { board_slug: string; id: string; title: string; expected_digest: string }
+
+export class WorkItemFocusConflictError extends Error {
+  readonly code = "WORKITEM_FOCUS_CONFLICT";
+  constructor(readonly actorId: string, readonly target: { board_slug: string; id: string },
+    readonly active_workitems: ActiveAgentWorkItem[], readonly active_workitem_count: number) {
+    super(`Agent already has Active work. Explicitly resolve it before starting another Work Item. ${JSON.stringify({
+      code:"WORKITEM_FOCUS_CONFLICT", confirmation_required:true, action_taken:false, actor_id:actorId, target,
+      active_workitems, active_workitem_count,
+      choices:{
+        hold_current:"Read current work; change_workitem_state to on-hold with an explicit reason. Then reload the target Board and retry claim.",
+        complete_current:"Submit the current work's real outcome and evidence with submit_workitem_result. Then reload the target Board and retry claim.",
+        keep_current:"Continue current work; do not claim or start the new Work Item.",
+      },
+    })}`);
+    this.name = "WorkItemFocusConflictError";
+  }
+}
+
+function assertAgentWorkItemFocus(slug: string, before: NoteWorkItem[], after: NoteWorkItem[]): void {
+  const starting = after.filter((item): item is NoteWorkItem & { ownerId: string }=>{
+    const previous = before.find(candidate=>candidate.id===item.id);
+    return !item.deletedAt && item.kind!=="UserStory" && item.state==="WIP" && typeof item.ownerId==="string" && !item.ownerId.startsWith("user:")
+      && (!previous || !!previous.deletedAt || previous.kind==="UserStory" || previous.state!=="WIP" || previous.ownerId!==item.ownerId);
+  });
+  if (!starting.length) return;
+  const boards = allNoteFiles().filter(file=>noteFromFile(file).documentKind==="todo-board");
+  for (const target of starting) {
+    const conflicts: ActiveAgentWorkItem[] = [];
+    let count = 0;
+    for (const board of boards) {
+      const boardSlug = relNoExt(board.rel);
+      const snapshot = noteWorkItemsRead(boardSlug);
+      for (const item of snapshot.items) {
+        if (item.deletedAt || item.kind==="UserStory" || item.state!=="WIP" || item.ownerId!==target.ownerId
+          || boardSlug===slug && item.id===target.id) continue;
+        count++;
+        if (conflicts.length < 20) conflicts.push({ board_slug:boardSlug, id:item.id, title:item.title.slice(0,256), expected_digest:snapshot.digest });
+      }
+    }
+    if (count) throw new WorkItemFocusConflictError(target.ownerId, { board_slug:slug, id:target.id }, conflicts, count);
+  }
+}
+
+export function noteWorkItemCommand(slug: string, expectedDigest: string, command: unknown, actor: WorkItemActor): ReturnType<typeof readNoteWorkItems> {
+  return withMarkdownAssetMutation(getStorePath(), () => {
+    const relative = slug + ".md";
+    if (relative.split("/")[0].toLowerCase() === "system") throw new Error("System Notes are read-only for Work Item updates.");
+    const full = checkedMarkdownPath(notesRoot(), relative);
+    const markdown = readFileSync(full, "utf8");
+    const boardFile = todoBoardPath(relative);
+    if (existsSync(boardFile) || parseFrontmatter(markdown).fm.documentKind === "todo-board") {
+      const source = readFileSync(boardFile, "utf8");
+      const updated = commandTodoBoard(source, expectedDigest, command, actor);
+      assertAgentWorkItemFocus(slug, readTodoBoard(source).items, readTodoBoard(updated).items);
+      persistTodoBoard(boardFile, updated);
+      return readTodoBoard(updated);
+    }
+    if (actor.role === "board-agent") throw new Error("Board management APIs require a dedicated Todo Board, not legacy Markdown.");
+    const updated = commandNoteWorkItem(markdown, expectedDigest, command, actor);
+    writeKnowledgeMarkdownUnlocked("notes", relative, relative, updated);
+    return readNoteWorkItems(updated);
+  });
+}
+
+export function noteWorkItemUpsert(slug: string, expectedDigest: string, item: unknown): ReturnType<typeof readNoteWorkItems> {
+  return withMarkdownAssetMutation(getStorePath(), () => {
+    const relative = slug + ".md";
+    if (relative.split("/")[0].toLowerCase() === "system") throw new Error("System Notes are read-only for Work Item updates.");
+    const full = checkedMarkdownPath(notesRoot(), relative);
+    const markdown = readFileSync(full, "utf8");
+    if (existsSync(todoBoardPath(relative)) || parseFrontmatter(markdown).fm.documentKind === "todo-board") {
+      throw new Error("Todo Boards require lifecycle commands, not low-level upsert.");
+    }
+    const updated = upsertNoteWorkItem(markdown, expectedDigest, item);
+    writeKnowledgeMarkdownUnlocked("notes", relative, relative, updated);
+    return readNoteWorkItems(updated);
+  });
+}
+
 export function noteUpsert(row: {
   slug: string; title: string; content: string; type: string; tags: string[]; category?: string; pinned?: boolean; description?: string; links?: unknown[];
 }): boolean {
@@ -502,6 +722,7 @@ export function noteUpsert(row: {
     schema: identity.schema, knowledgeId: identity.knowledgeId, revision: identity.revision, aliases: identity.aliases,
     title: row.title, description: row.description ?? existing?.description ?? "", type: row.type, tags: row.tags ?? [], created,
     links: validatedKnowledgeLinks(row.links ?? existing?.links),
+    ...(existing?.documentKind === "todo-board" ? { documentKind: "todo-board" } : {}),
   };
   if (pinned) fm.pinned = true;
   writeKnowledgeMarkdown("notes", newRel, existing ? row.slug + ".md" : undefined, serializeFrontmatter(fm, row.content ?? ""));
@@ -854,12 +1075,36 @@ export function slugExists(slug: string): boolean {
 }
 
 export function noteExport(): any[] {
-  return allNoteFiles().map(file => noteFromFile(file));
+  return allNoteFiles().map(file => {
+    const note = noteFromFile(file);
+    return note.documentKind === "todo-board"
+      ? { ...note, todoBoard: { schema: "pkm.todo-board/v1", items: noteWorkItemsRead(note.slug).items } }
+      : note;
+  });
 }
 
 export function noteImport(rows: any[]): number {
   let count = 0;
   for (const r of rows) {
+    if (r.documentKind === "todo-board") {
+      const source = JSON.stringify(r.todoBoard);
+      const snapshot = readTodoBoard(source);
+      if (Object.keys(todoBoardWorkers(source)).length) throw new Error("Todo Board imports must not contain worker access grants.");
+      const slug = r.slug || safeName(r.title || "Board");
+      const created = todoBoardCreate(slug, r.title || nameOf(slug), catOf(slug));
+      withMarkdownAssetMutation(getStorePath(), () => {
+        if (noteWorkItemsRead(slug).digest !== created.digest) throw new Error("Todo Board changed during import; no imported tasks were applied.");
+        persistTodoBoard(todoBoardPath(slug + ".md"), serializeTodoBoard(snapshot.items));
+        const descriptor = parseFrontmatter(readFileSync(checkedMarkdownPath(notesRoot(), slug + ".md"), "utf8"));
+        writeKnowledgeMarkdownUnlocked("notes", slug + ".md", slug + ".md", serializeFrontmatter({
+          ...descriptor.fm, description: r.description || "", pinned: r.pinned === true,
+          tags: Array.isArray(r.tags) ? r.tags : typeof r.tags === "string" ? JSON.parse(r.tags) : [],
+        }, typeof r.content === "string" ? r.content : ""));
+      });
+      count++;
+      continue;
+    }
+    if (r.slug && noteGet(r.slug)?.documentKind === "todo-board") throw new Error("Cannot overwrite a Todo Board through Markdown import.");
     try {
       noteUpsert({
         slug: r.slug || safeName(r.title || "note"),

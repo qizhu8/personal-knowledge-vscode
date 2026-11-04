@@ -20,7 +20,7 @@ try {
   const compiledDirectory = path.join(root, "compiled");
   fs.mkdirSync(compiledDirectory, { recursive: true });
   fs.writeFileSync(path.join(compiledDirectory, "mcp.js"), 'module.exports = require("./mcp/mcp");');
-  const generationScript = require("typescript").transpileModule(source.slice(source.indexOf("export function generateMcpServer(")), {
+  const generationScript = require("typescript").transpileModule(source.slice(source.indexOf("export async function generateMcpServer(")), {
     compilerOptions: { target: require("typescript").ScriptTarget.ES2020, module: require("typescript").ModuleKind.CommonJS },
   }).outputText;
   const generation = {
@@ -51,6 +51,9 @@ try {
   const store = path.join(root, "store");
   fs.mkdirSync(path.join(store, "skills", "Coding"), { recursive: true });
   fs.writeFileSync(path.join(store, "skills", "Coding", "Python Testing.md"), `---\nname: Python Testing\ndescription: Use when debugging Python tests with pytest and import errors.\ntags: ["python", "pytest"]\nrecipe_required: true\nrecipe_hint: "Reusable Python test diagnosis and validation"\nrelated_skills: ["Coding/Scope Python UDO Dependency Packaging"]\ncreated: 2026-08-12\n---\n\nRun pytest with the repository source path configured.\n`);
+  const skillAssets = path.join(store, "skills", "Coding", "Python Testing.assets");
+  fs.mkdirSync(skillAssets, { recursive: true });
+  fs.writeFileSync(path.join(skillAssets, "architecture sketch.png"), Buffer.from("image-data"));
   fs.mkdirSync(path.join(store, "skills", "Project", "Common"), { recursive: true });
   fs.writeFileSync(path.join(store, "skills", "Project", "Common", "TODO Notes.md"), `---\nname: TODO Notes\ndescription: Use for project task checklists, progress notes, coding work, and issue tracking.\ntags:\n  - task\n  - coding\n  - notes\ncreated: 2026-08-12\n---\n\nFormat project work as a hierarchical checklist with verification evidence.\n`);
   fs.writeFileSync(path.join(store, "skills", "Coding", "Scope Python Packaging.md"), `---\nname: Scope Python UDO Dependency Packaging\ndescription: Package and import local Python dependencies for Scope UDO execution.\ntags:\n  - python\n  - package\n  - scope\ncreated: 2026-08-12\n---\n\nConfigure dependency archives and import paths.\n`);
@@ -121,7 +124,108 @@ Build deterministic training datasets and validate every exported split.`);
   }
   fs.writeFileSync(path.join(moduleDir, "chat_server.py"), "from fastmcp import FastMCP\nmcp = FastMCP('chat-stub')\n");
   fs.writeFileSync(path.join(moduleDir, "exercise.py"), `import asyncio, hashlib, json, pathlib\nfrom fastmcp import Client\nimport server\nversion = server.check_version()\nassert version['components']['recipes'] == 'test' and 'pkm-recipes' in version['capabilities'], version\nassert version['recipe_discovery_tool'] == 'recipe_capabilities'\ntool_names = {tool.name for tool in asyncio.run(server.mcp.list_tools())}\nassert {'skill_context','list_notes','recipe_capabilities','agent_session_capabilities'} <= tool_names, tool_names\ncap = json.loads(server.skill_capabilities())\nassert cap['capability'] == 'pkm-skills'\nassert pathlib.Path(server.STORE) == pathlib.Path(r'${store.replaceAll('\\', '\\\\')}'), server.STORE\nassert server._all_skills(), (server.STORE, server.SKILLS, list(server.SKILLS.rglob('*')))\ncontext = json.loads(server.skill_context('debug pytest Python import errors'))\nfull_context = json.loads(server.skill_context('debug pytest Python import errors', detail='full'))\nassert len(json.dumps(context, ensure_ascii=False)) < len(json.dumps(full_context, ensure_ascii=False)), (context, full_context)\nassert 'task' not in context and full_context['task'] == 'debug pytest Python import errors'\nassert context['count'] == 1, context\nassert context['no_match'] is False and context['retrieval'] == 'summary', context\nskill = context['skills'][0]\nassert skill['skill_id'] == 'Coding/Python Testing'\nassert skill['content_hash']\nassert 'content' not in skill, skill\nfull_skill = json.loads(server.get_skill(skill['skill_id']))\nassert full_skill['skill_id'] == skill['skill_id']\nassert full_skill['content_hash'] == skill['content_hash']\nassert 'Run pytest' in full_skill['content']\nasync def assert_typed_skill_transport():\n    async with Client(server.mcp) as client:\n        result = await client.call_tool('skill_context', {'task':'debug pytest Python import errors'})\n        assert result.structured_content == json.loads(result.content[0].text), result.structured_content\nasyncio.run(assert_typed_skill_transport())\nnote = json.loads(server.get_note('Projects/Release Constraints'))\nnote_document = {key: note[key] for key in ['title', 'type', 'category', 'tags', 'content']}\nexpected_note_hash = hashlib.sha256(json.dumps(note_document, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()\nassert note['content_hash'] == expected_note_hash, note\nno_match = json.loads(server.skill_context('organize a birthday picnic menu'))\nassert no_match['no_match'] is True and no_match['count'] == 0, no_match\nfeedback = json.loads(server.skill_feedback('debug tests', [skill['skill_id']], 'success', ['PYTHONPATH was required'], ['pytest passed']))\nassert feedback['feedback_id']\nproposal = json.loads(server.propose_skill_update(skill['skill_id'], skill['content_hash'], 'Document PYTHONPATH', ['pytest passed'], 'Add the verified command.', 0.9))\nassert proposal['ok'] and proposal['conflict'] is False\nconflict = json.loads(server.propose_skill_update(skill['skill_id'], 'stale-hash', 'Stale proposal'))\nassert conflict['conflict'] is True\nassert pathlib.Path(proposal['proposal_path']).exists()\nassert (pathlib.Path(r'${store.replaceAll('\\', '\\\\')}') / '_feedback' / 'skill-usage.jsonl').exists()\nprint('PKM Skill MCP: thresholded summaries, full fetch, feedback, proposal, and conflict detection OK')\n`);
+  fs.appendFileSync(path.join(moduleDir, "exercise.py"), "\nassert full_skill['image_assets'] == [{'path': 'Python Testing.assets/architecture sketch.png', 'markdown_reference': '![architecture sketch](Python%20Testing.assets/architecture%20sketch.png)', 'media_type': 'image/png', 'size_bytes': 10}], full_skill\nassert 'relative to the Skill file' in full_skill['image_reference_format'], full_skill\n");
+  fs.appendFileSync(path.join(moduleDir, "exercise.py"), "\nasync def assert_skill_image_transport():\n    async with Client(server.mcp) as client:\n        loaded = (await client.call_tool('get_skill', {'id': skill['skill_id']})).structured_content\n        assert loaded['image_assets'] == full_skill['image_assets'], loaded\nasyncio.run(assert_skill_image_transport())\n");
   fs.appendFileSync(path.join(moduleDir, "exercise.py"), "\nhttp_retrieval_request = server._retrieval_request\n");
+  fs.appendFileSync(path.join(moduleDir, "exercise.py"), `
+async def assert_note_work_item_transport():
+    from fastmcp.exceptions import ToolError
+    slug = 'Projects/Work Item Fixture'
+    fixture = server.NOTES / (slug + '.md')
+    original = '# Work Item fixture\\n'
+    fixture.write_text(original, encoding='utf-8')
+    async with Client(server.mcp) as client:
+        tools = {tool.name: tool for tool in await client.list_tools()}
+        assert tools['note_work_items'].annotations.readOnlyHint is True
+        assert tools['note_work_item_upsert'].annotations.readOnlyHint is False
+        assert tools['note_work_item_command'].annotations.readOnlyHint is False
+        before = (await client.call_tool('note_work_items', {'slug':slug})).structured_content
+        assert before['items'] == [], before
+        item = {'id':'verify-release', 'title':'Verify release', 'goal':'Check release contract', 'scope':'Local fixtures',
+                'acceptance':['Exact expected result'], 'state':'Planning', 'evidence':[]}
+        after = (await client.call_tool('note_work_item_upsert', {
+            'slug':slug, 'expected_digest':before['digest'], 'item':item})).structured_content
+        stored = after['items'][0]
+        assert {key: value for key, value in stored.items() if key != 'history'} == item, after
+        assert after['digest'] != before['digest'], after
+        assert stored['history'][0]['actorId'] == 'mcp:external' and stored['history'][0]['action'] == 'create', after
+        assert fixture.read_text(encoding='utf-8').startswith(original)
+        again = (await client.call_tool('note_work_items', {'slug':slug})).structured_content
+        assert again == after
+        try:
+            await client.call_tool('note_work_item_upsert', {
+                'slug':slug, 'expected_digest':before['digest'], 'item':item})
+        except ToolError as error:
+            assert 'Note changed since it was read' in str(error), error
+        else:
+            raise AssertionError('stale digest must fail')
+        assert (await client.call_tool('note_work_items', {'slug':slug})).structured_content == after
+        claimed = (await client.call_tool('note_work_item_command', {
+            'slug':slug, 'expected_digest':after['digest'], 'command':{'action':'claim','id':item['id']}})).structured_content
+        assert claimed['items'][0]['ownerId'] == 'mcp:external' and claimed['items'][0]['state'] == 'WIP', claimed
+        try:
+            await client.call_tool('note_work_item_upsert', {
+                'slug':slug, 'expected_digest':claimed['digest'], 'item':dict(claimed['items'][0], acceptance=['Weakened'])})
+        except ToolError as error:
+            assert 'acceptance' in str(error) or 'contract' in str(error) or 'protected' in str(error), error
+        else:
+            raise AssertionError('compatibility upsert must not bypass worker contract protection')
+        done = (await client.call_tool('note_work_item_command', {
+            'slug':slug, 'expected_digest':claimed['digest'], 'command':{
+                'action':'transition','id':item['id'],'state':'Done','outcome':'Success','evidence':['test://mcp/transport']}})).structured_content
+        assert done['items'][0]['outcome'] == 'Success' and 'acceptanceDecision' not in done['items'][0], done
+        try:
+            await client.call_tool('note_work_item_command', {
+                'slug':slug, 'expected_digest':done['digest'], 'command':{'action':'accept','id':item['id'],'reason':'Self approval'}})
+        except ToolError as error:
+            assert 'reviewer' in str(error) or 'User' in str(error) or 'user' in str(error), error
+        else:
+            raise AssertionError('MCP must not grant itself acceptance authority')
+    fixture.unlink()
+asyncio.run(assert_note_work_item_transport())
+async def assert_structured_board_transport():
+    from fastmcp.exceptions import ToolError
+    async with Client(server.mcp) as client:
+        created = (await client.call_tool('todo_board_create', {'title':'Structured Board','category':'Projects'})).structured_content
+        slug = created['slug']
+        assert created['items'] == [], created
+        assert any(row['slug'] == slug for row in (await client.call_tool('note_work_item_notes', {'query':'Structured Board'})).structured_content['notes'])
+        record = {'id':'board-task','title':'Board task','goal':'Safe state','scope':'MCP transport','acceptance':['Commands only'],'state':'Planning','evidence':[]}
+        added = (await client.call_tool('note_work_item_command', {'slug':slug,'expected_digest':created['digest'],'command':{'action':'create','item':record}})).structured_content
+        assert added['items'][0]['history'][0]['actorId'] == 'mcp:external'
+        info = (await client.call_tool('get_note', {'slug':slug})).structured_content
+        assert info['documentKind'] == 'todo-board' and 'content' not in info, info
+        before = (server.NOTES / (slug + '.md')).read_bytes()
+        try:
+            await client.call_tool('update_note', {'slug':slug,'content':'# Attempted raw overwrite'})
+        except ToolError as error:
+            assert 'Markdown' in str(error), error
+        else:
+            raise AssertionError('Board must reject generic Note updates')
+        assert (server.NOTES / (slug + '.md')).read_bytes() == before
+        assert (await client.call_tool('note_work_items', {'slug':slug})).structured_content == added
+        try:
+            await client.call_tool('note_work_item_command', {'slug':slug,'expected_digest':added['digest'],'command':{'action':'create','item':dict(record,id='story',kind='UserStory',storyStatus='draft')}})
+        except ToolError as error:
+            assert 'Only users' in str(error), error
+        else:
+            raise AssertionError('external worker must not author a user-only Story contract')
+        claimed = (await client.call_tool('note_work_item_command', {'slug':slug,'expected_digest':added['digest'],'command':{'action':'claim','id':'board-task'}})).structured_content
+        done = (await client.call_tool('note_work_item_command', {'slug':slug,'expected_digest':claimed['digest'],'command':{'action':'transition','id':'board-task','state':'Done','outcome':'Success','evidence':['test://structured-board/mcp']}})).structured_content
+        assert done['items'][0]['state'] == 'Done' and 'acceptanceDecision' not in done['items'][0]
+        # Trusted local user establishes the Story contract and a separately scoped external worker.
+        import subprocess
+        setup = "const s=require(process.argv[1]+'/dist/knowledge/filestore');s.setStorePath(process.argv[2]);let r=s.noteWorkItemsRead(process.argv[3]);for(const item of JSON.parse(process.argv[4]))r=s.noteWorkItemCommand(process.argv[3],r.digest,{action:'create',item},{id:'user:local',role:'user'});console.log(s.todoBoardGrantWorker(process.argv[3],r.digest,'external:claude:transport'));"
+        story = dict(record,id='transport-story',kind='UserStory',storyStatus='draft')
+        child = dict(record,id='transport-child',parentId='transport-story',ownerId='external:claude:transport',owner='Claude transport worker')
+        worker_token = subprocess.run([server._KNOWLEDGE_NODE,'-e',setup,server._KNOWLEDGE_EXTENSION,str(server.STORE),slug,json.dumps([story,child])],capture_output=True,text=True,check=True).stdout.strip()
+        observed = (await client.call_tool('note_work_items', {'slug':slug})).structured_content
+        assert any(item.get('kind') == 'UserStory' for item in observed['items'])
+        external = (await client.call_tool('note_work_item_command', {'slug':slug,'expected_digest':observed['digest'],'worker_token':worker_token,'command':{'action':'claim','id':'transport-child'}})).structured_content
+        linked = next(item for item in external['items'] if item['id'] == 'transport-child')
+        assert linked['parentId'] == 'transport-story' and linked['history'][-1]['actorId'] == 'external:claude:transport'
+asyncio.run(assert_structured_board_transport())
+`);
   fs.appendFileSync(path.join(moduleDir, "exercise.py"), "\ntools = {tool.name: tool for tool in asyncio.run(server.mcp.list_tools())}\nfor read_tool in ['check_version','retrieval_status','search_knowledge','skill_capabilities','skill_context','list_skills','search_skills','get_skill','agent_session_capabilities']:\n    assert tools[read_tool].annotations.readOnlyHint is True, (read_tool, tools[read_tool].annotations)\nassert tools['skill_feedback'].annotations.readOnlyHint is not True, tools['skill_feedback'].annotations\n");
   fs.appendFileSync(path.join(moduleDir, "exercise.py"), "server.RETRIEVAL_STATE.mkdir(parents=True, exist_ok=True)\n(server.RETRIEVAL_STATE / 'worker.json').write_text(json.dumps({'token':'test','port':9}), encoding='utf-8')\ntimeouts = []\noriginal_urlopen = server.urllib.request.urlopen\ndef capture_timeout(request, timeout):\n    timeouts.append(timeout)\n    raise TimeoutError('bounded test timeout')\nserver.urllib.request.urlopen = capture_timeout\ntry:\n    bounded = server._retrieval_request('/search', {'deadline_at_ms': int(server.time.time() * 1000) + 250})\nfinally:\n    server.urllib.request.urlopen = original_urlopen\nassert bounded['ok'] is False and 0.1 <= timeouts[0] <= 0.5, (bounded, timeouts)\n");
   fs.appendFileSync(path.join(moduleDir, "exercise.py"), "async def assert_snapshot_read_only():\n    async with Client(server.mcp) as client:\n        capabilities = (await client.call_tool('agent_session_capabilities', {})).structured_content\n        assert capabilities['owner'] == 'pkm-chat' and capabilities['external_sessions'] == 'unsupported', capabilities\n        listed = (await client.call_tool('agent_session_snapshot_list', {})).structured_content\n        assert listed['snapshots'] == [], listed\n        for retired in ['agent_session_start', 'agent_session_todo_append', 'agent_session_snapshot_recover']:\n            assert retired not in tools, retired\n        await client.call_tool('skill_context', {'task':'debug pytest Python import errors'})\nasyncio.run(assert_snapshot_read_only())\nstate_root = pathlib.Path(server.STORE) / '.pkm' / 'state'\nassert not (state_root / 'agent-sessions' / 'active').exists(), 'Snapshot reads must not create external Agent Session mappings'\nassert not (state_root / 'mcp-usage' / 'todos').exists(), 'MCP calls without a PKM Todo must not be attributed'\n");
@@ -375,6 +479,20 @@ asyncio.run(live_model_acceptance())
   execFileSync("python", [path.join(moduleDir, "exercise.py")], { cwd: moduleDir, stdio: "inherit" });
   fs.writeFileSync(path.join(moduleDir, "feature-domains.json"), JSON.stringify({ schema: 1, enabled: ["skillRouter"] }));
   fs.writeFileSync(path.join(moduleDir, "feature-domains.py"), "import asyncio, json, server\nfrom fastmcp import Client\nasync def main():\n  async with Client(server.mcp) as client:\n    names = {tool.name for tool in await client.list_tools()}\n    assert {'check_version','skill_context','search_knowledge','search_skills','get_skill','retrieval_status'} <= names, names\n    assert not ({'list_notes','add_skill','recipe_capabilities','agent_session_capabilities'} & names), names\n    response = await client.call_tool('check_version', {})\n    assert not response.is_error\nasyncio.run(main())\nversion = server.check_version()\nassert version['enabled_feature_domains'] == ['skillRouter'] and version['capabilities'] == ['pkm-skills'], version\nassert 'recipe_discovery_tool' not in version and version['skill_discovery_tool'] == 'skill_capabilities', version\nevents = list((server.STORE / '.pkm' / 'state' / 'mcp-usage' / 'events').glob('*.json'))\nassert events, events\nusages = [json.loads(event.read_text(encoding='utf-8')) for event in events]\nusage = next(item for item in reversed(sorted(usages, key=lambda item: item['occurredAt'])) if item['toolName'] == 'check_version')\nassert usage['inputBytes'] >= 0 and usage['outputBytes'] > 0, usage\nassert usage['estimatedTokenEquivalent'] > 0 and usage['reportedTokens'] == {'input': 0, 'output': 0}, usage\nprint('MCP feature domains: discovery filtering and call-boundary evidence OK')\n");
+  fs.appendFileSync(path.join(moduleDir, "feature-domains.py"), `
+from fastmcp.exceptions import ToolError
+async def assert_work_items_require_knowledge_domain():
+    async with Client(server.mcp) as client:
+        names = {tool.name for tool in await client.list_tools()}
+        assert not ({'note_work_items', 'note_work_item_upsert', 'note_work_item_command', 'todo_board_create'} & names), names
+        try:
+            await client.call_tool('note_work_items', {'slug':'Projects/Release Constraints'})
+        except ToolError as error:
+            assert 'Unknown tool' in str(error), error
+        else:
+            raise AssertionError('disabled Work Item tool must not be callable')
+asyncio.run(assert_work_items_require_knowledge_domain())
+`);
   execFileSync("python", [path.join(moduleDir, "feature-domains.py")], { cwd: moduleDir, stdio: "inherit" });
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
