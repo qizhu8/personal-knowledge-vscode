@@ -5,6 +5,8 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Add a bounded, Host-authored stop diagnostic when complete Copilot SDK hard-limit summary evidence cannot fit before dispatch. Preserve failed status, recorded outcomes and original evidence; include read-only evidence references without another model call, replay or fabricated acceptance. Keep cancellation and unrelated failures distinct.
+- Exclude successful, complete equal-hash `replace_text` receipts from loop/Harness progress, including changing arguments or timestamps. Cover exact three-round stagnation and change resets, plus native Memory cancellation during review and Portal mutation denial.
 - Add opt-in compact capability discovery with versioned Todo/Memory contracts and shared native/MCP dispatch, retaining legacy tool exposure by default. Add private, scoped explicit Memory proposals, human-confirmed revisions/confirmation/revocation, durable audit and bounded recall previews; external MCP cannot impersonate local confirmation. Harness receipts identify leaf versions and retrieved Memory revisions without claiming automatic application. Live Copilot/Claude effectiveness certification remains pending.
 - Enable browser-native spellcheck in PKM browser pages and Extension webviews for prose inputs, retaining opt-outs for code/JSON, URL entry and structured Todo references; no spelling dependency or service is added.
 - Move browser Library collapse/expand to a keyboard-accessible arrow handle centered on the sidebar edge, remaining visible while scrolling and returning width to the article when collapsed.

@@ -94,6 +94,59 @@ test("three unchanged rounds detect stagnation even when arguments change; new e
   assert.equal(active.summarizing, false);
 });
 
+test("complete replace_text no-ops cannot reset stagnation; changed or unknown receipts remain observations", async () => {
+  const { isReplaceTextNoop } = require("../dist/chat/chat-effectiveness");
+  const hashA = "a".repeat(64), hashB = "b".repeat(64);
+  const receipt = (beforeHash, afterHash, round, counts = true) => JSON.stringify({
+    applied: true, path: "fixture.txt", workspace: 0, appliedAt: new Date(Date.UTC(2026, 0, round + 1)).toISOString(),
+    saved: false, attribution: "exact", ...(counts === false ? {} : typeof counts === "object"
+      ? { added: counts.added, removed: counts.removed } : { added: round + 1, removed: round }), beforeHash, afterHash,
+  });
+  const notices = [], guard = new ChatToolLoopGuard({ maxToolRounds: 100,
+    onToolLoopNotice: async notice => { notices.push(notice); return "summarize"; } });
+  const messages = [], request = { tools: [{ name: "replace_text", execute: async args => receipt(hashA, hashA, args.round) }] };
+  for (let round = 0; round < 3; round++) {
+    assert.equal(notices.length, 0);
+    await guard.beforeRound(round, signal());
+    assert.equal(notices.length, 0);
+    await executeChatToolBatch([call(`noop-${round}`, "replace_text", { round })], request, messages, guard, signal(), round);
+    assert.equal(notices.length, 0);
+  }
+  await guard.beforeRound(3, signal());
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].reason, "no-progress");
+
+  const recoveryNotices = [], recovering = new ChatToolLoopGuard({ maxToolRounds: 100,
+    onToolLoopNotice: async notice => { recoveryNotices.push(notice); return "summarize"; } });
+  const changing = { tools: [{ name: "replace_text", execute: async args => args.round === 2
+    ? receipt(hashA, hashB, args.round, false) : receipt(hashA, hashA, args.round) }] };
+  for (let round = 0; round < 6; round++) {
+    assert.equal(recoveryNotices.length, 0);
+    await recovering.beforeRound(round, signal());
+    assert.equal(recoveryNotices.length, 0);
+    await executeChatToolBatch([call(`mixed-${round}`, "replace_text", { round })], changing, [], recovering, signal(), round);
+    assert.equal(recoveryNotices.length, 0);
+  }
+  await recovering.beforeRound(6, signal());
+  assert.equal(recoveryNotices.length, 1);
+  assert.equal(recoveryNotices[0].reason, "no-progress");
+
+  assert.equal(isReplaceTextNoop("replace_text", receipt(hashA, hashA, 0), true), true);
+  assert.equal(isReplaceTextNoop("replace_text", receipt(hashA, hashB, 0, false), true), false);
+  assert.equal(isReplaceTextNoop("replace_text", receipt("bad", "bad", 0), true), false);
+  assert.equal(isReplaceTextNoop("replace_text", receipt(undefined, undefined, 0), true), false);
+  assert.equal(isReplaceTextNoop("replace_text", receipt(hashA, hashA, 0), false), false);
+
+  const result = result => ({ name: "replace_text", result, status: "complete", round: 0 });
+  const failure = { name: "replace_text", result: receipt(hashA, hashA, 0), status: "failed", round: 0 };
+  const effectiveness = chatEffectiveness({ budgetReceipts: [{ round: 0, status: "sent" }], toolCalls: [
+    result(receipt(hashA, hashA, 0)), result(receipt(hashA, hashB, 1, false)),
+    result(receipt(hashA, hashB, 3, { added: 0, removed: 0 })), result(receipt("malformed", "malformed", 2)),
+    result(JSON.stringify({ applied: true })), failure,
+  ] });
+  assert.equal(effectiveness.rounds[0].novelResults, 4);
+});
+
 test("a second failed command triggers a strategy review, not acceptance; process heartbeats are not progress", async () => {
   const notices = [], guard = new ChatToolLoopGuard({ maxToolRounds: 100,
     onToolLoopNotice: async notice => { notices.push(notice); return "summarize"; } });

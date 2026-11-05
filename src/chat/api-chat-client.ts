@@ -4,6 +4,7 @@ import { createHash } from "crypto";
 import { ChatTokenUsage, ThinkingBudget, checkReportedOutput, reportedReasoningTokens, reportedCopilotUsage } from "./api-chat-models";
 import { ChatInferenceClock, ChatInferenceTiming } from "./chat-inference-timing";
 import { executeChatToolBatch } from "./chat-tool-execution";
+import { isReplaceTextNoop } from "./chat-effectiveness";
 
 export interface ChatImage { label: string; mimeType: "image/png" | "image/jpeg"; dataBase64: string; }
 
@@ -25,6 +26,17 @@ export interface ApiChatMessage {
   tool_calls?: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }>;
 }
 
+export interface ChatInputBaseline {
+  inputTokens: number;
+  outputTokens: number;
+  messageHashes: readonly string[];
+}
+
+export interface ChatRoundContext {
+  kind: "final-summary";
+  inputOverhead: number;
+}
+
 export interface ApiChatTool {
   name: string;
   label?: string;
@@ -44,7 +56,7 @@ export interface ChatTransportReceipt {
   provider: "http" | "vscode";
   messageHashes: string[];
   toolSchemaHash: string;
-  countingMethod: "utf8-byte-estimate" | "utf8-byte-upper-bound" | "vscode-countTokens-plus-overhead";
+  countingMethod: "utf8-byte-estimate" | "utf8-byte-upper-bound" | "vscode-countTokens-plus-overhead" | "provider-usage-plus-byte-bound";
   inputTokens: number;
   payloadScope?: "sdk-managed-context";
   automaticKnowledge?: { inputBudget: number; inputTokens: number; countingMethod: "utf8-byte-upper-bound" | "vscode-countTokens-plus-overhead" };
@@ -107,7 +119,7 @@ export interface ApiChatRequest {
   loopExemptTools?: string[];
   onToolLoopNotice?: (notice: ChatToolLoopNotice, signal: AbortSignal) => Promise<ChatToolLoopDecision>;
   onTool?: (event: ApiChatToolEvent) => void;
-  beforeRound?: (messages: ApiChatMessage[], outputTokens: number) => void | Promise<void>;
+  beforeRound?: (messages: ApiChatMessage[], outputTokens: number, baseline?: ChatInputBaseline, context?: ChatRoundContext) => void | Promise<void>;
   afterRound?: (round: number) => void | Promise<void>;
   prepareContext?: (messages: ApiChatMessage[], outputTokens: number, counter: ChatInputTokenCounter) => Promise<void>;
   automaticKnowledge?: { inputBudget: number; includes: (message: ApiChatMessage) => boolean };
@@ -201,17 +213,21 @@ export class ChatToolLoopGuard {
     }
     const key = createHash("sha256").update(stableToolValue([name, parsedArguments])).digest("hex");
     const signature = createHash("sha256").update(stableToolValue(parsedResult)).digest("hex");
+    const noOp = isReplaceTextNoop(name, parsedResult, succeeded);
     if (!["session_info", "report_work", "record_harness", "list_chats", "list_workers"].includes(name)) {
       this.roundObserved = true;
       const evidence = readOnlyToolNames.has(name) || tool?.execution === "parallel-read"
         ? `${name}:${signature}` : `${name}:${key}:${signature}`;
-      if (succeeded && !this.seenResults.has(evidence)) this.roundResults.add(evidence);
+      if (succeeded && !noOp && !this.seenResults.has(evidence)) this.roundResults.add(evidence);
       if (!succeeded) {
         this.failures.set(key, { key, tool: name, repeats: (this.failures.get(key)?.repeats || 0) + 1 });
         if (this.failures.size > 24) this.failures.delete(this.failures.keys().next().value!);
       } else this.failures.delete(key);
       this.failure = [...this.failures.values()].find(item => item.repeats >= 2);
     }
+    // No-op edits are observed rounds but neither novel results nor repeated-call stalls;
+    // round-level no-progress accounting must catch them even when their arguments differ.
+    if (noOp) return;
     const previous = this.observed.get(key);
     if (previous && previous.signature !== signature) {
       for (let index = this.recent.length - 1; index >= 0; index--) if (this.recent[index].key === key) this.recent.splice(index, 1);

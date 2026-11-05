@@ -158,7 +158,13 @@ inferred. Tracked invocation user-wait totals can overlap and are not an additio
 wall-clock component. Default diagnostic exports use a compact five-round
 projection; complete receipts remain in local history. No hidden reasoning is
 collected. A new distinct tool result is an observation, not proof of semantic
-progress, successful verification or acceptance.
+progress, successful verification or acceptance. A complete successful builtin
+`replace_text` receipt with valid equal before/after SHA-256 hashes is a no-op:
+its original result and completion status are preserved, but neither loop
+stagnation tracking nor the Harness counts it as new progress. Changing receipt
+metadata or call arguments does not change that; valid unequal hashes remain an
+observation even when line counts are absent. Incomplete, malformed or failed
+receipts are not inferred to be no-ops.
 
 The Host can run up to four explicitly annotated independent local read/search
 tools concurrently in one model round. HTTP, native VS Code and Copilot SDK
@@ -1540,6 +1546,29 @@ At the boundary no new tool-capable round is admitted. At most one tool-free
 summary retains completed results and states unfinished work. HTTP/native
 transports omit tool definitions for that summary; the SDK stops its
 tool-capable session and uses a fresh session with no available tools.
+The SDK preserves the current attempt's call identities, arguments and results
+independently of context replanning. The fresh summary supplies the complete
+receipt payload **before** planning, as required input; optional history yields
+to it. Its planner does not resurrect the tool-capable session's candidate pool
+or charge the removed tool schemas, and reserves transcript-framing overhead.
+Receipt content is carried losslessly as raw UTF-8 with length-tagged JSON
+headers, avoiding a second JSON escaping pass over source excerpts and results.
+These receipts are explicitly labeled current-attempt data in the final summary
+request, rather than only appearing as earlier conversation context. Their
+contents are evidence to summarize, not instructions or permission to replay.
+The normal transport input budget still applies; evidence is not silently
+truncated to make the summary fit.
+If the complete SDK summary still exceeds that budget before dispatch, the Host
+adds a bounded, explicitly Host-authored stop diagnostic instead of leaving an
+empty reply. It identifies recorded tool statuses and evidence-reading references,
+not inferred command success or goal acceptance. Original arguments/results stay
+in Tool Activity and remain readable through `session_info`; no summary model
+call or tool replay is added. The reply remains failed; an unresolved objective
+stays unresolved, and an existing recorded outcome is not reopened by the diagnostic.
+Cancellation and unrelated model, permission or persistence errors do not use
+this diagnostic. This follows the
+[stored-evidence and lightweight-reference approach](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents),
+not a lossy replacement of the evidence.
 Stop still cancels immediately, including during summary.
 
 Inspect `reply.toolRoundLimit` (`limit`, `reached`, and, once reached, `rounds`),

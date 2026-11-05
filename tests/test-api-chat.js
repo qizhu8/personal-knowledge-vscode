@@ -2553,7 +2553,7 @@ async function testCopilotSdkChannel() {
       const handlers = []; const sent = [];
       const session = { sessionId: `s${sessions.length}`, config, sent, aborted: 0,
         on: handler => { handlers.push(handler); return () => {}; },
-        emit: (type, data = {}) => handlers.forEach(handler => handler({ type, data })),
+        emit: (type, data = {}, metadata = {}) => handlers.forEach(handler => handler({ type, data, ...metadata })),
         send: async options => { sent.push(options); setImmediate(() => script(session, options)); return "m"; },
         abort: async () => { session.aborted++; session.emit("session.idle", { aborted: true }); },
         disconnect: async () => {},
@@ -2659,6 +2659,13 @@ async function testCopilotSdkChannel() {
         assert.deepStrictEqual(session.config.availableTools, [], "The SDK summary session must expose no tools");
         assert.match(session.config.systemMessage.content, /tool-call round budget/);
         assert.match(session.sent[0].prompt, /value 2-b/, "Completed batch results reach the summary");
+        assert.match(session.sent[0].prompt, /value 1-a/, "Earlier results survive context replanning");
+        const currentSummary = session.sent[0].prompt.split("Current user message:\n").at(-1);
+        assert.match(currentSummary, /Host's final-summary request/);
+        assert.match(currentSummary, /current-attempt-tool-receipts/);
+        assert.match(currentSummary, /"pkm_lookup"/, "Tool names remain available to interpret results");
+        assert.match(currentSummary, /\["0-a","pkm_lookup"/, "Call identities survive context replanning");
+        assert.match(currentSummary, /value 2-b/, "Current execution evidence is in the summary request, not only older-history context");
         session.emit("assistant.turn_start", { turnId:"summary" });
         session.emit("assistant.message", { content:"Partial results; more work remains.", toolRequests:[] });
         session.emit("assistant.usage", { turnId:"summary", inputTokens:20, outputTokens:5 });
@@ -2678,6 +2685,11 @@ async function testCopilotSdkChannel() {
       tools:[{ ...request.tools[0], execute:async args => { executed++; return `value ${args.key}`; } }],
       onHardToolRoundLimit: stop => stops.push(stop), onUsage:(_usage, round) => limitUsageRounds.push(round),
       beforeFinish:() => { finishChecks++; return "Do more work"; },
+      beforeRound: messages => {
+        // Model context planning may discard tool messages, but the final summary still needs execution evidence.
+        const base = messages.filter(message => message.role === "system" || message.role === "user");
+        messages.splice(0, messages.length, ...base);
+      },
     }, () => {}, {}, deps);
     assert.equal(executed, 4, "A round limit counts batches, not individual tools");
     assert.equal(summaries, 1); assert.equal(finishChecks, 0, "Goal correction cannot extend a hard-limited summary");
@@ -2685,6 +2697,267 @@ async function testCopilotSdkChannel() {
     assert.deepStrictEqual(limitUsageRounds, [0, 1, 2], "The separate summary keeps monotonically increasing usage rounds");
     assert.equal(sessions.length - startSessions, 2);
     assert.equal(sessions[startSessions].aborted, 1, "The tool-capable SDK session stops before the next inference");
+  }
+  {
+    const { ChatContextPlanner } = require("../dist/chat/chat-context");
+    const optional = { role:"system", content:"optional historical context ".repeat(1600) };
+    const messages = [{ role:"system", content:"Preserve permissions and report incomplete work. ".repeat(65) }, optional, { role:"user", content:"Complete this bounded development task." }];
+    const automatic = new Map([[optional, { ids:["optional-history"], priority:1 }]]);
+    const schema = [{ role:"system", content:"original tool schema ".repeat(600) }];
+    const planner = new ChatContextPlanner(messages, automatic, schema);
+    const expected = new Map(), receipts = [];
+    let preparedSummary, summaryPlan, summaries = 0;
+    script = async session => {
+      if (!session.config.tools.length) {
+        summaries++;
+        const prompt = session.sent[0].prompt;
+        assert.equal(prompt, copilotSdkPrompt(preparedSummary).prompt, "no evidence may be appended after final context planning");
+        const opening = "<current-attempt-tool-receipts>\n";
+        const data = Buffer.from(prompt.slice(prompt.indexOf(opening) + opening.length, prompt.lastIndexOf("\n</current-attempt-tool-receipts>")));
+        const evidence = [];
+        for (let offset = 0; offset < data.length;) {
+          const end = data.indexOf(10, offset);
+          const metadata = JSON.parse(data.subarray(offset, end).toString("utf8"));
+          const argumentsStart = end + 1;
+          if (Array.isArray(metadata)) {
+            const [id, name, batch, argumentsUtf8Bytes, resultUtf8Bytes] = metadata;
+            assert.equal(name, "pkm_lookup"); assert(Number.isSafeInteger(batch));
+            const argumentsEnd = argumentsStart + argumentsUtf8Bytes;
+            const args = data.subarray(argumentsStart, argumentsEnd).toString("utf8");
+            assert.deepEqual(JSON.parse(args), { key:id.replace(/^development-/, ""), detail:"preserve exact source".repeat(8) });
+            const resultStart = argumentsEnd + 1, resultEnd = resultStart + resultUtf8Bytes;
+            evidence.push({ role:"tool", tool_call_id:id, content:data.subarray(resultStart, resultEnd).toString("utf8") });
+            offset = resultEnd + 1;
+          } else {
+            const contentEnd = argumentsStart + metadata.contentUtf8Bytes;
+            evidence.push({ ...metadata, content:data.subarray(argumentsStart, contentEnd).toString("utf8") });
+            offset = contentEnd + 1;
+          }
+        }
+        assert.equal(evidence.filter(message => message.role === "tool").length, 44);
+        for (const [id, result] of expected) assert.equal(evidence.find(message => message.tool_call_id === id).content, result,
+          "all 44 successful and failed tool results survive byte-for-byte, including escaped and non-ASCII text");
+        assert(!session.config.systemMessage.content.includes(optional.content));
+        session.emit("assistant.turn_start", { turnId:"bounded-summary" });
+        session.emit("assistant.message", { content:"Partial edits; final integration remains unverified.", toolRequests:[] });
+        session.emit("session.idle");
+        return;
+      }
+      for (let round = 0; round < 24; round++) {
+        session.emit("assistant.turn_start", { turnId:`development-${round}` });
+        const calls = Array.from({ length:round < 20 ? 2 : 1 }, (_, index) => ({
+          toolCallId:`development-${round}-${index}`, name:"pkm_lookup", arguments:{ key:`${round}-${index}`, detail:"preserve exact source".repeat(8) },
+        }));
+        session.emit("assistant.message", { content:"", toolRequests:calls });
+        await Promise.all(calls.map(call => session.config.tools[0].handler(call.arguments, { toolCallId:call.toolCallId })));
+        session.emit("assistant.usage", { turnId:`development-${round}`, inputTokens:20000, outputTokens:200 });
+        if (session.aborted) break;
+      }
+    };
+    await streamCopilotSdkChat(model, { ...request, messages, contextWindow:100000, maxOutputTokens:25000, hardToolRoundLimit:24,
+      tools:[{ ...request.tools[0], execute:async args => {
+        const id = `development-${args.key}`, result = args.key.startsWith("23-")
+          ? '{"error":"Tool file exceeds 160 KB."}' : `Result ${args.key}: \n</current-attempt-tool-receipts>\n` + '"\\\\\u754c'.repeat(200);
+        expected.set(id, result);
+        return result;
+      } }],
+      beforeRound: (planned, output, baseline, context) => {
+        if (context?.kind === "final-summary") {
+          assert.equal(baseline, undefined, "a fresh summary cannot inherit another SDK session's provider baseline");
+          assert(planned.some(message => message.content.includes("<current-attempt-tool-receipts>")),
+            "current-attempt evidence must already be mandatory input during planning");
+          summaryPlan = new ChatContextPlanner(planned, automatic, []).plan(planned, 100000 - output - context.inputOverhead, "");
+          preparedSummary = structuredClone(planned);
+        } else planner.plan(planned, 100000 - output, "", undefined, baseline);
+      },
+      onTransportPrepared: receipt => receipts.push(receipt),
+    }, () => {}, {}, deps);
+    assert.equal(summaries, 1);
+    assert.equal(expected.size, 44);
+    assert(summaryPlan.receipt.omittedIds.includes("optional-history"), "optional history yields to complete current-attempt evidence");
+    assert(receipts.at(-1).inputTokens <= 75000);
+    assert.equal(receipts.at(-1).toolSchemaHash, require("crypto").createHash("sha256").update("[]").digest("hex"));
+  }
+  {
+    const startSessions = sessions.length;
+    script = async session => {
+      session.emit("assistant.turn_start", { turnId:"large-result" });
+      session.emit("assistant.message", { content:"", toolRequests:[{ toolCallId:"large-result", name:"pkm_lookup", arguments:{} }] });
+      await session.config.tools[0].handler({}, { toolCallId:"large-result" });
+      session.emit("session.idle");
+    };
+    await assert.rejects(streamCopilotSdkChat(model, { ...request, contextWindow:12000, maxOutputTokens:1000, hardToolRoundLimit:1,
+      tools:[{ ...request.tools[0], execute:async () => "full result ".repeat(1200) }],
+    }, () => {}, {}, deps), error => error instanceof sdkChannel.CopilotSdkSummaryBudgetError
+      && error.message.includes("Completed tool receipts were preserved without truncation; the final summary was not sent."));
+    assert.equal(sessions.length - startSessions, 1, "genuinely oversized receipts are not truncated or sent to a second session");
+  }
+  {
+    const { ChatContextPlanner, ContextBudgetExceededError } = require("../dist/chat/chat-context");
+    const { CopilotSdkSummaryBudgetError } = sdkChannel;
+    const runSummary = options => {
+      const start = sessions.length;
+      script = async session => {
+        if (!session.config.tools.length) {
+          session.emit("assistant.turn_start", { turnId:"unexpected-summary" });
+          session.emit("assistant.message", { content:"unexpected summary", toolRequests:[] });
+          session.emit("session.idle");
+          return;
+        }
+        session.emit("assistant.turn_start", { turnId:"summary-budget-fixture" });
+        session.emit("assistant.message", { content:"", toolRequests:[{ toolCallId:"summary-budget", name:"pkm_lookup", arguments:{} }] });
+        await session.config.tools[0].handler({}, { toolCallId:"summary-budget" });
+        session.emit("session.idle");
+      };
+      const promise = streamCopilotSdkChat(model, { ...request, contextWindow:12000, maxOutputTokens:1000, hardToolRoundLimit:1,
+        tools:[{ ...request.tools[0], execute:async () => "complete receipt" }], ...options }, () => {}, {}, deps);
+      return { start, promise };
+    };
+    let plannerEntered = false;
+    const plannerCase = runSummary({ beforeRound:(planned, output, baseline, context) => {
+      if (context?.kind !== "final-summary") return;
+      plannerEntered = true;
+      assert(planned.some(message => message.content.includes("<current-attempt-tool-receipts>")));
+      new ChatContextPlanner(planned, new Map(), []).plan(planned, 0, "");
+    } });
+    await assert.rejects(plannerCase.promise, error => error instanceof CopilotSdkSummaryBudgetError
+      && error.message.includes("Completed tool receipts were preserved without truncation; the final summary was not sent."));
+    assert.equal(plannerEntered, true, "the Host planner's mandatory-input overflow is the source of the typed refusal");
+    assert.equal(sessions.length - plannerCase.start, 1, "planner refusal does not start a final-summary SDK session");
+
+    const lookalike = new ContextBudgetExceededError("Context budget exceeded by required input, pinned context or active tool results. Reduce required context or increase the model budget.").message;
+    const lookalikeCase = runSummary({ beforeRound:(planned, output, baseline, context) => {
+      if (context?.kind === "final-summary") throw new Error(lookalike);
+    } });
+    await assert.rejects(lookalikeCase.promise, error => !(error instanceof CopilotSdkSummaryBudgetError)
+      && error.message === `${lookalike} Completed tool receipts were preserved without truncation; the final summary was not sent.`);
+    assert.equal(sessions.length - lookalikeCase.start, 1);
+
+    const controller = new AbortController();
+    const cancelledCase = runSummary({ signal:controller.signal, beforeRound:(planned, output, baseline, context) => {
+      if (context?.kind === "final-summary") { controller.abort(); throw new ContextBudgetExceededError(lookalike); }
+    } });
+    await assert.rejects(cancelledCase.promise, error => !(error instanceof CopilotSdkSummaryBudgetError) && error.message === "Request cancelled.");
+    assert.equal(sessions.length - cancelledCase.start, 1, "cancelled summary planning does not start another SDK session");
+
+    let prepared = 0;
+    const persistenceCase = runSummary({ onTransportPrepared:() => {
+      if (++prepared === 2) throw new Error("Transport receipt persistence failed.");
+    } });
+    await assert.rejects(persistenceCase.promise, error => !(error instanceof CopilotSdkSummaryBudgetError)
+      && /Transport receipt persistence failed/.test(error.message));
+    assert.equal(sessions.length - persistenceCase.start, 1, "summary receipt persistence failure occurs before a new SDK session");
+
+    for (const contextWindow of [1000, 999, NaN]) {
+      const invalid = runSummary({ contextWindow });
+      await assert.rejects(invalid.promise, error => !(error instanceof CopilotSdkSummaryBudgetError)
+        && /budget exceeded/.test(error.message));
+      assert.equal(sessions.length, invalid.start, "invalid input budgets never start an SDK session");
+    }
+  }
+  {
+    const { ChatContextPlanner } = require("../dist/chat/chat-context");
+    for (const outcome of ["fits", "multi-round", "native-usage", "native-initiated-agent", "native-legacy-usage", "native-multi-round", "native-over-budget", "native-subagent",
+      "native-background", "native-unknown-initiator", "native-user-class", "native-fusion", "native-foreign-session", "native-stale-sequence", "native-old-timestamp", "native-ambiguous",
+      "over-budget", "no-usage", "malformed-usage", "unmatched-usage", "zero-input", "stale-usage", "duplicate-usage", "pruned-growth"]) {
+      const base = [{ role:"user", content:"Read and implement a bounded change." }];
+      const schema = [{ role:"system", content:"schema ".repeat(9000) }];
+      const planner = new ChatContextPlanner(base, new Map(), schema);
+      const continuationReceipts = [];
+      let generated = false;
+      script = async (session, options) => {
+        if (options.source === "system") return;
+        if (outcome === "multi-round" || outcome === "native-multi-round") {
+          for (let index = 0; index < 7; index++) {
+            session.emit("assistant.turn_start", { turnId:`development-${index}` });
+            if (session.aborted) return;
+            session.emit("assistant.message", { content:"", toolRequests:[{ toolCallId:`source-${index}`, name:"read_file", arguments:{ line:index } }] });
+            await session.config.tools[0].handler({ line:index }, { toolCallId:`source-${index}` });
+            session.emit("assistant.usage", { ...(outcome === "multi-round" ? { turnId:`development-${index}` }
+              : { model:"gpt-x", initiator:"user", interactionType:"conversation-agent",
+                accounting:{ sourceSessionId:session.sessionId, sequence:index, usageId:`usage-${index}` } }),
+              inputTokens:16000 + index * 600, outputTokens:100 }, { id:`usage-event-${index}`, ephemeral:true });
+            if (index === 2) session.emit("assistant.usage", { turnId:"development-0", inputTokens:74000, outputTokens:100 });
+            if (index === 2 && outcome === "native-multi-round") session.emit("assistant.usage", {
+              model:"gpt-x", inputTokens:74000, outputTokens:100,
+              accounting:{ sourceSessionId:session.sessionId, sequence:0, usageId:"usage-0" },
+            }, { id:"late-native-usage", ephemeral:true });
+          }
+          session.emit("assistant.turn_start", { turnId:"development-final" });
+          if (session.aborted) return;
+          generated = true;
+          session.emit("assistant.message", { content:"Seven source-reading rounds completed.", toolRequests:[] });
+          session.emit("session.idle");
+          return;
+        }
+        session.emit("assistant.turn_start", { turnId:"input-0" }, { id:"turn-start-0", timestamp:"2026-11-05T02:50:00.000Z" });
+        session.emit("assistant.message", { content:"", toolRequests:[{ toolCallId:"source", name:"read_file", arguments:{} }] });
+        await session.config.tools[0].handler({}, { toolCallId:"source" });
+        if (outcome.startsWith("native-")) {
+          const accounting = { sourceSessionId:outcome === "native-foreign-session" ? "another-session" : session.sessionId,
+            sequence:outcome === "native-stale-sequence" ? -1 : 0, usageId:"main-call-0" };
+          session.emit("assistant.usage", { model:"gpt-x", inputTokens:outcome === "native-over-budget" ? 74000 : 16000, outputTokens:100,
+            ...(outcome === "native-legacy-usage" ? {} : { accounting }),
+            ...(outcome === "native-background" ? { initiator:"mcp-sampling", interactionType:"conversation-sampling" } : {}),
+            ...(outcome === "native-initiated-agent" ? { initiator:"user", interactionType:"conversation-agent" } : {}),
+            ...(outcome === "native-unknown-initiator" ? { initiator:"unknown-initiator" } : {}),
+            ...(outcome === "native-user-class" ? { interactionType:"conversation-user" } : {}),
+            ...(outcome === "native-fusion" ? { initiator:"user", interactionType:"conversation-agent", fusion:{ phase:"fixture" } } : {}),
+          }, { id:"usage-native-0", ephemeral:true, parentId:"turn-start-0",
+            timestamp:outcome === "native-old-timestamp" ? "2026-11-05T02:49:00.000Z" : "2026-11-05T02:50:01.000Z",
+            ...(outcome === "native-subagent" ? { agentId:"subagent-1" } : {}) });
+          if (outcome === "native-ambiguous") session.emit("assistant.usage", { model:"gpt-x", inputTokens:17000, outputTokens:100,
+            accounting:{ ...accounting, sequence:1, usageId:"other-call-0" } }, { id:"usage-native-1", timestamp:"2026-11-05T02:50:02.000Z" });
+        }
+        else if (outcome !== "no-usage") session.emit("assistant.usage", { turnId:outcome === "unmatched-usage" ? "another-session-turn" : "input-0",
+          inputTokens:["over-budget", "pruned-growth"].includes(outcome) ? 74000 : outcome === "malformed-usage" ? NaN : outcome === "zero-input" ? 0 : 16000,
+          outputTokens:100 });
+        if (outcome === "duplicate-usage") session.emit("assistant.usage", { turnId:"input-0", inputTokens:74000, outputTokens:100 });
+        session.emit("assistant.turn_start", { turnId:"input-1" });
+        if (session.aborted) return;
+        if (outcome === "stale-usage") {
+          session.emit("assistant.message", { content:"", toolRequests:[{ toolCallId:"source-2", name:"read_file", arguments:{} }] });
+          await session.config.tools[0].handler({}, { toolCallId:"source-2" });
+          session.emit("assistant.usage", { turnId:"input-0", inputTokens:15000, outputTokens:50 });
+          session.emit("assistant.turn_start", { turnId:"input-2" });
+          if (session.aborted) return;
+        }
+        generated = true;
+        session.emit("assistant.message", { content:"Implementation can proceed.", toolRequests:[] });
+        session.emit("session.idle");
+      };
+      const run = streamCopilotSdkChat({ ...model, maxInputTokens:100000 }, { ...request, contextWindow:76000, maxToolRounds:12,
+        messages:base, tools:[{ name:"read_file", description:"schema ".repeat(9000), parameters:{ type:"object" }, execute:async args => `Source ${args.line ?? 0}: ` + "bounded source ".repeat(800) }],
+        beforeRound:(messages, output, baseline) => {
+          if (outcome === "pruned-growth") messages.splice(0, messages.length, ...base);
+          return planner.plan(messages, 76000 - output, "", undefined, baseline);
+        },
+        onTransportPrepared:receipt => continuationReceipts.push(receipt),
+      }, () => {}, {}, deps);
+      if (["fits", "multi-round", "native-usage", "native-initiated-agent", "native-legacy-usage", "native-multi-round"].includes(outcome)) {
+        await run;
+        assert(generated);
+        assert.equal(continuationReceipts[1].countingMethod, "provider-usage-plus-byte-bound");
+        assert(continuationReceipts[1].inputTokens < 40000);
+        if (outcome === "multi-round" || outcome === "native-multi-round") {
+          assert.equal(continuationReceipts.length, 8);
+          assert(continuationReceipts.slice(1).every(receipt => receipt.countingMethod === "provider-usage-plus-byte-bound" && receipt.inputTokens < 40000));
+        }
+      } else {
+        await assert.rejects(run, error => {
+          assert.match(error.message, /Context budget|SDK context/, outcome);
+          assert.match(error.message, /SDK context admission diagnostics:/, outcome);
+          assert(!error.message.includes("bounded source") && !error.message.includes("main-call-0")
+            && !error.message.includes("another-session"), "diagnostics contain flags, not source content or runtime identities");
+          if (outcome === "native-background") assert.match(error.message, /"main":false/);
+          if (outcome === "native-foreign-session") assert.match(error.message, /"sourceMatches":false/);
+          if (outcome === "native-old-timestamp") assert.match(error.message, /"current":false/);
+          if (outcome === "native-subagent") assert.match(error.message, /"agent":true/);
+          return true;
+        }, outcome);
+        assert.equal(generated, false, "true overflow and unmeasured input still stop continuation");
+      }
+    }
   }
   for (const outcome of ["rogue", "cancel", "goal-only", "stop-failed", "stop-hung"]) {
     let executions = 0, summaries = 0;

@@ -31,13 +31,13 @@ import { todoReadApiNames } from "../knowledge/todo-api-contract";
 import { actionRequest } from "../ui/action-browser";
 import { connectApiChatMcp, connectManagedChatMcp, ManagedChatMcp, mcpUrl, ApiChatMcpServer, vscodeToolCatalog, createVscodeTools, groupVscodeTools, pkmToolSets } from "./api-chat-mcp";
 import { assertVscodeModelCallable, discoverVscodeModels, isVscodeModelAccessError, streamVscodeChat, vscodeModelProfile, VscodeChatModel } from "./api-chat-vscode";
-import { discoverCopilotSdkModels } from "./api-chat-copilot-sdk";
+import { CopilotSdkSummaryBudgetError, discoverCopilotSdkModels } from "./api-chat-copilot-sdk";
 import type { ChatModelActivity } from "./api-chat-client";
 import { runFixtureChatAcceptance } from "./api-chat-acceptance";
 import { API_CHAT_CONTROL_OPERATIONS } from "./agent-control";
 import { loadedExtensionBuild } from "../runtime/extension-host-runtime";
 import { readChatKnowledge, automaticChatSkills, CHAT_KNOWLEDGE_KINDS, CHAT_ASSET_CURATION_GUIDANCE } from "./knowledge-reader";
-import { chatMemoryTree, chatMemorySegments, readChatToolEvidence, retrieveChatMemory, recentChatDialogue, toolEvidenceReminder } from "./chat-memory";
+import { chatMemoryTree, chatMemorySegments, readChatToolEvidence, retrieveChatMemory, recentChatDialogue, toolEvidenceReminder, hostSummaryBudgetStopReport } from "./chat-memory";
 import { ChatMemoryService, chatMemoryScope, messageRevision, MemoryContextBlock, MemoryModelError, MemoryModelRequest, MemoryModelResult } from "../memory/chat-memory-service";
 import { memoryPolicy, validMemoryPolicy } from "./chat-memory-policy";
 import { recallScopedChatMemory, scopedMemorySegment } from "./chat-memory-scope";
@@ -4480,7 +4480,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
           contextMeasurement = await contextPlanner.measure(roundMessages, settings.contextWindow - output, counter);
         },
         afterRound: () => enforceActivityBudget(),
-        beforeRound: (roundMessages: ApiChatMessage[], output: number) => {
+        beforeRound: (roundMessages: ApiChatMessage[], output: number, baseline?: import("./api-chat-client").ChatInputBaseline, roundContext?: import("./api-chat-client").ChatRoundContext) => {
           if (convergenceInstruction) {
             roundMessages.push({ role: "system", content: convergenceInstruction });
             convergenceInstruction = undefined;
@@ -4496,6 +4496,10 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
             return steeringMessages.get(input.id)!;
           });
           const planned = [...roundMessages, ...additions];
+          const roundToolSchema = roundContext?.kind === "final-summary" ? [] : toolSchema;
+          const inputOverhead = roundContext?.inputOverhead || 0;
+          const inputBudget = settings.contextWindow - output - inputOverhead;
+          const roundPlanner = roundContext?.kind === "final-summary" ? new ChatContextPlanner(planned, automatic, roundToolSchema) : contextPlanner;
           if (steering.length && requirementCandidates.length) {
             requirementsActive = false;
             if (reply!.profileRequirementRecall) reply!.profileRequirementRecall = { ...reply!.profileRequirementRecall, status:"invalidated",
@@ -4528,33 +4532,33 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
             if (!planned.includes(workingStateMessage)) planned.push(workingStateMessage);
           }
           retrieval?.refreshSourceValidation?.();
-          const rollbackPlan = contextPlanner.checkpoint();
+          const rollbackPlan = roundPlanner.checkpoint();
           try {
             const query = [...steering.map(input => input.text), ...chat.messages.filter(message =>
               message.taskId === chat.sessionId && message.role === "user" && message.inputKind === "steer").map(message => message.content).reverse(),
               currentHarnessTask(chat)?.goal, text].filter(Boolean).join("\n");
             const measurement = contextMeasurement;
             contextMeasurement = undefined;
-            const plan = contextPlanner.plan(planned, settings.contextWindow - output, query, measurement);
+            const plan = roundPlanner.plan(planned, inputBudget, query, measurement, baseline);
             if (profileContext && !plan.receipt.manifest.some(message => message.hash === profileContext.messageHash)) {
               throw new Error("Required Profile snapshot is missing from the prepared model context. Nothing was dispatched.");
             }
             const selected = plan.selected;
-            validateBudget(profile, settings.contextWindow, output, measurement ? [] : [...planned, ...toolSchema]);
+            validateBudget(profile, settings.contextWindow, output, measurement || baseline ? [] : [...planned, ...roundToolSchema]);
             const previousQueue = chat.queuedInputs, previousMessages = [...chat.messages], previousBudgets = reply!.budgetReceipts;
             const previousActivity = structuredClone(reply!.retrievalActivity!), previousRetrieval = reply!.retrieval;
             updateReceipt(selected);
             const activity = reply!.retrievalActivity!;
             const index = activity.droppedRounds + activity.rounds.length;
             if (activity.rounds.length >= 32) { activity.rounds.shift(); activity.droppedRounds++; }
-            activity.rounds.push({ index, at: Date.now(), inputTokens: estimateInputTokens([...planned, ...toolSchema]),
-              inputBudget: settings.contextWindow - output, countingMethod: "utf8-byte-estimate", receipt: structuredClone(reply!.retrieval!) });
+            activity.rounds.push({ index, at: Date.now(), inputTokens: estimateInputTokens([...planned, ...roundToolSchema]) + inputOverhead,
+              inputBudget, countingMethod: "utf8-byte-estimate", receipt: structuredClone(reply!.retrieval!) });
             reply!.budgetReceipts = [...reply!.budgetReceipts || [], {
               schema:"pkm.chat.budget/v1", at:Date.now(), round:reply!.budgetReceipts?.length || 0, modelId:profile.id, countingMethod:"utf8-byte-estimate",
               requested:{ contextWindow:settings.contextWindow, outputTokens:settings.maxOutputTokens, modelTimeoutMs:settings.timeoutMs,
                 activeReviewMs:settings.loopReviewAfterMs, toolRoundReview:settings.maxToolRounds },
-              effective:{ inputBudget:settings.contextWindow - output, outputTokens:output },
-              consumed:{ estimatedInputTokens:estimateInputTokens([...planned, ...toolSchema]), activeMs:Math.max(0, reviewClock.now() - startedAt) },
+              effective:{ inputBudget, outputTokens:output },
+              consumed:{ estimatedInputTokens:estimateInputTokens([...planned, ...roundToolSchema]) + inputOverhead, activeMs:Math.max(0, reviewClock.now() - startedAt) },
               selectedReferenceIds:[...selected], contextPlan:plan.receipt, status:"prepared"
             }];
             const budget = reply!.budgetReceipts[reply!.budgetReceipts.length - 1];
@@ -4720,6 +4724,9 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
           taskId:chat.sessionId, role:"assistant", content:"", status:"failed",
           model:settings.provider === "vscode" ? settings.selectedProfile.label : settings.model, progress:chat.progress };
         chat.messages.push(reply);
+      }
+      if (error instanceof CopilotSdkSummaryBudgetError && !controller.signal.aborted && reply.toolRoundLimit?.reached) {
+        reply.content = [reply.content, hostSummaryBudgetStopReport(reply)].filter(Boolean).join("\n\n");
       }
       reply.status = chat.progress.status === "cancelled" ? "cancelled" : "failed";
       reply.error = failure;

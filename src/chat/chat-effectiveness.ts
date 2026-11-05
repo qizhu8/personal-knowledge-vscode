@@ -1,6 +1,26 @@
 import { createHash } from "crypto";
 import type { ChatMessage } from "./api-chat-store";
 
+/** A complete, successful builtin edit receipt whose content hash did not change. */
+export function isReplaceTextNoop(name: string, result: unknown, succeeded = true): boolean {
+  if (name !== "replace_text" || !succeeded) return false;
+  let receipt = result;
+  if (typeof receipt === "string") {
+    try { receipt = JSON.parse(receipt); } catch { return false; }
+  }
+  if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) return false;
+  const value = receipt as Record<string, unknown>;
+  const sha256 = (item: unknown): item is string => typeof item === "string" && /^[a-f0-9]{64}$/i.test(item);
+  return value.applied === true && typeof value.path === "string" && value.path.length > 0
+    && Number.isInteger(value.workspace) && Number.isFinite(value.workspace)
+    && typeof value.appliedAt === "string" && Number.isFinite(Date.parse(value.appliedAt))
+    && value.saved === false && (value.attribution === "exact" || value.attribution === "unknown")
+    && (value.added === undefined || Number.isFinite(value.added) && (value.added as number) >= 0)
+    && (value.removed === undefined || Number.isFinite(value.removed) && (value.removed as number) >= 0)
+    && sha256(value.beforeHash) && sha256(value.afterHash)
+    && value.beforeHash.toLowerCase() === value.afterHash.toLowerCase();
+}
+
 type Interval = { startedAt: number; finishedAt?: number };
 function coveredMs(intervals: Interval[]): number {
   const sorted = intervals.filter((item): item is Interval & { finishedAt: number } =>
@@ -27,6 +47,7 @@ export function chatEffectiveness(message: ChatMessage) {
       toolWallMs: coveredMs(tools.flatMap(call => call.startedAt === undefined ? [] : [{ startedAt: call.startedAt, finishedAt: call.finishedAt }])),
       queuedMs: tools.some(call => call.queuedMs !== undefined) ? tools.reduce((total, call) => total + (call.queuedMs || 0), 0) : undefined,
       novelResults: new Set(tools.filter(call => call.status === "complete" && !call.reused
+        && !isReplaceTextNoop(call.name, call.result, true)
         && !["session_info", "report_work", "record_harness"].includes(call.name))
         .flatMap(call => {
           const hash = createHash("sha256").update(JSON.stringify([call.name, call.result])).digest("hex");

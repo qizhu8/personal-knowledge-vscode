@@ -1,7 +1,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { createHash } = require("node:crypto");
-const { fitChatContext, ChatContextPlanner, ContextCandidateLimitError, AUTOMATIC_KNOWLEDGE_INPUT_BUDGET } = require("../dist/chat/chat-context");
+const { fitChatContext, ChatContextPlanner, ContextCandidateLimitError, AUTOMATIC_KNOWLEDGE_INPUT_BUDGET, sdkInputBound } = require("../dist/chat/chat-context");
 const { estimateInputTokens } = require("../dist/chat/api-chat-models");
 const { ChatToolLoopGuard } = require("../dist/chat/api-chat-client");
 const required = () => ({ role:"user", content:"Preserve all constraints. Do not deploy." });
@@ -17,6 +17,34 @@ function fit(entries, budget, options = {}) {
   const selected = fitChatContext(messages, automatic, budget, [], { ...options, report:value => { receipt = value; } });
   return { messages, selected, receipt };
 }
+
+test("SDK provider input baseline avoids charging a known schema's bytes as tokens again", () => {
+  const prompt = required(), schema = [{ role:"system", content:"tool schema ".repeat(5500) }];
+  const messages = [prompt], planner = new ChatContextPlanner(messages, new Map(), schema);
+  const baseline = { inputTokens:16000, outputTokens:300, messageHashes:[hash(prompt)] };
+  const call = { role:"assistant", content:"", tool_calls:[{ id:"read", type:"function", function:{ name:"read_file", arguments:"{}" } }] };
+  const result = { role:"tool", content:"source ".repeat(1800), tool_call_id:"read" };
+  const round = [prompt, call, result];
+  assert.throws(() => planner.plan([...round], 75000, ""), /required input/);
+  const plan = planner.plan(round, 75000, "", undefined, baseline);
+  assert(round.includes(result), "the latest complete result remains mandatory and intact");
+  assert.equal(plan.receipt.measuredInput.countingMethod, "provider-usage-plus-byte-bound");
+  assert.equal(plan.receipt.measuredInput.inputTokens, sdkInputBound(round, baseline));
+  assert(plan.receipt.measuredInput.inputTokens < 31000);
+  assert(plan.receipt.estimatedAfter > 75000, "raw byte estimate remains separately visible, not relabeled as actual tokens");
+  assert.throws(() => planner.plan([...round], 20000, "", undefined, baseline), /required input/);
+});
+
+test("SDK baseline accounts for changed messages and never reclaims already consumed runtime context", () => {
+  const message = required(), baseline = { inputTokens:2000, outputTokens:100, messageHashes:[hash(message)] };
+  assert.equal(sdkInputBound([message], baseline), 2132);
+  assert.equal(sdkInputBound([], baseline), 2132, "removing a shadow message does not remove it from the SDK session");
+  assert(sdkInputBound([message, { ...message }], baseline) > 2132, "a duplicate new message is not free just because its hash is known");
+  message.content += " New required instruction.";
+  assert(sdkInputBound([message], baseline) > 2132, "mutated content must be charged again");
+  assert.throws(() => sdkInputBound([message], { ...baseline, inputTokens:NaN }), /Invalid SDK/);
+  assert.throws(() => sdkInputBound([{ ...message, images:[{}] }], baseline), /New images/);
+});
 
 test("automatic PKM reference budget admits exactly 8k and rejects one byte over independently of the model window", () => {
   assert.equal(AUTOMATIC_KNOWLEDGE_INPUT_BUDGET, 8000);
