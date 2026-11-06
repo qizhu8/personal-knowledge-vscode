@@ -268,7 +268,7 @@ function fileSelectorCategoryTree(items) {
 function fileSelectorTreeItems(node) { return [...node.items, ...Object.values(node.folders).flatMap(fileSelectorTreeItems)]; }
 const uiIcon = (name, label = '') => `<span class="codicon codicon-${name}" aria-hidden="true"></span>${label ? `<span>${esc(label)}</span>` : ''}`;
 const ICON = {todo:uiIcon('circle-outline'),done:uiIcon('pass-filled'),'data-path':uiIcon('folder'),observation:uiIcon('eye'),general:uiIcon('note')};
-const surfacePanelTitles = { skills:'Skills', notes:'Notes', papers:'Research', agentSessions:'Agent Sessions', recipes:'Recipe Library', actionLibrary:'Action Library', actions:'Action Workbench', prompts:'Prompts', scripts:'Scripts', packages:'Packages', environments:'Environments', servers:'Servers', projects:'Projects', chatroom:'Threads', portalConnections:'Portal Connections', subscriptions:'Network & Sharing', githubSync:'GitHub Sync', backgroundTasks:'Background Tasks', mcp:'General & MCP', userProfile:'User Profile', skillRouter:'Router' };
+const surfacePanelTitles = { help:'Help', skills:'Skills', notes:'Notes', papers:'Research', agentSessions:'Agent Sessions', recipes:'Recipe Library', actionLibrary:'Action Library', actions:'Action Workbench', prompts:'Prompts', scripts:'Scripts', packages:'Packages', environments:'Environments', servers:'Servers', projects:'Projects', chatroom:'Threads', portalConnections:'Portal Connections', subscriptions:'Network & Sharing', githubSync:'GitHub Sync', backgroundTasks:'Background Tasks', mcp:'General & MCP', userProfile:'User Profile', skillRouter:'Router' };
 let lastPanelTitle = '';
 function setPanelTitle(title) {
   const next = String(title || 'Personal Knowledge Manager').trim();
@@ -316,6 +316,7 @@ function i18nElementParams(element) {
   return params;
 }
 function translateUiNode(node, lookup) {
+  if ((node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement)?.closest('.pkm-help,[data-pkm-guidance]')) return;
   if (node.nodeType === Node.TEXT_NODE) {
     const parent = node.parentElement;
     if (!parent || parent.closest('script,style,code,pre,textarea,option[data-i18n-skip]')) return;
@@ -370,6 +371,7 @@ function applyUiLanguage(payload) {
   document.documentElement.dir = locale?.direction || 'ltr';
   const selector = document.getElementById('pkm-language-select');
   if (selector) selector.value = uiI18n.setting || 'auto';
+  if (state.tab === 'help') showHelpTab();
 }
 function changeUiLanguage(setting) {
   if (uiI18n.catalogs?.[setting]) applyUiLanguage({ setting, resolved: setting });
@@ -388,9 +390,10 @@ const workspaceSurfaces = Object.freeze({
   tools:['prompts','scripts','packages','environments','servers'],
   automation:['userProfile','agentSessions','agentSnapshots','actionLibrary','recipes','actions'],
   projects:['projects','chatroom','portalConnections'],
-  settings:['mcp','skillRouter','subscriptions','githubSync','backgroundTasks']
+  settings:['mcp','skillRouter','subscriptions','githubSync','backgroundTasks'],
+  help:['help']
 });
-const workspaceDefaultSurface = Object.freeze({ knowledge:'skills', tools:'prompts', automation:'agentSessions', projects:'projects', settings:'mcp' });
+const workspaceDefaultSurface = Object.freeze({ knowledge:'skills', tools:'prompts', automation:'agentSessions', projects:'projects', settings:'mcp', help:'help' });
 function workspaceForTab(tab) {
   return Object.keys(workspaceSurfaces).find(workspace => workspaceSurfaces[workspace].includes(tab)) || 'projects';
 }
@@ -521,18 +524,19 @@ function showActionError(button, message) {
   dismiss.setAttribute('aria-label','Dismiss error');
   dismiss.onclick = () => error.remove();
   error.append(text, dismiss);
+  appendProblemGuide(error);
   host.insertAdjacentElement('afterend', error);
 }
 
 function showViewActionError(message) {
-  const host = document.querySelector('.d-title,.sub-head,#item-list');
+  const host = document.getElementById('detail');
   if (!host) return;
-  host.parentElement?.querySelectorAll(':scope > .pk-action-error').forEach(error => error.remove());
+  host.querySelectorAll(':scope > .pk-action-error').forEach(error => error.remove());
   const error = document.createElement('div');
   error.className = 'pk-action-error'; error.setAttribute('role','alert');
   const text = document.createElement('span'); text.textContent = message;
   const dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.className = 'pk-action-error-dismiss'; dismiss.textContent = '×'; dismiss.title = 'Dismiss error'; dismiss.setAttribute('aria-label','Dismiss error'); dismiss.onclick = () => error.remove();
-  error.append(text, dismiss); host.insertAdjacentElement('afterend', error);
+  error.append(text, dismiss); appendProblemGuide(error); host.prepend(error);
 }
 
 function showInitialViewError(title, message, retryCommand) {
@@ -553,6 +557,7 @@ function showInitialViewError(title, message, retryCommand) {
     ask(retryCommand, {});
   });
   container.append(heading, body, retry);
+  appendProblemGuide(container);
   detail.replaceChildren(container);
 }
 
@@ -907,7 +912,7 @@ window.addEventListener('message', e => {
   else if (command === 'envList') {
     envCache = data || [];
     if (state.tab === 'environments') renderEnvDashboard(envCache);
-    if (e.data.refreshErrors?.length) showViewActionError(`Environment refresh incomplete: ${e.data.refreshErrors.join('; ')}`);
+    if (e.data.refreshErrors?.length && state.tab === 'environments') showEnvProblem(e.data.refreshErrors.join('; '));
     const refresh = document.querySelector('#content-toolbar .tbtn[onclick="doReload()"]');
     if (refresh) { refresh.disabled = false; refresh.innerHTML = uiIcon('refresh', 'Refresh'); }
   }
@@ -1148,9 +1153,9 @@ window.addEventListener('message', e => {
       progress.innerHTML = `<div class="sync-progress"><div><strong>${esc(data.message || 'Synchronizing…')}</strong><span>${percent === null ? '' : percent + '%'}${amount ? ' · ' + esc(amount) : ''}</span></div><progress ${percent === null ? '' : `value="${percent}" max="100"`}></progress></div>`;
     }
   }
-  else if (command === 'mcpStatus')    { mcpOnStatus(data); }
+  else if (command === 'mcpStatus')    { mcpOnStatus(data); finishAction('mcpStatus'); }
   else if (command === 'mcpCheckComplete') {
-    if (data?.state === 'error') failAction(data?.error || 'PKM integration setup failed.','checkMcp');
+    if (data?.state === 'error' || data?.state === 'action-required') failAction(data?.error || 'PKM integration setup needs attention.','checkMcp');
     else finishAction('checkMcp');
   }
   else if (command === 'mcpActionResult') {
@@ -1161,6 +1166,7 @@ window.addEventListener('message', e => {
   }
   else if (command === 'skillRouterStatus') { skillRouterOnStatus(data); }
   else if (command === 'uiLanguage')   { applyUiLanguage(data); }
+  else if (command === 'helpGuide') { helpOnGuide(data); }
   else if (command === 'tourCatalog') { updateFeatureTourCatalog(data); }
   else if (command === 'initialExperience') { queueInitialExperience(data); }
   else if (command === 'mcpPathSize')  { finishAction('refreshMcpPathSizes'); mcpOnPathSize(data); }
@@ -1221,6 +1227,7 @@ window.addEventListener('message', e => {
     setTimeout(() => ask('detail', { type: itemType, key: itemKey }), 150);
   }
   else if (command === 'openTab') {
+    if (e.data.tab === 'help' && e.data.helpSection) { openHelpSection(e.data.helpSection); return; }
     const btn = document.querySelector(`.tab[data-tab="${e.data.tab}"]`);
     if (btn) btn.dispatchEvent(new MouseEvent('click'));
   }
@@ -1234,10 +1241,9 @@ window.addEventListener('message', e => {
   else if (command === 'focusEnvironment') { focusEnvironmentDashboard(String(e.data.environmentId || '')); }
   else if (command === 'openSubscription') { subscriptionOpen(String(e.data.shareId || '')); }
   else if (command === 'highlightMcpRegenerate') {
-    const btn = document.querySelector('.tab[data-tab="mcp"]');
-    if (btn) btn.dispatchEvent(new MouseEvent('click'));
-    setTimeout(highlightMcpRegenerate, 250);
+    openMcpSetup('progress');
   }
+  else if (command === 'focusMcpSetup') { openMcpSetup(e.data.target); }
   else if (command === 'chatConfig') { chatOnConfig(data); }
   else if (command === 'chatState')  { chatOnState(data); }
   else if (command === 'chatRecents'){ chatOnRecents(data); }
@@ -1359,7 +1365,7 @@ function isInitialViewResponse(command, message = {}) {
   const responseByTab = {
     skills:'list', notes:'list', papers:'list', prompts:'list', packages:'list', scripts:'list',
     environments:'envList', servers:'serverList', agentSessions:'projectState', recipes:'projectState', projects:'projectState',
-    userProfile:'userProfile', chatroom:'chatState', mcp:'mcpStatus', skillRouter:'skillRouterStatus', subscriptions:'subscriptionState', githubSync:'githubSyncState', backgroundTasks:'backgroundTasks', portalConnections:'portalConnections',
+    userProfile:'userProfile', chatroom:'chatState', mcp:'mcpStatus', help:'helpGuide', skillRouter:'skillRouterStatus', subscriptions:'subscriptionState', githubSync:'githubSyncState', backgroundTasks:'backgroundTasks', portalConnections:'portalConnections',
   };
   return responseByTab[state.tab] === command && (command !== 'list' || message.tab === state.tab);
 }

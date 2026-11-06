@@ -17,14 +17,14 @@ function memoryReferences(operation: unknown, result: unknown) {
 }
 
 export function capabilityObservations(message: ChatMessage) {
-  return (message.toolCalls || []).filter(call => ["capability_call", "capability_read"].includes(call.name)
+  return (message.toolCalls || []).filter(call => call.dispatch || ["capability_call", "capability_read"].includes(call.name)
     || /^memory_record_(propose|get|search|confirm|revise|revoke|audit)$/.test(call.name)).slice(-50).map(call => {
     let input: Record<string, unknown> = {}, output: Record<string, unknown> = {};
     try { input = JSON.parse(call.arguments); } catch { /* Legacy malformed inputs remain visible as unknown. */ }
     try { output = JSON.parse(call.result || "{}"); } catch { /* Raw tool evidence remains in history. */ }
-    const operation = call.name.startsWith("memory_record_") ? `memory.record.${call.name.slice(14)}` : input?.operation;
-    return { callId: call.id, operation: typeof operation === "string" && /^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*){2}$/.test(operation) && operation.length <= 100 ? operation : undefined,
-      version: call.name.startsWith("memory_record_") || input?.version === 1 ? 1 : undefined, status: call.status,
+    const operation = call.dispatch?.operation || (call.name.startsWith("memory_record_") ? `memory.record.${call.name.slice(14)}` : input?.operation);
+    return { callId: call.id, operation: typeof operation === "string" && /^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*){2}$/.test(operation) && operation.length <= 100 ? operation : undefined,
+      version: call.dispatch?.version === 1 || call.name.startsWith("memory_record_") || input?.version === 1 ? 1 : undefined, status: call.status,
       catalogRevision: typeof output?.catalogRevision === "string" && /^[a-f0-9]{64}$/.test(output.catalogRevision) ? output.catalogRevision : undefined,
       memory: call.status === "complete" ? memoryReferences(operation, call.name.startsWith("memory_record_") ? output : output?.result) : undefined,
       note: "Invocation evidence, not acceptance. Full arguments/results remain in the original tool receipt." };

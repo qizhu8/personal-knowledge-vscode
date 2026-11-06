@@ -41,10 +41,10 @@ context.copyDetailUrl();
 assert.strictEqual(copied.length, beforeEmpty);
 
 for (const marker of [
-  /d-title[^\n]+data\.name[\s\S]{0,180}detailPathHtml\(data\)[\s\S]{0,80}<div class="d-meta">/,
-  /d-title[^\n]+data\.title[\s\S]{0,180}detailPathHtml\(data\)[\s\S]{0,80}<div class="d-meta">/,
+  /d-title[^\n]+data\.name[\s\S]{0,220}detailPathHtml\(data\)[\s\S]{0,80}<div class="d-meta">/,
+  /d-title[^\n]+data\.title[\s\S]{0,220}detailPathHtml\(data\)[\s\S]{0,80}<div class="d-meta">/,
   /d-title[^\n]+data\.file[\s\S]{0,100}detailPathHtml\(data\)[\s\S]{0,80}<div class="d-meta">/,
-  /d-title[^\n]+d\.title[\s\S]{0,180}detailPathHtml\(d\)[\s\S]{0,80}<div class="d-meta">/,
+  /d-title[^\n]+d\.title[\s\S]{0,220}detailPathHtml\(d\)[\s\S]{0,80}<div class="d-meta">/,
 ]) assert.match(panel, marker);
 const promptHeader = panel.indexOf('class="prompt-workbench-head"');
 const promptTitle = panel.indexOf("meta?.title || task", promptHeader);

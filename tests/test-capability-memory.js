@@ -3,11 +3,41 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), { randomUUID } = require("node:crypto");
 const { executeMemoryOperation } = require("../dist/capabilities/memory-operations");
 const { callCapabilityService } = require("../dist/capabilities/service");
-const { createExplicitMemoryTools } = require("../dist/chat/explicit-memory-tools");
+const { createExplicitMemoryTools, formatExplicitMemoryPermission, formatExplicitMemoryDecision } = require("../dist/chat/explicit-memory-tools");
 const { memoryCapabilities } = require("../dist/capabilities/memory-contract");
 const { capabilityTools } = require("../dist/chat/capability-tools");
 const { capabilityObservations } = require("../dist/capabilities/observations");
 const { todoCapabilities } = require("../dist/capabilities/registry");
+
+test("Memory permission and exact-revision review explain scope, provenance, changes and recall effects", () => {
+  const scope = { account:"fixture-owner", project:"fixture-project", repository:"fixture-repository" };
+  const sources = [{ id:"input-1", chat:"fixture-chat", revision:"source-revision", locator:"message/input-1" }];
+  const proposal = formatExplicitMemoryPermission("memory_record_propose", { content:"New convention", sources, operation_id:"proposal-1" }, scope);
+  for (const value of ["Account: fixture-owner", "Project scope: fixture-project", "Repository scope: fixture-repository",
+    "New convention", "pending", "not active recall", "Source ID: input-1", "Chat: fixture-chat", "Source revision: source-revision",
+    "Locator: message/input-1", "idempotency): proposal-1"]) assert(proposal.includes(value), value);
+  assert.throws(() => formatExplicitMemoryPermission("memory_record_propose", { sources:[null] }, scope), { code:"INVALID_ARGUMENT" });
+  const current = { id:"record-1", revision:3, current_revision:3, status:"confirmed", current_status:"confirmed",
+    content:"Existing convention", sources };
+  for (const action of ["confirm", "revise", "revoke"]) {
+    const request = { action, operationId:`${action}-1`, scope, recordId:current.id, expectedRevision:3,
+      content:"Replacement convention", sources:[{ ...sources[0], id:"input-2" }] };
+    const permission = formatExplicitMemoryPermission(`memory_record_${action}`, { id:current.id, expected_revision:3 }, scope);
+    assert.match(permission, /Record ID: record-1/);
+    assert.match(permission, /Expected revision: 3/);
+    assert.match(permission, /separate exact-record review/);
+    const detail = formatExplicitMemoryDecision(request, current);
+    for (const value of ["Record ID: record-1", "Expected revision: 3", "Current record revision: 3", "Current record status: confirmed",
+      "Existing convention", "Source ID: input-1", "user:local", `idempotency): ${action}-1`]) assert(detail.includes(value), value);
+    if (action === "confirm") assert.match(detail, /eligible for future active Memory search/);
+    if (action === "revise") {
+      assert.match(detail, /before/); assert.match(detail, /after/);
+      assert.match(detail, /Replacement convention/); assert.match(detail, /Source ID: input-2/);
+      assert.match(detail, /pending revision; prior confirmation does not carry forward/);
+    }
+    if (action === "revoke") assert.match(detail, /exclude.*future active Memory search.*not deleted/);
+  }
+});
 
 test("combined Todo/Memory compact schema stays below the pilot 40-percent regression threshold", () => {
   const definitions = [...todoCapabilities, ...memoryCapabilities];
@@ -57,15 +87,21 @@ test("native and external capability paths share durable scoped Memory, but only
   await assert.rejects(call("call", "memory.record.confirm", { id: proposed.id, expected_revision: 1, operation_id: "fake-confirm" }), { code: "NOT_AVAILABLE" });
   await assert.rejects(call("call", "memory.record.propose", { content: "Bad", sources, operation_id: "bad", userConfirmed: true }), { code: "INVALID_ARGUMENT" });
   let decisions = 0, allow = false;
+  const permissions = [];
   const tools = createExplicitMemoryTools({
     enabled: memoryCapabilities.map(operation => operation.transportName), context: () => scope, assertActive: () => {},
-    approve: async () => true,
+    approve: async (write, operation, args, signal) => {
+      assert(signal instanceof AbortSignal);
+      permissions.push({ write, operation, args });
+      return true;
+    },
     authorize: async request => { decisions++; assert.equal(request.recordId, proposed.id); return allow ? { actorId: "user:local", decisionId: randomUUID() } : null; },
   });
   const compact = capabilityTools(tools, memoryCapabilities, true), mutate = compact.find(tool => tool.name === "capability_call");
   const confirmArgs = { operation: "memory.record.confirm", version: 1,
     arguments: { id: proposed.id, expected_revision: 1, operation_id: "confirm-1" } };
   await assert.rejects(mutate.execute(confirmArgs, new AbortController().signal), /authorize/);
+  assert.deepEqual(permissions[0], { write:true, operation:"memory_record_confirm", args:confirmArgs.arguments });
   assert.equal(decisions, 1, "Allow All does not replace the injected human-decision boundary");
   allow = true;
   const confirmed = JSON.parse(await mutate.execute(confirmArgs, new AbortController().signal)).result;

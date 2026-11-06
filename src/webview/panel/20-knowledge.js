@@ -139,7 +139,7 @@ document.querySelectorAll('.tab').forEach(t =>
     if (!hasCachedProjectView) renderEmptyDetail();
     closePaperViews();
     updatePaperChrome();
-    const fullWidthTab = ['actionLibrary', 'actions', 'mcp', 'userProfile', 'skillRouter', 'environments', 'servers', 'subscriptions', 'githubSync', 'backgroundTasks', 'portalConnections', 'agentSessions', 'agentSnapshots', 'recipes', 'projects', 'chatroom'].includes(state.tab);
+    const fullWidthTab = ['help', 'actionLibrary', 'actions', 'mcp', 'userProfile', 'skillRouter', 'environments', 'servers', 'subscriptions', 'githubSync', 'backgroundTasks', 'portalConnections', 'agentSessions', 'agentSnapshots', 'recipes', 'projects', 'chatroom'].includes(state.tab);
     document.getElementById('layout-resizer').style.display = fullWidthTab ? 'none' : '';
     document.getElementById('sidebar-toggle').style.display = fullWidthTab ? 'none' : '';
     document.getElementById('content-toolbar').style.display = fullWidthTab ? 'none' : '';
@@ -167,6 +167,10 @@ document.querySelectorAll('.tab').forEach(t =>
       document.getElementById('searchbox').style.display = 'none';
       renderProjects();
       if (!projectSnapshot || projectSnapshotDirty) ask('projectState', {});
+    } else if (state.tab === 'help') {
+      document.getElementById('sidebar').style.display = 'none';
+      document.getElementById('searchbox').style.display = 'none';
+      showHelpTab();
     } else if (state.tab === 'mcp') {
       // Hide sidebar for MCP full-width pane
       document.getElementById('sidebar').style.display = 'none';
@@ -1548,25 +1552,27 @@ function promptRenderComparison() {
 }
 
 // ── Render detail ──────────────────────────────────────────────────────────
-function markdownToolbar(data) {
+function markdownPinButton(data) {
   const type = data.type;
   const pin = type === 'note'
     ? `toggleNotePin('${esc(data.slug)}',${data.pinned ? 'false' : 'true'})`
     : type === 'skill'
       ? `toggleSkillPin('${esc(data.name)}',${data.pinned ? 'false' : 'true'})`
       : `togglePin('${esc(data.slug)}',${data.pinned ? 'false' : 'true'})`;
+  return `<button type="button" class="meta-edit detail-pin" onclick="${pin}" title="${data.pinned ? 'Unpin' : 'Pin to top'}" aria-label="${data.pinned ? 'Unpin' : 'Pin'}" aria-pressed="${!!data.pinned}">${uiIcon(data.pinned ? 'pinned' : 'pin')}</button>`;
+}
+
+function markdownToolbar(data) {
+  const type = data.type;
   const area = type + 's';
   const key = type === 'skill' ? data.name : data.slug;
   const category = type === 'skill' ? data.category || '' : '';
   return `
-    <button class="tbtn" style="font-size:11px" onclick="${pin}" title="${data.pinned ? 'Unpin' : 'Pin to top'}">${uiIcon(data.pinned ? 'pinned' : 'pin', data.pinned ? 'Pinned' : 'Pin')}</button>
     <button class="tbtn" style="font-size:11px" onclick="exportMarkdown('browser')" title="Open the browser preview">${uiIcon('globe', 'Browser')}</button>
     <button class="tbtn" style="font-size:11px" onclick="copyDetailUrl()" title="Copy PKM URL">${uiIcon('link', 'Copy PKM URL')}</button>
-    ${type === 'note' ? `<button class="tbtn" style="font-size:11px" onclick="exportMarkdown('linkedSave')" title="Save this Note and its linked Notes as a shareable site">${uiIcon('package', 'Site')}</button>` : ''}
     <button class="tbtn" style="font-size:11px" onclick="exportMarkdown('file')" title="Download as a self-contained HTML file">${uiIcon('cloud-download', 'Download')}</button>
     ${data.documentKind==='todo-board'?'':`<button class="tbtn" style="font-size:11px" onclick="openMarkdownItem('${area}', '${esc(category)}', '${esc(key)}')">${uiIcon('edit', 'Edit Content')}</button>`}
-    ${type==='note'&&data.documentKind!=='todo-board'?'<button class="tbtn" onclick="ask(\'todoBoardConvert\',{slug:currentDetail.slug})">Convert to Todo Board</button>':''}
-    <button class="tbtn" style="font-size:11px" onclick="editMarkdownMetadataItem('${area}', '${esc(category)}', '${esc(key)}')">${uiIcon('settings-gear', 'Edit Metadata')}</button>`;
+    ${type==='note'&&data.documentKind!=='todo-board'?'<button class="tbtn" onclick="ask(\'todoBoardConvert\',{slug:currentDetail.slug})" title="Copy an Agent prompt or choose a PKM Chat">Convert to Todo Board</button>':''}`;
 }
 
 function detailContentPath(data) {
@@ -1630,7 +1636,7 @@ function renderDetail(data) {
     const tags = JSON.parse(data.tags||'[]');
     const toc = buildToc(data.content||'');
     el.innerHTML = `
-      <div class="d-title"><span>${esc(data.name)}</span>${privacyLock(data.isPrivate)}<button class="meta-edit" onclick="editCurrentMetadata('title')" title="Edit name">✎</button></div>
+      <div class="d-title"><span>${esc(data.name)}</span>${privacyLock(data.isPrivate)}<button class="meta-edit" onclick="editCurrentMetadata('title')" title="Edit name">✎</button>${markdownPinButton(data)}</div>
       ${detailPathHtml(data)}
       <div class="d-meta">
         ${data.category?`<span class="cat">${esc(data.category)}</span>`:''}
@@ -1655,7 +1661,7 @@ function renderDetail(data) {
     currentDetail = data;
     const tags = JSON.parse(data.tags||'[]');
     el.innerHTML = `
-      <div class="d-title"><span>${ICON[data.note_type]||uiIcon('note')} ${esc(data.title)}</span>${privacyLock(data.isPrivate)}<button class="meta-edit" onclick="editCurrentMetadata('title')" title="Edit title">${uiIcon('edit')}</button></div>
+      <div class="d-title"><span>${ICON[data.note_type]||uiIcon('note')} ${esc(data.title)}</span>${privacyLock(data.isPrivate)}<button class="meta-edit" onclick="editCurrentMetadata('title')" title="Edit title">${uiIcon('edit')}</button>${markdownPinButton(data)}</div>
       ${detailPathHtml(data)}
       <div class="d-meta">
         <span>${esc(data.note_type)}</span>
@@ -2977,7 +2983,7 @@ function paperDetailHtml(d) {
   const concl = d.conclusions || [];
   const cites = d.resolvedCites || d.cites || [];
   return `
-    <div class="d-title"><span>${esc(d.title)}</span>${privacyLock(d.isPrivate)}<button class="meta-edit" onclick="editCurrentMetadata('title')" title="Edit title">✎</button></div>
+    <div class="d-title"><span>${esc(d.title)}</span>${privacyLock(d.isPrivate)}<button class="meta-edit" onclick="editCurrentMetadata('title')" title="Edit title">✎</button>${markdownPinButton(d)}</div>
     ${detailPathHtml(d)}
     <div class="d-meta">
       ${d.kind === 'idea' ? '<span class="pc-cite" style="background:#f4b400;color:#1a1200">Idea</span>' : ''}

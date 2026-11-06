@@ -1,5 +1,5 @@
 import type { ApiChatMessage, ChatInputBaseline, ChatInputTokenCounter } from "./api-chat-client";
-import { estimateInputTokens } from "./api-chat-models";
+import { ChatBudgetExceededError, estimateInputTokens } from "./api-chat-models";
 import { createHash } from "crypto";
 import { memoryMatchScore, memoryTerms, toolEvidenceReminder } from "./chat-memory";
 
@@ -13,7 +13,9 @@ export interface AutomaticChatContext {
   isCurrent?: () => boolean;
 }
 
-export class ContextBudgetExceededError extends Error {}
+export class ContextBudgetExceededError extends ChatBudgetExceededError {
+  constructor(message: string) { super(message, "input"); }
+}
 
 export interface ContextPlanReceipt {
   schema: "pkm.chat.context-plan/v1";

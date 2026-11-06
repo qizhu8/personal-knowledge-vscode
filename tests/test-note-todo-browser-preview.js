@@ -25,7 +25,13 @@ test("browser Note reuses read-only Table/Story Board/Timeline without bridge or
     assert.equal(await page.evaluate(()=>document.documentElement.dataset.pkmDirty),"true","background reader refresh must not reset interactive progress views");
     assert.equal(await page.locator(".note-todo-swimrow").count(),1);
     assert.equal(await page.locator(".note-todo-swimstory .note-todo-card").count(),1);
+    assert.equal(await page.locator('[data-todo-toggle-story=story]').getAttribute("aria-expanded"),"false","Stories start collapsed");
+    assert.equal(await page.locator(".note-todo-swimcell .note-todo-card").count(),0);
+    const collapsedHeight=(await page.locator(".note-todo-swimrow").boundingBox()).height;
+    await page.locator('[data-todo-toggle-story=story]').click();
+    assert.equal(await page.locator('[data-todo-toggle-story=story]').getAttribute("aria-expanded"),"true");
     assert.equal(await page.locator(".note-todo-swimcell .note-todo-card").count(),1);
+    assert((await page.locator(".note-todo-swimrow").boundingBox()).height>collapsedHeight,"default collapse reduces row height");
     assert.equal(await page.locator(".note-todo-card .note-todo-details").count(),0);
     for (const width of [390,1100,2000]) {
       await page.setViewportSize({width,height:850});
@@ -66,6 +72,7 @@ test("browser Note reuses read-only Table/Story Board/Timeline without bridge or
     assert.match(await dialog.innerText(),/User value/);
     await dialog.getByRole("button",{name:"Close Work Item details"}).click();
     await page.locator("#note-todo-show-done").check();
+    assert.equal(await page.locator('[data-todo-toggle-story=story]').getAttribute("aria-expanded"),"true","explicit expansion survives filters and rerenders");
     assert.equal(await page.locator('.note-todo-swimcell[data-state=Done] .note-todo-card').count(),1);
     await page.locator("[data-todo-collapse-all]").click();
     assert.equal(await page.locator(".note-todo-swimcell .note-todo-card").count(),0);

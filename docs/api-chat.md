@@ -7,6 +7,46 @@ within each group. Worker Chats are indented beneath their parent, even when the
 own placement is Ungroup. Hover an option or the selected name for its full group /
 parent path and status. Collapsed groups remain available; Trash is excluded.
 
+Each Chat List group, including Ungroup and empty groups, has a small **+** button
+to create a Chat directly in that group. Trash has no create action.
+User groups and Ungroup also expose **Copy Path** in their right-click/ellipsis
+menu. Agent Sessions' corresponding user-group menu copies the same stable
+`pkm://chat-groups/<group ID>` path; renaming a group does not change it.
+Give this path to a lead Chat and use native `list_chats({groupId: path})` or
+MCP `api_chat_list(group_path=path)` to discover its non-Trash members.
+Membership means the stored user group, not temporary visual nesting beneath a
+worker's manager. Follow `nextOffset` until null before claiming to have listed
+the entire group. Copying/listing does not assign workers or start model work;
+explicit delegation still uses the existing permission and busy-Chat checks.
+
+For a complete Note inventory in one response, call MCP `list_notes(limit=0,
+directory="Project", recursive=true)`. Directory accepts a Notes-relative path
+or copied `pkm://notes/Project/` folder path, with exact directory boundaries.
+Every call returns the same envelope with `total`, `returned`, `next_offset`, `has_more`,
+and `inventory_revision`; pass that revision on each subsequent page (required
+when offset is positive). Ordering is deterministic by slug, and any detected
+change during or between scans fails explicitly rather than skipping Notes.
+`complete=true` means the scoped scan completed, not that one page contains all
+Notes: continue until `next_offset=null`. The default `limit=50` returns at most
+50 matches; positive integers set the maximum without a fixed upper cap.
+`limit=0` returns all remaining matches from the offset. Hidden, Trash and
+asset directories are excluded; read errors and visible symlinks fail the scan.
+An empty existing folder returns zero; a missing folder is an error.
+Persisted `knowledge_id` and `source_id` stay stable when a Note moves. Legacy
+Notes without IDs and duplicate IDs are explicitly counted; check
+`identity_complete` before relying on identity uniqueness. Listing never edits
+Notes or invents stable IDs. `list_notes` has no `detail` or legacy-array mode.
+With compact MCP discovery, use read-only `capability_read` for operation
+`mcp.tool.list_notes`, version `1`, with the same arguments.
+Creating or switching Chats immediately clears the previous transcript and shows
+a loading status with the composer unavailable. Navigation responses are correlated
+so a delayed previous selection cannot replace the latest target. Drafts remain
+bound to their original Chat; failures display an error and restore the previous
+view rather than leaving an indefinite loading state. Publishing the selected Chat
+does not wait for the workspace's remembered-active-Chat update.
+Revisiting a loaded, idle Chat reuses its transcript only while the existing file
+identity/size/timestamp checks still match; cross-window changes force a reload.
+
 Header commands are tucked behind the right-hand chevron so the selected Chat name
 gets the available width. Hover or focus the chevron, or tap/click it, to reveal the
 horizontal action list over the header without resizing it. Narrow views wrap the
@@ -29,6 +69,118 @@ per-candidate context checks without dropping old messages, weakening conflict
 checks or increasing the disconnected-warning timeout. Load the updated extension
 Host to apply the fix; already running Hosts keep their loaded implementation.
 
+## Chat List renderer responsiveness
+
+Worker ancestry and descendant activity are indexed once per library snapshot.
+Picker traversal and visible-row construction use explicit stacks rather than
+recursive calls. Collapsed groups and collapsed Workers do not construct hidden
+descendant DOM; expansion restores the rows, while every non-trashed Chat remains
+available in the grouped picker. Active descendants still promote their manager.
+The model/header picker builds wizard SVG only for the selected Chat.
+
+Isolated Chromium reproduced a synchronous stall of about 38 seconds for a
+2,000-Chat Worker chain in the previous renderer. Regression cases require the
+collapsed-chain list and full Chat state to render within one second, retain all
+2,000 picker entries and allow browser timers to resume. This is a synthetic
+reproduction of a blocking path, not proof of the user's live freeze cause.
+List-render receipts contain only phase, Chat count and elapsed milliseconds,
+not Chat titles or content. Initial Host health readiness is acknowledged after
+state rendering, not before it.
+
+## Isolated reliability fault simulations
+
+Run `npm run test:chat-faults` to build and run the suite, or
+`npm run test:chat-faults:run` after building. The same case files are included in
+`test:pkm-chat:daily:run`. Each test in the dedicated runner has a 30-second default
+deadline; explicit shorter case deadlines still apply. Fixtures inject failed or
+pending backend/MCP loading, stale MCP generations, missing or corrupt components,
+SDK bootstrap failures, permission errors and disk-full errors. Filesystem faults
+are restricted to disposable fixture paths; accounts, installed runtimes and user
+knowledge are untouched. A hard renderer stall runs only in a disposable child
+process with an external deadline.
+
+Backend loading and MCP preparation waits have a three-minute deadline. Timed-out
+backend attempts are cancelled and late results cannot attach; reconnect starts a
+new attempt. MCP preparation timeout fences the Chat consumer, not the shared
+integration maintenance operation: it may still be running, and no Chat tool call
+is replayed. Existing safe drain rules remain in force for uncertain writes.
+
+Unreadable or corrupt Chat files fail listing explicitly with the affected path,
+without deleting data or silently switching selection. Only a concurrently missing
+Chat file may leave listing. Missing or damaged HTML and missing critical scripts
+display an asset-independent recovery page with retry and diagnostic buttons.
+Runtime frontend errors are also sent to the Host diagnostic sink.
+
+Startup begin, completion and failure stages are persisted even at an error-only
+log level. Diagnostic persistence failures notify once per outage and retain the
+latest 200 records in bounded memory, marked `persisted: false` when a write failed.
+Open diagnostic log exposes that fallback while storage is unavailable and after
+recovery while unpersisted records remain in the buffer; it does not survive an
+Extension Host reload. Successful writes clear the outage and
+retain a drop count. A frozen renderer still cannot run its own warning timers.
+These simulations do not establish the cause of a live VS Code freeze or certify
+the installed build.
+
+### Reliability test-case catalog
+
+Case IDs are stable and appear in the automated test names (Python names use
+underscores). Parameterized IDs
+include the injected error as a suffix and run independently. The catalog defines
+30 scenarios (34 executable fault cases); the full runner also includes supporting
+storage, lifecycle and model-selection regressions.
+
+Types:
+- **Contract**: required behavior that must remain protected.
+- **Characterization**: an explicitly recorded current defect, not an acceptance
+  criterion for a robust product. When fixing it, retain the case ID and replace
+  the assertion with the required error/recovery behavior; update this catalog.
+- **Boundary**: a platform limitation, not evidence that a live freeze was reproduced.
+
+Common preconditions: isolated temporary storage, stubbed account/SDK access, no
+user inference or production MCP mutation. Backend cases isolate admission and
+error paths from full rendering; Host-health cases use a fake Webview clock.
+Managed MCP cases use disposable real fixture processes. Each fixture restores
+injections and removes owned data; pending operations are released or cancelled.
+
+Sources: **F** = [backend/filesystem faults](../tests/test-chat-fault-injection.js),
+**H** = [Host health](../tests/test-host-health-startup.js),
+**M** = [managed MCP](../tests/test-chat-managed-mcp.js),
+**S** = [SDK responsiveness](../tests/test-copilot-sdk-responsiveness.js),
+**B** = [real-browser Chat List rendering](../tests/test-chat-list-rendering.py).
+
+| Case ID (`PKM-FAULT-` prefix) | Injection / action | Asserted result | Type | Source |
+|---|---|---|---|---|
+| 001 | Reject lazy backend import; send `ready` again | `initializationError`; explicit retry succeeds | Contract | F |
+| 002 | Remove Webview HTML | Independent recovery UI and failure trace; retry can restore the page | Contract | F |
+| 003 | Leave backend load pending; ping and reconnect | Health answers; deadline fails; new attempt can attach; late old result is disposed | Contract | F |
+| 004 | Reject MCP connection; retry | Initial Chat publishes; inline error; discovery clears and retry succeeds | Contract | F |
+| 005 | Leave `prepareMcp` pending | Deadline reports failure, clears busy state and fences late completion; explicit retry works | Contract | F |
+| 006 | Reuse generation, then change cached generation | Same generation reuses connection; stale generation closes and reconnects | Contract | F |
+| 007 | Deny Chat-root listing (`EACCES`) | Initialization error; no successful state publication | Contract | F |
+| 008/EACCES, 008/corrupt-json | Deny or corrupt one Chat file | Path-specific error; no deletion or silent selection switch; repaired file can reopen | Contract | F |
+| 009 | Corrupt shared library metadata | Explicit initialization error | Contract | F |
+| 010/EACCES, 010/ENOSPC | Fail Chat temporary-file write | Explicit error; committed bytes unchanged; no successful publication | Contract | F |
+| 011 | Fail history-segment rename with `ENOSPC` | Save throws; previous committed Chat remains readable and unchanged | Contract | F |
+| 012/EACCES, 012/ENOSPC | Fail diagnostic append; restore writes | One outage notification; bounded unpersisted fallback; recovery clears outage and reports drops | Contract | F |
+| 013 | Stop loaded Host replies for 20 seconds; restore replies | Disconnect warning; sends blocked; confirmed reply clears warning | Contract | H |
+| 014 | Host answers but no first state arrives | Three-minute initialization failure; later first state clears warning | Contract | H |
+| 015 | Block disposable renderer child synchronously | External deadline terminates child; internal timers cannot warn | Boundary | H |
+| 016 | Fixture MCP never answers `listTools` | Total discovery deadline expires; no content mutation | Contract | M |
+| 017 | Remove bundled SDK runtime entry | Interactive error; no replacement runtime or passive sign-in prompt | Contract | S |
+| 018 | Throw during SDK start; retry | Failed runtime stopped; new connection can retry | Contract | S |
+| 019 | Leave account access pending; cancel | Prompt cancellation; no SDK bootstrap from a late token | Contract | S |
+| 020 | Corrupt SDK JavaScript syntax | Explicit discovery error; no CLI execution | Contract | S |
+| 021/EACCES, 021/ENOSPC | Fail SDK private-directory creation | Explicit discovery error; runtime never constructed | Contract | S |
+| 022 | Connected MCP reports wrong build | Reject connection before content tools run | Contract | M |
+| 023 | Change active component API incompatibly | Fence old connection before write; original note intact | Contract | M |
+| 024 | Close times out during an uncertain write | Keep write alive and action-required; explicit drain retry is safe | Contract | M |
+| 025 | Render a collapsed 2,000-Chat Worker chain | Under 1 second; one visible row, all 2,000 picker entries; timers resume | Contract | B |
+| 026 | Expand/collapse 500 wide Workers and select a leaf | Rows load on expansion; selection reaches leaf; picker retains all entries | Contract | B |
+| 027 | Collapse/reopen a 500-Chat group | No hidden Chat DOM; picker remains complete; rows restore | Contract | B |
+| 028 | Introduce cyclic Worker ancestry | Flatten safely; no recursion failure or hidden Chats | Contract | B |
+| 029 | Mark a collapsed descendant active | Its manager sorts ahead of idle roots without expanding descendants | Contract | B |
+| 030 | Deliver full Chat state with a 2,000-Chat Worker chain | Under 1 second; all picker options; one list row; health ready after rendering | Contract | B |
+
 ## Standardized capability discovery
 
 The Todo/Memory pilot uses stable logical identities such as `todo.workitem.create`,
@@ -38,9 +190,11 @@ definitions and supplies version, output envelope, authorization, cancellation,
 CAS/idempotency and execution metadata. Discovery is not authorization: every
 invocation still enters the original target-specific Host/Board checks.
 
-The default **legacy** profile preserves existing tools. Opt into
-`personalKnowledge.apiChatCapabilityProfile: "compact"` to replace only the
-enabled pilot leaves with:
+The default **compact** Chat profile keeps core file editing, process, question
+and task-reporting tools directly available. Every other enabled native leaf is
+available through discovery instead of injecting its full schema before round
+zero. Todo/Memory retain their canonical identities; other native leaves use
+`native.tool.<original_name>`:
 
 - `capabilities_list`: bounded hierarchical listing and revision-pinned paging.
 - `capabilities_search`: keyword search, returning three complete contracts by
@@ -55,17 +209,36 @@ original leaf. Generic dispatch does not enable concurrent writes, grant user
 authority, accept tasks or automatically retry effects. Unknown identities,
 versions and extra authority fields fail explicitly. Invalid output fails with a
 reconcile warning because a mutation may already have committed.
+Native `native.tool.*` dispatch returns the original tool text without wrapping,
+escaping or truncating it. Host activity projects that dispatch back to the
+original leaf name, arguments, call ID and raw result, retaining dispatcher and
+operation/version provenance for Harness observations, so worker handoffs and
+effect attribution retain their existing evidence semantics. Irregular external
+tool names use a stable hashed native identity; use the discovered ID, never
+guess it. The managed MCP child behind Chat retains its legacy leaf catalogue
+for per-Chat selection; Chat's own discovery facade bounds the model schemas.
+Unannotated native
+operations conservatively use mutation dispatch. Set
+`personalKnowledge.apiChatCapabilityProfile: "legacy"` for eager-schema
+compatibility; permissions and context limits are unchanged in either mode.
 
 The generated MCP server exposes the same pilot through these entry points.
 `capabilities_inventory` additionally reports actually exposed tool names,
 read-only hints and serialized schema bytes without executing them. To opt into
-compact MCP exposure, set `PKM_CAPABILITY_PROFILE=compact` in that client's server
-environment and reconnect. This requires FastMCP's public
-`enable(names=..., only=True, components={"tool"})` API; unsupported runtimes fail
-explicitly. Legacy is the default. Compact MCP intentionally exposes only pilot
-entry points plus the version handshake; non-pilot tools require a legacy
-connection. This is not a claim that arbitrary clients support dynamic tool
-loading or automatically recall Memory.
+eager MCP exposure, set `PKM_CAPABILITY_PROFILE=legacy` in that client's server
+environment and reconnect. Compact is the default: only discovery, dispatch,
+version and lifecycle-control schemas are advertised initially. All enabled MCP
+domains, including mounted tools, are discoverable as `mcp.tool.<original_name>`;
+search returns exact contracts and revision-pinned paging covers the full
+catalog. Dispatch uses the original MCP executor and middleware, preserving its
+validation, cancellation, annotations, authorization and exact MCP result.
+Canonical Todo/Memory service identities remain callable for compatibility.
+The listing middleware removes eager schemas, not implementations: known legacy
+aliases remain callable, but disabled or withdrawn tools cannot be discovered or
+invoked through dispatch. Lifecycle drain/control stays outside generic dispatch
+to avoid waiting on its own enclosing invocation. This uses public FastMCP
+middleware/listing/call APIs and does not promise that arbitrary clients support
+dynamic schema injection or automatically recall Memory.
 
 Capabilities have versioned catalog hashes; callers paging a changing catalog
 must restart discovery. No legacy alias is removed in the legacy profile. Future
@@ -82,8 +255,8 @@ Pilot inventory and migration boundaries:
 | Todo UI | Existing local-user Board commands and same domain persistence | Existing UI is unchanged; not a new generic UI mutation endpoint |
 | Explicit Memory (7 operations) | Typed Host service over private Memory Engine; canonical input/output contracts | Native local leaves; external MCP exposes only 4 non-decision operations |
 | Chat topic/summary Memory | Existing ChatMemoryService and authorized context sources | Remains distinct; not reinterpreted as confirmed long-term facts |
-| Action, Recipe, Chat/Agent Session capabilities | Existing domain-specific capability/status contracts | Legacy exposure; not yet migrated into the pilot registry |
-| Knowledge, retrieval and other MCP domains | Existing domain tools | Runtime inventory reports actually exposed tools, not invented availability |
+| Action, Recipe, Chat/Agent Session capabilities | Existing domain-specific capability/status contracts | Full MCP discovery routes to original executors; native non-core leaves are deferred |
+| Knowledge, retrieval and other MCP domains | Existing domain tools | Full MCP discovery; runtime inventory reports initial advertised schemas |
 
 This removes duplicate pilot schema declarations at the adapters, not every
 domain-specific implementation. The fixed native Todo fixture uses one discovery
@@ -93,9 +266,13 @@ paid-provider timing benchmark. The local schema regression threshold is compact
 Todo definitions below 40% of legacy bytes; no live speed/cost threshold has been
 accepted. The actual generated stdio-server fixture also inventories its complete
 legacy exposure: 160 tools / 123,601 bytes versus compact's 7 tools / 5,103 bytes.
-Compact hides non-pilot domains; these are not equivalent full-domain catalogs.
-Use runtime inventory for each deployed configuration rather than extrapolating
-either fixture's count.
+Those are historical pilot-only measurements, not the current full-domain
+catalog. Current regression requires that the union of bootstrap and discovered
+aliases exactly equals the complete legacy catalog, with initial MCP schemas
+below 10,000 bytes and 40% of legacy. Native regression requires complete
+coverage and a first-round bound below 24,000 against the unchanged 59,904 input
+budget. These are local admission/schema thresholds, not a live speed/quality
+claim. Use runtime inventory for each deployed configuration.
 
 The local Harness records canonical capability operation/version and catalog
 revision beside original tool evidence. The MCP usage ledger records the actual
@@ -114,12 +291,14 @@ database, never a synchronized knowledge document.
 - `propose` records bounded content and exact `{id, chat, revision, locator}`
   references as **pending**, using a required operation ID for idempotency.
 - `confirm`, `revise`, and `revoke` require a separate native local human decision
-  showing the exact stored content, sources and expected revision. Allow All is
-  not confirmation. Portal-controlled writes are rejected. Cancellation/runtime
-  state and revision CAS are checked again after the decision.
-- Revision supersedes the old content and creates a new **pending** version;
-  it does not inherit confirmation. Revocation excludes the record from future
-  active search, including after worker restart.
+  bound to the Host's scope and the exact record ID and expected revision. The
+  review shows the stored content and exact source references. For `revise`, it
+  shows the before/after content and sources; the replacement is a new **pending**
+  revision and does not inherit confirmation. Allow All is not confirmation.
+  Portal-controlled writes are rejected. Cancellation/runtime state and revision
+  CAS are checked again after the decision.
+- `revoke` excludes the record from future active recall, including after worker
+  restart; it does not delete the record or its audit history.
 - `search` returns at most three confirmed-current previews, explicitly marked
   with truncation, record ID and revision. Use `get` for full text and provenance.
   Content and aggregate serialized sources are each limited to 4096 UTF-8 bytes.
@@ -138,7 +317,12 @@ revisions and statuses, labelled retrieved/read, with application not observed.
 
 Local executable checks cover native Chat discovery, actual FastMCP dispatch,
 shared durable Memory state, scope isolation, approval denial, revision and
-revocation across fresh workers, and legacy Todo/Plan compatibility. The Todo
+revocation across fresh workers, and legacy Todo/Plan compatibility. A native
+Host fixture also verifies cancel leaves record revision/content/status/audit
+unchanged and that a stale approved revision is rejected after a simulated
+concurrent change while review is pending. It uses a temporary private database
+and simulated Host decisions; it is not real-user authorization or loaded-Host
+acceptance. The Todo
 native fixture measures 23,325 legacy schema bytes versus 2,412 compact bytes;
 the combined Todo/Memory native fixture measures 27,318 versus 2,412 bytes.
 The knowledge-tool FastMCP fixture measures 37,094 versus 4,629 bytes. These are
@@ -147,6 +331,18 @@ leaves), not provider token counts or live latency/quality results.
 Real loaded-Host, Copilot and Claude client certification remains separate and
 must not be inferred from these tests.
 
+Controller fixtures that model eager tool calls explicitly select the `legacy`
+capability profile. Dedicated compact tests continue to exercise the actual
+default, complete discovery coverage and original authorization. Mocked settings
+must also provide valid activity credit and review-time values, like production;
+missing values must not accidentally turn a synthetic request into a modal wait.
+
+Streaming persistence checks use the built-in Node mock clock at the 499/500 ms
+boundary: both active Chats are saved once, with one visible or zero hidden
+stream publications. Independent asynchronous filesystem watcher deliveries are
+not counted as stream publications. Todo spellcheck coverage loads the complete
+production fragment and awaits rendering, so missing dependencies fail directly.
+
 ## Inference effectiveness and convergence
 
 The local Agent Harness exposes **Inference effectiveness** for each attempt, with
@@ -154,8 +350,14 @@ up to 20 recent rounds. It connects existing inference timing, reported usage an
 credits to tool rounds, local scheduling wait and reused reads. Overlapping tool
 intervals are merged, not summed as elapsed wall time. Missing timing remains
 unknown; provider queue time, CPU time and unobserved orchestration gaps are not
-inferred. Tracked invocation user-wait totals can overlap and are not an additional
-wall-clock component. Default diagnostic exports use a compact five-round
+inferred. Unfinished, non-finite or reversed intervals do not establish a measured
+duration. With no valid completed intervals the duration remains unknown, while
+an actual zero-length interval remains zero. A round with no tools has zero tool
+time; tools without completed clocks do not. Mixed records include only the union
+of valid completed observations, not proof of complete attempt coverage.
+Tracked invocation user-wait totals can overlap and are not an additional
+wall-clock component. Tool dispatch intervals can include local Host work; they
+are not pure executor CPU time. Default diagnostic exports use a compact five-round
 projection; complete receipts remain in local history. No hidden reasoning is
 collected. A new distinct tool result is an observation, not proof of semantic
 progress, successful verification or acceptance. A complete successful builtin
@@ -165,6 +367,75 @@ stagnation tracking nor the Harness counts it as new progress. Changing receipt
 metadata or call arguments does not change that; valid unequal hashes remain an
 observation even when line counts are absent. Incomplete, malformed or failed
 receipts are not inferred to be no-ops.
+
+Active work receives at most one pre-action exploration advisory per request
+after eight successful, non-reused builtin file/search/directory observations
+across at least three distinct valid tool rounds. Repeated completion events,
+failed calls and missing/invalid rounds do not advance it. A completed meaningful
+edit, save, program execution or Worker dispatch suppresses this advisory; known
+equal-hash no-op edits do not. This is a strategy reminder, not a hard read cap,
+proof of wasted investigation, automatic delegation or authority to modify files.
+Investigation-only work may simply deliver its findings. The reminder uses the
+same bounded Host context and transport admission as evidence identity hints;
+original results and loop/permission/acceptance guards are unchanged.
+
+Startup diagnostics distinguish attempt-to-first-budget, attempt-to-first-model
+and first-budget-to-first-model spans. New SDK receipts additionally retain
+Host-clock client-acquisition and session-creation intervals, without a second
+transport-preparation checkpoint. These are local await observations, not proof
+of physical network dispatch or provider queue time. Old histories and other
+transports leave absent setup clocks unavailable; partial observations remain
+partial. Inter-round spans subtract overlap unions of completed recorded
+observations, not sums of concurrent tool durations. Incomplete tool clocks or
+missing intermediate model rounds leave unobserved time unknown. Exports retain
+at most 19 gaps (four in compact summaries), with explicit omitted counts, while
+startup always uses the original beginning rather than the recent-round window.
+
+Tool status and original evidence are checkpointed synchronously before the
+Host callback returns. When a progress-stage update already saved and published
+the event, the callback does not repeat those operations. A suppressed duplicate
+stage still checkpoints changed event metadata; cancellation still ignores late
+callbacks and storage failures still propagate. This reduces redundant Host
+work, not model inference count, and introduces no delayed-write window.
+
+The focused regression
+`node --test --test-name-pattern="tool events checkpoint once" tests/test-capability-native.js`
+checks exact checkpoint/publication counts, immediate durable results,
+suppressed-stage fallback and cancellation with a private large-history fixture.
+Its timing is local callback/persistence time with UI publications counted but
+not rendered, not live model or end-to-end task latency. Compare like-for-like
+workloads before claiming a real-world speedup.
+
+SDK post-tool identity/budget guidance is deferred until the whole batch has settled;
+inserting guidance after only the first result would make a valid batch fail
+the next context admission. This does not waive incomplete/duplicate-group,
+permission, cancellation, input-budget or final-summary guards.
+
+HTTP, native VS Code and SDK requests support `onToolResultsContext(events)`:
+one optional Host context for the successful terminal events of a completed
+batch, in declared call order. It takes precedence over the legacy per-result
+callback, including when it returns `undefined`. Empty batches do not invoke it;
+SDK buffers are drained before invocation so repeated post-tool hooks cannot
+revisit the same batch. With no batch callback, existing per-result behavior
+and SDK callback timing are preserved. Original tool results are not rewritten:
+HTTP/native messages retain call order, while SDK messages retain completion
+order. Invalid callback context rejects the request; SDK hook failures explicitly
+fail and abort the session rather than relying on exceptions the SDK can swallow.
+
+Work-evidence hints share goal and attempt metadata in
+`pkm.chat.work-evidence-hint/v2`, with an `evidence` identity list and an exact
+`omitted` count. The formatter retains whole identities and prioritizes a complete
+list when it fits. The Host reserves room for a genuine exploration advisory
+before asking the formatter to fill the remaining budget.
+It never truncates an identity or turns a candidate into semantic acceptance,
+permission, or managed completion. A single identity that fits the full budget keeps v1 compatibility.
+The combined Host context remains at most 2,000 characters.
+The eight-identity formatter fixture retains every ID at 810 UTF-8 bytes versus
+2,559 bytes for eight v1 hints (68% less); this measures hint payload only, not
+end-to-end latency, total model input, or provider credit savings.
+The actual Host callback replay also retains all eight IDs and the genuine
+advisory at 965 bytes versus 2,721 bytes for the per-result hints plus that
+advisory. This is a local payload check, not a live installed-Host benchmark.
 
 The Host can run up to four explicitly annotated independent local read/search
 tools concurrently in one model round. HTTP, native VS Code and Copilot SDK
@@ -826,12 +1097,22 @@ Visualization; it neither starts a model nor creates a Task or Recipe binding.
 The tree's counts still refer to managed Tasks. Folder arrows expand groups
 independently, and selecting a Task restores its existing Task dashboard.
 
-Completed Chats and unread results use a sleeping wizard with zzz and a green
-status light. Failed Chats use a sooty wizard with white blinking eyes. Manager/
-worker roles remain available in status labels and metadata; reduced motion
+Completed/read Chats use a sleeping wizard with zzz and a green
+status light. Unread results use the same frozen stirring pose as Stopped, but
+with a green upper-right light: the potion is ready to collect. Completion/unread
+metadata and accessible labels remain unchanged. Failed Chats first stir, then
+the cauldron explodes; afterward the stirrer stays in the cauldron, the wizard's
+face is sooty, and only its white eyes blink. Manager/
+worker roles remain available in status labels and metadata. Clothing identifies
+the role in every pose: ordinary Chats are purple, Managers red, and Workers
+green. Clothing colors do not change status-light meanings or recolor skin,
+soot, potions or Portal rings. Controller/Controlled is an independent Portal
+direction, not a clothing role: a Manager remains red and a Worker green while
+either controlling or being controlled. Reduced motion
 disables blinking and hidden/background animation is paused. Paused and Stopped
-Chats show an awake tea-break wizard with animated breathing/steam, an amber
-Paused light or a neutral Stopped light. These animations also honor reduced
+Chats show the wizard holding the stirrer in the cauldron without stirring;
+only the eyes blink. Paused has a yellow upper-right circle and Stopped a red
+upper-right circle. Blinking honors reduced
 motion and background suspension. The paused wizard remains visible in the
 Chat header when a Portal is bound; the Portal button still shows its connection.
 
@@ -892,6 +1173,29 @@ The tool schema and work context explicitly require copying the existing
 criteria verbatim. A rejected replacement report names the missing criteria
 and leaves the work state unchanged so the agent can submit a corrected list;
 it never auto-adds a verified root criterion or bypasses evidence validation.
+Each criterion permits at most 32 `evidenceCallIds`. An oversized list is rejected
+with its zero-based `acceptance[index].evidenceCallIds` field, actual count and
+maximum 32, not a criterion-count error. No work state is changed; evidence is
+never truncated or selected automatically. All other validation rules remain unchanged.
+An invalid evidence report lists at most eight eligible current-reply call
+identities and tool names, with an explicit omitted count or empty list. No
+arguments, result bodies or earlier replies are included. These are candidates,
+not semantic acceptance: duplicates, missing/foreign IDs and stale Worker
+versions still fail without changing the work state. `session_info`,
+`report_work`, `finish_debug` and `record_harness` IDs are not acceptance
+evidence; the agent must correct a rejected report before claiming it was
+recorded.
+For active work goals, HTTP/native tool batches and the SDK post-tool hook can
+provide a separate Host-authored evidence-identity hint after completed tools.
+The bounded hint contains current goal/attempt and call identities only, never
+arguments, result bodies or earlier replies. Original tool output and stored
+evidence remain unchanged. The hint is included in context admission and does
+not add a separate inference request. Reuse its exact call ID and the existing
+work objective's criteria/source-input IDs; call `session_info` when those
+requirements are absent or have changed, not merely to recopy a visible ID.
+Oversized identities are explicitly omitted, never truncated into a different
+ID. This is not automatic verification or a new reporting/permission API:
+all original acceptance, context and Worker-version checks still apply.
 Continuing requires a concrete next action; resolution requires every criterion verified against successful, non-report
 tool calls from the current attempt. A successful diagnostic alone does not
 automatically settle the objective. These are evidence-linked **agent claims**,
@@ -960,7 +1264,18 @@ Original tool call IDs and model round IDs correlate new records;
 old records without these IDs remain readable without guessing a match by
 tool name. Reported model-round `in / out` usage appears before elapsed time.
 Each event is labelled **LLM**, **CMD** or **INFO**, in its original chronological
-order. The Activity type filter hides other categories without reordering events;
+order. Recorded Copilot SDK session executions appear under a collapsible **Model
+Call** parent: **Start Session**, **Select Model**, **Inference**, and recorded
+SDK routing/tool steps. A session may contain multiple inference rounds; token
+usage and Credits remain on those rounds, never duplicated on the parent.
+The generic connection announcement immediately preceding SDK setup is represented
+by Start Session rather than incorrectly occupying the inference row's position.
+Local retrieval/preparation and advertised tool context remain outside the group.
+Records without an SDK session-start event keep their existing flat presentation;
+the UI does not invent session membership. Running calls start expanded and fold
+when finished, while manual collapse and historical reopening survive refreshes.
+The Activity type filter applies to children and hides parents with no matching
+children without reordering events;
 its selection survives live refreshes. LLM includes inference only. VS Code model
 API token counting is local INFO bookkeeping retained in diagnostic receipts,
 not a standalone Activity row or an additional LLM call (including older records
@@ -985,8 +1300,23 @@ shown as a flat grey list; when no Session todos exist, explicit agent-reported
 planning possibilities are shown instead. Neither is a guarantee of future
 execution. Old activity records retain their own recorded plans.
 
-Reported reasoning tokens, when available, are shown as a subset of the round's
-output tokens, not an extra amount to add again. Row time is the recorded
+Reported reasoning tokens, when available, remain a subset of the round's
+output tokens in accounting, not an extra amount to add again. The compact LLM
+Activity usage line omits the separate reasoning count and rounds Credits to
+two significant digits (for example, `0.0259776` becomes `0.026`); its tooltip
+retains the exact Credit amount. Raw usage and reply totals are unchanged.
+Activity uses `123 in (100 cached) / 45 out` for positive reported cache counts.
+Zero cache counts omit the parentheses; unavailable cache accounting is explained
+in the tooltip, not the compact line. Cached tokens remain part of total input.
+Completed Activity rows omit the redundant `complete` suffix. Their status light
+retains completion in its tooltip and accessible label; other status text remains.
+Model rows use `<model> working...` while running and just the recorded model name
+after completion; round/stage details remain in the title tooltip. Provider-reported
+readable thinking expands automatically while its model activity runs and folds
+when that activity ends, independently of the overall Chat. Manual collapse is
+preserved during streaming; finished details can still be reopened. Hidden reasoning
+is never synthesized or exposed.
+Row time is the recorded
 dispatch/result interval including waits, not CPU time or proof of remote-job
 completion. Missing accounting remains unknown.
 
@@ -1105,17 +1435,22 @@ source evidence, local validation, correction history and user authorization.
 ## Configuration
 
 Click the model name / **Choose model** button beside Send. For a new direct-HTTP
-chat, select **VS Code models** to open the actual available-model picker, or
+chat, select **VS Code models** to open the model-source picker, or
 **Connect API provider...** to configure HTTP. An already connected VS Code chat
-opens discovery/selection directly. The header gear (**Model connection**) also
+opens the model-source picker directly. The header gear (**Model connection**) also
 switches provider sources. Choose one of two connection paths:
 
-1. **Use VS Code models**: choose an actually available model from VS Code's
-  Language Model API. Sign in to the relevant provider and approve access when
-  VS Code asks. PKM does not request an API key or extract a Copilot login token.
-  Copilot and other configured providers can appear, subject to their actual
-  availability, permissions, quota and subscription. If the list is empty, sign
-  in or configure providers using VS Code's **Manage Language Models** command.
+1. **Use VS Code models**: first choose **Copilot Models** or **SDK**.
+  **Copilot Models** lists the available Copilot models from VS Code's Language
+  Model API, without discovering or signing in to SDK. **SDK** first uses
+  VS Code's GitHub authentication to sign in/grant account access if needed,
+  then lists the available models from the bundled Copilot SDK runtime.
+  Each list puts provider-reported **Auto** first and includes every available
+  model from that source; the two catalogs are never mixed. Choosing SDK on an
+  already connected Chat checks account access again before loading its catalog.
+  Cancelling either selection or SDK connection preserves the selected/default
+  model and does not send a model request. Discovery failures are reported
+  explicitly instead of displaying a misleading empty model list.
 2. **OpenAI-compatible** or **Azure OpenAI**: provide a base endpoint, model
   ID/deployment name and API key as described below.
 
@@ -1304,6 +1639,8 @@ The displayed input estimate conservatively counts UTF-8 bytes, including system
 text, attachments, selected Memory/Skills, bounded dialogue and builtin schemas.
 MCP schemas are discovered and checked at connection time. This is not provider
 tokenization; every model round is checked against the configured window.
+SDK continuations use the observed-usage policy below rather than repeatedly
+charging the full schema's UTF-8 bytes as tokens.
 
 Limits: 160 KB per chosen file, 60,000 attached characters, 16,000 message
 characters and 100,000 UTF-8 output bytes per model inference, including serialized
@@ -1313,6 +1650,60 @@ context/output budget, not an unrelated 100,000-character ceiling. Required inpu
 explicit context and active tool results are never silently shortened; if these
 alone exceed the budget, the request fails before model dispatch. Optional
 retrieved references and recent dialogue are admitted only when they fit.
+
+### SDK continuation context accounting
+
+The first SDK dispatch still checks the rendered prompt, system instructions and
+fixed tool catalog using conservative byte bounds. Within that one SDK session,
+a valid provider input/output usage event for the immediately preceding turn can
+anchor the next context admission. SDK `assistant.usage` does not define a
+`turnId`: native events are associated with the ordered main-agent inference
+window in the owning session. Event identity and, when provided, the SDK's
+`accounting.sourceSessionId` / increasing `sequence` / `usageId` fence replay
+and cross-session observations. An older event timestamp, auxiliary/sub-agent
+usage, or multiple distinct calls in one window cannot establish this baseline.
+The SDK's `conversation-agent` interaction classification identifies a main call
+even when `initiator` is present; a nonempty initiator alone does not mean a
+background call. When classification is absent, initiated calls remain excluded.
+Fusion calls and all other explicit interaction classes remain excluded.
+Transports supplying an explicit turn ID must match an observed turn instead.
+Missing, malformed, zero-input, unmatched or stale usage does not qualify.
+Another session/request never inherits this baseline. Cached input remains part
+of input usage; it is not subtracted from the context window.
+
+The bound reserves reported input plus output (including reasoning), then adds
+UTF-8 byte bounds and message overhead for new assistant/tool evidence and changed
+or newly selected messages. Fingerprints retain occurrence counts, not merely
+distinct hashes. Completed evidence remains charged even if the local planner
+removes it from its shadow transcript. The already measured fixed tool catalog
+is not charged again as schema bytes. Without a qualifying observation, planning
+retains the original conservative fallback. Actual over-budget required input
+still stops; budgets, tool-round limits and approval boundaries are unchanged.
+No guessed bytes-per-token ratio or additional model call is introduced.
+
+Receipts label this hybrid bound `provider-usage-plus-byte-bound`, separately from
+raw byte estimates and actual provider usage. It is an estimate, not exact
+tokenization of the next wire payload. The SDK owns its internal model loop:
+For native usage without turn IDs, attribution depends on the SDK's ordered
+single-main-call event stream, not a provider-supplied per-turn correlation.
+`assistant.turn_start` is an observation/cancellation boundary, not a Host-owned
+pre-dispatch hook. Local selection does not replace or compact SDK history.
+Long sessions can still exhaust genuine context, and large first requests can
+still fail conservatively before any provider measurement exists.
+If continuation admission fails, the error preserves a bounded, content-free
+diagnostic: the last twelve relevant event types, local rounds, agent/child
+flags and baseline admission checks. It excludes prompts, tool results and
+runtime identities. This distinguishes missing/late usage from identity,
+timestamp, auxiliary-call or ambiguity rejection without weakening the guard.
+
+This follows the separation between observed usage and history compaction in
+[Codex's context compactor](https://github.com/openai/codex/blob/main/codex-rs/core/src/compact.rs).
+The [Copilot SDK configuration](https://github.com/github/copilot-sdk/blob/main/nodejs/src/types.ts)
+also exposes native compaction thresholds, and its
+[context-management API](https://github.com/github/copilot-sdk/blob/main/docs/features/context-management.md)
+can explicitly clear model history. This change does not enable those runtime
+features or new session persistence: doing so needs a separate integration that
+preserves Host instructions, pending work, evidence and privacy guarantees.
 
 ### User-approved Task context checkpoints
 
@@ -1352,8 +1743,8 @@ source would fit the window. A source without a bounded safe passage is omitted,
 not prefix-truncated or rewritten. Dependent passage context stays together.
 Planning uses the existing conservative UTF-8-byte upper bound, so it may admit
 less than 8,000 provider tokens. Native transport additionally checks real
-`countTokens` plus overhead when available; HTTP and native hosts without a
-tokenizer use conservative local bounds, not reported provider usage. Dispatch
+`countTokens` plus overhead when available; this independent reference limit
+continues to use conservative local bounds on SDK continuations as well. Dispatch
 stops explicitly if the independent reference limit is exceeded.
 
 This limit applies to automatically retrieved knowledge, not manual attachments,
@@ -1513,6 +1904,27 @@ send prompts, inspect results and explicitly cancel responses:
   do not create, recover or adopt conversations. `api_chat_cancel` cancels only
   the owning Host's current response, retaining partial output and history.
 
+Saving sidebar state and opening the sidebar are non-blocking UI actions,
+not prerequisites for agent dispatch; failures are reported without replaying
+the send. Required model/tool preparation remains visible to Stop.
+Cancelling before model dispatch creates no new reply
+and does not adopt an older reply as the send's result. A cancel result includes
+`cancellation.requested` and `cancellation.pending`: acknowledgement is not proof
+that the original send has settled; inspect that send's own receipt.
+
+Reconnecting an already selected Copilot or SDK model discovers only its source;
+a stalled native catalog does not block an SDK send. Catalog reads retain the
+30-second bound and distinguish discovery timeout from user cancellation without
+selecting a fallback model.
+
+Filesystem-backed `read_file` and its version check read closed Unicode files
+in the Extension Host, without opening them through the frontend. Existing
+unsaved documents and staged edits remain authoritative. Legacy encodings still
+use VS Code's decoder, with a bounded editor wait. Outside-workspace approval,
+resolved-path checks, excluded paths and the 16 MiB/range limits remain in force.
+Stop also interrupts a tool's version check; a late version response cannot
+execute a cancelled tool.
+
 Read-only `api_chat_models`, `api_chat_list` and `api_chat_get` accept an omitted
 or empty `command_id`; each such call gets a new receipt ID. `api_chat_get` also
 accepts the full `pkm://chats/<workspace>/<chat-id>` URL as `chat_id`, but still
@@ -1542,6 +1954,39 @@ Supporting Hosts advertise `send_limits.hardToolRoundLimit` in capabilities.
 The MCP bridge rejects a limited send to an older Host before submitting it,
 rather than silently running without the limit. The limit participates in
 `command_id` idempotency; changing it requires a new explicit request ID.
+
+Bounded requests include a short model-facing advisory with total, completed and
+remaining inference rounds. Remaining includes the coming inference, not the
+number of tools in a batch. HTTP/native transports update one local system
+message before each round's context planning and transport counting. The SDK
+includes the initial advisory in its prepared prompt, then uses the official
+[`onPostToolUse.additionalContext` hook](https://docs.github.com/en/copilot/how-tos/copilot-sdk/hooks/post-tool-use)
+when the next round has three, two or one rounds remaining. Each next round gets
+at most one closing reminder, including after a batch of concurrent tools or a
+failed tool result. The SDK adapter returns failures as original JSON result
+strings, so these still pass through the post-tool result hook.
+
+SDK reminders are separate context, not appended to tool-result strings. They
+participate in conservative context admission before injection and in subsequent
+provider-usage/hash accounting; if a reminder would exceed the input budget,
+the request fails explicitly with completed evidence retained, without sending
+the reminder or another inference. Admission errors explicitly fail the Chat
+before aborting the session, since the SDK may swallow hook callback exceptions.
+No extra `session.send`, result suppression,
+permission change or tool replay is used. Unlimited requests and fresh tool-free
+summary sessions register no closing-reminder hook. Reminder delivery requires
+the SDK runtime's documented post-tool hook support; source regressions do not
+constitute acceptance in an older, already-loaded Host.
+
+At three or fewer remaining rounds, the advisory prioritizes explicitly saving
+applied edits, checking the saved files and final reporting over new edits or
+further rereading. If checks cannot fit, report blocked with saved versus unsaved
+paths and unrun checks. The initial advisory also recommends small saved-and-tested
+slices: a final model summary is not guaranteed to fit the input budget.
+This is guidance, not a reserved
+quota or completion guarantee: unverified criteria remain unverified and
+`report_work` must still fit within the original cap.
+
 At the boundary no new tool-capable round is admitted. At most one tool-free
 summary retains completed results and states unfinished work. HTTP/native
 transports omit tool definitions for that summary; the SDK stops its
@@ -1558,18 +2003,54 @@ request, rather than only appearing as earlier conversation context. Their
 contents are evidence to summarize, not instructions or permission to replay.
 The normal transport input budget still applies; evidence is not silently
 truncated to make the summary fit.
-If the complete SDK summary still exceeds that budget before dispatch, the Host
-adds a bounded, explicitly Host-authored stop diagnostic instead of leaving an
-empty reply. It identifies recorded tool statuses and evidence-reading references,
-not inferred command success or goal acceptance. Original arguments/results stay
+If the complete SDK summary still exceeds that budget before dispatch, or a typed
+input/output budget refusal ends an HTTP/native/SDK request, the Host adds a
+bounded, explicitly Host-authored stop diagnostic. It distinguishes an unsent
+summary from an ordinary budget stop, preserves partial model text, and identifies
+recorded tool statuses and evidence-reading references. Its handoff includes bounded
+recent edit/save receipts with observed hashes, process exit codes and the current
+Goal's agent-reported reason/next action when available. It records source response,
+input and task IDs plus the message's `recordedAt`; absent or oversized values
+and invalid/unsupported recorded times are `unknown`. Supported time is the producers'
+canonical UTC `Date.toISOString()` format (including signed six-digit extended years),
+with exact calendar round-trip validation: normalized dates such as February 30,
+zone offsets and informal/date-only strings are not accepted. `recordedAt` is
+message-recorded time, not generation/observation time or live state; no expiry is inferred.
+Goal data requires a known source input identity matching its `attemptInputId`;
+two missing identities cannot establish a match.
+The diagnostic stays within 12,000 UTF-8 bytes. Bounds measure JSON-serialized
+bytes, including control-character/lone-surrogate escaping: identity fields use
+256 bytes, Goal status 64 bytes, and reason/next action each retain at most 600
+UTF-16 units and 1,200 serialized bytes plus an explicit bounded marker. Oversized
+identities/status are `unknown`; these are derived summaries only. Receipt summaries
+and identity reminders retain their separate 2,400/2,048-byte serialized bounds.
+Original provenance, Goal fields and tool arguments/results are never rewritten.
+It explicitly counts omitted
+operations; malformed or failed receipts stay unconfirmed. These are historical,
+untrusted observations, not current disk state, test acceptance or recovery authority.
+A recorded save does not verify the code, and later edits may invalidate earlier
+saves/checks. Missing verification remains unverified. Original arguments/results stay
 in Tool Activity and remain readable through `session_info`; no summary model
 call or tool replay is added. The reply remains failed; an unresolved objective
 stays unresolved, and an existing recorded outcome is not reopened by the diagnostic.
 Cancellation and unrelated model, permission or persistence errors do not use
-this diagnostic. This follows the
+this diagnostic; errors are classified by type, not matching message text.
+Once the SDK request has failed, stopped or been cancelled, queued or late tool
+callbacks cannot start execution, including after an outstanding content-version
+check returns. An operation that already started can still have effects: this
+guard does not undo work or prove remote termination.
+This follows the
 [stored-evidence and lightweight-reference approach](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents),
 not a lossy replacement of the evidence.
 Stop still cancels immediately, including during summary.
+
+When a work objective is active, budget for its final `report_work` as well as
+business tools. Do not prohibit the reporting tool in a bounded acceptance test:
+plain text alone does not close an active objective. Small tasks can make their
+first report the final outcome with the contract and evidence, without a separate
+`continue` report. Reuse source input identities and criteria already in the
+objective; obtain missing current-attempt evidence identities from `session_info`.
+There is no extra reporting-tool allowance after the hard boundary.
 
 Inspect `reply.toolRoundLimit` (`limit`, `reached`, and, once reached, `rounds`),
 also retained in local history and Harness diagnostics. A summary is not goal
@@ -1627,6 +2108,10 @@ Cancelling a tool records the end of local observation, not proof that its
 remote effects or durable process terminated. Host recovery marks running
 records interrupted and preserves their last sampled counters without
 inventing an end timestamp or charging downtime.
+
+Recovery-guide and diagnostic actions use text-sized buttons that wrap within
+narrow views. Opening the recovery guide does not retry the response or undo
+earlier tool actions.
 
 Only the latest failed/cancelled/interrupted response offers Retry. It requires
 an explicit inline Chat decision and replaces that failed assistant response in place with
@@ -1951,8 +2436,10 @@ submitted Chat message response and its inference rounds; set it to `-1` to
 disable the credit limit. Only reported model credits are counted. Ordinary
 tool execution, including a detached terminal's runtime, is not credit usage;
 model requests made to track that terminal still count. Once reported usage
-reaches the limit, PKM waits at the inference boundary before executing returned
-tools or sending another request. The user can add 50 credits, enter a new total
+reaches the limit, it gates genuine pending work—executing returned tools or
+sending another inference—across HTTP, native VS Code and SDK transports. If a
+completed response has no next inference or pending tool execution, it settles
+without an extra-credit prompt. The user can add 50 credits, enter a new total
 limit, make this response unlimited, make this Chat session unlimited, pause,
 or cancel. A custom limit applies only to the current response and does not
 change the setting. Response-level bypass ends with that response. Chat-session
@@ -1960,6 +2447,32 @@ bypass persists with the Chat across reopen and can be removed in Model Settings
 If a provider omits credit usage, the receipt remains partial/not-reported and
 the configured limit can only apply to the reported portion; unknown usage is
 never treated as zero.
+
+**Credit limit** in Chat Model settings or a Chat List row's action menu sets
+that Chat's persisted `activityCreditLimit`: **Use global default** removes the
+override, **Custom limit** accepts an integer from 0 to 1,000,000,000, and
+**Unlimited credits** stores `-1`. A group action opens the same local dialog
+with the exact current, non-Trash member IDs (up to 1,000 Chats). Saving applies
+the selected policy to those existing members only, not future group members.
+The dialog shows stable IDs even when titles are duplicated. It makes no model
+or authentication request. Custom entry is initially suggested as 1,000 credits;
+opening or cancelling does not change any cap.
+
+Overrides take effect on future responses, not the already-running response's
+captured cap. This is a per-response reported-credit gate, not a prepaid balance,
+provider quota, or aggregate whole-task/group spending cap. Memory and workers
+retain their separate accounting. Token bounds, activity-time review, loop
+guards, permissions and paused Goals are unchanged; saving never resumes a task.
+An existing session-wide time/credit bypass must first be explicitly re-enabled
+before assigning a credit-only policy, rather than silently changing its scope.
+
+Batch saves reject stale membership, missing/Trash targets or a foreign-running
+Chat before writes. A Chat moved out during saving is not updated. Writes retain
+the existing per-Chat revision guards; a disk or concurrent-write failure can
+leave a partial batch, which reports the exact saved IDs and failed Chat.
+Reopen and inspect that state before explicitly retrying. The UI waits for the
+matching save acknowledgement and prevents duplicate submits; it does not
+automatically resend after missing acknowledgement or failure.
 
 `personalKnowledge.apiChatActivityReviewMinutes` defaults to **20 active
 minutes**. At the next inference boundary, the user can continue for another
@@ -1984,6 +2497,21 @@ The composer Agent configuration button and native Session component diagram
 configure retrieval/history, external Markdown Skills, explicit attachments,
 model budgets, builtin permissions and MCP servers. Explicit attachments remain
 snapshots. Skill and Chat Memory selection is automatic, not a required checklist.
+
+In the composer, **Agent configuration > Model and budget** and the settings
+button beside the model name open the same local budget panel. Opening it does
+not load a model catalog, sign in, or change the selected model. Context and
+Output edits retain their existing validation and apply to the next request;
+changing models is a separate **Choose model** action, which can require provider
+access. The native Session configuration picker remains a separate Host flow.
+
+To disable the reported-credit cap before sending, set
+`personalKnowledge.apiChatActivityCreditLimit` to `-1` in VS Code Settings.
+`personalKnowledge.chatMemoryThinkingBudget: "unlimited"` separately removes the
+local Memory thinking-token guard, within the model's own limits. Neither setting
+makes Context or Output unlimited, disables time/loop review, adds provider quota,
+or fixes a disconnected native model channel. No limits are changed by opening
+the panel.
 
 The **Retrieval** panel shows Top 10 or Top 20 typed candidates from the last
 request receipt, with that request's actual model as the target. Only selected
@@ -2285,15 +2813,18 @@ remain meaningful:
   Results include `totalLines`, the displayed `endLine`, `contentTruncated` and,
   when a whole range fits, `nextStartLine`. Character-truncated ranges explicitly
   omit the next-line cursor; choose a smaller line range rather than skipping
-  undisplayed text. Binary content is rejected. Edit/save tools and explicitly
-  attached context files retain their separate 160 KB limits.
+    undisplayed text. Binary content is rejected. Explicitly attached context files
+    retain their separate 160 KB limit.
 - `find_files`: bounded workspace glob listing; `search_text`: bounded literal
   search, not regex or shell, including text files up to the same 16 MiB read limit.
 - `list_directory`: bounded entry names/types, never file bodies. Omitted or empty
   `path` means the selected workspace root, not the filesystem root. Outside-root
   approval and hidden/sensitive-path exclusions remain enforced.
 - `replace_text`: a unique exact replacement, with policy-based PKM approval.
-  Stale versions are rejected; edits remain unsaved in VS Code.
+  Existing text files and resulting documents may be up to 16 MiB, matching the
+  read limit; the exact match plus replacement stays bounded to 16,000 characters.
+  Stale versions are rejected; edits remain unsaved in VS Code. `save_file`
+  uses the same whole-file limit, separate approval and expected content hash.
 - `run_process`: policy-based approval for non-interactive program launch, separate
   program/arguments, closed stdin, restricted inherited environment, output cap
   and 1-120 second deadline. Programs can still modify files outside the workspace
@@ -2400,6 +2931,34 @@ continue to obey those inherited selections and their own approvals. A worker
 may become a manager by calling `spawn_workers` itself; no separate recursion
 budget is reset at that boundary.
 
+Chat chooses whether delegation is worthwhile; no separate parent-assistant API
+call is required. In the compact profile, Worker schemas stay deferred: discover
+enabled `spawn_workers` / `assign_workers` contracts once through
+`capabilities_search`, then use the returned capability dispatcher. Disabled,
+read-only and Portal-controlled delegation remains unavailable. Small work and a
+single continuous dependency trace should stay local, rather than paying for
+another Chat. Every assignment should carry the objective, known paths/facts,
+acceptance checks and a stop condition because workers do not inherit the
+manager's conversation. Batch only ready independent siblings, declare disjoint
+`writeScope` and exclusive `resources`, and normally leave shared builds,
+integration and final acceptance with the manager. A worker result is evidence
+to validate, not automatic acceptance. Run shared builds after relevant siblings
+have saved and handed off: disjoint edit scopes do not make a compiler reading
+the whole worktree independent of those edits.
+
+Declared scopes are persisted in task-tree slots and checked atomically with
+capacity reservation under the existing cross-process lock. New tasks cannot
+overlap any unreleased non-ancestor branch, including failed/unresolved workers.
+An ancestor may delegate subranges of its own declared ownership, but a child
+cannot expand a declared ancestor's paths or exclusive resources. Concurrent
+managers therefore cannot both reserve the same declared file/resource after
+passing separate preflight checks. Released scopes can be reused. Existing
+unscoped records remain compatible; absent declarations are unknown, not proof
+of independence. `writeScope: []` declares no writes, and sibling read-only work
+may coexist. These are coordination declarations, not filesystem sandboxing or
+new permissions: tools still use their original approvals, and undeclared actual
+effects cannot be certified or prevented by this ownership check.
+
 Defaults are **3 automatically approved concurrent workers** and **10 maximum** across
 the entire tree, configured by `personalKnowledge.apiChatAutomaticWorkers` and
 `personalKnowledge.apiChatMaximumWorkers`. The automatic threshold must not
@@ -2416,7 +2975,15 @@ independent task tree starts in a new Chat.
 
 After the dispatch round the manager stops model requests and releases its
 stream/connections/timers. **Sleep is a scheduler state, not a repeated wait tool
-or model poll.** PKM reports actionable outcomes and blockers: completed,
+or model poll.** A successful dispatch completes this response phase, not the
+active work objective or its acceptance. Do not reject it merely because the
+objective still awaits worker evidence. A worker-event response can return to
+sleep while other owned workers continue or further events are queued; when
+nothing remains pending, the normal evidence-backed report/blocker guards apply.
+Already queued completion events remain pending work even if a fast worker
+finished before the dispatch request returned. Cancellation, real transport/tool
+failures and the request's tool cap remain enforced; this handoff does not
+authorize more tools in that request. PKM reports actionable outcomes and blockers: completed,
 failed/interrupted, cancelled, clarification, suggestion, real human permission,
 active-time limit, or a suspected loop with repeated-tool evidence. Ordinary
 running/progress/resume updates affect UI only. Events are bound to activity and
@@ -2706,8 +3273,9 @@ removed individually. Other Chats can run independently. A Chat owned by another
 window remains read-only, and changing settings affects the next request.
 
 Status distinguishes an animated running cauldron, green completion (including
-read results), red failure, yellow user-input/result waiting, and blue stop/pause.
-Only a never-run or otherwise idle Chat uses the empty indicator.
+read results), red failure/stop, and yellow user-input/result waiting/pause.
+Only a never-run or otherwise idle Chat uses a green hollow status circle;
+completion uses solid green.
 
 ## Native Session Questions
 

@@ -3,11 +3,13 @@
   const terminal = value => ({ succeeded:'complete', completed:'complete', complete:'complete', failed:'failed', skipped:'ignored', ignored:'ignored' })[value] || '';
   const list = value => Array.isArray(value) ? value : [];
   const key = (...parts) => JSON.stringify(parts);
-  function creditLabel(summary, translate = (text, values = {}) => text.replace(/\{(\w+)\}/g, (_, key) => values[key] ?? `{${key}}`)) {
+  function creditLabel(summary, translate = (text, values = {}) => text.replace(/\{(\w+)\}/g, (_, key) => values[key] ?? `{${key}}`), compact = false) {
     if (!summary?.reportedCalls || summary.credits === undefined) return '';
+    const credits = compact && Number.isFinite(Number(summary.credits))
+      ? Number(summary.credits).toLocaleString(undefined, { minimumFractionDigits:2, maximumFractionDigits:2 }) : summary.credits;
     return summary.status === 'partial'
-      ? translate('{credits} credits (partial: {reported}/{total} calls)', { credits:summary.credits, reported:summary.reportedCalls, total:summary.totalCalls })
-      : translate('{credits} credits', { credits:summary.credits });
+      ? translate('{credits} credits (partial: {reported}/{total} calls)', { credits, reported:summary.reportedCalls, total:summary.totalCalls })
+      : translate('{credits} credits', { credits });
   }
 
   function svgShape(parent, tag, attrs, text) {

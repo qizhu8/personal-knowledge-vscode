@@ -2,7 +2,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
 const { CapabilityRegistry, todoCapabilities, validateCapabilityInput } = require("../dist/capabilities/registry");
-const { capabilityTools } = require("../dist/chat/capability-tools");
+const { capabilityTools, nativeToolCapabilities, projectNativeCapabilityEvent } = require("../dist/chat/capability-tools");
 const { callCapabilityService } = require("../dist/capabilities/service");
 const { capabilityObservations } = require("../dist/capabilities/observations");
 const { todoApiDefinitions } = require("../dist/knowledge/todo-api-contract");
@@ -81,6 +81,38 @@ test("shared capability dispatch preserves real Todo CAS, task ownership and acc
   await assert.rejects(call("todo.workitem.claim", { board_slug: "Board", id: "task", expected_digest: claimed.digest }), { code: "ACCESS_DENIED" });
   await assert.rejects(callCapabilityService("read", { operation: "todo.board.get", version: 2, arguments: { board_slug: "Board" } }, "mcp:external"), { code: "INVALID_ARGUMENT" });
   assert.throws(() => validateCapabilityInput({ actorId: "user" }, { type: "object", properties: {}, additionalProperties: false }), { code: "INVALID_ARGUMENT" });
+});
+
+test("all non-core native leaves are deferred without changing raw results, permissions or evidence", async () => {
+  const invoked = [];
+  const result = 'raw "receipt"\n'.repeat(1000);
+  const leaves = ["read_file", "read_chat_result", "portal", "future_operation"].map(name => ({
+    name, description:name, parameters:{ type:"object", properties:{ id:{ type:"string" } }, required:["id"], additionalProperties:false },
+    execute:async args => { invoked.push([name, args]); if (name === "portal") throw new Error("Original approval declined"); return result; },
+  }));
+  const definitions = nativeToolCapabilities(leaves, []);
+  const compact = capabilityTools(leaves, definitions, true);
+  assert(compact.includes(leaves[0]), "core file tools retain their original contracts");
+  assert.equal(definitions.length, 3);
+  const read = compact.find(tool => tool.name === "capability_read"), write = compact.find(tool => tool.name === "capability_call");
+  const args = { operation:"native.tool.read_chat_result", version:1, arguments:{ id:"worker" } };
+  assert.equal(await read.execute(args, new AbortController().signal), result, "raw evidence must not be JSON-escaped or wrapped");
+  const event = { id:"call-1", name:"capability_read", status:"complete", arguments:JSON.stringify(args), result, round:2 };
+  const projected = projectNativeCapabilityEvent(event, definitions);
+  assert.deepEqual(projected, { ...event, name:"read_chat_result", arguments:'{"id":"worker"}',
+    dispatch:{ name:"capability_read", operation:"native.tool.read_chat_result", version:1 } });
+  assert.equal(capabilityObservations({ toolCalls:[projected] })[0].operation, "native.tool.read_chat_result");
+  assert.equal(capabilityObservations({ toolCalls:[projected] })[0].version, 1);
+  assert.equal(projectNativeCapabilityEvent({ ...event, arguments:'{"operation":"native.tool.disabled","version":1,"arguments":{}}' }, definitions).name, "capability_read");
+  await assert.rejects(read.execute({ ...args, operation:"native.tool.future_operation" }, new AbortController().signal), { code:"ACCESS_DENIED" });
+  await assert.rejects(write.execute({ ...args, operation:"native.tool.portal" }, new AbortController().signal), /Original approval declined/);
+  await assert.rejects(write.execute({ ...args, operation:"native.tool.disabled" }, new AbortController().signal), { code:"NOT_AVAILABLE" });
+  await assert.rejects(read.execute({ ...args, arguments:{ id:4 } }, new AbortController().signal), { code:"INVALID_ARGUMENT" });
+  assert.deepEqual(invoked.map(call => call[0]), ["read_chat_result", "portal"]);
+  const external = [{ ...leaves[2], name:"external.Custom-Tool.v2" }];
+  const foreign = nativeToolCapabilities(external, []);
+  assert.equal(new CapabilityRegistry(foreign).describe(foreign[0].id).transportName, external[0].name);
+  assert(foreign[0].id.length <= 100, "foreign MCP names cannot break catalog identity validation");
 });
 
 test("Harness records bounded canonical invocation versions, not arbitrary supplied metadata", () => {

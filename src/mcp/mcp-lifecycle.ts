@@ -5,6 +5,7 @@ import { withCrossProcessLock } from "../runtime/cross-process-lock";
 import { normalizeManagedMcpAttribution } from "./mcp-attribution";
 
 export const MCP_LIFECYCLE_SCHEMA = "pkm.mcp.lifecycle/v1";
+const runtimeDirectories = ["dist", "resources", "modules/pkm-memory-engine/src"] as const;
 export interface ManagedMcpManifest {
   schema: typeof MCP_LIFECYCLE_SCHEMA;
   generation: string;
@@ -61,7 +62,8 @@ export function bundledMcpBuildIdentity(extensionRoot: string): string {
       else if (entry.isFile() && /\.(js|json|py|template)$/.test(entry.name)) files.push(relative);
     }
   };
-  collect("dist"); collect("resources"); files.sort();
+  for (const directory of runtimeDirectories) collect(directory);
+  files.sort();
   const key = extensionRoot + "\0" + files.map(name => {
     const stat = fs.statSync(path.join(extensionRoot, name));
     return `${name}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
@@ -132,8 +134,9 @@ export async function stageManagedMcpGeneration(
   await fs.promises.mkdir(target, { recursive: true });
   try {
     const runtime = path.join(target, "runtime");
-    await copyTree(path.join(extensionRoot, "dist"), path.join(runtime, "dist"));
-    await copyTree(path.join(extensionRoot, "resources"), path.join(runtime, "resources"));
+    for (const directory of runtimeDirectories) {
+      await copyTree(path.join(extensionRoot, directory), path.join(runtime, directory));
+    }
     await fs.promises.copyFile(path.join(extensionRoot, "package.json"), path.join(runtime, "package.json"));
     await generate(target);
     const manifest: ManagedMcpManifest = {
@@ -260,7 +263,7 @@ export interface ManagedMcpHandshake {
 
 /** Evidence must come from the actual connected client, never generated source/process discovery. */
 export function verifyManagedMcpHandshake(
-  expected: ManagedMcpManifest | undefined, version: any, lifecycle: any, tools: readonly string[],
+  expected: ManagedMcpManifest | undefined, version: any, lifecycle: any, tools: readonly string[], discovered: readonly unknown[] = [],
 ): ManagedMcpHandshake {
   if (!expected || !lifecycle || lifecycle.schema !== MCP_LIFECYCLE_SCHEMA) {
     return { state: "reconnect-required", reason: "This connection has no verified managed lifecycle. Reconnect explicitly; old uninstrumented calls cannot be safely drained." };
@@ -280,15 +283,24 @@ export function verifyManagedMcpHandshake(
   }
   if (domains.includes("knowledge")) required.push("add_skill", "update_skill", "delete_skill", "knowledge_file_trash");
   if (domains.includes("automation")) required.push("chat_capabilities", "chat_join", "chat_standby", "chat_post");
+  const contracts = discovered.filter((value): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value));
+  const revisions = new Set(contracts.map(contract => contract.revision));
+  const discoveredLeaf = (name: string) => tools.includes("capabilities_describe") && revisions.size === 1 && contracts.some(contract => {
+    const schema = contract.inputSchema, legacy = contract.lifecycle;
+    return contract.id === `mcp.tool.${name}` && contract.version === 1
+      && typeof contract.revision === "string" && /^[a-f0-9]{64}$/.test(contract.revision)
+      && schema && typeof schema === "object" && "type" in schema && schema.type === "object"
+      && legacy && typeof legacy === "object" && "legacyAlias" in legacy && legacy.legacyAlias === name;
+  });
   if (!Array.isArray(version.capabilities) || !version.capabilities.includes("managed-lifecycle-v1")
-    || required.some(name => !tools.includes(name))) {
-    return { state: "incompatible", reason: "Successor is missing required advertised lifecycle/Skill/Chat capabilities or tools." };
+    || required.some(name => !tools.includes(name) && (["check_version", "mcp_lifecycle_status", "mcp_lifecycle_quiesce"].includes(name) || !discoveredLeaf(name)))) {
+    return { state: "incompatible", reason: "Successor is missing required lifecycle tools or verified Skill/Chat contracts." };
   }
   return { state: "ready", reason: "Actual connected runtime verified; no prior calls were replayed.", generation: expected.generation };
 }
 
 export async function handshakeManagedMcpConnection(
-  directory: string, invoke: (tool: string, arguments_: Record<string, never>) => Promise<any>, tools: readonly string[], timeoutMs = 10_000,
+  directory: string, invoke: (tool: string, arguments_: Record<string, unknown>) => Promise<any>, tools: readonly string[], timeoutMs = 10_000,
 ): Promise<ManagedMcpHandshake> {
   const expected = readManagedMcpManifest(directory);
   if (!expected) return verifyManagedMcpHandshake(undefined, undefined, undefined, tools);
@@ -296,7 +308,14 @@ export async function handshakeManagedMcpConnection(
     const [version, lifecycle] = await boundedLifecycleRead(
       Promise.all([invoke("check_version", {}), invoke("mcp_lifecycle_status", {})]), timeoutMs);
     const actual = typeof lifecycle?.generation === "string" ? readManagedMcpGeneration(directory, lifecycle.generation) : undefined;
-    const result = verifyManagedMcpHandshake(actual, version, lifecycle, tools);
+    const required: string[] = [];
+    if (actual?.enabledFeatureDomains.includes("knowledge")) required.push("add_skill", "update_skill", "delete_skill", "knowledge_file_trash");
+    if (actual?.enabledFeatureDomains.includes("automation")) required.push("chat_capabilities", "chat_join", "chat_standby", "chat_post");
+    const missing = tools.includes("capabilities_describe") ? required.filter(name => !tools.includes(name)) : [];
+    const discovered = await boundedLifecycleRead(Promise.all(missing.map(name =>
+      invoke("capabilities_describe", { operation:`mcp.tool.${name}` }))), timeoutMs);
+    const currentLifecycle = missing.length ? await boundedLifecycleRead(invoke("mcp_lifecycle_status", {}), timeoutMs) : lifecycle;
+    const result = verifyManagedMcpHandshake(actual, version, currentLifecycle, tools, discovered);
     if (actual && !managedMcpApiCompatible(actual, expected)) {
       return { state:"incompatible", reason:"The connected MCP API or enabled feature domains are not compatible with the configured runtime." };
     }

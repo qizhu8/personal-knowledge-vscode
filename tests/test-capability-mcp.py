@@ -10,6 +10,7 @@ import tempfile
 
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
+from fastmcp.server.middleware import Middleware
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "resources"))
@@ -22,6 +23,21 @@ logging.getLogger("fastmcp").setLevel(logging.CRITICAL)
 async def main():
     with tempfile.TemporaryDirectory(prefix="pkm-cap-mcp-") as directory:
         server = FastMCP("capability-test")
+        observed = []
+        class LeafGuard(Middleware):
+            async def on_call_tool(self, context, call_next):
+                name = context.message.name
+                observed.append(name)
+                if name == "guarded_write":
+                    raise ToolError("original leaf authorization declined")
+                return await call_next(context)
+        server.add_middleware(LeafGuard())
+        @server.tool(annotations={"readOnlyHint": True})
+        def nonpilot_read(key: str) -> dict:
+            return {"key": key, "original": True}
+        @server.tool(annotations={"readOnlyHint": False})
+        def guarded_write(key: str) -> dict:
+            raise AssertionError("Unauthorized write executed")
         register_knowledge_mutation_tools(server, Path(directory), shutil.which("node"), ROOT, {
             "python": sys.executable, "extensionRoot": str(ROOT),
             "database": str(Path(directory) / "private-memory.sqlite3"), "identity": "fixture-local-owner"})
@@ -81,12 +97,42 @@ async def main():
                 memory_read = await client.call_tool("capability_read", {
                     "operation": "memory.record.get", "version": 1, "arguments": {"id": memory["result"]["id"]}})
                 assert (memory_read.structured_content or json.loads(memory_read.content[0].text))["result"]["status"] == "pending"
+                names, offset, revision = set(), 0, None
+                while offset is not None:
+                    page = (await client.call_tool("capabilities_list", {
+                        "offset": offset, "limit": 10, **({"revision": revision} if revision else {})})).structured_content
+                    names.update(item["transportName"] for item in page["operations"])
+                    offset, revision = page["nextOffset"], page["revision"]
+                assert names == {tool.name for tool in legacy} - {tool.name for tool in compact}
+                found = (await client.call_tool("capabilities_search", {"query": "nonpilot_read"})).structured_content
+                assert found["operations"][0]["inputSchema"]["properties"]["key"]["type"] == "string"
+                raw = await client.call_tool("capability_read", {
+                    "operation": "mcp.tool.nonpilot_read", "version": 1, "arguments": {"key": "original"}})
+                assert raw.structured_content == {"key": "original", "original": True}
+                assert "nonpilot_read" in observed, "generic calls must enter original middleware"
+                direct = await client.call_tool("nonpilot_read", {"key": "compatibility"})
+                assert direct.structured_content["key"] == "compatibility"
+                for entry, operation, args, expected in [
+                    ("capability_read", "mcp.tool.guarded_write", {"key": "no"}, "ACCESS_DENIED"),
+                    ("capability_call", "mcp.tool.guarded_write", {"key": "no"}, "original leaf authorization declined"),
+                    ("capability_read", "mcp.tool.nonpilot_read", {"key": 4}, "validation"),
+                    ("capability_call", "mcp.tool.memory_record_confirm", {}, "NOT_AVAILABLE"),
+                    ("capability_call", "mcp.tool.capability_call", {}, "NOT_AVAILABLE"),
+                ]:
+                    try:
+                        await client.call_tool(entry, {"operation": operation, "version": 1, "arguments": args})
+                    except ToolError as error:
+                        assert expected.lower() in str(error).lower(), str(error)
+                    else:
+                        raise AssertionError(f"Unprotected deferred call: {operation}")
+                server.disable(names={"nonpilot_read"}, components={"tool"})
                 try:
-                    await client.call_tool("add_workitem", {})
-                except ToolError:
-                    pass
+                    await client.call_tool("capability_read", {
+                        "operation": "mcp.tool.nonpilot_read", "version": 1, "arguments": {"key": "withdrawn"}})
+                except ToolError as error:
+                    assert "NOT_AVAILABLE" in str(error)
                 else:
-                    raise AssertionError("legacy tool still exposed in compact profile")
+                    raise AssertionError("Disabled leaf remained callable through discovery")
                 print(json.dumps({"legacy_tools": len(legacy), "compact_tools": len(compact),
                                   "legacy_schema_bytes": legacy_bytes, "compact_schema_bytes": compact_bytes}))
         finally:

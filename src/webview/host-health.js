@@ -23,16 +23,23 @@
   retry.type = 'button';
   retry.title = 'Reconnect to Extension Host';
   retry.setAttribute('aria-label', retry.title);
-  retry.innerHTML = '<span class="codicon codicon-refresh" aria-hidden="true"></span>';
-  banner.append(icon, text, retry);
+  retry.textContent = retry.title;
+  const logs = document.createElement('button');
+  logs.type = 'button'; logs.textContent = 'Open diagnostic log';
+  logs.onclick = () => api.postMessage({ command:'showLogs', type:'showLogs' });
+  banner.append(icon, text, retry, logs);
   document.body.append(banner);
   function warn(message, kind = 'interface') {
+    if (kind === 'interface') api.postMessage({ type: 'interfaceError', message: String(message).slice(0, 600) });
     if (loading) loading.hidden = true;
     failed = true;
     failureKind = kind;
     banner.dataset.kind = kind;
     banner.setAttribute('role', 'alert');
-    text.textContent = message;
+    text.textContent = message + ' If it persists, check Output > Personal Knowledge. Reconnecting does not undo tool actions.';
+    retry.hidden = false; logs.hidden = false;
+    retry.textContent = kind === 'interface' ? 'Reload interface' : 'Reconnect to Extension Host';
+    retry.title = retry.textContent; retry.setAttribute('aria-label', retry.title);
     banner.hidden = false;
     document.body.classList.add('pkm-host-unavailable');
   }
@@ -44,6 +51,7 @@
     banner.dataset.kind = 'starting';
     banner.setAttribute('role', 'status');
     banner.hidden = false;
+    retry.hidden = true; logs.hidden = false;
   }
   function ready() {
     if (loading) loading.hidden = true;
@@ -66,11 +74,12 @@
     getState: () => api.getState(),
     setState: value => api.setState(value),
     postMessage: message => {
-      if (failed && !['ready', 'hostHealth'].includes(message.command || message.type)) return;
+      if (failed && !['ready', 'hostHealth', 'openHelp', 'showLogs'].includes(message.command || message.type)) return;
       return api.postMessage(message);
     },
   };
   retry.onclick = () => {
+    if (failureKind === 'interface') { window.location.reload(); return; }
     if (!loaded) {
       startedAt = Date.now();
       failureKind = undefined;
@@ -82,7 +91,7 @@
   };
   window.addEventListener('message', event => {
     const message = event.data;
-    if (message?.type === 'initializationError') warn('PKM Chat failed to initialize: ' + String(message.message || 'Unknown error'));
+    if (message?.type === 'initializationError') warn('PKM Chat failed to initialize: ' + String(message.message || 'Unknown error'), 'initial');
     if ((message?.type || message?.command) === 'hostHealth' && pending.has(message.id)) {
       pending.delete(message.id);
       lastReply = Date.now();

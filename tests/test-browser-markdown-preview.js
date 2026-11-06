@@ -528,7 +528,11 @@ async function testMediaZoomBoundaries() {
       PkmMediaZoom.renderImages(document.getElementById("root"));
       document.getElementById("hidden").style.display = "block";
     });
-    await page.waitForFunction(() => document.querySelector("#diagram svg").getBoundingClientRect().width >= 299);
+    await page.waitForFunction(() => {
+      const viewport = document.querySelector("#diagram .media-zoom-viewport");
+      return viewport.clientWidth > 0 && Math.abs(viewport.querySelector("svg").getBoundingClientRect().width-viewport.clientWidth) < 1;
+    });
+    const fittedStatus = await page.locator("#diagram output").textContent();
     assert.strictEqual(await page.locator(".image-zoom").count(), 1, "cached images are initialized once; broken images are not replaced");
     assert.strictEqual(await page.locator("#broken").count(), 1, "broken image and its alt text remain visible to the reader");
     await page.locator("#broken").evaluate((image, src) => { image.src = src; return image.decode(); }, imageUri);
@@ -537,7 +541,7 @@ async function testMediaZoomBoundaries() {
     const diagram = page.locator("#diagram");
     await diagram.locator(".media-zoom-viewport").focus();
     await page.keyboard.press("Control+-");
-    assert.strictEqual(await diagram.locator("output").textContent(), "25%", "browser modifier shortcuts are not intercepted");
+    assert.strictEqual(await diagram.locator("output").textContent(), fittedStatus, "browser modifier shortcuts are not intercepted");
     await page.keyboard.press("0");
     await page.keyboard.press("+");
     assert.strictEqual(await diagram.locator("output").textContent(), "125%", "keyboard zoom in works");
@@ -557,7 +561,8 @@ async function testMediaZoomBoundaries() {
     await diagram.getByRole("button", {name:"Zoom out", exact:true}).evaluate(button => { for (let i=0; i<80; i++) button.click(); });
     assert.strictEqual(await diagram.locator("output").textContent(), "1%", "minimum zoom is bounded");
     await diagram.getByRole("button", {name:"Fit diagram to width", exact:true}).click();
-    assert.strictEqual(await diagram.locator("output").textContent(), "25%");
+    assert.strictEqual(await diagram.locator("output").textContent(),
+      await diagram.locator(".media-zoom-viewport").evaluate(el => Math.round(el.clientWidth / 1200 * 100) + "%"));
     assert.strictEqual(await page.evaluate(() => observedMedia.size), 3);
     await page.evaluate(() => document.getElementById("root").remove());
     await page.waitForFunction(() => observedMedia.size === 0);
@@ -668,13 +673,17 @@ async function testMediaZoomInteractions() {
     assert(await diagram.getByRole("button", {name:"View diagram fullscreen", exact:true}).evaluate(el => document.activeElement === el),
       "closing fullscreen returns keyboard focus to its button");
     await diagram.getByRole("button", {name:"Fit diagram to width", exact:true}).click();
+    const fittedStatus = await diagram.locator("output").textContent();
     await diagram.getByRole("button", {name:"View diagram fullscreen", exact:true}).click();
-    await page.waitForFunction(() => document.querySelector("dialog output")?.textContent !== "25%");
+    await page.waitForFunction(status => document.querySelector("dialog output")?.textContent !== status, fittedStatus);
     await dialog.getByRole("button", {name:"Exit fullscreen", exact:true}).click();
     await dialog.waitFor({state:"detached"});
-    assert.strictEqual(await diagram.locator("output").textContent(), "25%", "fullscreen restores fit mode");
+    assert.strictEqual(await diagram.locator("output").textContent(), fittedStatus, "fullscreen restores fit mode");
     await page.locator("#root").evaluate(el => { el.style.width = "320px"; });
-    await page.waitForFunction(() => document.querySelector("#diagram output").textContent === "20%");
+    await page.waitForFunction(() => {
+      const viewport = document.querySelector("#diagram .media-zoom-viewport");
+      return Math.abs(viewport.querySelector("svg").getBoundingClientRect().width-viewport.clientWidth) < 1;
+    });
     await diagram.getByRole("button", {name:"View diagram fullscreen", exact:true}).click();
     await page.locator("#root").evaluate(el => el.remove());
     await dialog.waitFor({state:"detached"});

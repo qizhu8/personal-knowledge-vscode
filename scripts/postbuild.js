@@ -26,6 +26,7 @@ for (const name of ["api-chat-client", "api-chat-mcp", "api-chat-tools", "sync/g
     bundle: true,
     platform: "node",
     format: "cjs",
+    define: { navigator: "undefined" },
     external: ["vscode", `${distPath}/*`],
     allowOverwrite: true,
     outfile: entry,
@@ -94,12 +95,21 @@ try {
     throw new Error("panel.css must hide #chat-active when no Chatroom is active");
   }
   const panelJs = fs.readFileSync(panelJsPath, "utf-8");
+  if (!html.includes('data-workspace="help"') || !html.includes('codicon-question') ||
+      !panelJs.includes("function showHelpTab") || !panelJs.includes("function copyHelpRequest")) {
+    throw new Error("PKM Help must expose its question-mark workspace and bundled guide renderer");
+  }
+  for (const language of ["en", "zh-hans"]) {
+    const guide = fs.readFileSync(path.join(__dirname, "..", "resources", "help", `${language}.md`), "utf8");
+    if (!guide.trim() || !guide.includes("```agent")) throw new Error(`PKM Help guide ${language} is incomplete`);
+  }
   if (/chat-hosted-actions|chatCopyActiveInvite|chatOpenActiveBrowser|chatRotateActiveKey/.test(panelJs)) {
     throw new Error("active Chatroom header must not duplicate Hub Invite/Browser/Key actions");
   }
-  if (!html.includes("Regenerate Server Code") || !panelJs.includes("mcp-regenerate-server-code") ||
-      !panelJs.includes("highlightMcpRegenerate") || !panelCss.includes("mcpRegenerateHighlight")) {
-    throw new Error("outdated MCP guidance must expose and highlight Regenerate Server Code");
+  if (!html.includes("mcp-setup-action") || !panelJs.includes("function mcpSetupAction") ||
+      !panelJs.includes("selectSettingsSubtab('mcp', 'mcp')") || !panelJs.includes("mcpRuntimeProgressHtml") ||
+      !panelJs.includes("resumeIntegrationGuide")) {
+    throw new Error("MCP guidance must expose state-driven setup, visible targets, retained progress and recovery");
   }
   if (!html.includes('data-tab="servers">Servers</button>') || html.includes('data-tab="servers">🖥')) {
     throw new Error("Servers menu tab must use text only, without a leading icon");
@@ -174,7 +184,8 @@ try {
   };
   if (providerResolvers.length === 1) collectResolutionCalls(providerResolvers[0]);
   const allowedResolutionCalls = new Set(["createDefinition", "readAccountMcpBinding", "fs.realpathSync", "getStorePath"]);
-  if (previewOnlyBranches.length !== 2 ||
+  if (previewOnlyBranches.length !== 1 ||
+      !extensionTs.includes('case "generateMcp":\n    case "generateChatMcp":') ||
       providerResolvers.length !== 1 || !resolutionCalls.includes("createDefinition") ||
       resolutionCalls.some(name => !allowedResolutionCalls.has(name))) {
     throw new Error("MCP preview/provider resolution must not regenerate server code implicitly");

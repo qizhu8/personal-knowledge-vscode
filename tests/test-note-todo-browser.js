@@ -142,6 +142,7 @@ test("built Note Table/Board/Timeline roundtrips through Markdown, preserves dra
       noteTodoProjectResult({projectId:"project-ui",requestId:999,records:noteTodo.snapshot.items.map(item=>({slug:noteTodo.slug,item}))});
     });
     assert.equal(await page.locator("#project-note-todos .note-todo-timeline-row").count(),1);
+    await page.locator("#project-note-todos > details > summary").filter({hasText:"Recorded state timeline"}).click();
     await page.locator("#project-note-todos .note-todo-timeline-row > details > summary").click();
     assert.equal(await page.locator("#project-note-todos").getByRole("button",{name:"Open Note"}).count(),1);
     await page.setViewportSize({width:390,height:850});
@@ -168,6 +169,8 @@ test("built Note Table/Board/Timeline roundtrips through Markdown, preserves dra
     await page.evaluate(data=>noteTodoResult(data),{slug,requestId:storyWrite.requestId,snapshot:result,content:store.noteGet(slug).content});
     const story=result.items.find(item=>item.kind==="UserStory");
     assert(story);
+    assert.equal(await page.locator(`[data-todo-toggle-story="${story.id}"]`).getAttribute("aria-expanded"),"false","new Stories start collapsed");
+    await page.locator(`[data-todo-toggle-story="${story.id}"]`).click();
     await page.locator(".note-todo-swimcell [data-todo-edit]").click();
     await form.locator('[name=parentId]').selectOption(story.id);
     await form.getByRole("button",{name:"Save Work Item"}).click();

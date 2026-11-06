@@ -3,6 +3,7 @@ let mcpStatusCache = null;
 let mcpStatusUpdatedAt = 0;
 let mcpGeneratedCache = null;
 let mcpCompletionNotice = '';
+let mcpPendingSetupTarget = null;
 const mcpPathSizeCache = new Map();
 
 function beginMcpUiAction(command, payload, button) {
@@ -32,20 +33,33 @@ function renderMcpLoading() {
 
 function showMcpTab() {
   if (mcpStatusCache) renderMcpPane(mcpStatusCache); else renderMcpLoading();
-  if (!tabCacheIsFresh(mcpStatusUpdatedAt)) ask('checkMcp', {}, null, true);
+  if (!tabCacheIsFresh(mcpStatusUpdatedAt)) ask('mcpStatus', {}, null, true);
 }
 
 function mcpOnStatus(data) {
   const previous = mcpStatusCache;
+  if (previous?.store?.path && data?.store?.path && previous.store.path !== data.store.path) mcpRuntimeProgressCache = null;
   mcpStatusCache = data || {};
   if (mcpStatusCache.usage?.deferred && previous?.usage && !previous.usage.deferred
       && previous.store?.path === mcpStatusCache.store?.path) {
     mcpStatusCache.usage = previous.usage;
   }
+  const automatic = mcpStatusCache.automaticSetup || {};
+  if (automatic.progress && (!mcpRuntimeProgressCache || automatic.progress.updatedAt >= mcpRuntimeProgressCache.updatedAt)) {
+    mcpRuntimeProgressCache = { ...automatic.progress, output:String(automatic.progress.output || '').slice(-6000) };
+  }
+  if (automatic.state === 'ready' && !automatic.progress && mcpDashboardState(mcpStatusCache).ready) mcpRuntimeProgressCache = null;
+  if (mcpRuntimeProgressCache) mcpStatusCache.automaticSetup = { ...automatic, progress:mcpRuntimeProgressCache };
+  if (automatic.state === 'ready' && mcpStatusCache.mcpPython?.valid === true && mcpDashboardState(mcpStatusCache).ready) completeIntegrationGuide();
   mcpStatusUpdatedAt = Date.now();
   loadProfilingEnabled = !!data?.loadProfiling?.enabled;
   updateGlobalMcpWarning(mcpStatusCache);
-  if (state.tab === 'mcp') renderMcpPane(mcpStatusCache);
+  if (state.tab === 'mcp') {
+    const focusId = document.activeElement?.id;
+    renderMcpPane(mcpStatusCache);
+    if (mcpPendingSetupTarget) requestAnimationFrame(focusPendingMcpSetup);
+    else if (focusId) document.getElementById(focusId)?.focus({ preventScroll:true });
+  }
 }
 
 function mcpOnUsage(data) {
@@ -66,67 +80,100 @@ function mcpOnPathSize(data) {
   if (state.tab === 'mcp') renderMcpPathSize(data);
 }
 
+function mcpSetupPresentation(data) {
+  const automatic = data?.automaticSetup || {};
+  if (data?.store?.valid === false) return { kind:'store', label:helpText('Choose Knowledge Root', '选择知识目录'), text:helpText('The Knowledge Root is missing or unavailable. Choose a folder on this host first; MCP setup is optional.', '知识目录尚未选择或不可用。先选择当前主机上的文件夹；MCP 配置是可选的。') };
+  if (data?.newerThanExpected) return { kind:'preserved', label:t('config.setupReviewRuntime'), text:'A newer PKM MCP runtime is installed and was preserved. Upgrade Personal Knowledge Manager before changing server code.' };
+  if (automatic.state === 'running') return { kind:'running', label:t('config.setupViewProgress'), text:automatic.progress?.text || t('config.setupRunning') };
+  if (data?.mcpPython?.valid === false) return { kind:'python', label:t('config.setupChoosePython'), text:automatic.error || t('config.setupPythonMissing') };
+  if (automatic.state === 'action-required' && /close\/reconnect|drain|uncertain|process inspection/i.test(automatic.error || '')) return { kind:'review', label:t('config.setupReview'), text:automatic.error };
+  if (['error','action-required'].includes(automatic.state)) return { kind:'retry', label:helpText('Review setup output', '查看配置错误与输出'), text:automatic.error || t('config.setupError') };
+  if (!data?.mcpRuntime && data?.installed && data?.current) return { kind:'unknown', label:t('config.setupCheck'), text:t('config.setupUnknown') };
+  if (!data?.installed) return { kind:'setup', label:helpText('Review server setup', '查看服务配置'), text:t('config.setupMissingServer') };
+  if (!data?.current) {
+    const installed = data?.installedVersion || 'unknown';
+    const detail = installed === data?.expectedVersion
+      ? `server v${installed} is current, but runtime components need update`
+      : 'Optional MCP server code needs update';
+    return { kind:'setup', label:helpText('Review component update', '查看组件更新'), text:detail + '. PKM prepares the managed runtime automatically.' };
+  }
+  if (!mcpDashboardState(data).ready) return { kind:'runtime', label:helpText('Review environment repair', '查看环境修复'), text:data?.mcpRuntime?.error || t('config.setupRuntimeMissing') };
+  return { kind:'ready', label:t('config.setupReviewClient'), text:t('config.setupReady') };
+}
+
+function mcpSetupAction(button) {
+  const presentation = mcpSetupPresentation(mcpStatusCache);
+  if (presentation.kind === 'store') beginMcpUiAction('reconfigureKnowledgeRoot', {}, button);
+  else if (presentation.kind === 'unknown') beginMcpUiAction('mcpStatus', {}, button);
+  else openMcpSetup(presentation.kind === 'python' ? 'python' : ['running','retry','runtime'].includes(presentation.kind) ? 'progress'
+    : presentation.kind === 'review' ? 'lifecycle' : ['setup','preserved'].includes(presentation.kind) ? 'server' : 'client');
+}
+
 function updateGlobalMcpWarning(data) {
   const banner = document.getElementById('mcp-global-warning');
   const text = document.getElementById('mcp-global-warning-text');
-  const regenerate = banner?.querySelector('.mcp-regenerate-action');
+  const action = banner?.querySelector('.mcp-setup-action');
   if (!banner || !text) return;
-  if (data?.installed && data?.current) {
-    const attention = data.lifecycle?.instances?.some(instance => instance.heartbeatFresh === true
-      && (['draining', 'action-required'].includes(instance.observedState) || instance.uncertainCalls > 0 || instance.controlError));
-    if (attention) {
-      banner.classList.remove('hidden');
-      text.textContent = 'An MCP instance is draining or needs review. See Managed MCP lifecycle in Config; do not replay uncertain writes.';
-      if (regenerate) regenerate.hidden = true;
-      return;
-    }
-    banner.classList.add('hidden');
-    text.textContent = '';
-    if (regenerate) regenerate.hidden = false;
-    return;
-  }
-  const installed = data?.installedVersion || 'missing';
-  const expected = data?.expectedVersion || '?';
-  const components = [
-    ['Knowledge', data?.installedKnowledgeVersion, data?.knowledgeVersion],
-    ['Chat', data?.installedChatVersion, data?.chatVersion],
-    ['Recipes', data?.installedRecipeVersion, data?.recipeVersion],
-    ['Agent Sessions', data?.installedAgentSessionVersion, data?.agentSessionVersion],
-  ].filter(([, actual, target]) => actual && target && actual !== target);
-  if (regenerate) regenerate.hidden = !!data?.newerThanExpected;
-  if (!data?.installed) {
-    text.textContent = `PKM MCP server is missing (expected v${expected}). Create the managed runtime and generate the server.`;
-  } else if (data?.newerThanExpected) {
-    text.textContent = `A newer PKM MCP runtime is installed and was preserved. Upgrade Personal Knowledge Manager before regenerating server code.`;
-  } else if (installed === expected && components.length) {
-    const detail = components.map(([name, actual, target]) => `${name} v${actual} → v${target}`).join(', ');
-    text.textContent = `PKM MCP server v${installed} is current, but runtime components need update (${detail}). Regenerate server code and restart pkm.`;
-  } else {
-    text.textContent = `PKM MCP server needs update (installed v${installed}, expected v${expected}). Regenerate server code and restart pkm.`;
-  }
-  banner.classList.remove('hidden');
+  const presentation = mcpSetupPresentation(data);
+  const attention = data?.lifecycle?.instances?.some(instance => instance.heartbeatFresh === true
+    && (['draining','action-required'].includes(instance.observedState) || instance.uncertainCalls > 0 || instance.controlError));
+  const visible = !['ready','unknown'].includes(presentation.kind) || attention;
+  banner.hidden = !visible;
+  if (visible) banner.classList.remove('hidden'); else banner.classList.add('hidden');
+  banner.dataset.setupState = presentation.kind;
+  text.textContent = attention ? 'An MCP instance needs review. Do not replay uncertain writes.' : visible ? presentation.text : '';
+  if (action) { action.textContent = attention ? 'Review lifecycle' : presentation.label; action.onclick = attention ? () => openMcpSetup('lifecycle') : () => mcpSetupAction(action); }
+  const guide = banner.querySelector('.mcp-help-action');
+  if (guide && guide !== action) guide.textContent = helpText('Setup guide', '配置指南');
 }
 
-function openMcpSetup() {
-  const button = document.querySelector('.tab[data-tab="mcp"]');
-  if (button) button.dispatchEvent(new MouseEvent('click'));
-  setTimeout(highlightMcpRegenerate, 250);
+function openMcpSetup(target) {
+  const kind = target || (mcpSetupPresentation(mcpStatusCache).kind === 'python' ? 'python' : 'progress');
+  mcpPendingSetupTarget = kind;
+  selectSettingsSubtab('mcp', 'mcp');
+  document.querySelector('.tab[data-tab="mcp"]')?.click();
+  requestAnimationFrame(focusPendingMcpSetup);
 }
 
-function highlightMcpRegenerate() {
-  const button = document.getElementById('mcp-regenerate-server-code');
-  if (!button) { ask('checkMcp', {}); setTimeout(highlightMcpRegenerate, 300); return; }
-  button.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  button.classList.remove('mcp-regenerate-highlight');
-  void button.offsetWidth;
-  button.classList.add('mcp-regenerate-highlight');
-  setTimeout(() => button.classList.remove('mcp-regenerate-highlight'), 6500);
+function focusPendingMcpSetup() {
+  if (!mcpPendingSetupTarget || state.tab !== 'mcp') return;
+  applySettingsSubtab('mcp');
+  const id = mcpPendingSetupTarget === 'server' ? 'mcp-regenerate-server-code' : mcpPendingSetupTarget === 'python' ? 'mcp-python-path' : mcpPendingSetupTarget === 'client' ? 'mcp-configure-native' : mcpPendingSetupTarget === 'lifecycle' ? 'mcp-lifecycle' : 'mcp-runtime-status';
+  const element = document.getElementById(id);
+  if (!element) return;
+  element.scrollIntoView({ behavior:'smooth', block:'center' });
+  element.focus();
+  mcpPendingSetupTarget = null;
 }
 
 function mcpVersionBadge(installed, current, installedVersion, expectedVersion) {
   if (!installed) return `<span ${mcpI18nAttrs('config.missingExpectedVersion', { version: expectedVersion || '?' })} style="font-size:11px;padding:2px 8px;border-radius:8px;background:var(--border);color:var(--muted)">Missing · expected v${esc(expectedVersion || '?')}</span>`;
   if (current) return `<span ${mcpI18nAttrs('config.currentVersion', { version: installedVersion })} style="font-size:11px;padding:2px 8px;border-radius:8px;background:#4ade8022;color:#4ade80">Current · v${esc(installedVersion)}</span>`;
   return `<span ${mcpI18nAttrs('config.outdatedVersion', { installed: installedVersion || 'unknown', expected: expectedVersion || '?' })} style="font-size:11px;padding:2px 8px;border-radius:8px;background:#f4b40022;color:#f4b400">Outdated · ${esc(installedVersion || 'unknown')} → v${esc(expectedVersion || '?')}</span>`;
+}
+
+function mcpRegeneratePresentation(data) {
+  const installed = data?.installedVersion || 'missing';
+  const expected = data?.expectedVersion || '?';
+  const knowledgeInstalled = data?.installedKnowledgeVersion || 'missing';
+  const knowledgeExpected = data?.knowledgeVersion || '?';
+  const chatInstalled = data?.installedChatVersion || 'missing';
+  const chatExpected = data?.chatVersion || '?';
+  const recipeInstalled = data?.installedRecipeVersion || 'missing';
+  const recipeExpected = data?.recipeVersion || '?';
+  const agentSessionInstalled = data?.installedAgentSessionVersion || 'missing';
+  const agentSessionExpected = data?.agentSessionVersion || '?';
+  const label = !data?.installed
+    ? `Generate Server Code · target v${expected}`
+    : data?.current
+      ? `Regenerate Server Code · v${expected}`
+      : `Regenerate Server Code · v${installed} → v${expected}`;
+  const title = data?.current
+    ? `Generated server is current: Unified v${expected}, Knowledge v${knowledgeExpected}, Chat v${chatExpected}, Recipes v${recipeExpected}, Agent Sessions v${agentSessionExpected}.`
+    : `Regenerate Unified v${installed} → v${expected}; Knowledge v${knowledgeInstalled} → v${knowledgeExpected}; Chat v${chatInstalled} → v${chatExpected}; Recipes v${recipeInstalled} → v${recipeExpected}; Agent Sessions v${agentSessionInstalled} → v${agentSessionExpected}.`;
+  const key = !data?.installed ? 'config.generateServerTarget' : data?.current ? 'config.regenerateServerCurrent' : 'config.regenerateServerTransition';
+  const params = !data?.installed ? { version: expected } : data?.current ? { version: expected } : { installed, expected };
+  return { label, title, key, params };
 }
 
 function mcpRegeneratePresentation(data) {
@@ -227,19 +274,74 @@ function refreshMcpPathSizes(button) {
   beginMcpUiAction('refreshMcpPathSizes', {}, button);
 }
 
-function completeIntegrationGuide() {
+let mcpGuideDeferred = !!vscode.getState()?.mcpGuideDeferred;
+let mcpRuntimeProgressCache = null;
+
+function deferIntegrationGuide() {
+  mcpGuideDeferred = true;
+  vscode.setState({ ...(vscode.getState() || {}), mcpGuideDeferred:true });
   document.getElementById('pkm-first-run-guide')?.remove();
   document.querySelectorAll('.pkm-first-run-target').forEach(element => element.classList.remove('pkm-first-run-target'));
+  if (state.tab === 'mcp' && mcpStatusCache) renderMcpPane(mcpStatusCache);
+}
+function resumeIntegrationGuide() {
+  mcpGuideDeferred = false;
+  vscode.setState({ ...(vscode.getState() || {}), mcpGuideDeferred:false });
+  openMcpSetup('python');
+  if (mcpStatusCache) renderMcpPane(mcpStatusCache);
+}
+function completeIntegrationGuide() {
+  const pending = mcpStatusCache?.firstRunGuide?.visible || document.getElementById('pkm-first-run-guide');
+  if (!pending) return;
+  if (mcpStatusCache?.firstRunGuide) mcpStatusCache.firstRunGuide.visible = false;
+  deferIntegrationGuide();
   ask('dismissIntegrationGuide', {});
 }
 
 function renderIntegrationGuide(data) {
   const guide = data?.firstRunGuide;
-  if (!guide?.visible || guide.step !== 'python') return '';
+  if (!guide?.visible || guide.step !== 'python' || mcpGuideDeferred) return '';
   return `<aside id="pkm-first-run-guide" class="pkm-first-run-guide" data-step="${esc(guide.step)}" role="dialog" aria-label="First configuration guide">
-    <div><strong>Choose Python once</strong><button class="icon-btn" onclick="completeIntegrationGuide()" title="Dismiss guide" aria-label="Dismiss guide">${uiIcon('close')}</button></div>
-    <p>Click List Pythons, choose a detected interpreter, then Validate &amp; Save. PKM will create an isolated runtime, install its managed dependencies, generate the MCP server, and build the retrieval index automatically.</p>
+    <div><strong>${esc(t('config.setupChoosePython'))}</strong><button class="tbtn" data-i18n="config.setupLater" onclick="deferIntegrationGuide()">${esc(t('config.setupLater'))}</button></div>
+    <p>Click List Pythons, choose a detected interpreter, then Validate &amp; Save. PKM creates the isolated runtime and prepares the server automatically. Retrieval preparation and actual client discovery are separate steps.</p>
+    <p><span data-i18n="config.setupInstallHint">${esc(t('config.setupInstallHint'))}</span> <a href="https://www.python.org/downloads/">${esc(t('config.setupInstallPython'))}</a></p>
+    <button class="tbtn" onclick="openMcpSetup('python')">${esc(t('config.setupChoosePython'))}</button>
   </aside>`;
+}
+
+function createGettingStartedNote(button) {
+  document.querySelector('.workspace-button[data-workspace="knowledge"]')?.click();
+  document.querySelector('.tab[data-tab="notes"]')?.click();
+  ask('createKnowledgeItem', {area:'notes'}, button);
+}
+function renderGettingStarted(data) {
+  const presentation = mcpSetupPresentation(data);
+  return `<section class="pkm-getting-started" aria-labelledby="pkm-getting-started-title">
+    <h2 id="pkm-getting-started-title" data-i18n="config.gettingStartedTitle">${esc(t('config.gettingStartedTitle'))}</h2>
+    <p data-i18n="config.gettingStartedBasic">${esc(t('config.gettingStartedBasic'))}</p>
+    <button class="tbtn primary" data-i18n="config.gettingStartedCreateNote" data-pending-label="Creating…" onclick="createGettingStartedNote(this)">${esc(t('config.gettingStartedCreateNote'))}</button>
+    <details><summary data-i18n="config.gettingStartedOptional">${esc(t('config.gettingStartedOptional'))}</summary>
+      <p>${esc(presentation.text)}</p>
+      <button class="tbtn" onclick="mcpSetupAction(this)">${esc(presentation.label)}</button>
+      ${mcpGuideDeferred && data?.firstRunGuide?.visible ? `<button class="tbtn" onclick="resumeIntegrationGuide()">${esc(t('config.setupResume'))}</button>` : ''}
+      <p data-i18n="config.setupPythonExplanation">${esc(t('config.setupPythonExplanation'))}</p>
+      ${presentation.kind === 'python' ? `<p><span data-i18n="config.setupInstallHint">${esc(t('config.setupInstallHint'))}</span> <a href="https://www.python.org/downloads/">${esc(t('config.setupInstallPython'))}</a></p>` : ''}
+      <p data-i18n="config.setupClientExplanation">${esc(t('config.setupClientExplanation'))}</p>
+    </details>
+  </section>`;
+}
+function mcpRuntimeProgressHtml(data) {
+  const automatic = data?.automaticSetup || {};
+  const progress = automatic.progress || mcpRuntimeProgressCache;
+  const text = automatic.state === 'error' || automatic.state === 'action-required' ? automatic.error || 'Setup needs attention.'
+    : progress?.text || (automatic.state === 'running' ? 'Preparing optional MCP; waiting for the next setup observation…' : mcpSetupPresentation(data).text);
+  const elapsed = Number.isFinite(progress?.startedAt) ? Math.max(0, Math.floor(((progress.updatedAt || Date.now()) - progress.startedAt) / 1000)) : null;
+  const needsAction = ['error','action-required'].includes(automatic.state) || data?.mcpRuntime?.healthy === false && automatic.state !== 'running';
+  const guidance = needsAction ? problemGuidanceHtml(text,
+    helpText('Check the phase and output below. Select a valid base Python before creating or repairing the managed runtime. Review active clients first; never repeat uncertain writes.',
+      '查看当前阶段和下方输出。创建或修复托管环境前先选择有效的基础 Python，并审查正在使用它的客户端；不要重复结果不确定的写入。'),
+    `<button class="tbtn" onclick="openMcpSetup('python')">${esc(t('config.setupChoosePython'))}</button><button class="tbtn" onclick="openMcpSetup('lifecycle')">${esc(helpText('Review active clients','查看活动客户端'))}</button>`, 'setup') : '';
+  return `<div role="status" aria-live="polite" aria-atomic="true"><strong>${esc(progress?.phase || automatic.state || 'Not checked')}</strong> · ${esc(text)}${elapsed === null ? '' : ` <small>(${elapsed}s observed)</small>`}</div>${guidance}${progress?.output ? `<details open><summary>Latest setup output</summary><pre class="mcp-progress-output">${esc(String(progress.output).slice(-6000))}</pre></details>` : ''}`;
 }
 
 function renderSkillRouterField(data) {
@@ -261,11 +363,9 @@ function renderMcpDashboard(data) {
   const processLabel = status.process.running ? `Running${status.process.pid ? ` · PID ${status.process.pid}` : ''}` : status.ready ? 'Ready · starts on demand' : 'Setup required';
   const processLabelKey = status.process.running ? status.process.pid ? 'config.runningPid' : 'config.running' : status.ready ? 'config.readyOnDemand' : 'config.setupRequired';
   const automatic = data?.automaticSetup || { state: 'idle', error: '' };
-  const automaticReady = automatic.state === 'ready' && status.runtime.healthy && data?.current;
-  const automaticDetail = automatic.state === 'error' ? automatic.error || 'Automatic setup needs attention.'
-    : automatic.state === 'running' ? 'Creating or updating the runtime, server, and retrieval index…'
-    : automaticReady ? 'Runtime, server code, dependencies, and retrieval index are current.'
-    : 'PKM will finish this automatically.';
+  const automaticReady = automatic.state === 'ready' && status.ready;
+  const presentation = mcpSetupPresentation(data);
+  const automaticDetail = presentation.text;
   const externalLink = data?.externalLink || { options: [], selected: '', unavailable: false, contentPort: 39502 };
   const externalOptions = (externalLink.options || []).map(item => `<option value="${esc(item.address)}" ${item.address === externalLink.selected ? 'selected' : ''}>${esc(item.label || item.address)}</option>`).join('');
   const unavailableOption = externalLink.unavailable ? `<option value="${esc(externalLink.selected)}" selected disabled>Unavailable · ${esc(externalLink.selected)}</option>` : '';
@@ -276,14 +376,17 @@ function renderMcpDashboard(data) {
     ['Recipe runtime', data?.installedRecipeVersion ? `v${data.installedRecipeVersion}` : 'Missing', `v${data?.recipeVersion || '?'}`, data?.installedRecipeVersion === data?.recipeVersion, '<span class="mcp-no-action">Automatic</span>'],
     ['Agent Session runtime', data?.installedAgentSessionVersion ? `v${data.installedAgentSessionVersion}` : 'Missing', `v${data?.agentSessionVersion || '?'}`, data?.installedAgentSessionVersion === data?.agentSessionVersion, '<span class="mcp-no-action">Automatic</span>'],
   ];
+  for (const row of rows) {
+    if (!row[3]) row[4] = `<button class="tbtn" onclick="openMcpSetup('server')">${esc(helpText('Review component setup','查看组件配置'))}</button>`;
+  }
   const setup = [
-    [status.store.valid, 'Knowledge location', status.store.valid ? status.store.path : 'Choose where this machine stores PKM Markdown files.', '<span class="mcp-no-action">Chosen at startup</span>'],
-    [!!data?.mcpPython?.valid, 'Python 3.10+', data?.mcpPython?.valid ? `${data.mcpPython.path} · ${data.mcpPython.version}` : 'Select and validate a Python executable.', '<button class="tbtn" onclick="document.getElementById(\'mcp-python-path\')?.scrollIntoView({behavior:\'smooth\'})">Choose Python</button>'],
-    [automaticReady, 'Automatic integration', automaticDetail, automatic.state === 'error' ? '<button class="tbtn" data-pending-label="Retrying…" onclick="beginMcpUiAction(\'checkMcp\',{},this)">Retry</button>' : `<span class="mcp-no-action">${automatic.state === 'running' ? 'Working…' : automaticReady ? 'Ready' : 'Automatic'}</span>`],
+    [status.store.valid, 'Knowledge location', status.store.valid ? status.store.path : 'Choose where this machine stores PKM Markdown files.', status.store.valid ? '<span class="mcp-no-action">Configured</span>' : `<button class="tbtn" onclick="beginMcpUiAction('reconfigureKnowledgeRoot',{},this)">${esc(helpText('Choose Knowledge Root','选择知识目录'))}</button>`],
+    [!!data?.mcpPython?.valid, 'Python 3.10+', data?.mcpPython?.valid ? `${data.mcpPython.path} · ${data.mcpPython.version}` : 'Select and validate a Python executable.', '<button class="tbtn" onclick="openMcpSetup(\'python\')">Choose Python</button>'],
+    [automaticReady, 'Automatic integration', automaticDetail, `<button class="tbtn" data-pending-label="Checking…" onclick="mcpSetupAction(this)">${esc(presentation.label)}</button>`],
     [!!data?.accountBinding, 'Account binding (not client discovery)', data?.accountBinding ? `VS Code owner: ${data.accountBinding.registrationOwner}. ~/.pkm/mcp-binding.json is not a client registration. Verify each client separately.` : 'Complete account-level PKM setup.', '<button class="tbtn" onclick="beginMcpUiAction(\'configureNativeMcpDiscovery\',{},this)">Configure PKM MCP...</button>'],
   ];
   return `<section class="mcp-dashboard">
-    <div class="mcp-dashboard-head"><div><h2>PKM Integration Status</h2><p>Server runtime and generated schemas are versioned independently.</p></div><div class="mcp-running">${mcpStatusLight(processKind, processLabel, processLabelKey, { pid: status.process.pid || '' })}<button class="tbtn" data-pending-label="Refreshing…" onclick="beginMcpUiAction('checkMcp',{},this)" title="Refresh process and version status" aria-label="Refresh process and version status">${uiIcon('refresh')}</button></div></div>
+    <div class="mcp-dashboard-head"><div><h2>PKM Integration Status</h2><p>Server runtime and generated schemas are versioned independently.</p></div><div class="mcp-running">${mcpStatusLight(processKind, processLabel, processLabelKey, { pid: status.process.pid || '' })}<button class="tbtn" data-pending-label="Refreshing…" onclick="beginMcpUiAction('mcpStatus',{},this)" title="Refresh process and version status" aria-label="Refresh process and version status">${uiIcon('refresh')}</button></div></div>
     <div class="mcp-runtime-note" ${status.process.detail === 'Generated server process detected.' ? 'data-i18n="config.processDetected"' : ''}>${esc(status.process.detail || '')}${!status.process.running && status.ready ? ' <span data-i18n="config.onDemandHelp">Stdio MCP servers start when an MCP client requests pkm; use MCP: List Servers to start it manually.</span>' : ''}</div>
     ${renderSkillRouterField(data)}
     <div class="mcp-paths"><div class="mcp-paths-head"><h3>External links</h3></div>
@@ -298,7 +401,7 @@ function renderMcpDashboard(data) {
           <tr><td>Knowledge root</td><td><code title="${esc(paths.store || '')}">${esc(paths.store || 'Not configured')}</code><div class="pkm-skill-detail">${esc(data?.store?.host ? `machine-local · ${data.store.host}` : 'machine-local')}</div>${data?.store?.cloudSynchronized ? `<div class="mcp-cloud-root-warning">${uiIcon('warning')} ${esc(data.store.cloudSynchronized.provider)} can cause file locks and permission races. GitHub Sync already provides cross-machine sync; move this root to a normal local folder.</div>` : ''}</td><td data-mcp-path-size="store">Not calculated</td><td><button class="tbtn" data-pending-label="Reconfiguring…" onclick="beginMcpUiAction('reconfigureKnowledgeRoot',{},this)" title="Choose a different machine-local Knowledge Root">${uiIcon('settings-gear', 'Reconfigure')}</button></td></tr>
           <tr><td>Environments root</td><td><code title="${esc(paths.environments || '')}">${esc(paths.environments || 'Not configured')}</code><div class="pkm-skill-detail">Machine-local storage for migrated/created conda, venv, uv environments and the managed pkm-mcp runtime. This directory can grow very large.</div></td><td data-mcp-path-size="environments">Not calculated</td><td><button class="tbtn" data-pending-label="Reconfiguring…" onclick="beginMcpUiAction('reconfigureEnvironmentsRoot',{},this)" title="Choose where managed environments are stored on this machine">${uiIcon('settings-gear', 'Reconfigure')}</button></td></tr>
           <tr><td>Managed MCP runtime</td><td><code title="${esc(paths.runtime || '')}">${esc(paths.runtime || 'Not created')}</code><div class="pkm-skill-detail">Machine-local virtual environment; reconfiguration rebuilds it at the new path.</div></td><td data-mcp-path-size="runtime">Not calculated</td><td><button class="tbtn" data-pending-label="Rebuilding…" onclick="beginMcpUiAction('reconfigureMcpRuntimePath',{},this)">${uiIcon('settings-gear', 'Reconfigure & Rebuild')}</button></td></tr>
-          <tr><td>MCP Base Python</td><td><code title="${esc(paths.python || '')}">${esc(paths.python || 'Not configured')}</code><div class="pkm-skill-detail">Machine-local Python executable used to build the managed runtime.</div></td><td data-mcp-path-size="python">Not calculated</td><td><button class="tbtn" onclick="document.getElementById('mcp-python-path')?.scrollIntoView({behavior:'smooth'})">${uiIcon('settings-gear', 'Configure & Rebuild')}</button></td></tr>
+          <tr><td>MCP Base Python</td><td><code title="${esc(paths.python || '')}">${esc(paths.python || 'Not configured')}</code><div class="pkm-skill-detail">Machine-local Python executable used to build the managed runtime.</div></td><td data-mcp-path-size="python">Not calculated</td><td><button class="tbtn" onclick="openMcpSetup('python')">${uiIcon('settings-gear', 'Configure & Rebuild')}</button></td></tr>
           <tr><td>MCP server directory</td><td><code title="${esc(paths.serverDirectory || '')}">${esc(paths.serverDirectory || 'Not generated')}</code><div class="pkm-skill-detail">Machine-local generated server code; reconfiguration regenerates all files.</div></td><td data-mcp-path-size="serverDirectory">Not calculated</td><td><button class="tbtn" data-pending-label="Regenerating…" onclick="beginMcpUiAction('reconfigureMcpServerPath',{},this)">${uiIcon('settings-gear', 'Reconfigure & Regenerate')}</button></td></tr>
         </tbody>
       </table></div>
@@ -354,7 +457,7 @@ function renderMcpPane(data) {
         Configure the external runtimes and Agent integrations used by Personal Knowledge Manager.
       </p>
       <div id="mcp-completion-slot">${mcpCompletionNotice ? `<div id="mcp-completion-notice" role="status" style="margin-bottom:14px;padding:9px 11px;border:1px solid #4ade8066;border-radius:6px;background:#4ade8012;color:#4ade80;font-size:11px">${uiIcon('check')} ${esc(mcpCompletionNotice)}</div>` : ''}</div>
-      <section data-settings-panel="general">${renderMcpDashboard(data)}
+      <section data-settings-panel="general">${renderGettingStarted(data)}${renderMcpDashboard(data)}
         <div class="mcp-paths-head"><h3>Optional Action toolchains</h3><button class="tbtn" onclick="ask('actionToolchainsConfigure',{},this)">${uiIcon('settings-gear', 'Configure toolchains')}</button></div>
       </section>
       <section data-settings-panel="access">${renderMcpFeatureDomains(data)}</section>
@@ -394,7 +497,7 @@ function renderMcpPane(data) {
           <button class="tbtn" data-pending-label="${runtime.exists ? 'Repairing…' : 'Creating…'}" onclick="beginMcpUiAction('mcpRepairRuntime',{},this)" ${python.valid ? '' : 'disabled'}>${runtime.exists ? 'Repair / Reinstall' : 'Create Runtime'}</button>
         </div>
         <div style="font-size:10px;color:var(--muted);margin-top:6px;overflow-wrap:anywhere">${esc(runtime.python || runtime.path || '')}${runtime.version ? ' · Python ' + esc(runtime.version) : ''} · ${runtime.registered ? 'Registered in PKM Envs' : 'Not registered'}</div>
-        <div id="mcp-runtime-status" ${runtime.healthy || !runtime.error ? `data-i18n="${runtime.healthy ? 'config.runtimeDedicatedDescription' : 'config.runtimeCreateDescription'}"` : ''} style="font-size:11px;color:${runtime.healthy ? 'var(--muted)' : '#f4b400'};margin-top:5px">${esc(runtime.healthy ? 'The unified pkm server uses this dedicated environment.' : runtime.error || 'Create the runtime before generating MCP configuration.')}</div>
+        <div id="mcp-runtime-status" tabindex="-1" style="font-size:11px;color:var(--vscode-descriptionForeground);margin-top:5px">${mcpRuntimeProgressHtml(data)}</div>
       </div>
       <div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:20px;font-size:12px;color:var(--muted);line-height:1.7">
         <div style="font-weight:600;color:var(--text);margin-bottom:6px" data-i18n="config.whyTitle">Why run this?</div>
@@ -557,8 +660,14 @@ function renderMcpPythonResult(data) {
     status.style.color = data?.valid ? '#4ade80' : '#f87171';
     status.innerHTML = data?.valid ? `${uiIcon('check')} Python ${esc(data.version)} validated${data.saved ? ' and saved' : '. Click Validate & Save to use it.'}` : `${uiIcon('error')} ${esc(data?.error || 'Invalid Python executable.')}`;
   }
-  if (data?.saved) {
-    completeMcpUiAction('Python configured and managed MCP runtime is ready.');
+  if (data?.saved && data?.valid) {
+    if (data.runtime?.healthy) {
+      if (!mcpStatusCache) mcpStatusCache = {};
+      mcpStatusCache.mcpPython = data;
+      mcpStatusCache.mcpRuntime = data.runtime;
+      completeIntegrationGuide();
+      completeMcpUiAction('Python configured and managed MCP runtime is ready. Client discovery is verified separately.');
+    } else completeMcpUiAction('Python validated and saved. Checking managed runtime setup…');
     setTimeout(() => ask('checkMcp', {}), 200);
   }
 }
@@ -613,15 +722,22 @@ function selectMcpPythonCandidate(select) {
 }
 
 function renderMcpRuntimeProgress(data) {
+  mcpRuntimeProgressCache = { ...data, output:String(data?.output || '').slice(-6000) };
+  if (!mcpStatusCache) mcpStatusCache = {};
+  const terminalState = ['error','action-required','ready'].includes(data?.phase) ? data.phase : 'running';
+  mcpStatusCache.automaticSetup = { ...mcpStatusCache.automaticSetup, state:terminalState, error:['error','action-required'].includes(terminalState) ? data.text : '', progress:mcpRuntimeProgressCache };
+  updateGlobalMcpWarning(mcpStatusCache);
   const status = document.getElementById('mcp-runtime-status');
-  if (!status) return;
-  status.style.color = '#f4b400';
-  status.textContent = data?.text || 'Working…';
+  if (status) status.innerHTML = mcpRuntimeProgressHtml(mcpStatusCache);
 }
 
 function renderMcpRuntimeResult(data) {
+  if (!mcpStatusCache) mcpStatusCache = {};
+  mcpRuntimeProgressCache = { ...mcpRuntimeProgressCache, phase:data?.ok ? 'runtime-ready' : 'error', text:data?.ok ? 'Managed runtime is healthy; checking server and client configuration separately.' : data?.error || 'Managed runtime setup failed.' };
+  mcpStatusCache.automaticSetup = { ...mcpStatusCache.automaticSetup, state:data?.ok ? 'idle' : 'error', error:data?.ok ? '' : mcpRuntimeProgressCache.text, progress:mcpRuntimeProgressCache };
+  updateGlobalMcpWarning(mcpStatusCache);
   const status = document.getElementById('mcp-runtime-status');
-  if (data?.ok) { if (status) { status.style.color = '#4ade80'; status.innerHTML = `${uiIcon('check')} Managed runtime is healthy and registered in PKM Envs.`; } completeMcpUiAction('Managed MCP runtime is healthy and registered.'); setTimeout(() => ask('checkMcp', {}), 200); return; }
+  if (data?.ok) { if (data.runtime?.healthy) { mcpStatusCache.mcpRuntime = data.runtime; completeIntegrationGuide(); } if (status) status.innerHTML = mcpRuntimeProgressHtml(mcpStatusCache); completeMcpUiAction('Managed MCP runtime is healthy. Client discovery is not yet verified.'); setTimeout(() => ask('checkMcp', {}), 200); return; }
   if (!status) return;
   const commands = data?.commands || [];
   window._mcpManualCommands = commands.join('\n');
@@ -633,7 +749,6 @@ function renderMcpRuntimeResult(data) {
 
 function saveMcpPython(button) {
   const path = document.getElementById('mcp-python-path')?.value.trim() || '';
-  if (path && document.getElementById('pkm-first-run-guide')?.dataset.step === 'python') completeIntegrationGuide();
   beginMcpUiAction('mcpSetPython', { path }, button);
 }
 

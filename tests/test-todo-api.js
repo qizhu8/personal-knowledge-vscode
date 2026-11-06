@@ -70,6 +70,32 @@ test("categorized Todo CRUD preserves kinds, structure, audit and pagination",t=
   assert.throws(()=>callTodoApi("get_board",{board_slug:"../Team/Board"},actor),/safe Board/);
 });
 
+test("blocked verification schema and API retain reports without implying execution or acceptance",t=>{
+  const {read,write}=fixture(t);
+  for(const name of ["submit_workitem_result","change_workitem_state"]){
+    const schema=todoApiDefinitions.find(api=>api.name===name).parameters.properties.verification.items;
+    assert(schema.properties.status.enum.includes("blocked"),`${name} advertises blocked verification`);
+  }
+  write("add_workitem",{item:item("blocked-report")});
+  write("claim_workitem",{id:"blocked-report"});
+  const verification=[
+    {layer:"unit",status:"failed",evidence:["fixture://failure"],reason:"Prior failure"},
+    {layer:"functional",status:"blocked",evidence:["fixture://unavailable"],reason:"  Dependency unavailable\nRaw detail  "},
+    {layer:"e2e",status:"blocked",evidence:[]},
+  ];
+  const result=write("submit_workitem_result",{id:"blocked-report",outcome:"Unsure",evidence:["fixture://reported-outcome"],verification});
+  assert.deepEqual(result.item.verification,verification);
+  assert.equal(result.item.status,"completed");
+  assert.equal(result.item.outcome,"Unsure");
+  assert.equal(result.item.acceptanceDecision,undefined);
+  assert.deepEqual(read("get_workitem",{id:"blocked-report"}).item.verification,verification);
+  write("reopen_workitem",{id:"blocked-report",reason:"A new attempt, not a new verification"});
+  const reopened=read("get_workitem",{id:"blocked-report"}).item;
+  assert.deepEqual(reopened.verification,verification);
+  assert.equal(reopened.outcome,undefined);
+  assert.equal(reopened.acceptanceDecision,undefined);
+});
+
 test("task execution API is identity-bound, dependency-aware and separate from acceptance",t=>{
   const {read,write}=fixture(t);
   write("add_workitem",{item:item("first")});
@@ -104,6 +130,24 @@ test("task execution API is identity-bound, dependency-aware and separate from a
   assert.equal(read("get_workitem",{id:"dependent"}).item.ownerId,undefined);
   write("reopen_workitem",{id:"first",reason:"New requirement"});
   assert.equal(read("get_workitem",{id:"first"}).item.acceptanceDecision,undefined);
+});
+
+test("named native/MCP contracts preserve and explicitly clear presentation, collaboration and monitoring fields",t=>{
+  const {read,write,digest}=fixture(t);
+  const metadata={description:"Detailed contract",icon:"eye",collaboratorIds:[other],monitoring:{endCondition:"Three samples recorded"}};
+  write("add_workitem",{item:item("monitor",metadata)});
+  assert.deepEqual(read("get_workitem",{id:"monitor"}).item.monitoring,metadata.monitoring);
+  assert(read("list_agents").items.some(entry=>entry.id===other));
+  const before=digest();
+  assert.throws(()=>write("update_workitem",{id:"monitor",patch:{monitoring:{}},reason:"Unbounded monitoring"}),/Monitoring requires/);
+  assert.equal(digest(),before);
+  write("update_workitem",{id:"monitor",patch:{monitoring:{until:"2020-01-01T00:00:00Z"}},reason:"Use an explicit historical observation window"});
+  assert.equal(read("get_workitem",{id:"monitor"}).item.state,"Planning","deadline passes do not schedule or complete");
+  write("update_workitem",{id:"monitor",patch:{},clear_fields:["monitoring","collaboratorIds","description","icon"],reason:"Explicitly return to an ordinary task"});
+  const current=read("get_workitem",{id:"monitor"}).item;
+  for(const field of Object.keys(metadata))assert.equal(current[field],undefined);
+  const definition=todoApiDefinitions.find(api=>api.name==="add_workitem").parameters.properties.item.properties;
+  for(const field of Object.keys(metadata))assert(definition[field],"same schema advertised to native and capability/MCP dispatch");
 });
 
 test("one Active task requires an explicit hold/completion/deferral choice across Boards",t=>{

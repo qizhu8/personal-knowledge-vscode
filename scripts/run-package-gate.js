@@ -15,7 +15,7 @@ const python = process.env.PYTHON || "python";
 const groups = {
   "note-todo": [[node, "--test", "tests/test-note-work-items.js", "tests/test-note-work-item-lifecycle.js",
     "tests/test-note-user-stories.js", "tests/test-note-todo-tools.js", "tests/test-note-todo-host.js", "tests/test-note-todo-browser.js",
-    "tests/test-note-todo-browser-preview.js", "tests/test-todo-board.js", "tests/test-todo-board-browser.js", "tests/test-todo-management.js", "tests/test-todo-api.js", "tests/test-browser-markdown-preview.js", "tests/test-browser-library.js"],
+    "tests/test-note-todo-browser-preview.js", "tests/test-todo-board.js", "tests/test-todo-board-browser.js", "tests/test-todo-management.js", "tests/test-note-tracking-e2e.js", "tests/test-work-item-progress.js", "tests/test-todo-api.js", "tests/test-browser-markdown-preview.js", "tests/test-browser-library.js"],
     [python, "-B", "tests/test-todo-api-mcp.py"], [python, "-B", "tests/test-capability-mcp.py"], [node, "--test", "tests/test-capability-registry.js", "tests/test-capability-native.js", "tests/test-capability-memory.js"]],
   "action-builtins": [[python, "-B", "tests/test-action-builtins.py"]],
   "action-component-languages": [[python, "-B", "tests/test-action-component-languages.py"]],

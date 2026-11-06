@@ -29,10 +29,13 @@ def trash_file(store, area, relative, node, extension_root, expected_sha256=None
     request = {"operation": "trash", "area": area, "path": relative}
     if expected_sha256:
         request["expectedSha256"] = expected_sha256
-    result = subprocess.run(
-        [str(node), str(helper), str(extension_root), str(store)],
-        input=json.dumps(request), text=True, capture_output=True, check=True,
-        env={**os.environ, "ELECTRON_RUN_AS_NODE": "1"})
+    try:
+        result = subprocess.run(
+            [str(node), str(helper), str(extension_root), str(store)],
+            input=json.dumps(request), text=True, capture_output=True, check=True,
+            env={**os.environ, "ELECTRON_RUN_AS_NODE": "1"})
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f"Knowledge Trash rejected: {error.stderr.strip()}") from error
     return json.loads(result.stdout)
 
 def register_knowledge_mutation_tools(mcp, store, node, extension_root, memory_config=None):

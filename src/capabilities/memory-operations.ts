@@ -1,8 +1,12 @@
 import { MemoryEngineClient, MemoryEngineRequestError, type MemoryEngineClientOptions } from "../memory/memory-engine-client";
-import { ExplicitMemoryService, ExplicitMemoryValidationError, type ExplicitMemoryHostAuthorizer } from "../memory/explicit-memory-service";
+import { ExplicitMemoryService, ExplicitMemoryValidationError, type ExplicitMemoryHostAuthorizer, type ExplicitMemoryRecord } from "../memory/explicit-memory-service";
 import { memoryCapabilities, repositoryMemoryScope } from "./memory-contract";
 import { CapabilityError, validateCapabilityInput } from "./registry";
 
+export function executeMemoryOperation(options: MemoryEngineClientOptions, root: string, operation: "memory_record_get",
+  args: Record<string, unknown>, authorize?: ExplicitMemoryHostAuthorizer): Promise<ExplicitMemoryRecord & Record<string, unknown>>;
+export function executeMemoryOperation(options: MemoryEngineClientOptions, root: string, operation: string,
+  args: Record<string, unknown>, authorize?: ExplicitMemoryHostAuthorizer): Promise<Record<string, unknown>>;
 export async function executeMemoryOperation(options: MemoryEngineClientOptions, root: string, operation: string,
   args: Record<string, unknown>, authorize: ExplicitMemoryHostAuthorizer = () => null): Promise<Record<string, unknown>> {
   const definition = memoryCapabilities.find(item => item.transportName === operation);

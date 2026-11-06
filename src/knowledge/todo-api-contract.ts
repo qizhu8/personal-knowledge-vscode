@@ -1,5 +1,8 @@
+import { workItemIcons } from "./note-work-items";
+
 export const todoStateNames = { todo:"Planning", active:"WIP", blocked:"Blocked", "on-hold":"OnHold", completed:"Done" } as const;
-export const todoDetailFields = ["title", "goal", "scope", "acceptance", "projectId", "dependsOn", "plannedStart", "plannedEnd", "links"];
+export const todoDetailFields = ["title", "goal", "scope", "acceptance", "projectId", "dependsOn", "plannedStart", "plannedEnd", "links",
+  "description", "icon", "collaboratorIds", "monitoring"];
 const string = { type:"string", minLength:1, maxLength:1024 };
 const paging = { offset:{ type:"integer", minimum:0 }, limit:{ type:"integer", minimum:1, maximum:100 } };
 const board = { board_slug:string };
@@ -11,6 +14,9 @@ const strings = { type:"array", items:{ type:"string", minLength:1 }, maxItems:1
 const details = {
   title:string, goal:{ type:"string", minLength:1, maxLength:16000 }, scope:{ type:"string", minLength:1, maxLength:16000 },
   acceptance:strings, projectId:string, dependsOn:strings, plannedStart:string, plannedEnd:string, links:strings,
+  description:{ type:"string", minLength:1, maxLength:16000 }, icon:{ type:"string", enum:workItemIcons },
+  collaboratorIds:{ ...strings, maxItems:20 },
+  monitoring:{ type:"object", properties:{ until:string, endCondition:{ type:"string", minLength:1, maxLength:8000 } }, additionalProperties:false },
 };
 const patch = { type:"object", properties:{ ...details, storyStatus:{ type:"string", enum:["draft", "confirmed"] } }, additionalProperties:false };
 const newItem = { type:"object", properties:{ id:string, ...details, parentId:string, storyStatus:{ type:"string", enum:["draft", "confirmed"] } },
@@ -18,7 +24,7 @@ const newItem = { type:"object", properties:{ id:string, ...details, parentId:st
 const state = { type:"string", enum:Object.keys(todoStateNames) };
 const resultFields = { outcome:{ type:"string", enum:["Success", "Failed", "Unsure"] }, evidence:strings,
   verification:{ type:"array", maxItems:3, items:{ type:"object", properties:{
-    layer:{ type:"string", enum:["unit", "functional", "e2e"] }, status:{ type:"string", enum:["passed", "failed", "not-run", "not-applicable"] },
+    layer:{ type:"string", enum:["unit", "functional", "e2e"] }, status:{ type:"string", enum:["passed", "failed", "blocked", "not-run", "not-applicable"] },
     evidence:strings, reason:string,
   }, required:["layer", "status", "evidence"], additionalProperties:false } } };
 
@@ -40,7 +46,7 @@ export const todoApiDefinitions = [
   definition("list_userstories", true, "List User Stories with state and child counts.", { ...board, ...paging, ...filters, ...version }, ["board_slug"]),
   definition("get_userstory", true, "Read Story high-level contract and paginated children, including completed tasks.", { ...identity, ...paging, include_deleted:{ type:"boolean" } }, ["board_slug", "id"]),
   definition("list_agents", true, "List actual PKM Chat names/IDs/URLs and recorded external owner IDs for this Board; assignment starts no Agent.", { ...board, ...paging, query:string }, ["board_slug"]),
-  definition("add_workitem", false, "Create a Planning task. item contains id/title/goal/scope/acceptance and optional parentId/schedule/dependencies.", { ...board, ...version, item:newItem }, ["board_slug", "expected_digest", "item"]),
+  definition("add_workitem", false, "Create a Planning task. Optional description/icon/collaboratorIds grant no ownership or permissions. Explicit monitoring requires until (UTC timestamp) or endCondition; no scheduler or automatic completion.", { ...board, ...version, item:newItem }, ["board_slug", "expected_digest", "item"]),
   definition("update_workitem", false, "Patch task contract/schedule/dependencies. clear_fields removes optional metadata; state/owner/audit use dedicated APIs. reason is required.", { ...writeIdentity, patch, clear_fields:strings, ...reason }, [...writeRequired, "patch", "reason"]),
   definition("delete_workitem", false, "Soft-delete task with reason; reject live dependent references. Audit remains.", { ...writeIdentity, ...reason }, [...writeRequired, "reason"]),
   definition("restore_workitem", false, "Restore deleted task with reason; parent and dependencies must be live.", { ...writeIdentity, ...reason }, [...writeRequired, "reason"]),

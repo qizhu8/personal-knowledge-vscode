@@ -97,7 +97,7 @@ test("registry preserves additive attribution but legacy/malformed metadata neve
 test("source UI renders escaped reported attribution and honest legacy/shared boundaries", () => {
   const vm = require("node:vm");
   const source = fs.readFileSync(path.resolve(__dirname, "../src/webview/panel/50-mcp.js"), "utf8");
-  const context = vm.createContext({ esc: value => String(value).replace(/</g, "&lt;").replace(/>/g, "&gt;") });
+  const context = vm.createContext({ vscode:{getState:()=>({})}, esc: value => String(value).replace(/</g, "&lt;").replace(/>/g, "&gt;") });
   vm.runInContext(source, context);
   assert.match(context.mcpLaunchAttributionHtml(undefined, true), /unverified.*legacy/);
   assert.match(context.mcpLaunchAttributionHtml({ schema: attribution.MCP_ATTRIBUTION_SCHEMA,
@@ -144,6 +144,8 @@ function fixture(t) {
   const extension = path.join(root, "extension");
   fs.mkdirSync(path.join(extension, "dist", "knowledge"), { recursive: true });
   fs.mkdirSync(path.join(extension, "resources"), { recursive: true });
+  fs.mkdirSync(path.join(extension, "modules/pkm-memory-engine/src/pkm_memory_engine"), { recursive: true });
+  fs.writeFileSync(path.join(extension, "modules/pkm-memory-engine/src/pkm_memory_engine/__init__.py"), 'IDENTITY = "immutable-memory"\n');
   fs.writeFileSync(path.join(extension, "dist", "knowledge", "filestore.js"), 'module.exports = { build: "fixture-build" };');
   fs.writeFileSync(path.join(extension, "resources", "helper.js"), "module.exports = true;");
   fs.writeFileSync(path.join(extension, "package.json"), '{"version":"5.0.0"}');
@@ -157,7 +159,10 @@ function stage(managed, extension, fail = false) {
       fs.writeFileSync(path.join(directory, "server.py"), `
 import json
 from pathlib import Path
-print(json.dumps({"generation": Path(__file__).parent.name, "runtime": (Path(__file__).parent / "runtime/dist/knowledge/filestore.js").read_text()}))
+import sys
+sys.path.insert(0, str(Path(__file__).parent / "runtime/modules/pkm-memory-engine/src"))
+import pkm_memory_engine
+print(json.dumps({"generation": Path(__file__).parent.name, "runtime": (Path(__file__).parent / "runtime/dist/knowledge/filestore.js").read_text(), "memory": pkm_memory_engine.IDENTITY}))
 `);
       if (fail) throw new Error("generation failed");
     }));
@@ -193,7 +198,8 @@ test("generation uses async bulk I/O, yields to heartbeats and holds ownership t
     const manifest = await first;
     await second;
     assert.equal(acquired, true);
-    assert.equal(Object.keys(manifest.files).length, 4);
+    assert.equal(Object.keys(manifest.files).length, 5);
+    assert(manifest.files["runtime/modules/pkm-memory-engine/src/pkm_memory_engine/__init__.py"]);
     assert.equal(lifecycle.readManagedMcpManifest(managed), undefined);
   } finally {
     release();
@@ -260,6 +266,7 @@ test("immutable runtime survives extension removal and launcher follows only com
   lifecycle.publishManagedMcpGeneration(managed, second);
   fs.renameSync(extension, path.join(root, "removed-extension"));
   assert.equal(launch().generation, second.generation);
+  assert.equal(launch().memory, "immutable-memory", "Memory remains importable after the installed extension is removed");
   assert.match(launch().runtime, /fixture-build/);
   assert(fs.existsSync(path.join(managed, "generations", first.generation, "runtime", "dist", "knowledge", "filestore.js")));
   const file = path.join(managed, "generations", second.generation, "runtime", "dist", "knowledge", "filestore.js");
@@ -284,6 +291,14 @@ test("successor handshake requires actual version, schemas, generation and Skill
     assert.equal(lifecycle.verifyManagedMcpHandshake(manifest, version, bad, tools).state, "incompatible");
   }
   assert.equal(lifecycle.verifyManagedMcpHandshake(manifest, version, runtime, tools.filter(name => name !== "update_skill")).state, "incompatible");
+  const bootstrap = ["check_version", "mcp_lifecycle_status", "mcp_lifecycle_quiesce", "capabilities_describe"];
+  const discovered = tools.filter(name => !bootstrap.includes(name)).map(name => ({
+    id:`mcp.tool.${name}`, version:1, revision:"a".repeat(64), inputSchema:{ type:"object" }, lifecycle:{ legacyAlias:name },
+  }));
+  assert.equal(lifecycle.verifyManagedMcpHandshake(manifest, version, runtime, bootstrap, discovered).state, "ready");
+  assert.equal(lifecycle.verifyManagedMcpHandshake(manifest, version, runtime, bootstrap, discovered.slice(1)).state, "incompatible");
+  assert.equal(lifecycle.verifyManagedMcpHandshake(manifest, version, runtime, bootstrap,
+    discovered.map((item, index) => index ? item : { ...item, revision:"b".repeat(64) })).state, "incompatible");
   assert.equal(lifecycle.verifyManagedMcpHandshake(manifest, version, undefined, tools).state, "reconnect-required");
 });
 
@@ -308,6 +323,28 @@ test("connected handshake rejects control changes and discovery failure without 
   assert.deepEqual(calls.sort(), ["check_version", "mcp_lifecycle_status"]);
   assert.equal((await lifecycle.handshakeManagedMcpConnection(managed, async () => { throw new Error("connection lost"); }, tools)).state, "reconnect-required");
   assert.equal((await lifecycle.handshakeManagedMcpConnection(managed, () => new Promise(() => {}), tools, 10)).state, "reconnect-required");
+});
+
+test("compact managed handshake verifies exact deferred contracts and current lifecycle without invoking leaves", async t => {
+  const { managed, extension } = fixture(t);
+  const manifest = await stage(managed, extension);
+  lifecycle.publishManagedMcpGeneration(managed, manifest);
+  const tools = ["check_version", "mcp_lifecycle_status", "mcp_lifecycle_quiesce", "capabilities_describe"];
+  const version = { ...versions, capabilities:["managed-lifecycle-v1"], enabled_feature_domains:["knowledge", "automation"] };
+  const runtime = { ...versions, schema:lifecycle.MCP_LIFECYCLE_SCHEMA, generation:manifest.generation,
+    runtimeBuild:manifest.runtimeBuild, phase:"accepting", acceptingNewCalls:true };
+  const calls = [];
+  const result = await lifecycle.handshakeManagedMcpConnection(managed, async (name, args) => {
+    calls.push(name);
+    if (name === "check_version") return version;
+    if (name === "mcp_lifecycle_status") return runtime;
+    assert.equal(name, "capabilities_describe", "handshake must never invoke a leaf to prove availability");
+    const alias = args.operation.slice("mcp.tool.".length);
+    return { id:args.operation, version:1, revision:"a".repeat(64), inputSchema:{ type:"object" }, lifecycle:{ legacyAlias:alias } };
+  }, tools);
+  assert.equal(result.state, "ready");
+  assert.equal(calls.filter(name => name === "capabilities_describe").length, 8);
+  assert.equal(calls.filter(name => name === "mcp_lifecycle_status").length, 2);
 });
 
 test("compatible publication preserves legacy admission while new launchers select the latest runtime", async t => {
@@ -374,6 +411,7 @@ test("actual generated unified FastMCP performs Skill writes from owned runtime 
   // Use existing build outputs, never build or install dependencies from this test.
   fs.cpSync(path.join(repository, "dist"), path.join(extension, "dist"), { recursive: true });
   fs.cpSync(path.join(repository, "resources"), path.join(extension, "resources"), { recursive: true });
+  fs.cpSync(path.join(repository, "modules/pkm-memory-engine/src"), path.join(extension, "modules/pkm-memory-engine/src"), { recursive: true });
   const store = path.join(root, "store");
   fs.mkdirSync(store);
   const configuration = { mcpServerPath: managed, mcpRuntimePath: require("./dev-paths").testVenv };
@@ -398,17 +436,30 @@ async def main():
         tools = [tool.name for tool in await client.list_tools()]
         version = (await client.call_tool("check_version", {})).structured_content
         runtime = (await client.call_tool("mcp_lifecycle_status", {})).structured_content
+        deferred = []
+        for name in ["add_skill", "update_skill", "delete_skill", "knowledge_file_trash",
+                     "chat_capabilities", "chat_join", "chat_standby", "chat_post"]:
+            if name not in tools:
+                deferred.append((await client.call_tool("capabilities_describe", {"operation":"mcp.tool." + name})).structured_content)
         added = (await client.call_tool("add_skill", {"name":"owned-runtime", "content":"Original", "category":"Tests"})).structured_content
         updated = (await client.call_tool("update_skill", {"name":"owned-runtime", "content":"Updated through immutable runtime"})).structured_content
         assert added["ok"] and updated["ok"], (added, updated)
-        print(json.dumps({"version":version,"runtime":runtime,"tools":tools}))
+        memory = (await client.call_tool("capability_call", {
+            "operation":"memory.record.propose", "version":1,
+            "arguments":{"content":"Immutable Memory survives extension replacement.", "operation_id":"immutable-memory-proposal",
+                         "sources":[{"id":"fixture","chat":"fixture","revision":"r1","locator":"message/input"}]}})).structured_content["result"]
+        assert memory["status"] == "pending"
+        recalled = (await client.call_tool("capability_read", {
+            "operation":"memory.record.get", "version":1, "arguments":{"id":memory["id"]}})).structured_content["result"]
+        assert recalled["revision"] == memory["revision"]
+        print(json.dumps({"version":version,"runtime":runtime,"tools":tools,"deferred":deferred}))
 asyncio.run(main())
 `;
   const result = JSON.parse(execFileSync(require("./dev-paths").testPython, ["-c", script, generated.serverPath], {
     encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
   }));
-  assert.equal(lifecycle.verifyManagedMcpHandshake(manifest, result.version, result.runtime, result.tools).state, "ready");
+  assert.equal(lifecycle.verifyManagedMcpHandshake(manifest, result.version, result.runtime, result.tools, result.deferred).state, "ready");
   let connectManagedChatMcp;
   const originalLoad = Module._load;
   try {

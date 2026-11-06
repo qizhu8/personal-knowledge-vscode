@@ -36,7 +36,7 @@ import {
   knowledgeMoveToTrash, knowledgeTrashList, knowledgeTrashRestore, knowledgeTrashDelete, knowledgeTrashEmpty, KnowledgeTrashArea,
   noteList, noteSearch, noteGet, noteUpsert, noteDelete, slugExists, noteMove, noteMoveFolder, noteSetPinned, noteFolderPins, noteSetFolderPinned,
   noteExport, noteImport, saveNoteAsset,
-  noteWorkItemsRead, noteWorkItemCommand, noteWorkItemNotes, todoBoardCreate, todoBoardConversionPreview, todoBoardConvert, todoBoardGrantWorker,
+  noteWorkItemsRead, noteWorkItemCommand, noteWorkItemNotes, todoBoardCreate, todoBoardGrantWorker,
   paperList, paperSearch, paperGet, paperUpsert, paperDelete, paperMoveAllToTrash,
   migrateLegacyMyIdeasFolder,
   paperFacets, paperGraph, savePaperFile,
@@ -108,6 +108,7 @@ import { createRetrievalSnapshot } from "./retrieval/retrieval-snapshot";
 import { RetrievalWorkerManager, type RetrievalWorkerStatus } from "./retrieval/retrieval-worker";
 import { cloudSynchronizedPath, extensionHostDescription, isAbsoluteForPlatform, isForeignAbsolutePath, resolveMachineStorePath } from "./knowledge/store-path";
 import { loadLocaleCatalogs, loadLocaleManifest, localizedText, normalizeUiLanguage, resolveUiLanguage, UiLanguageSetting, uiLanguageSetting } from "./ui/localization";
+import { readHelpGuide } from "./ui/help-guide";
 import { decideInitialExperience, FEATURE_TOUR_MODULES, minorRelease } from "./ui/onboarding-experience";
 import { AiBackend, aiSummarizeScript, listAiBackends, runAiPrompt, scriptCacheDir } from "./ai/ai";
 import { registerApiChatShell, setChatStartupTrace } from "./chat/api-chat-shell";
@@ -120,11 +121,12 @@ import { actionRequest, initializeActionCommands, openActionLibrary, openActionW
 import { createNativeHarnessServer } from "./runtime/native-harness-server";
 import { readHarnessActions } from "./runtime/native-harness-actions";
 import { projectCockpits } from "./workflows/project-cockpit";
+import { inspectWorkItem, projectWorkItemProgress, WorkItemReference } from "./knowledge/work-item-progress";
 import { handleProjectCockpitRequest, promoteChatProject, actionRunProject } from "./workflows/project-cockpit-host";
 import { agentSessionOrigin, apiChatGroupSnapshots, apiChatSessionHarnessSnapshot, verifyHarnessArtifacts } from "./chat/api-chat-store";
 import {
   cancelMcpPythonScan, combinedMcpRegistry,
-  configuredMcpFeatureDomains, detectMcpPython, ensureMcpRuntime, generateMcpServer, MCP_FEATURE_DOMAINS, McpFeatureDomain,
+  configuredMcpFeatureDomains, detectMcpPython, ensureMcpRuntime as ensureMcpRuntimeWithProgress, McpRuntimeProgress, generateMcpServer, MCP_FEATURE_DOMAINS, McpFeatureDomain,
   managedMcpRuntimePath, managedMcpServerDirectory, mcpProcessStatus, mcpRuntimeManualCommands, mcpRuntimeStatus, mcpRuntimeStatusAsync, warmMcpPythonProbes, mcpServerDefinitionData, mcpStatus, streamMcpPythonCandidates,
   resolveMcpPython, validateMcpPython, writeMcpFeatureDomainConfig, writeActionWorkspaceConfig, trashKnowledgeFileViaMcp,
 } from "./mcp/mcp";
@@ -663,20 +665,52 @@ async function sweepEnvSizes(respond: (m: any) => void): Promise<void> {
   if (!missing.length) return;
   _sizeSweeping = true;
   try {
-    for (const e of missing) { try { await pyenvSize(e.id, true); } catch { /* ignore */ } }
+    for (const e of missing) await refreshEnvironmentSize(e.id);
     respond({ command: "envList", data: envListForUi() });
   } finally { _sizeSweeping = false; }
 }
 
 // Fast background sweep to detect Python versions for envs missing one.
 let _verSweeping = false;
+const environmentProbeErrors = new Map<string, string>();
+const environmentSizeProbeErrors = new Map<string, string>();
+async function refreshEnvironmentSize(id: string): Promise<Awaited<ReturnType<typeof pyenvSize>>> {
+  try {
+    const result = await pyenvSize(id, true);
+    if (result.error) {
+      environmentSizeProbeErrors.set(id, result.error);
+      log.warn(`Environment ${id} disk size probe failed: ${result.error}`);
+    } else environmentSizeProbeErrors.delete(id);
+    return result;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    environmentSizeProbeErrors.set(id, message);
+    log.warn(`Environment ${id} disk size probe failed: ${message}`);
+    return { bytes: 0, human: "", at: "", cached: false, error: message };
+  }
+}
+async function refreshEnvironmentVersion(id: string): Promise<Awaited<ReturnType<typeof pyenvPyVersion>>> {
+  try {
+    const result = await pyenvPyVersion(id, true);
+    if (result.error) {
+      environmentProbeErrors.set(id, result.error);
+      log.warn(`Environment ${id} Python probe failed: ${result.error}`);
+    } else environmentProbeErrors.delete(id);
+    return result;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    environmentProbeErrors.set(id, message);
+    log.warn(`Environment ${id} Python probe failed: ${message}`);
+    return { version: "", cached: false, error: message };
+  }
+}
 async function sweepEnvVersions(respond: (m: any) => void): Promise<void> {
   if (_verSweeping) return;
   const missing = pyenvList().filter(e => !e.pyVersion);
   if (!missing.length) return;
   _verSweeping = true;
   try {
-    for (const e of missing) { try { await pyenvPyVersion(e.id, true); } catch { /* ignore */ } }
+    for (const e of missing) await refreshEnvironmentVersion(e.id);
     respond({ command: "envList", data: envListForUi() });
   } finally { _verSweeping = false; }
 }
@@ -698,6 +732,10 @@ function envListForUi(): any[] {
       missing: (!!e.path && !pathExists) || (!!e.python && !pythonExists),
       pathExists,
       pythonExists,
+      probeError: [environmentProbeErrors.get(e.id), environmentSizeProbeErrors.get(e.id)].filter(Boolean).join("\n") || undefined,
+      pythonProbeError: environmentProbeErrors.get(e.id),
+      sizeProbeError: environmentSizeProbeErrors.get(e.id),
+      isMcpRuntime: !!e.path && path.resolve(e.path) === path.resolve(managedMcpRuntimePath()),
     };
   });
 }
@@ -724,8 +762,9 @@ function mcpPanelStatusData(traceId = ""): object {
   const accountBinding = readAccountMcpBinding();
   const accountSecurity = activeStorePath ? accountKnowledgeSecurity(activeStorePath) : { private: false, detail: "No account Knowledge Root is configured." };
   const guideDismissed = !!chatCtx?.globalState.get<boolean>("pkm.integrationGuideDismissed.v1", false);
-  const guideStep = !guideDismissed && !python.valid ? "python"
-    : "";
+  // Config is resumable from actual state, independently of the dismissible invitation.
+  const guideStep = !python.valid ? "python" : integrationMaintenanceState === "ready" ? ""
+    : !runtime.healthy ? "runtime" : !info.current ? "server" : "";
   return {
     ...info,
     extensionVersion: String(chatCtx?.extension?.packageJSON?.version || "unknown"),
@@ -757,8 +796,8 @@ function mcpPanelStatusData(traceId = ""): object {
       { id: "exact", name: "Exact", kind: "Deterministic", version: "1", status: "active", description: "Hard exact constraints and identifier matches." },
       { id: "bm25", name: "BM25", kind: "Lexical", version: "academic-k1=0.9-b=0.4", status: "active", description: "Frozen relevance ranking across the typed Subscriber index." },
     ],
-    firstRunGuide: { visible: !!guideStep, step: guideStep },
-    automaticSetup: { state: integrationMaintenanceState, error: integrationMaintenanceError },
+    firstRunGuide: { visible: !!guideStep, step: guideStep, dismissed: guideDismissed },
+    automaticSetup: { state: integrationMaintenanceState, error: integrationMaintenanceError, progress: integrationSetupProgress },
     performance: performanceStateDir ? performanceSummary(performanceStateDir) : {},
     baseline: baselineReport(performanceStateDir, loadProfiler.enabled()),
     objectTaxonomy: PKM_ENTRY_POINTS,
@@ -851,10 +890,20 @@ class Logger {
   init(context: vscode.ExtensionContext): void {
     try {
       const dir = path.join(context.globalStorageUri.fsPath, "diagnostics", "extension");
-      this.fileLog = new DiagnosticLog(dir);
+      this.fileLog = new DiagnosticLog(dir, 100_000, 1_000, error => {
+        this.channel.appendLine(`[ERROR] ${error.message}`);
+        console.error(error.message);
+        void vscode.window.showWarningMessage(error.message, "Open diagnostic log").then(choice => {
+          if (choice === "Open diagnostic log") this.show();
+        }, notificationError => console.error("PKM diagnostic warning failed:", notificationError));
+      });
       this.fileLog.record("host.started", { parentPid: process.ppid, platform: process.platform, extensionVersion: context.extension?.packageJSON?.version ?? "unknown", buildId: loadedExtensionBuild?.buildId ?? "unknown", vscodeVersion: vscode.version ?? "unknown", nodeVersion: process.version });
       this.channel.appendLine(`Diagnostic log: ${dir} writer=${this.fileLog.writerId} latest=100000`);
-    } catch { /* file logging optional */ }
+    } catch (error) {
+      this.channel.appendLine(`Diagnostic logging initialization failed: ${error instanceof Error ? error.message : String(error)}`);
+      void vscode.window.showErrorMessage("PKM diagnostic logging could not initialize. Open Output > Personal Knowledge Manager.")
+        .then(undefined, notificationError => console.error("PKM diagnostic initialization warning failed:", notificationError));
+    }
     this.refreshLevel();
     if (this.heartbeat) clearInterval(this.heartbeat);
     let previous = performance.now();
@@ -889,12 +938,24 @@ class Logger {
   warn(msg: string):  void { this.write("warn", msg); }
   error(msg: string): void { this.write("error", msg); }
 
+  startup(msg: string): void {
+    this.channel.appendLine(`[${new Date().toISOString()}] [STARTUP] ${msg}`);
+    this.fileLog?.record("chat.startup", { message: msg });
+  }
+
   /** Log a user action (always at info level for auditability). */
   action(name: string, detail?: object): void {
     this.write("info", `action: ${name}${detail ? " " + JSON.stringify(detail) : ""}`);
   }
 
-  show(): void { this.channel.show(); }
+  show(): void {
+    const recent = this.fileLog?.latest() || [];
+    if (this.fileLog?.persistenceError || recent.some(entry => entry.persisted === false)) {
+      this.channel.appendLine(this.fileLog?.persistenceError || "Some recent diagnostics were not persisted and remain only in memory.");
+      for (const entry of recent) this.channel.appendLine(`[memory diagnostic] ${JSON.stringify(entry)}`);
+    }
+    this.channel.show();
+  }
 }
 
 const log = new Logger();
@@ -3575,7 +3636,7 @@ function liveMarkdownNavigation(documentPath: string, includePrivate: boolean): 
     };
     const links = renderFolder(root, []);
     const directory = links || '<p class="reader-nav-empty">No content</p>';
-    return `<section class="reader-nav-group" role="tabpanel" id="library-${group.type}" aria-labelledby="tab-${group.type}" data-library-panel="${group.type}"${activeTab !== group.type ? " hidden" : ""}><h2>${group.label}</h2>${group.type === "papers" ? `<div class="reader-graph-tools" aria-label="Research view"><button type="button" data-graph-view="directory" aria-pressed="true">Directory</button><button type="button" data-graph-view="2d" aria-pressed="false">2D Graph</button><button type="button" data-graph-view="3d" aria-pressed="false">3D Graph</button></div><div class="reader-research-directory">${directory}</div><p class="reader-graph-status" role="status" hidden></p><div class="reader-graph-canvas" hidden></div>` : directory}</section>`;
+    return `<section class="reader-nav-group" role="tabpanel" id="library-${group.type}" aria-labelledby="tab-${group.type}" data-library-panel="${group.type}"${activeTab !== group.type ? " hidden" : ""}><h2>${group.label}</h2>${group.type === "papers" ? `<div class="reader-graph-tools" aria-label="Research view"><button type="button" data-graph-view="directory" aria-pressed="true">Directory</button><button type="button" data-graph-view="2d" aria-pressed="false">2D Graph</button><button type="button" data-graph-view="3d" aria-pressed="false">3D Graph</button></div><div class="reader-research-directory">${directory}</div>` : directory}</section>`;
   }).join("");
   const tabs = [...groups].sort((a, b) => ["skills", "notes", "papers"].indexOf(a.type) - ["skills", "notes", "papers"].indexOf(b.type)).map(group =>
     `<button type="button" role="tab" id="tab-${group.type}" aria-controls="library-${group.type}" data-library-tab="${group.type}" aria-selected="${activeTab === group.type}">${group.label}</button>`).join("");
@@ -3583,7 +3644,7 @@ function liveMarkdownNavigation(documentPath: string, includePrivate: boolean): 
   const accessLabel = includePrivate ? "Private" : "Public";
   const accessDescription = includePrivate ? "Authenticated view: Public and Private knowledge" : "Public knowledge only";
   const accessBadge = `<footer class="reader-access" data-access="${includePrivate ? "private" : "public"}" aria-label="${accessDescription}" title="${accessDescription}"><span class="reader-access-dot" aria-hidden="true"></span><span class="reader-access-label">${accessLabel}</span></footer>`;
-  return `<aside class="reader-sidebar" aria-label="Knowledge navigation"><details open><summary>Library</summary><label class="reader-search"><input type="search" aria-label="Search Notes, Skills and Research" placeholder="Search current library tab" oninput="const query=this.value.toLocaleLowerCase();const sidebar=this.closest('aside');sidebar.querySelectorAll('.reader-nav-item').forEach(item=>{item.hidden=!item.textContent.toLocaleLowerCase().includes(query)&&!item.title.toLocaleLowerCase().includes(query)});sidebar.querySelectorAll('.reader-nav-folder').forEach(folder=>{if(query){if(!('searchOpen' in folder.dataset))folder.dataset.searchOpen=String(folder.open);folder.hidden=!folder.querySelector('.reader-nav-item:not([hidden])');if(!folder.hidden)folder.open=true}else{folder.hidden=false;if('searchOpen' in folder.dataset){folder.open=folder.dataset.searchOpen==='true';delete folder.dataset.searchOpen}}})"></label><div class="reader-tabs" role="tablist" aria-label="Library tabs">${tabs}</div><nav>${sections}</nav></details>${accessBadge}</aside>${browserNavigationRuntime(activeTab, graph)}`;
+  return `<aside class="reader-sidebar" aria-label="Knowledge navigation"><details open><summary>Library</summary><label class="reader-search"><input type="search" aria-label="Search Notes, Skills and Research" placeholder="Search current library tab" oninput="const query=this.value.toLocaleLowerCase();const sidebar=this.closest('aside');sidebar.querySelectorAll('.reader-nav-item').forEach(item=>{item.hidden=!item.textContent.toLocaleLowerCase().includes(query)&&!item.title.toLocaleLowerCase().includes(query)});sidebar.querySelectorAll('.reader-nav-folder').forEach(folder=>{if(query){if(!('searchOpen' in folder.dataset))folder.dataset.searchOpen=String(folder.open);folder.hidden=!folder.querySelector('.reader-nav-item:not([hidden])');if(!folder.hidden)folder.open=true}else{folder.hidden=false;if('searchOpen' in folder.dataset){folder.open=folder.dataset.searchOpen==='true';delete folder.dataset.searchOpen}}})"></label><div class="reader-tabs" role="tablist" aria-label="Library tabs">${tabs}</div><nav>${sections}</nav></details>${accessBadge}</aside><section class="reader-graph-view" aria-label="Research graph" hidden><p class="reader-graph-status" role="status"></p><div class="reader-graph-canvas"></div></section>${browserNavigationRuntime(activeTab, graph)}`;
 }
 
 async function browserGraphResources(context: vscode.ExtensionContext): Promise<{ cytoscape: Buffer; forcegraph3d: Buffer }> {
@@ -7279,6 +7340,7 @@ let remoteTaskAttemptsReader: ((chatId: string, requestId: string, replyId?: str
 let portalProfileReview: ((chatId: string) => Promise<PersonaSnapshot | undefined>) | undefined;
 let portalChatContext: ((chatId?: string, label?: string) => Promise<{ id: string; label: string }>) | undefined;
 let portalChooseContext: (() => Promise<{ id: string; label: string } | undefined>) | undefined;
+let todoBoardConversionChat: ((prompt: string, title: string) => Promise<void>) | undefined;
 let portalMutationGuard: ((chatId: string) => void) | undefined;
 let portalMutationPolicy: ((chatId: string) => Promise<void>) | undefined;
 let portalChatBindingsReader: (() => Promise<Array<{ id: string; title: string }>>) | undefined;
@@ -8072,6 +8134,22 @@ async function handleMessage(
     log.debug(`handleMessage: ${msg.command}`);
   }
   switch (msg.command) {
+    case "helpGuide": {
+      const language = msg.language === "zh-hans" ? "zh-hans" : "en";
+      const requestId = Number.isSafeInteger(msg.requestId) ? msg.requestId : 0;
+      try {
+        respond({ command: "helpGuide", data: { ...await readHelpGuide(context.extensionPath, language), requestId } });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        log.error(`PKM Help guide could not be loaded: ${message}`);
+        respond({ command: "helpGuide", data: { language, requestId, error: message } });
+      }
+      break;
+    }
+    case "showLogs": {
+      log.show();
+      break;
+    }
     case "panelViewState": {
       session.snapshot = panelsSnapshot(msg.state);
       break;
@@ -8212,7 +8290,9 @@ async function handleMessage(
       if (session.pendingTab) {
         const tab = session.pendingTab;
         session.pendingTab = undefined;
-        respond({ command: "openTab", tab });
+        const helpSection = tab === "help" ? session.pendingHelpSection : undefined;
+        session.pendingHelpSection = undefined;
+        respond({ command: "openTab", tab, helpSection });
       }
       if (session.pendingActions) {
         respond({ command: "openEmbeddedActions", state: session.pendingActions });
@@ -8244,6 +8324,10 @@ async function handleMessage(
       if (session.pendingMcpRegenerateHighlight) {
         session.pendingMcpRegenerateHighlight = false;
         respond({ command: "highlightMcpRegenerate" });
+      }
+      if (session.pendingMcpSetupTarget) {
+        respond({ command: "focusMcpSetup", target: session.pendingMcpSetupTarget });
+        session.pendingMcpSetupTarget = undefined;
       }
       respond({
         command: "mcpSummary",
@@ -10842,20 +10926,11 @@ async function handleMessage(
 
     case "todoBoardConvert": {
       try {
-        if (vscode.workspace.isTrusted === false) throw new Error("Todo Board conversion requires a trusted workspace.");
-        const slug = String(msg.slug || "");
-        const preview = todoBoardConversionPreview(slug);
-        const stories = preview.items.filter(item => item.kind === "UserStory").length;
-        const choice = await vscode.window.showWarningMessage(
-          `Convert “${slug}” to a Todo Board? Import ${stories} Stories and ${preview.items.length - stories} tasks, preserving IDs, states, evidence and history. Original Markdown is retained as historical source, not live task data. Future edits use Board UI / MCP commands.`,
-          { modal: true }, "Convert to Todo Board");
-        if (choice !== "Convert to Todo Board") break;
-        todoBoardConvert(slug, preview.digest);
-        gitCommit(`convert(todo-board): ${slug}`);
-        _treeProvider?.refresh();
-        const note = noteGet(slug);
-        respond({ command: "detail", data: { ...note, note_type: note.type, type: "note" } });
-        respond({ command: "saved" });
+        const { requestTodoBoardConversion } = await import("./ui/todo-board-conversion");
+        await requestTodoBoardConversion(String(msg.slug || ""), async (prompt, title) => {
+          if (!todoBoardConversionChat) throw new Error("PKM Chat is unavailable. Use Copy conversion prompt instead.");
+          await todoBoardConversionChat(prompt, title);
+        });
       } catch (error) {
         vscode.window.showErrorMessage(`Todo Board conversion failed: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -10894,13 +10969,48 @@ async function handleMessage(
       try {
         if (vscode.workspace.isTrusted === false) throw new Error("Work Items require a trusted workspace.");
         if (!currentProjectStore().list().projects.some(project => project.projectId === projectId)) throw new Error("Project not found.");
-        const discovery = noteWorkItemNotes("", 1000);
-        if (discovery.truncated) throw new Error("Too many Work Item Notes for a complete Project timeline. Narrow the knowledge collection before loading.");
-        const records = discovery.notes.flatMap(note => noteWorkItemsRead(note.slug).items.filter(item => item.projectId === projectId)
-          .map(item => ({ slug: note.slug, item })));
-        respond({ command: "noteTodoProjectResult", data: { projectId, requestId: msg.requestId, records } });
+        const progress = projectWorkItemProgress(projectId);
+        const chats = apiChatGroupSnapshots(path.join(getStorePath(), ".pkm", "state"))
+          .filter(chat => !chat.deletedAt).map(chat => ({ id: chat.hostSessionId, title: chat.title || chat.hostSessionId }));
+        const agentIds = chats.map(chat => chat.id);
+        respond({ command: "noteTodoProjectResult", data: { projectId, requestId: msg.requestId, ...progress, agentIds, chats } });
       } catch (error) {
         respond({ command: "noteTodoProjectResult", data: { projectId, requestId: msg.requestId, error: error instanceof Error ? error.message : String(error) } });
+      }
+      break;
+    }
+
+    case "noteTodoInspect":
+    case "noteTodoAgent": {
+      try {
+        if (vscode.workspace.isTrusted === false) throw new Error("Work Items require a trusted workspace.");
+        const reference = msg.reference as WorkItemReference;
+        const inspected = inspectWorkItem(reference);
+        if (msg.command === "noteTodoInspect") {
+          respond({ command: "noteTodoInspectResult", data: { requestId: msg.requestId, ...inspected } });
+        } else {
+          const ownerId = inspected.item.ownerId;
+          const root = getStorePath();
+          if (!ownerId?.startsWith("chat:")) throw new Error("No resolvable PKM Chat identity is recorded for this Work Item.");
+          const chatId = ownerId.slice("chat:".length);
+          const chat = apiChatGroupSnapshots(path.join(getStorePath(), ".pkm", "state"))
+            .find(chat => chat.hostSessionId === chatId && !chat.deletedAt);
+          if (!chat) throw new Error("The recorded Agent is unavailable. No same-name Chat was substituted.");
+          const snapshots = listAgentSnapshots(root).filter(snapshot => snapshot.sourceHostKind === "pkm" && snapshot.sourceHostSessionId === chatId);
+          if (typeof msg.snapshotId === "string") {
+            if (!snapshots.some(snapshot => snapshot.snapshotId === msg.snapshotId)) throw new Error("Snapshot is unavailable for this Agent.");
+            const contents = readAgentSnapshotContents(root, msg.snapshotId);
+            respond({ command: "noteTodoAgentResult", data: { requestId: msg.requestId, ...inspected, chatId, title: chat.title, snapshots, contents } });
+            break;
+          }
+          const snapshot = await vscode.commands.executeCommand("personalKnowledge.readChatHarness", chatId, "snapshot", {});
+          if (!snapshot) throw new Error("The scoped Agent record reader is unavailable.");
+          if (getStorePath() !== root || inspectWorkItem(reference).digest !== inspected.digest) throw new Error("Work Item changed while reading Agent records. Reload before inspecting.");
+          respond({ command: "noteTodoAgentResult", data: { requestId: msg.requestId, ...inspected, chatId, title: chat.title, snapshot, snapshots } });
+        }
+      } catch (error) {
+        respond({ command: msg.command === "noteTodoInspect" ? "noteTodoInspectResult" : "noteTodoAgentResult",
+          data: { requestId: msg.requestId, error: error instanceof Error ? error.message : String(error) } });
       }
       break;
     }
@@ -11614,10 +11724,10 @@ async function handleMessage(
       if (msg.refresh) {
         const refreshErrors: string[] = [];
         for (const environment of pyenvList()) {
-          try { await pyenvPyVersion(environment.id, true); }
-          catch (error) { refreshErrors.push(`${environment.name || environment.id}: Python version probe failed: ${error instanceof Error ? error.message : String(error)}`); }
-          try { await pyenvSize(environment.id, true); }
-          catch (error) { refreshErrors.push(`${environment.name || environment.id}: disk size probe failed: ${error instanceof Error ? error.message : String(error)}`); }
+          const probe = await refreshEnvironmentVersion(environment.id);
+          if (probe.error) refreshErrors.push(`${environment.name || environment.id}: Python version probe failed: ${probe.error}`);
+          const size = await refreshEnvironmentSize(environment.id);
+          if (size.error) refreshErrors.push(`${environment.name || environment.id}: disk size probe failed: ${size.error}`);
         }
         respond({ command: "envList", data: envListForUi(), refreshErrors });
         break;
@@ -11685,7 +11795,7 @@ async function handleMessage(
       break;
     }
     case "envSize": {
-      const r = await pyenvSize(String(msg.id || ""), !!msg.refresh);
+      const r = msg.refresh ? await refreshEnvironmentSize(String(msg.id || "")) : await pyenvSize(String(msg.id || ""), false);
       respond({ command: "envSize", id: msg.id, ...r });
       break;
     }
@@ -12547,6 +12657,11 @@ async function handleMessage(
       break;
     }
 
+    case "mcpStatus": {
+      mcpRuntimeStatusCache = undefined;
+      respond({ command: "mcpStatus", data: mcpPanelStatusData(String(msg.profileRequestId || "")) });
+      break;
+    }
     case "checkMcp": {
       respond({ command: "mcpStatus", data: mcpPanelStatusData(String(msg.profileRequestId || "")) });
       await maintainPkmIntegration(context);
@@ -12787,13 +12902,13 @@ async function handleMessage(
     case "mcpSetPython": {
       const result = validateMcpPython(String(msg.path || ""));
       if (result.error) {
+        requireMcpPythonSetup(context, result.error);
         respond({ command: "mcpPythonResult", data: { ...result, valid: false, source: "configured", saved: false } });
         break;
       }
       const configuration = vscode.workspace.getConfiguration("personalKnowledge");
       const previousPython = configuration.get<string>("mcpPythonPath", "");
       await configuration.update("mcpPythonPath", result.path, vscode.ConfigurationTarget.Global);
-      respond({ command: "mcpRuntimeProgress", data: { text: "Creating or repairing the managed PKM MCP runtime and installing dependencies…" } });
       try {
         const runtime = await ensureMcpRuntime(context);
         scheduleRetrievalRefresh(context, 0);
@@ -12811,8 +12926,11 @@ async function handleMessage(
 
     case "mcpRepairRuntime": {
       const base = detectMcpPython();
-      if (!base.valid) { respond({ command: "mcpRuntimeResult", data: { ok: false, error: base.error, commands: [] } }); break; }
-      respond({ command: "mcpRuntimeProgress", data: { text: "Repairing the managed PKM MCP runtime…" } });
+      if (!base.valid) {
+        requireMcpPythonSetup(context, base.error);
+        respond({ command: "mcpRuntimeResult", data: { ok: false, error: base.error, commands: [] } });
+        break;
+      }
       try {
         const runtime = await ensureMcpRuntime(context);
         scheduleRetrievalRefresh(context, 0);
@@ -12826,42 +12944,38 @@ async function handleMessage(
       break;
     }
 
-    case "generateMcp": {
-      try {
-        const preview = !!msg.previewOnly;
-        if (!preview && !mcpRuntimeStatus().healthy) {
-          respond({ command: "mcpRuntimeProgress", data: { text: "Updating managed runtime dependencies before generating server code…" } });
-          await ensureMcpRuntime(context);
-          scheduleRetrievalRefresh(context, 0);
-        }
-        const info = preview
-          ? { serverPath: mcpStatus().serverPath, configSnippet: combinedMcpRegistry() }
-          : await generateMcpServer(context);
-        if (!preview) refreshMcpDefinitions();
-        respond({ command: "mcpGenerated", data: { ...info, preview } });
-        if (!preview) vscode.window.setStatusBarMessage("$(check) MCP server created", 4000);
-      } catch (e: any) {
-        respond({ command: "mcpError", data: { error: e.message } });
-      }
-      break;
-    }
-
+    case "generateMcp":
     case "generateChatMcp": {
       try {
         const preview = !!msg.previewOnly;
         if (!preview && !mcpRuntimeStatus().healthy) {
-          respond({ command: "mcpRuntimeProgress", data: { text: "Updating managed runtime dependencies before generating server code…" } });
           await ensureMcpRuntime(context);
           scheduleRetrievalRefresh(context, 0);
+        }
+        if (!preview) {
+          integrationMaintenanceState = "running";
+          integrationMaintenanceError = "";
+          setupProgress("generating-server", "Generating current MCP server code…", true);
         }
         const info = preview
           ? { serverPath: mcpStatus().serverPath, configSnippet: combinedMcpRegistry() }
           : await generateMcpServer(context);
-        if (!preview) refreshMcpDefinitions();
+        if (!preview) {
+          refreshMcpDefinitions();
+          if (!(await mcpRuntimeStatusAsync()).healthy || !mcpStatus().current) throw new Error("Generated MCP server/runtime verification failed.");
+          integrationMaintenanceState = "ready";
+          setupProgress("ready", "Runtime/server verified; retrieval and client discovery must be verified separately.");
+        }
         respond({ command: "mcpGenerated", data: { ...info, preview } });
-        if (!preview) vscode.window.setStatusBarMessage("$(check) Unified PKM MCP server created", 4000);
+        if (!preview) vscode.window.setStatusBarMessage("$(check) MCP server created", 4000);
       } catch (e: any) {
-        respond({ command: "mcpError", data: { error: e.message } });
+        const message = e?.message || String(e);
+        if (!msg.previewOnly) {
+          integrationMaintenanceState = integrationFailureState(message);
+          integrationMaintenanceError = message;
+          setupProgress(integrationMaintenanceState, message);
+        }
+        respond({ command: "mcpError", data: { error: message } });
       }
       break;
     }
@@ -13018,15 +13132,17 @@ async function offerMcpRuntimeDependencyRepair(context: vscode.ExtensionContext)
   }
 }
 
-function openMcpSetup(context: vscode.ExtensionContext, highlightRegenerate = false): void {
+function openMcpSetup(context: vscode.ExtensionContext, highlightRegenerate = false, target?: "python" | "progress"): void {
   const mcpPanel = getOrCreatePanel(context);
   mcpPanel.reveal(vscode.ViewColumn.One);
   if (panelSession().ready) {
     void mcpPanel.webview.postMessage({ command: "openTab", tab: "mcp" });
     if (highlightRegenerate) void mcpPanel.webview.postMessage({ command: "highlightMcpRegenerate" });
+    if (target) void mcpPanel.webview.postMessage({ command: "focusMcpSetup", target });
   } else {
     panelSession().pendingTab = "mcp";
     panelSession().pendingMcpRegenerateHighlight ||= highlightRegenerate;
+    panelSession().pendingMcpSetupTarget = target;
   }
 }
 
@@ -13069,24 +13185,81 @@ let integrationMaintenanceErrorShown = false;
 let integrationMaintenanceState: "idle" | "running" | "ready" | "action-required" | "error" = "idle";
 let integrationMaintenanceError = "";
 let newerPkmVersionNotice = "";
+let integrationSetupProgress: McpRuntimeProgress | undefined;
+let integrationSetupPostedAt = 0;
+let missingPythonSetupInvited = false;
+
+function integrationFailureState(message: string): "action-required" | "error" {
+  return /action-required|close\/reconnect|newer|downgrade|Python 3\.10/i.test(message) ? "action-required" : "error";
+}
+
+function publishIntegrationProgress(progress: McpRuntimeProgress): void {
+  const previousPhase = integrationSetupProgress?.phase;
+  integrationSetupProgress = { ...progress };
+  const now = Date.now();
+  if (previousPhase === progress.phase && now - integrationSetupPostedAt < 250) return;
+  integrationSetupPostedAt = now;
+  // Retain the snapshot even without a panel; never create/reveal a panel during installation.
+  if (!activePanel() || !panelSession().ready) return;
+  postToPanel({ command: "mcpRuntimeProgress", data: integrationSetupProgress });
+  postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() });
+}
+
+function setupProgress(phase: string, text: string, restart = false): void {
+  const now = Date.now();
+  publishIntegrationProgress({ phase, text, startedAt: restart ? now : integrationSetupProgress?.startedAt ?? now, updatedAt: now });
+}
+
+function requireMcpPythonSetup(context: vscode.ExtensionContext, error: string): void {
+  integrationMaintenanceState = "action-required";
+  integrationMaintenanceError = error || "Python 3.10+ is required for PKM MCP.";
+  setupProgress("action-required", `${integrationMaintenanceError} Basic file Knowledge remains available. Open Config → MCP / Python to resume.`);
+  if (missingPythonSetupInvited) return;
+  missingPythonSetupInvited = true;
+  void vscode.window.showInformationMessage(
+    "PKM file Knowledge is available. MCP setup needs Python 3.10+: choose Python in Config → MCP to continue.",
+    "Open setup", "Later",
+  ).then(choice => { if (choice === "Open setup") openMcpSetup(context, false, "python"); });
+}
+
+// All existing automatic/user runtime entry points share the retained Host protocol.
+async function ensureMcpRuntime(context: vscode.ExtensionContext): Promise<Awaited<ReturnType<typeof ensureMcpRuntimeWithProgress>>> {
+  integrationMaintenanceState = "running";
+  integrationMaintenanceError = "";
+  setupProgress("checking", "Preparing managed runtime…", true);
+  try {
+    const runtime = await ensureMcpRuntimeWithProgress(context, progress => {
+      if (progress.phase !== "ready" && progress.phase !== "error") publishIntegrationProgress(progress);
+    });
+    refreshMcpDefinitions();
+    if (!integrationMaintenance) integrationMaintenanceState = "ready";
+    setupProgress("runtime-verified", "Runtime health verified. Retrieval refresh is separate; client discovery/trust must be verified separately.");
+    return runtime;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    integrationMaintenanceError = message;
+    integrationMaintenanceState = integrationFailureState(message);
+    setupProgress(integrationMaintenanceState, message);
+    throw error;
+  }
+}
+
 function maintainPkmIntegration(context: vscode.ExtensionContext): Promise<void> {
   if (integrationMaintenance) return integrationMaintenance;
   integrationMaintenanceState = "running";
   integrationMaintenanceError = "";
+  setupProgress("checking", "Checking PKM integration and waiting for shared maintenance…", true);
   const producer = backgroundTaskRegistry.producer({ id: "pkm-integration-upgrade", kind: "other", label: "Preparing PKM integration" });
   producer.queued({ detail: "Waiting for shared runtime maintenance" });
   integrationMaintenance = withCrossProcessLock(path.join(managedMcpServerDirectory(), "integration-upgrade.lock"), "PKM integration upgrade", 600_000, async () => {
     producer.running({ detail: "Checking managed runtime and server compatibility" });
-    const probeStartedAt = Date.now();
     await warmMcpPythonProbes();
-    log.info(`PKM integration: Python/runtime probes ${Date.now() - probeStartedAt}ms (async, off the Extension Host thread)`);
-    activePanel()?.webview.postMessage({ command: "loadingProgress", data: { stage: "integration", percent: 10, message: "Checking PKM integration…" } });
     const server = mcpStatus();
     if (server.newerThanExpected) {
       const detected = `MCP server v${server.installedVersion}`;
       integrationMaintenanceState = "action-required";
       integrationMaintenanceError = `Newer PKM components detected: ${detected}. Reload this VS Code window to use the updated extension. No files were changed.`;
-      postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() });
+      setupProgress("action-required", integrationMaintenanceError);
       if (newerPkmVersionNotice !== detected) {
         newerPkmVersionNotice = detected;
         void vscode.window.showInformationMessage(
@@ -13098,39 +13271,34 @@ function maintainPkmIntegration(context: vscode.ExtensionContext): Promise<void>
     }
     const python = detectMcpPython();
     if (!python.valid) {
-      integrationMaintenanceState = "action-required";
-      integrationMaintenanceError = python.error || "Python 3.10+ is required for PKM MCP.";
+      requireMcpPythonSetup(context, python.error);
       log.warn(`automatic PKM integration setup requires action: ${integrationMaintenanceError}`);
-      postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() });
       return;
     }
     const runtime = mcpRuntimeStatus();
     if (!runtime.healthy) {
-      activePanel()?.webview.postMessage({ command: "loadingProgress", data: { stage: "runtime", percent: 25, message: "Preparing managed Python runtime…" } });
       log.info("automatically creating or repairing managed MCP runtime");
       await ensureMcpRuntime(context);
     } else if (!server.current) {
-      activePanel()?.webview.postMessage({ command: "loadingProgress", data: { stage: "mcp", percent: 48, message: "Updating MCP server code…" } });
-      log.info("automatically updating generated MCP server code");
+      setupProgress("generating-server", "Updating generated MCP server code…");
       await generateMcpServer(context);
     }
+    setupProgress("health-check", "Verifying managed runtime health and current server…");
     refreshMcpDefinitions();
     if (!(await mcpRuntimeStatusAsync()).healthy || !mcpStatus().current) {
       throw new Error("PKM integration upgrade did not produce a healthy runtime and current MCP server.");
     }
-    activePanel()?.webview.postMessage({ command: "loadingProgress", data: { stage: "retrieval", percent: 68, message: "Refreshing knowledge retrieval index…" } });
     scheduleRetrievalRefresh(context, 0);
-
     integrationMaintenanceErrorShown = false;
     integrationMaintenanceState = "ready";
-    activePanel()?.webview.postMessage({ command: "loadingProgress", data: { stage: "ready", percent: 100, message: "PKM runtime prepared; client verification required" } });
+    setupProgress("ready", "PKM runtime and server verified; retrieval refresh scheduled (not yet verified). Client discovery/trust must be verified separately.");
     postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() });
   }, 1_800_000).catch(error => {
-    const message = (error as Error).message;
-    integrationMaintenanceState = "error";
+    const message = error instanceof Error ? error.message : String(error);
+    integrationMaintenanceState = integrationFailureState(message);
     integrationMaintenanceError = message;
+    setupProgress(integrationMaintenanceState, message);
     log.warn(`automatic PKM integration maintenance failed: ${message}`);
-    postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() });
     if (!integrationMaintenanceErrorShown) {
       integrationMaintenanceErrorShown = true;
       void vscode.window.showWarningMessage(
@@ -14371,10 +14539,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   configureCopilotSdk({ storageDir: context.globalStorageUri.fsPath });
   log.init(context);
   let apiChat: ReturnType<typeof registerApiChatShell> | undefined;
-  setChatStartupTrace(message => log.info(`${message} (activation+${Date.now() - activationStartedAt}ms)`));
+  setChatStartupTrace(message => log.startup(`${message} (activation+${Date.now() - activationStartedAt}ms)`));
   try {
-    apiChat = registerApiChatShell(context, async () => {
+    apiChat = registerApiChatShell(context, async signal => {
       const { registerApiChat } = await import("./chat/api-chat-view");
+      if (signal.aborted) throw new Error("PKM Chat backend loading was cancelled.");
       return registerApiChat(context, createChatKnowledgeRetriever(() => retrievalWorker, currentRetrievalSnapshot), false, async () => {
         await maintainPkmIntegration(context);
         if (integrationMaintenanceState !== "ready") {
@@ -14393,6 +14562,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     portalChooseContext = () => {
       if (!apiChat) throw new Error("PKM Chat is unavailable.");
       return apiChat.choosePortalContext();
+    };
+    todoBoardConversionChat = (prompt, title) => {
+      if (!apiChat) throw new Error("PKM Chat is unavailable.");
+      return apiChat.runNoteBoardConversion(prompt, title);
     };
     portalChatBindingsReader = () => apiChat!.portalChatBindings();
     remoteChatExecutor = (prompt, signal, requestId, chatId, observer, source, profileSnapshot) => {
@@ -14729,6 +14902,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     getOrCreatePanel(context);
   };
   context.subscriptions.push(vscode.commands.registerCommand("personalKnowledge.open", openMainPanel));
+  context.subscriptions.push(vscode.commands.registerCommand("personalKnowledge.openHelp", (requested: unknown) => {
+    const sections = ["start", "tools", "retrieval", "agents", "tasks", "workers", "memory", "recipes", "projects", "sharing", "snapshots", "setup", "troubleshooting"];
+    const section = typeof requested === "string" && sections.includes(requested) ? requested : "troubleshooting";
+    const target = getOrCreatePanel(context);
+    target.reveal(vscode.ViewColumn.One);
+    if (panelSession().ready) target.webview.postMessage({ command: "openTab", tab: "help", helpSection: section });
+    else {
+      panelSession().pendingTab = "help";
+      panelSession().pendingHelpSection = section;
+    }
+  }));
   context.subscriptions.push(vscode.commands.registerCommand("_personalKnowledge.testNavigationPath", (area: string, segments: string[]) => {
     const rootType = `root-${area}`;
     let children = treeProvider.getChildren();

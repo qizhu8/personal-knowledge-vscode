@@ -11,6 +11,7 @@ export interface PanelSession<T extends PanelTarget> {
   recoveryTimer?: ReturnType<typeof setTimeout>;
   pendingOpen?: { type: string; key: string; edit?: boolean; tab?: string };
   pendingTab?: string;
+  pendingHelpSection?: string;
   pendingActions?: Record<string, any>;
   pendingProjectId?: string;
   pendingNativeSessionId?: string;
@@ -18,6 +19,7 @@ export interface PanelSession<T extends PanelTarget> {
   pendingServerSlug?: string;
   pendingEnvironmentId?: string;
   pendingMcpRegenerateHighlight: boolean;
+  pendingMcpSetupTarget?: "python" | "progress";
   revisions: Map<string, string>;
   listRequests: Map<string, number>;
 }

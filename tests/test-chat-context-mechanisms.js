@@ -3,9 +3,43 @@ const assert = require("node:assert/strict");
 const { createHash } = require("node:crypto");
 const { fitChatContext, ChatContextPlanner, ContextCandidateLimitError, AUTOMATIC_KNOWLEDGE_INPUT_BUDGET, sdkInputBound } = require("../dist/chat/chat-context");
 const { estimateInputTokens } = require("../dist/chat/api-chat-models");
-const { ChatToolLoopGuard } = require("../dist/chat/api-chat-client");
+const { ChatToolLoopGuard, chatToolRoundLimit, chatToolRoundBudgetNotice } = require("../dist/chat/api-chat-client");
 const required = () => ({ role:"user", content:"Preserve all constraints. Do not deploy." });
 const hash = message => createHash("sha256").update(JSON.stringify(message)).digest("hex");
+
+test("hard-round budget notice is bounded advisory with exact inference boundaries", () => {
+  assert.equal(chatToolRoundBudgetNotice(0), undefined);
+  assert.equal(chatToolRoundBudgetNotice(NaN, undefined), undefined);
+  for (const limit of [1, 2, 4, 1000]) {
+    assert.equal(chatToolRoundLimit(limit), limit);
+    for (let remaining = 0; remaining <= Math.min(4, limit); remaining++) {
+      const completed = limit - remaining;
+      const notice = chatToolRoundBudgetNotice(completed, limit);
+      assert.equal(notice, chatToolRoundBudgetNotice(completed, limit));
+      assert.ok(Buffer.byteLength(notice, "utf8") < 1000);
+      assert.ok(notice.includes(`total=${limit}, completed=${completed}, remaining=${remaining}.`));
+      assert.match(notice, /Remaining includes the coming inference, not calls\/tools/);
+      assert.match(notice, /No extra reporting allowance after the boundary/);
+      assert.match(notice, /Advisory only; does not change caps\/guards or authorize tools, permissions or acceptance/);
+      assert.equal(notice.includes("Tools stopped; only summary allowed"), remaining === 0);
+      assert.equal(notice.includes("explicitly save applied edits, verify saved files with focused tests, then report_work with actual evidence"), remaining > 0 && remaining <= 3);
+      if (remaining > 0 && remaining <= 3) {
+        assert.match(notice, /Stop new edits and rereading/);
+        assert.match(notice, /report blocked with saved versus unsaved paths and unrun checks/);
+        assert.match(notice, /Unverified criteria stay unverified/);
+      }
+      assert.match(notice, /final model summary may not fit the input budget/);
+    }
+  }
+  for (const limit of [0, -1, 1.5, NaN, Infinity, 1001, Number.MAX_SAFE_INTEGER + 1, null]) {
+    assert.throws(() => chatToolRoundBudgetNotice(0, limit), /Choose a tool round limit of 1-1000/);
+    assert.throws(() => chatToolRoundLimit(limit), /Choose a tool round limit of 1-1000/);
+  }
+  for (const completed of [-1, 0.5, NaN, Infinity, 5, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => chatToolRoundBudgetNotice(completed, 4), /Completed inference rounds must be a safe integer from 0 to the hard limit/);
+  }
+  assert.equal(chatToolRoundLimit(), 30); // Existing cap validation remains unchanged.
+});
 
 function reference(content, id, priority, refine) {
   return { message:{ role:"system", content }, reference:{ ids:[id], priority, refine } };

@@ -13,7 +13,9 @@ const mcpPanelSource = fs.readFileSync(path.resolve(__dirname, "../src/webview/p
 const attributionStart = mcpPanelSource.indexOf("function mcpLaunchAttributionHtml(");
 const attributionEnd = mcpPanelSource.indexOf("\nfunction mcpPathSizeText(", attributionStart);
 assert(attributionStart >= 0 && attributionEnd > attributionStart);
-const renderer = mcpPanelSource.slice(attributionStart, attributionEnd) + "\n"
+const renderer = "const uiI18n = {resolved:'en'};\n"
+  + fs.readFileSync(path.resolve(__dirname, "../src/webview/panel/06-help.js"), "utf8") + "\n"
+  + mcpPanelSource.slice(attributionStart, attributionEnd) + "\n"
   + fs.readFileSync(path.resolve(__dirname, "../src/webview/panel/52-background-tasks.js"), "utf8");
 
 const rows = parseProcessTable(`

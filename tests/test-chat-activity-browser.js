@@ -6,6 +6,95 @@ const { chromium } = require(process.env.PKM_PLAYWRIGHT_PATH || "playwright");
 const { themes, applyTheme } = require("./ui-theme-fixtures");
 
 const webview = path.join(process.env.PKM_ACTIVITY_EXTENSION_ROOT || path.join(__dirname, ".."), "dist", "webview");
+test("Chat group menus copy paths without selecting a Chat or collapsing the group", async t => {
+  const {page, errors} = await open(t, 390);
+  const id = "chat_group_" + "a".repeat(32);
+  await page.evaluate(id => {
+    __state.library.groups = [{id, name:"Lead candidates"}];
+    window.dispatchEvent(new MessageEvent("message", {data:__state}));
+    document.getElementById("back").click();
+  }, id);
+  for (const groupId of [id, "ungroup"]) {
+    const group = page.locator(`[data-group-id="${groupId}"]`);
+    const wasOpen = await group.evaluate(node => node.open);
+    await group.getByRole("button", {name:"Group actions", exact:true}).click();
+    await page.getByRole("menuitem", {name:"Copy Path", exact:true}).click();
+    const copied = await page.evaluate(() => __posts.filter(post => post.type === "copyChatGroupPath").at(-1));
+    assert.equal(copied.id, groupId);
+    assert.equal(await group.evaluate(node => node.open), wasOpen);
+    await group.locator(":scope > summary").click({button:"right"});
+    assert(await page.getByRole("menuitem", {name:"Copy Path", exact:true}).isVisible());
+    await page.keyboard.press("Escape");
+  }
+  assert.deepEqual(errors, []);
+});
+
+for (const width of [1280, 390]) test(`Chat navigation clears old history immediately and accepts only the latest target (${width}px)`, async t => {
+  const { page, errors } = await open(t, width);
+  await page.evaluate(() => {
+    __state.chat.messages = [{ id:"old-history", role:"assistant", content:"PRIVATE OLD CHAT HISTORY", status:"complete" }];
+    __state.library.groups = [{ id:"pkm", name:"PKM" }, { id:"empty", name:"Empty" }];
+    __state.library.chats.push({ id:"other", title:"Other", groupId:"pkm", status:"idle" });
+    __state.chats = structuredClone(__state.library.chats);
+    window.dispatchEvent(new MessageEvent("message", { data:__state }));
+    document.getElementById("prompt").value = "Draft in original Chat";
+    document.getElementById("prompt").dispatchEvent(new Event("input"));
+    document.getElementById("back").click();
+  });
+  assert.equal(await page.locator(".chat-group-add").count(), 3, "Ungroup and empty user groups have add buttons, Trash does not");
+  const empty = page.locator('[data-group-id="empty"]');
+  await empty.locator(".chat-group-add").focus();
+  await page.keyboard.press("Enter");
+  const create = await page.evaluate(() => __posts.filter(post => post.type === "new").at(-1));
+  assert.equal(create.groupId, "empty");
+  assert(create.requestId);
+  assert(await empty.evaluate(node => node.open), "Group add must not collapse its summary");
+  assert.equal(await page.locator("#messages").textContent(), "");
+  assert.equal(await page.locator("#messages").getAttribute("aria-busy"), "true");
+  assert(await page.locator("#chat-navigation-status").isVisible());
+  assert(await page.locator("#composer").isHidden());
+  await page.evaluate(() => {
+    window.dispatchEvent(new MessageEvent("message", { data:structuredClone(__state) }));
+    window.dispatchEvent(new MessageEvent("message", { data:{ type:"delta", chatId:__state.chat.id, id:"old-history", text:"STALE DELTA" } }));
+  });
+  assert.equal(await page.locator("#messages").textContent(), "", "Uncorrelated old state/delta cannot restore old history");
+  await page.evaluate(requestId => {
+    const next = structuredClone(__state);
+    next.navigationRequestId = requestId;
+    next.chat = { ...next.chat, id:"created", title:"New chat", messages:[] };
+    next.chats.push({ id:"created", title:"New chat", groupId:"empty", status:"idle" });
+    next.library.chats = structuredClone(next.chats);
+    window.__createdState = next;
+    window.dispatchEvent(new MessageEvent("message", { data:next }));
+  }, create.requestId);
+  assert(await page.locator("#composer").isVisible());
+  assert.equal(await page.locator("#prompt").inputValue(), "");
+  assert.equal(await page.locator("#messages .message").count(), 0);
+  await page.selectOption("#chats", "other");
+  const first = await page.evaluate(() => __posts.filter(post => post.type === "select").at(-1));
+  await page.selectOption("#chats", chatId);
+  const latest = await page.evaluate(() => __posts.filter(post => post.type === "select").at(-1));
+  assert.notEqual(first.requestId, latest.requestId);
+  await page.evaluate(({ first, latest }) => {
+    window.__oldTarget = { ...structuredClone(__createdState), navigationRequestId:first.requestId,
+      chat:{ ...structuredClone(__createdState.chat), id:"other", messages:[{ id:"wrong", role:"assistant", status:"complete", content:"WRONG TARGET HISTORY" }] } };
+    window.dispatchEvent(new MessageEvent("message", { data:__oldTarget }));
+    window.dispatchEvent(new MessageEvent("message", { data:{ type:"error", requestId:first.requestId, message:"Stale failure" } }));
+    window.dispatchEvent(new MessageEvent("message", { data:{ ...structuredClone(__state), navigationRequestId:latest.requestId } }));
+  }, { first, latest });
+  assert.match(await page.locator("#messages").textContent(), /PRIVATE OLD CHAT HISTORY/);
+  assert.equal(await page.locator("#prompt").inputValue(), "Draft in original Chat");
+  await page.evaluate(() => window.dispatchEvent(new MessageEvent("message", { data:__oldTarget })));
+  assert.doesNotMatch(await page.locator("#messages").textContent(), /WRONG TARGET HISTORY/);
+  await page.selectOption("#chats", "other");
+  const failed = await page.evaluate(() => __posts.filter(post => post.type === "select").at(-1));
+  await page.evaluate(requestId => window.dispatchEvent(new MessageEvent("message", { data:{ type:"error", requestId, message:"Cannot load selected Chat" } })), failed.requestId);
+  assert.match(await page.locator("#error").textContent(), /Cannot load selected Chat/);
+  assert.equal(await page.locator("#messages").getAttribute("aria-busy"), "false");
+  assert.equal(await page.locator("#prompt").inputValue(), "Draft in original Chat");
+  assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  assert.deepEqual(errors, []);
+});
 test("Plan review is readable, context-bound, keyboard-accessible and safe on narrow themed views", async t => {
   const { page, errors } = await open(t, 320);
   await page.evaluate(() => {
@@ -190,7 +279,7 @@ test("retrieval inspector shows actual routing and only explicit reviews, with c
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
   assert.deepEqual(errors,[]);
 });
-test("Chat shows tokens and exact provider credits independently, including zero, partial coverage and localized narrow layouts", async t => {
+test("Chat shows credits to two decimal places with exact tooltip values, zero, partial coverage and localized narrow layouts", async t => {
   const { page, errors } = await open(t, 390);
   await page.evaluate(() => {
     const now = Date.now();
@@ -206,36 +295,61 @@ test("Chat shows tokens and exact provider credits independently, including zero
   });
   const message = page.locator('[data-message-id="credit-message"]');
   assert.match(await message.locator(":scope > .message-tokens:not(.message-credits)").innerText(), /123 in \/ 45 out tokens/);
-  assert.equal(await message.locator(".message-credits").innerText(), "1.000000001 credits");
+  assert.equal(await message.locator(".message-credits").innerText(), "1.00 credits");
+  assert.match(await message.locator(".message-credits").getAttribute("title"), /1\.000000001 credits/);
   assert.match(await message.locator(".message-credits").getAttribute("title"), /Memory and workers are accounted separately/);
   await message.locator(".activity > summary").click();
-  assert.match(await message.locator(".activity-usage").innerText(), /123 in \/ 45 out.*1\.000000001 credits/);
-  assert.match(await message.locator(".activity-usage").innerText(), /Cache usage not reported/);
+  assert.match(await message.locator(".activity-usage").innerText(), /123 in \/ 45 out.*1\.00 credits/);
+  assert.match(await message.locator(".activity-usage").getAttribute("title"), /1\.000000001 credits/);
+  assert.doesNotMatch(await message.locator(".activity-usage").innerText(), /Cache usage not reported/);
+  assert.match(await message.locator(".activity-usage").getAttribute("title"), /Cache usage not reported/);
+  for (const [raw, compact] of [["0.0259776", "0.03"], ["12.345678", "12.35"], ["0.000123456", "0.00"], ["0.72279315", "0.72"]]) {
+    await page.evaluate(raw => {
+      window.__state.chat.messages[0].budgetReceipts[0].ledger.credits = {
+        ...window.__state.chat.messages[0].creditUsage, credits:raw,
+      };
+      window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+    }, raw);
+    assert.match(await message.locator(".activity-usage").textContent(), new RegExp(`${compact.replace(".", "\\.")} credits$`));
+    assert((await message.locator(".activity-usage").getAttribute("title")).includes(`${raw} credits`));
+    assert.equal(await message.locator(".message-credits").innerText(), "1.00 credits");
+    assert.equal(await page.evaluate(() => window.__state.chat.messages[0].budgetReceipts[0].ledger.credits.credits), raw);
+  }
+  await page.evaluate(() => {
+    window.__state.chat.messages[0].budgetReceipts[0].ledger.credits = window.__state.chat.messages[0].creditUsage;
+    window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
+  });
   for (const cached of [0, 100]) {
     await page.evaluate(cached => {
       window.__state.chat.messages[0].budgetReceipts[0].ledger.providerUsage.cachedInputTokens = cached;
       window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
     }, cached);
-    assert.match(await message.locator(".activity-usage").textContent(), new RegExp(`${cached} cached input`));
-    assert.equal(await message.locator(".message-credits").innerText(), "1.000000001 credits");
+    const usageText = await message.locator(".activity-usage").textContent();
+    if (cached > 0) assert.match(usageText, /123 in \(100 cached\) \/ 45 out/);
+    else {
+      assert.doesNotMatch(usageText, /cached input|Cache usage not reported/);
+      assert.match(usageText, /123 in \/ 45 out.*1\.00 credits/);
+    }
+    assert.equal(await message.locator(".message-credits").innerText(), "1.00 credits");
   }
   await page.evaluate(() => {
     window.__state.chat.messages[0].budgetReceipts[0].ledger.providerUsage.cachedInputTokens = 124;
     window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
   });
-  assert.match(await message.locator(".activity-usage").textContent(), /Cache usage not reported/);
+  assert.doesNotMatch(await message.locator(".activity-usage").textContent(), /cached|Cache usage not reported/);
+  assert.match(await message.locator(".activity-usage").getAttribute("title"), /Cache usage not reported/);
   await page.evaluate(() => {
     Object.assign(window.__state.chat.messages[0].creditUsage, { status:"partial", reportedCalls:1, totalCalls:2, credits:"0", totalNanoAiu:"0" });
     window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
   });
-  assert.equal(await message.locator(".message-credits").innerText(), "0 credits (partial: 1/2 calls)");
+  assert.equal(await message.locator(".message-credits").innerText(), "0.00 credits (partial: 1/2 calls)");
   await page.evaluate(localization => {
     window.__state.localization = localization;
     window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
   }, { locale:"zh-hans", english:JSON.parse(fs.readFileSync(path.join(__dirname, "../resources/locales/en.json"))).strings,
     strings:JSON.parse(fs.readFileSync(path.join(__dirname, "../resources/locales/zh-hans.json"))).strings });
-  assert.equal(await message.locator(".message-credits").innerText(), "0 Credit（不完整：1/2 次调用）");
-  assert.match(await message.locator(".activity-usage").textContent(), /未报告缓存用量/);
+  assert.equal(await message.locator(".message-credits").innerText(), "0.00 Credit（不完整：1/2 次调用）");
+  assert.match(await message.locator(".activity-usage").getAttribute("title"), /未报告缓存用量/);
   await page.evaluate(() => {
     delete window.__state.chat.messages[0].creditUsage;
     window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
@@ -258,8 +372,8 @@ test("Chat shows tokens and exact provider credits independently, including zero
     window.__state.chat.messages[0].budgetReceipts = [{ round:0, ledger:{ credits:window.__state.chat.messages[0].creditUsage } }];
     window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
   });
-  assert.equal(await message.locator(".message-credits").innerText(), "0 Credit");
-  assert.equal(await message.locator(".activity-usage").textContent(), "0 Credit");
+  assert.equal(await message.locator(".message-credits").innerText(), "0.00 Credit");
+  assert.equal(await message.locator(".activity-usage").textContent(), "0.00 Credit");
   await page.evaluate(() => {
     const message = window.__state.chat.messages[0];
     message.usage = { inputTokens:0, outputTokens:0 };
@@ -539,6 +653,28 @@ for (const width of [360, 1280]) test(`Activity categories preserve chronology, 
   assert.deepEqual(errors, []);
 });
 
+test("Activity waits with the input wizard and resumes its working wizard without a stale terminal pose", async t => {
+  const { page, errors } = await open(t);
+  await page.evaluate(() => {
+    __state.busy = true;
+    __state.chat.status = "completed";
+    __state.chat.progress = { attemptId:"wizard-wait", startedAt:Date.now(), status:"running",
+      steps:[{ label:"Approve tool", status:"waiting", at:Date.now() }] };
+    window.dispatchEvent(new MessageEvent("message", { data:__state }));
+  });
+  const icon = page.locator('.activity[data-attempt="wizard-wait"] > summary > .chat-status-indicator').first();
+  assert.equal(await icon.getAttribute("data-state"), "waiting-input");
+  assert.equal(await icon.locator(".wizard-wave").count(), 1);
+  await page.evaluate(() => {
+    __state.chat.progress.steps.push({ label:"Executing tool", status:"running", at:Date.now() });
+    window.dispatchEvent(new MessageEvent("message", { data:__state }));
+  });
+  assert.equal(await icon.getAttribute("data-state"), "running");
+  assert.equal(await icon.locator(".wizard-wave,.wizard-sleeping").count(), 0);
+  assert.equal(await icon.locator(".pixel-wizard-frame").count(), 4);
+  assert.deepEqual(errors, []);
+});
+
 test("running activity is expanded and collapses once the run finishes", async t => {
   const { page, errors } = await open(t, 360);
   await page.evaluate(() => {
@@ -759,15 +895,21 @@ test("Chat picker mirrors groups and nested workers, including collapsed groups 
   await page.locator('[data-group-id="pkm"] > summary').click();
   await page.locator('[data-chat-id="other"]').click();
   await page.evaluate(() => {
-    window.dispatchEvent(new MessageEvent("message", { data:__state }));
+    const request = __posts.filter(post => post.type === "select").at(-1);
+    __state.chat = { ...__state.chat, id:request.id, title:"Other" };
+    window.dispatchEvent(new MessageEvent("message", { data:{ ...__state, navigationRequestId:request.requestId } }));
   });
   assert.equal(await page.locator('#chats optgroup[label="PKM"] option').count(), 3, "collapsed groups remain switchable");
   await page.selectOption("#chats", "grandchild");
-  assert.deepEqual(await page.evaluate(() => __posts.filter(post => post.type === "select").at(-1)), { type:"select", id:"grandchild" });
+  const selected = await page.evaluate(() => __posts.filter(post => post.type === "select").at(-1));
+  assert.equal(selected.id, "grandchild");
+  assert(selected.requestId);
   await page.evaluate(() => {
+    const request = __posts.filter(post => post.type === "select").at(-1);
+    __state.chat = { ...__state.chat, id:request.id, title:"Nested worker" };
     __state.library.groups[0].name = "Renamed group";
     __state.library.chats.find(chat => chat.id === "other").groupId = "pkm";
-    window.dispatchEvent(new MessageEvent("message", { data:__state }));
+    window.dispatchEvent(new MessageEvent("message", { data:{ ...__state, navigationRequestId:request.requestId } }));
   });
   assert.equal(await page.locator('#chats optgroup[label="Renamed group"] option[value="other"]').count(), 1);
   assert.equal(await page.evaluate(() => __posts.some(post => post.type === "send")), false);
@@ -783,9 +925,13 @@ for (const width of [280, 390, 1280]) test(`Chat header actions overlay leftward
     window.dispatchEvent(new MessageEvent("message", { data:__state }));
   });
   assert(await panel.isHidden());
-  assert.equal(await page.locator(".chat-toolbar > button").count(), 0, "all header commands are tucked into the action drawer");
+  assert.equal(await page.locator(".chat-toolbar > button").count(), 1, "Back navigation stays outside the action drawer");
+  assert(await page.locator(".chat-toolbar > #back").isVisible());
   const before = await page.locator("#chats").boundingBox();
-  assert(before.width >= width - 72, "the selector should own almost all header width");
+  const back = await page.locator("#back").boundingBox();
+  const status = await page.locator("#chat-status > .chat-status-indicator").boundingBox();
+  assert.equal(status.width, 28);
+  assert(before.width >= width - 56 - status.width - back.width - 6, "Back and the uniform enlarged status slot have explicit width budgets");
   const header = await page.locator(".chat-toolbar").boundingBox();
   assert(header.height <= 44, "the header stays a single compact row");
   await toggle.hover();
@@ -802,7 +948,7 @@ for (const width of [280, 390, 1280]) test(`Chat header actions overlay leftward
   await toggle.focus();
   assert(await panel.isVisible(), "keyboard focus opens the commands");
   await page.keyboard.press("Tab");
-  assert.equal(await page.locator("#back").evaluate(node => node === document.activeElement), true);
+  assert.equal(await page.locator("#persona-profiles").evaluate(node => node === document.activeElement), true);
   await page.keyboard.press("Escape");
   assert(await panel.isHidden());
   assert.equal(await toggle.evaluate(node => node === document.activeElement), true);
@@ -825,7 +971,7 @@ for (const width of [280, 390, 1280]) test(`Chat header actions overlay leftward
       execution:{ state:"running" } };
     window.dispatchEvent(new MessageEvent("message", { data:__state }));
   });
-  assert((await page.locator("#chats").boundingBox()).width >= width - 80, "remote execution status stays compact too");
+  assert((await page.locator("#chats").boundingBox()).width >= width - 56 - status.width - back.width - 6, "remote execution uses the same status budget alongside persistent Back navigation");
   assert.match(await page.locator("#chat-status").getAttribute("title"), /Controlled execution/);
   for (const theme of Object.keys(themes)) {
     await applyTheme(page, theme);
@@ -1174,10 +1320,34 @@ test("upward wheel retrieves earlier messages even when the current page cannot 
   assert.deepEqual(errors, []);
 });
 
+test("token-counting implementation notices stay out of transcripts while actionable warnings remain visible", async t => {
+  const { page, errors } = await open(t);
+  const notices = [
+    "Copilot SDK models do not expose output token counting. The separate 100,000-byte inference output limit remains active. Bytes are not tokens.",
+    "Output token counting is unavailable. The per-inference token limit can only be checked from valid provider usage.",
+  ];
+  for (const notice of notices) {
+    await page.evaluate(notice => {
+      __state.chat.messages = [{ id:"technical-notice", role:"assistant", content:"Actual answer", status:"complete", outputBudgetWarning:notice }];
+      window.dispatchEvent(new MessageEvent("message", { data:__state }));
+    }, notice);
+    assert.match(await page.locator("#messages").innerText(), /Actual answer/);
+    assert(!(await page.locator("#messages").innerText()).includes(notice));
+    assert.equal(await page.evaluate(() => __state.chat.messages[0].outputBudgetWarning), notice, "Diagnostic evidence is retained");
+  }
+  await page.evaluate(() => {
+    __state.chat.messages[0].outputBudgetWarning = "Inference convergence stop: repeated-failure; round 3.";
+    window.dispatchEvent(new MessageEvent("message", { data:__state }));
+  });
+  assert.match(await page.locator("#messages").innerText(), /Inference convergence stop: repeated-failure/);
+  assert.deepEqual(errors, []);
+});
+
 test("Chat List has no global Portal entry and keeps the draft without submitting", async t => {
   const { page, errors } = await open(t);
   await page.locator("#prompt").fill("Keep my unsent draft");
-  await page.locator("#chat-actions-toggle").hover();
+  assert.equal(await page.locator("#chat-actions-panel").isVisible(), false);
+  assert.equal(await page.locator("#back").isVisible(), true);
   await page.getByRole("button", { name:"Back to Chat List", exact:true }).click();
   assert.equal(await page.locator("#peer-collaboration").count(), 0);
   const posts = await page.evaluate(() => window.__posts);
@@ -1374,9 +1544,9 @@ test("Portal connectivity stays independent of local wizard states and only live
       window.dispatchEvent(new MessageEvent("message", {data:__state}));
     }, status);
     assert.equal(await page.locator("#chat-status > .chat-status-indicator").getAttribute("data-state"), indicator);
-    assert.equal(await page.locator("#chat-status .portal-scene").count(), 0, "idle Portal and persisted command history cannot impersonate current work");
+    assert.equal(await page.locator("#chat-status .portal-ring").count(), 1, "Portal role stays visible without changing the local execution state");
     assert.equal(await page.locator("#chat-portal .portal-open").count(), 1);
-    assert.equal(await page.evaluate(() => PkmChatRole(__state.chats[0])), undefined);
+    assert.equal(await page.evaluate(() => PkmChatRole(__state.chats[0])), "controlled");
   }
   for (const [key, role] of [["workerManager","manager"],["workerParentChatId","worker"]]) {
     await page.evaluate(key => {
@@ -1413,7 +1583,8 @@ test("Portal connectivity stays independent of local wizard states and only live
   });
   assert.equal(await page.locator("#chat-status .portal-scene").count(), 0, "another connected Chat does not inherit incoming execution");
   assert.equal(await page.locator('#chat-status > [data-state="paused"]').count(), 1);
-  assert.equal(await page.locator('.chat-list-open .chat-status-indicator[data-chat-role="controlled"]').count(), 1, "the running owner's list status stays controlled while another Chat is open");
+  assert.equal(await page.locator('.chat-list-open .chat-status-indicator[data-chat-role="controlled"]').count(), 2, "both paired Chats retain the role while only the execution owner is running");
+  assert.equal(await page.locator('.chat-list-open .chat-status-indicator[data-chat-role="controlled"][data-state="running"]').count(), 1);
   await page.evaluate(() => {
     __state.chat = __ownerChat;
     __state.portal = __ownerPortal;
@@ -1471,6 +1642,229 @@ test("delayed acceptance does not clear an identical new draft", async t => {
   assert.deepEqual(errors, []);
 });
 
+test("all nine Chat states have wizard artwork, distinct waiting animations and accessible motion fallbacks", async t => {
+  const { page, errors } = await open(t);
+  const states = ["running", "idle", "awaiting-input", "awaiting-result", "completed", "new-result", "paused", "stopped", "failed"];
+  const inspect = () => page.evaluate(states => {
+    document.getElementById("wizard-matrix")?.remove();
+    const root = document.createElement("section"); root.id = "wizard-matrix"; document.body.append(root);
+    return states.flatMap(state => [undefined, "manager", "worker", "controller", "controlled"].map(role => {
+      const icon = PkmChatStatusIndicator(state, role); root.append(icon);
+      return { state, role, svg:!!icon.querySelector(".pixel-wizard,.portal-side-wizard"), label:icon.getAttribute("aria-label"),
+        unread:icon.dataset.unread, wave:!!icon.querySelector(".wizard-wave"), glass:!!icon.querySelector(".wizard-hourglass"),
+        cup:!!icon.querySelector(".wizard-break-cup"), idle:icon.classList.contains("wizard-idle"),
+        sleeping:icon.classList.contains("wizard-sleeping"), snore:icon.querySelector(".wizard-zzz")?.textContent,
+        size:[icon.getBoundingClientRect().width, icon.getBoundingClientRect().height],
+        artworkSize:[icon.querySelector("svg").getBoundingClientRect().width, icon.querySelector("svg").getBoundingClientRect().height],
+        sleepingArtwork:icon.classList.contains("wizard-sleeping") ? icon.querySelector("svg").innerHTML : undefined,
+        artwork:icon.querySelector("svg").innerHTML,
+        unreadEnvelope:!!icon.querySelector(".wizard-unread"),
+        clothingColors:[...icon.querySelectorAll(".wizard-clothing")].map(part => getComputedStyle(part).fill),
+        trimColors:[...icon.querySelectorAll(".wizard-clothing-trim")].map(part => getComputedStyle(part).fill),
+        stateAttr:icon.dataset.state,
+        portalCount:icon.querySelectorAll(".portal-ring").length,
+        portalColor:icon.querySelector(".portal-ring") ? getComputedStyle(icon.querySelector(".portal-ring")).stroke : undefined,
+        attention:icon.querySelectorAll(".wizard-attention").length,
+        light:getComputedStyle(icon,"::before").backgroundColor,
+        lightBorder:getComputedStyle(icon,"::before").borderColor,
+        lightRadius:getComputedStyle(icon,"::before").borderRadius,
+        motions:[...icon.querySelectorAll(".wizard-wave,.wizard-sand,.wizard-hourglass,.wizard-unread,.wizard-break-breathe,.pixel-wizard-frame,.wizard-snore,.wizard-eye")]
+          .map(node => ({ name:getComputedStyle(node).animationName, play:getComputedStyle(node).animationPlayState })) };
+    }));
+  }, states);
+  const normal = await inspect();
+  for (const item of normal) {
+    assert(item.svg && item.label, JSON.stringify(item));
+    const clothing = item.role === "manager" ? "rgb(207, 98, 98)" : item.role === "worker" ? "rgb(84, 168, 108)" : "rgb(153, 131, 206)";
+    const trim = item.role === "manager" ? "rgb(242, 177, 177)" : item.role === "worker" ? "rgb(181, 224, 192)" : "rgb(200, 180, 239)";
+    assert(item.clothingColors.length && item.trimColors.length, "each pose exposes clothing, not skin or equipment, for role colors");
+    assert(item.clothingColors.every(color => color === clothing), `${item.state}/${item.role}: consistent garment color`);
+    assert(item.trimColors.every(color => color === trim), `${item.state}/${item.role}: matching garment trim`);
+    assert.deepEqual(item.size, [28, 28], `${item.state}/${item.role}: uniform status slot`);
+    assert.deepEqual(item.artworkSize, [28, 28], `${item.state}/${item.role}: enlarged artwork`);
+    assert.equal(item.portalCount, ["controller","controlled"].includes(item.role) ? 1 : 0);
+    if (item.portalCount) assert.equal(item.portalColor, "rgb(62, 166, 255)");
+    if (item.state === "idle") assert.equal(item.sleepingArtwork,
+      normal.find(other => other.state === "completed" && other.role === item.role).sleepingArtwork,
+      "Idle and Completed use exactly the same desk-sleep artwork");
+    if (item.state === "awaiting-input") {
+      assert(item.wave); assert(!item.cup); assert.equal(item.attention,0);
+      assert.equal(item.light,"rgb(227, 179, 65)");
+    }
+    if (item.state === "awaiting-result") { assert(item.glass); assert(!item.cup); }
+    if (item.state === "idle") {
+      assert(item.idle); assert(!item.cup); assert(item.sleeping); assert.equal(item.snore, "zZZ");
+      assert.equal(item.stateAttr, "idle"); assert.match(item.label, /Idle/);
+      assert.equal(item.light, "rgba(0, 0, 0, 0)", "idle status light is hollow");
+      assert.equal(item.lightBorder, "rgb(82, 187, 128)", "idle status light uses completion green");
+      assert.equal(item.lightRadius, "50%", "idle status light is circular");
+    }
+    if (item.state === "completed") assert.equal(item.light, "rgb(82, 187, 128)", "completed status remains solid green");
+    assert.equal(item.unread === "true", item.state === "new-result");
+    if (item.state === "new-result") {
+      assert.equal(item.artwork, normal.find(other => other.state === "stopped" && other.role === item.role).artwork,
+        "unread completion uses the stopped artwork, differing only in the green status light");
+      assert.equal(item.light, "rgb(82, 187, 128)");
+      assert.equal(item.stateAttr, "completed", "visual stopped pose does not change completion status");
+      assert.match(item.label, /Completed: unread result/);
+      assert.equal(item.unreadEnvelope, false);
+    }
+    assert(item.motions.length || item.state === "failed", JSON.stringify(item));
+  }
+  const poses = () => page.locator("#wizard-matrix .wizard-wave,#wizard-matrix .wizard-sand")
+    .evaluateAll(nodes => nodes.map(node => getComputedStyle(node).transform));
+  const before = await poses();
+  await page.waitForTimeout(380);
+  assert.notDeepEqual(await poses(), before, "waiting poses actually move rather than only naming a keyframe");
+  await page.evaluate(() => document.body.classList.add("chat-backgrounded"));
+  for (const item of await inspect()) assert(item.motions.every(motion => motion.play === "paused"));
+  await page.evaluate(() => document.body.classList.remove("chat-backgrounded"));
+  await page.emulateMedia({ reducedMotion:"reduce" });
+  for (const item of await inspect()) assert(item.motions.every(motion => motion.name === "none"));
+  assert.deepEqual(errors, []);
+});
+
+test("waiting-result hourglass flips repeatedly around its center without rotating the wizard", async t => {
+  const { page, errors } = await open(t);
+  await page.evaluate(() => {
+    const icon = PkmChatStatusIndicator("awaiting-result"); icon.id = "hourglass-flip-check"; document.body.append(icon);
+    for (const animation of icon.getAnimations({ subtree:true })) animation.pause();
+  });
+  const frame = time => page.locator("#hourglass-flip-check").evaluate((icon, time) => {
+    const glass = icon.querySelector(".wizard-hourglass");
+    for (const animation of glass.getAnimations({ subtree:true })) animation.currentTime = time;
+    return { glass:getComputedStyle(glass).transform, wizard:getComputedStyle(icon.querySelector(".wizard-break-breathe")).transform,
+      sandY:glass.querySelector(".wizard-sand").getBoundingClientRect().y,
+      sandBottom:glass.querySelector(".wizard-sand").getBoundingClientRect().bottom,
+      floorY:Math.max(...[...glass.querySelectorAll(".wizard-hourglass-cap")].map(cap => cap.getBoundingClientRect().top)),
+      iterations:getComputedStyle(glass).animationIterationCount, origin:getComputedStyle(glass).transformOrigin };
+  }, time);
+  const start = await frame(0), flipped = await frame(2000), repeated = await frame(6000);
+  assert.equal(start.glass, "matrix(1, 0, 0, 1, 0, 0)");
+  assert.equal(flipped.glass, "matrix(-1, 0, 0, -1, 0, 0)");
+  assert.equal(repeated.glass, flipped.glass);
+  assert.equal(flipped.iterations, "infinite");
+  assert.equal(flipped.origin, "3px 5px");
+  assert.equal(flipped.wizard, start.wizard);
+  assert.notEqual((await frame(1800)).glass, start.glass, "the turn has intermediate frames");
+  for (const [early,late] of [[0,1600],[2000,3600],[4000,5600],[6000,7600]]) {
+    assert((await frame(late)).sandY > (await frame(early)).sandY, `sand falls downward at ${early}ms, even after inversion`);
+  }
+  assert.equal((await frame(1600)).sandY,(await frame(3600)).sandY, "both orientations drain to the same lower chamber");
+  for (const time of [1600,3600,5600,7600]) {
+    const drained = await frame(time);
+    assert(Math.abs(drained.sandBottom - drained.floorY) < .01, `sand rests directly on the lower cap at ${time}ms`);
+  }
+  assert.deepEqual(errors, []);
+});
+
+test("Portal direction preserves ordinary, manager and worker clothes in every state", async t => {
+  const {page, errors} = await open(t);
+  const results = await page.evaluate(() => {
+    return ["controller", "controlled"].flatMap(direction => [undefined, "manager", "worker"].flatMap(clothing => {
+      const chat = {manager:clothing === "manager", workerParentChatId:clothing === "worker" ? "parent" : undefined,
+        portal:{binding:{role:direction}}};
+      return ["running", "idle", "awaiting-input", "awaiting-result", "completed", "new-result", "paused", "stopped", "failed"].map(status => {
+        const icon = PkmChatStatusIndicator(status, PkmChatRole(chat), PkmChatClothingRole(chat));
+        document.body.append(icon);
+        const result = {direction, clothing, status, role:icon.dataset.chatRole,
+          colors:[...icon.querySelectorAll(".wizard-clothing")].map(part => getComputedStyle(part).fill),
+          rings:icon.querySelectorAll(".portal-ring").length};
+        icon.remove(); return result;
+      });
+    }));
+  });
+  for (const result of results) {
+    assert.equal(result.role, result.direction);
+    assert.equal(result.rings, 1);
+    const expected = result.clothing === "manager" ? "rgb(207, 98, 98)" : result.clothing === "worker" ? "rgb(84, 168, 108)" : "rgb(153, 131, 206)";
+    assert(result.colors.length && result.colors.every(color => color === expected), JSON.stringify(result));
+  }
+  assert.deepEqual(errors, []);
+});
+
+test("Portal header, details and Chat List update clothes when the base role changes", async t => {
+  const {page, errors} = await open(t);
+  for (const direction of ["controller", "controlled"]) for (const baseRole of ["manager", "worker", "chat"]) {
+    await page.evaluate(({direction, baseRole}) => {
+      const portal = {connected:true, binding:{role:direction, peerName:"Peer"}, permissions:{grants:[], effective:{}}, observations:[], transfers:[], receipts:[]};
+      Object.assign(__state.chat, {workerManager:baseRole === "manager", workerParentChatId:baseRole === "worker" ? "parent" : undefined, portal});
+      __state.workerOverview = undefined;
+      __state.portal = portal;
+      const item = {id:__state.chat.id, title:__state.chat.title, status:"idle", groupId:"ungroup",
+        manager:baseRole === "manager", workerParentChatId:baseRole === "worker" ? "parent" : undefined, portal};
+      __state.chats = [item];
+      __state.library.chats = [item];
+      window.dispatchEvent(new MessageEvent("message", {data:__state}));
+    }, {direction, baseRole});
+    const expected = baseRole === "manager" ? "rgb(207, 98, 98)" : baseRole === "worker" ? "rgb(84, 168, 108)" : "rgb(153, 131, 206)";
+    for (const selector of ["#chat-status", ".portal-details .portal-wizard", ".chat-list-open"]) {
+      const colors = await page.locator(selector).locator(".wizard-clothing").evaluateAll(parts => parts.map(part => getComputedStyle(part).fill));
+      assert(colors.length && colors.every(color => color === expected), `${selector}/${direction}/${baseRole}: ${colors}`);
+    }
+  }
+  assert.deepEqual(errors, []);
+});
+
+test("sleeping ZZZ leaves clear space for the upper-right status dot", async t => {
+  const { page, errors } = await open(t);
+  const results = await page.evaluate(() => {
+    return ["idle","completed"].flatMap(state => [undefined,"controller","controlled"].map(role => {
+      const icon = PkmChatStatusIndicator(state,role); document.body.append(icon);
+      const badge = getComputedStyle(icon,"::before"), bounds = icon.getBoundingClientRect();
+      const badgeLeft = bounds.right - parseFloat(badge.width) - parseFloat(badge.borderLeftWidth) - parseFloat(badge.borderRightWidth);
+      const snoreRight = Math.max(...[...icon.querySelectorAll(".wizard-snore")].map(letter => letter.getBoundingClientRect().right));
+      icon.remove(); return {state,role,gap:badgeLeft-snoreRight};
+    }));
+  });
+  for (const result of results) assert(result.gap >= 1, JSON.stringify(result));
+  assert.deepEqual(errors,[]);
+});
+
+test("failed wizard stirs, explodes once, then keeps blinking while staying sooty", async t => {
+  const { page, errors } = await open(t);
+  await page.evaluate(() => {
+    const icon = PkmChatStatusIndicator("failed", "manager"); icon.id = "failure-sequence"; document.body.append(icon);
+    for (const animation of icon.getAnimations({ subtree:true })) animation.pause();
+  });
+  const frame = time => page.evaluate(time => {
+    const icon = document.getElementById("failure-sequence");
+    for (const animation of icon.getAnimations({ subtree:true })) animation.currentTime = time;
+    const style = selector => getComputedStyle(icon.querySelector(selector));
+    return { stir:Number(style(".wizard-failure-stir").opacity), blast:Number(style(".wizard-failure-blast").opacity),
+      face:Number(style(".wizard-failure-aftermath").opacity), eyes:style(".wizard-eye").transform,
+      iterations:style(".wizard-eye").animationIterationCount };
+  }, time);
+  assert.deepEqual(await frame(400), { stir:1, blast:0, face:0, eyes:"matrix(1, 0, 0, 1, 0, 0)", iterations:"infinite" });
+  const blast = await frame(1440);
+  assert.equal(blast.stir, 0); assert(blast.blast > .9);
+  assert.equal((await frame(2000)).face, 1);
+  for (const time of [2680, 3360, 6680, 7360, 10680, 11360]) {
+    const blinking = await frame(time);
+    assert.match(blinking.eyes, /0\.1,/);
+    assert.equal(blinking.face, 1); assert.equal(blinking.blast, 0); assert.equal(blinking.stir, 0);
+  }
+  for (const time of [2400, 3000, 3600, 8000]) {
+    const still = await frame(time);
+    assert.equal(still.eyes, "matrix(1, 0, 0, 1, 0, 0)");
+    assert.equal(still.face, 1); assert.equal(still.blast, 0); assert.equal(still.stir, 0);
+  }
+  await page.emulateMedia({ reducedMotion:"reduce" });
+  assert.equal(await page.locator("#failure-sequence .wizard-failure-stir").evaluate(node => getComputedStyle(node).display), "none");
+  assert.equal(await page.locator("#failure-sequence .wizard-failure-blast").evaluate(node => getComputedStyle(node).display), "none");
+  assert.equal(await page.locator("#failure-sequence .wizard-failure-aftermath").evaluate(node => getComputedStyle(node).opacity), "1");
+  await page.evaluate(() => {
+    __state.chats.find(chat => chat.id === __state.chat.id).status = "failed";
+    __state.chat.status = "failed";
+    window.dispatchEvent(new MessageEvent("message", { data:__state }));
+    window.__failureHeader = document.querySelector("#chat-status > .wizard-sooty");
+    window.dispatchEvent(new MessageEvent("message", { data:structuredClone(__state) }));
+  });
+  assert.equal(await page.evaluate(() => !!__failureHeader && __failureHeader === document.querySelector("#chat-status > .wizard-sooty")), true,
+    "unchanged state updates must not restart the one-shot failure sequence");
+  assert.deepEqual(errors, []);
+});
+
 test("terminal wizards sleep side-on at a desk with animated zZZ; failures keep a red light", async t => {
     const { page } = await open(t);
     const results = await page.evaluate(() => {
@@ -1478,9 +1872,25 @@ test("terminal wizards sleep side-on at a desk with animated zZZ; failures keep 
       for (const role of [undefined, "manager", "worker", "controller", "controlled"]) for (const state of ["completed", "new-result", "failed", "running", "paused", "stopped"]) {
         const node = window.PkmChatStatusIndicator(state, role);
         document.body.append(node);
+        const pose = node.querySelector(".wizard-failure-aftermath") || node;
+        const wand = pose.querySelector('.pixel-wizard-frame[data-frame="0"] .wizard-stirrer')?.getBoundingClientRect();
+        const pot = pose.querySelector(".wizard-cauldron")?.getBoundingClientRect();
+        const wandInPot = !!(wand && pot && wand.left < pot.right && wand.right > pot.left && wand.top < pot.bottom && wand.bottom > pot.top);
         results.push({ state, role, label:node.getAttribute("aria-label"), stateAttr:node.dataset.state,
+          wandInPot,
           sleeping:node.classList.contains("wizard-sleeping"), sooty:node.classList.contains("wizard-sooty"),
           onBreak:node.classList.contains("wizard-on-break"), cup:!!node.querySelector(".wizard-break-cup"),
+          held:node.classList.contains("wizard-held"), cauldron:!!node.querySelector(".wizard-cauldron"),
+          stirrers:node.querySelectorAll('.pixel-wizard-frame[data-frame="0"] .wizard-stirrer').length,
+          stirFrames:[...node.querySelectorAll(".pixel-wizard-frame")].map(frame => ({
+            frame:frame.dataset.frame, opacity:getComputedStyle(frame).opacity, animation:getComputedStyle(frame).animationName,
+          })),
+          eyeAnimations:[...node.querySelectorAll(".wizard-eye")].map(eye => getComputedStyle(eye).animationName),
+          sootyFace:node.querySelector(".wizard-failure-aftermath .wizard-face")?.getAttribute("fill"),
+          aftermathStirrer:!!node.querySelector('.wizard-failure-aftermath .pixel-wizard-frame[data-frame="0"] .wizard-stirrer'),
+          aftermathFrames:[...node.querySelectorAll(".wizard-failure-aftermath .pixel-wizard-frame")].map(frame => ({
+            frame:frame.dataset.frame, opacity:getComputedStyle(frame).opacity, animation:getComputedStyle(frame).animationName,
+          })),
           steam:node.querySelectorAll(".wizard-break-steam").length,
           zzz:node.querySelector(".wizard-zzz")?.textContent, eyes:node.querySelectorAll(".wizard-eye").length,
           facing:node.querySelector("svg")?.dataset.facing, desk:!!node.querySelector(".wizard-desk"),
@@ -1496,20 +1906,33 @@ test("terminal wizards sleep side-on at a desk with animated zZZ; failures keep 
     for (const result of results) {
       assert(result.label);
       if (result.role) assert.match(result.label, new RegExp(result.role, "i"));
-      if (["completed", "new-result"].includes(result.state)) {
+      if (result.state === "completed") {
         assert.equal(result.sleeping, true); assert.equal(result.zzz, "zZZ"); assert.equal(result.light, "rgb(82, 187, 128)");
         assert.equal(result.facing, "side"); assert.equal(result.desk, true); assert(result.face <= 24);
         assert.equal(result.snores.length, 3); assert(result.snores.every(letter => letter.name === "wizard-snore"));
         assert.equal(new Set(result.snores.map(letter => letter.delay)).size, 3);
       } else if (result.state === "failed") {
         assert.equal(result.sooty, true); assert.equal(result.eyes, 2); assert(result.face <= 42);
+        assert.equal(result.sootyFace, "#39333d"); assert.equal(result.aftermathStirrer, true);
+        assert.equal(result.wandInPot, true, "the frozen stirrer still reaches into the cauldron");
+        for (const frame of result.aftermathFrames) {
+          assert.equal(frame.animation, "none", "hand remains still after the explosion");
+          assert.equal(frame.opacity, frame.frame === "0" ? "1" : "0");
+        }
         assert.equal(result.light, "rgb(239, 108, 108)"); assert.notEqual(result.lightDisplay, "none");
         assert.deepEqual(result.lightPosition, ["0px", "0px"]); assert.equal(result.lightShape, "50%");
-      } else if (["paused", "stopped"].includes(result.state)) {
-        assert.equal(result.onBreak, true); assert.equal(result.cup, true); assert.equal(result.steam, 2);
+      } else if (["paused", "stopped", "new-result"].includes(result.state)) {
+        assert.equal(result.held, true); assert.equal(result.cauldron, true); assert.equal(result.stirrers, 1);
+        assert.equal(result.wandInPot, true, "paused/stopped hands retain the active stirring position");
+        assert.equal(result.onBreak, false); assert.equal(result.cup, false); assert.equal(result.steam, 0);
+        assert.deepEqual(result.eyeAnimations, ["wizard-blink", "wizard-blink"]);
+        for (const frame of result.stirFrames) {
+          assert.equal(frame.animation, "none", "stirring is frozen, not merely slowed");
+          assert.equal(frame.opacity, frame.frame === "0" ? "1" : "0");
+        }
         assert.equal(result.sleeping, false); assert.equal(result.sooty, false); assert.equal(result.zzz, undefined);
-        assert.equal(result.stateAttr, result.state, "Paused and Stopped remain distinct states");
-        assert.equal(result.light, result.state === "paused" ? "rgb(227, 179, 65)" : "rgb(157, 163, 168)");
+        assert.equal(result.stateAttr, result.state === "new-result" ? "completed" : result.state, "Unread completion is not a stopped lifecycle");
+        assert.equal(result.light, result.state === "new-result" ? "rgb(82, 187, 128)" : result.state === "paused" ? "rgb(227, 179, 65)" : "rgb(239, 108, 108)");
         assert.equal(result.lightShape, "50%");
       }
       else { assert.equal(result.sleeping, false); assert.equal(result.sooty, false); }
@@ -1539,44 +1962,51 @@ test("terminal wizards sleep side-on at a desk with animated zZZ; failures keep 
     assert.deepEqual(animation, ["none", "none", "none", "none"]);
 });
 
-test("paused wizards take a tea break, animate gently, honor reduced motion and appear in Portal status", async t => {
+test("paused wizards freeze stirring, blink, honor reduced motion and appear in Portal status", async t => {
   const { page, errors } = await open(t, 390);
   await page.evaluate(() => {
     window.__state.chat.paused = true;
     window.__state.chats[0].status = window.__state.library.chats[0].status = "paused";
     window.dispatchEvent(new MessageEvent("message", {data:window.__state}));
   });
-  assert.equal(await page.locator('#chat-status .wizard-on-break[data-state="paused"]').count(), 1);
-  assert.equal(await page.locator('.chat-list-open .wizard-on-break[data-state="paused"]').count(), 1);
+  assert.equal(await page.locator('#chat-status .wizard-held[data-state="paused"]').count(), 1);
+  assert.equal(await page.locator('.chat-list-open .wizard-held[data-state="paused"]').count(), 1);
   assert.equal(await page.locator("#send").getAttribute("aria-label"), "Resume Chat");
   await page.locator("#send").click();
   assert.equal(await page.evaluate(() => __posts.filter(item => item.type === "resume").length), 1,
     "the new status animation does not change resume behavior");
-  const frames = () => page.locator("#chat-status .wizard-break-breathe, #chat-status .wizard-break-steam")
-    .evaluateAll(nodes => nodes.map(node => getComputedStyle(node).transform));
+  const frames = () => page.locator("#chat-status .pixel-wizard-frame")
+    .evaluateAll(nodes => nodes.map(node => ({transform:getComputedStyle(node).transform, opacity:getComputedStyle(node).opacity})));
   const before = await frames();
   await page.waitForTimeout(260);
   const after = await frames();
-  assert.equal(before.length, 3);
-  assert(before.every((value, index) => value !== after[index]), "body and both steam wisps actually animate");
+  assert.equal(before.length, 4);
+  assert.deepEqual(before, after, "body and stirring remain frozen");
+  const eyes = time => page.locator("#chat-status .wizard-eye").evaluateAll((nodes, time) => nodes.map(node => {
+    for (const animation of node.getAnimations()) { animation.pause(); animation.currentTime = time; }
+    return getComputedStyle(node).transform;
+  }), time);
+  const openEyes = await eyes(4400);
+  const closedEyes = await eyes(4500);
+  assert(openEyes.every((value, index) => value !== closedEyes[index]), "only the eyes blink");
   await page.evaluate(async () => {
     document.body.classList.add("chat-backgrounded");
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   });
-  const frozen = await frames();
+  const frozen = await page.locator("#chat-status .wizard-eye").evaluateAll(nodes => nodes.map(node => getComputedStyle(node).transform));
   await page.waitForTimeout(180);
-  assert.deepEqual(await frames(), frozen, "tea-break animation freezes in background views");
+  assert.deepEqual(await page.locator("#chat-status .wizard-eye").evaluateAll(nodes => nodes.map(node => getComputedStyle(node).transform)), frozen, "blinking freezes in background views");
   await page.evaluate(() => document.body.classList.remove("chat-backgrounded"));
   await page.emulateMedia({reducedMotion:"reduce"});
-  assert.deepEqual(await page.locator("#chat-status .wizard-break-breathe, #chat-status .wizard-break-steam, #chat-status .wizard-eye")
-    .evaluateAll(nodes => nodes.map(node => getComputedStyle(node).animationName)), ["none", "none", "none", "none", "none"]);
+  assert.deepEqual(await page.locator("#chat-status .wizard-eye")
+    .evaluateAll(nodes => nodes.map(node => getComputedStyle(node).animationName)), ["none", "none"]);
   await page.emulateMedia({reducedMotion:"no-preference"});
   for (const role of ["controller", "controlled"]) {
     await page.evaluate(role => {
       window.__state.portal = {connected:true, binding:{role, peerName:"Fixture peer"}};
       window.dispatchEvent(new MessageEvent("message", {data:window.__state}));
     }, role);
-    const indicator = page.locator("#chat-status .wizard-on-break");
+    const indicator = page.locator("#chat-status .wizard-held");
     assert.equal(await indicator.getAttribute("data-state"), "paused");
     assert.equal(await indicator.getAttribute("aria-label"), "Paused", "a connected Portal does not change the local wizard role");
     assert.equal(await page.locator("#chat-portal .portal-open").count(), 1,
@@ -1587,10 +2017,76 @@ test("paused wizards take a tea break, animate gently, honor reduced motion and 
     window.__state.chats[0].status = window.__state.library.chats[0].status = "running";
     window.dispatchEvent(new MessageEvent("message", {data:window.__state}));
   });
-  assert.equal(await page.locator("#chat-status .wizard-on-break").count(), 0);
+  assert.equal(await page.locator("#chat-status .wizard-held").count(), 0);
   assert.equal(await page.locator("#chat-status .portal-open").count(), 0, "resuming local work does not imply remote control");
   assert.equal(await page.locator('#chat-status > [data-state="running"]').count(), 1);
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth+1));
+  assert.deepEqual(errors, []);
+});
+
+for (const width of [1280, 390, 260]) test(`recovery guide text stays inside its button and above usage (${width}px)`, async t => {
+  const { page, errors } = await open(t, width);
+  for (const theme of Object.keys(themes)) {
+    await applyTheme(page, theme);
+    for (const fontSize of [13, 24]) {
+      for (const status of ["error", "failed", "cancelled"]) {
+        await page.evaluate(({ status, fontSize }) => {
+          document.documentElement.style.setProperty("--vscode-font-size", `${fontSize}px`);
+          __state.chat.messages = [{
+            id:"recovery-layout", role:"assistant", status, content:"Retained answer",
+            error:"The user objective remains open; the response or tool budget ended without verified acceptance or a concrete blocker.",
+            elapsedMs:33000, usage:{inputTokens:27282,outputTokens:298},
+          }];
+          window.dispatchEvent(new MessageEvent("message", { data:__state }));
+        }, { status, fontSize });
+        const guide = page.getByRole("button", { name:"Review recovery steps before retrying", exact:true });
+        const layout = await guide.evaluate(button => {
+          const box = button.getBoundingClientRect();
+          const message = button.closest(".message").getBoundingClientRect();
+          const usage = button.closest(".message").querySelector(".message-tokens").getBoundingClientRect();
+          const range = document.createRange(); range.selectNodeContents(button);
+          return {
+            width:box.width, height:box.height,
+            contained:[...range.getClientRects()].every(text => text.left >= box.left - 1
+              && text.right <= box.right + 1 && text.top >= box.top - 1 && text.bottom <= box.bottom + 1),
+            insideMessage:box.left >= message.left - 1 && box.right <= message.right + 1,
+            usageBelow:usage.top >= box.bottom - 1,
+            noOverflow:button.scrollWidth <= button.clientWidth + 1 && button.scrollHeight <= button.clientHeight + 1,
+          };
+        });
+        assert(layout.width > 100 && layout.height >= 28, JSON.stringify({ width, theme, fontSize, status, layout }));
+        assert(layout.contained && layout.insideMessage && layout.usageBelow && layout.noOverflow,
+          JSON.stringify({ width, theme, fontSize, status, layout }));
+      }
+    }
+  }
+  const guide = page.getByRole("button", { name:"Review recovery steps before retrying", exact:true });
+  await guide.focus();
+  await page.keyboard.press("Enter");
+  assert.deepEqual(await page.evaluate(() => __posts.filter(post => post.type === "openHelp").at(-1)),
+    { type:"openHelp", value:"agents" });
+  assert.equal(await page.evaluate(() => __posts.filter(post => ["send", "retry"].includes(post.type)).length), 0);
+  assert.deepEqual(errors, []);
+});
+
+test("Chat error actions use text-sized buttons that wrap within narrow views", async t => {
+  const { page, errors } = await open(t, 260);
+  await page.evaluate(() => window.dispatchEvent(new MessageEvent("message", {
+    data:{type:"error",message:"Model request failed"},
+  })));
+  const buttons = page.locator(".chat-error-actions button");
+  assert.equal(await buttons.count(), 3);
+  for (const button of await buttons.all()) {
+    const layout = await button.evaluate(node => {
+      const box = node.getBoundingClientRect();
+      const parent = node.parentElement.getBoundingClientRect();
+      return { width:box.width, fits:box.right <= parent.right + 1,
+        noOverflow:node.scrollWidth <= node.clientWidth + 1 && node.scrollHeight <= node.clientHeight + 1 };
+    });
+    assert(layout.width > 28 && layout.fits && layout.noOverflow, JSON.stringify(layout));
+  }
+  await page.getByRole("button", { name:"View troubleshooting steps", exact:true }).click();
+  assert.equal(await page.evaluate(() => __posts.filter(post => post.type === "openHelp").at(-1).value), "agents");
   assert.deepEqual(errors, []);
 });
 
@@ -1723,11 +2219,109 @@ test("readable search/edit activity stays safe, localized and inspectable withou
   assert.deepEqual(errors, []);
 });
 
-test("model activity distinguishes rounds and reserves waiting labels for the current round", async t => {
+for (const width of [1280, 390, 320]) {
+  test(`SDK Model Call contains chronological stages without duplicating usage (${width}px)`, async t => {
+    const { page, errors } = await open(t, width);
+    await page.evaluate(() => {
+      const now = Date.now() - 3000;
+      const progress = {attemptId:"sdk-hierarchy", model:"Auto", startedAt:now, status:"running", steps:[
+        {label:"Retrieving knowledge", category:"info", operation:"retrieval", status:"complete", at:now},
+        {label:"Connecting to model API", kind:"model", round:0, status:"complete", at:now + 10},
+        {label:"Starting Copilot SDK session", category:"info", operation:"model-access", status:"complete", at:now + 20},
+        {label:"Auto selected gpt-test", category:"info", operation:"model-access", status:"complete", at:now + 30},
+        {label:"Waiting for first output", kind:"model", round:0, status:"complete", at:now + 40},
+        {label:"Generating response", kind:"model", round:0, status:"complete", at:now + 50},
+        {label:"Completed tool: read_file", kind:"tool", toolCallId:"sdk-read", round:0, status:"complete", at:now + 60},
+        {label:"Generating response", kind:"model", round:1, status:"running", at:now + 70},
+      ]};
+      window.__state.busy = true;
+      window.__state.chat.progress = progress;
+      window.__state.chat.messages = [{id:"sdk-hierarchy", role:"assistant", status:"streaming", content:"", progress,
+        reasoningSummaries:[{round:1, text:"Public SDK summary."}],
+        budgetReceipts:[{round:0, ledger:{providerUsage:{inputTokens:100, outputTokens:20, cachedInputTokens:0}}}],
+        toolCalls:[{id:"sdk-read", name:"read_file", arguments:'{"path":"fixture"}', status:"complete", result:"fixture"}],
+      }];
+      window.dispatchEvent(new MessageEvent("message", {data:window.__state}));
+    });
+    const activity = page.locator('[data-message-id="sdk-hierarchy"] .workflow');
+    const call = activity.locator(".model-call");
+    assert.equal(await call.count(), 1);
+    assert.equal(await call.locator(":scope > summary").innerText(), "Model Call");
+    assert.notEqual(await call.getAttribute("open"), null);
+    const stages = await call.locator(".model-call-events > li > .workflow-event-line .activity-label, .model-call-events > li > details > summary .activity-label").allTextContents();
+    assert.deepEqual(stages, ["Start Session", "Select Model · gpt-test", "Inference · Auto", "Read fixture", "Inference · Auto working..."]);
+    assert.equal(await activity.locator(":scope > .workflow-events > li[data-operation='retrieval']").count(), 1);
+    assert.equal(await call.locator('[data-operation="retrieval"]').count(), 0);
+    assert.equal(await call.locator('.activity-usage:not([hidden])').count(), 1, "only the actual inference carries provider usage");
+    assert.equal(await call.locator(".activity-thinking").isVisible(), true);
+    const filter = activity.getByLabel("Activity type filter");
+    await filter.selectOption("cmd");
+    assert.equal(await call.isVisible(), true);
+    assert.equal(await call.locator('.model-call-events > li:not([hidden])').count(), 1);
+    await filter.selectOption("info");
+    assert.equal(await call.locator('.model-call-events > li:not([hidden])').count(), 2);
+    await filter.selectOption("all");
+    await call.locator(":scope > summary").click();
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent("message", {data:window.__state})));
+    assert.equal(await call.getAttribute("open"), null, "manual group collapse survives streaming");
+    await call.locator(":scope > summary").click();
+    await page.evaluate(() => {
+      window.__state.busy = false;
+      window.__state.chat.progress.status = "complete";
+      window.__state.chat.progress.steps.at(-1).status = "complete";
+      window.__state.chat.messages[0].status = "complete";
+      window.dispatchEvent(new MessageEvent("message", {data:window.__state}));
+    });
+    assert.equal(await call.getAttribute("open"), null, "completed calls fold automatically");
+    await activity.locator(":scope > summary").click();
+    await call.locator(":scope > summary").click();
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent("message", {data:window.__state})));
+    assert.notEqual(await call.getAttribute("open"), null, "historical call reopening survives refreshes");
+    assert.equal(await call.locator(":scope > summary .workflow-dot").getAttribute("aria-label"), "complete");
+    assert.equal(await call.locator(".activity-thinking").isVisible(), false, "completed inference details remain collapsed");
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+    assert.deepEqual(errors, []);
+  });
+}
+
+test("SDK calls stay separate and empty type-filter groups disappear", async t => {
   const { page, errors } = await open(t, 390);
   await page.evaluate(() => {
     const now = Date.now() - 3000;
-    const progress = { attemptId:"round-labels", startedAt:now, status:"running", steps:[
+    const progress = {attemptId:"sdk-separate", status:"failed", startedAt:now, finishedAt:now + 1000, steps:[
+      {label:"Starting Copilot SDK session", status:"complete", at:now},
+      {label:"Generating response", kind:"model", round:0, status:"complete", at:now + 10},
+      {label:"Retrieving more knowledge", category:"info", operation:"retrieval", status:"complete", at:now + 20},
+      {label:"Starting Copilot SDK session", category:"info", operation:"model-access", status:"failed", at:now + 30},
+    ]};
+    window.__state.busy = false;
+    window.__state.chat.messages = [{id:"sdk-separate", role:"assistant", status:"failed", content:"", progress}];
+    window.dispatchEvent(new MessageEvent("message", {data:window.__state}));
+  });
+  const activity = page.locator('[data-message-id="sdk-separate"] .workflow');
+  await activity.locator(":scope > summary").click();
+  const calls = activity.locator(".model-call");
+  assert.equal(await calls.count(), 2);
+  assert.equal(await calls.nth(0).locator(":scope > summary .workflow-dot").getAttribute("aria-label"), "complete");
+  assert.equal(await calls.nth(1).locator(":scope > summary .workflow-dot").getAttribute("aria-label"), "failed");
+  await calls.nth(0).locator(":scope > summary").click();
+  await calls.nth(1).locator(":scope > summary").click();
+  assert.equal(await calls.nth(0).locator(".model-call-events > li").count(), 2, "legacy setup without an operation still belongs to its call");
+  assert.equal(await calls.nth(1).locator(".model-call-events > li").count(), 1);
+  await activity.getByLabel("Activity type filter").selectOption("llm");
+  assert.equal(await calls.nth(0).isVisible(), true);
+  assert.equal(await calls.nth(1).isVisible(), false);
+  await activity.getByLabel("Activity type filter").selectOption("cmd");
+  assert.equal(await calls.nth(0).isVisible(), false);
+  assert.equal(await calls.nth(1).isVisible(), false);
+  assert.deepEqual(errors, []);
+});
+
+test("model activity uses compact model titles and keeps round details in tooltips", async t => {
+  const { page, errors } = await open(t, 390);
+  await page.evaluate(() => {
+    const now = Date.now() - 3000;
+    const progress = { attemptId:"round-labels", model:"gpt-test", startedAt:now, status:"running", steps:[
       { label:"Waiting for first output", kind:"model", round:0, at:now, status:"complete" },
       { label:"Generating response", kind:"model", round:0, at:now + 100, status:"complete" },
       { label:"Waiting for first output", kind:"model", round:1, at:now + 1000, status:"running" },
@@ -1740,17 +2334,19 @@ test("model activity distinguishes rounds and reserves waiting labels for the cu
   const activity = page.locator('[data-message-id="round-labels"] .workflow');
   const rows = activity.locator('.workflow-events > li[data-category="llm"]');
   assert.equal(await rows.count(), 2, "stages in one model round share one row");
-  assert.match(await rows.nth(0).innerText(), /Model round 1: Model response received/);
-  assert.match(await rows.nth(1).innerText(), /Model round 2: Waiting for model response/);
-  assert.match(await activity.locator(":scope > summary").innerText(), /Model round 2: Waiting for model response/);
+  assert.equal(await rows.nth(0).locator(".activity-label").innerText(), "gpt-test");
+  assert.equal(await rows.nth(1).locator(".activity-label").innerText(), "gpt-test working...");
+  assert.match(await rows.nth(1).locator(".activity-label").getAttribute("title"), /Model round 2/);
+  assert.match(await activity.locator(":scope > summary").innerText(), /gpt-test working/);
   assert.doesNotMatch(await activity.innerText(), /Waiting for first output/);
   await page.evaluate(localization => {
     window.__state.localization = localization;
     window.dispatchEvent(new MessageEvent("message", { data:window.__state }));
   }, { locale:"zh-hans", english:JSON.parse(fs.readFileSync(path.join(__dirname, "../resources/locales/en.json"))).strings,
     strings:JSON.parse(fs.readFileSync(path.join(__dirname, "../resources/locales/zh-hans.json"))).strings });
-  assert.match(await rows.nth(0).innerText(), /第 1 轮模型交互: 已收到模型响应/);
-  assert.match(await rows.nth(1).innerText(), /第 2 轮模型交互: 等待模型响应/);
+  assert.equal(await rows.nth(0).locator(".activity-label").innerText(), "gpt-test");
+  assert.equal(await rows.nth(1).locator(".activity-label").innerText(), "gpt-test working...");
+  assert.match(await rows.nth(1).locator(".activity-label").getAttribute("title"), /第 2 轮模型交互/);
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
   assert.deepEqual(errors, []);
 });
@@ -1771,14 +2367,64 @@ test("advertised tools are listed first and the running event is last with a blu
   const rows = page.locator('[data-message-id="order"] .workflow-events > li:not(.activity-availability):not(.activity-planned)');
   assert.match(await rows.first().innerText(), /Tools available to the model \(2\)/);
   assert.equal(await rows.first().getAttribute("data-status"), "context");
-  assert.match(await rows.last().innerText(), /Model round 2: Waiting for model response \(the model may be reasoning\) · running/);
+  assert.equal(await rows.last().locator(".activity-label").innerText(), "Model working...");
   const dot = await rows.last().locator(".workflow-dot").evaluate(node => getComputedStyle(node).backgroundColor);
   assert.equal(dot, "rgb(55, 148, 255)", "running dot uses the theme's chart blue");
-  assert.match(await rows.last().locator(".activity-thinking").innerText(), /Thinking: …Compare both files first\./);
+  assert.match(await rows.last().locator(".activity-thinking").innerText(), /Compare both files first\./);
+  assert.equal(await rows.last().locator(".activity-thinking").evaluate(node => getComputedStyle(node).maxHeight), "none",
+    "expanded thinking is not clipped to the old live-preview height");
+  const thinking = rows.last().locator(".activity-event");
+  assert.notEqual(await thinking.getAttribute("open"), null, "running model expands reported thinking automatically");
+  await thinking.locator("summary").click();
+  await page.evaluate(() => window.dispatchEvent(new MessageEvent("message", {data:window.__state})));
+  assert.equal(await thinking.getAttribute("open"), null, "manual collapse survives streaming updates");
+  await thinking.locator("summary").click();
+  await page.evaluate(() => {
+    window.__state.chat.progress.steps.at(-1).status = "complete";
+    window.__state.chat.progress.steps.push({label:"Preparing tool", kind:"info", status:"running", at:Date.now()});
+    window.dispatchEvent(new MessageEvent("message", {data:window.__state}));
+  });
+  const finished = rows.filter({has:page.locator(".activity-thinking")}).locator(".activity-event");
+  assert.equal(await finished.getAttribute("open"), null, "model activity folds when its round ends even while the Chat is busy");
+  await finished.locator("summary").click();
+  assert.match(await finished.locator(".activity-thinking").innerText(), /Compare both files first/);
   assert.deepEqual(errors, []);
 });
 
-test("live activity starts readable and expanded, preserves collapse and separates reported reasoning usage", async t => {
+for (const status of ["complete", "failed", "cancelled"]) {
+  test(`model thinking folds on ${status} and historical reopening survives rerenders`, async t => {
+    const { page, errors } = await open(t, 390);
+    await page.evaluate(() => {
+      const progress = { attemptId:"thinking-lifecycle", model:"test-model", startedAt:Date.now(), status:"running",
+        steps:[{kind:"model", round:0, label:"Generating response", status:"running", at:Date.now()}] };
+      window.__state.busy = true;
+      window.__state.chat.progress = progress;
+      window.__state.chat.messages = [{id:"thinking-lifecycle", role:"assistant", status:"streaming", content:"", progress}];
+      window.dispatchEvent(new MessageEvent("message", {data:window.__state}));
+    });
+    const activity = page.locator('[data-message-id="thinking-lifecycle"] .workflow');
+    assert.equal(await activity.locator(".activity-event").count(), 0, "no thinking is fabricated when the provider reports none");
+    await page.evaluate(() => {
+      window.__state.chat.messages[0].reasoningSummaries = [{round:0, text:"A public summary."}];
+      window.dispatchEvent(new MessageEvent("message", {data:window.__state}));
+    });
+    const detail = activity.locator('li[data-category="llm"] .activity-event');
+    assert.notEqual(await detail.getAttribute("open"), null);
+    await page.evaluate(status => {
+      window.__state.chat.progress.steps[0].status = status;
+      window.__state.chat.progress.steps.push({kind:"info", label:"Next activity", status:"running", at:Date.now()});
+      window.dispatchEvent(new MessageEvent("message", {data:window.__state}));
+    }, status);
+    assert.equal(await detail.getAttribute("open"), null);
+    await detail.locator("summary").click();
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent("message", {data:window.__state})));
+    assert.notEqual(await detail.getAttribute("open"), null);
+    assert.match(await detail.locator(".activity-thinking").innerText(), /A public summary/);
+    assert.deepEqual(errors, []);
+  });
+}
+
+test("live activity starts readable and expanded, preserves collapse and keeps reasoning counts out of the compact usage line", async t => {
   const { page, errors } = await open(t, 390);
   await page.evaluate(() => {
     const now = Date.now() - 3000;
@@ -1802,8 +2448,9 @@ test("live activity starts readable and expanded, preserves collapse and separat
   assert.equal(await tool.getAttribute("open"), null);
   assert.match(await activity.locator(":scope > summary").innerText(), /Read src\/main.ts, lines 94-130/);
   assert.equal(await tool.locator(".activity-usage").innerText(), "");
-  const model = activity.locator(".activity-event").filter({ hasText:"Model round 1: Model response received" });
-  assert.equal(await model.locator(".activity-usage").innerText(), "100 in / 20 out · 7 reasoning · Cache usage not reported");
+  const model = activity.locator('li[data-category="llm"] .activity-event');
+  assert.equal(await model.locator(".activity-usage").innerText(), "100 in / 20 out");
+  assert.equal(await page.evaluate(() => window.__state.chat.messages[0].budgetReceipts[0].ledger.providerUsage.reasoningTokens), 7);
   assert.match(await model.locator(".activity-usage").getAttribute("title"), /included in output/);
   await activity.locator(":scope > summary").click();
   await page.waitForTimeout(20);
@@ -1857,14 +2504,20 @@ for (const width of [1280, 390, 320]) test(`activity rows contain their own deta
   const details = activity.locator(".activity-event");
   assert.equal(await details.count(), 3, "one model, one tool and advertised tools; no duplicate grey tool list");
   assert.equal(await page.locator(".debug-information .tool-call").count(), 0);
-  const tool = details.filter({ hasText:"Read fixture · complete" });
+  const tool = details.filter({ hasText:"Read fixture" });
+  for (const row of await activity.locator('li[data-status="complete"]').all()) {
+    assert.doesNotMatch(await row.locator(".activity-label").textContent(), /· complete/);
+    assert.equal(await row.locator(".workflow-dot").getAttribute("aria-label"), "complete");
+    assert.equal(await row.locator(".workflow-dot").getAttribute("title"), "complete");
+  }
   assert.equal(await tool.getAttribute("open"), null);
   await tool.locator("summary").click();
   assert.match(await tool.innerText(), /"path":"fixture"/);
   assert.equal(await tool.locator("img").count(), 0);
   assert.equal(await page.evaluate(() => Boolean(window.__unsafe)), false);
-  const model = details.filter({ hasText:"Model round 1: Model response received" });
-  assert.equal(await model.locator(".activity-usage").innerText(), "100 in / 20 out · Cache usage not reported");
+  const model = activity.locator('li[data-category="llm"] .activity-event');
+  assert.equal(await model.locator(".activity-usage").innerText(), "100 in / 20 out");
+  assert.match(await model.locator(".activity-usage").getAttribute("title"), /Cache usage not reported/);
   const order = await model.locator("summary").evaluate(node => [...node.children].map(child => child.className));
   assert(order.indexOf("activity-usage") < order.indexOf("elapsed"));
   await model.locator("summary").click();

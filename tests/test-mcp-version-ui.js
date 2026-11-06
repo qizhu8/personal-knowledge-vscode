@@ -52,7 +52,7 @@ assert.match(panelJs, /A newer PKM MCP runtime is installed and was preserved/,
   "newer installed runtimes must receive preservation and Extension upgrade guidance");
 assert.match(panelJs, /checkMcp:600000/,
   "automatic integration checks can install dependencies and need a realistic timeout");
-assert.match(panelJs, /command === 'mcpStatus'\)\s*\{\s*mcpOnStatus\(data\);\s*\}/,
+assert.match(panelJs, /command === 'mcpStatus'\)\s*\{\s*mcpOnStatus\(data\);\s*finishAction\('mcpStatus'\);\s*\}/,
   "generic MCP status refreshes must not prematurely finish mutating actions");
 assert.match(panelJs, /command === 'mcpCheckComplete'[\s\S]{0,350}finishAction\('checkMcp'\)/,
   "only the dedicated MCP check terminal event may finish the check action");
@@ -155,8 +155,10 @@ for (const [id, command, label] of [
 }
 assert.doesNotMatch(panelJs, />Update with Server<\/button>|>Update Code<\/button>|>Repair Runtime<\/button>/,
   "normal Config state must not ask new users to maintain internal components manually");
-assert.match(panelJs, /automatic\.state === 'error' \? '<button class="tbtn" data-pending-label="Retrying…" onclick="beginMcpUiAction\(\\'checkMcp\\'/,
-  "automatic failures must expose one Retry action");
+assert.match(panelJs, /\['error','action-required'\]\.includes\(automatic\.state\)/,
+  "both failed and action-required setup must expose an actionable state");
+assert.match(panelJs, /function mcpSetupAction[\s\S]{0,300}beginMcpUiAction\('mcpStatus'/,
+  "unknown setup status must use read-only inspection, not maintenance");
 assert.match(panelJs, /Personal Knowledge Manager<\/span>[\s\S]{0,300}Extension v\$\{esc\(data\?\.extensionVersion \|\| 'unknown'\)\}/,
   "the Config header must show the complete Extension semver independently from MCP schema versions");
 assert.doesNotMatch(panelJs, /\['PKM Skill Router',/,
@@ -169,11 +171,13 @@ assert.doesNotMatch(panelJs, /<details class="mcp-router-field" open/,
   "the Skill Router field must be collapsed by default");
 assert.match(panelJs, /function renderSkillRouterField[\s\S]{0,900}router\.name[\s\S]{0,900}router\.description/,
   "the field must render the backend-provided route list without action buttons");
-assert.match(extensionTs, /firstRunGuide: \{ visible: !!guideStep, step: guideStep \}/);
+assert.match(extensionTs, /firstRunGuide: \{ visible: !!guideStep, step: guideStep, dismissed: guideDismissed \}/);
 assert.match(panelJs, /guide\.step !== 'python'/,
   "first configuration must not guide users back into retired injection");
-assert.match(panelJs, /dataset\.step === 'python'\) completeIntegrationGuide\(\)/,
-  "Python guidance must complete only when Validate & Save submits a path");
+assert.doesNotMatch(panelJs.slice(panelJs.indexOf("function saveMcpPython("), panelJs.indexOf("function doGenerateMcp(")), /completeIntegrationGuide/,
+  "submitting a Python path is not successful runtime setup");
+assert.match(panelJs, /if \(data\.runtime\?\.healthy\)[\s\S]{0,300}completeIntegrationGuide\(\)/,
+  "Python guidance must complete only after verified runtime success");
 assert.match(panelCss, /\.pkm-first-run-target::after\{content:'Start here'/);
 assert.match(panelCss, /\.pkm-first-run-guide\{position:fixed/);
 assert.match(panelJs, /const previousScrollTop = el\?\.scrollTop \|\| 0/);
@@ -242,6 +246,8 @@ const copilotElements = {
 };
 const copilotSandbox = {
   window: {},
+  vscode: { getState: () => ({}) },
+  t: key => JSON.parse(fs.readFileSync(path.join(__dirname, "..", "resources/locales/en.json"), "utf8")).strings[key] || key,
   esc: value => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"),
   document: { getElementById: id => copilotElements[id] || null },
 };
@@ -266,6 +272,7 @@ assert.match(copilotSandbox.renderMcpLifecycle({ connectionState:"unverified" })
 assert.equal(copilotSandbox.renderMcpLifecycle(undefined), "");
 const hidden = new Set(["hidden"]), regenerate = { hidden:false };
 copilotElements["mcp-global-warning"] = {
+  dataset:{},
   classList:{ add:value => hidden.add(value), remove:value => hidden.delete(value) },
   querySelector:() => regenerate,
 };
@@ -277,7 +284,7 @@ assert.match(lifecycleHtml, /^<details id="mcp-lifecycle"/, "connection verifica
 assert.match(lifecycleHtml, /id="mcp-lifecycle" open/, "actual draining/uncertain instances remain visible");
 copilotSandbox.updateGlobalMcpWarning({ installed:true, current:true, lifecycle });
 assert.equal(hidden.has("hidden"), false, "actual drain/uncertainty still raises an actionable warning");
-assert.equal(regenerate.hidden, true, "regeneration cannot resolve uncertain writes");
+assert.equal(regenerate.textContent, "Review lifecycle", "uncertain writes require review, not regeneration");
 copilotSandbox.updateGlobalMcpWarning({ installed:true, current:true });
 assert.equal(hidden.has("hidden"), true);
 for (const definition of [
@@ -339,7 +346,7 @@ for (const text of [
   'postToPanel({ command: "mcpStatus", data: mcpPanelStatusData() })',
 ]) assert(extensionTs.includes(text), `missing safe path refresh: ${text}`);
 assert(sourceTs.includes("Refusing to replace unrecognized directory"));
-const pipInstallIndex = sourceTs.indexOf('execFile(validation.path, ["-m", "pip", "install"');
+const pipInstallIndex = sourceTs.indexOf('await pipInstall(["--no-deps", "--upgrade", retrievalWheel])');
 const markerWriteIndex = sourceTs.lastIndexOf("fs.writeFileSync(mcpRuntimeBaseMarker()");
 assert(pipInstallIndex >= 0 && markerWriteIndex > pipInstallIndex, "runtime ownership marker must be written after pip succeeds");
 assert.doesNotMatch(extensionTs, /case "configureStorePath"|case "configureEnvironmentsPath"/);

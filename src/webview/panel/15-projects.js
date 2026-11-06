@@ -391,7 +391,7 @@ function agentSessionFolderMenu(event, folder) {
   if (folder.startsWith('chat-library:')) {
     showPaperMenu(event.clientX, event.clientY, [
       { label:'Chat Group', header:true },
-      recipeCopyPathMenu(folder.slice('chat-library:'.length), 'Copy Group identity')
+      recipeCopyPathMenu(`pkm://chat-groups/${folder.slice('chat-library:'.length)}`)
     ], 'agent-session-context-menu');
     return;
   }
@@ -598,7 +598,7 @@ function projectCockpitItems(items) {
 
 function projectCockpitNow(project) {
   const cockpit = projectCockpitData(project);
-  return `<p>Live projection of existing execution records with one review inbox. Explicit answers target the original checkpoint and its pinned proposal; there is no blind resume.</p>
+  return `<p>Projection of persisted execution records with one review inbox, not a live activity guarantee. Explicit answers target the original checkpoint and its pinned proposal; there is no blind resume.</p>
     ${cockpit.diagnostics.length ? `<div role="alert">${cockpit.diagnostics.map(esc).join('<br>')}</div>` : ''}
     <section class="project-band"><h3>Review inbox</h3>${projectCockpitItems(cockpit.reviewInbox)}</section>
     ${[['running','Running / Ready'],['waiting','Waiting'],['blocked','Blocked']].map(([group,label]) => `<section class="project-band"><h3>${label}</h3>${projectCockpitItems(cockpit.now[group])}</section>`).join('')}`;
@@ -3324,7 +3324,7 @@ function projectGanttBody(project, threads) {
     <label class="wide">Dependencies<select id="gantt-dependencies" multiple size="${Math.min(5, Math.max(2, tasks.length))}">${tasks.filter(task => task.taskId !== selectedGanttTaskId).map(task => `<option value="${esc(task.taskId)}" ${(draft.dependencyIds || []).includes(task.taskId) ? 'selected' : ''}>${esc(task.title)}</option>`).join('')}</select><small>Use Ctrl/Cmd or Shift to select multiple tasks.</small></label>
     <footer><button class="pk-button primary" type="submit" data-pending-label="Saving…">${selected ? 'Update task' : 'Create task'}</button></footer>
   </form>`;
-  return `<div class="gantt-workspace"><section class="project-note-todo-section"><header><h3>Note Work Items</h3><button type="button" class="tbtn" onclick="noteTodoProjectLoad('${esc(project.projectId)}')">Load / refresh Note timeline</button></header><div id="project-note-todos" data-project-id="${esc(project.projectId)}"><p>On-demand projection of Work Items explicitly assigned to this Project. No duplicate Gantt task state.</p></div></section>${timeline}<div class="gantt-table-wrap">${tasks.length ? `<table class="gantt-table"><caption class="sr-only">Gantt tasks for ${esc(project.name)}</caption><thead><tr><th>Task</th><th>Scope</th><th>Dates</th><th>Status</th><th>Owners</th><th>Depends on</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table>` : ''}</div>${form}</div>`;
+  return `<div class="gantt-workspace">${noteTodoProjectSection(project.projectId)}${timeline}<div class="gantt-table-wrap">${tasks.length ? `<table class="gantt-table"><caption class="sr-only">Gantt tasks for ${esc(project.name)}</caption><thead><tr><th>Task</th><th>Scope</th><th>Dates</th><th>Status</th><th>Owners</th><th>Depends on</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table>` : ''}</div>${form}</div>`;
 }
 
 function projectSectionBody(project, threads, recipes) {
@@ -3337,7 +3337,7 @@ function projectSectionBody(project, threads, recipes) {
   }, { completed:0, remaining:0, total:0 });
   if (projectRoute.section === 'Now') return projectCockpitNow(project);
   if (['Artifacts','Decisions','Timeline'].includes(projectRoute.section)) return projectCockpitEvidence(project, projectRoute.section);
-  if (projectRoute.section === 'Overview') return `${projectCockpitOverview(project)}
+  if (projectRoute.section === 'Overview') return `${projectCockpitOverview(project)}${noteTodoProjectSection(project.projectId)}
     <section class="project-band"><div class="project-band-heading"><h3>Threads</h3><button class="project-band-link" onclick="projectSection('Threads')">View all ${threads.length} <span class="codicon codicon-chevron-right" aria-hidden="true"></span></button></div>${threads.length ? `<div class="project-thread-compact">${threads.slice(0,5).map(thread => `<button onclick="projectOpenThread('${esc(thread.threadId)}')"><span class="project-thread-compact-main"><strong>${esc(thread.name)}</strong><small>${thread.systemKind === 'general-thread' ? 'System thread' : thread.archived ? 'Archived' : thread.chatroom ? 'Chatroom linked' : 'No chatroom linked'}</small></span><span class="codicon codicon-chevron-right" aria-hidden="true"></span></button>`).join('')}</div>` : projectZero('No Threads','Create a Thread to begin project work.')}</section>`;
   if (projectRoute.section === 'Todos') {
     const label = projectRoute.workflowView;

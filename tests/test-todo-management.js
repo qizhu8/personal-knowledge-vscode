@@ -54,6 +54,7 @@ test("authenticated browser manages Board by CAS; public, cross-origin and untru
     page.on("pageerror",error=>errors.push(error.message));
     await page.goto(`${base}/notes/Board.html?_pkm_token=${token}`);
     await page.waitForFunction(()=>noteTodo.snapshot?.items.length===2&&!noteTodo.pending);
+    await page.locator("[data-todo-expand-all]").click();
     assert.equal(store.noteWorkItemsRead("Board").items.find(item=>item.id==="task").ownerId,undefined,"reading never claims a task");
     const card=page.locator('[data-todo-card-id=task]');
     await card.locator("[data-todo-open]").click();

@@ -49,14 +49,15 @@ export async function connectManagedChatMcp(
   let expected: ManagedMcpManifest = configured;
   const client = new Client({ name: "pkm-chat-managed", version: "1.0.0" });
   const transport = new StdioClientTransport({
-    ...launch, env: managedMcpAttributionEnv(launch.env, "pkm-chat", options.chatId), stderr: "inherit",
+    // Chat already defers these schemas; keep leaf identities for per-Chat selection and approval.
+    ...launch, env: { ...managedMcpAttributionEnv(launch.env, "pkm-chat", options.chatId), PKM_CAPABILITY_PROFILE:"legacy" }, stderr: "inherit",
   });
   const drainTimeoutMs = Math.max(1, options.drainTimeoutMs ?? 30_000);
   let admissionClosed = false;
   let verified = false;
   let closed = false;
   let closePromise: Promise<void> | undefined;
-  const invokeControl = async (name: string, arguments_: Record<string, never>): Promise<any> => {
+  const invokeControl = async (name: string, arguments_: Record<string, unknown>): Promise<any> => {
     const result = await client.callTool({ name, arguments: arguments_ }, undefined, { timeout: 10_000 });
     if (result.isError) throw new Error("Managed PKM lifecycle observation failed; drain state is unknown.");
     if (result.structuredContent) return result.structuredContent;

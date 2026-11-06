@@ -74,3 +74,62 @@ test("Todo tool inputs, cancellation after approval and remote wiring stay bound
   assert.match(view,/write && this\.remoteControlledRequests\.has\(chat\.id\).*throw new Error\("Portal-controlled requests cannot modify/s);
   assert.match(view,/actorId: `chat:\$\{chat\.id\}`/);
 });
+
+test("native conversion tools create a real Board and draft contracts without modifying the source", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-native-conversion-"));
+  const previous = store.getStorePath();
+  try {
+    store.setStorePath(root);
+    const sourceSlug = "Team/Agent Plan";
+    store.noteUpsert({slug:sourceSlug, category:"Team", title:"Agent Plan", type:"general", tags:[],
+      content:"# Plan\n\n- [x] Deliver a tested UI\n"});
+    const original = store.noteGet(sourceSlug).content;
+    let approved = false;
+    const approvals = [];
+    const tools = createNoteTodoTools({actorId:"chat:converter", assertActive() {},
+      approve:async (write, detail) => { approvals.push({write, detail}); return approved; }});
+    const tool = name => tools.find(candidate => candidate.name === name);
+    const signal = new AbortController().signal;
+    const create = tool("todo_board_create");
+    const args = {title:"Agent Plan Todo Board", category:"Team"};
+    await assert.rejects(create.execute(args, signal), /declined/);
+    assert.equal(store.noteGet("Team/Agent Plan Todo Board"), null);
+    approved = true;
+    const created = JSON.parse(await create.execute(args, signal));
+    assert.equal(created.slug, "Team/Agent Plan Todo Board");
+    assert.equal(store.noteGet(created.slug).documentKind, "todo-board");
+    assert.equal(planReadTools.has(create.name), false);
+    assert.equal(reusableReadOnlyTools.has(create.name), false);
+    await assert.rejects(create.execute(args, signal), /already exists/);
+    await assert.rejects(create.execute({title:"../escape"}, signal), /valid|path|title|category/i);
+    await assert.rejects(create.execute({title:""}, signal), /title/);
+    await assert.rejects(create.execute({title:"Bad", category:12}, signal), /category/);
+    const contract = {title:"Deliver UI", goal:"Usable interface", scope:"UI implementation", acceptance:["Browser tests pass"],
+      links:["pkm://notes/Team/Agent%20Plan.md"]};
+    let snapshot = store.noteWorkItemsRead(created.slug);
+    await tool("add_userstory").execute({board_slug:created.slug, expected_digest:snapshot.digest,
+      item:{...contract, id:"story", storyStatus:"draft"}}, signal);
+    snapshot = store.noteWorkItemsRead(created.slug);
+    await tool("add_workitem").execute({board_slug:created.slug, expected_digest:snapshot.digest,
+      item:{...contract, id:"task", parentId:"story"}}, signal);
+    snapshot = store.noteWorkItemsRead(created.slug);
+    assert.equal(snapshot.items.length, 2);
+    assert.equal(snapshot.items.find(item => item.id === "story").storyStatus, "draft");
+    for (const item of snapshot.items) {
+      assert.equal(item.state, "Planning");
+      assert.equal(item.ownerId, undefined);
+      assert.equal(item.acceptanceDecision, undefined);
+    }
+    assert.equal(store.noteGet(sourceSlug).content, original);
+    assert(approvals.some(entry => entry.write && entry.detail.includes("chat:converter")));
+    const blocked = createNoteTodoTools({actorId:"chat:converter", assertActive() {}, approve:async () => {
+      controller.abort(); return true;
+    }}).find(candidate => candidate.name === "todo_board_create");
+    const controller = new AbortController();
+    await assert.rejects(blocked.execute({title:"Cancelled"}, controller.signal), /cancelled/);
+    assert.equal(store.noteGet("Cancelled"), null);
+  } finally {
+    store.setStorePath(previous);
+    fs.rmSync(root, {recursive:true, force:true});
+  }
+});

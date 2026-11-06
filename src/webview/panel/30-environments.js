@@ -3,10 +3,26 @@ let envCache = [];
 let envListLoading = false;
 let envFocusId = '';
 const ENV_MGR_COLOR = { conda: '#3fb950', venv: '#4daafc', uv: '#a371f7', other: '#8b949e' };
+function envProblemHtml(message, id, probeKind) {
+  const environment = envCache.find(item => item.id === id);
+  const managedMcp = environment?.isMcpRuntime === true;
+  const sizeOnly = probeKind === 'size' || environment?.sizeProbeError && !environment?.pythonProbeError && !environment?.missing;
+  const next = sizeOnly
+    ? helpText('Disk-size inspection failed. Check the host’s disk-usage tooling and folder permissions in the diagnostic output. Size is unknown, not zero; the Python environment may still be usable.', '磁盘大小检查失败。根据诊断输出检查当前主机的磁盘统计工具和目录权限。大小未知，不是零；Python 环境可能仍可使用。')
+    : managedMcp
+    ? helpText('This is PKM’s MCP runtime. Use its dedicated setup and client-safety checks, not a generic environment migration.', '这是 PKM 的 MCP 托管环境，应使用专用配置和客户端安全检查，而不是普通环境迁移。')
+    : helpText('Check the environment folder and interpreter on this host. If it moved, register the correct folder. Recheck before retrying; no files will be deleted by these buttons.', '检查当前主机上的环境文件夹和解释器。如果位置改变，请登记正确的文件夹。重试前重新检查；这些按钮不会删除文件。');
+  const actions = `<button class="tbtn" onclick="refreshEnvDashboard()">${esc(helpText('Recheck environments','重新检查环境'))}</button><button class="tbtn" onclick="ask('showLogs',{})">${esc(helpText('Open diagnostic log','查看诊断日志'))}</button>`
+    + (sizeOnly ? '' : managedMcp ? `<button class="tbtn" onclick="openMcpSetup('progress')">${esc(helpText('Review MCP runtime repair','查看 MCP 环境修复'))}</button>`
+      : `<button class="tbtn" onclick="registerFolderEnv()">${esc(helpText('Select environment folder','选择环境文件夹'))}</button>`);
+  return problemGuidanceHtml(message, next, actions, sizeOnly ? 'tools' : managedMcp ? 'setup' : 'tools');
+}
+function showEnvProblem(message, id, probeKind) { envOut(envProblemHtml(message, id, probeKind)); }
 function renderEnvDashboard(envs, loading = false) {
   const preservedOutput = [...(document.getElementById('env-out')?.childNodes || [])];
   envListLoading = loading;
   envCache = envs || [];
+  const problems = envCache.filter(environment => environment.missing || environment.probeError);
   if (envFocusId) {
     const environment = envCache.find(item => item.id === envFocusId);
     if (environment) expandCategoryPath(envCategory(environment), 'environments');
@@ -23,6 +39,10 @@ function renderEnvDashboard(envs, loading = false) {
         <button class="tbtn" onclick="findSimilar()"${envCache.length < 2 ? ' disabled' : ''} title="Find near-duplicate environments that could be merged">${uiIcon('search', 'Similar')}</button>
         <button id="env-refresh-btn" class="tbtn" onclick="refreshEnvDashboard()" title="Force-refresh paths, Python versions, and disk sizes for every registered environment">${uiIcon('refresh', 'Refresh')}</button>
       </div>
+      ${problems.length ? problemGuidanceHtml(
+        helpText(`${problems.length} registered environment(s) need attention.`, `${problems.length} 个登记环境需要检查。`),
+        helpText('Open the affected registration to inspect its paths and probe output. This expands the environment group without changing or repairing files.', '打开对应登记项，查看路径和探测输出。这会展开环境分组，不修改或修复文件。'),
+        problems.map(environment => `<button class="tbtn" data-env-id="${esc(encodeURIComponent(environment.id))}" onclick="focusEnvironmentDashboard(decodeURIComponent(this.dataset.envId))">${esc(helpText('Review ','查看 ') + (environment.name || environment.id))}</button>`).join(''), 'tools') : ''}
       <div id="env-tree"></div>
       <div id="env-out"></div>
     </div>`;
@@ -100,6 +120,7 @@ function envCardHtml(e, indent) {
       </div>
       ${e.description ? `<div class="ec-desc">${renderEnvTags(e.description)}</div>` : ''}
       <div class="ec-path">${esc(e.python || e.path || '')}</div>
+      ${e.missing || e.probeError ? envProblemHtml(e.probeError || helpText('The registered environment folder or Python executable is missing on this host.', '登记的环境文件夹或 Python 程序在当前主机上不存在。'), e.id) : ''}
     </div>`;
 }
 function humanSizeJs(b) {
@@ -115,12 +136,12 @@ function renderEnvTags(desc) {
 }
 function activateEnv(id) { ask('envActivate', { id }); }
 function onEnvActivate(d) {
-  if (d.error) { envOut('<div style="color:#f87171">' + esc(d.error) + '</div>'); return; }
+  if (d.error) { showEnvProblem(d.error, d.id); return; }
   envOut(`<div class="ec-row" style="margin:10px 0 6px"><b>${uiIcon('terminal')} Activated in terminal “${esc(d.termName || 'env')}”</b><span style="font-size:11px;color:var(--muted)">the environment is now active there — run <code>python</code> / <code>pip</code> as usual</span></div><pre class="env-activate">${esc(d.script)}</pre>`);
 }
 function refreshEnvSize(id) { envOut('<div class="empty">Computing on-disk size…</div>'); ask('envSize', { id, refresh: true }); }
 function onEnvSize(d) {
-  if (d.error) { envOut('<div style="color:#f87171">' + esc(d.error) + '</div>'); return; }
+  if (d.error) { showEnvProblem(d.error, d.id, 'size'); return; }
   envOut('');
   ask('envList', {}); // refresh cards with the persisted size
 }
@@ -134,7 +155,7 @@ function migrateEnv(id, name) {
 }
 function onEnvMigrated(d) {
   if (d && d.ok) { envOut(''); return; }
-  const err = '<span style="color:#f87171">' + esc((d && d.error) || 'migration failed') + '</span>' + (d && d.log ? '<pre class="env-activate" style="margin-top:6px;max-height:160px;overflow:auto">' + esc(d.log) + '</pre>' : '');
+  const err = envProblemHtml((d && d.error) || 'Environment migration failed. Inspect both source and destination before trying again.', d?.id) + (d && d.log ? '<pre class="env-activate" style="margin-top:6px;max-height:160px;overflow:auto">' + esc(d.log) + '</pre>' : '');
   envOut('<div>' + err + '</div>');
 }
 function envOut(html) { const o = document.getElementById('env-out'); if (o) o.innerHTML = html; }
@@ -143,7 +164,7 @@ function viewEnvPackages(id, refresh) {
   ask('envPackages', { id, refresh: !!refresh });
 }
 function onEnvPackages(d) {
-  if (d.error) { envOut('<div style="color:#f87171">' + esc(d.error) + '</div>'); return; }
+  if (d.error) { showEnvProblem(d.error, d.id); return; }
   const rows = (d.packages || []).map(p => `<tr><td>${esc(p.name)}</td><td class="pv">${esc(p.version)}</td></tr>`).join('');
   envOut(`<div class="ec-row" style="margin:10px 0 6px">
       <b>${(d.packages || []).length} packages</b>
@@ -211,7 +232,7 @@ function comparePair(a, b) {
 }
 function mergeScript(a, b) { envOut('<div class="empty">Generating merge script…</div>'); ask('envMergeScript', { a, b }); }
 function onEnvMergeScript(d) {
-  if (d.error) { envOut('<div style="color:#f87171">' + esc(d.error) + '</div>'); return; }
+  if (d.error) { showEnvProblem(d.error); return; }
   envOut(`<div class="ec-row" style="margin:10px 0 6px"><b>${uiIcon('git-merge')} Merge script</b><span style="font-size:11px;color:var(--muted)">keep <b>${esc(d.keep)}</b>, drop <b>${esc(d.drop)}</b> — copied to clipboard; review and run it yourself, the extension will not execute it</span></div><pre class="env-activate">${esc(d.script)}</pre>`);
 }
 const CMP_ST = {
@@ -298,7 +319,12 @@ function registerCondaEnv() { envOut('<div class="empty">Listing conda envs…</
 let _condaEnvs = [];
 function onCondaList(envs) {
   _condaEnvs = envs || [];
-  if (!_condaEnvs.length) { envOut('<div class="empty">No conda envs found (is <code>conda</code> on PATH?).</div>'); return; }
+  if (!_condaEnvs.length) {
+    envOut(problemGuidanceHtml(helpText('No conda environments were found on this host.', '当前主机上未找到 conda 环境。'),
+      helpText('Check whether conda is installed and available to this Extension Host. You can register an existing venv/uv folder instead; an empty list is not proof that conda is absent.', '检查此 Extension Host 是否能使用 conda；也可登记已有 venv/uv 文件夹。列表为空不代表 conda 一定未安装。'),
+      `<button class="tbtn" onclick="registerCondaEnv()">${esc(helpText('Rescan conda environments','重新扫描 conda 环境'))}</button><button class="tbtn" onclick="registerFolderEnv()">${esc(helpText('Select environment folder','选择环境文件夹'))}</button>`, 'tools'));
+    return;
+  }
   const opts = _condaEnvs.map((e, i) => `<option value="${i}">${esc(e.name)} — ${esc(e.prefix)}</option>`).join('');
   envOut(`<div class="ec-row" style="margin:10px 0"><select id="conda-pick">${opts}</select><button class="tbtn" onclick="addCondaEnv()">Register</button></div>`);
 }
@@ -310,7 +336,7 @@ let _envFolder = '';
 function registerFolderEnv() { ask('envPickFolder', {}); }
 function onEnvPickFolder(dir) { if (!dir) return; _envFolder = dir; ask('envDetectFolder', { dir }); }
 function onEnvFolderDetected(d) {
-  if (!d.ok) { vscode.postMessage({ command: 'toast', text: d.error || 'Not a venv/uv folder' }); return; }
+  if (!d.ok) { showEnvProblem(d.error || 'Not a venv/uv folder'); return; }
   const base = _envFolder.split('/').pop();
   pkModal({ title: 'Register environment', message: `${d.manager} · ${d.python}`, input: true, defaultValue: base, okLabel: 'Register',
     onOk: v => { if (v.trim()) ask('envAdd', { env: { name: v.trim(), manager: d.manager, python: d.python, path: _envFolder } }); } });
@@ -386,7 +412,7 @@ function submitNewEnv() {
 function onEnvCreated(d) {
   if (d.ok) { envOut(''); return; }
   const el = document.getElementById('ne-msg');
-  const err = '<span style="color:#f87171">' + esc(d.error || 'failed') + '</span>' + (d.log ? '<pre class="env-activate" style="margin-top:6px;max-height:160px;overflow:auto">' + esc(d.log) + '</pre>' : '');
+  const err = envProblemHtml(d.error || 'Environment creation failed.') + (d.log ? '<pre class="env-activate" style="margin-top:6px;max-height:160px;overflow:auto">' + esc(d.log) + '</pre>' : '');
   if (el) el.innerHTML = err; else envOut('<div>' + err + '</div>');
 }
 function onEnvCreatePickDir(d) { if (d && d.dir) { const el = document.getElementById('ne-dir'); if (el) el.value = d.dir; } }
@@ -403,7 +429,7 @@ function onEnvDeleteResult(d) {
   }
   if (!d.ok) {
     const action = d.filesRequested ? 'Deleting environment files and registration failed.' : 'Removing the environment registration failed.';
-    envOut('<div style="color:#f87171"><b>' + uiIcon('error') + ' ' + esc(action) + '</b><br>' + esc(d.error || 'No error details were returned.') + (d.path ? '<br><span style="color:var(--muted)">Path:</span> <code>' + esc(d.path) + '</code>' : '') + '</div>');
+    envOut(envProblemHtml(action + ' ' + (d.error || 'No error details were returned.'), d.id) + (d.path ? '<p>Path: <code>' + esc(d.path) + '</code></p>' : ''));
     return;
   }
   let text = d.filesRequested
@@ -414,6 +440,6 @@ function onEnvDeleteResult(d) {
 }
 function deleteEnvScript(id) { ask('envDeleteScript', { id }); }
 function onEnvDeleteScript(d) {
-  if (d.error) { envOut('<div style="color:#f87171">' + esc(d.error) + '</div>'); return; }
+  if (d.error) { showEnvProblem(d.error, d.id); return; }
   envOut(`<div class="ec-row" style="margin:10px 0 6px"><b>${uiIcon('file-code')} Delete script</b><span style="font-size:11px;color:var(--muted)">copied to clipboard — review and run it yourself; the extension will not execute it</span></div><pre class="env-activate">${esc(d.script)}</pre>`);
 }

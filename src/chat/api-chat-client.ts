@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { imageSize } from "image-size";
 import { createHash } from "crypto";
-import { ChatTokenUsage, ThinkingBudget, checkReportedOutput, reportedReasoningTokens, reportedCopilotUsage } from "./api-chat-models";
+import { ChatBudgetExceededError, ChatTokenUsage, ThinkingBudget, checkReportedOutput, reportedReasoningTokens, reportedCopilotUsage } from "./api-chat-models";
 import { ChatInferenceClock, ChatInferenceTiming } from "./chat-inference-timing";
 import { executeChatToolBatch } from "./chat-tool-execution";
 import { isReplaceTextNoop } from "./chat-effectiveness";
@@ -46,10 +46,21 @@ export interface ApiChatTool {
   execution?: "parallel-read";
   readVersion?: (arguments_: Record<string, unknown>, signal: AbortSignal) => Promise<string>;
 }
-export interface ApiChatToolEvent { id: string; name: string; arguments: string; status: "running" | "complete" | "failed"; result?: string; round?: number; queuedMs?: number; reused?: boolean; }
+export interface ApiChatToolEvent {
+  id: string; name: string; arguments: string; status: "running" | "complete" | "failed"; result?: string;
+  round?: number; queuedMs?: number; reused?: boolean;
+  dispatch?: { name:"capability_read" | "capability_call"; operation:string; version:1 };
+}
 export interface ChatToolLoopNotice { reason: "round-limit" | "stalled" | "no-progress" | "repeated-failure"; rounds: number; limit: number; tool?: string; repeats?: number; }
 export type ChatToolLoopDecision = "continue" | "summarize" | "cancel";
 export const chatInferenceOutputByteLimit = 100_000;
+
+export interface ChatSdkSetupTiming {
+  schema: "pkm.chat.sdk-setup-timing/v1";
+  observation: "extension-host-clock";
+  clientAcquisition: { startedAt: number; finishedAt: number };
+  sessionCreation: { startedAt: number; finishedAt: number };
+}
 
 export interface ChatTransportReceipt {
   schema: "pkm.chat.transport/v1";
@@ -59,6 +70,8 @@ export interface ChatTransportReceipt {
   countingMethod: "utf8-byte-estimate" | "utf8-byte-upper-bound" | "vscode-countTokens-plus-overhead" | "provider-usage-plus-byte-bound";
   inputTokens: number;
   payloadScope?: "sdk-managed-context";
+  /** Optional local SDK setup boundaries; not provider dispatch or model timing. */
+  sdkSetupTiming?: ChatSdkSetupTiming;
   automaticKnowledge?: { inputBudget: number; inputTokens: number; countingMethod: "utf8-byte-upper-bound" | "vscode-countTokens-plus-overhead" };
 }
 
@@ -119,8 +132,14 @@ export interface ApiChatRequest {
   loopExemptTools?: string[];
   onToolLoopNotice?: (notice: ChatToolLoopNotice, signal: AbortSignal) => Promise<ChatToolLoopDecision>;
   onTool?: (event: ApiChatToolEvent) => void;
+  /** Bounded Host context after completed tools, separate from original results and not acceptance. */
+  onToolResultContext?: (event: ApiChatToolEvent) => string | undefined;
+  /** One bounded Host context after a complete tool batch; receives successful terminal events in call order. */
+  onToolResultsContext?: (events: readonly ApiChatToolEvent[]) => string | undefined;
   beforeRound?: (messages: ApiChatMessage[], outputTokens: number, baseline?: ChatInputBaseline, context?: ChatRoundContext) => void | Promise<void>;
   afterRound?: (round: number) => void | Promise<void>;
+  /** Admission before pending effects or transport-managed continuation, not final settlement. */
+  beforeWork?: () => void | Promise<void>;
   prepareContext?: (messages: ApiChatMessage[], outputTokens: number, counter: ChatInputTokenCounter) => Promise<void>;
   automaticKnowledge?: { inputBudget: number; includes: (message: ApiChatMessage) => boolean };
   onTransportPrepared?: (receipt: ChatTransportReceipt) => void;
@@ -134,6 +153,22 @@ export interface ApiChatRequest {
 export function chatToolRoundLimit(value = 30): number {
   if (!Number.isSafeInteger(value) || value < 1 || value > 1000) throw new Error("Choose a tool round limit of 1-1000.");
   return value;
+}
+
+export function chatToolRoundBudgetNotice(completedRounds: number, hardLimit?: number): string | undefined {
+  if (hardLimit === undefined) return undefined;
+  const limit = chatToolRoundLimit(hardLimit);
+  if (!Number.isSafeInteger(completedRounds) || completedRounds < 0 || completedRounds > limit) {
+    throw new Error("Completed inference rounds must be a safe integer from 0 to the hard limit.");
+  }
+  const remaining = limit - completedRounds;
+  const budget = `Inference rounds: total=${limit}, completed=${completedRounds}, remaining=${remaining}. Remaining includes the coming inference, not calls/tools. No extra reporting allowance after the boundary.`;
+  const advice = remaining === 0
+    ? " Tools stopped; only summary allowed."
+    : remaining <= 3
+      ? " Close the current slice: explicitly save applied edits, verify saved files with focused tests, then report_work with actual evidence. Stop new edits and rereading; if checks cannot fit, report blocked with saved versus unsaved paths and unrun checks. Unverified criteria stay unverified."
+      : "";
+  return `${budget}${advice} Plan small saved-and-tested slices; a final model summary may not fit the input budget. Advisory only; does not change caps/guards or authorize tools, permissions or acceptance.`;
 }
 
 export const toolBudgetSummary = "The tool-call round budget or repeated-call review stopped further tool execution. Give the best answer from completed tool results without calling more tools. Clearly state any unresolved work; do not claim it succeeded.";
@@ -341,6 +376,8 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
   try {
     if (controller.signal.aborted) throw new Error("Cancelled");
     const messages = [...request.messages];
+    const budgetNotice = request.hardToolRoundLimit === undefined ? undefined : { role:"system" as const, content:"" };
+    if (budgetNotice) messages.push(budgetNotice);
     const callIds = new Set(messages.flatMap(message => message.tool_calls?.map(call => call.id) || []));
     const checkLoop = async (round: number) => {
       clearTimeout(timer);
@@ -348,6 +385,7 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
     };
     for (let round = 0; ; round++) {
     await checkLoop(round);
+    if (budgetNotice) budgetNotice.content = loop.summarizing ? "Tool execution stopped. Only the final summary is allowed; do not invoke more tools." : chatToolRoundBudgetNotice(round, request.hardToolRoundLimit)!;
     if (loop.summarizing) messages.push({ role: "system", content: toolBudgetSummary });
     if (controller.signal.aborted) throw new Error("Request cancelled.");
     const outputTokens = request.maxOutputTokens;
@@ -409,7 +447,7 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
         bytes + Buffer.byteLength(JSON.stringify({ id: call.id, name: call.function.name, arguments: call.function.arguments }), "utf8"), 0);
       if (outputBytes > chatInferenceOutputByteLimit) {
         controller.abort();
-        throw new Error("Inference output exceeded the 100,000-byte local size limit. Partial output was preserved; no pending tool was executed.");
+        throw new ChatBudgetExceededError("Inference output exceeded the 100,000-byte local size limit. Partial output was preserved; no pending tool was executed.", "output");
       }
       if (text) onText(text);
       if (choice?.finish_reason) finishReason = choice.finish_reason;
@@ -440,6 +478,8 @@ export async function streamApiChat(request: ApiChatRequest, onText: (text: stri
       callIds.add(call.id);
     }
     messages.push({ role: "assistant", content: responseText, tool_calls: toolCalls });
+    await request.beforeWork?.();
+    if (controller.signal.aborted) throw new Error("Request cancelled.");
     await executeChatToolBatch(toolCalls, request, messages, loop, controller.signal, round);
     if (request.afterTools?.()) return;
     }

@@ -21,6 +21,24 @@ let skillRouterWorkflowStage = 'calibrator';
 let skillRouterInspectorTab = 'parameters';
 let skillRouterWorkflowTipTimer;
 const skillRouterInspectorTabs = [['parameters','Parameters'],['controls','Controls'],['graphs','Graphs'],['metrics','Metrics']];
+function skillRouterReviewModelSetup() {
+  selectSettingsSubtab('router', 'performance');
+  skillRouterInspectorTab = 'controls';
+  skillRouterSelectWorkflow('encoder');
+  const section = document.getElementById('sr-text-solutions');
+  if (!section) return;
+  section.scrollIntoView({ block:'start' });
+  section.focus({ preventScroll:true });
+  section.querySelectorAll('details.sr-model-advanced,details[data-model-budget]').forEach(details => { details.open = true; });
+}
+function skillRouterProblemHtml(message, performance = false) {
+  const next = performance ? helpText('Refresh these observations explicitly. Missing timing or judgments mean unknown, not zero.', '请明确刷新观测数据。没有耗时或质量标注意味着未知，不是零。')
+    : helpText('Review the model Python, failed preparation phase, files and resource budget below. Exact + BM25 remains available; do not redownload or rebuild blindly.', '查看下方模型 Python、失败阶段、文件和资源预算。Exact + BM25 仍可使用；不要盲目重新下载或构建。');
+  const actions = performance
+    ? `<button class="tbtn" onclick="skillRouterRequestPerformance()">${esc(helpText('Refresh observations','刷新观测数据'))}</button>`
+    : `<button class="tbtn" onclick="skillRouterReviewModelSetup()">${esc(helpText('Review model setup and budget','查看模型配置与预算'))}</button><button class="tbtn" onclick="skillRouterSolutionRequest('retrievalSolutions')">${esc(helpText('Recheck model status','重新检查模型状态'))}</button>`;
+  return problemGuidanceHtml(message, next, actions, 'retrieval');
+}
 
 function skillRouterRequestPerformance() {
   if (skillRouterPerformancePending) return;
@@ -281,7 +299,8 @@ function skillRouterPerformanceHtml(runtime = skillRouterStatusCache?.runtime ||
   return `<section id="sr-performance" class="sr-section" data-settings-panel="performance">
     ${skillRouterWorkflowHtml(view)}
     ${!selected ? '<p role="status" class="sr-inspector-note">Model retrieval is not enabled. Exact + BM25 remains available.</p>' : ''}
-    ${skillRouterPerformanceError || data.learning_error || data.error ? `<p role="alert">${esc(skillRouterPerformanceError || data.learning_error || data.error)}</p>` : ''}
+    ${skillRouterPerformanceError || data.learning_error ? skillRouterProblemHtml(skillRouterPerformanceError || data.learning_error, true) : ''}
+    ${data.error || data.setup?.phase === 'failed' || data.setup?.index?.blocked ? skillRouterProblemHtml(data.error || data.setup.error || helpText('Model preparation failed. Review the failed phase and its output.', '模型准备失败，请查看失败阶段和输出。')) : ''}
     ${skillRouterAdaptivePending !== undefined ? '<p role="status">Applying Online Retrieval Learning...</p>' : ''}
     <section id="sr-inspector" class="sr-inspector" aria-labelledby="sr-inspector-title" data-stage="${skillRouterWorkflowStage}">
       <header class="sr-inspector-head"><h3 id="sr-inspector-title">${esc(stage.label)}</h3>
@@ -496,7 +515,7 @@ function skillRouterSetupHtml(data) {
     <ol class="sr-setup-steps">${steps.map((step, index) => `<li data-step="${step}" class="${index < position ? 'complete' : index === position ? failed || blocked ? 'failed' : 'current' : ''}" ${index === position ? 'aria-current="step"' : ''}><span class="sr-setup-circle" aria-hidden="true"></span><span>${labels[index]}</span></li>`).join('')}</ol>
     ${setup.phase === 'acquire' && setup.source === 'huggingface' && setup.total > 0 ? `<div class="sr-download-progress"><progress aria-label="Model download" value="${Number(setup.current) || 0}" max="${Number(setup.total)}"></progress><span>${skillRouterSolutionBytes(setup.current)} / ${skillRouterSolutionBytes(setup.total)}</span></div>` : ''}
     ${setup.detail && !failed ? `<p role="status">${esc(setup.detail)}</p>` : ''}
-    ${failed || blocked ? `<p role="alert">${esc(setup.error || data.error || 'Index preparation blocked. Check the model Python and retry explicitly.')}</p>` : ''}
+    ${failed || blocked ? skillRouterProblemHtml(setup.error || data.error || 'Index preparation blocked. Check the model Python and retry explicitly.') : ''}
     ${archive ? '<p>Imported only. Review the budget below, then choose Enable & build.</p>' : inactive ? '<p>Model is not enabled. Verified files remain available; choose Enable & build to activate it.</p>' : phase === 'index' ? `<p>Building local index${data.progress?.phase ? ': ' + esc(data.progress.phase) : ''}. Exact + BM25 remains available.</p>` : phase === 'ready' ? '<p>Embedding retrieval is ready for semantic / dual queries.</p>' : '<p>Preparation uses local CPU and storage. No knowledge text is sent to Hugging Face.</p>'}
   </div>`;
 }
@@ -516,7 +535,7 @@ function skillRouterSolutionsHtml() {
     const resources = item.resources || {};
     return `<article class="sr-model-card"><h4>${esc(item.name)}</h4>
       <p class="sr-model-summary">${active ? 'Ready / active' : requested ? `Requested: ${esc(data.state)}` : 'Imported, not enabled'} · ${skillRouterSolutionBytes(item.bytes)}</p>
-      ${item.error ? `<p role="alert">${esc(item.error)}</p>` : ''}
+      ${item.error ? skillRouterProblemHtml(item.error) : ''}
       <details data-model-budget="${esc(item.package_id)}"><summary>Preparation budget & source validation</summary>
         <p>${esc(item.architecture || 'Unknown architecture')} · ${esc(item.license || 'License not reported')}</p>
         <code class="sr-model-id">${esc(item.package_id)}</code>
@@ -537,7 +556,7 @@ function skillRouterSolutionsHtml() {
   const progress = data?.progress;
   const observed = data?.observed || {};
   const setupError = data?.setup && (['failed','cancelled'].includes(data.setup.phase) || data.setup.phase === 'index' && data.state === 'blocked');
-  return `<section class="sr-section" id="sr-text-solutions" data-settings-panel="performance"><h3>Embedding retrieval</h3>
+  return `<section class="sr-section" id="sr-text-solutions" tabindex="-1" data-settings-panel="performance"><h3>Embedding retrieval</h3>
     <p>Optional local model. Exact + BM25 works without it.</p>
     <div class="sr-model-actions sr-model-sources">
       <button class="tbtn primary" onclick="skillRouterSolutionRequest('retrievalModelDownload')" ${disabled}>Download from Hugging Face</button></div>
@@ -557,7 +576,7 @@ function skillRouterSolutionsHtml() {
       <button class="tbtn" onclick="skillRouterSolutionRequest('retrievalSolutions')">Refresh models</button>
       <button class="tbtn" onclick="skillRouterSolutionRequest('retrievalSolutionDisable')" ${disabled}>Disable model</button></div></details>
     ${skillRouterSolutionPending ? '<p role="status">Applying model configuration…</p>' : ''}
-    ${data?.error && !setupError ? `<p role="alert" class="sr-runtime-error">${esc(data.error)}</p>` : ''}
+    ${data?.error && !setupError ? skillRouterProblemHtml(data.error) : ''}
     ${data ? `<p role="status">Current model: ${esc(data.state === 'disabled' || data.state === 'idle' ? 'Not enabled · Exact + BM25 is available' : data.state || 'unavailable')}${preparing && progress ? ` · ${esc(progress.phase)}` : ''}</p>` : '<p role="status">Loading model catalog…</p>'}
     ${progress && progress.total > 0 ? `<progress value="${Math.min(progress.current, progress.total)}" max="${progress.total}"></progress><span>${progress.current} / ${progress.total} units</span>` : ''}
     <details data-model-budget="diagnostics"><summary>Resource diagnostics</summary>
@@ -661,8 +680,8 @@ function skillRouterModelReadiness(runtime) {
       <div><dt>Requested model package</dt><dd>${esc(solution.requested_package_id || 'None reported')}</dd></div>
       <div><dt>Active model package</dt><dd>${esc(solution.active_package_id || 'None reported')}</dd></div>
       <div><dt>Frozen Skill release</dt><dd>${serving.ready === true ? 'Ready' : serving.ready === false ? 'Not ready' : 'Not reported'}</dd></div></dl>
-    ${solution.error ? `<p class="sr-runtime-error" role="alert">${esc(solution.error)}</p>` : ''}
-    ${modelSelected && serving.error ? `<p class="sr-runtime-error" role="alert">${esc(serving.error)}</p>` : ''}
+    ${solution.error || modelSelected && serving.error ? skillRouterProblemHtml(solution.error || serving.error) : ''}
+    ${modelSelected && runtime.semanticStatus === 'unavailable' && !solution.error && !serving.error ? skillRouterProblemHtml(helpText('The selected semantic / dual model is unavailable.', '所选语义 / Dual 模型不可用。')) : ''}
     <p class="sr-source-note">Worker readiness only proves the local index is available. It does not prove a model is loaded, admitted or serving this query.</p></section>`;
 }
 

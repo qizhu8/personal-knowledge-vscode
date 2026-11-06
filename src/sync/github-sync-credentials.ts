@@ -20,7 +20,7 @@ export async function readStoredGitHubSyncCredentials(
   try {
     raw = await new Promise<string | undefined>((resolve, reject) => {
       timer = setTimeout(() => reject(new GitHubSyncCredentialError("CREDENTIAL_READ_TIMEOUT",
-        "The executing VS Code host's credential channel did not respond in time. GitHub was not contacted. Automatic retry will prefer another connected compatible host if available; otherwise reopen the executing VS Code window and retry Sync.")), timeoutMs);
+        "The executing VS Code host's credential channel did not respond in time. GitHub was not contacted. See Sync status to check whether an automatic retry is scheduled.")), timeoutMs);
       // A late RPC result must not resume a timed-out synchronization.
       Promise.resolve().then(readSecret).then(resolve, reject);
     });

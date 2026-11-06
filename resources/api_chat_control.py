@@ -150,9 +150,16 @@ def register_api_chat_tools(mcp, store):
         return _submit(root, host_id, "models", {}, command_id or str(uuid.uuid4()))
 
     @mcp.tool(annotations={"readOnlyHint": True})
-    def api_chat_list(host_id: str, command_id: str = "") -> dict:
-        """List up to 100 non-Trash Chats with chatUrl PKM URLs in the selected Host's workspace, without conversation bodies. Select host_id from api_chat_capabilities; command_id is optional for this read."""
-        return _submit(root, host_id, "list", {}, command_id or str(uuid.uuid4()))
+    def api_chat_list(host_id: str, command_id: str = "", group_path: str = "", offset: int = 0, limit: int = 100) -> dict:
+        """List non-Trash Chats in the selected Host's Knowledge Root, without bodies. Optional copied pkm://chat-groups/<group ID> group_path filters stored user-group membership. Follow nextOffset to list the entire group. This does not assign Chats or start work."""
+        if group_path and not re.fullmatch(r"(?:pkm://chat-groups/)?(?:ungroup|chat_group_[a-f0-9]{32})", group_path):
+            raise ValueError("Use a copied pkm://chat-groups/<group ID> path or exact Chat group ID.")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0 or isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("Choose a non-negative offset and a limit from 1 to 100.")
+        arguments = {"offset": offset, "limit": limit}
+        if group_path:
+            arguments["groupId"] = group_path
+        return _submit(root, host_id, "list", arguments, command_id or str(uuid.uuid4()))
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True})
     def api_chat_create(host_id: str, title: str, command_id: str, model_id: str = "") -> dict:

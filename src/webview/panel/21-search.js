@@ -31,7 +31,7 @@ function knowledgeSearchMarkup(result) {
     const evidence = (hit.path_evidence || []).map(entry =>
       `${entry.path}: rank ${entry.rank}, raw score ${entry.score}, ${entry.match} · ${entry.matched_field} · ${entry.matched_path}`).join('\n');
     return `<div class="li" style="padding-left:${8 + (depth + 1) * 12}px"><button class="tbtn knowledge-search-hit" type="button" data-search-hit="${index}" ${hit.openTarget ? '' : 'disabled'}>${esc(hit.title || hit.sourceId || hit.source_id)}</button>
-      ${hit.openTarget ? '' : `<div role="alert">${esc(hit.open_error || 'Cannot open: source identity unavailable. Refresh the index.')}</div>`}
+      ${hit.openTarget ? '' : `<div role="alert">${esc(hit.open_error || 'Cannot open: source identity unavailable. Refresh the index.')}<p>Inspect the source identity and index before reopening. This is not proof that an embedding model is missing.</p><button type="button" class="tbtn" onclick="openHelpSection('retrieval')">View source and retrieval guide</button></div>`}
       <details><summary>Retrieval evidence</summary><div class="meta">${esc(label)}</div><div>${esc(hit.displayPath || '')}</div><pre style="white-space:pre-wrap">${esc(evidence)}</pre></details></div>`;
   }, state.search, null, null, { area: 'search', readOnly: true, githubSyncType: 'search' });
   return `<p role="status">Mode: ${esc(result.search_mode || knowledgeSearchMode.value)} · Semantic: ${esc(status)}${reason ? ` — ${esc(reason)}` : ''}</p>${result.ok === false ? '<p>Search unavailable. No results were substituted.</p>' : rows || '<p>No matching sources.</p>'}${result.incomplete ? '<p>Results are incomplete or capped at the retrieval limit.</p>' : ''}`;

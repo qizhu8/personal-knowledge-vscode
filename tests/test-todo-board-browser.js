@@ -14,7 +14,12 @@ test("dedicated Board opens a large work-item dialog, assigns actual identities,
   const slug="Board";
   store.todoBoardCreate(slug,slug);
   let state=store.noteWorkItemsRead(slug);
-  for(const record of [item("story",{kind:"UserStory",storyStatus:"draft"}),item("other-story",{kind:"UserStory"}),item("task",{parentId:"story",plannedStart:"2026-11-01",plannedEnd:"2026-11-10"})]) {
+  const verification=[
+    {layer:"unit",status:"failed",evidence:["fixture://prior-failure"],reason:"Prior unit failure"},
+    {layer:"functional",status:"blocked",evidence:["fixture://dependency"],reason:"Dependency unavailable"},
+    {layer:"e2e",status:"not-applicable",evidence:[],reason:"No installed E2E in this fixture"},
+  ];
+  for(const record of [item("story",{kind:"UserStory",storyStatus:"draft"}),item("other-story",{kind:"UserStory"}),item("task",{parentId:"story",plannedStart:"2026-11-01",plannedEnd:"2026-11-10",verification})]) {
     state=store.noteWorkItemCommand(slug,state.digest,{action:"create",item:record},{id:"user:local",role:"user"});
   }
   const browser=await chromium.launch({headless:true,...(process.env.PKM_CHROMIUM_EXECUTABLE?{executablePath:process.env.PKM_CHROMIUM_EXECUTABLE}:{})});
@@ -46,6 +51,9 @@ test("dedicated Board opens a large work-item dialog, assigns actual identities,
     await page.evaluate(()=>noteTodoMount(currentDetail));
     await page.waitForFunction(()=>noteTodo.snapshot?.items.length===3&&noteTodo.pending===null);
     assert.equal(await page.evaluate(()=>noteTodo.view),"board");
+    assert.equal(await page.locator('[data-todo-toggle-story=story]').getAttribute("aria-expanded"),"false");
+    assert.equal(await page.locator(".note-todo-swimcell .note-todo-card").count(),0,"dedicated Board Stories start collapsed");
+    await page.locator('[data-todo-expand-all]').click();
     assert.equal(await page.locator(".note-todo-card .note-todo-details").count(),0,"Story and task cards omit inline contract details");
     await page.locator('[data-todo-open=story]').click();
     assert.equal(await page.getByRole("dialog").count(),0,"single-click must not open a Story");
@@ -70,12 +78,21 @@ test("dedicated Board opens a large work-item dialog, assigns actual identities,
     const box=await dialog.boundingBox();
     assert(box.width>=1200*.88&&box.height>=900*.88,"dialog occupies approximately 80% of screen area");
     assert.equal(await form.locator('[name=goal]').inputValue(),"Detailed user value");
+    assert.equal(await form.locator('[name=verify-functional]').inputValue(),"blocked");
+    assert.equal(await form.locator('[name=reason-functional]').inputValue(),verification[1].reason);
+    assert.equal(await form.locator('[name=evidence-functional]').inputValue(),verification[1].evidence.join("\n"));
+    // Edit unrelated fields: the selected blocked status and every other layer must survive save.
+    await form.locator('[name=title]').fill("Task with retained blocked verification");
+    await form.locator('[name=reason]').fill("Clarify title without changing reported verification");
     await form.getByLabel("Assign to",{exact:true}).selectOption("user:local");
     assert.equal(await form.locator('[name=ownerId]').inputValue(),"user:local");
     await form.getByRole("button",{name:"Save Work Item"}).click();
     await page.waitForFunction(()=>!noteTodo.pending&&!noteTodo.editor);
     assert.equal(store.noteWorkItemsRead(slug).items.find(item=>item.id==="task").ownerId,"user:local");
+    assert.deepEqual(writes.filter(message=>message.command==="noteTodoCommand").at(-1).operation.item.verification,verification);
+    assert.deepEqual(store.noteWorkItemsRead(slug).items.find(item=>item.id==="task").verification,verification);
     await page.locator('[data-todo-open=task]').dblclick();
+    assert.equal(await form.locator('[name=verify-functional]').inputValue(),"blocked");
     await form.getByLabel("Assign to",{exact:true}).selectOption("chat:pkm-worker-one");
     await form.getByRole("button",{name:"Save Work Item"}).click();
     await page.waitForFunction(()=>!noteTodo.pending&&!noteTodo.editor);
@@ -188,6 +205,8 @@ test("Story creation and header grouping persist through the real Board CAS stor
       ${source}`});
     await page.evaluate(()=>noteTodoMount(currentDetail));
     await page.waitForFunction(()=>noteTodo.snapshot?.items.length===3&&!noteTodo.pending);
+    assert.equal(await page.locator('[data-todo-toggle-story=story-a]').getAttribute("aria-expanded"),"false");
+    await page.locator('[data-todo-expand-all]').click();
     const header=id=>page.locator(`[data-story-row="${id}"] .note-todo-swimstory`);
     const card=()=>page.locator('[data-todo-card-id=moving]');
     // Native HTML drag needs a second target move for dragover on every Chromium path.
@@ -308,6 +327,8 @@ test("browser Board renders empty snapshots and large read-only item dialogs wit
     assert.equal(await page.locator(".note-todo-swimboard").count(),1);
     await page.goto("about:blank");
     await page.setContent(html);
+    assert.equal(await page.locator('[data-todo-toggle-story=story-a]').getAttribute("aria-expanded"),"false","read-only dedicated Boards start compact too");
+    await page.locator('[data-todo-expand-all]').click();
     const readonlyBefore=await page.evaluate(()=>JSON.stringify(noteTodo.snapshot));
     const requests=[];page.on('request',request=>requests.push(request.url()));
     const taskCard=page.locator('[data-todo-card-id=task]');
@@ -323,6 +344,87 @@ test("browser Board renders empty snapshots and large read-only item dialogs wit
     await page.getByRole("dialog").waitFor();
     assert.match(await page.getByRole("dialog").innerText(),/Detailed user value/);
     assert.equal(await page.locator("#note-todo-editor,[data-todo-action],[data-todo-worker-token],[draggable=true]").count(),0);
+    assert.deepEqual(errors,[]);
+  }finally{await browser.close();}
+});
+test("dedicated Board owner identity is stable across duplicate Chat names, rename, and refresh",async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),"pkm-board-owner-"));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  store.setStorePath(root);
+  const slug="Owner identity",actor={id:"user:local",role:"user"};
+  store.todoBoardCreate(slug,slug);
+  let snapshot=store.noteWorkItemsRead(slug);
+  for(const record of [
+    item("story",{kind:"UserStory"}),
+    item("assigned-task",{parentId:"story",ownerId:"user:local",owner:"Local user"}),
+  ]) snapshot=store.noteWorkItemCommand(slug,snapshot.digest,{action:"create",item:record},actor);
+  let chats=[
+    {id:"chat-one",title:"Duplicate Chat",chatUrl:"pkm://chats/stable/11111111-1111-4111-8111-111111111111"},
+    {id:"chat-two",title:"Duplicate Chat",chatUrl:"pkm://chats/stable/22222222-2222-4222-8222-222222222222"},
+  ];
+  const writes=[],grants=[],errors=[];
+  const browser=await chromium.launch({headless:true,...(process.env.PKM_CHROMIUM_EXECUTABLE?{executablePath:process.env.PKM_CHROMIUM_EXECUTABLE}:{})});
+  try{
+    const page=await browser.newPage({viewport:{width:1200,height:900}});
+    page.on("pageerror",error=>errors.push(error.message));
+    await page.exposeFunction("host",async message=>{
+      if(message.command==="todoBoardGrantWorker"){grants.push(message);return;}
+      const data={slug,requestId:message.requestId,chats,documentKind:"todo-board"};
+      try{
+        if(message.command==="noteTodoCommand"){
+          writes.push(message);
+          store.noteWorkItemCommand(slug,message.expectedDigest,message.operation,actor);
+        }
+        data.snapshot=store.noteWorkItemsRead(slug);data.content=store.noteGet(slug).content;
+      }catch(error){data.error=error.message;}
+      await page.evaluate(data=>noteTodoResult(data),data);
+    });
+    await page.setContent('<style>.hidden{display:none!important}:root{--vscode-panel-border:#bbb;--vscode-foreground:#222;--vscode-descriptionForeground:#666;--vscode-editor-background:#fff;--vscode-input-background:#fff;--vscode-input-foreground:#222;--vscode-focusBorder:#087ea4;--vscode-charts-blue:#087ea4;--vscode-charts-green:#187744;--vscode-errorForeground:#a00}</style><nav><button data-note-view="board">Board</button></nav><div id="note-todo"></div><div id="note-markdown" class="hidden"></div>');
+    await page.addStyleTag({path:path.resolve(__dirname,"../dist/webview/panel.css")});
+    const source=fs.readFileSync(path.resolve(__dirname,"../src/webview/panel/22-note-todo.js"),"utf8");
+    assert(fs.readFileSync(path.resolve(__dirname,"../dist/webview/panel.js"),"utf8").includes(source),"tested browser source must match the ready build");
+    await page.addScriptTag({content:`const esc=value=>String(value??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+      let currentDetail={type:'note',documentKind:'todo-board',slug:'Owner identity',title:'Owner identity',content:''};
+      const vscode={postMessage:message=>host(message)};const safeMarked=esc;const pkModal=options=>options.onOk('User reviewed');
+      ${source}`});
+    await page.evaluate(()=>noteTodoMount(currentDetail));
+    await page.waitForFunction(()=>noteTodo.snapshot?.items.length===2&&!noteTodo.pending);
+    await page.locator('[data-todo-expand-all]').click();
+    await page.locator('[data-todo-edit="assigned-task"]').click();
+    const form=page.locator('#note-todo-editor');
+    const assignee=form.locator('[name=assignee]');
+    const initialOptions=await assignee.locator('option').evaluateAll(options=>options.map(option=>({value:option.value,label:option.textContent})));
+    assert.equal(initialOptions.find(option=>option.value==="chat:chat-one").label,initialOptions.find(option=>option.value==="chat:chat-two").label,"duplicate display names are allowed");
+    assert.deepEqual(initialOptions.filter(option=>option.value.startsWith("chat:")).map(option=>option.value),["chat:chat-one","chat:chat-two"],"stable Chat IDs remain distinct option values");
+    assert(initialOptions.some(option=>option.value==="user:local"),"existing local user assignment remains available");
+    await assignee.selectOption("chat:chat-two");
+    assert.equal(await form.locator('[name=ownerId]').inputValue(),"chat:chat-two");
+    await form.getByRole("button",{name:"Save Work Item"}).click();
+    await page.waitForFunction(()=>!noteTodo.pending&&!noteTodo.editor);
+    let persisted=store.noteWorkItemsRead(slug).items.find(record=>record.id==="assigned-task");
+    assert.equal(persisted.ownerId,"chat:chat-two","the exact selected stable identity is persisted, not its title");
+    assert.equal(persisted.state,"Planning");
+    assert.equal(persisted.acceptanceDecision,undefined);
+    assert.equal(store.noteWorkItemsRead(slug).items.find(record=>record.id==="story").kind,"UserStory");
+
+    const writesBeforeRefresh=writes.length,grantsBeforeRefresh=grants.length;
+    chats=[
+      {id:"chat-two",title:"Renamed Chat",chatUrl:"pkm://chats/stable/22222222-2222-4222-8222-222222222222"},
+      {id:"chat-one",title:"Duplicate Chat",chatUrl:"pkm://chats/stable/11111111-1111-4111-8111-111111111111"},
+    ];
+    await page.locator('[data-todo-refresh]').click();
+    await page.waitForFunction(()=>!noteTodo.pending&&noteTodo.chats[0]?.title==="Renamed Chat");
+    const assigned=page.locator('[data-todo-card-id="assigned-task"] [data-todo-copy-chat]');
+    assert.match(await assigned.innerText(),/Renamed Chat.*chat-two/,"owner display follows the renamed Chat and still identifies it");
+    assert.equal(writes.length,writesBeforeRefresh,"rename/refresh performs no Work Item command");
+    assert.equal(grants.length,grantsBeforeRefresh,"rename/refresh grants no worker authorization");
+    persisted=store.noteWorkItemsRead(slug).items.find(record=>record.id==="assigned-task");
+    assert.equal(persisted.ownerId,"chat:chat-two","reordered Chat results cannot transfer ownership to the duplicate-name Chat");
+    await page.locator('[data-todo-edit="assigned-task"]').click();
+    assert.equal(await form.locator('[name=ownerId]').inputValue(),"chat:chat-two");
+    assert.equal(await assignee.inputValue(),"chat:chat-two","the refreshed editor selects the same stable identity");
+    const refreshedOptions=await assignee.locator('option').evaluateAll(options=>options.map(option=>({value:option.value,label:option.textContent})));
+    assert.deepEqual(refreshedOptions.filter(option=>option.value.startsWith("chat:")).map(option=>option.value),["chat:chat-two","chat:chat-one"],"reordered display metadata preserves distinct identity values");
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
 });

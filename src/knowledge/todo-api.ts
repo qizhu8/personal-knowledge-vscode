@@ -91,7 +91,7 @@ function executeTodoApi(name: string, input: unknown, actorId: string): Record<s
     const chats = apiChatGroupSnapshots(join(getStorePath(), ".pkm", "state")).filter(chat=>!chat.deletedAt);
     const agents = new Map<string, { id:string; kind:string; title:string; chatUrl?:string }>();
     for (const chat of chats) agents.set(`chat:${chat.hostSessionId}`, { id:`chat:${chat.hostSessionId}`, kind:"pkm-chat", title:chat.title, chatUrl:chat.chatUrl });
-    for (const id of new Set(snapshot.items.flatMap(item=>[item.ownerId, ...(item.history || []).map(event=>event.actorId)]).filter((id): id is string=>!!id))) {
+    for (const id of new Set(snapshot.items.flatMap(item=>[item.ownerId, ...(item.collaboratorIds || []), ...(item.history || []).map(event=>event.actorId)]).filter((id): id is string=>!!id))) {
       if (!agents.has(id)) agents.set(id, { id, kind:id.startsWith("chat:")?"missing-chat":id.startsWith("user:")?"user":"external", title:id });
     }
     return { ...base, ...page([...agents.values()].filter(agent=>!args.query || `${agent.id} ${agent.title}`.toLowerCase().includes(String(args.query).toLowerCase())), args) };
@@ -135,8 +135,8 @@ function executeTodoApi(name: string, input: unknown, actorId: string): Record<s
     const allowed = [...detailFields, ...(storyApi?["storyStatus"]:[])];
     if (name!=="move_workitem" && Object.keys(fields).some(field=>!allowed.includes(field))) throw new Error("Use a dedicated operation for parent, ownership, state, result or audit.");
     for (const field of (args.clear_fields || []) as string[]) {
-      if (!["projectId", "dependsOn", "plannedStart", "plannedEnd", "links"].includes(field) || fields[field]!==undefined) throw new Error("clear_fields only removes optional metadata not present in patch.");
-      delete next[field as "projectId" | "dependsOn" | "plannedStart" | "plannedEnd" | "links"];
+      if (!["projectId", "dependsOn", "plannedStart", "plannedEnd", "links", "description", "icon", "collaboratorIds", "monitoring"].includes(field) || fields[field]!==undefined) throw new Error("clear_fields only removes optional metadata not present in patch.");
+      delete next[field as "projectId" | "dependsOn" | "plannedStart" | "plannedEnd" | "links" | "description" | "icon" | "collaboratorIds" | "monitoring"];
     }
     const merged = { ...next, ...fields };
     if (name==="move_workitem" && args.story_id===undefined) delete merged.parentId;

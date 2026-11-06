@@ -114,7 +114,7 @@ function portalEndpointRow(item) {
       <div class="portal-connection-detail">Local long-term permissions: ${esc(item.permissions.join(', ') || 'None · requests still need approval')}</div>
       <div class="portal-connection-detail">External MCP access: ${item.externalAccess ? 'Enabled · saved for this endpoint' : 'Disabled · external requests require approval'}</div>
       <div class="portal-connection-detail">Saved pairing · automatic reconnection · no task replay${item.deleted ? ' · Bind another Chat and authorize again' : ''}</div>
-      ${item.error ? `<div class="portal-connection-detail" role="alert">${esc(item.error)}</div>` : ''}
+      ${item.error ? problemGuidanceHtml(item.error, helpText('Inspect the saved pairing, bound Chat and local permissions. Reconnection does not replay tasks or grant new permissions.', '检查已保存的配对、绑定 Chat 和本地权限。重新连接不会重放任务或授予新权限。'), '', 'sharing') : ''}
     </div>
     <div class="portal-connection-actions">
       ${!item.paired && item.state === 'disconnected' ? button('Pair', 'Pair…') : item.state === 'disconnected' ? button('Connect', 'Connect') : button('Disconnect', 'Disconnect')}
@@ -140,7 +140,7 @@ function portalHubPortNotice(hub) {
       <div class="portal-connection-detail">Requested: ${esc(requested)} → Actual: ${esc(actual)}${changed ? ' · Port changed' : ''}</div>
       <div class="portal-connection-detail">${esc(reason)}</div>
       ${hub.reason === 'in-use' && hub.state === 'ready' ? '<div class="portal-connection-detail">New pairing codes use the new port. Forwarding is resolved during code creation; saved remote addresses were not updated.</div>' : ''}
-      ${hub.error ? `<div class="portal-connection-detail">${esc(hub.error)}</div>` : ''}
+      ${hub.state === 'failed' || hub.error ? problemGuidanceHtml(hub.error || 'The local Hub is not listening.', helpText('Review the configured Hub port and diagnostic output. Check existing listeners; do not stop them or change saved peer addresses automatically.', '检查 Hub 端口配置和诊断输出，确认现有监听者；不要自动停止它们或修改已保存的对端地址。'), `<button class="tbtn" onclick="ask('showLogs',{})">${esc(helpText('Open diagnostic log','查看诊断日志'))}</button>`, 'sharing') : ''}
     </div></section>`;
 }
 

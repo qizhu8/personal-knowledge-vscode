@@ -1,4 +1,23 @@
-import type { ApiChatMessage, ApiChatRequest, ApiChatTool, ChatToolLoopGuard } from "./api-chat-client";
+import type { ApiChatMessage, ApiChatRequest, ApiChatTool, ApiChatToolEvent, ChatToolLoopGuard } from "./api-chat-client";
+
+function boundedToolContext(content: string | undefined): ApiChatMessage | undefined {
+  if (content === undefined) return undefined;
+  if (typeof content !== "string" || !content.trim() || content.length > 2000) throw new Error("Host tool-result context must contain 1-2000 characters.");
+  return { role:"system", content };
+}
+
+export function chatToolResultContext(request: Pick<ApiChatRequest, "onToolResultContext">,
+  event: ApiChatToolEvent): ApiChatMessage | undefined {
+  return boundedToolContext(request.onToolResultContext?.(event));
+}
+
+/** Validate the shared bounded context contract for one completed successful batch. */
+export function chatToolBatchContext(request: Pick<ApiChatRequest, "onToolResultsContext">,
+  events: readonly ApiChatToolEvent[]): ApiChatMessage | undefined {
+  const callback = request.onToolResultsContext;
+  if (!events.length || callback === undefined) return undefined;
+  return boundedToolContext(callback(events));
+}
 
 /** Unannotated tools are exclusive barriers; only Host-declared independent reads may overlap. */
 export class ChatToolScheduler {
@@ -29,12 +48,13 @@ export class ChatToolScheduler {
 }
 
 export async function executeChatToolBatch(
-  calls: NonNullable<ApiChatMessage["tool_calls"]>, request: Pick<ApiChatRequest, "tools" | "onTool" | "afterTools">,
+  calls: NonNullable<ApiChatMessage["tool_calls"]>, request: Pick<ApiChatRequest, "tools" | "onTool" | "onToolResultContext" | "onToolResultsContext" | "afterTools">,
   messages: ApiChatMessage[], loop: ChatToolLoopGuard, signal: AbortSignal, round: number,
 ): Promise<void> {
   await loop.beforeRound(round, signal);
   const scheduler = new ChatToolScheduler();
   const completed: ApiChatMessage[] = [];
+  const events: Parameters<NonNullable<ApiChatRequest["onToolResultContext"]>>[0][] = [];
   const controller = new AbortController();
   const cancel = () => controller.abort();
   signal.addEventListener("abort", cancel, { once: true });
@@ -59,7 +79,8 @@ export async function executeChatToolBatch(
         if (!tool) throw new Error("This tool is not enabled for the request.");
         const args: unknown = JSON.parse(call.function.arguments);
         if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("Tool arguments must be an object.");
-        const version = await tool.readVersion?.(args as Record<string, unknown>, batchSignal);
+        const version = await cancellable(Promise.resolve().then(() => tool.readVersion?.(args as Record<string, unknown>, batchSignal)), batchSignal);
+        if (batchSignal.aborted) throw new Error("Request cancelled.");
         const prior = loop.reuse(tool.name, call.function.arguments, [...messages, ...completed], version);
         if (prior) {
           result = prior.result; reused = true;
@@ -78,6 +99,7 @@ export async function executeChatToolBatch(
         loop.record(tool, call.function.name, call.function.arguments, result, false);
       }
       request.onTool?.({ ...event, status: succeeded ? "complete" : "failed", result, reused });
+      events.push({ ...event, status:succeeded ? "complete" : "failed", result, reused });
       const output = { role: "tool" as const, content: result, tool_call_id: call.id };
       completed.push(output);
       return output;
@@ -86,6 +108,20 @@ export async function executeChatToolBatch(
   for (const output of outputs) if (output.status === "fulfilled") messages.push(output.value);
   const failed = outputs.find(output => output.status === "rejected");
   if (failed?.status === "rejected") throw failed.reason;
+  if (request.onToolResultsContext !== undefined) {
+    const successful = calls.map(call => events.find(event => event.id === call.id))
+      .filter((event): event is ApiChatToolEvent => event?.status === "complete");
+    const context = chatToolBatchContext(request, successful);
+    if (context) messages.push(context);
+  } else {
+    for (const call of calls) {
+      const event = events.find(event => event.id === call.id);
+      if (event?.status === "complete") {
+        const context = chatToolResultContext(request, event);
+        if (context) messages.push(context);
+      }
+    }
+  }
   } finally { signal.removeEventListener("abort", cancel); }
 }
 

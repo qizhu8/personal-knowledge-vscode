@@ -69,7 +69,7 @@ const sandbox = {
     setChatStartupTrace() {},
     registerApiChatShell: (_context, load) => { deferredLoad = load; return shellProvider; },
   },
-  log: { info() {}, error: message => messages.push(message) },
+  log: { info() {}, startup() {}, error: message => messages.push(message) },
   vscode: { window: { showErrorMessage: message => { messages.push(message); return Promise.resolve(); } } },
 };
 require("vm").runInNewContext(`(async () => { ${compiled.slice(chatStart, chatEnd)} return apiChat; })()`, sandbox)
@@ -94,10 +94,12 @@ require("vm").runInNewContext(`(async () => { ${compiled.slice(chatStart, chatEn
         if (name.endsWith("/extension-host-runtime")) return {};
         if (name === "./visualization-window") return { registerVisualizationWindow() {} };
         if (name === "./agent-control") return require("../dist/chat/agent-control");
+        if (name === "../runtime/async-deadline") return require("../dist/runtime/async-deadline");
         return require(name);
       },
       setTimeout: callback => queueMicrotask(callback),
       setInterval: () => ({ unref() {} }), clearInterval() {},
+      AbortController,
     });
     let loads = 0;
     let handoff;
@@ -106,7 +108,7 @@ require("vm").runInNewContext(`(async () => { ${compiled.slice(chatStart, chatEn
       if (loads === 1) throw new Error("fixture backend unavailable");
       return { attachWebviewView: (view, retainHtml) => { handoff = { view, retainHtml }; }, isBusy: false };
     });
-    assert.strictEqual(commands, 6);
+    assert.strictEqual(commands, 7);
     assert.strictEqual(loads, 0);
     const listeners = new Set();
     const posted = [];
@@ -151,8 +153,11 @@ require("vm").runInNewContext(`(async () => { ${compiled.slice(chatStart, chatEn
         this.attachWebviewView(nextView, false);
       },
     };
+    let startedBackend;
+    const backendStarted = new Promise(resolve => { startedBackend = resolve; });
     exports.registerApiChatShell(lifecycleContext, async () => {
       lifecycleLoads++;
+      startedBackend();
       return backendGate;
     });
     const createLifecycleView = () => {
@@ -173,7 +178,7 @@ require("vm").runInNewContext(`(async () => { ${compiled.slice(chatStart, chatEn
     const closingView = createLifecycleView();
     registered.resolveWebviewView(closingView.view);
     const pendingReady = closingView.ready();
-    await Promise.resolve(); await Promise.resolve();
+    await backendStarted;
     assert.strictEqual(lifecycleLoads, 1);
     closingView.close();
     const replacementView = createLifecycleView();
@@ -230,9 +235,10 @@ require("vm").runInNewContext(`(async () => { ${compiled.slice(chatStart, chatEn
       const integrationShell = {};
       require("vm").runInNewContext(fs.readFileSync(path.join(root, "dist/chat/api-chat-shell.js"), "utf8"), {
         exports: integrationShell,
-        require: name => name === "vscode" ? integrationHost : name.endsWith("/filestore") ? { getStorePath: () => "" } : name.endsWith("/extension-host-runtime") ? {} : name === "./agent-control" ? require("../dist/chat/agent-control") : name === "./visualization-window" ? { registerVisualizationWindow() {} } : require(name),
+        require: name => name === "vscode" ? integrationHost : name.endsWith("/filestore") ? { getStorePath: () => "" } : name.endsWith("/extension-host-runtime") ? {} : name === "../runtime/async-deadline" ? require("../dist/runtime/async-deadline") : name === "./agent-control" ? require("../dist/chat/agent-control") : name === "./visualization-window" ? { registerVisualizationWindow() {} } : require(name),
         setTimeout: callback => queueMicrotask(callback),
         setInterval: () => ({ unref() {} }), clearInterval() {},
+        AbortController,
       });
       const registrationSandbox = {
         vscode: integrationHost, api_chat_shell_1: integrationShell,
@@ -250,6 +256,7 @@ require("vm").runInNewContext(`(async () => { ${compiled.slice(chatStart, chatEn
       await require("vm").runInNewContext(`(async () => { ${activationCode} return apiChat; })()`, {
         ...sandbox, context: integrationContext, api_chat_shell_1: integrationShell,
         retrieval_snapshot_1: require("../dist/retrieval/retrieval-snapshot"),
+        chat_knowledge_retriever_1: { createChatKnowledgeRetriever: () => async () => [] },
         currentRetrievalSnapshot: () => ({ documents: [], corpus_revision: "fixture" }),
         require: name => { assert.strictEqual(name, "./chat/api-chat-view"); return backendModule; },
       });
@@ -272,7 +279,7 @@ require("vm").runInNewContext(`(async () => { ${compiled.slice(chatStart, chatEn
         assert.strictEqual(registrationCalls[0][0], integrationContext);
         assert.strictEqual(typeof registrationCalls[0][1], "function");
         assert.strictEqual(registrationCalls[0][2], false, "The backend must not register another view or command facade");
-        assert.strictEqual(providers.size, 1); assert.strictEqual(commandNames.size, 6);
+        assert.strictEqual(providers.size, 1); assert.strictEqual(commandNames.size, 7);
         assert.strictEqual(modelListeners, 1, "Backend lifecycle listeners must remain registered");
         assert.strictEqual(instances[0].attached.view, integrationView);
         assert.strictEqual(instances[0].attached.retainHtml, true);
@@ -286,7 +293,7 @@ require("vm").runInNewContext(`(async () => { ${compiled.slice(chatStart, chatEn
     }
     const activationCode = compiled.slice(chatStart, chatEnd);
     await activationRegistrationTest(activationCode);
-    const duplicateRegistration = activationCode.replace(/\), false\);(?=\s*\}\);)/, "));");
+    const duplicateRegistration = activationCode.replace(/,\s*false,\s*async\s*\(\)\s*=>/, ", true, async () =>");
     assert.notStrictEqual(duplicateRegistration, activationCode, "The regression mutation must remove the backend's duplicate-registration guard");
     await assert.rejects(activationRegistrationTest(duplicateRegistration), /View provider for 'personalKnowledge\.apiChat' already registered/);
     console.log("Sidebar opening, lazy Chat loading, initialization recovery and duplicate-provider registration regression tests passed");

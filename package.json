@@ -2,7 +2,7 @@
   "name": "personal-knowledge",
   "displayName": "Personal Knowledge Manager",
   "description": "%extension.description%",
-  "version": "4.0.11",
+  "version": "4.0.22",
   "publisher": "Uone",
   "author": {
     "name": "Yu Wang"
@@ -1101,7 +1101,7 @@
           "default": 200,
           "minimum": -1,
           "maximum": 1000000000,
-          "description": "Provider-reported Copilot credits allowed per Chat message response and its inference rounds. At the limit, PKM waits before the next inference; the user can add 50 credits, choose a new total, make this response or the whole Chat session unlimited, pause or cancel. -1 disables the credit limit. Missing provider credit reports remain unknown and are surfaced as partial/not-reported."
+          "description": "Default provider-reported Copilot credits allowed per Chat message response and its inference rounds. Credit limit in Chat Model settings or Chat List actions can override this per Chat; a group action applies to existing members only. At the limit, PKM waits before pending work; the user can add 50 credits, choose a new total, make this response or the whole Chat session unlimited, pause or cancel. -1 disables the default credit limit, not token/time/provider limits. Missing provider credit reports remain unknown and are surfaced as partial/not-reported."
         },
         "personalKnowledge.apiChatCapabilityProfile": {
           "type": "string",
@@ -1109,8 +1109,8 @@
             "legacy",
             "compact"
           ],
-          "default": "legacy",
-          "description": "Chat capability exposure. Legacy preserves individual tools. Compact replaces enabled Todo/Memory pilot tools with bounded hierarchical discovery and read/mutation dispatch; existing leaf permissions and Plan restrictions still apply."
+          "default": "compact",
+          "description": "Chat capability exposure. Compact keeps core editing/process tools and defers all other enabled tools through bounded discovery and read/mutation dispatch. Original permissions, Plan restrictions and receipts remain authoritative. Legacy restores eager individual schemas for compatibility."
         },
         "personalKnowledge.apiChatActivityReviewMinutes": {
           "type": "integer",
@@ -1283,9 +1283,11 @@
     "vscode:prepublish": "node scripts/vscode-prepublish.js",
     "build": "tsc -p tsconfig.json && npx esbuild dist/chat/api-chat-tools.js dist/chat/api-chat-mcp.js --bundle --platform=node --format=cjs --define:navigator=undefined --external:vscode --external:./api-chat-tools --outdir=dist/chat --allow-overwrite && npx esbuild src/subscriptions/subscription-gateway-entry.ts --bundle --platform=node --format=cjs --outfile=dist/subscription-gateway.js && cp -r src/webview dist/ && node scripts/build-panel.js && cp node_modules/sql.js/dist/sql-wasm.js dist/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/ && cp node_modules/marked/lib/marked.umd.js dist/webview/ && cp node_modules/@vscode/codicons/dist/codicon.css node_modules/@vscode/codicons/dist/codicon.ttf dist/webview/ && npx esbuild src/live-markdown-entry.js --bundle --platform=node --format=cjs --outfile=dist/live-markdown.js && npx esbuild src/webview/hljs-entry.js --bundle --minify --format=iife --outfile=dist/webview/hljs.js && cp node_modules/highlight.js/styles/github-dark.css dist/webview/hljs.css && cp node_modules/katex/dist/katex.min.js dist/webview/katex.js && cp node_modules/katex/dist/katex.min.css dist/webview/katex.css && mkdir -p dist/webview/fonts && cp node_modules/katex/dist/fonts/*.woff2 dist/webview/fonts/ && cp node_modules/cytoscape/dist/cytoscape.min.js dist/webview/cytoscape.js && cp node_modules/mermaid/dist/mermaid.min.js dist/webview/mermaid.js && cp node_modules/3d-force-graph/dist/3d-force-graph.min.js dist/webview/forcegraph3d.js && node scripts/postbuild.js",
     "test:ui-build-artifacts": "npm run build && node tests/test-ui-build-artifacts.js",
-    "test:api-chat": "npm run build && node --test tests/test-api-chat.js tests/test-chat-managed-mcp.js tests/test-chat-library-actions.js tests/test-host-health-startup.js",
+    "test:api-chat": "npm run build && node --test tests/test-api-chat.js tests/test-chat-managed-mcp.js tests/test-chat-library-actions.js tests/test-host-health-startup.js tests/test-chat-fault-injection.js",
+    "test:chat-faults": "npm run build && npm run test:chat-faults:run",
+    "test:chat-faults:run": "node --test --test-timeout=30000 tests/test-chat-fault-injection.js tests/test-host-health-startup.js tests/test-chat-managed-mcp.js tests/test-copilot-sdk-responsiveness.js tests/test-chat-history-storage.js tests/test-chat-view-lifecycle.js tests/test-chat-model-picker.js tests/test-diagnostic-log.js tests/test-sidebar-panel-opening.js && python -B tests/test-chat-list-rendering.py",
     "test:pkm-chat:daily": "npm run build && npm run test:pkm-chat:daily:run",
-    "test:pkm-chat:daily:run": "node --test tests/test-api-chat.js tests/test-chat-managed-mcp.js tests/test-chat-library-actions.js tests/test-host-health-startup.js tests/test-chat-activity-browser.js tests/test-chat-history-storage.js tests/test-agent-session-tree-groups.js tests/test-agent-session-tree-browser.js tests/test-panel-instances-browser.js tests/test-portal-connections.js tests/test-portal-permissions.js tests/test-persona-profiles.js tests/test-persona-profile-ui.js tests/test-persona-profile-browser.js tests/test-chat-context-contracts.js tests/test-peer-collaboration.js tests/test-portal-profile-wiring.js tests/test-chat-workers.js tests/test-persona-installed-helper.js",
+    "test:pkm-chat:daily:run": "node --test tests/test-api-chat.js tests/test-chat-managed-mcp.js tests/test-chat-library-actions.js tests/test-host-health-startup.js tests/test-chat-fault-injection.js tests/test-copilot-sdk-responsiveness.js tests/test-chat-view-lifecycle.js tests/test-chat-model-picker.js tests/test-diagnostic-log.js tests/test-sidebar-panel-opening.js tests/test-chat-activity-browser.js tests/test-chat-history-storage.js tests/test-agent-session-tree-groups.js tests/test-agent-session-tree-browser.js tests/test-panel-instances-browser.js tests/test-portal-connections.js tests/test-portal-permissions.js tests/test-persona-profiles.js tests/test-persona-profile-ui.js tests/test-persona-profile-browser.js tests/test-chat-context-contracts.js tests/test-peer-collaboration.js tests/test-portal-profile-wiring.js tests/test-persona-installed-helper.js && python -B tests/test-chat-list-rendering.py",
     "test:persona-profiles": "npm run build && node --test tests/test-user-profile-fragments.js tests/test-profile-sync.js tests/test-persona-profiles.js tests/test-persona-profile-ui.js tests/test-persona-profile-browser.js tests/test-chat-context-contracts.js tests/test-peer-collaboration.js tests/test-portal-profile-wiring.js tests/test-persona-installed-helper.js",
     "test:work-intent-review": "node --test tests/test-work-intent-review-browser.js",
     "test:mcp-lifecycle": "npm run build && node --test tests/test-mcp-lifecycle.js tests/test-chat-managed-mcp.js && python -B tests/test-mcp-lifecycle.py",

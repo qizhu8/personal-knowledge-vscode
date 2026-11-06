@@ -183,6 +183,7 @@ async def main(bridge):
             sys.executable,
             [str(module_directory / "server.py")],
             cwd=str(module_directory),
+            env={**os.environ, "PKM_CAPABILITY_PROFILE": "legacy"},
             log_file=log,
         )
         async with asyncio.timeout(15):
@@ -427,18 +428,37 @@ async def main(bridge):
 
         compact_transport = StdioTransport(
             sys.executable, [str(module_directory / "server.py")], cwd=str(module_directory),
-            env={**os.environ, "PKM_CAPABILITY_PROFILE": "compact"}, log_file=log)
+            env={key: value for key, value in os.environ.items() if key != "PKM_CAPABILITY_PROFILE"}, log_file=log)
         async with Client(compact_transport, timeout=3, init_timeout=3) as client:
             compact_tools = {tool.name for tool in await client.list_tools()}
             assert compact_tools == {"capabilities_inventory", "capabilities_list", "capabilities_search",
-                                     "capabilities_describe", "capability_read", "capability_call", "check_version"}, compact_tools
+                                     "capabilities_describe", "capability_read", "capability_call", "check_version",
+                                     "mcp_lifecycle_status", "mcp_lifecycle_quiesce"}, compact_tools
             compact_inventory = (await client.call_tool("capabilities_inventory", {})).structured_content
             assert compact_inventory["schemaBytes"] < inventory["schemaBytes"] * 0.4
+            assert compact_inventory["schemaBytes"] < 10000
+            deferred, offset, revision = set(), 0, None
+            while offset is not None:
+                page = (await client.call_tool("capabilities_list", {
+                    "offset": offset, "limit": 10, **({"revision": revision} if revision else {})})).structured_content
+                deferred.update(item["transportName"] for item in page["operations"])
+                offset, revision = page["nextOffset"], page["revision"]
+            assert deferred | compact_tools == set(by_name), ("compact lost original tools", deferred ^ set(by_name))
+            found = (await client.call_tool("capabilities_search", {"query": "chat_capabilities"})).structured_content
+            assert found["operations"][0]["id"] == "mcp.tool.chat_capabilities"
+            original = (await client.call_tool("capability_read", {
+                "operation": "mcp.tool.chat_capabilities", "version": 1, "arguments": {}})).structured_content
+            assert original["version"] == "chat-test", original
+            made = (await client.call_tool("capability_call", {
+                "operation": "mcp.tool.todo_board_create", "version": 1,
+                "arguments": {"title": "Deferred Board"}})).structured_content
+            assert made["slug"] == "Deferred Board", made
             recalled = (await client.call_tool("capability_read", {
                 "operation": "memory.record.get", "version": 1, "arguments": {"id": proposal["id"]}})).structured_content["result"]
             assert recalled["revision"] == proposal["revision"] and recalled["status"] == "pending"
             print(json.dumps({"pilot": "generated-unified-mcp-compact", "exposedTools": compact_inventory["total"],
-                              "schemaBytes": compact_inventory["schemaBytes"], "measurement": "actual exposed fixture schemas; nonpilot domains hidden"}))
+                              "schemaBytes": compact_inventory["schemaBytes"], "discoverableLeaves": len(deferred),
+                              "measurement": "actual schemas; full original catalog coverage and original executors"}))
 
 
 with RetrievalBridge() as bridge:

@@ -48,6 +48,7 @@ const calls = [];
 const timers = new Map();
 const context = {
   console,
+  uiI18n:{ resolved:'en' },
   state: { tab: 'skills' },
   setTimeout: callback => { const id = timers.size + 1; timers.set(id, callback); return id; },
   clearTimeout: id => timers.delete(id),
@@ -64,6 +65,7 @@ const context = {
   },
 };
 vm.createContext(context);
+new vm.Script(fs.readFileSync(path.join(__dirname, '..', 'src/webview/panel/06-help.js'), 'utf8')).runInContext(context);
 const tabsStart = panelJs.indexOf('function settingsTabBar(');
 const tabsEnd = panelJs.indexOf('function selectSettingsSubtab(', tabsStart);
 assert(tabsStart >= 0 && tabsEnd > tabsStart);

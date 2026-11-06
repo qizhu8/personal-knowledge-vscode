@@ -31,7 +31,7 @@ test("default credential deadline is exactly 10 seconds and releases the waiting
     assert.equal(error.code, "CREDENTIAL_READ_TIMEOUT");
     assert.equal(error.phase, "authenticating");
     assert.match(error.message, /executing VS Code host.*credential channel.*GitHub was not contacted/);
-    assert.match(error.message, /Automatic retry.*another connected compatible host/);
+    assert.match(error.message, /See Sync status to check whether an automatic retry is scheduled/);
     assert.doesNotMatch(error.message, /Reload this window/);
     return true;
   });

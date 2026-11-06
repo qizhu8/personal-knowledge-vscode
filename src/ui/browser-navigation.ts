@@ -59,10 +59,17 @@ export function browserNavigationRuntime(active: string, graph: any): string {
   receipt.hidden = true;
   document.body.append(menu, receipt);
   let pathTarget;
+  let receiptTimer;
+  let receiptVersion = 0;
+  const hideReceipt = () => {
+    clearTimeout(receiptTimer);
+    receipt.hidden = true;
+  };
   const closeMenu = () => { menu.hidden = true; };
   function openMenu(target, x, y) {
     pathTarget = target;
-    receipt.hidden = true;
+    receiptVersion++;
+    hideReceipt();
     menu.hidden = false;
     menu.style.left = Math.max(0, Math.min(x, innerWidth-menu.offsetWidth-8)) + 'px';
     menu.style.top = Math.max(0, Math.min(y, innerHeight-menu.offsetHeight-8)) + 'px';
@@ -84,7 +91,10 @@ export function browserNavigationRuntime(active: string, graph: any): string {
   });
   copy.addEventListener('click', async () => {
     const target = pathTarget;
+    const version = ++receiptVersion;
+    hideReceipt();
     closeMenu();
+    let copied = false;
     try {
       if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(target.dataset.pkmPath);
       else {
@@ -97,11 +107,15 @@ export function browserNavigationRuntime(active: string, graph: any): string {
           if (!document.execCommand('copy')) throw new Error('Clipboard unavailable');
         } finally { field.remove(); }
       }
+      if (version !== receiptVersion) return;
       receipt.textContent = 'PKM path copied';
+      copied = true;
     } catch (error) {
+      if (version !== receiptVersion) return;
       receipt.textContent = 'Copy failed: ' + error.message + '. Path: ' + target.dataset.pkmPath;
     }
     receipt.hidden = false;
+    if (copied) receiptTimer = setTimeout(hideReceipt, 2000);
     target.focus({preventScroll:true});
   });
   document.addEventListener('pointerdown', event => { if (!menu.contains(event.target)) closeMenu(); });
@@ -164,8 +178,9 @@ export function browserNavigationRuntime(active: string, graph: any): string {
   try { state = JSON.parse(sessionStorage.getItem(storageKey) || '{}') || {}; } catch {}
   let current = ${json(active)};
   let cy, fg, graphMode = state.papers?.view || 'directory', generation = 0;
-  const canvas = sidebar.querySelector('.reader-graph-canvas');
-  const status = sidebar.querySelector('.reader-graph-status');
+  const graphView = sidebar.parentElement.querySelector('.reader-graph-view');
+  const canvas = graphView.querySelector('.reader-graph-canvas');
+  const status = graphView.querySelector('.reader-graph-status');
   const save = () => { try { sessionStorage.setItem(storageKey, JSON.stringify(state)); } catch {} };
   function remember() {
     const panel = panels.find(panel => panel.dataset.libraryPanel === current);
@@ -184,7 +199,7 @@ export function browserNavigationRuntime(active: string, graph: any): string {
     panels.forEach(panel => { panel.hidden = panel.dataset.libraryPanel !== type; });
     sidebar.scrollTop = state[type]?.scroll || 0;
     if (type === 'papers') showGraph(graphMode);
-    else { generation++; fg?.pauseAnimation(); }
+    else { generation++; graphView.hidden = true; fg?.pauseAnimation(); }
   }
   const libraries = {};
   function library(name, url) {
@@ -198,6 +213,10 @@ export function browserNavigationRuntime(active: string, graph: any): string {
     });
   }
   const href = key => '/papers/' + key.split('/').map(encodeURIComponent).join('/') + '.html';
+  function openPaper(key) {
+    showGraph('directory');
+    location.assign(href(key));
+  }
   const color = node => {
     if (node.kind === 'idea') return '#f4b400';
     let hash = 0; for (const letter of node.topic) hash = ((hash << 5) - hash + letter.charCodeAt(0)) | 0;
@@ -208,12 +227,10 @@ export function browserNavigationRuntime(active: string, graph: any): string {
     graphMode = ['directory','2d','3d'].includes(mode) ? mode : 'directory';
     state.papers = { ...state.papers, view:graphMode }; save();
     sidebar.querySelectorAll('[data-graph-view]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.graphView === graphMode)));
-    sidebar.querySelector('.reader-research-directory').hidden = graphMode !== 'directory';
-    canvas.hidden = graphMode === 'directory';
-    status.hidden = graphMode === 'directory';
+    graphView.hidden = current !== 'papers' || graphMode === 'directory';
     const ticket = ++generation;
-    if (graphMode === 'directory') { fg?.pauseAnimation(); return; }
-    if (canvas.dataset.mode === graphMode && (cy || fg)) { cy?.resize(); fg?.resumeAnimation(); return; }
+    if (graphView.hidden) { fg?.pauseAnimation(); return; }
+    if (canvas.dataset.mode === graphMode && (cy || fg)) { resizeGraph(); fg?.resumeAnimation(); return; }
     dispose();
     canvas.dataset.mode = '';
     status.textContent = 'Loading research graph…';
@@ -233,19 +250,19 @@ export function browserNavigationRuntime(active: string, graph: any): string {
             {selector:'edge',style:{'curve-style':'bezier','target-arrow-shape':'triangle','line-color':'#93a2a7','target-arrow-color':'#93a2a7',width:1.4}}
           ], layout:{name:'cose',animate:false,padding:24,nodeRepulsion:9000,idealEdgeLength:95}
         });
-        cy.on('tap','node', event => location.assign(href(event.target.id())));
+        cy.on('tap','node', event => openPaper(event.target.id()));
       } else {
         const probe = document.createElement('canvas');
         const gl = probe.getContext('webgl2') || probe.getContext('webgl');
         if (!gl) throw new Error('WebGL is unavailable');
         gl.getExtension('WEBGL_lose_context')?.loseContext();
-        fg = globalThis.ForceGraph3D()(canvas).width(canvas.clientWidth || 260).height(380)
+        fg = globalThis.ForceGraph3D()(canvas).width(canvas.clientWidth).height(canvas.clientHeight)
           .backgroundColor('#f6f7f9')
           .graphData({nodes:data.nodes.map(node => ({...node,id:node.key})),links:data.edges.map(edge => ({source:edge.from,target:edge.to}))})
           .nodeColor(color).nodeVal(node => node.kind === 'idea' ? 6 : 2+node.citationCount)
           .nodeLabel(node => { const label=document.createElement('span'); label.textContent=node.title; return label; })
           .linkDirectionalArrowLength(3.5).linkDirectionalArrowRelPos(1)
-          .onNodeClick(node => location.assign(href(node.key)));
+          .onNodeClick(node => openPaper(node.key));
       }
       canvas.dataset.mode = graphMode;
       status.textContent = data.nodes.length + ' papers · ' + data.edges.length + ' citations · click a node to open';
@@ -265,9 +282,17 @@ export function browserNavigationRuntime(active: string, graph: any): string {
     });
   });
   sidebar.querySelectorAll('[data-graph-view]').forEach(button => button.addEventListener('click', () => showGraph(button.dataset.graphView)));
+  sidebar.addEventListener('click', event => {
+    if (event.target.closest('a.reader-nav-item')) showGraph('directory');
+  });
   window.addEventListener('pagehide', remember);
   sidebar.addEventListener('toggle', event => { if (event.target.matches('.reader-nav-folder')) remember(); }, true);
-  new ResizeObserver(() => { cy?.resize(); if(fg) fg.width(canvas.clientWidth || 260); }).observe(canvas);
+  function resizeGraph() {
+    if (graphView.hidden) return;
+    cy?.resize();
+    if (fg) fg.width(canvas.clientWidth).height(canvas.clientHeight);
+  }
+  new ResizeObserver(resizeGraph).observe(canvas);
   select(current);
 })();
 </script>`;
@@ -292,10 +317,14 @@ export const browserNavigationStyles = `
 .reader-tabs button,.reader-graph-tools button{border:1px solid transparent;border-radius:4px;padding:6px 7px;background:transparent;color:#57606a;font:inherit;cursor:pointer}
 .reader-tabs button[aria-selected=true],.reader-graph-tools button[aria-pressed=true]{background:#dcebed;border-color:#accdd0;color:#145b60;font-weight:650}
 .reader-tabs button:focus-visible,.reader-graph-tools button:focus-visible{outline:2px solid #287f85}
-.reader-nav-group[hidden],.reader-research-directory[hidden],.reader-graph-canvas[hidden],.reader-graph-status[hidden]{display:none!important}
+.reader-nav-group[hidden],.reader-graph-view[hidden]{display:none!important}
+.reader-layout:has(>.reader-graph-view:not([hidden]))>.wrap{display:none}
+.reader-graph-view{grid-column:2;min-width:0;height:100vh;height:100dvh;padding:24px;display:flex;flex-direction:column;gap:12px}
 .reader-graph-tools{display:flex;flex-wrap:wrap;gap:2px;margin:8px 0}
-.reader-graph-canvas{position:relative;width:100%;height:380px;overflow:hidden;border:1px solid #d8dee4;border-radius:4px}
-.reader-graph-status{font-size:11px;color:#57606a;overflow-wrap:anywhere;line-height:1.5}
+.reader-graph-canvas{position:relative;width:100%;flex:1;min-height:320px;overflow:hidden;border:1px solid #d8dee4;border-radius:4px}
+.reader-graph-status{margin:0;font-size:13px;color:#57606a;overflow-wrap:anywhere;line-height:1.5}
+@media(max-width:700px){.reader-graph-view{padding:20px 12px}}
+@media print{.reader-graph-view{display:none}.reader-layout:has(>.reader-graph-view:not([hidden]))>.wrap{display:block}}
 .reader-path-menu{position:fixed;z-index:10000;min-width:140px;padding:4px;background:#fff;border:1px solid #d8dee4;border-radius:5px;box-shadow:0 4px 16px #0002}
 .reader-path-menu button{display:block;width:100%;padding:7px 12px;border:0;border-radius:3px;background:transparent;color:#24292f;font:inherit;text-align:left;cursor:pointer}
 .reader-path-menu button:hover,.reader-path-menu button:focus-visible{background:#dcebed;outline:2px solid #287f85;outline-offset:-2px}

@@ -46,10 +46,14 @@ try {
   let now = 0;
   let heartbeat;
   let disposed = false;
+  const output = [], warnings = [];
   const sandbox = {
     DiagnosticLog, loadedExtensionBuild, path, process, performance: { now: () => now },
     vscode: {
-      window: { createOutputChannel: () => ({ appendLine() {}, show() {} }) },
+      window: {
+        createOutputChannel: () => ({ appendLine:line => output.push(line), show() {} }),
+        showWarningMessage:message => { warnings.push(message); return Promise.resolve(); },
+      },
       workspace: { getConfiguration: () => ({ get: () => "info" }) },
     },
     setInterval: callback => { heartbeat = callback; return { unref() {} }; },
@@ -71,6 +75,25 @@ try {
   context.subscriptions[0].dispose();
   assert(disposed);
   assert.strictEqual(logger.fileLog.latest(1)[0].event, "host.stopped");
+  logger.minLevel = "error";
+  logger.startup("before a potentially blocked Chat backend import");
+  assert.strictEqual(logger.fileLog.latest(1)[0].event, "chat.startup", "startup evidence must survive error-only log settings");
+  const originalAppend = fs.appendFileSync;
+  try {
+    fs.appendFileSync = (filename, ...args) => {
+      if (String(filename).startsWith(logger.fileLog.directory + path.sep)) throw Object.assign(new Error("ENOSPC: fixture diagnostic volume full"), { code:"ENOSPC" });
+      return originalAppend(filename, ...args);
+    };
+    logger.error("fixture diagnostic failure");
+    logger.error("fixture diagnostic failure again");
+    assert.strictEqual(warnings.length, 1);
+    logger.show();
+    assert(output.some(line => line.includes("[memory diagnostic]") && line.includes('"persisted":false')));
+  } finally { fs.appendFileSync = originalAppend; }
+  logger.error("fixture diagnostic recovery");
+  assert.strictEqual(logger.fileLog.persistenceError, undefined);
+  logger.show();
+  assert(output.some(line => line.includes("Some recent diagnostics were not persisted")));
   let clock = 1000;
   const runtimeDirectory = path.join(directory, "hosts");
   const oldBuild = "a".repeat(64), targetBuild = "b".repeat(64);

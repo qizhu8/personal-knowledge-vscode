@@ -17,6 +17,21 @@ function load(file, dependencies = {}) {
 const helper = load("src/ui/browser-navigation.ts");
 const {navigationItemPath} = load("src/ui/navigation-path.ts");
 const { startLiveMarkdownServer } = load("src/knowledge/live-note-server.ts");
+async function assertMainGraph(page) {
+  const graph = page.getByRole("region",{name:"Research graph",exact:true});
+  assert.strictEqual(await graph.isVisible(),true,"graph is visible in the main content area");
+  assert.strictEqual(await page.locator(".reader-sidebar .reader-graph-canvas,.reader-sidebar .reader-graph-status").count(),0,"graph is not rendered inside navigation");
+  assert.strictEqual(await page.locator(".wrap").isVisible(),false,"graph temporarily replaces the article");
+  assert.strictEqual(await page.locator(".reader-research-directory").evaluate(element => element.hidden),false,"graph mode does not hide the navigation directory");
+  const sidebar = await page.locator(".reader-sidebar").boundingBox();
+  const graphBox = await graph.boundingBox();
+  const canvas = await page.locator(".reader-graph-canvas").boundingBox();
+  const viewport = page.viewportSize();
+  assert(Math.abs(graphBox.x-sidebar.x-sidebar.width)<2,"graph starts after the sidebar");
+  assert(Math.abs(graphBox.x+graphBox.width-viewport.width)<2,"graph fills the available main width");
+  assert(canvas.height>viewport.height*0.75,"graph uses the main viewport height");
+  assert.strictEqual(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),true,"graph does not overflow a narrow viewport");
+}
 const { browserNoteTodo } = load("src/ui/note-todo-browser.ts", {
   "../knowledge/note-work-items":require("../dist/knowledge/note-work-items"),
 });
@@ -159,6 +174,8 @@ async function main() {
       assert.strictEqual(await page.locator('[data-note-view=markdown]').count(),0);
       assert.strictEqual(await page.locator("#note-markdown").innerText(),"");
       assert.doesNotMatch(await page.content(),/HISTORICAL_|PRIVATE_BOARD_|Secret\/Board/);
+      assert.strictEqual(await page.locator('[data-todo-open=board-task]').count(),0,"Story children start collapsed in the live Library too");
+      await page.locator("[data-todo-expand-all]").click();
       assert.strictEqual(await page.locator('[data-todo-open=board-task]').count(),1);
       assert.strictEqual(await page.locator('[data-todo-open=historical-task]').count(),0);
       assert.strictEqual(await page.locator("[data-todo-edit],[data-todo-action],[data-todo-new],[data-todo-worker-token]").count(),0);
@@ -175,7 +192,10 @@ async function main() {
       await page.getByRole("button",{name:"2D Graph",exact:true}).click();
       await page.waitForFunction(() => document.querySelector(".reader-graph-canvas").dataset.mode === "2d");
       assert.match(await page.locator(".reader-graph-status").innerText(),/2 papers · 1 citations/);
-      assert.strictEqual(await page.locator(".doc-title").innerText(),"Board","Library/Graph leaves the independent Board article intact");
+      await assertMainGraph(page);
+      await page.getByRole("button",{name:"Directory",exact:true}).click();
+      assert.strictEqual(await page.locator(".wrap").isVisible(),true);
+      assert.strictEqual(await page.locator(".doc-title").innerText(),"Board","Directory restores the independent Board article");
       await page.locator('[data-todo-open=board-task]').dblclick();
       await dialog.waitFor();
       await dialog.getByRole("button",{name:"Close Work Item details"}).click();
@@ -233,9 +253,16 @@ async function main() {
       await menu.getByRole("menuitem",{name:"Copy path"}).click();
       assert.strictEqual(await page.evaluate(()=>navigator.clipboard.readText()),"pkm://notes/Public/");
       assert.strictEqual(await folder.evaluate(node=>node.parentElement.open),folderWasOpen,"right click must not toggle folder");
+      const receipt = page.locator(".reader-path-receipt");
+      await receipt.waitFor({state:"visible"});
+      await page.waitForTimeout(1000);
       await note.click({button:"right"});
       await menu.getByRole("menuitem",{name:"Copy path"}).click();
       assert.strictEqual(await page.evaluate(()=>navigator.clipboard.readText()),"pkm://notes/Public/Note.md");
+      await receipt.waitFor({state:"visible"});
+      await page.waitForTimeout(1100);
+      assert.strictEqual(await receipt.isVisible(),true,"a repeat copy gets its own full display interval");
+      await receipt.waitFor({state:"hidden",timeout:3000});
       assert.strictEqual(await page.locator(".doc-title").innerText(),"A public note","copy does not navigate");
       const encoded = page.locator('#library-notes a').filter({hasText:"Encoded note"});
       assert.strictEqual(await encoded.getAttribute("data-pkm-path"),"pkm://notes/Public/Space%20%26%20%E4%B8%AD%E6%96%87/Topic%20%231.md");
@@ -250,6 +277,8 @@ async function main() {
       await note.click({button:"right"});
       await menu.getByRole("menuitem",{name:"Copy path"}).click();
       assert.match(await page.locator(".reader-path-receipt").innerText(),/Copy failed: Permission denied.*pkm:\/\/notes\/Public\/Note.md/);
+      await page.waitForTimeout(2100);
+      assert.strictEqual(await receipt.isVisible(),true,"clipboard failure remains readable instead of disappearing as a success toast");
       await page.keyboard.press("Control+g");
       const go = page.getByRole("dialog",{name:"Go to PKM path"});
       await go.getByRole("textbox",{name:"PKM URL"}).fill("pkm://notes/Public/");
@@ -286,30 +315,61 @@ async function main() {
       await page.waitForFunction(() => document.querySelector(".reader-graph-canvas").dataset.mode === "2d");
       assert(await page.locator(".reader-graph-canvas canvas").count() > 0);
       assert.match(await page.locator(".reader-graph-status").innerText(),/2 papers · 1 citations/);
+      await assertMainGraph(page);
+      const initialCanvasWidth = (await page.locator(".reader-graph-canvas").boundingBox()).width;
+      await page.getByRole("button",{name:"Collapse navigation",exact:true}).click();
+      await page.waitForFunction(width => document.querySelector(".reader-graph-canvas").clientWidth > width, initialCanvasWidth);
+      await assertMainGraph(page);
+      await page.getByRole("button",{name:"Expand navigation",exact:true}).click();
       await page.getByRole("tab",{name:"Notes",exact:true}).click();
+      assert.strictEqual(await page.locator(".reader-graph-view").isVisible(),false);
+      assert.strictEqual(await page.locator(".wrap").isVisible(),true,"leaving Research restores the article");
       await page.getByRole("tab",{name:"Research",exact:true}).click();
+      await assertMainGraph(page);
       assert.strictEqual(await page.getByRole("button",{name:"2D Graph",exact:true}).getAttribute("aria-pressed"),"true");
       await page.getByRole("button",{name:"3D Graph",exact:true}).click();
       await page.waitForFunction(() => document.querySelector(".reader-graph-canvas").dataset.mode === "3d" || document.querySelector(".reader-graph-status").textContent.includes("WebGL unavailable"));
+      await assertMainGraph(page);
       if(await page.locator(".reader-graph-canvas").getAttribute("data-mode") !== "3d") {
         assert.match(await page.locator(".reader-graph-status").innerText(),/3D graph \/ WebGL unavailable:/);
         console.log(`Chromium ${width}px: explicit WebGL-unavailable fallback`);
       } else {
         assert(await page.locator(".reader-graph-canvas canvas").count() > 0);
+        await page.setViewportSize({width:width+120,height:1000});
+        await page.waitForFunction(() => {
+          const container = document.querySelector(".reader-graph-canvas");
+          const rendered = container.querySelector("canvas");
+          return Math.abs(rendered.clientWidth-container.clientWidth)<2
+            && Math.abs(rendered.clientHeight-container.clientHeight)<2;
+        });
+        await assertMainGraph(page);
+        await page.setViewportSize({width,height:900});
+        await page.waitForFunction(() => {
+          const container = document.querySelector(".reader-graph-canvas");
+          const rendered = container.querySelector("canvas");
+          return Math.abs(rendered.clientWidth-container.clientWidth)<2
+            && Math.abs(rendered.clientHeight-container.clientHeight)<2;
+        });
         console.log(`Chromium ${width}px: real ForceGraph3D WebGL canvas`);
       }
       await page.getByRole("button",{name:"Directory",exact:true}).click();
+      assert.strictEqual(await page.locator(".wrap").isVisible(),true);
       assert.strictEqual(await page.locator(".wrap").innerHTML(),article,"tabs and graph controls cannot replace the article");
+      await page.getByRole("button",{name:"2D Graph",exact:true}).click();
+      await page.waitForFunction(() => document.querySelector(".reader-graph-canvas").dataset.mode === "2d");
       await page.locator("#library-papers summary").click();
       await page.locator("#library-papers a").filter({hasText:"Root paper"}).click();
       assert.strictEqual(await page.getByRole("tab",{name:"Research",exact:true}).getAttribute("aria-selected"),"true","new article selects its own kind");
       assert.strictEqual(await page.locator(".doc-title").innerText(),"Root paper");
+      assert.strictEqual(await page.locator(".wrap").isVisible(),true,"choosing a directory document exits graph mode");
+      assert.strictEqual(await page.getByRole("button",{name:"Directory",exact:true}).getAttribute("aria-pressed"),"true");
       await page.getByRole("button",{name:"2D Graph",exact:true}).click();
       await page.waitForFunction(() => document.querySelector(".reader-graph-canvas").dataset.mode === "2d");
       await page.reload();
       await page.waitForLoadState("networkidle");
       await page.waitForFunction(() => document.querySelector(".reader-graph-canvas").dataset.mode === "2d");
       assert.strictEqual(await page.getByRole("button",{name:"2D Graph",exact:true}).getAttribute("aria-pressed"),"true","Research view survives reload");
+      await assertMainGraph(page);
       assert(await page.locator("#library-skills details").evaluate(element => element.open),"tab folder state survives navigation/reload");
       assert.deepStrictEqual(errors,[]);
       await page.close();
@@ -333,6 +393,9 @@ async function main() {
     await noWebGL.goto(publicServer.localBaseUrl+"/papers/Public/Root.html");
     await noWebGL.getByRole("button",{name:"3D Graph",exact:true}).click();
     await noWebGL.waitForFunction(() => document.querySelector(".reader-graph-status").textContent.includes("WebGL unavailable"));
+    await assertMainGraph(noWebGL);
+    await noWebGL.getByRole("button",{name:"Directory",exact:true}).click();
+    assert.strictEqual(await noWebGL.locator(".wrap").isVisible(),true,"WebGL failure does not block returning to the article");
     await noWebGL.getByRole("button",{name:"2D Graph",exact:true}).click();
     await noWebGL.waitForFunction(() => document.querySelector(".reader-graph-canvas").dataset.mode === "2d");
     await noWebGL.close();

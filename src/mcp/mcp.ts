@@ -471,7 +471,77 @@ export function mcpRuntimeStatusAsync(): Promise<McpRuntimeStatus> {
   })().finally(() => { runtimeProbeInFlight = undefined; });
 }
 
-export async function ensureMcpRuntime(context: vscode.ExtensionContext): Promise<McpRuntimeStatus> {
+export interface McpRuntimeProgress {
+  phase: string;
+  text: string;
+  startedAt: number;
+  updatedAt: number;
+  output?: string;
+}
+export type McpRuntimeProgressObserver = (progress: McpRuntimeProgress) => void;
+
+// Progress is advisory: a broken observer must never change maintenance or pip outcomes.
+function mcpProgressReporter(onProgress?: McpRuntimeProgressObserver): (phase: string, text: string, output?: string) => void {
+  const startedAt = Date.now();
+  return (phase, text, output) => {
+    try { onProgress?.({ phase, text, startedAt, updatedAt: Date.now(), ...(output ? { output } : {}) }); }
+    catch (error) { console.warn("[PKM MCP] Runtime progress observer failed:", mcpProgressOutput(error instanceof Error ? error.message : String(error))); }
+  };
+}
+
+function mcpProgressOutput(value: string): string {
+  return value.replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
+    .replace(/(https?:\/\/)[^\s/@]+(?::[^\s/@]*)?@/gi, "$1[redacted]@")
+    .replace(/([?&](?:token|key|password|secret|signature)=)[^\s&]+/gi, "$1[redacted]")
+    .replace(/((?:token|password|secret|api[_-]?key)\s*[:=]\s*)\S+/gi, "$1[redacted]")
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "").slice(-2048);
+}
+
+// Keep the original bounded execFile child and callback error detail; stream only a bounded tail.
+function mcpPipInstall(python: string, args: string[], onOutput: (output: string) => void): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let latest = "", lastSent = 0, dirty = false, timer: ReturnType<typeof setTimeout> | undefined;
+    const flush = () => {
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      if (!latest || !dirty) return;
+      dirty = false;
+      lastSent = Date.now();
+      try { onOutput(mcpProgressOutput(latest)); }
+      catch (error) { console.warn("[PKM MCP] Dependency progress observer failed:", mcpProgressOutput(error instanceof Error ? error.message : String(error))); }
+    };
+    const receive = (chunk: Buffer | string) => {
+      latest = mcpProgressOutput(latest + String(chunk).slice(-4096));
+      dirty = true;
+      if (Date.now() - lastSent >= 250) flush();
+      else timer ||= setTimeout(flush, 250 - (Date.now() - lastSent));
+    };
+    const child = execFile(python, ["-m", "pip", "install", ...args], {
+      timeout: 600000, maxBuffer: 1 << 24, windowsHide: process.platform === "win32",
+    }, (error, stdout, stderr) => {
+      flush();
+      if (error) reject(new Error(`${error.message}\n${String(stdout || "")}\n${String(stderr || "")}`.trim()));
+      else resolve();
+    });
+    child.stdout?.on("data", receive);
+    child.stderr?.on("data", receive);
+  });
+}
+
+export async function ensureMcpRuntime(context: vscode.ExtensionContext, onProgress?: McpRuntimeProgressObserver): Promise<McpRuntimeStatus> {
+  const report = mcpProgressReporter(onProgress);
+  report("checking", "Checking shared runtime and waiting for safe maintenance access…");
+  try {
+    const result = await ensureMcpRuntimeLocked(context, report);
+    report("ready", "Managed runtime health verified; retrieval and client discovery are separate checks.");
+    return result;
+  } catch (error) {
+    report("error", mcpProgressOutput(error instanceof Error ? error.message : String(error)));
+    throw error;
+  }
+}
+
+async function ensureMcpRuntimeLocked(context: vscode.ExtensionContext, report: (phase: string, text: string, output?: string) => void): Promise<McpRuntimeStatus> {
   const directory = managedMcpServerDirectory();
   return withCrossProcessLock(`${mcpRuntimePath()}.pkm-maintenance-lock`, "MCP runtime maintenance", 2_000, async () => {
     fs.mkdirSync(directory, { recursive: true });
@@ -496,7 +566,7 @@ export async function ensureMcpRuntime(context: vscode.ExtensionContext): Promis
             + (!processes.available ? "Process inspection is unavailable; choose a new empty managed runtime path instead of modifying a possibly active environment." : processes.detail));
         }
       }
-      return await ensureMcpRuntimeFiles(context);
+      return await ensureMcpRuntimeFiles(context, report);
     } finally {
       fs.rmSync(marker, { force: true });
       fs.rmSync(runtimeMarker, { force: true });
@@ -504,7 +574,8 @@ export async function ensureMcpRuntime(context: vscode.ExtensionContext): Promis
   });
 }
 
-async function ensureMcpRuntimeFiles(context: vscode.ExtensionContext): Promise<McpRuntimeStatus> {
+async function ensureMcpRuntimeFiles(context: vscode.ExtensionContext, report: (phase: string, text: string, output?: string) => void): Promise<McpRuntimeStatus> {
+  report("checking", "Checking base Python and current managed runtime…");
   invalidateMcpPythonProbes();
   await warmMcpPythonProbes();
   const base = detectMcpPython();
@@ -527,6 +598,7 @@ async function ensureMcpRuntimeFiles(context: vscode.ExtensionContext): Promise<
     const stale = pyenvList().find(env => env.name === "PKM MCP Runtime" || (env.path && path.resolve(env.path) === path.resolve(runtimePath)));
     if (stale) await pyenvDelete(stale.id, false);
     if (fs.existsSync(runtimePath)) fs.rmSync(runtimePath, { recursive: true, force: true });
+    report("creating-environment", "Creating an isolated managed Python environment…");
     const created = await pyenvCreate({
       manager: "venv", name: runtimeName, parentDir: root, baseInterpreter: base.path,
       description: "Managed runtime for the unified PKM MCP server",
@@ -536,11 +608,14 @@ async function ensureMcpRuntimeFiles(context: vscode.ExtensionContext): Promise<
     validation = validateMcpPython(mcpRuntimePythonPath());
     if (validation.error) throw new Error(validation.error);
   }
+  report("generating-server", "Generating current MCP server code (newer versions remain protected)…");
   await generateMcpServer(context);
   const requirements = path.join(managedMcpServerDirectory(), "requirements.txt");
-  const pipInstall = (args: string[]) => new Promise<void>((resolve, reject) => execFile(validation.path, ["-m", "pip", "install", ...args], {
-    timeout: 600000, maxBuffer: 1 << 24, windowsHide: process.platform === "win32",
-  }, (error, stdout, stderr) => error ? reject(new Error(`${error.message}\n${String(stdout || "")}\n${String(stderr || "")}`.trim())) : resolve()));
+  let pipPhase = "installing-requirements", pipText = "Installing managed runtime requirements…";
+  const pipInstall = (args: string[]) => {
+    report(pipPhase, pipText);
+    return mcpPipInstall(validation.path, args, output => report(pipPhase, pipText, output));
+  };
   try {
     await pipInstall(["-r", requirements]);
   } catch (initialError: any) {
@@ -552,20 +627,26 @@ async function ensureMcpRuntimeFiles(context: vscode.ExtensionContext): Promise<
     if (!fs.existsSync(wheel)) throw new Error(`Prompt Manager download failed and the bundled fallback wheel is missing: ${wheel}\n${detail}`);
     const digest = createHash("sha256").update(fs.readFileSync(wheel)).digest("hex");
     if (digest !== PROMPT_MANAGER_WHEEL_SHA256) throw new Error("Bundled Prompt Manager wheel failed integrity verification.");
+    pipPhase = "installing-fallback"; pipText = "Installing integrity-verified bundled Prompt Manager fallback…";
     await pipInstall(["--no-deps", wheel]);
+    pipPhase = "installing-requirements"; pipText = "Retrying runtime requirements after verified fallback…";
     await pipInstall(["-r", requirements]);
   }
   const retrievalWheel = path.join(context.extensionPath, "resources", "vendor", RETRIEVAL_ENGINE_WHEEL);
   if (!fs.existsSync(retrievalWheel)) throw new Error(`Bundled retrieval engine wheel is missing: ${retrievalWheel}`);
   const retrievalDigest = createHash("sha256").update(fs.readFileSync(retrievalWheel)).digest("hex");
   if (retrievalDigest !== RETRIEVAL_ENGINE_WHEEL_SHA256) throw new Error("Bundled retrieval engine wheel failed integrity verification.");
+  pipPhase = "installing-retrieval"; pipText = "Installing integrity-verified bundled retrieval wheel…";
   await pipInstall(["--no-deps", "--upgrade", retrievalWheel]);
   fs.writeFileSync(mcpRuntimeBaseMarker(), JSON.stringify({ path: base.path, version: base.version }, null, 2) + "\n");
   const existing = pyenvList().find(env => env.path && path.resolve(env.path) === path.resolve(runtimePath));
   if (existing) pyenvUpdate(existing.id, { name: "PKM MCP Runtime", manager: "venv", python: validation.path, description: "Managed runtime for the unified PKM MCP server" });
   else pyenvAdd({ name: "PKM MCP Runtime", manager: "venv", path: runtimePath, python: validation.path, description: "Managed runtime for the unified PKM MCP server" });
+  report("health-check", "Verifying managed runtime imports and Python health…");
   invalidateMcpPythonProbes();
-  return mcpRuntimeStatusAsync();
+  const status = await mcpRuntimeStatusAsync();
+  if (!status.healthy) throw new Error(status.error || "Managed MCP runtime failed its final health check.");
+  return status;
 }
 
 export function mcpRuntimeManualCommands(basePython: string): string[] {
@@ -795,7 +876,7 @@ function generateMcpServerFiles(context: vscode.ExtensionContext, mcpDir: string
   fs.copyFileSync(path.join(context.extensionPath, "resources", "agent_session_runtime.py"), agentSessionRuntimePy);
   fs.copyFileSync(path.join(context.extensionPath, "resources", "api_chat_control.py"), path.join(mcpDir, "api_chat_control.py"));
   fs.copyFileSync(path.join(context.extensionPath, "resources", "knowledge_recovery.py"), path.join(mcpDir, "knowledge_recovery.py"));
-  for (const resource of ["knowledge_mutations.py", "knowledge_mutations.js", "todo_api.py", "capability_api.py", "knowledge_snapshots.py", "asset_classification.py", "asset_classification.js"]) {
+  for (const resource of ["knowledge_mutations.py", "knowledge_mutations.js", "note_inventory.py", "todo_api.py", "capability_api.py", "knowledge_snapshots.py", "asset_classification.py", "asset_classification.js"]) {
     fs.copyFileSync(path.join(context.extensionPath, "resources", resource), path.join(mcpDir, resource));
   }
   fs.copyFileSync(path.join(context.extensionPath, "resources", "mcp_call_guard.py"), callGuardPy);
@@ -891,6 +972,7 @@ from api_chat_control import register_api_chat_tools
 from knowledge_recovery import register_knowledge_recovery_tools
 from knowledge_mutations import trash_file, write_markdown, register_knowledge_mutation_tools
 from knowledge_snapshots import register_knowledge_snapshot_tools
+from note_inventory import note_inventory_page
 from asset_classification import register_asset_classification_tools
 _KNOWLEDGE_NODE = ${JSON.stringify(process.execPath)}
 _KNOWLEDGE_EXTENSION = str(Path(__file__).resolve().parent / "runtime") if (Path(__file__).resolve().parent / "runtime").is_dir() else ${JSON.stringify(context.extensionPath.replace(/\\/g, "/"))}
@@ -1662,9 +1744,12 @@ def _mtime(p):
 # ── Notes ────────────────────────────────────────────────────────────────────
 def _note(p, key):
     fm, body = _parse(p.read_text(encoding="utf-8"))
+    identity = fm.get("knowledgeId")
+    identity = identity if isinstance(identity, str) and re.fullmatch(r"knowledge_[a-f0-9]{24}", identity) else None
     board_file = p.with_name(p.stem + ".assets") / "pkm-todo-board.json"
     is_board = fm.get("documentKind") == "todo-board" or board_file.exists()
     return {"slug": key, "title": fm.get("title") or _name_of(key),
+            "knowledge_id": identity,
             "documentKind": "todo-board" if is_board else "markdown",
             "type": fm.get("type") or "general", "tags": fm.get("tags") or [],
             "category": _cat_of(key), "content": body, "updated_at": _mtime(p),
@@ -2299,15 +2384,24 @@ def get_skill(id: str = "", interaction_id: str = "", name: Optional[str] = None
   return json.dumps(result)
 
 
-@_feature_tool("knowledge")
-def list_notes(type: Optional[str] = None) -> str:
-    """List notes. type can be: general, todo, done, observation, data-path."""
-    rows = _all_notes()
-    if type and type != "all":
-        rows = [r for r in rows if r["type"] == type]
-    rows.sort(key=lambda r: r["updated_at"], reverse=True)
-    return json.dumps([{"slug": r["slug"], "title": r["title"], "type": r["type"], "documentKind": r["documentKind"],
-                        "category": r["category"], "updated_at": r["updated_at"]} for r in rows[:50]])
+@_feature_tool("knowledge", read_only=True)
+def list_notes(type: Optional[str] = None, directory: Optional[str] = None,
+               recursive: bool = True, offset: int = 0, limit: int = 50,
+               inventory_revision: Optional[str] = None) -> str:
+    """Read-only Note inventory. limit defaults to 50; limit=0 returns all matches.
+
+    directory accepts a Notes-relative folder or copied pkm://notes/<folder>/ path;
+    recursive includes subfolders. Returns stable knowledge_id/source_id
+    when present, identity completeness, total, next_offset and inventory_revision.
+    Follow next_offset until null and pass the first revision on every later page;
+    concurrent changes fail explicitly. Legacy notes without IDs are marked missing,
+    never assigned fake stable IDs. Hidden/asset/Trash folders are excluded.
+    Positive limit sets the maximum number returned, with no fixed upper cap.
+    Every call returns the same inventory envelope. type: general/todo/done/observation/data-path.
+    """
+    return json.dumps(note_inventory_page(NOTES, _note, directory=directory,
+        recursive=recursive, offset=offset, limit=limit, note_type=type,
+        inventory_revision=inventory_revision), ensure_ascii=False)
 
 
 @_feature_tool("knowledge", read_only=True)

@@ -1,8 +1,8 @@
 import * as vscode from "vscode";
 import { createHash } from "crypto";
 import { ChatInferenceClock } from "./chat-inference-timing";
-import { ApiChatMessage, ApiChatRequest, ApiChatToolEvent, ChatImage, decodeChatImage, ChatToolLoopGuard, toolBudgetSummary, chatInferenceOutputByteLimit, chatTransportReceipt } from "./api-chat-client";
-import { ChatModelProfile, ChatTokenUsage, checkReportedOutput, reportedReasoningTokens, reportedCopilotUsage } from "./api-chat-models";
+import { ApiChatMessage, ApiChatRequest, ApiChatToolEvent, ChatImage, decodeChatImage, ChatToolLoopGuard, toolBudgetSummary, chatInferenceOutputByteLimit, chatTransportReceipt, chatToolRoundBudgetNotice } from "./api-chat-client";
+import { ChatBudgetExceededError, ChatModelProfile, ChatTokenUsage, checkReportedOutput, reportedReasoningTokens, reportedCopilotUsage } from "./api-chat-models";
 import { abortable } from "./api-chat-tools";
 import { executeChatToolBatch } from "./chat-tool-execution";
 import { discoverCopilotSdkModels, isCopilotSdkModel, streamCopilotSdkChat } from "./api-chat-copilot-sdk";
@@ -62,17 +62,17 @@ export function vscodeModelProfile(model: VscodeChatModel): ChatModelProfile {
   };
 }
 
-export async function discoverVscodeModels(host = vscode, signal?: AbortSignal): Promise<VscodeChatModel[]> {
-  if (!host.lm?.selectChatModels) throw new Error("This VS Code version does not provide the Language Model API. Use an API provider instead.");
+export async function discoverVscodeModels(host = vscode, signal?: AbortSignal, vendor?: "copilot" | "copilot-sdk"): Promise<VscodeChatModel[]> {
+  if (vendor !== "copilot-sdk" && !host.lm?.selectChatModels) throw new Error("This VS Code version does not provide the Language Model API. Use an API provider instead.");
   try {
     if (signal?.aborted) throw new Error("Request cancelled.");
     // Neither provider's startup should wait for the other provider's catalog.
     const pending = Promise.all([
-      Promise.resolve().then(() => host.lm.selectChatModels()),
-      host.authentication ? discoverCopilotSdkModels(host, signal) : Promise.resolve([]),
+      Promise.resolve().then(() => vendor === "copilot-sdk" ? [] : vendor ? host.lm.selectChatModels({ vendor }) : host.lm.selectChatModels()),
+      vendor !== "copilot" && host.authentication ? discoverCopilotSdkModels(host, signal) : Promise.resolve([]),
     ]);
     const [nativeModels, sdkModels] = signal ? await abortable(pending, signal) : await pending;
-    const models = [...nativeModels.filter(model => model.vendor !== "copilotcli"), ...sdkModels as unknown as VscodeChatModel[]];
+    const models = [...nativeModels.filter(model => model.vendor !== "copilotcli" && (!vendor || model.vendor === vendor)), ...sdkModels as unknown as VscodeChatModel[]];
     if (signal?.aborted) throw new Error("Request cancelled.");
     if (!models.length) throw new Error("No VS Code models callable through the Language Model API are available. Copilot CLI catalog-only entries are excluded. Sign in to a request-capable provider or configure an API connection.");
     return models;
@@ -83,7 +83,7 @@ export async function discoverVscodeModels(host = vscode, signal?: AbortSignal):
   }
 }
 
-type VscodeChatRequest = Pick<ApiChatRequest, "messages" | "purpose" | "signal" | "timeoutMs" | "maxOutputTokens" | "thinkingBudget" | "maxToolRounds" | "hardToolRoundLimit" | "onHardToolRoundLimit" | "loopReviewAfterMs" | "loopReviewClock" | "loopExemptTools" | "onToolLoopNotice" | "contextWindow" | "onImage" | "tools" | "onTool" | "beforeRound" | "afterRound" | "prepareContext" | "beforeFinish" | "automaticKnowledge" | "onTransportPrepared" | "onTransportSent" | "afterTools" | "onStage" | "onModelActivity" | "onUsage" | "onUsageMetadata" | "onInferenceTiming" | "onOutputBudgetWarning" | "onThinking">;
+type VscodeChatRequest = Pick<ApiChatRequest, "messages" | "purpose" | "signal" | "timeoutMs" | "maxOutputTokens" | "thinkingBudget" | "maxToolRounds" | "hardToolRoundLimit" | "onHardToolRoundLimit" | "loopReviewAfterMs" | "loopReviewClock" | "loopExemptTools" | "onToolLoopNotice" | "contextWindow" | "onImage" | "tools" | "onTool" | "onToolResultContext" | "onToolResultsContext" | "beforeRound" | "afterRound" | "beforeWork" | "prepareContext" | "beforeFinish" | "automaticKnowledge" | "onTransportPrepared" | "onTransportSent" | "afterTools" | "onStage" | "onModelActivity" | "onUsage" | "onUsageMetadata" | "onInferenceTiming" | "onOutputBudgetWarning" | "onThinking">;
 type NativePart = { value?: string; callId?: string; name?: string; input?: unknown; data?: Uint8Array; mimeType?: string };
 
 export async function streamVscodeChat(model: VscodeChatModel, request: VscodeChatRequest,
@@ -120,6 +120,8 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
       throw new VscodeChatError("This VS Code model or host does not expose tool calling. Disable tools or select a tool-capable model.");
     }
     const messages = [...request.messages];
+    const budgetNotice: ApiChatMessage | undefined = request.hardToolRoundLimit === undefined ? undefined : { role:"system", content:"" };
+    if (budgetNotice) messages.push(budgetNotice);
     const callIds = new Set<string>();
     const hasOutputTokenizer = typeof model.countTokens === "function";
     const countTokens = async (value: vscode.LanguageModelChatMessage | string): Promise<number> => {
@@ -163,6 +165,7 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
     let metadataParts = 0;
     for (let round = 0; ; round++) {
       await loop.beforeRound(round, signal);
+      if (budgetNotice) budgetNotice.content = loop.summarizing ? "Tool execution stopped. Only the final summary is allowed; do not invoke more tools." : chatToolRoundBudgetNotice(round, request.hardToolRoundLimit)!;
       if (loop.summarizing) messages.push({ role: "system", content: toolBudgetSummary });
       const hasImages = messages.some(message => message.images?.length);
       if (hasImages && (model.capabilities?.imageInput !== true || !native.LanguageModelDataPart || !native.LanguageModelTextPart || typeof model.countTokens !== "function")) throw new VscodeChatError("This model/host does not expose image input and image token counting. Select a vision-capable VS Code model.");
@@ -173,11 +176,11 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
       // UTF-8 bytes bound tokens from above, so the tokenizer runs only once bytes could exceed the remaining budget.
       const checkOutputBudget = async (text: string) => {
         const bytes = Buffer.byteLength(text, "utf8");
-        if (bytes > chatInferenceOutputByteLimit) throw new VscodeChatError("Inference output exceeded the 100,000-byte local size limit. Partial output was preserved; no pending tool was executed.");
+        if (bytes > chatInferenceOutputByteLimit) throw new ChatBudgetExceededError("Inference output exceeded the 100,000-byte local size limit. Partial output was preserved; no pending tool was executed.", "output");
         if (!hasOutputTokenizer) return;
         if (bytes < nextTokenCheck) return;
         const tokens = await countTokens(text);
-        if (tokens > remaining) throw new VscodeChatError("Local output budget exhausted. Partial output was preserved; provider usage may be higher.");
+        if (tokens > remaining) throw new ChatBudgetExceededError("Local output budget exhausted. Partial output was preserved; provider usage may be higher.", "output");
         nextTokenCheck = bytes + Math.max(1, remaining - tokens);
       };
       const toolDefinitions = request.tools?.length && !loop.summarizing
@@ -206,7 +209,10 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
         if (controller.signal.aborted) throw new Error("Request cancelled.");
         await request.beforeRound?.(messages, remaining);
       }
-      catch (error) { throw new VscodeChatError(error instanceof Error ? error.message : "Context budget exceeded."); }
+      catch (error) {
+        if (error instanceof ChatBudgetExceededError) throw error;
+        throw new VscodeChatError(error instanceof Error ? error.message : "Context budget exceeded.");
+      }
       activity();
       const prompt = messages.map(nativeMessage);
       const options: vscode.LanguageModelChatRequestOptions & { tools?: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> } = {
@@ -245,7 +251,8 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
         transport.automaticKnowledge = { inputBudget:knowledgeBudget.inputBudget, inputTokens:knowledgeTokens,
           countingMethod:countingMethod === "vscode-countTokens-plus-overhead" ? countingMethod : "utf8-byte-upper-bound" };
       }
-      if (!Number.isSafeInteger(inputBudget) || transport.inputTokens > inputBudget) throw new VscodeChatError(`${hasImages ? "Image context" : "Native context"} budget exceeded. Remove optional context or increase Context.`);
+      if (!Number.isSafeInteger(inputBudget)) throw new VscodeChatError("Invalid native input budget.");
+      if (transport.inputTokens > inputBudget) throw new ChatBudgetExceededError(`${hasImages ? "Image context" : "Native context"} budget exceeded. Remove optional context or increase Context.`, "input");
       try { request.onTransportPrepared?.(transport); }
       catch (error) { throw new VscodeChatError(error instanceof Error ? error.message : "Transport receipt persistence failed."); }
       request.onStage?.("connecting");
@@ -342,10 +349,7 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
       clearTimeout(timer);
       inferenceClock.finish("stream-ended");
       if (usage) { unreportedUsage = undefined; request.onUsage?.(usage); }
-      if (usage) {
-        try { checkReportedOutput(usage, remaining, request.thinkingBudget); }
-        catch (error) { throw new VscodeChatError((error as Error).message); }
-      }
+      if (usage) checkReportedOutput(usage, remaining, request.thinkingBudget);
       await request.afterRound?.(round);
       if (!calls.length) {
         if (!responseText && !responseImages.length) throw new VscodeChatError("The model returned an empty response.");
@@ -359,6 +363,8 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
       if (!request.tools?.length) throw new VscodeChatError("Tool execution is not enabled. No pending tool was executed.");
       if (loop.summarizing) throw new VscodeChatError("The model requested more tools during the final summary. Completed results were preserved; no additional tool was executed.");
       messages.push({ role: "assistant", content: responseText, tool_calls: calls, ...(responseImages.length ? { images: responseImages } : {}) });
+      await request.beforeWork?.();
+      if (signal.aborted) throw new Error("Request cancelled.");
       await executeChatToolBatch(calls, request, messages, loop, signal, round);
       if (request.afterTools?.()) return;
     }
@@ -370,7 +376,7 @@ export async function streamVscodeChat(model: VscodeChatModel, request: VscodeCh
       Object.assign(failure, { code: error.code });
       throw failure;
     }
-    if (error instanceof VscodeChatError) throw error;
+    if (error instanceof VscodeChatError || error instanceof ChatBudgetExceededError) throw error;
     if (errorChainText(error).some(text => text.includes("Auto mode needs a prompt or a command to route a request."))) {
       throw new VscodeChatError("Copilot Auto could not route the tool follow-up through the VS Code Language Model API. Select Auto · Copilot SDK (or a specific model), then retry explicitly. Completed tool results were preserved; no automatic retry was performed.");
     }

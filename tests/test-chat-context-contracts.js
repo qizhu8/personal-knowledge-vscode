@@ -13,7 +13,7 @@ const host = {
   commands: {},
   env: { language: "en" },
   window: { showInformationMessage: async () => undefined, showWarningMessage: async () => undefined, showErrorMessage: async () => undefined },
-  workspace: { isTrusted: true, workspaceFolders: [], getConfiguration: () => ({ get: (_key, fallback) => fallback }) },
+  workspace: { isTrusted: true, workspaceFolders: [], getConfiguration: () => ({ get: (key, fallback) => key === "apiChatCapabilityProfile" ? "legacy" : fallback }) },
   lm: { tools: [] },
   Uri:undefined,
   CancellationTokenSource:undefined, LanguageModelChatMessage:undefined,
@@ -556,6 +556,7 @@ async function transportFixture(t, source, options = {}) {
     endpoint: `http://127.0.0.1:${server.address().port}/v1`, model: profile.model,
     contextWindow: options.contextWindow || profile.contextWindow,
     maxOutputTokens: 1024, timeoutMs: 10000, maxToolRounds: options.maxToolRounds || 3, loopReviewAfterMs: 60000,
+    activityCreditLimit: 200, activityReviewMs: 20 * 60_000,
   });
   return { provider, requests, retrievalQueries, errors, directory };
 }

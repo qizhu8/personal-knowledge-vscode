@@ -29,7 +29,7 @@ import { agentSnapshotRecovery, AgentSnapshotContents, AgentSnapshotSummary } fr
 import { assertHarnessRecipeBinding, currentHarnessTaskState, HarnessBinding } from "./chat-harness-records";
 import { validationArtifactState, verifyValidationArtifacts } from "./validation-artifacts";
 import { citedWorkerEvidence, readWorkerResultVersion, verifyWorkerEvidenceState, workerEvidenceState } from "./worker-result-versions";
-import { copilotCreditSummary } from "./api-chat-models";
+import { copilotCreditSummary, validActivityCreditLimit } from "./api-chat-models";
 import { validTaskContextCheckpoint, taskContextInputs, taskContextInputDigest, type TaskContextCheckpoint } from "./task-context-checkpoint";
 import { validPortalTaskLink, type PortalTaskLink } from "./portal-task-attempts";
 import { validPortalCommandRecords } from "./portal-command-activity";
@@ -172,7 +172,7 @@ export interface ChatMessage {
   outputBudgetWarning?: string;
   changes?: import("./api-chat-tools").ApiChatEditChange[];
   toolCalls?: Array<{ id: string; name: string; arguments: string; status: "running" | "complete" | "failed"; result?: string;
-    round?: number; queuedMs?: number; reused?: boolean;
+    round?: number; queuedMs?: number; reused?: boolean; dispatch?: import("./api-chat-client").ApiChatToolEvent["dispatch"];
     harnessBinding?: import("./chat-harness-records").HarnessBinding; startedAt?: number; finishedAt?: number }>;
 }
 export interface ApiConversation {
@@ -188,6 +188,7 @@ export interface ApiConversation {
   customTitle?: boolean;
   paused?: boolean;
   activityBudgetBypass?: "session";
+  activityCreditLimit?: number;
   permissionMode?: "protective" | "ask" | "read-only" | "allow-all";
   permissionGrants?: string[];
   permissionContextId?: string;
@@ -465,7 +466,7 @@ export function apiChatHarnessSnapshot(chat: ApiConversation, fullResults = fals
         } : {}),
       } : undefined,
       toolCalls: (message.toolCalls || []).map(call => ({
-        id: call.id, name: call.name, status: call.status,
+        id: call.id, name: call.name, status: call.status, dispatch:call.dispatch,
         harnessBinding:call.harnessBinding, startedAt:call.startedAt, finishedAt:call.finishedAt,
         arguments: call.arguments,
         resultPreview: fullResults ? call.result || "" : (call.result || "").slice(0, 2_000),
@@ -873,6 +874,7 @@ export class ApiChatStore {
 
   private saveUnlocked(chat: ApiConversation, initializeSession: boolean, taskTitle?: string): void {
     if (this.library.read().placements[chat.id]?.trashedAt) throw new Error("Restore this Chat from Trash before changing it.");
+    if (chat.activityCreditLimit !== undefined && !validActivityCreditLimit(chat.activityCreditLimit)) throw new Error("Invalid Chat activity credit limit.");
     this.validateImages(chat);
     const file = this.file(chat.id);
     if (!fs.existsSync(file) && chat.revision !== undefined) throw new Error("This Chat was deleted in another window. Choose another Chat.");
@@ -1022,6 +1024,7 @@ export class ApiChatStore {
     const changesValid = (items: NonNullable<ChatMessage["changes"]>) => Array.isArray(items) && items.length <= 4096 && items.every(item => item && typeof item.path === "string" && item.path.length <= 4096 && Number.isSafeInteger(item.workspace) && item.workspace >= 0 && typeof item.appliedAt === "string" && Number.isFinite(Date.parse(item.appliedAt)) && /^[a-f0-9]{64}$/.test(item.beforeHash) && /^[a-f0-9]{64}$/.test(item.afterHash) && item.saved === false && ["exact", "unknown"].includes(item.attribution) && (item.attribution !== "exact" || Number.isSafeInteger(item.added) && item.added! >= 0 && Number.isSafeInteger(item.removed) && item.removed! >= 0));
     if (!chat || chat.version !== 1 || chat.id !== id || chat.sessionId !== undefined && !/^agent_session_[a-f0-9]{32}$/.test(chat.sessionId) || typeof chat.title !== "string" || typeof chat.updatedAt !== "string" || !Number.isFinite(Date.parse(chat.updatedAt)) || typeof chat.createdAt !== "string" || !Number.isFinite(Date.parse(chat.createdAt)) || typeof chat.includeHistory !== "boolean" || !Array.isArray(chat.messages) || !contextsValid(chat.context)
       || chat.activityBudgetBypass !== undefined && chat.activityBudgetBypass !== "session"
+      || chat.activityCreditLimit !== undefined && !validActivityCreditLimit(chat.activityCreditLimit)
       || chat.memoryPolicy !== undefined && !validMemoryPolicy(chat.memoryPolicy)
       || chat.workflowMode !== undefined && !["chat", "plan", "execute"].includes(chat.workflowMode)
       || chat.plans !== undefined && !validChatPlans(chat.plans, chat.id)
@@ -1319,7 +1322,7 @@ export class ApiChatStore {
     if (chat.paused || session.nativeChat?.paused === true) throw new Error("This Session is paused. Resume it before sending another request.");
   }
 
-  list(includeTrash = false): Array<{ id: string; workspaceNamespace: string; title: string; updatedAt: string; status: ApiChatStatus; groupId: string; trashedAt?: string; workerParentChatId?: string; workerTreeId?: string; workerManager?: boolean }> {
+  list(includeTrash = false): Array<{ id: string; workspaceNamespace: string; title: string; updatedAt: string; status: ApiChatStatus; groupId: string; trashedAt?: string; workerParentChatId?: string; workerTreeId?: string; workerManager?: boolean; activityCreditLimit?: number; activityBudgetBypass?: "session" }> {
     const placements = this.library.read().placements;
     const chats: ReturnType<ApiChatStore["list"]> = [];
     const seen = new Set<string>();
@@ -1333,8 +1336,13 @@ export class ApiChatStore {
         const stopped = entry.sessionId ? this.sessionStopped(entry.sessionId, entry.id) : false;
         if (includeTrash || !placement.trashedAt) chats.push({ id: entry.id, workspaceNamespace: entry.workspaceNamespace, title: entry.title, updatedAt: entry.updatedAt,
           status: stopped ? "stopped" : entry.status, ...placement, ...(entry.workerManager ? { workerManager: true } : {}),
+          activityCreditLimit: entry.activityCreditLimit, activityBudgetBypass: entry.activityBudgetBypass,
           ...(entry.workerTreeId ? { workerTreeId: entry.workerTreeId, ...(entry.workerParentChatId ? { workerParentChatId: entry.workerParentChatId } : {}) } : {}) });
-      } catch {}
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT" && !fs.existsSync(file)) { this.listingCache.delete(file); continue; }
+        const detail = error instanceof Error ? error.message : "Unknown read failure";
+        throw new Error(`Cannot read Chat ${name.slice(0, -5)} at ${file}: ${detail}. No Chat data was deleted. Restore access or repair this file before reopening Chat.`);
+      }
     }
     for (const file of this.listingCache.keys()) if (!seen.has(file)) this.listingCache.delete(file);
     return chats.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
@@ -1343,7 +1351,7 @@ export class ApiChatStore {
   // Listing used to parse every full Chat file (all messages) and session file on each call; renaming or copying a Chat
   // URL called it 3-4 times, which on Windows/NTFS with many Chats took seconds. Entries are reused while a file's
   // size and mtime are unchanged.
-  private readonly listingCache = new Map<string, { stamp: string; entry: { id: string; workspaceNamespace: string; title: string; updatedAt: string; status: ApiChatStatus; sessionId?: string; workerManager: boolean; workerTreeId?: string; workerParentChatId?: string } }>();
+  private readonly listingCache = new Map<string, { stamp: string; entry: { id: string; workspaceNamespace: string; title: string; updatedAt: string; status: ApiChatStatus; sessionId?: string; workerManager: boolean; workerTreeId?: string; workerParentChatId?: string; activityCreditLimit?: number; activityBudgetBypass?: "session" } }>();
   private readonly sessionStatusCache = new Map<string, { stamp: string; stopped: (chatId: string) => boolean }>();
   private static fileStamp(file: string): string | undefined {
     try { const stat = fs.statSync(file); return `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.ino}`; } catch { return undefined; }
@@ -1356,9 +1364,11 @@ export class ApiChatStore {
     const summary = this.history.summary(stored);
     const chat = summary ? stored : this.load(name.slice(0, -5), false);
     if (chat.id !== name.slice(0, -5) || typeof chat.title !== "string" || typeof chat.updatedAt !== "string"
-      || !Number.isFinite(Date.parse(chat.updatedAt))) throw new Error("Unsupported Chat listing metadata.");
+      || !Number.isFinite(Date.parse(chat.updatedAt))
+      || chat.activityCreditLimit !== undefined && !validActivityCreditLimit(chat.activityCreditLimit)) throw new Error("Unsupported Chat listing metadata.");
     const entry = { id: chat.id, workspaceNamespace: chat.workspaceNamespace || path.basename(directory), title: chat.title, updatedAt: chat.updatedAt,
       status: summary?.status || apiChatStatus({ ...chat, version: 1 }), ...(chat.sessionId ? { sessionId: chat.sessionId } : {}),
+      activityCreditLimit: chat.activityCreditLimit, activityBudgetBypass: chat.activityBudgetBypass,
       workerManager: !!(summary?.workerManager ?? chat.messages.some(message => message.delegations?.length)),
       ...(chat.workerState ? { workerTreeId: chat.workerState.treeId, ...(chat.workerState.parentChatId ? { workerParentChatId: chat.workerState.parentChatId } : {}) } : {}) };
     // A legacy file may have been rewritten by load(); stamp after reading so the next call re-validates once.

@@ -17,6 +17,10 @@ export interface ChatModelProfile {
 }
 export interface ChatTokenUsage { inputTokens: number; outputTokens: number; cachedInputTokens?: number; reasoningTokens?: number; copilotNanoAiu?: number; }
 
+export class ChatBudgetExceededError extends Error {
+  constructor(message: string, readonly budget: "input" | "output") { super(message); }
+}
+
 export interface CopilotCreditSummary {
   source: "provider.copilot_usage.total_nano_aiu";
   status: "reported" | "partial" | "not-reported";
@@ -59,6 +63,10 @@ export function reportedReasoningTokens(usage: { completion_tokens: number; comp
 }
 
 export type ThinkingBudget = number | "unlimited";
+export function validActivityCreditLimit(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= -1 && value <= 1_000_000_000;
+}
+
 export const thinkingBudgetChoices = ["900", "1500", "2048", "unlimited"] as const;
 
 export function parseThinkingBudget(value: unknown): ThinkingBudget {
@@ -69,17 +77,17 @@ export function parseThinkingBudget(value: unknown): ThinkingBudget {
 export function checkReportedOutput(usage: ChatTokenUsage, outputBudget: number, thinkingBudget?: ThinkingBudget): void {
   const suffix = " Partial output was preserved; no pending tool was executed.";
   if (thinkingBudget === undefined) {
-    if (usage.outputTokens > outputBudget) throw new Error(`Model output exceeded the per-inference token budget.${suffix}`);
+    if (usage.outputTokens > outputBudget) throw new ChatBudgetExceededError(`Model output exceeded the per-inference token budget.${suffix}`, "output");
     return;
   }
   const thinkingLimit = thinkingBudget === "unlimited" ? Infinity : thinkingBudget;
   if (usage.reasoningTokens === undefined) {
-    if (usage.outputTokens > outputBudget + thinkingLimit) throw new Error(`Model output (${usage.outputTokens} tokens, thinking not reported separately) exceeded the ${outputBudget}-token output plus ${thinkingBudget}-token thinking budget.${suffix}`);
+    if (usage.outputTokens > outputBudget + thinkingLimit) throw new ChatBudgetExceededError(`Model output (${usage.outputTokens} tokens, thinking not reported separately) exceeded the ${outputBudget}-token output plus ${thinkingBudget}-token thinking budget.${suffix}`, "output");
     return;
   }
-  if (usage.reasoningTokens > thinkingLimit) throw new Error(`Model thinking used ${usage.reasoningTokens} tokens, over the ${thinkingBudget}-token thinking budget.${suffix}`);
+  if (usage.reasoningTokens > thinkingLimit) throw new ChatBudgetExceededError(`Model thinking used ${usage.reasoningTokens} tokens, over the ${thinkingBudget}-token thinking budget.${suffix}`, "output");
   const visible = usage.outputTokens - usage.reasoningTokens;
-  if (visible > outputBudget) throw new Error(`Model visible output used ${visible} tokens, over the ${outputBudget}-token output budget.${suffix}`);
+  if (visible > outputBudget) throw new ChatBudgetExceededError(`Model visible output used ${visible} tokens, over the ${outputBudget}-token output budget.${suffix}`, "output");
 }
 
 export function modelProfiles(values: unknown, legacyIds: string[]): ChatModelProfile[] {

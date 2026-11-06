@@ -35,8 +35,8 @@
 </div>
 <div id="mcp-global-warning" class="hidden" role="status" hidden>
   <span id="mcp-global-warning-text"></span>
-  <button class="tbtn mcp-regenerate-action" onclick="doGenerateMcp()">Regenerate Server Code</button>
-  <button class="tbtn" onclick="openMcpSetup()">Open Config</button>
+  <button class="tbtn mcp-setup-action" onclick="mcpSetupAction(this)">Continue setup</button>
+  <button class="tbtn mcp-help-action" onclick="openHelpSection('setup')">Setup guide</button>
 </div>
 <div id="workspace-shell" hidden>
 <nav id="workspace-rail" aria-label="Primary workspaces">
@@ -49,6 +49,8 @@
   <button class="workspace-button" data-workspace="projects" title="Projects" aria-label="Projects"><span class="codicon codicon-folder" aria-hidden="true"></span></button>
   <span class="workspace-separator" aria-hidden="true"></span>
   <button class="workspace-button" data-workspace="settings" title="Settings" aria-label="Settings"><svg class="academy-icon academy-dials" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/><circle class="dial dial-one" cx="9" cy="6" r="2"/><circle class="dial dial-two" cx="15" cy="12" r="2"/><circle class="dial dial-three" cx="8" cy="18" r="2"/><path class="dial-spark" d="m19 8 .5 1.2 1.2.5-1.2.5-.5 1.2-.5-1.2-1.2-.5 1.2-.5z"/></svg></button>
+  <span class="workspace-separator" aria-hidden="true"></span>
+  <button class="workspace-button" data-workspace="help" title="Help" aria-label="Help"><span class="codicon codicon-question" aria-hidden="true"></span></button>
 </nav>
 <div id="workspace-stage">
   <nav id="workspace-context" aria-label="Workspace navigation">
@@ -119,6 +121,12 @@
         <button class="tab" role="tab" aria-selected="false" data-tab="subscriptions">Sharing &amp; Subscribe</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="githubSync">GitHub Sync</button>
         <button class="tab" role="tab" aria-selected="false" data-tab="backgroundTasks">Background Tasks</button>
+      </div>
+    </div>
+    <div class="workspace-context-group" data-workspace-group="help">
+      <span class="workspace-context-title">Help</span>
+      <div class="workspace-context-tabs" role="tablist" aria-label="Help views">
+        <button class="tab" role="tab" aria-selected="false" data-tab="help">Help</button>
       </div>
     </div>
   </nav>

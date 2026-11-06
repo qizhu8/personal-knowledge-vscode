@@ -2,6 +2,23 @@
 
 [Overview](README.md) · [Installation](#installation-guide) · [Detailed Features](#features) · [MCP Integration](#mcp-integration) · [Changelog](CHANGELOG.md)
 
+## In-app Help
+
+The bottom question-mark **Help** workspace provides a readable English/Chinese
+user guide, a section index, direct links to existing features, and copy-only
+Agent requests. Start with a saved Note, then learn Skills, Boards, Chat Tasks
+and Workers, Memory, Recipes, Projects, sharing, Snapshots, and troubleshooting
+as needed. Reading Help needs neither a Knowledge Root nor Python/MCP setup.
+Other UI languages show an explicit English-guide fallback.
+
+Detected component, environment and model problems expose contextual next steps
+and direct Help-section links instead of a generic settings button. Environment
+probe failures remain visible until a successful recheck. Host warnings distinguish
+normal startup, reconnectable failures and interface reloads. Diagnostic/guidance
+buttons do not replay writes, kill processes or bypass existing repair approvals.
+
+[English guide](resources/help/en.md) · [中文指南](resources/help/zh-hans.md)
+
 ## PKM Chat
 
 Use models, tools, pasted images, reusable Skills, and persistent Tasks in a Chat
@@ -66,6 +83,12 @@ anyone with repository access can read its committed content and history.
 Use the appropriate private repository, GitHub permissions, and Broker/Subscriber
 access controls. Restore is explicit; do not assume every asset or Snapshot is
 included by default. See [Sync authority and recovery](docs/design/github-sync-authority.md).
+
+If a local credential-channel interruption prevents Sync, Auto remains enabled
+and retains its existing 15-minute retry. The status card shows the next scheduled
+retry and explains that no manual action is needed while it is pending. A paused
+target or a failure without a scheduled retry is not presented as automatically
+recovering; follow the displayed action instead.
 
 ## Portal
 
@@ -300,7 +323,7 @@ Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/item
 code --install-extension personal-knowledge-*.vsix
 ```
 
-On first installation, PKM opens a guided tour that anchors explanatory bubbles and arrows to the real controls needed for setup. A minor upgrade shows only feature modules introduced since the last minor release; patch upgrades stay quiet. **Skip** dismisses the presented modules, while the sparkle and help buttons in the PKM title bar replay **What's New** or the complete tour at any time.
+The first-time feature tour explains the real controls. Closing it or pressing Escape defers it rather than marking setup complete; the title-bar help button can replay it. A minor upgrade shows only newly introduced feature modules; patch upgrades stay quiet. Config also has a resumable **Getting started** surface driven by actual integration health, including when the Knowledge Root already exists.
 
 ### 1. Choose Your Knowledge Root
 
@@ -308,7 +331,11 @@ On first activation, choose the directory that owns your Markdown knowledge. Use
 
 The extension initializes the folder and git repository. If a legacy `knowledge.db` is found, Skills and Notes are migrated non-destructively.
 
-### 2. Open Config
+### 2. Get Your First Useful Result
+
+Open **Personal Knowledge Manager → Config → General Setting** and choose **Create your first Note**. Save it and reopen it from Notes. Notes and Skills remain available without Python or MCP; you do not need to finish optional integrations before using your knowledge folder.
+
+### 3. Optionally Connect AI Tools
 
 Open **Personal Knowledge Manager → Config**. The dashboard separates these independently versioned components:
 
@@ -319,17 +346,21 @@ Open **Personal Knowledge Manager → Config**. The dashboard separates these in
 
 Green means current. Orange actions appear only when user action is needed.
 
-### 3. Configure Python and Runtime
+#### Choose Python and Prepare the Runtime
 
 1. Select or browse to Python 3.10 or newer.
 2. Click **Validate & Save**.
-3. Click **Create Runtime** to create the isolated `pkm-mcp` virtual environment.
+3. PKM automatically creates the isolated `pkm-mcp` environment, installs dependencies, generates the server and checks runtime health. You do not normally need separate Create Runtime or Generate actions.
+
+The VS Code project interpreter and PKM's base Python are separate selections. PKM manages its own isolated environment; new users do not need to create an environment or fill multiple paths. If no interpreter is detected, follow **Install Python 3.10+**, install it on this window's target machine, then scan again. Remote SSH uses the remote host, not the local computer.
+
+The setup surface distinguishes running, action-required, failed and verified states. It retains actual phases and bounded recent dependency output across tab changes; it does not invent a download percentage. **Later** defers the Python guide, and **Resume Python guide** reopens it. Validation or installation failure does not complete the guide. The warning's primary action follows the blocking step rather than always asking for server regeneration.
 
 The Paths table shows the resolved Root, environment root, runtime, Python executable, and generated server directory. Disk usage is cached for the session; click **Refresh sizes** to recalculate it.
 
-### 4. Generate Server Code
+#### Generated Server Code
 
-Click **Generate Server Code**. It writes these files under the selected Root:
+Automatic setup writes these files under the selected Root. Explicit generation and repair controls remain available for advanced maintenance:
 
 - `mcp-server/server.py`
 - `mcp-server/chat_server.py`
@@ -337,7 +368,7 @@ Click **Generate Server Code**. It writes these files under the selected Root:
 
 Regeneration does not modify external Agency registries or workspace `.vscode/mcp.json` files.
 
-### 5. Register and Start `pkm`
+#### Register and Start `pkm`
 
 On supported VS Code versions, the extension publishes the `pkm` definition through its native provider for the configured target machine and OS account. Run **MCP: List Servers**, select `pkm`, and start it, or run **PKM: Start PKM MCP**.
 
@@ -347,13 +378,13 @@ Do not add duplicate user/workspace registrations to a VS Code client that alrea
 
 Verify a real `check_version` tool call in this window and in a second workspace on the same target/account without adding project configuration. Discovery, native trust, startup, tool listing, and agent-visible calls are separate acceptance steps.
 
-### 6. Verify
+#### Verify
 
 - The Config process light shows **Running** when the generated `server.py` process is detected.
 - Call `pkm.check_version` and verify Unified `2.13.6`, Knowledge `1.5.1`, Chat `2.3.6`, Recipe `1.7.3`, and Agent Session `1.7.6`.
 - Call `pkm.chat_capabilities` and verify the Chatroom tools are present.
 
-Stdio MCP servers start on demand, so **Ready · starts on demand** means setup is complete and `pkm` will launch when an MCP client requests it.
+Stdio MCP servers start on demand, so **Ready · starts on demand** means the managed runtime and server are prepared. It does not establish client trust, discovered tools or a completed retrieval refresh: setup schedules retrieval separately, and actual client calls must be verified.
 
 ## Store directory
 

@@ -306,8 +306,9 @@ async function main() {
     const offlineIdentity = api.pkmServiceIdentity(offlineOptions);
     const offlineState = () => JSON.parse(fs.readFileSync(path.join(offlineIdentity.stateDirectory, "coordinator.json"), "utf8"));
     await wait(Math.max(1500, lifecycleMs * 3));
-    assert.equal(offlineState().targets.offline.enabled, true,
-      "an independent service without any connected host must preserve the user's Auto setting");
+    const offlineSnapshot = offlineState();
+    assert.equal(offlineSnapshot.targets.offline.enabled, true,
+      `an independent service without any connected host must preserve the user's Auto setting: ${JSON.stringify(offlineSnapshot.targets.offline.lastFailure)}`);
     assert.equal(offlineState().targets.offline.lastFailure, undefined,
       "waiting for a host must not consume automatic failure attempts");
     assert.match(offlineState().runtime.offline.detail, /connected|host/i);
@@ -465,7 +466,10 @@ async function main() {
     assert.equal(fixtureClient.snapshot().fixture.lastErrorPhase, "authenticating");
     assert.match(fixtureClient.snapshot().fixture.lastError, /GitHub was not contacted/);
     const fixtureCoordinatorPath = path.join(api.pkmServiceIdentity(fixtureOptions).stateDirectory, "coordinator.json");
-    const authenticationFailure = JSON.parse(fs.readFileSync(fixtureCoordinatorPath, "utf8")).targets.fixture.lastFailure;
+    const authenticationFailure = await until(() => {
+      const failure = JSON.parse(fs.readFileSync(fixtureCoordinatorPath, "utf8")).targets.fixture.lastFailure;
+      return failure?.errorCode === "CREDENTIAL_READ_TIMEOUT" && failure;
+    }, "durable authentication failure before reconfiguration");
     const automaticAuthenticationTarget = {
       id:"fixture", enabled:true, intervalMinutes:2, syncOnChange:true,
       lastFailure:{...authenticationFailure, attempts:3},

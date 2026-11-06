@@ -143,9 +143,9 @@ assert.match(css, /\.workspace-cattree-divider \{[\s\S]*?width: 6px;[\s\S]*?back
 assert.match(css, /#paper-ctx\.agent-session-context-menu,\s*#paper-ctx\.agent-snapshot-context-menu \{[\s\S]*?max-width: min\(340px, calc\(100vw - 16px\)\)/, "Agent Session and Snapshot context menus remain compact on long tasks");
 assert.match(css, /\.recipe-library-workbench\.cattree-collapsed,[\s\S]*?\.projects-workspace\.cattree-collapsed,[\s\S]*?\.agent-sessions-workspace\.cattree-collapsed/, "Projects and Automation CatTrees share a collapsed layout");
 
-assert.strictEqual((html.match(/class="workspace-button/g) || []).length, 5, "five primary workspace buttons");
-assert.strictEqual((html.match(/class="workspace-separator"/g) || []).length, 4, "four separators divide the five primary workspaces");
-assert.strictEqual((html.match(/class="workspace-context-group/g) || []).length, 5, "five contextual workspace groups");
+assert.strictEqual((html.match(/class="workspace-button/g) || []).length, 6, "six primary workspace buttons including Help");
+assert.strictEqual((html.match(/class="workspace-separator"/g) || []).length, 5, "five separators divide the six primary workspaces");
+assert.strictEqual((html.match(/class="workspace-context-group/g) || []).length, 6, "six contextual workspace groups");
 assert.match(html, /data-workspace="knowledge"[^>]*><span class="codicon codicon-library" aria-hidden="true"><\/span><\/button>/);
 assert.match(html, /data-workspace="tools"[^>]*><span class="codicon codicon-tools" aria-hidden="true"><\/span><\/button>/);
 assert.match(html, /data-workspace="automation"[^>]*><span class="codicon codicon-play" aria-hidden="true"><\/span><\/button>/);
@@ -156,8 +156,8 @@ assert.doesNotMatch(html, /workspace-button[^>]*>[\s\S]*?<span aria-hidden="true
 assert.doesNotMatch(html, /workspace-button[^>]*>[\s\S]*?<b>/, "workspace rail remains icon-only across locales");
 assert.match(css, /\[data-workspace="tools"\],\[data-workspace-group="tools"\]\{--workspace-color:#e5a84b\}/, "rail and context headings share workspace colors");
 assert.match(css, /\[data-workspace="automation"\],\[data-workspace-group="automation"\]\{--workspace-color:#e25555\}/, "Automation uses a distinct red identity color");
-assert.strictEqual((html.match(/class="workspace-context-title"/g) || []).length, 5, "five non-interactive workspace titles");
-assert.strictEqual((html.match(/class="workspace-context-tabs" role="tablist"/g) || []).length, 5, "each workspace exposes a distinct tab list");
+assert.strictEqual((html.match(/class="workspace-context-title"/g) || []).length, 6, "six non-interactive workspace titles");
+assert.strictEqual((html.match(/class="workspace-context-tabs" role="tablist"/g) || []).length, 6, "each workspace exposes a distinct tab list");
 assert.match(html, /<span class="workspace-context-title">Automation<\/span>[\s\S]*?data-tab="userProfile">User Profile<\/button>\s*<button[^>]*data-tab="agentSessions">Agent Sessions<\/button>\s*<button[^>]*data-tab="agentSnapshots">Agent Snapshot<\/button>\s*<button[^>]*data-tab="recipes">Recipe Library<\/button>\s*<button[^>]*data-tab="actionLibrary">Action Library<\/button>\s*<button[^>]*data-tab="actions">Action Workbench<\/button>/, "Automation keeps User Profile first and Recipe Library before the Action views");
 assert.match(bundle, /const embeddedActionViews = \{ actions:[^\n]*actionLibrary:/, "Library and Workbench retain independent embedded renderers");
 assert.match(extensionSource, /case "openActionLibrary":\s*\{\s*openActionLibrary\(context\);/, "extension host opens the library view rather than an unrelated Run");
@@ -436,6 +436,7 @@ const context = {
 vm.createContext(context);
 vm.runInContext(bundle.slice(bundle.indexOf("function captureRefreshView("), bundle.indexOf("function updateLoadingProgress(")), context, { filename: "refresh-view.js" });
 vm.runInContext(recipeGraphSharedSource, context, { filename: "recipe-graph-shared.js" });
+vm.runInContext(fs.readFileSync(path.join(root, "src/webview/panel/22-note-todo.js"), "utf8"), context, { filename: "22-note-todo.js" });
 vm.runInContext(projectsSource, context, { filename: "15-projects.js" });
 assert.strictEqual(context.recipeGraphEdgeRoute(20, 30, 20, 90, 120), "M 20 30 L 20 90", "vertically aligned graph modules use a straight arrow");
 assert.match(context.recipeGraphEdgeRoute(20, 30, 80, 90, 120), /^M 20 30 C /, "offset graph modules use a curved dependency line");

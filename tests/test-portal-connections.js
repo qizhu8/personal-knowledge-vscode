@@ -49,9 +49,10 @@ assert.equal(journal.snapshot(live).connections.length,0);
 const detail={style:{},innerHTML:"",querySelectorAll:()=>[]},asks=[];
 const source=fs.readFileSync(path.join(root,"src/webview/panel/16-portal-connections.js"),"utf8");
 const timers=[];
-const ui={document:{getElementById:()=>detail},state:{tab:"portalConnections"},setTimeout:(fn,ms)=>{timers.push({fn,ms});return timers.length;},clearTimeout:id=>{if(timers[id-1])timers[id-1].fn=null;},
+const ui={uiI18n:{resolved:"en"},document:{getElementById:()=>detail},state:{tab:"portalConnections"},setTimeout:(fn,ms)=>{timers.push({fn,ms});return timers.length;},clearTimeout:id=>{if(timers[id-1])timers[id-1].fn=null;},
   esc:value=>String(value??"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;"),ask:(...args)=>asks.push(args)};
 vm.createContext(ui);
+vm.runInContext(fs.readFileSync(path.join(root,"src/webview/panel/06-help.js"),"utf8"),ui);
 vm.runInContext(`${source};this.onSnapshot=portalConnectionsOnSnapshot;this.show=showPortalConnectionsTab`,ui);
 ui.show();assert.match(detail.innerHTML,/Loading Portal connections/);
 journal.observe(owner,binding);snapshot=journal.snapshot(live);

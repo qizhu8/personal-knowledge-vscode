@@ -7,6 +7,11 @@ export interface ChatFolder { id: string; name: string; }
 export interface ChatPlacement { groupId: string; trashedAt?: string; }
 interface LibraryState { version: 1; groups: ChatFolder[]; placements: Record<string, ChatPlacement>; }
 
+export function chatGroupPkmUrl(id: string): string {
+  if (id !== "ungroup" && !/^chat_group_[a-f0-9]{32}$/.test(id)) throw new Error("Choose a valid Chat group identity.");
+  return `pkm://chat-groups/${id}`;
+}
+
 export class ChatLibrary {
   constructor(private readonly directory: string) {}
 
@@ -19,6 +24,13 @@ export class ChatLibrary {
     const groupIds = new Set(state.groups.map(group => group.id));
     if (groupIds.size !== state.groups.length || Object.entries(state.placements).some(([id, placement]) => !/^[a-f0-9-]{36}$/.test(id) || !placement || typeof placement !== "object" || Array.isArray(placement) || placement.groupId !== "ungroup" && !groupIds.has(placement.groupId) || placement.trashedAt !== undefined && (typeof placement.trashedAt !== "string" || !Number.isFinite(Date.parse(placement.trashedAt))))) throw new Error("Unsupported Chat library placement format.");
     return state;
+  }
+
+  resolveGroup(value: unknown): ChatFolder {
+    if (typeof value !== "string") throw new Error("Choose a Chat group ID or pkm://chat-groups/<group ID> path.");
+    const id = value.trim().replace(/^pkm:\/\/chat-groups\//, "");
+    chatGroupPkmUrl(id);
+    return id === "ungroup" ? { id, name:"Ungroup" } : this.group(this.read(), id);
   }
 
   createGroup(name: string): string {

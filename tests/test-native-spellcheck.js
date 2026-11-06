@@ -30,20 +30,21 @@ async function main() {
     }
     await page.setContent('<body spellcheck="true"><div id="editor"></div></body>');
     await page.addScriptTag({content:`
-      const esc=value=>String(value??'').replace(/[&<>"]/g,'');
-      const noteTodoAttr=esc;
-      const noteTodo={editor:{item:{id:'task',title:'Title',goal:'Goal',scope:'Scope',acceptance:['Verified'],state:'Planning',evidence:[]}},chats:[],projects:[],snapshot:{items:[]}};
+      const esc=value=>String(value??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
       const currentDetail={documentKind:'todo-board'};
-      ${read("src/webview/panel/22-note-todo.js").slice(read("src/webview/panel/22-note-todo.js").indexOf("function noteTodoAssignees("), read("src/webview/panel/22-note-todo.js").indexOf("function noteTodoCapture("))}
-      const noteTodoStates=['Planning','WIP','Blocked','OnHold','Done'];
-      const noteTodoStateLabel=state=>state;
-      ${read("src/webview/panel/22-note-todo.js").slice(read("src/webview/panel/22-note-todo.js").indexOf("function noteTodoEditorHtml("), read("src/webview/panel/22-note-todo.js").indexOf("function noteTodoBoard("))}
-      document.getElementById('editor').innerHTML=noteTodoEditorHtml();
+      ${read("src/webview/panel/22-note-todo.js")}
     `});
-    for (const name of ["title","goal","scope","acceptance","blockedReason","reason"]) {
+    await page.evaluate(() => {
+      Object.assign(noteTodo, {
+        editor:{item:{id:'task',title:'Title',goal:'Goal',scope:'Scope',acceptance:['Verified'],state:'Planning',evidence:[]}},
+        chats:[],projects:[],snapshot:{items:[]},
+      });
+      document.getElementById('editor').innerHTML=noteTodoEditorHtml();
+    });
+    for (const name of ["title","description","goal","scope","acceptance","owner","monitorEndCondition","blockedReason","reason"]) {
       assert.equal(await page.locator(`[name="${name}"]`).evaluate(node=>node.spellcheck), true, name);
     }
-    for (const name of ["ownerId","dependsOn","links","reviewerIds","evidence","evidence-unit"]) {
+    for (const name of ["ownerId","dependsOn","links","reviewerIds","collaboratorIds","monitorUntil","evidence","evidence-unit"]) {
       assert.equal(await page.locator(`[name="${name}"]`).evaluate(node=>node.spellcheck), false, name);
     }
     console.log("PASS native spellcheck: Chat/Markdown/dynamic Todo prose enabled; URL, JSON and references excluded");

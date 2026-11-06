@@ -32,6 +32,7 @@ function retryInitialViewRequest() {
   else if (state.tab === 'portalConnections') ask('portalConnections', {});
   else if (state.tab === 'chatroom') ask('chatState', {});
   else if (state.tab === 'mcp') ask('checkMcp', {});
+  else if (state.tab === 'help') showHelpTab(true);
   else if (state.tab === 'skillRouter') ask('skillRouterStatus', {});
   else ask('list', { tab:state.tab, filter:'all', q:'' });
 }

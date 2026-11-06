@@ -1,6 +1,6 @@
 # Installation Guide
 
-The canonical Marketplace installation guide is maintained in the [README](../../README.md#installation-guide), where it is visible on the Marketplace **DETAILS** tab.
+Start with the [README quick start](../../README.md#get-started) and the [complete installation guide](../../FEATURES.md#installation-guide).
 
 VS Code Marketplace tabs are platform-defined; extension manifests cannot add a custom Installation Guide tab. This file provides a stable direct link for release notes, support responses, and repository navigation.
 
@@ -8,8 +8,8 @@ Follow the complete guide:
 
 1. Install the extension.
 2. Choose or recover the Knowledge Root.
-3. Configure Python 3.10+ and create the managed runtime.
-4. Generate the unified MCP server code.
+3. Open Config → General Setting → **Create your first Note**, save it and reopen it. Basic Notes and Skills do not require Python or MCP.
+4. Optionally choose Python 3.10+ in Config → MCP → **Validate & Save**. PKM automatically creates the isolated runtime, installs dependencies, generates the server and verifies runtime health. Follow the retained phase/output display; **Later** and **Resume Python guide** do not mark unfinished setup complete. Missing Python, dependency failures and shared-runtime action-required states each expose an appropriate next action. For Remote SSH, install/select Python on the remote host. The project interpreter is not the PKM base Python.
 5. For VS Code native chat, use the account-level native provider and start `pkm` through **MCP: List Servers**. Do not add another VS Code user/workspace registration for the same server. Copilot CLI / SDK sessions that do not inherit VS Code MCP definitions need the separate user-level registration below.
 6. Call `check_version` through the actual agent tool surface, then verify discovery and a real call in a second workspace on the same target/account.
 
@@ -165,4 +165,4 @@ server in the writable development workspace. This does not retrofit isolation
 into existing VS Code Agents; workspace/user MCP-only instructions are policy,
 not an OS permission boundary. Re-run via the launcher for enforced protection.
 
-See [README.md — Installation Guide](../../README.md#installation-guide) for the animated walkthrough and troubleshooting details.
+See the [complete installation guide](../../FEATURES.md#installation-guide) for the walkthrough and troubleshooting details. Runtime/server readiness does not prove client discovery or retrieval completion; verify them separately.

@@ -116,7 +116,7 @@ Build deterministic training datasets and validate every exported split.`);
   fs.copyFileSync(path.join(__dirname, "..", "resources", "mcp_call_guard.py"), path.join(moduleDir, "mcp_call_guard.py"));
   fs.copyFileSync(path.join(__dirname, "..", "resources", "diagnostic_log.py"), path.join(moduleDir, "diagnostic_log.py"));
   fs.copyFileSync(path.join(__dirname, "..", "resources", "api_chat_control.py"), path.join(moduleDir, "api_chat_control.py"));
-  for (const resource of ["knowledge_recovery.py", "knowledge_mutations.py", "knowledge_mutations.js", "knowledge_snapshots.py", "asset_classification.py", "asset_classification.js"]) {
+  for (const resource of ["knowledge_recovery.py", "knowledge_mutations.py", "knowledge_mutations.js", "note_inventory.py", "todo_api.py", "capability_api.py", "knowledge_snapshots.py", "asset_classification.py", "asset_classification.js"]) {
     fs.copyFileSync(path.join(__dirname, "..", "resources", resource), path.join(moduleDir, resource));
   }
   for (const resource of ["action_runtime.py", "action_modules.py", "action_authoring.py", "action_monitoring.py", "action_azuredevops.py", "action_run_store.py", "action_recovery.py", "action_components.py"]) {
@@ -476,7 +476,46 @@ async def live_model_acceptance():
 asyncio.run(live_model_acceptance())
 `);
   }
-  execFileSync("python", [path.join(moduleDir, "exercise.py")], { cwd: moduleDir, stdio: "inherit" });
+  fs.appendFileSync(path.join(moduleDir, "exercise.py"), `
+async def assert_note_inventory_transport():
+    import tempfile
+    with tempfile.TemporaryDirectory(dir=server.NOTES, prefix='inventory-') as temporary:
+        directory = pathlib.Path(temporary).name
+        nested = pathlib.Path(temporary) / 'Sub'
+        nested.mkdir()
+        for index in range(125):
+            (nested / ('Note %03d.md' % index)).write_text('---\\nknowledgeId: knowledge_%024x\\ntitle: Note %03d\\n---\\nbody' % (index, index), encoding='utf-8')
+        async with Client(server.mcp) as client:
+            tools = await client.list_tools()
+            schema = next(tool.inputSchema for tool in tools if tool.name == 'list_notes')
+            assert {'directory', 'recursive', 'offset', 'limit', 'inventory_revision'} <= schema['properties'].keys()
+            assert 'detail' not in schema['properties']
+            first = (await client.call_tool('list_notes', {'directory':directory})).structured_content
+            assert first['total'] == 125 and first['returned'] == 50 and first['next_offset'] == 50
+            routed = (await client.call_tool('capability_read', {'operation':'mcp.tool.list_notes', 'version':1, 'arguments':{'directory':directory}})).structured_content
+            assert routed['total'] == first['total'] and routed['inventory_revision'] == first['inventory_revision']
+            seen = first['notes']
+            page = first
+            while page['next_offset'] is not None:
+                page = (await client.call_tool('list_notes', {'directory':directory, 'offset':page['next_offset'], 'inventory_revision':first['inventory_revision']})).structured_content
+                seen += page['notes']
+            assert len(seen) == 125 and len({row['knowledge_id'] for row in seen}) == 125
+            assert page['identity_complete'] and all(row['source_id'].startswith('pkm://knowledge/') for row in seen)
+            unlimited = (await client.call_tool('list_notes', {'directory':directory, 'limit':0})).structured_content
+            assert unlimited['returned'] == 125 and unlimited['next_offset'] is None and not unlimited['has_more']
+            assert unlimited['inventory_revision'] == first['inventory_revision']
+            assert (await client.call_tool('list_notes', {'directory':directory, 'limit':1000})).structured_content['returned'] == 125
+            original_notes = server.NOTES
+            try:
+                server.NOTES = pathlib.Path(temporary)
+                default = json.loads(server.list_notes())
+                assert default['schema'] == first['schema'] and default['returned'] == 50
+            finally:
+                server.NOTES = original_notes
+asyncio.run(assert_note_inventory_transport())
+print('Note inventory MCP: default 50, unlimited limit=0, recursive paging and stable identities passed')
+`);
+  execFileSync("python", [path.join(moduleDir, "exercise.py")], { cwd: moduleDir, stdio: "inherit", env: { ...process.env, PKM_CAPABILITY_PROFILE:"legacy" } });
   fs.writeFileSync(path.join(moduleDir, "feature-domains.json"), JSON.stringify({ schema: 1, enabled: ["skillRouter"] }));
   fs.writeFileSync(path.join(moduleDir, "feature-domains.py"), "import asyncio, json, server\nfrom fastmcp import Client\nasync def main():\n  async with Client(server.mcp) as client:\n    names = {tool.name for tool in await client.list_tools()}\n    assert {'check_version','skill_context','search_knowledge','search_skills','get_skill','retrieval_status'} <= names, names\n    assert not ({'list_notes','add_skill','recipe_capabilities','agent_session_capabilities'} & names), names\n    response = await client.call_tool('check_version', {})\n    assert not response.is_error\nasyncio.run(main())\nversion = server.check_version()\nassert version['enabled_feature_domains'] == ['skillRouter'] and version['capabilities'] == ['pkm-skills'], version\nassert 'recipe_discovery_tool' not in version and version['skill_discovery_tool'] == 'skill_capabilities', version\nevents = list((server.STORE / '.pkm' / 'state' / 'mcp-usage' / 'events').glob('*.json'))\nassert events, events\nusages = [json.loads(event.read_text(encoding='utf-8')) for event in events]\nusage = next(item for item in reversed(sorted(usages, key=lambda item: item['occurredAt'])) if item['toolName'] == 'check_version')\nassert usage['inputBytes'] >= 0 and usage['outputBytes'] > 0, usage\nassert usage['estimatedTokenEquivalent'] > 0 and usage['reportedTokens'] == {'input': 0, 'output': 0}, usage\nprint('MCP feature domains: discovery filtering and call-boundary evidence OK')\n");
   fs.appendFileSync(path.join(moduleDir, "feature-domains.py"), `
@@ -493,7 +532,7 @@ async def assert_work_items_require_knowledge_domain():
             raise AssertionError('disabled Work Item tool must not be callable')
 asyncio.run(assert_work_items_require_knowledge_domain())
 `);
-  execFileSync("python", [path.join(moduleDir, "feature-domains.py")], { cwd: moduleDir, stdio: "inherit" });
+  execFileSync("python", [path.join(moduleDir, "feature-domains.py")], { cwd: moduleDir, stdio: "inherit", env: { ...process.env, PKM_CAPABILITY_PROFILE:"legacy" } });
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }

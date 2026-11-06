@@ -26,6 +26,7 @@ const control = new ApiChatAgentControl(process.argv[1], { workspacePaths: ['/fi
   if (operation === 'get') return { running: pending.has(args.chatId), createCalls, sendCalls };
   if (operation === 'cancel') { pending.get(args.chatId)?.({ reply: { status: 'cancelled', credits: null } }); pending.delete(args.chatId); return { cancelled: true }; }
   if (operation === 'portal') return { ...args, portalCalls: ++portalCalls };
+  if (operation === 'list' && args.groupId) return { arguments: args };
   return { createCalls, sendCalls };
 });
 process.on('SIGTERM', () => { control.dispose(); process.exit(0); });
@@ -131,6 +132,11 @@ async def main():
                 assert portal_directory.is_absolute() and portal_directory.name.startswith("pkm-portal-ipc-")
                 assert len(list(portal_directory.glob("*.json"))) == 3
                 assert not list(requests.glob("*.json")), "Portal must not write receipts to Knowledge Root"
+                group_path = "pkm://chat-groups/chat_group_" + "a" * 32
+                listing = await call(client, "api_chat_list", {"host_id": host_id, "group_path": group_path, "offset": 100, "limit": 20})
+                listed = await receipt(client, listing, "succeeded")
+                assert listed["result"]["arguments"] == {"groupId": group_path, "offset": 100, "limit": 20}
+                await rejected(client, "api_chat_list", {"host_id": host_id, "group_path": group_path + "/extra"}, "copied")
                 direct_args = {**portal_args, "operation": "command", "context_id": host_id,
                                "command_id": "direct-command", "request_id": host_id,
                                "command": {"program": "cmd.exe", "arguments": ["/c", "echo PKM_PORTAL_CMD_TEST"], "timeoutSeconds": 10}}

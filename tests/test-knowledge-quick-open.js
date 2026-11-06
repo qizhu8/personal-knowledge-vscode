@@ -157,6 +157,39 @@ assert.throws(
   error => error instanceof PkmLocatorError && error.code === "duplicate",
 );
 
+for (const entry of inventory.filter(entry => ["skills", "notes", "papers"].includes(entry.area))) {
+  const slugUrl = `pkm://${entry.area}/${entry.slug}`;
+  assert.deepStrictEqual(parsePkmLocator(slugUrl), {
+    kind: "local-path", locator: slugUrl, area: entry.area, path: entry.slug,
+  });
+  const slugTarget = resolvePkmLocator(slugUrl, inventory);
+  const fileTarget = resolvePkmLocator(`pkm://${entry.area}/${entry.relativePath}`, inventory);
+  assert.strictEqual(slugTarget.key, fileTarget.key, "slug and Markdown paths open the same item");
+  assert.strictEqual(slugTarget.type, fileTarget.type);
+  assert.strictEqual(slugTarget.tab, entry.area);
+}
+const reportedSkillPath = "Ads/Storage/cosmos-vc-adl-azure-cli-transfer";
+const reportedSkillUrl = `pkm://skills/${reportedSkillPath}`;
+const reportedSkill = [{area:"skills",relativePath:`${reportedSkillPath}.md`,slug:reportedSkillPath,title:"Transfer"}];
+assert.deepStrictEqual(resolvePkmLocator(reportedSkillUrl, reportedSkill), {
+  kind:"panel",locator:reportedSkillUrl,type:"skill",key:reportedSkillPath,tab:"skills",title:"Transfer",
+}, "Go accepts the exact extensionless Skill link reported by the user");
+assert.strictEqual(resolvePkmLocator(reportedSkillUrl + ".md", reportedSkill).key, reportedSkillPath);
+assert.strictEqual(resolvePkmLocator("`pkm://skills/Coding/Review`", inventory).key, "Coding/Review");
+for (const locator of ["pkm://skills/Coding/Missing", "pkm://notes/Coding/Review", "pkm://skills/Coding"]) {
+  assert.throws(() => resolvePkmLocator(locator, inventory),
+    error => error instanceof PkmLocatorError && error.code === "not-found",
+    "slug lookup is exact, area-scoped, and never resolves a folder or guesses by title");
+}
+for (const locator of ["pkm://skills/Coding/../Review", "pkm://skills/Coding/%2e%2e/Review", "pkm://skills/Coding/Review/"]) {
+  assert.throws(() => resolvePkmLocator(locator, inventory),
+    error => error instanceof PkmLocatorError && error.code === "invalid");
+}
+assert.throws(() => resolvePkmLocator("pkm://skills/Coding/Review.md", [
+  ...inventory, {area:"skills",relativePath:"Coding/Review.md.md",slug:"Coding/Review.md",title:"Other Review"},
+]), error => error instanceof PkmLocatorError && error.code === "duplicate",
+"an ambiguous file-path/slug collision must not open the wrong item");
+
 const root = path.join(__dirname, "..");
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const command = manifest.contributes.commands.find(item => item.command === "personalKnowledge.goToPkmPath");

@@ -3,6 +3,7 @@ import * as path from "path";
 import { randomUUID } from "crypto";
 import { withCrossProcessLockSync } from "../runtime/cross-process-lock";
 import type { ChatExecutionContext } from "./execution-context";
+import { assertIndependentWorkerScopes, assertWorkerScopeWithin, validWorkerScope, workerScope, type WorkerScope } from "./worker-scope";
 
 export type WorkerPhase = "running" | "awaiting-input" | "sleeping" | "complete" | "failed" | "cancelled";
 export type WorkerDecisionReason = "clarification" | "suggestion" | "permission" | "runtime-limit" | "suspected-loop";
@@ -31,7 +32,7 @@ export interface ChatWorkerState {
   stopped: boolean;
   events: WorkerEvent[];
 }
-export interface WorkerSlot { receiptId: string; chatId: string; parentChatId: string; title: string; temporary?: boolean; released?: boolean; }
+export interface WorkerSlot extends WorkerScope { receiptId: string; chatId: string; parentChatId: string; title: string; temporary?: boolean; released?: boolean; }
 interface WorkerTree { schema: "pkm.chat.worker-tree/v1"; id: string; rootChatId: string; slots: WorkerSlot[]; approvedQuota?: number; }
 export interface WorkerLimits { automatic: number; maximum: number; }
 
@@ -70,7 +71,8 @@ export class WorkerTreeStore {
     const uuid = (value: unknown) => typeof value === "string" && /^[a-f0-9-]{36}$/.test(value);
     if (tree.schema !== "pkm.chat.worker-tree/v1" || tree.id !== id || !uuid(tree.rootChatId) || !Array.isArray(tree.slots) || tree.slots.length > 10000
       || tree.slots.some(slot => !slot || !uuid(slot.chatId) || !uuid(slot.receiptId) || !uuid(slot.parentChatId) || typeof slot.title !== "string" || slot.title.length > 120
-        || slot.temporary !== undefined && typeof slot.temporary !== "boolean" || slot.released !== undefined && typeof slot.released !== "boolean")
+        || slot.temporary !== undefined && typeof slot.temporary !== "boolean" || slot.released !== undefined && typeof slot.released !== "boolean"
+        || !validWorkerScope(slot))
       || new Set(tree.slots.filter(slot => !slot.released).map(slot => slot.chatId)).size !== tree.slots.filter(slot => !slot.released).length
       || tree.approvedQuota !== undefined && (!Number.isSafeInteger(tree.approvedQuota) || tree.approvedQuota < 0 || tree.approvedQuota > 1000)) throw new Error("Invalid persisted worker tree.");
     return tree;
@@ -115,13 +117,27 @@ export class WorkerTreeStore {
     });
   }
 
-  reserve(id: string, parentChatId: string, titles: string[], limits: WorkerLimits, approvedTotal?: number, existingChatIds?: string[]): WorkerSlot[] {
+  reserve(id: string, parentChatId: string, titles: string[], limits: WorkerLimits, approvedTotal?: number, existingChatIds?: string[], scopes?: WorkerScope[]): WorkerSlot[] {
     this.file(id);
     workerLimits(limits.automatic, limits.maximum);
     return withCrossProcessLockSync(path.join(this.directory, `${id}.lock`), "Worker tree budget", () => {
       const tree = this.read(id);
       if (parentChatId !== tree.rootChatId && !tree.slots.some(slot => !slot.released && slot.chatId === parentChatId)) throw new Error("The manager does not belong to this worker tree.");
       if (!titles.length || titles.length > limits.maximum || titles.some(title => !title.trim() || title.length > 120)) throw new Error("Choose bounded worker titles.");
+      if (scopes && scopes.length !== titles.length) throw new Error("Provide one scope per worker task.");
+      const taskScopes = titles.map((_, index) => workerScope(scopes ? scopes[index] : {}));
+      const active = tree.slots.filter(slot => !slot.released);
+      const ancestors = new Set<string>();
+      let owner = active.find(slot => slot.chatId === parentChatId);
+      while (owner) {
+        if (ancestors.has(owner.chatId)) throw new Error("Worker tree ancestry contains a cycle.");
+        ancestors.add(owner.chatId);
+        for (const scope of taskScopes) assertWorkerScopeWithin(scope, owner);
+        const parent = owner.parentChatId;
+        owner = active.find(slot => slot.chatId === parent);
+      }
+      // Check and persist ownership under the same cross-process lock as capacity.
+      assertIndependentWorkerScopes(taskScopes, active.filter(slot => !ancestors.has(slot.chatId)));
       if (tree.slots.length + titles.length > 10000) throw new Error("Worker tree history is full. Start a new manager task.");
       const total = tree.slots.filter(slot => !slot.released).length + titles.length;
       if (total > limits.maximum) throw new Error(`Worker tree limit exceeded (${total} > ${limits.maximum}); no workers were spawned.`);
@@ -131,7 +147,7 @@ export class WorkerTreeStore {
       tree.approvedQuota = Math.max(quota, approvedTotal || 0);
       if (existingChatIds && (existingChatIds.length !== titles.length || new Set(existingChatIds).size !== existingChatIds.length
         || existingChatIds.some(chatId => !/^[a-f0-9-]{36}$/.test(chatId) || chatId === tree.rootChatId || tree.slots.some(slot => !slot.released && slot.chatId === chatId)))) throw new Error("Choose distinct available existing worker Chats.");
-      const slots = titles.map((title, index) => ({ receiptId: randomUUID(), chatId: existingChatIds?.[index] || randomUUID(), parentChatId, title, temporary: !existingChatIds }));
+      const slots = titles.map((title, index) => ({ receiptId: randomUUID(), chatId: existingChatIds?.[index] || randomUUID(), parentChatId, title, temporary: !existingChatIds, ...taskScopes[index] }));
       tree.slots.push(...slots);
       this.write(tree);
       return slots;

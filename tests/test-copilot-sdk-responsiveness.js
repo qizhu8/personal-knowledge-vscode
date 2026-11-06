@@ -153,7 +153,7 @@ test("cold bootstrap yields during private transcript cleanup and shares one run
   await assert.rejects(fs.promises.access(sessionState), { code: "ENOENT" });
 });
 
-test("missing bundled runtime is reported without substituting a CLI or prompting during passive discovery", async t => {
+test("PKM-FAULT-017: missing bundled runtime is reported without substituting a CLI or prompting during passive discovery", async t => {
   const { sdk, state, host, cliPath } = await fixture(t);
   t.mock.method(console, "warn", () => {});
   await fs.promises.rm(cliPath);
@@ -181,7 +181,7 @@ test("disposal while async bootstrap is pending does not launch an orphan runtim
   assert.equal(state.constructed, 0);
 });
 
-test("failed runtime startup is cleaned up and a later connection can retry", async t => {
+test("PKM-FAULT-018: failed runtime startup is cleaned up and a later connection can retry", async t => {
   const { sdk, state, host } = await fixture(t);
   state.start = () => { throw new Error("fixture startup failure"); };
   await assert.rejects(sdk.discoverCopilotSdkModels(host, undefined, undefined, true), /bundled with VS Code failed to start: fixture startup failure/);
@@ -206,7 +206,7 @@ test("disposal during runtime startup stops it once and prevents catalog access"
   assert.equal(state.lists, 0);
 });
 
-test("cancellation interrupts pending GitHub permission access before SDK bootstrap", async () => {
+test("PKM-FAULT-019: cancellation interrupts pending GitHub permission access before SDK bootstrap", async () => {
   const { sdk } = adapters();
   const token = deferred(), controller = new AbortController();
   let clients = 0;
@@ -274,6 +274,28 @@ test("passive discovery preserves consent and sanitized failures; interactive di
   await assert.rejects(sdk.discoverCopilotSdkModels({}, undefined, failing, true),
     error => /Cannot discover Copilot SDK models/.test(error.message) && !error.message.includes("private diagnostic"));
   assert(warnings.every(message => !message.includes("private diagnostic")));
+});
+
+test("PKM-FAULT-020: a syntactically corrupted SDK module reports discovery failure without executing its bundled CLI", async t => {
+  const f = await fixture(t);
+  await fs.promises.writeFile(path.join(f.directory, "node_modules/@github/copilot-sdk/index.js"), "this is not valid JavaScript [");
+  await assert.rejects(f.sdk.discoverCopilotSdkModels(f.host, undefined, undefined, true),
+    /Cannot discover Copilot SDK models/);
+  assert.equal(f.state.constructed, 0);
+});
+
+for (const code of ["EACCES", "ENOSPC"]) test(`PKM-FAULT-021/${code}: SDK private runtime-directory ${code} reports model discovery failure`, async t => {
+  const f = await fixture(t);
+  const original = fs.promises.mkdir;
+  t.mock.method(fs.promises, "mkdir", async (directory, ...args) => {
+    if (String(directory).startsWith(f.directory + path.sep)) {
+      throw Object.assign(new Error(`${code}: injected private runtime-directory failure`), { code });
+    }
+    return original(directory, ...args);
+  });
+  await assert.rejects(f.sdk.discoverCopilotSdkModels(f.host, undefined, undefined, true),
+    /Cannot discover Copilot SDK models/);
+  assert.equal(f.state.constructed, 0);
 });
 
 test("native and SDK model catalogs start concurrently and retain their actual identities", async () => {

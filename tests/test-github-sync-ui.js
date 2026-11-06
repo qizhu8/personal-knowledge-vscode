@@ -47,8 +47,20 @@ context.document.querySelectorAll = () => [];
 assert.match(vm.runInContext("githubSyncPhaseDiagram('', 'scheduled')", context), /github-sync-phase-current " aria-hidden="true">Scheduled</,
   "a scheduled snapshot without a phase must not claim that Sync failed");
 assert.doesNotMatch(vm.runInContext("githubSyncPhaseDiagram('', 'scheduled')", context), /Sync failed/);
-assert.match(vm.runInContext("githubSyncPhaseDiagram('', 'syncing')", context), /Synchronizing/);
-assert.match(vm.runInContext("githubSyncPhaseDiagram('', 'queued')", context), /Queued/);
+for (const phase of ['', 'unrecognized-phase']) {
+  context.unavailablePhase = phase;
+  const diagram = vm.runInContext("githubSyncPhaseDiagram(unavailablePhase, 'syncing')", context);
+  assert.match(diagram, /Sync in progress - phase details unavailable/);
+  assert.match(diagram, /current" data-phase="phase-unavailable"/,
+    "missing phase details get an explicit active indicator, not an all-grey diagram");
+  assert.doesNotMatch(diagram, /done" data-phase=/,
+    "an unavailable phase must not fabricate completed Git steps");
+}
+const queuedDiagram = vm.runInContext("githubSyncPhaseDiagram('waiting-for-lock', 'queued')", context);
+assert.match(queuedDiagram, /Queued - waiting for sync worker/);
+assert.match(queuedDiagram, /current" data-phase="queued"/);
+assert.doesNotMatch(queuedDiagram, /current" data-phase="waiting-for-lock"/,
+  "a queued worker is not yet waiting on the Git lock");
 assert.match(vm.runInContext("githubSyncPhaseDiagram('resolve-conflicts', 'partial')", context),
   /Partially synchronized: other content continues syncing/);
 assert.strictEqual(vm.runInContext("githubSyncEffectiveStatus({lastSync:{entityBases:{pending:'base'}}}, {status:'scheduled'}, {}, false)", context), "partial");
@@ -120,16 +132,46 @@ for (const persisted of [false, true]) {
       githubSyncData = previous;
       return {cards,paused};
     })()`, context);
-    assert.match(retryCard.cards, /Next automatic retry after/);
-    assert.doesNotMatch(retryCard.paused, /Next automatic retry after/,
+    assert.match(retryCard.cards, /class="github-sync-error"[^>]*>[^<]*We will retry automatically after[^<]*No action is needed while waiting/);
+    assert.match(retryCard.cards, /Waiting for automatic retry/);
+    assert.doesNotMatch(retryCard.paused, /We will retry automatically after|No action is needed while waiting/,
       "stale nextSyncAt cannot claim that a disabled target will retry");
+    assert.match(retryCard.paused, /Auto Sync is off\. No automatic retry is scheduled/);
     if (errorCode !== 'SYNC_FAILED') {
       assert.match(retryCard.cards, /Local credential channel unavailable/);
       assert.match(retryCard.cards, /GitHub was not contacted/);
       assert.doesNotMatch(retryCard.cards, /Authentication failed|Reload this window/);
-      if (errorCode === 'CREDENTIAL_READ_TIMEOUT') assert.match(retryCard.cards, /prefer another connected compatible host/);
+      assert.doesNotMatch(retryCard.cards, /Reopen the executing|local credential recovery|every 30/);
     } else assert.match(retryCard.cards, /Fetch \/ Pull failed/);
   }
+}
+for (const [name, runtime, overrides, expected, barriers = {}] of [
+  ['missing retry schedule', {status:'error'}, {}, /No automatic retry is scheduled/],
+  ['invalid retry schedule', {status:'error', nextSyncAt:'invalid'}, {}, /No automatic retry is scheduled/],
+  ['nonretryable failure', {status:'error', nextSyncAt:'2026-10-21T12:00:00Z', lastError:'Terminal failure'}, {lastFailure:{error:'Terminal failure', retryable:false}}, /No automatic retry is scheduled/],
+  ['initial sync required', {status:'error', nextSyncAt:'2026-10-21T12:00:00Z'}, {automation:{enabled:true, initialSyncCompleted:false}}, /No automatic retry is scheduled/],
+  ['queued retry', {status:'queued', nextSyncAt:'2026-10-21T12:00:00Z'}, {}, /Queued - waiting for sync worker/],
+  ['active retry', {status:'syncing', nextSyncAt:'2026-10-21T12:00:00Z'}, {}, /Sync is in progress/],
+  ['blocked worker', {status:'blocked', nextSyncAt:'2026-10-21T12:00:00Z'}, {}, /No automatic retry is scheduled/],
+  ['paused worker with stale settings', {status:'paused', nextSyncAt:'2026-10-21T12:00:00Z'}, {}, /No automatic retry is scheduled/],
+  ['attention required', {status:'needs-attention', nextSyncAt:'2026-10-21T12:00:00Z'}, {}, /No automatic retry is scheduled/],
+  ['content repair', {status:'error', nextSyncAt:'2026-10-21T12:00:00Z'}, {}, /Waiting for local content repair/, {contentRepairs:{'retry-case':{issues:[]}}}],
+  ['unresolved conflict', {status:'error', nextSyncAt:'2026-10-21T12:00:00Z'}, {}, /Choose a candidate for each file/, {conflicts:{'retry-case':{files:[]}}}],
+]) {
+  context.retryCase = {runtime, overrides, barriers};
+  const cards = vm.runInContext(`(() => {
+    const saved = githubSyncData;
+    try {
+      const failure = {error:'Local channel unavailable', errorCode:'CREDENTIAL_READ_TIMEOUT', phase:'authenticating'};
+      const target = {id:'retry-case', name:'Retry case', repository:'owner/repo', branch:'main',
+        automation:{enabled:true, initialSyncCompleted:true}, publication:{manualVerificationCompleted:true},
+        lastFailure:failure, ...retryCase.overrides};
+      githubSyncData = {targets:[target], runtime:{'retry-case':retryCase.runtime}, credentialErrors:{'retry-case':failure}, ...retryCase.barriers};
+      return githubSyncCards();
+    } finally { githubSyncData = saved; }
+  })()`, context);
+  assert.doesNotMatch(cards, /We will retry automatically after|No action is needed while waiting/, name);
+  if (expected) assert.match(cards, expected, name);
 }
 context.failedTarget.lastSync.at = '2026-07-20T10:00:00Z';
 assert.strictEqual(vm.runInContext("githubSyncEffectiveStatus(failedTarget, {status:'scheduled'}, null, false)", context), 'scheduled', 'a later successful sync clears the effective failure status');
@@ -159,8 +201,8 @@ let staleConflictRemoved = false;
 const staleConflictNode = { remove: () => { staleConflictRemoved = true; } };
 context.syncButton = { closest: () => ({ querySelector: selector => selector === '.github-sync-phase' ? phaseNode : selector === '.sub-broker-meta > small:last-of-type' ? detailNode : selector === '.github-sync-conflict-actions' ? staleConflictNode : null }) };
 vm.runInContext("githubSyncForce('primary', syncButton)", context);
-assert.match(phaseNode.outerHTML, /data-phase="waiting-for-lock"/, "click updates the target phase before any host reply");
-assert.strictEqual(detailNode.textContent, 'Waiting for Git lock', "click updates the target detail before any host reply");
+assert.match(phaseNode.outerHTML, /current" data-phase="queued"/, "click shows the pending request without claiming Git execution has started");
+assert.strictEqual(detailNode.textContent, 'Queued - waiting for sync worker', "click updates the target detail before any host reply");
 assert.strictEqual(staleConflictRemoved, true, "manual recheck immediately removes the previous conflict prompt before a host response");
 assert.strictEqual(requests.length, 2);
 vm.runInContext('githubSyncForcePending.clear()', context);
@@ -428,7 +470,7 @@ const failingCard = vm.runInContext(`(() => {
 assert.match(failingCard, /github-sync-flow-step error" data-phase="fetch"/);
 assert.match(failingCard, /github-sync-phase-current error" aria-hidden="true">Fetch \/ Pull failed</,
   "the current failure stays visible when its node is scrolled out of view");
-assert.match(failingCard, /github-sync-error[^>]*>\[SYNC_FAILED\] current failure</, "error targets show their current failure");
+assert.match(failingCard, /github-sync-error[^>]*>\[SYNC_FAILED\] current failure No automatic retry is scheduled\./, "error targets show their current failure and truthful retry guidance");
 assert.match(failingCard, /github-sync-flow-step done" data-phase="authenticating"/,
   "a Fetch / Pull failure keeps the completed Authentication stage successful");
 const retryButton = failingCard.match(/<button[^>]*githubSyncForce\('primary',this\)[\s\S]*?<\/button>/)?.[0] || '';
@@ -455,21 +497,21 @@ const manualFailureCard = vm.runInContext(`(() => {
 })()`, context);
 assert.match(manualFailureCard, /github-sync-phase-current error" aria-hidden="true">Sync failed</,
   "manual failures without a reported phase use a red, non-duplicated failure label");
-assert.match(manualFailureCard, /github-sync-error[^>]*>\[SYNC_FAILED\] authentication expired</,
+assert.match(manualFailureCard, /github-sync-error[^>]*>\[SYNC_FAILED\] authentication expired Auto Sync is off\. No automatic retry is scheduled\.</,
   "manual failures display the actual error even with Auto Sync off");
 const missingErrorCard = vm.runInContext(`(() => {
   githubSyncData.runtime.primary = {status:'error'};
   delete githubSyncData.targets[0].lastFailure;
   return githubSyncCards();
 })()`, context);
-assert.match(missingErrorCard, /github-sync-error[^>]*>\[SYNC_FAILED\] No error details were recorded\. Open Sync Diagnostic Log for this attempt\.</,
+assert.match(missingErrorCard, /github-sync-error[^>]*>\[SYNC_FAILED\] No error details were recorded\. Open Sync Diagnostic Log for this attempt\. Auto Sync is off\. No automatic retry is scheduled\.</,
   'a failed target without recorded details still displays an explicit diagnostic message');
 const persistedFailureCard = vm.runInContext(`(() => {
   githubSyncData.runtime.primary = {status:'error'};
   githubSyncData.targets[0].lastFailure = {error:'Local content changed during synchronization: notes/Images/diagram.png'};
   return githubSyncCards();
 })()`, context);
-assert.match(persistedFailureCard, /github-sync-error[^>]*>\[SYNC_FAILED\] Local content changed during synchronization: notes\/Images\/diagram\.png<\/small>/,
+assert.match(persistedFailureCard, /github-sync-error[^>]*>\[SYNC_FAILED\] Local content changed during synchronization: notes\/Images\/diagram\.png Auto Sync is off\. No automatic retry is scheduled\.<\/small>/,
   "a persisted failure gives the actual cause directly on the target card");
 assert.match(persistedFailureCard, /githubSyncForce\('primary',this\)" >Sync with Remote<\/button>/,
   "a persisted manual failure exposes an enabled retry action instead of an unusable instruction");
@@ -479,18 +521,18 @@ const queuedCard = vm.runInContext(`(() => {
   githubSyncOnRunQueued({targetId:'primary',queued:true});
   return githubSyncCards();
 })()`, context);
-assert.match(queuedCard, /github-sync-flow-step current" data-phase="waiting-for-lock"/,
-  "a queued manual retry immediately shows Git lock instead of the previous failure");
+assert.match(queuedCard, /github-sync-flow-step current" data-phase="queued"/,
+  "a queued manual retry immediately shows the queue instead of the previous failure");
 assert.doesNotMatch(queuedCard, /old failure|github-sync-error/, "the old error is hidden while a retry is pending");
 vm.runInContext(`githubSyncOnState({runtime:{primary:{status:'error',phase:'resolve-conflicts',lastError:'old failure',lastAttemptAt:'2026-09-30T20:00:00Z',activityAt:'2026-09-30T20:00:00Z'}}})`, context);
-assert.match(vm.runInContext('githubSyncCards()', context), /github-sync-flow-step current" data-phase="waiting-for-lock"/,
+assert.match(vm.runInContext('githubSyncCards()', context), /github-sync-flow-step current" data-phase="queued"/,
   "an old failure snapshot must not cancel the newly queued sync");
 vm.runInContext(`githubSyncOnState({runtime:{primary:{status:'syncing',phase:'authenticating',lastAttemptAt:'2026-09-30T21:00:00Z',activityAt:'2026-09-30T21:00:01Z'}}})`, context);
 assert.match(vm.runInContext('githubSyncCards()', context), /github-sync-flow-step current" data-phase="authenticating"/,
-  "a new attempt moves from Git lock to Authentication");
+  "a new attempt moves from the queue to Authentication");
 vm.runInContext(`githubSyncOnRuntimeState({targetId:'primary',state:{status:'syncing',phase:'fetch',detail:'Validating Remote',lastAttemptAt:'2026-09-30T21:00:00Z',activityAt:'2026-09-30T21:00:02Z'}})`, context);
 assert.match(vm.runInContext('githubSyncCards()', context), /github-sync-flow-step current" data-phase="fetch"/,
-  "the authoritative runtime phase replaces the optimistic Git lock phase");
+  "the authoritative runtime phase replaces the optimistic queue phase");
 vm.runInContext(`githubSyncOnRuntimeState({targetId:'primary',state:{status:'syncing',phase:'waiting-for-lock',lastAttemptAt:'2026-09-30T21:00:00Z',activityAt:'2026-09-30T21:00:01Z'}})`, context);
 assert.match(vm.runInContext('githubSyncCards()', context), /github-sync-flow-step current" data-phase="fetch"/,
   "an older runtime event cannot move Fetch back to Git lock");
@@ -499,10 +541,10 @@ assert.match(vm.runInContext('githubSyncCards()', context), /github-sync-flow-st
   "a late stale snapshot cannot roll Fetch back to the previous failure");
 vm.runInContext(`githubSyncForcePending.add('primary'); githubSyncPendingAfter.set('primary','2026-09-30T20:00:00Z'); githubSyncOnRuntimeState({targetId:'primary',state:{status:'error',phase:'fetch',lastError:'current failure',lastAttemptAt:'2026-09-30T21:00:00Z',activityAt:'2026-09-30T21:00:03Z'}})`, context);
 assert.match(vm.runInContext('githubSyncCards()', context), /github-sync-phase-current error" aria-hidden="true">Fetch \/ Pull failed</,
-  "a terminal runtime error replaces the optimistic Git lock even without a full state snapshot");
+  "a terminal runtime error replaces the optimistic queue even without a full state snapshot");
 vm.runInContext(`githubSyncForcePending.add('primary'); githubSyncOnRunQueued({targetId:'primary',queued:false})`, context);
-assert.doesNotMatch(vm.runInContext('githubSyncCards()', context), /github-sync-flow-step current" data-phase="waiting-for-lock"/,
-  "a rejected queue request clears the optimistic Git lock phase");
+assert.doesNotMatch(vm.runInContext('githubSyncCards()', context), /github-sync-flow-step current" data-phase="queued"/,
+  "a rejected queue request clears the optimistic queue phase");
 
 const conflictCard = vm.runInContext(`(() => {
   githubSyncData = {
@@ -526,7 +568,7 @@ assert.match(conflictCard, /Choose a candidate for each file, then Apply resolut
 vm.runInContext("githubSyncForce('shared', {})", context);
 assert.doesNotMatch(vm.runInContext('githubSyncCards()', context), /github-sync-conflict-actions|Choose a candidate/,
   "queued manual recheck hides old conflict choices without deleting them");
-assert.match(vm.runInContext('githubSyncCards()', context), /current" data-phase="waiting-for-lock"/);
+assert.match(vm.runInContext('githubSyncCards()', context), /current" data-phase="queued"/);
 vm.runInContext("githubSyncOnRuntimeState({targetId:'shared',state:{status:'queued',phase:'waiting-for-lock',detail:'Queued for a new attempt'}})", context);
 assert.doesNotMatch(vm.runInContext('githubSyncCards()', context), /github-sync-conflict-actions/);
 for (const phase of ['authenticating', 'fetch', 'resolve-conflicts', 'commit', 'push', 'refresh-index']) {
@@ -762,6 +804,49 @@ async function verifyRetryHost() {
   await execute();
   assert.strictEqual(queued.length, 2, 'normal Sync with Remote passes the host guard after automatic exhaustion');
 }
+const statusLifecycle = vm.runInContext(`(() => {
+  const previous = githubSyncData;
+  const targetId = 'status-lifecycle';
+  githubSyncData = {
+    targets:[{id:targetId,name:'Status lifecycle',automation:{enabled:true,initialSyncCompleted:true}}],
+    runtime:{}
+  };
+  const result = {};
+  githubSyncOnRuntimeState({targetId,state:{status:'scheduled',lastSuccessAt:'2026-11-05T23:20:00Z'}});
+  result.completed = githubSyncCards();
+  githubSyncOnState({runtime:{[targetId]:{status:'syncing',lastSuccessAt:'2026-11-05T23:20:00Z',lastAttemptAt:'2026-11-05T23:21:00Z'}}});
+  result.missingPhase = githubSyncCards();
+  githubSyncOnRuntimeState({targetId,state:{status:'queued',lastSuccessAt:'2026-11-05T23:20:00Z',lastAttemptAt:'2026-11-05T23:22:00Z'}});
+  result.queued = githubSyncCards();
+  githubSyncOnRunQueued({targetId,queued:false});
+  githubSyncOnRuntimeState({targetId,state:{status:'syncing',phase:'fetch',lastAttemptAt:'2026-11-05T23:22:00Z',activityAt:'2026-11-05T23:22:01Z'}});
+  result.fetch = githubSyncCards();
+  githubSyncOnRuntimeState({targetId,state:{status:'scheduled',lastSuccessAt:'2026-11-05T23:23:00Z'}});
+  result.finished = githubSyncCards();
+  githubSyncRemotePending.add(targetId);
+  result.remotePending = githubSyncCards();
+  githubSyncRemotePending.delete(targetId);
+  githubSyncActionFeedback.set(targetId,{error:true,message:'Repair approval failed.'});
+  result.repairError = githubSyncActionFeedbackPanel(targetId,'syncing');
+  githubSyncActionFeedback.delete(targetId);
+  githubSyncData = previous;
+  return result;
+})()`, context);
+assert.match(statusLifecycle.completed, /Last sync completed successfully\./);
+assert.match(statusLifecycle.missingPhase, /current" data-phase="phase-unavailable"/);
+assert.doesNotMatch(statusLifecycle.missingPhase, /sync completed successfully|Scheduled to fetch remote changes|Next fetch after/);
+assert.match(statusLifecycle.queued, /current" data-phase="queued"/);
+assert.doesNotMatch(statusLifecycle.queued, /sync completed successfully/);
+assert.match(statusLifecycle.fetch, /current" data-phase="fetch"/);
+assert.doesNotMatch(statusLifecycle.fetch, /already queued or running|phase details unavailable|sync completed successfully/);
+assert.match(statusLifecycle.finished, /Last sync completed successfully\./);
+assert.doesNotMatch(statusLifecycle.finished, /Sync queued|already queued or running/);
+assert.match(statusLifecycle.remotePending, /current" data-phase="remote-replacement"/,
+  "Remote review keeps its own activity label rather than claiming it is queued for Git execution");
+assert.doesNotMatch(statusLifecycle.remotePending, /current" data-phase="queued"|sync completed successfully/);
+assert.match(statusLifecycle.repairError, /role="alert".*Repair approval failed\./,
+  "suppressing old sync outcomes must not hide unrelated action failures");
+
 verifyRetryHost().then(() => console.log("github-sync UI tests passed")).catch(error => {
   console.error(error);
   process.exitCode = 1;

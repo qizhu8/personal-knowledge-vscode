@@ -118,9 +118,10 @@ function githubSyncOnRepairResult(data) {
   if (state.tab === 'githubSync') renderGitHubSyncPane();
 }
 
-function githubSyncActionFeedbackPanel(targetId) {
+function githubSyncActionFeedbackPanel(targetId, status) {
   const feedback = githubSyncActionFeedback.get(targetId);
   if (!feedback) return '';
+  if (feedback.kind === 'sync-queue' || feedback.kind === 'sync-result' && ['syncing', 'queued'].includes(status)) return '';
   return `<div class="github-sync-action-feedback ${feedback.error ? 'github-sync-error' : ''}" onclick="event.stopPropagation()" role="${feedback.error ? 'alert' : 'status'}" aria-live="polite" aria-busy="${!!feedback.pending}">${feedback.pending ? '<span class="codicon codicon-loading codicon-modifier-spin" aria-hidden="true"></span> ' : ''}${esc(feedback.message)}</div>`;
 }
 
@@ -272,7 +273,7 @@ function githubSyncEditor() {
   const authenticationStatus = githubSyncAuthenticationResult
     ? `<div class="github-sync-auth-status success"><span class="codicon codicon-verified-filled"></span><span><strong>${esc(githubSyncAuthenticationResult.login)}</strong><small>${esc(githubSyncAuthenticationResult.fingerprint)}</small></span></div>`
     : credentialError
-      ? `<div class="github-sync-auth-status"><span class="codicon codicon-warning"></span><span>${esc(githubSyncFormatError(credentialError))}</span></div>`
+      ? `<div class="github-sync-auth-status"><span class="codicon codicon-warning"></span><span>${esc(githubSyncFormatError(credentialError))}</span><button type="button" class="tbtn" onclick="openHelpSection('sharing')">Account setup guide</button></div>`
     : accountConnected
       ? `<div class="github-sync-auth-status success"><span class="codicon codicon-verified-filled"></span><span><strong>${esc(authentication.expectedLogin)}</strong><small>Stored securely for automatic backup</small></span></div>`
       : '<div class="github-sync-auth-status"><span class="codicon codicon-key"></span><span>Connect and test this account before automatic backup</span></div>';
@@ -444,14 +445,18 @@ function githubSyncPhaseDiagram(phase, status, errorCode) {
     ['commit', 'Commit'], ['push', 'Push'], ['refresh-index', 'Refresh index'],
   ];
   if (phase === 'initial-preview') steps.splice(4, 0, ['initial-preview', 'Compare files']);
+  const auxiliaryPhase = status === 'queued' ? 'queued' : phase === 'remote-replacement' ? 'remote-replacement'
+    : status === 'syncing' && !steps.some(([key]) => key === phase) && phase !== 'no-change' ? 'phase-unavailable' : '';
+  if (auxiliaryPhase) phase = auxiliaryPhase;
   const noChange = phase === 'no-change';
   const currentIndex = noChange ? 3 : ['paused', 'blocked', 'needs-attention'].includes(status) ? -1 : steps.findIndex(([key]) => key === phase);
   const statusLabel = {
-    scheduled:'Scheduled', syncing:'Synchronizing', queued:'Queued', paused:'Auto sync off',
+    scheduled:'Scheduled', syncing:'Sync in progress - phase details unavailable', queued:'Queued - waiting for sync worker', paused:'Auto sync off',
     blocked:'Blocked', 'needs-attention':'Needs attention: local content validation',
     conflicts:'Resolve conflicts', partial:'Partially synchronized: other content continues syncing', error:'Sync failed',
   }[status] || 'Reading sync status…';
-  const currentLabel = ['paused', 'blocked', 'needs-attention', 'partial'].includes(status) ? statusLabel
+  const currentLabel = auxiliaryPhase === 'remote-replacement' ? 'Reviewing / applying Remote replacement'
+    : ['paused', 'blocked', 'needs-attention', 'partial'].includes(status) ? statusLabel
     : noChange ? 'No Change' : currentIndex < 0 ? statusLabel : steps[currentIndex][1];
   const label = status === 'error' ? credentialChannelFailure ? 'Local credential channel unavailable' : currentIndex < 0 ? 'Sync failed' : `${currentLabel} failed` : status === 'conflicts' ? `${currentLabel}: action required` : currentLabel;
   const nodes = steps.map(([key, text], index) => {
@@ -461,7 +466,8 @@ function githubSyncPhaseDiagram(phase, status, errorCode) {
     return `<span class="github-sync-flow-step ${state}" data-phase="${key}"><i aria-hidden="true"></i>${text}</span>`;
   }).join('');
   const branch = `<span class="github-sync-flow-step github-sync-no-change ${noChange ? 'current' : 'upcoming'}" data-phase="no-change"><i aria-hidden="true"></i>No Change</span>`;
-  return `<span class="github-sync-phase"><span class="github-sync-phase-current ${status === 'error' ? 'error' : ['conflicts', 'partial', 'needs-attention'].includes(status) ? 'conflicts' : ''}" aria-hidden="true">${esc(label)}</span><span class="github-sync-flow" role="img" aria-label="GitHub Sync: ${esc(label)}"><span class="github-sync-flow-main">${nodes}</span>${branch}</span></span>`;
+  const currentMarkup = auxiliaryPhase ? `<span class="github-sync-flow-step current" data-phase="${auxiliaryPhase}"><i aria-hidden="true"></i>${esc(label)}</span>` : esc(label);
+  return `<span class="github-sync-phase"><span class="github-sync-phase-current ${status === 'error' ? 'error' : ['conflicts', 'partial', 'needs-attention'].includes(status) ? 'conflicts' : ''}" aria-hidden="true">${currentMarkup}</span><span class="github-sync-flow" role="img" aria-label="GitHub Sync: ${esc(label)}"><span class="github-sync-flow-main">${nodes}</span>${branch}</span></span>`;
 }
 
 function githubSyncHasUnresolvedBase(target, runtime) {
@@ -537,7 +543,7 @@ function githubSyncFormatError(failure) {
   const message = canceled
     ? 'The previous Sync was canceled. Retry Sync; if it repeats, reload this window.'
     : /^CREDENTIAL_READ_(TIMEOUT|CANCELED|FAILED)$/.test(code)
-    ? `The executing VS Code host's local credential channel ${code === 'CREDENTIAL_READ_TIMEOUT' ? 'timed out' : code === 'CREDENTIAL_READ_CANCELED' ? 'was canceled' : 'failed'}. GitHub was not contacted. ${code === 'CREDENTIAL_READ_TIMEOUT' ? 'Automatic retry will prefer another connected compatible host if available. ' : ''}Reopen the executing VS Code window if needed, then retry Sync.`
+    ? `The executing VS Code host's local credential channel ${code === 'CREDENTIAL_READ_TIMEOUT' ? 'timed out' : code === 'CREDENTIAL_READ_CANCELED' ? 'was canceled' : 'failed'}. GitHub was not contacted.`
     : failure?.error || 'No error details were recorded. Open Sync Diagnostic Log for this attempt.';
   return `[${code}${failure?.phase ? ` · ${failure.phase}` : ''}] ${message}`;
 }
@@ -592,21 +598,28 @@ function githubSyncCards() {
     const conflict = rechecking || repair ? null : storedConflict;
     const initialPreview = conflict?.purpose === 'initial-preview';
     const status = githubSyncEffectiveStatus(target, runtime, conflict, forcePending, repair);
+    const presentationStatus = !remotePending && (forcePending || runtime.status === 'queued') ? 'queued' : status;
     const failedPhase = runtime.status === 'error' && runtime.lastError
       ? runtime.lastErrorPhase || runtime.phase : target.lastFailure?.phase || runtime.lastErrorPhase || runtime.phase;
-    const phase = forcePending ? 'waiting-for-lock' : initialPreview ? 'initial-preview' : conflict ? 'resolve-conflicts'
+    const phase = remotePending ? 'remote-replacement' : forcePending ? 'queued' : initialPreview ? 'initial-preview' : conflict ? 'resolve-conflicts'
       : status === 'error' ? ['scheduled', 'paused'].includes(failedPhase) ? '' : failedPhase || ''
       : runtime.phase || (runtime.status === 'scheduled' ? 'scheduled' : '');
     const retryWithPause = status === 'error' && !!target.automation?.enabled && automaticReady;
-    const phaseDiagram = githubSyncPhaseDiagram(phase, status, githubSyncEffectiveFailure(target, runtime)?.errorCode)
+    const phaseDiagram = githubSyncPhaseDiagram(phase, presentationStatus, githubSyncEffectiveFailure(target, runtime)?.errorCode)
       + (runtime.service ? `<small class="github-sync-service">PKM service ${esc(runtime.service.version)} · PID ${esc(runtime.service.pid)}</small>` : '');
-    const error = status === 'error' ? githubSyncEffectiveError(target, runtime)
+    const retryAt = target.automation?.enabled && automaticReady
+      && ['error', 'scheduled'].includes(runtime.status) && !repair && !conflict
+      && target.lastFailure?.retryable !== false
+      && Number.isFinite(Date.parse(runtime.nextSyncAt || ''))
+      ? `We will retry automatically after ${new Date(runtime.nextSyncAt).toLocaleString()}. No action is needed while waiting.` : '';
+    const retryMessage = retryAt || (target.automation?.enabled
+      ? 'No automatic retry is scheduled. Review the error before retrying.'
+      : 'Auto Sync is off. No automatic retry is scheduled.');
+    const error = status === 'error' ? `${githubSyncEffectiveError(target, runtime)} ${retryMessage}`
       : githubSyncData.credentialErrors?.[target.id] ? githubSyncFormatError(githubSyncData.credentialErrors[target.id]) : '';
-    const retryAt = target.automation?.enabled && Number.isFinite(Date.parse(runtime.nextSyncAt || ''))
-      ? `Next automatic retry after ${new Date(runtime.nextSyncAt).toLocaleString()}` : '';
-    const next = remotePending ? 'Reviewing / applying Remote replacement · GitHub will not be pushed' : forcePending ? 'Waiting for Git lock' : repair ? 'Waiting for local content repair · Remote has not been fetched' : initialPreview ? 'Remote fetched read-only · review the file tree before applying' : conflict ? 'Choose a candidate for each file, then Apply resolutions & Sync' : status === 'error' ? retryAt || 'Review the error before retrying' : runtime.detail || (!automaticReady ? 'Initial manual sync required before automation can be enabled' : runtime.nextSyncAt ? `Next fetch after ${new Date(runtime.nextSyncAt).toLocaleString()}` : target.automation?.enabled ? 'Scheduled to fetch remote changes' : 'Automatic pull/push is off');
+    const next = remotePending ? 'Reviewing / applying Remote replacement · GitHub will not be pushed' : forcePending ? 'Queued - waiting for sync worker' : repair ? 'Waiting for local content repair · Remote has not been fetched' : initialPreview ? 'Remote fetched read-only · review the file tree before applying' : conflict ? 'Choose a candidate for each file, then Apply resolutions & Sync' : status === 'error' ? retryAt ? 'Waiting for automatic retry' : 'Review the error before retrying' : runtime.detail || (presentationStatus === 'queued' ? 'Queued - waiting for sync worker' : status === 'syncing' ? 'Sync is in progress; see the current phase above' : !automaticReady ? 'Initial manual sync required before automation can be enabled' : runtime.nextSyncAt ? `Next fetch after ${new Date(runtime.nextSyncAt).toLocaleString()}` : target.automation?.enabled ? 'Scheduled to fetch remote changes' : 'Automatic pull/push is off');
     const conflictActions = (repair ? githubSyncContentRepairPanel(target.id, repair) : conflict ? githubSyncConflictPanel(target.id, conflict) : '')
-      + githubSyncPausedItemsPanel(target) + githubSyncActionFeedbackPanel(target.id);
+      + githubSyncPausedItemsPanel(target) + githubSyncActionFeedbackPanel(target.id, presentationStatus);
     const resolutionDiagram = !conflict ? githubSyncResolutionDiagram(target.lastResolutionReport) : '';
     const syncLabel = repair ? 'Revalidate & Sync' : conflict ? 'Recheck with Remote' : forcePending ? 'Sync queued' : retryWithPause ? 'Pause Auto & Retry' : 'Sync with Remote';
     const scheduleLabel = target.automation?.enabled && automaticReady
@@ -775,7 +788,7 @@ function githubSyncOnRuntimeState(data) {
   }
   if (runtime.lastSuccessAt && runtime.lastSuccessAt !== previous?.lastSuccessAt
     && ['scheduled','paused'].includes(runtime.status)) {
-    if (!githubSyncRepairPending.has(data.targetId)) githubSyncActionFeedback.set(data.targetId, { message:'Sync completed successfully.' });
+    if (!githubSyncRepairPending.has(data.targetId)) githubSyncActionFeedback.set(data.targetId, { kind:'sync-result', message:'Last sync completed successfully.' });
     ask('githubSyncState', {}, null, true);
   }
   if (githubSyncForcePending.has(data.targetId) && runtime.lastAttemptAt
@@ -785,7 +798,7 @@ function githubSyncOnRuntimeState(data) {
   }
   if (state.tab === 'githubSync') { githubSyncCaptureDraft(); renderGitHubSyncPane(); }
 }
-function githubSyncOnRunQueued(data) { if (!data?.targetId) return; if (!data.queued) { githubSyncForcePending.delete(data.targetId); githubSyncPendingAfter.delete(data.targetId); } githubSyncActionFeedback.set(data.targetId, { pending:true, message:data.queued ? 'Sync queued. Waiting for the worker…' : 'Sync is already queued or running.' }); if (state.tab === 'githubSync') { githubSyncCaptureDraft(); renderGitHubSyncPane(); } vscode.postMessage({ command:'toast', text:data.queued ? 'GitHub sync queued' : 'GitHub sync is already queued or running' }); }
+function githubSyncOnRunQueued(data) { if (!data?.targetId) return; if (!data.queued) { githubSyncForcePending.delete(data.targetId); githubSyncPendingAfter.delete(data.targetId); } githubSyncActionFeedback.set(data.targetId, { kind:'sync-queue', pending:true, message:data.queued ? 'Sync queued. Waiting for the worker…' : 'Sync is already queued or running.' }); if (state.tab === 'githubSync') { githubSyncCaptureDraft(); renderGitHubSyncPane(); } vscode.postMessage({ command:'toast', text:data.queued ? 'GitHub sync queued' : 'GitHub sync is already queued or running' }); }
 function githubSyncDelete(targetId, button) { const target = githubSyncData.targets.find(item => item.id === targetId); pkModal({ title:'Delete GitHub Target?', message:`${target?.name || targetId}\n\nStops future pull/push operations and removes the local target configuration immediately. Local checkout cleanup continues in the background if Git still holds Windows file handles. The GitHub repository and Knowledge Root content are not deleted. An already-started push may still finish.`, okLabel:'Delete Target', danger:true, onOk:()=>ask('githubSyncDelete',{targetId},button) }); }
 function githubSyncForce(targetId, button) {
   if (githubSyncForcePending.has(targetId) || pendingActionButtons.has('githubSyncRun')) return;
@@ -797,11 +810,12 @@ function githubSyncForce(targetId, button) {
   githubSyncForcePending.add(targetId);
   const card = button?.closest?.('.sub-broker-card');
   const phase = card?.querySelector('.github-sync-phase');
-  if (phase) phase.outerHTML = githubSyncPhaseDiagram('waiting-for-lock', 'syncing');
+  if (phase) phase.outerHTML = githubSyncPhaseDiagram('queued', 'queued');
   card?.querySelector('.github-sync-error')?.remove();
   card?.querySelector('.github-sync-conflict-actions')?.remove();
+  card?.querySelector('.github-sync-action-feedback')?.remove();
   const detail = card?.querySelector('.sub-broker-meta > small:last-of-type');
-  if (detail) detail.textContent = 'Waiting for Git lock';
+  if (detail) detail.textContent = 'Queued - waiting for sync worker';
   ask('githubSyncRun', { targetId, ...(pauseAutomation ? { pauseAutomation:true } : {}) }, button);
 }
 function githubSyncForceUpdate(targetId, button) {

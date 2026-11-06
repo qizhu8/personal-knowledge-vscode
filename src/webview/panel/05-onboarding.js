@@ -13,6 +13,12 @@ const experience = {
 };
 
 let featureTourCatalog = { version: '', modules: [] };
+const deferredExperiences = new Set();
+function deferExperience() {
+  if (experience.automatic) deferredExperiences.add(`${experience.version || featureTourCatalog.version}:${experience.audience}`);
+  experience.pending = null;
+  finishExperience(false);
+}
 
 function featureTourModules(moduleIds) {
   const wanted = new Set(moduleIds || []);
@@ -243,6 +249,7 @@ function showWhatsNew(options = {}) {
 
 function queueInitialExperience(data) {
   if (data?.kind !== 'tour' || !data?.version || !Array.isArray(data.moduleIds)) return;
+  if (deferredExperiences.has(`${data.version}:${data.audience}`)) return;
   experience.pending = data;
   maybeStartPendingExperience();
 }
@@ -267,7 +274,7 @@ function maybeStartPendingExperience() {
 }
 
 document.getElementById('coachmark-close')?.addEventListener('click', () => {
-  finishExperience(experience.automatic);
+  deferExperience();
 });
 document.getElementById('whats-new-button')?.addEventListener('click', () => showWhatsNew());
 document.getElementById('start-tour-button')?.addEventListener('click', () => startOnboardingTour());
@@ -275,7 +282,7 @@ document.addEventListener('keydown', event => {
   if (experienceLayer()?.classList.contains('hidden')) return;
   if (event.key === 'Escape') {
     event.preventDefault();
-    finishExperience(experience.automatic);
+    deferExperience();
     return;
   }
   if (event.key !== 'Tab') return;

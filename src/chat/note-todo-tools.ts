@@ -1,5 +1,5 @@
 import { ApiChatTool } from "./api-chat-client";
-import { noteWorkItemCommand, noteWorkItemNotes, noteWorkItemsRead } from "../knowledge/filestore";
+import { noteWorkItemCommand, noteWorkItemNotes, noteWorkItemsRead, todoBoardCreate } from "../knowledge/filestore";
 import { callTodoApi } from "../knowledge/todo-api";
 import { todoApiDefinitions } from "../knowledge/todo-api-contract";
 
@@ -60,6 +60,25 @@ export function createNoteTodoTools(options: {
       await authorize(true, `Update Note ${identity}\nActor: ${options.actorId}\nDigest: ${args.expectedDigest}\n${JSON.stringify(args.command)}`, signal);
       return JSON.stringify({ actorId: options.actorId, slug: identity,
         ...noteWorkItemCommand(identity, args.expectedDigest, args.command, { id: options.actorId, role: "worker" }) });
+    },
+  }, {
+    name: "todo_board_create",
+    description: "Create an empty standard Todo Board in Notes, never a Markdown checklist. Returns slug, digest and items. Existing documents are never overwritten. Use get_board and named add_userstory/add_workitem APIs to populate it; never write backing JSON or Markdown directly. Creation does not start or accept tasks.",
+    parameters: { type: "object", properties: {
+      title: { type: "string", minLength: 1, maxLength: 120 },
+      category: { type: "string", maxLength: 1024 },
+    }, required: ["title"], additionalProperties: false },
+    execute: async (args, signal) => {
+      if (typeof args.title !== "string" || !args.title.trim() || args.title.length > 120 || /[\u0000-\u001f\u007f]/.test(args.title)) {
+        throw new Error("Provide a Board title from 1 to 120 characters without control characters.");
+      }
+      if (args.category !== undefined && (typeof args.category !== "string" || args.category.length > 1024 || /[\u0000-\u001f\u007f]/.test(args.category))) {
+        throw new Error("Provide a Board category of at most 1024 characters without control characters.");
+      }
+      const title = args.title.trim(), category = String(args.category || "").trim();
+      const identity = category ? `${category}/${title}` : title;
+      await authorize(true, `Create Todo Board ${identity}\nActor: ${options.actorId}`, signal);
+      return JSON.stringify({ slug: identity, ...todoBoardCreate(identity, title, category) });
     },
   }, ...todoApiDefinitions.map(api=>({
     name:api.name, description:api.description, parameters:api.parameters,

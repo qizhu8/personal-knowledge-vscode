@@ -30,6 +30,10 @@ const status = () => ({ ...manifest, phase: fenced ? (inFlight ? "draining" : "d
   acceptingNewCalls: !fenced, inFlight, uncertainCalls: 0 });
 const server = new Server({ name: "pkm-fixture", version: "1" }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => {
+if (process.argv[3] === "halted-discovery") {
+  fs.writeFileSync(process.argv[1] + ".discovery-halted", "true");
+  await new Promise(() => {});
+}
 if (process.argv[3] === "slow-discovery") {
   fs.writeFileSync(process.argv[1] + ".discovery-pages", String(++discoveryPages));
   await new Promise(resolve => setTimeout(resolve, 120));
@@ -144,7 +148,7 @@ function managedFixture(t, options = {}) {
         args: ["-c", pythonService, active.manifestPath, path.resolve(__dirname, "../resources")],
         env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
       } : { command: process.execPath, args: ["-e", service, note, active.manifestPath,
-        options.legacy ? "legacy" : options.identityMismatch ? "wrongbuild" : options.slowQuiesce ? "slow-quiesce" : options.slowDiscovery ? "slow-discovery" : ""] };
+        options.legacy ? "legacy" : options.identityMismatch ? "wrongbuild" : options.slowQuiesce ? "slow-quiesce" : options.slowDiscovery ? "slow-discovery" : options.haltedDiscovery ? "halted-discovery" : ""] };
       const connection = await connectManagedChatMcp({ ...launch, cwd: path.resolve(__dirname, "..") },
         signal, directory, closeOptions);
       connections.push(connection);
@@ -169,6 +173,15 @@ async function waitForFile(filename) {
     await new Promise(resolve => setTimeout(resolve, 10));
   }
 }
+
+test("PKM-FAULT-016: an MCP process that never answers listTools reaches the discovery deadline without invoking a content tool", { timeout:15000 }, async t => {
+  const fixture = managedFixture(t, { haltedDiscovery:true });
+  const started = Date.now();
+  await assert.rejects(fixture.connect(undefined, { discoveryTimeoutMs:1500 }), /discovery deadline exceeded/i);
+  assert(Date.now() - started < 5000);
+  assert.equal(fs.readFileSync(fixture.note + ".discovery-halted", "utf8"), "true");
+  assert.equal(fs.readFileSync(fixture.note, "utf8"), "Original note");
+});
 
 test("managed PKM list/update execute through MCP without native confirmations, retain approvals and reject replay", async t => {
   const fixture = managedFixture(t);
@@ -273,7 +286,7 @@ test("same-version legacy runtime is rejected before any content tool can execut
   assert.equal(fs.readFileSync(fixture.note, "utf8"), "Original note");
 });
 
-test("same-version same-generation runtime with a different actual build is rejected", async t => {
+test("PKM-FAULT-022: same-version same-generation runtime with a different actual build is rejected", async t => {
   const fixture = managedFixture(t, { identityMismatch: true });
   await assert.rejects(fixture.connect(), /differs|incompatible/i);
   assert.equal(fs.readFileSync(fixture.note, "utf8"), "Original note");
@@ -294,7 +307,7 @@ test("compatible generation update keeps the old Chat catalog usable without rec
   assert.equal(fs.readFileSync(fixture.note, "utf8"), "Explicit successor call");
 });
 
-test("incompatible component API still fences the old Chat before sending a write", async t => {
+test("PKM-FAULT-023: incompatible component API still fences the old Chat before sending a write", async t => {
   const fixture = managedFixture(t);
   const old = await fixture.connect();
   fixture.publish({ components:{ ...fixture.active.manifest.components, knowledge:"2.0.0" } });
@@ -326,7 +339,7 @@ test("lifetime cancellation fences local admission and drains an actual FastMCP 
   assert.equal(fs.readFileSync(path.join(fixture.directory, "writes"), "utf8"), "uncertain\n");
 });
 
-test("bounded close timeout leaves uncertain writes alive and action-required, then allows explicit drain retry", async t => {
+test("PKM-FAULT-024: bounded close timeout leaves uncertain writes alive and action-required, then allows explicit drain retry", async t => {
   const fixture = managedFixture(t, { python: true });
   const connection = await fixture.connect(undefined, { drainTimeoutMs: 100 });
   const pending = connection.invoke("mcp_pkm_write", { key: "bounded" }, new AbortController().signal);

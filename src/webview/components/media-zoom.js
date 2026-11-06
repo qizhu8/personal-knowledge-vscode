@@ -29,7 +29,8 @@ globalThis.PkmMediaZoom = (() => {
     toolbar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:8px;text-align:left';
     const viewport = document.createElement('div');
     viewport.className = 'media-zoom-viewport mermaid-viewport';
-    viewport.style.cssText = 'overflow:auto;max-height:75vh;min-width:0';
+    // Keep fitted media from toggling the scrollbar that determines its width.
+    viewport.style.cssText = 'overflow:auto;scrollbar-gutter:stable;max-height:75vh;min-width:0';
     viewport.setAttribute('role', 'region');
     viewport.setAttribute('aria-label', label + '. Use zoom controls or +, -, 0 and F keys. Ctrl or Command plus wheel zooms; drag non-text areas to pan.');
     viewport.tabIndex = 0;
@@ -42,6 +43,7 @@ globalThis.PkmMediaZoom = (() => {
     status.setAttribute('aria-live', 'polite');
     let scale = 1;
     let fitting = true;
+    let fittedWidth;
     let fullscreen;
     let drag;
     let suppressClick = false;
@@ -58,7 +60,8 @@ globalThis.PkmMediaZoom = (() => {
     };
     const fit = () => {
       fitting = true;
-      scale = Math.min(1, Math.max(1, viewport.clientWidth) / naturalWidth);
+      fittedWidth = viewport.clientWidth;
+      scale = Math.min(1, Math.max(1, fittedWidth) / naturalWidth);
       apply();
       viewport.scrollTo(0, 0);
     };
@@ -206,7 +209,7 @@ globalThis.PkmMediaZoom = (() => {
     });
     fit();
     const observer = new ResizeObserver(() => {
-      if (fitting && holder.isConnected) fit();
+      if (fitting && holder.isConnected && viewport.clientWidth !== fittedWidth) fit();
       else updatePan();
     });
     observer.observe(viewport);

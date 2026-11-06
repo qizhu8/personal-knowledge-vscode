@@ -13,6 +13,259 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class ChatUiTests(unittest.TestCase):
+    def test_budget_menu_is_local_and_model_change_is_explicit(self):
+        assets = ROOT / "dist/webview"
+        html = (assets / "api-chat.html").read_text()
+        replacements = {
+            "nonce": "budget-menu", "cspSource": "https://budget.test",
+            "styles": "api-chat.css", "script": "api-chat.js", "icons": "codicon.css",
+            "marked": "marked.umd.js", "purify": "purify.min.js",
+            "katex": "katex.js", "katexStyles": "katex.css", "mermaid": "mermaid.js",
+            "libraryScript": "api-chat-library.js", "retrievalScript": "chat-retrieval-flow.js",
+            "hostHealthScript": "host-health.js", "hostHealthStyles": "host-health.css",
+            "harnessScript": "agent-harness.js", "harnessStyles": "agent-harness.css",
+            "visualizationScript": "chat-visualization.js",
+        }
+        for key, value in replacements.items():
+            html = html.replace("{{" + key + "}}", value)
+        fixture = {
+            "type": "state", "busy": True, "chats": [], "tools": [], "toolGroups": [],
+            "chat": {"id": "budget_fixture", "title": "Budget", "context": [], "messages": [],
+                     "includeHistory": True, "permissionMode": "allow-all", "permissionGrants": []},
+            "settings": {"provider": "vscode", "contextWindow": 8192, "maxOutputTokens": 1024, "activityCreditLimitDefault": 200,
+                         "selectedProfile": {"id": "fixture", "label": "Fixture", "status": "active",
+                                             "contextWindow": 8192, "maxOutputTokens": 1024}},
+        }
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                for width in (1280, 390, 320):
+                    with self.subTest(width=width):
+                        page = browser.new_page(viewport={"width": width, "height": 844})
+                        errors = []
+                        page.on("pageerror", lambda error: errors.append(str(error)))
+                        page.add_init_script("window.__posts=[];window.acquireVsCodeApi=()=>({getState:()=>({}),setState:()=>{},postMessage:value=>window.__posts.push(value)});")
+
+                        def serve(route):
+                            name = Path(urlparse(route.request.url).path).name
+                            if name == "index.html":
+                                route.fulfill(body=html, content_type="text/html")
+                            elif (assets / name).is_file():
+                                route.fulfill(path=str(assets / name))
+                            else:
+                                route.fulfill(status=404, body="Not found")
+
+                        page.route("https://budget.test/**", serve)
+                        page.goto("https://budget.test/index.html")
+                        page.wait_for_load_state("networkidle")
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", fixture)
+                        page.evaluate("window.dispatchEvent(new MessageEvent('message',{data:{type:'showChat'}}))")
+                        page.locator("#agent-config").click()
+                        page.locator('[data-agent-config="model"]').evaluate("""button => {
+                            window.__budgetPosts = window.__posts.length;
+                            button.click();
+                            window.__budgetOpenedSynchronously = !document.getElementById('advanced-budget').hidden;
+                        }""")
+                        self.assertTrue(page.evaluate("window.__budgetOpenedSynchronously"),
+                                        "Budget settings must open synchronously without a model catalog or Host response")
+                        self.assertEqual(page.evaluate("window.__posts.slice(window.__budgetPosts)"), [],
+                                         "Opening a budget editor must not request model discovery or change the model")
+                        expect(page.locator("#advanced-budget")).to_be_visible()
+                        expect(page.locator("#agent-config-panel")).to_be_hidden()
+                        expect(page.locator("#options")).to_have_attribute("aria-expanded", "true")
+                        expect(page.locator("#window-slider")).to_be_focused()
+                        expect(page.locator("#output")).to_have_value("1024")
+                        expect(page.locator("#output")).to_have_attribute("max", "1024")
+                        page.locator("#output").fill("1025")
+                        page.locator("#output").press("Tab")
+                        self.assertEqual(page.evaluate("window.__posts.slice(window.__budgetPosts)"), [],
+                                         "Opening locally must not weaken the existing model output bound")
+                        page.locator("#output").fill("512")
+                        page.locator("#output").press("Tab")
+                        self.assertEqual(page.evaluate("window.__posts.at(-1)"),
+                                         {"type": "budget", "maxOutputTokens": 512})
+                        expect(page.locator("#model-label")).to_have_text("Fixture")
+                        panel = page.locator("#advanced-budget").bounding_box()
+                        self.assertGreaterEqual(panel["x"], 0)
+                        self.assertLessEqual(panel["x"] + panel["width"], width)
+                        self.assertGreaterEqual(panel["y"], 0)
+                        self.assertLessEqual(page.evaluate("document.documentElement.scrollWidth"), width)
+                        page.locator("#budget-model").click()
+                        self.assertEqual(page.evaluate("window.__posts.at(-1)"), {"type": "chooseModel"})
+                        expect(page.locator("#advanced-budget")).to_be_hidden()
+                        expect(page.locator("#model")).to_have_attribute("aria-busy", "true")
+                        page.locator("#model").click()
+                        self.assertEqual(page.evaluate("window.__posts.slice(window.__budgetPosts).filter(message=>message.type==='chooseModel').length"), 1,
+                                         "The budget panel must share the existing in-flight picker guard")
+                        page.evaluate("window.dispatchEvent(new MessageEvent('message',{data:{type:'modelPickerClosed'}}))")
+                        page.locator("#options").click()
+                        expect(page.locator("#advanced-budget")).to_be_visible()
+                        page.keyboard.press("Escape")
+                        expect(page.locator("#options")).to_be_focused()
+                        page.locator("#agent-config").click()
+                        page.locator('[data-agent-config="context"]').click()
+                        self.assertEqual(page.evaluate("window.__posts.at(-1)"),
+                                         {"type": "agentConfig", "value": "context"})
+                        self.assertFalse(page.evaluate("window.__posts.slice(window.__budgetPosts).some(message=>message.type==='send'||message.type==='resetActivityBudget')"))
+                        ids = [f"00000000-0000-4000-8000-{index:012d}" for index in range(1, 5)]
+                        credit_fixture = {**fixture, "library": {"groups": [{"id": "four", "name": "Four Chats"}],
+                            "chats": [{"id": id, "title": "Same name", "groupId": "four", "status": "paused"} for id in ids] + [
+                                {"id": "outside", "title": "Outside", "groupId": "ungroup", "status": "idle"},
+                                {"id": "deleted", "title": "Deleted", "groupId": "four", "status": "idle", "trashedAt": "2026-11-06"}]}}
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", credit_fixture)
+                        page.locator("#back").click()
+                        page.locator('[data-group-id="four"]').get_by_role("button", name="Group actions", exact=True).click()
+                        page.get_by_role("menuitem", name="Credit limit", exact=True).evaluate("""button => {
+                            window.__creditPosts = window.__posts.length; button.click();
+                            window.__creditOpenedSynchronously = document.getElementById('credit-limit-dialog').open;
+                        }""")
+                        self.assertTrue(page.evaluate("window.__creditOpenedSynchronously"))
+                        self.assertEqual(page.evaluate("window.__posts.slice(window.__creditPosts)"), [])
+                        expect(page.locator("#credit-limit-targets li")).to_have_count(4)
+                        self.assertEqual(page.locator("#credit-limit-targets code").all_text_contents(), ids)
+                        expect(page.locator("#credit-limit-default")).to_contain_text("200 credits")
+                        expect(page.locator("#credit-limit-help")).to_contain_text("No task is resumed")
+                        expect(page.locator("#credit-limit-mode")).to_have_value("default")
+                        page.locator("#credit-limit-mode").select_option("custom")
+                        expect(page.locator("#credit-limit-value")).to_have_value("1000")
+                        page.locator("#credit-limit-value").fill("1000.5")
+                        page.locator("#credit-limit-apply").click()
+                        self.assertEqual(page.evaluate("window.__posts.slice(window.__creditPosts)"), [])
+                        page.locator("#credit-limit-value").fill("1000")
+                        page.locator("#credit-limit-apply").click()
+                        request = page.evaluate("window.__posts.at(-1)")
+                        self.assertEqual(request["type"], "activityCredits")
+                        self.assertEqual(request["params"], {"chatIds": ids, "groupId": "four", "limit": 1000})
+                        page.locator("#credit-limit-form").evaluate("form=>form.requestSubmit()")
+                        self.assertEqual(page.evaluate("window.__posts.filter(message=>message.type==='activityCredits').length"), 1)
+                        page.evaluate("window.dispatchEvent(new MessageEvent('message',{data:{type:'activityCreditsSaved',requestId:'stale',saved:[]}}))")
+                        expect(page.locator("#credit-limit-apply")).to_be_disabled()
+                        page.keyboard.press("Escape")
+                        expect(page.locator("#credit-limit-dialog")).to_be_hidden()
+                        page.locator('[data-group-id="four"]').get_by_role("button", name="Group actions", exact=True).click()
+                        page.get_by_role("menuitem", name="Credit limit", exact=True).click()
+                        expect(page.locator("#error")).to_contain_text("awaiting confirmation")
+                        expect(page.locator("#credit-limit-dialog")).to_be_hidden()
+                        self.assertEqual(page.evaluate("window.__posts.filter(message=>message.type==='activityCredits').length"), 1)
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))",
+                                      {"type": "activityCreditsSaved", "requestId": request["requestId"], "saved": ids})
+                        expect(page.locator("#credit-limit-status")).to_contain_text("4")
+                        page.locator('[data-group-id="four"]').get_by_role("button", name="Group actions", exact=True).click()
+                        page.get_by_role("menuitem", name="Credit limit", exact=True).click()
+                        dialog = page.locator("#credit-limit-dialog").bounding_box()
+                        self.assertGreaterEqual(dialog["x"], 0)
+                        self.assertLessEqual(dialog["x"] + dialog["width"], width)
+                        self.assertGreaterEqual(dialog["y"], 0)
+                        page.locator("#credit-limit-mode").select_option("unlimited")
+                        expect(page.locator("#credit-limit-value")).to_be_hidden()
+                        page.locator("#credit-limit-apply").click()
+                        unlimited = page.evaluate("window.__posts.at(-1)")
+                        self.assertEqual(unlimited["params"]["limit"], -1)
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))",
+                                      {"type": "activityCreditsSaved", "requestId": unlimited["requestId"], "error": "Membership changed; nothing saved"})
+                        expect(page.locator("#credit-limit-status")).to_contain_text("Membership changed")
+                        page.locator("#credit-limit-mode").select_option("default")
+                        page.locator("#credit-limit-apply").click()
+                        inherited = page.evaluate("window.__posts.at(-1)")
+                        self.assertIsNone(inherited["params"]["limit"])
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))",
+                                      {"type": "activityCreditsSaved", "requestId": inherited["requestId"], "saved": ids})
+                        page.locator("#credit-limit-cancel").click()
+                        expect(page.locator("#credit-limit-dialog")).to_be_hidden()
+                        self.assertFalse(page.evaluate("window.__posts.slice(window.__creditPosts).some(message=>['send','chooseModel','resetActivityBudget'].includes(message.type))"))
+                        for entry in credit_fixture["library"]["chats"][:4]:
+                            entry["activityCreditLimit"] = 1000
+                        credit_fixture["chat"] = {**fixture["chat"], "id": ids[0], "activityCreditLimit": 1000}
+                        credit_fixture["settings"] = {**fixture["settings"], "activityCreditLimit": 1000}
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", credit_fixture)
+                        page.locator(f'[data-node-chat-id="{ids[1]}"] > .chat-list-row').get_by_role("button", name="Chat actions", exact=True).click()
+                        page.get_by_role("menuitem", name="Credit limit", exact=True).click()
+                        expect(page.locator("#credit-limit-targets li")).to_have_count(1)
+                        expect(page.locator("#credit-limit-targets code")).to_have_text(ids[1])
+                        expect(page.locator("#credit-limit-mode")).to_have_value("custom")
+                        expect(page.locator("#credit-limit-value")).to_have_value("1000")
+                        page.keyboard.press("Escape")
+                        page.evaluate("window.dispatchEvent(new MessageEvent('message',{data:{type:'showChat'}}))")
+                        page.locator("#options").click()
+                        expect(page.locator("#credit-limit-summary")).to_contain_text("1000 credits")
+                        page.locator("#credit-limit-open").click()
+                        expect(page.locator("#credit-limit-targets code")).to_have_text(ids[0])
+                        page.locator("#credit-limit-cancel").click()
+                        chinese = json.loads((ROOT / "resources/locales/zh-hans.json").read_text())["strings"]
+                        english = json.loads((ROOT / "resources/locales/en.json").read_text())["strings"]
+                        credit_fixture["localization"] = {"locale": "zh-hans", "strings": chinese, "english": english}
+                        credit_fixture["chat"]["activityBudgetBypass"] = "session"
+                        page.evaluate("data=>window.dispatchEvent(new MessageEvent('message',{data}))", credit_fixture)
+                        page.locator("#options").click()
+                        page.locator("#credit-limit-open").click()
+                        expect(page.locator("#credit-limit-title")).to_have_text("Credit 额度")
+                        expect(page.locator("#credit-limit-status")).to_contain_text("重新启用")
+                        expect(page.locator("#credit-limit-apply")).to_be_disabled()
+                        page.locator("#credit-limit-cancel").click()
+                        self.assertEqual(page.evaluate("window.__posts.filter(message=>message.type==='activityCredits').length"), 3,
+                                         "Single-Chat inspection, cancellation and bypass warning must not save or replay")
+                        self.assertEqual(errors, [])
+                        page.close()
+            finally:
+                browser.close()
+
+    def test_problem_guidance_and_safe_host_actions(self):
+        assets = ROOT / "dist/webview"
+        html = (assets / "api-chat.html").read_text()
+        replacements = {
+            "nonce": "problem-guidance", "cspSource": "https://guidance.test",
+            "styles": "api-chat.css", "script": "api-chat.js", "icons": "codicon.css",
+            "marked": "marked.umd.js", "purify": "purify.min.js",
+            "katex": "katex.js", "katexStyles": "katex.css", "mermaid": "mermaid.js",
+            "libraryScript": "api-chat-library.js", "retrievalScript": "chat-retrieval-flow.js",
+            "hostHealthScript": "host-health.js", "hostHealthStyles": "host-health.css",
+            "harnessScript": "agent-harness.js", "harnessStyles": "agent-harness.css",
+            "visualizationScript": "chat-visualization.js",
+        }
+        for key, value in replacements.items():
+            html = html.replace("{{" + key + "}}", value)
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                for width in (1280, 390, 320):
+                    with self.subTest(width=width):
+                        page = browser.new_page(viewport={"width": width, "height": 844})
+                        errors = []
+                        page.on("pageerror", lambda error: errors.append(str(error)))
+                        page.add_init_script("window.__posts=[];window.acquireVsCodeApi=()=>({getState:()=>({}),setState:()=>{},postMessage:value=>window.__posts.push(value)});")
+                        def route(request):
+                            name = Path(urlparse(request.request.url).path).name
+                            if name == "index.html":
+                                request.fulfill(body=html, content_type="text/html")
+                            elif (assets / name).is_file():
+                                request.fulfill(path=str(assets / name))
+                            else:
+                                request.fulfill(status=404, body="Not found")
+                        page.route("https://guidance.test/**", route)
+                        page.goto("https://guidance.test/index.html")
+                        page.wait_for_load_state("networkidle")
+                        page.evaluate("window.dispatchEvent(new MessageEvent('message',{data:{type:'error',message:'Request failed <img src=x>'}}))")
+                        expect(page.locator("#error")).to_contain_text("Earlier actions may already have occurred")
+                        expect(page.locator("#error img")).to_have_count(0)
+                        page.locator("#error").get_by_role("button", name="Open diagnostic log", exact=True).click()
+                        self.assertEqual(page.evaluate("window.__posts.at(-1)"), {"type": "showLogs"})
+                        page.locator("#error").get_by_role("button", name="View troubleshooting steps", exact=True).click()
+                        self.assertEqual(page.evaluate("window.__posts.at(-1)"), {"type": "openHelp", "value": "agents"})
+                        page.locator("#prompt").evaluate("node=>{node.value='Retained draft'}")
+                        page.evaluate("window.dispatchEvent(new ErrorEvent('error',{message:'Asset failure'}))")
+                        expect(page.get_by_role("button", name="Reload interface", exact=True)).to_be_visible()
+                        page.locator("#pkm-host-warning").get_by_role("button", name="Open diagnostic log", exact=True).click()
+                        self.assertEqual(page.evaluate("window.__posts.at(-1).type"), "showLogs")
+                        page.locator("#error").get_by_role("button", name="View troubleshooting steps", exact=True).click()
+                        self.assertEqual(page.evaluate("window.__posts.at(-1).type"), "openHelp")
+                        expect(page.locator("#prompt")).to_have_value("Retained draft")
+                        self.assertFalse(page.evaluate("window.__posts.some(message=>message.type==='send')"))
+                        self.assertLessEqual(page.evaluate("document.documentElement.scrollWidth"), width)
+                        self.assertEqual(errors, [])
+                        page.close()
+            finally:
+                browser.close()
+
     def test_panel_host_connection_warning(self):
         assets = ROOT / 'dist' / 'webview'
         html = (assets / 'panel.html').read_text(encoding='utf-8')

@@ -2,6 +2,11 @@
 
 ## Document types and authority
 
+For the definition of idea/Story/task/method/Run/evidence relations and the
+boundary between existing links and proposed typed adapters, see the
+[idea-to-action contract](./design/idea-to-action-traceability.md).
+That design does not enable new runtime APIs or change task acceptance authority.
+
 Creating a Note offers **Markdown** or **Todo Board**. Markdown stays free-form;
 checkboxes are not managed tasks. A Todo Board is a separate document type in
 the Notes tree, with its own Table / Story Board / Timeline UI and no Markdown
@@ -19,11 +24,42 @@ folder moves, Trash and restore. Explicit JSON export/import includes Board item
 and audit records, but excludes external worker grants.
 
 Existing fenced Markdown Work Items remain **legacy** and readable/editable with
-their previous lifecycle. **Convert to Todo Board** previews the Story/task counts
-and asks for explicit confirmation; application rechecks the full source digest.
-It preserves IDs, parent relationships, states, evidence and recorded history,
-retaining the original Markdown as historical source only. No automatic migration
-or inferred completion occurs.
+their previous lifecycle. The low-level `todoBoardConversionPreview` /
+`todoBoardConvert` migration API still supports explicit, digest-checked migration
+of these blocks, preserving IDs, relations, states, evidence, history and original
+Markdown. It is not the ordinary Note toolbar's conversion flow.
+
+## Agent-assisted Markdown conversion
+
+Ordinary Notes offer **Convert to Todo Board**, including free-form documents
+created by Agents without structured Work Item blocks. The button opens two choices:
+
+- **Copy conversion prompt** copies a source-specific prompt for the user to paste
+  into any Agent chat with access to the same PKM Knowledge Root. This starts no
+  model and performs no conversion.
+- **Convert with PKM Chat** opens a picker of existing non-Trash PKM Chats plus
+  **Create a new Chat** (available even when no Chats exist). After cost/execution
+  confirmation, the selected Chat is opened and receives the same prompt using
+  its model and normal tool approvals. Existing history and settings are retained;
+  a new Chat remains available as a conversion audit trail. Busy Chats reject the
+  request instead of being interrupted or silently replaced. Cancellation sends
+  nothing. Errors are shown explicitly; requests are not automatically retried.
+
+The prompt asks the Agent to read the full current source, preserve the original
+Markdown, and create a separate standard Board through `todo_board_create` and
+the named Story/task APIs. It requires complete contracts, source links,
+draft Stories and unassigned Planning tasks. Checkboxes do not become verified
+completion, acceptance, fabricated audit or automatic execution. Missing tools,
+ambiguous requirements, duplicates and partial failures must be reported.
+The Agent must read back the imported items and report their Board URL and counts;
+dispatching a Chat request or returning a prose plan is not proof of conversion.
+The UI does not itself parse or migrate the Markdown, delete the source, or bypass
+tool permissions. The entry is unavailable on an existing Todo Board.
+PKM Chat includes a native `todo_board_create` tool, subject to the same Work Item
+write approvals as the named Story/task tools. Creation is not available in
+read-only Plan mode and refuses existing paths; an external MCP connection is not
+required for this native creation path. Existing Chat tool selections remain
+unchanged; if a required tool is disabled, enable it explicitly.
 
 This is an application-level accidental-edit safeguard, not OS access control:
 someone with filesystem write access can still modify backing JSON. Reviewed
@@ -59,6 +95,25 @@ Required: `id`, `title`, `goal`, `scope`, nonempty string-array `acceptance`,
 
 Optional:
 
+- `description`: plain text, 1-16000 characters; rendered as escaped text, not
+  executable HTML. Rich project/method records remain linked documents.
+- `icon`: one of `tasklist`, `bug`, `beaker`, `eye`, `checklist`, `lightbulb`.
+  Decorative only; it changes no task type, lifecycle or permissions.
+- `collaboratorIds`: at most 20 unique namespaced stable actor identities,
+  distinct from `ownerId`. Display names are not identities. This records
+  participation, not ownership, reviewer delegation, resource access or a second
+  execution slot. Remove a collaborator explicitly before assigning that same
+  identity as execution owner. Restrictive workers cannot assign collaborators
+  on creation or change them afterward; users and authorized Board management
+  APIs manage this contract.
+- `monitoring`: optional `{until?, endCondition?}`. Declaring it requires at
+  least one boundary: `until` is a valid ISO UTC timestamp with `Z`;
+  `endCondition` is nonempty plain text, at most 8000 characters. Unknown keys
+  are rejected. An ordinary task without this field is unchanged. The system
+  never guesses monitoring intent from a title or scope. The deadline is not
+  planned scheduling and may describe a historical observation window.
+  Expiry does not claim, stop, complete or accept anything. This contract does
+  not install a scheduler, poll a model or prove that monitoring ran.
 - `kind`: `Task` (also the default when absent) or `UserStory`. Stories use the
   same goal/scope/acceptance/evidence contract and explicit lifecycle, not another
   database. `storyStatus`: `draft` or `confirmed` describes a Story definition,
@@ -82,9 +137,20 @@ Optional:
 - `links`: nonempty string references to Recipe/Action/Chat/Memory/Snapshot or
   other evidence. References do not execute, resolve or grant permissions.
 - `verification`: records `{layer, status, evidence, reason?}`. Layers: `unit`,
-  `functional`, `e2e`. Statuses: `passed`, `failed`, `not-run`, `not-applicable`.
-  Passed/failed reports require evidence; not-applicable requires a reason.
-  These are reported results, not independently verified test execution.
+  `functional`, `e2e`. Statuses: `passed`, `failed`, `blocked`, `not-run`, `not-applicable`.
+  Passed/failed reports require evidence; not-applicable requires a nonblank reason.
+  These are reported results, not independently verified test execution. Verification
+  `blocked` is distinct from the Work Item state `Blocked` and work outcome; it does
+  not mean executed, passed or accepted. Its reason remains optional and evidence
+  may be empty. The shared API schema and editor support retaining this status.
+  Canonical writes/readback preserve supplied reasons and evidence. Reopen retains
+  existing reports without making them fresh validation; replacing reports through
+  lifecycle commands retains their previous values in history changes. Records have
+  no attempt ID or execution attestation, so retained evidence cannot establish a
+  current-attempt pass. Missing/empty verification never defaults to passed, and
+  build/install/mock results alone do not prove functional or installed E2E behavior.
+  Invalid layers/statuses or not-applicable reports without a reason reject the
+  entire write. Data-contract regression coverage is not acceptance of these layers.
 - `blockedReason`: required for Blocked.
 - `outcome`: `Success`, `Failed`, `Unsure`; required for Done and forbidden otherwise.
   Done also requires evidence.
@@ -167,7 +233,254 @@ claims with the same digest have exactly one winner. A stale digest reports
 System Notes remain read-only for updates. Existing Note resource/Trash/move
 lifecycle is reused.
 
+## Atomic work contract
+
+### Identity, lifecycle and attempts
+
+The durable task identity is `(source knowledgeId, local Work Item id)`, with a
+slug hint and current source digest for resolution/CAS. Legacy sources without
+a stable knowledge identity require the exact digest and current path. A title,
+icon, Chat name or list position is never an identity. Rename does not create a
+new task. Duplicate/missing sources are explicit errors, not title-based matches.
+
+| State | Meaning | Outcome |
+|---|---|---|
+| Planning | Defined, not reported actively executing | Absent |
+| WIP | Owner reports active work; not a heartbeat or compute counter | Absent |
+| Blocked | Reported obstacle with a reason; no implicit approval request | Absent |
+| OnHold | Explicit suspension with a reason; ownership retained | Absent |
+| Done | An explicit submitted result with evidence | Success, Failed or Unsure |
+
+No conclusion yet means a nonterminal state with no outcome. `Unsure` means an
+explicitly submitted inconclusive finding, not silent success or automatic
+retry. `Failed` can be accepted as an accurately reported finding; acceptance
+does not rewrite it into Success. Only explicit Reopen clears current outcome
+and acceptance, returns to Planning and preserves ownership, evidence and audit.
+Reopen a Done parent Story first. A native Chat's managed Task has separate
+completion authority; reporting Work Item Done never completes that Task.
+
+The UI's **Recorded attempts** partitions immutable lifecycle audit at explicit
+`reopen` events, in audit order (even if timestamps coincide). The initial audit
+segment is attempt 1; each Reopen starts the next. The conceptual reference is
+the durable task identity plus this reopen ordinal. Repeated claims, tools,
+model requests, owner handoffs or comments do not manufacture new attempts.
+Each segment exposes its actors, reasons and recorded before/after changes,
+including old outcome, evidence, verification and acceptance when audited.
+Old acceptance remains historical, not valid for a reopened attempt. Evidence
+is cumulative; its presence alone does not establish that it was produced by
+the current attempt. Legacy/manual records without such audit remain unknown.
+These segments are not executor run IDs, measured durations or a new attempt
+database. Actual Recipe/Action/Chat attempts require explicit versioned links.
+
+### Responsibility and authority
+
+| Surface / role | Contracts, priority, allocation | Execution and result | Acceptance |
+|---|---|---|---|
+| Explicit user UI | Can revise contract, assignment and reviewer delegation | Can record observed state/result; cannot imply a model ran | Explicit accept/reopen with reason |
+| Authorized named Board APIs | Can manage contracts/allocation through existing approval boundary; reviewer delegation remains user-only | Owner submits; atomic claim and task-focus guards remain | Only a previously user-delegated identity |
+| Restrictive worker compatibility tools | Creates unowned Planning work; cannot change protected contracts/allocation | Claims unowned/self-owned work, updates own evidence, holds/releases/submits own task | Only if separately delegated by user |
+| Collaborator | Participation metadata only | Can record discussion through existing authorized comment API, not submit for another owner | No additional acceptance power |
+| A Chat called “lead” | The name grants nothing; use its actual authorized API role | No bypass of ownership or focus | No implied reviewer or managed-Task authority |
+
+Priority is a documented user/authorized-manager decision in the task context
+and audit comments, not inferred from Board order, a new Idea, urgency wording
+or a lead's display name. No numeric priority field, automatic preemption or
+allocation scheduler is introduced here. Management changes through named APIs
+require an explicit reason and current digest. Compatibility user edits retain
+their established behavior; integrations should supply reasons for contract
+revisions so the record is reviewable.
+
+Claims serialize under the shared mutation lock and source digest: exactly one
+competing write wins; the loser reloads and reconciles, never blindly retries.
+At most one execution `ownerId` exists. A helper does not become an owner
+implicitly. Named Board starts also check unfinished dependencies; dedicated
+Board focus permits at most one WIP task per stable actor across Boards.
+Legacy Markdown retains its older dependency/start behavior; do not treat it
+as certified equivalent to the dedicated Board management API.
+
+### Shared resources and explicit handoff
+
+A Work Item claim protects its **record**, not arbitrary files, terminals,
+external services or a developer's uncommitted changes. Before shared-resource
+work, record in `scope` / linked project context:
+
+1. Exact resource identities/paths and permitted mutation boundary.
+2. Current digest/revision/environment and which actor may write each resource.
+3. Independent collaborator work versus mutually exclusive operations.
+4. Verification rules, evidence locations and escalation/reconciliation owner.
+
+Use the resource's actual authority (e.g. Note/Board digest-CAS, reviewed
+knowledge-file SHA, Project store version or executor proposal digest). If its
+version changes, stop the conflicting write, reread and reconcile. Never
+overwrite another actor's changes, lower criteria, blindly replay uncertain
+side effects or claim that a task assignment acquired a filesystem lock. For
+resources with no concurrency primitive, coordinate a single writer explicitly;
+this feature supplies no generalized resource reservation or distributed lock.
+
+For assistance or handoff, first append an explicit comment containing:
+requesting/receiving stable identities, permitted scope/resources, last confirmed
+result with source versions, missing or uncertain effects, current obstacle,
+resume point, next action, verification needed and return/decision conditions.
+Requesting help does not change owner, group, permissions or acceptance.
+The current owner then explicitly holds (retain responsibility) or releases
+(clear owner and return to Planning), or an authorized manager explicitly
+reassigns with a reason. The receiver reads current contract/evidence/digests
+and explicitly claims before executing. After reassignment the old owner cannot
+submit a late result. Completion of a comment or handoff is not acceptance.
+Network/agent disappearance is not authorization to replay effects or silently
+take ownership; cross-group policy and automated recovery are separate work.
+
+### Tests, monitoring and result decisions
+
+Before execution, record applicable unit/functional/E2E criteria, exact target
+environment and evidence expectations in acceptance/scope and related records.
+For delegated review, the user records the identity in `reviewerIds` and the
+permitted review scope. Contract widening, ambiguous scope, new permissions or
+unsupported environments go back to the user rather than being self-approved
+by a lead. Delegation applies only to this Work Item result, not an external
+deployment, broader knowledge change or managed Task completion.
+
+Monitoring workers must execute within the declared window/end condition and
+explicitly submit observations, limitations and an outcome. A time boundary
+only defines when to evaluate; it is not evidence that an observation happened.
+If the boundary cannot be evaluated, report the actual obstacle or submit an
+evidenced Unsure finding, not an invented successful duration. Changing/removing
+the boundary is a management contract change; a restrictive worker cannot make
+its own task endless. The UI, native named APIs and MCP enforce the same field
+validation. Authoritative named updates clear optional fields only through
+explicit `clear_fields`; clearing `monitoring` returns to an ordinary task.
+
+`Done` is the submitter's report; unit/functional/E2E results, independent audit
+and acceptance are separate statements. Preserve failed, blocked, not-run and
+not-applicable reports (the last requires a reason), and link actual output
+versions. Reading, a successful tool call, a plan, a screenshot or a build alone
+cannot approve changed work. Acceptance is bound by task/source digest and
+explicit decision audit; stale replies cannot approve a reopened or edited
+record. “Needs rework” means explicit Reopen; “needs more verification” remains
+unaccepted with the missing checks recorded, not silently converted to Success.
+
+Validation uses `tests/test-note-work-item-lifecycle.js`, `tests/test-todo-api.js`
+and `tests/test-note-tracking-e2e.js` after building. The E2E uses two real stdio
+MCP processes with distinct Board-scoped actor tokens, native worker permission
+checks, authenticated HTTP/Chromium contract editing, independent user review,
+handoff and restart readback. Generic file-resource exclusivity and automatic
+monitor execution are **not implemented or claimed**. Installed-window and
+live-provider certification remain separate.
+
+## Proposed user-decision record (unimplemented; approval required)
+
+This is a contract proposal only: no decision schema, commands, Board/UI/API
+support or policy is implemented or approved. A user issue is not a Work Item
+execution state, a Done acceptance, a meeting topic, or a third task store. If
+approved, attach its record to the existing stable Work Item identity
+`(source knowledgeId, local Work Item id)` and persist it through that source's
+existing authority: the Board sidecar or the legacy Markdown block. Preserve
+legacy items without inferring a decision.
+
+**Proposed record fields:** stable decision ID and revision; lifecycle status
+`pending`, `discussing` or `closed`; concise decision needed and reason/impact;
+candidate options with linked evidence; participants; references to related
+Work Item objectives, acceptance criteria and artifacts; optional user-supplied
+review/defer date; and an audit of explicit events. Record the request, work and
+evidence versions each decision/reply concerns. Keep the decision discussion
+separate from execution permission: recording, reading, acknowledging or
+closing a discussion does not itself authorize a worker/API to perform an
+operation or resume suspended work.
+
+| Explicit event | Proposed effect |
+|---|---|
+| Create | Create an open `pending` issue with its version-bound context. |
+| Begin discussion | `pending` becomes `discussing`; preserve the issue and its context. |
+| Read / acknowledge | Audit only; status and authorization are unchanged. Repeated reads are harmless. |
+| Defer | Record who deferred, when, reason and any explicitly supplied replacement date; remain open (`pending` or `discussing`). No inferred expiry or automatic close. |
+| Return to pending | Explicit event when discussion pauses without resolution; retain prior discussion and dates in history. |
+| Resolve | Explicit, version-bound user decision closes this issue with its outcome and evidence. A changed request/work/evidence version makes an old reply stale and unusable as approval. |
+
+Dates are optional and never generated to make an item visible or actionable.
+An undated open issue remains discoverable across day changes. A defer or date
+passing does not close it, approve work, or silently change its state. Until date
+meaning and timezone rules are approved, do not interpret a date as a deadline,
+expiry instant or permission boundary. Meeting completion/adjournment, task
+transitions, Done acceptance and day rollover are not decision events.
+
+If approved, the existing named Board API/command path should validate explicit
+actor authority, source digest/CAS, decision revision and version bindings in
+the same atomic write as the Work Item source; it must not use the low-level
+upsert escape hatch. The Board UI should link the record to its Work Item,
+show all open issues including those without dates, expose explicit discuss /
+defer / resolve actions only to authorized actors, and render reads separately
+from state changes. Legacy Markdown and Board sidecar remain the respective
+sources of truth; no disconnected runtime index is proposed.
+
+**Acceptance examples for a future implementation:** (1) an undated pending
+issue is still listed after multiple days without a generated date; (2) an
+explicit defer remains open and retains its prior history; (3) repeated reads
+or acknowledgements do not resolve it; (4) duplicate resolution is rejected or
+idempotently reported without duplicate effects; (5) a reply bound to changed
+request/work/evidence is rejected as stale and cannot authorize execution.
+
+**Open approval questions (not settled):** which existing user/worker/reviewer
+roles may create, edit, defer or resolve; what the optional date means and its
+date-only/timezone semantics; and the immutable decision ID/revision model and
+exact request/work/evidence version binding, and whether an issue may exist
+without a Work Item reference and which existing source would own it.
+Conservative recommendations,
+subject to approval: only the existing user-authorized path resolves or defers
+user decisions (no implied worker, Board-agent or “lead” authority); use an
+explicit user-supplied date with no assumed timezone or expiry; and bind each
+reply to an immutable decision revision plus the exact relevant request, work
+and evidence versions. These recommendations grant no runtime permission.
+
 ## Note and Project UI
+
+Project **Overview** and **Gantt** share **Load / refresh progress**. This is an
+on-demand projection of explicit Project assignments, with local parent Stories
+included as context even when their Project is unset. It does not create Gantt
+tasks or a second task store. Responsibility, Story, timeline and performance
+sections start collapsed. Submitted, reported Success and accepted counts are
+independent; Blocked is not automatically a user request. The existing Cockpit
+review inbox still owns execution approvals.
+
+The projection reads under the shared Markdown mutation lock, returns its read
+time and source digests, and refuses truncated or unreadable discovery rather
+than displaying a misleadingly complete summary (1000 source Notes / 5000
+selected records maximum). Discovery may inspect the entire Note collection;
+it never runs on automatic Project refresh. This is not a filesystem-wide
+transaction against editors or tools that bypass PKM locking.
+
+Timeline bars show **recorded state**, not measured continuous execution.
+Open intervals end at the displayed read time; no heartbeat, duration, remaining
+time or success percentage is invented. Last state timestamps, missing audit and
+state/audit mismatches are explicit. No arbitrary age threshold implies activity
+or inactivity. A changed source digest warns on inspection; reload before
+comparing Project counts with a newer record.
+
+Extension inspection pins `knowledgeId` plus the Note-local Work Item ID. It
+follows source moves, rejects missing/duplicate/trashed identities and never
+substitutes a same-title task. Unversioned legacy sources require the original
+digest; changed or moved sources must be reloaded. Dependencies resolve only
+inside that exact source, including dependencies outside the selected Project.
+Inspection is read-only and does not replace an open Work Item editor or its
+unsaved draft. Public/private browser Boards retain their existing boundaries;
+the Agent record inspector is an Extension surface, not a new browser endpoint.
+
+**View Agent Todo / Memory / Snapshot / execution** resolves only a recorded
+`chat:<id>` owner in this Knowledge Root. Other identities and unavailable Chats
+are explicit unknowns. The existing scoped, read-only Harness reader provides
+current reports, experience context and attempt/validation evidence; these are
+the Agent's records, not proof it executed this particular Work Item. Task links
+and evidence remain separate. Memory is not hidden reasoning; a plan is not
+execution. Historical Snapshots must match the owning Chat and can be viewed
+without restore/recovery. Inspection does not call a model or change acceptance.
+Agent attempt usage retains its original source/measurement semantics; without a
+Project workload, measurement window and baseline, Project performance is
+**unmeasured**, not zero, a passing budget or an optimization claim.
+
+Regression: `node --test tests/test-work-item-progress.js tests/test-note-todo-host.js
+tests/test-note-tracking-e2e.js` after building. The E2E uses persisted isolated
+Projects, real stdio MCP/Chat tools, shipped Cockpit/Gantt in Chromium, real scoped
+Memory storage and encrypted Snapshot reads. VS Code message/command transport
+is adapted in-process; this is not installed-window or live-model certification.
 
 Markdown Notes open in **Markdown** by default; dedicated Boards open in **Board**.
 Explicit **Todo Table**, **Board** and
@@ -179,6 +492,9 @@ scope and acceptance criteria), owner label and stable owner ID, existing
 `projectId`, delegated `reviewerIds`, dependencies, paired planned dates,
 evidence and unit/functional/e2e verification reports. Reporting **Done** remains
 separate from **Accept**; **Reopen** requires an explicit reason.
+Done Work Item dialogs and Story overviews also expose **Accept** / **Reopen**,
+so evidence can be reviewed and the decision made without closing the details.
+These decisions apply to the current persisted record, not unsaved editor changes.
 
 After a digest/CAS conflict, use explicit **Reload** to obtain the current
 persisted record for comparison. Reload retains the local draft; reconcile it
@@ -190,6 +506,10 @@ recorded state-history intervals.
 
 **Board** is a User Story taskboard: each Story has a left-hand parent card and
 one swimlane row, with its child cards in Planning / WIP / Blocked / On hold / Done columns.
+Story rows start collapsed for a compact overview; expand a row or use **Expand all**
+to reveal the unchanged cards. Explicit expansion choices are retained per Note and
+Story for the current page session, including reloads and filter changes. Unassigned
+Work Items remain expanded by default.
 Story and task cards omit the inline contract/evidence/history section; double-click a
 Work Item title to open its details, including in the read-only browser view.
 Opening a User Story shows its title, problem/user value (goal), scope and
@@ -436,6 +756,7 @@ After the extension build:
 ```sh
 node --test tests/test-note-work-items.js tests/test-note-work-item-lifecycle.js
 node --test tests/test-todo-board.js tests/test-todo-board-browser.js
+node --test tests/test-note-tracking-e2e.js
 node tests/test-pkm-skill-mcp.js
 ```
 
@@ -450,3 +771,15 @@ Board tests additionally cover immutable task authority under descriptor edits,
 explicit conversion, empty discovery, atomic cross-process CAS, lifecycle/
 export/import preservation, external token scoping/rotation, modal dimensions,
 identity assignment, guarded drag/drop and read-only browser dialogs.
+
+The tracking E2E test creates actual persisted Projects in isolated knowledge
+roots. It runs two independent FastMCP stdio processes through the Python/Node
+bridge, native Chat tool execution, HTTP-served Chromium views, explicit user
+accept/reopen in authenticated Board dialogs, stale-window draft preservation,
+MCP restart, hash-reviewed Trash/asset restore, and two-machine synchronization
+against a local bare Git remote. Divergent task histories require an explicit
+conflict instead of silent overwrite; rejected Trash requests expose the original
+reason through MCP. The package gate's `note-todo` group includes this test.
+This is not a run against an existing business Project, a live model, an external
+GitHub account, or an installed VS Code window; those environments require their
+own verification and must not be inferred from this result.

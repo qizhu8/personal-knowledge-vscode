@@ -6,14 +6,17 @@ const path = require("node:path");
 const http = require("node:http");
 const Module = require("node:module");
 const { randomUUID, createHash } = require("node:crypto");
+const { spawn } = require("node:child_process");
 const { WorkerTreeStore, workerLimits, workerIsDescendant } = require("../dist/chat/worker-tree");
+const { workGoalInputs, rootWorkCriterion } = require("../dist/chat/chat-work-goal");
 const fixtures = require("./fixtures/chat-context");
 const originalLoad = Module._load;
 let maximum = 10;
+let capabilityProfile = "legacy";
 const host = {
   env: { language: "en" },
   window: { showInformationMessage: async () => undefined, showWarningMessage: async () => undefined, showErrorMessage: async () => undefined },
-  workspace: { isTrusted: true, workspaceFolders: [], getConfiguration: () => ({ get: (key, fallback) => key === "apiChatMaximumWorkers" ? maximum : fallback }) },
+  workspace: { isTrusted: true, workspaceFolders: [], getConfiguration: () => ({ get: (key, fallback) => key === "apiChatMaximumWorkers" ? maximum : key === "apiChatCapabilityProfile" ? capabilityProfile : fallback }) },
   lm: { tools: [] },
 };
 let ApiChatView;
@@ -78,9 +81,37 @@ async function harness(t, respond) {
     await new Promise(resolve => server.close(resolve));
     fs.rmSync(directory, { recursive: true, force: true });
     maximum = 10;
+    capabilityProfile = "legacy";
   });
-  return { provider, root, requests, approvals, errors, privateDirectory };
+  return { provider, root, requests, approvals, errors, privateDirectory, directory };
 }
+
+test("group-path Chat discovery filters before pagination and never dispatches work", async t => {
+  const {provider, requests} = await harness(t, (_payload, res) => answer(res, "No model expected"));
+  const store = provider.store;
+  const groupId = store.library.createGroup("Lead candidates");
+  const url = `pkm://chat-groups/${groupId}`;
+  const members = Array.from({length:3}, () => {
+    const chat = fixtures.conversation();
+    store.save(chat); store.library.move(chat.id, groupId); return chat.id;
+  });
+  store.trashChat(members[2]);
+  provider.openStore = () => store;
+  const first = await provider.agentControl("list", {groupId:url, limit:1});
+  assert.equal(first.total, 2);
+  assert.equal(first.chats.length, 1);
+  assert.equal(first.nextOffset, 1);
+  assert.equal(first.group.groupUrl, url);
+  const second = await provider.agentControl("list", {groupId:url, offset:first.nextOffset, limit:1});
+  assert.equal(second.nextOffset, null);
+  assert.deepEqual(new Set([...first.chats, ...second.chats].map(chat => chat.id)), new Set(members.slice(0, 2)));
+  assert(first.chats.every(chat => chat.groupId === groupId && chat.chatUrl.startsWith("pkm://chats/")));
+  await assert.rejects(provider.agentControl("list", {groupId:url + "/bad"}), /Choose/);
+  await assert.rejects(provider.agentControl("list", {groupId:url, offset:-1}), /offset/);
+  store.library.deleteGroup(groupId);
+  await assert.rejects(provider.agentControl("list", {groupId:url}), /existing Chat group/);
+  assert.equal(requests.length, 0);
+});
 
 test("worker result refresh selects the resumed attempt, clears old payload while running, and preserves earlier assignments", async t => {
   const { provider, root } = await harness(t, (_payload, res) => answer(res, "No model expected"));
@@ -316,6 +347,325 @@ test("tree capacity: recursive reservations share a persistent quota and resolve
   const reused = store.reserve(id, root, Array(10).fill("Reused"), workerLimits(3, 10));
   assert.equal(reused.length, 10, "Previously approved capacity requires no new approval");
   assert.equal(store.count(id), 10);
+});
+
+test("tree ownership persists, contains recursive scopes, and rejects other active branches without mutation", t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-tree-scopes-"));
+  t.after(() => fs.rmSync(directory, { recursive:true, force:true }));
+  const store = new WorkerTreeStore(directory), root = randomUUID(), id = store.create(root);
+  const limits = workerLimits(10, 10);
+  const [a, b] = store.reserve(id, root, ["A", "B"], limits, undefined, undefined,
+    [{ writeScope:["src/a"], resources:["build-a"] }, { writeScope:["src/b"], resources:["build-b"] }]);
+  const restored = new WorkerTreeStore(directory);
+  assert.deepEqual(restored.members(id).map(slot => ({ writeScope:slot.writeScope, resources:slot.resources })),
+    [{ writeScope:["src/a"], resources:["build-a"] }, { writeScope:["src/b"], resources:["build-b"] }]);
+  const [child] = restored.reserve(id, a.chatId, ["Child"], limits, undefined, undefined,
+    [{ writeScope:["src/a/child"], resources:[] }]);
+  const before = fs.readFileSync(path.join(directory, `${id}.json`), "utf8");
+  assert.throws(() => store.reserve(id, a.chatId, ["Collision"], limits, undefined, undefined,
+    [{ writeScope:["src/a/child/file.ts"] }]), /overlap/);
+  assert.throws(() => store.reserve(id, a.chatId, ["Escape"], limits, undefined, undefined,
+    [{ writeScope:["src/b/file.ts"] }]), /ancestor/);
+  assert.throws(() => store.reserve(id, child.chatId, ["Grandparent escape"], limits, undefined, undefined,
+    [{ writeScope:["src/a/elsewhere.ts"] }]), /ancestor/);
+  assert.throws(() => store.reserve(id, a.chatId, ["Resource escape"], limits, undefined, undefined,
+    [{ resources:["build-b"] }]), /ancestor/);
+  assert.throws(() => store.reserve(id, root, ["Missing scope"], limits, undefined, undefined, []), /one scope/);
+  assert.throws(() => store.reserve(id, root, ["Invalid scope"], limits, undefined, undefined, [null]), /scope object/);
+  assert.equal(fs.readFileSync(path.join(directory, `${id}.json`), "utf8"), before, "Rejected reservations cannot change ownership or quota");
+  store.release(id, child.receiptId);
+  store.reserve(id, a.chatId, ["Reused child range"], limits, undefined, undefined, [{ writeScope:["src/a/child"] }]);
+  store.release(id, b.receiptId);
+  store.reserve(id, root, ["Reused B range"], limits, undefined, undefined, [{ writeScope:["src/b"], resources:["build-b"] }]);
+});
+
+test("unscoped legacy managers cannot collide with scoped workers in another branch; empty scopes remain read-only declarations", t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-tree-legacy-scopes-"));
+  t.after(() => fs.rmSync(directory, { recursive:true, force:true }));
+  const store = new WorkerTreeStore(directory), root = randomUUID(), id = store.create(root), limits = workerLimits(10, 10);
+  const [a, b, readOnly] = store.reserve(id, root, ["Legacy A", "Legacy B", "Read only"], limits,
+    undefined, undefined, [{}, {}, { writeScope:[], resources:[] }]);
+  const [child] = store.reserve(id, a.chatId, ["Own shared file"], limits, undefined, undefined,
+    [{ writeScope:["src/shared.ts"], resources:["build-output"] }]);
+  assert.throws(() => store.reserve(id, b.chatId, ["File conflict"], limits, undefined, undefined,
+    [{ writeScope:["src/shared.ts"] }]), /overlap/);
+  assert.throws(() => store.reserve(id, b.chatId, ["Directory conflict"], limits, undefined, undefined,
+    [{ writeScope:["src"] }]), /overlap/);
+  assert.throws(() => store.reserve(id, b.chatId, ["Resource conflict"], limits, undefined, undefined,
+    [{ resources:["build-output"] }]), /overlap/);
+  assert.throws(() => store.reserve(id, readOnly.chatId, ["Write from read-only"], limits, undefined, undefined,
+    [{ writeScope:["tests/a.js"] }]), /ancestor/);
+  store.reserve(id, readOnly.chatId, ["Read-only child"], limits, undefined, undefined, [{ writeScope:[], resources:[] }]);
+  store.release(id, child.receiptId);
+  store.reserve(id, b.chatId, ["Released scope"], limits, undefined, undefined,
+    [{ writeScope:["src/shared.ts"], resources:["build-output"] }]);
+  const file = path.join(directory, `${id}.json`), saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  saved.slots.at(-1).writeScope = ["../outside"];
+  fs.writeFileSync(file, JSON.stringify(saved));
+  assert.throws(() => new WorkerTreeStore(directory).members(id), /Invalid persisted worker tree/);
+});
+
+test("concurrent processes reserve shared tree ownership atomically rather than both passing a preflight", { timeout:10000 }, async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-tree-scope-race-"));
+  t.after(() => fs.rmSync(directory, { recursive:true, force:true }));
+  const store = new WorkerTreeStore(directory), root = randomUUID(), id = store.create(root), limits = workerLimits(10, 10);
+  const managers = store.reserve(id, root, ["A", "B"], limits);
+  const script = `
+    const {WorkerTreeStore,workerLimits}=require(${JSON.stringify(require.resolve("../dist/chat/worker-tree"))});
+    const store=new WorkerTreeStore(process.argv[1]);
+    process.stdin.once("data",()=>{
+      try {store.reserve(process.argv[2],process.argv[3],["Concurrent"],workerLimits(10,10),undefined,undefined,
+        [{writeScope:["src/shared.ts"],resources:["shared-build"]}]);process.stdout.write("reserved");}
+      catch(error){if(!/overlap/.test(error.message)){console.error(error);process.exitCode=1;}else process.stdout.write("conflict");}
+    }); process.stdout.write("ready\\n");
+  `;
+  const children = managers.map(manager => spawn(process.execPath, ["-e", script, directory, id, manager.chatId],
+    { stdio:["pipe", "pipe", "pipe"] }));
+  t.after(() => children.forEach(child => { if (child.exitCode === null) child.kill(); }));
+  const results = children.map(child => {
+    let output = "", errors = "";
+    const ready = new Promise(resolve => child.stdout.on("data", chunk => {
+      output += chunk; if (output.includes("ready\n")) resolve();
+    }));
+    child.stderr.on("data", chunk => { errors += chunk; });
+    const exited = new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", code => code === 0 ? resolve(output.replace("ready\n", "")) : reject(new Error(errors || `Child exited ${code}`)));
+    });
+    return { ready, exited };
+  });
+  await Promise.all(results.map(result => result.ready));
+  children.forEach(child => child.stdin.end("start"));
+  assert.deepEqual((await Promise.all(results.map(result => result.exited))).sort(), ["conflict", "reserved"]);
+  assert.equal(store.count(id), 3);
+  assert.equal(store.members(id).filter(slot => slot.writeScope?.includes("src/shared.ts")).length, 1);
+});
+
+test("actual Chat recursion advertises delegation and rejects cross-branch scopes before creating a competing worker", async t => {
+  let gate, rejected;
+  const fixture = await harness(t, (payload, res) => {
+    const prompt = payload.messages.at(-1).content;
+    if (prompt === "SCOPED_ROOT") tool(res, "spawn_workers", { tasks:[
+      { title:"Manager A", question:"SCOPED_A" },
+      { title:"Owner B", question:"SCOPED_B", writeScope:["src/shared.ts"], resources:["build-output"] },
+    ] });
+    else if (prompt === "SCOPED_A") {
+      assert(payload.tools.some(tool => tool.function.name === "spawn_workers"), "Workers can choose recursive dispatch");
+      assert(payload.messages.some(message => message.content.includes("Workers do not inherit your conversation")));
+      tool(res, "spawn_workers", { tasks:[{ title:"Competing child", question:"MUST_NOT_RUN", writeScope:["src/shared.ts"] }] });
+    } else if (prompt.startsWith("SCOPED_B")) gate = res;
+    else if (payload.messages.at(-1).role === "tool") {
+      rejected = JSON.parse(prompt); answer(res, "Conflicting recursive dispatch rejected; no work executed.");
+    } else answer(res, "Manager received the bounded result.");
+  });
+  await fixture.provider.send("SCOPED_ROOT", fixture.root);
+  await until(() => !!gate && !!rejected, "nested conflict returned as real tool evidence");
+  assert.match(rejected.error, /overlap/);
+  const treeId = fixture.provider.store.load(fixture.root.id, false).workerState.treeId;
+  assert.equal(fixture.provider.store.workerTrees.members(treeId).length, 2, "No reservation or Chat created for rejected work");
+  assert(!fixture.requests.some(payload => payload.messages.at(-1).content === "MUST_NOT_RUN"));
+  answer(gate, "Owner B finished.");
+  await until(() => fixture.provider.running.size === 0 && fixture.provider.store.workerTrees.count(treeId) === 0, "tree completed and released");
+  assert.deepEqual(fixture.errors, []);
+});
+
+test("compact Chat discovers and dispatches its own worker without eagerly loading worker schemas or polling", async t => {
+  let rounds = 0, discovered = false, workerRan = false;
+  const fixture = await harness(t, (payload, res) => {
+    const prompt = payload.messages.at(-1).content;
+    if (prompt.startsWith("COMPACT_WORKER")) {
+      workerRan = true;
+      assert.match(prompt, /Known fact: bounded check/);
+      assert.match(prompt, /"writeScope":\[\]/);
+      answer(res, "Bounded worker result; no files changed.");
+    } else if (payload.messages.some(message => message.role === "user" && message.content === "COMPACT_MANAGER")
+      && ++rounds <= 2) {
+      const names = payload.tools.map(tool => tool.function.name);
+      assert(!names.includes("spawn_workers"), "Compact profile must not eagerly expose worker schemas");
+      if (rounds === 1) {
+        assert(payload.messages.some(message => message.content.includes("search enabled capabilities")));
+        tool(res, "capabilities_search", { query:"spawn_workers", limit:1 });
+      } else {
+        const catalog = JSON.parse(prompt);
+        const operation = catalog.operations.find(item => item.transportName === "spawn_workers");
+        assert.equal(operation.id, "native.tool.spawn_workers");
+        discovered = true;
+        tool(res, "capability_call", { operation:operation.id, version:1,
+          arguments:{ tasks:[{ title:"Bounded independent check", question:"COMPACT_WORKER Known fact: bounded check. Return findings and stop.", writeScope:[], resources:[] }] } });
+      }
+    } else answer(res, "Manager received the worker result; no further dispatch.");
+  });
+  capabilityProfile = "compact";
+  await fixture.provider.send("COMPACT_MANAGER", fixture.root);
+  await until(() => workerRan && fixture.provider.running.size === 0
+    && fixture.provider.store.workerTrees.count(fixture.provider.store.load(fixture.root.id, false).workerState.treeId) === 0,
+  "compact worker result archived and manager woke");
+  assert(discovered);
+  const manager = fixture.provider.store.load(fixture.root.id, false);
+  const dispatch = manager.messages.flatMap(message => message.toolCalls || []).find(call => call.name === "spawn_workers");
+  assert.equal(dispatch.status, "complete");
+  assert.equal(dispatch.dispatch.operation, "native.tool.spawn_workers");
+  assert.equal(dispatch.dispatch.name, "capability_call");
+  assert.equal(fixture.requests.filter(payload => payload.messages.at(-1).content.startsWith("Worker events")).length, 1);
+  assert(!manager.messages.flatMap(message => message.toolCalls || []).some(call => ["list_workers", "read_chat_result"].includes(call.name)),
+    "Event-delivered bounded results do not need a polling loop");
+  assert.deepEqual(fixture.errors, []);
+});
+
+test("active Host work combines one exploration advisory with exact identity context without changing original evidence", async t => {
+  const { provider, root, errors } = await harness(t, (_payload, res) => answer(res, "No provider expected"));
+  const client = require("../dist/chat/api-chat-client"), original = client.streamApiChat;
+  const contexts = [];
+  t.after(() => { client.streamApiChat = original; });
+  root.builtinTools = ["read_file"];
+  client.streamApiChat = async request => {
+    assert.equal(typeof request.onToolResultsContext, "function");
+    assert.equal(request.onToolResultContext, undefined);
+    await request.beforeRound(request.messages, 1024);
+    for (let index = 0; index < 8; index++) {
+      const event = { id:`exploration-host-${index}`, name:"read_file", arguments:"{}", round:index % 3 };
+      request.onTool({ ...event, status:"running" });
+      request.onTool({ ...event, status:"complete", result:`original source ${index}` });
+      const context = request.onToolResultsContext([{ ...event, status:"complete", result:`original source ${index}` }]);
+      assert(context.length <= 2000);
+      const hint = JSON.parse(context.split("\n")[0]);
+      assert.deepEqual(Array.isArray(hint.evidence) ? hint.evidence.map(item => item.id) : [hint.evidence.id], [event.id]);
+      contexts.push(context);
+    }
+    const repeated = request.onToolResultsContext([{ id:"exploration-host-7", name:"read_file", arguments:"{}",
+      round:2, status:"complete", result:"original source 7" }]);
+    assert(!repeated.includes("Exploration advisory"));
+    throw new Error("Controlled Host replay complete; no actual file read or provider dispatch.");
+  };
+  await provider.send("Start a new task: Investigate the bounded source without editing.", root);
+  assert(contexts.slice(0, 7).every(context => !context.includes("Exploration advisory")));
+  assert.match(contexts[7], /Exploration advisory/);
+  const reply = provider.store.load(root.id, false).messages.at(-1);
+  assert.equal(reply.status, "failed", "A replay stop is not a successful implementation");
+  assert.match(reply.error, /Controlled Host replay complete/);
+  assert.deepEqual(reply.toolCalls.map(call => call.result), Array.from({ length:8 }, (_, index) => `original source ${index}`));
+  assert.deepEqual(errors, []);
+});
+
+test("active work dispatch yields without acceptance, partial results return to sleep, and final evidence resolves the original goal", async t => {
+  const gates = new Map();
+  let fixture, partialWake = false;
+  const prompt = "Start a new task: Investigate two independent facts through read-only workers.";
+  fixture = await harness(t, (payload, res) => {
+    const input = payload.messages.findLast(message => message.role === "user");
+    if (input?.content === prompt) {
+      tool(res, "spawn_workers", { tasks:[
+        { title:"A", question:"ACTIVE_WORKER_A", writeScope:[], resources:[] },
+        { title:"B", question:"ACTIVE_WORKER_B", writeScope:[], resources:[] },
+      ] });
+    } else if (/^ACTIVE_WORKER_/.test(input?.content || "")) gates.set(input.content.split("\n")[0], res);
+    else {
+      const chat = fixture.provider.store.load(fixture.root.id, false);
+      const records = chat.messages.flatMap(message => message.delegations || []);
+      if (records.some(record => record.status === "running")) {
+        partialWake = true;
+        answer(res, "One result received; remaining worker continues independently.");
+      } else {
+        const reply = chat.messages.at(-1);
+        const inspected = (reply.toolCalls || []).filter(call => call.name === "read_chat_result" && call.status === "complete");
+        if (inspected.length < records.length) tool(res, "read_chat_result", { receiptId:records[inspected.length].id, requireReady:true });
+        else if (chat.workGoal.status === "active") tool(res, "report_work", {
+          status:"resolved", reason:"Both current read-only worker results were inspected.",
+          sourceInputIds:workGoalInputs(chat),
+          acceptance:[{ criterion:rootWorkCriterion, verified:true, evidenceCallIds:inspected.map(call => call.id) }],
+        });
+        else answer(res, "Original read-only investigation complete.");
+      }
+    }
+  });
+  const filestore = require("../dist/knowledge/filestore"), previousRoot = filestore.getStorePath();
+  filestore.setStorePath(fixture.directory);
+  t.after(() => filestore.setStorePath(previousRoot));
+  await fixture.provider.send(prompt, fixture.root);
+  await until(() => gates.size === 2, "active-goal workers dispatched");
+  let saved = fixture.provider.store.load(fixture.root.id, false);
+  const goalId = saved.workGoal.id, originalInput = saved.workGoal.inputId;
+  assert.equal(saved.messages.at(-1).status, "complete", saved.messages.at(-1).error);
+  assert.equal(saved.workGoal.status, "active", "Successful dispatch is not completed acceptance");
+  assert.equal(saved.workerState.sleeping, true);
+  assert.equal(saved.workerState.stopped, false);
+  assert.equal(fixture.requests.length, 3, "No extra manager inference after dispatch");
+  answer(gates.get("ACTIVE_WORKER_A"), "Fact A");
+  await until(() => partialWake && !fixture.provider.running.has(fixture.root.id), "partial result yields instead of failing or polling");
+  saved = fixture.provider.store.load(fixture.root.id, false);
+  assert.equal(saved.workGoal.status, "active");
+  assert.equal(saved.workerState.sleeping, true);
+  assert.equal(saved.workerState.stopped, false);
+  assert.equal(saved.messages.at(-1).status, "complete", saved.messages.at(-1).error);
+  const count = fixture.requests.length;
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.equal(fixture.requests.length, count, "Waiting for the second worker does not poll or force report_work");
+  answer(gates.get("ACTIVE_WORKER_B"), "Fact B");
+  await until(() => fixture.provider.running.size === 0
+    && fixture.provider.store.load(fixture.root.id, false).workGoal.status === "resolved", "final result validates and resolves", () => {
+      const chat = fixture.provider.store.load(fixture.root.id, false), reply = chat.messages.at(-1);
+      return { goal:chat.workGoal.status, stopped:chat.workerState.stopped, events:chat.workerState.events.length, error:reply.error,
+        calls:reply.toolCalls?.map(call => ({ name:call.name, status:call.status,
+          result:call.name === "read_chat_result" ? JSON.parse(call.result).status : call.result?.slice(0, 400) })),
+        errors:fixture.errors.map(error => error.message) };
+    });
+  saved = fixture.provider.store.load(fixture.root.id, false);
+  assert.equal(saved.workGoal.id, goalId);
+  assert.equal(saved.workGoal.inputId, originalInput);
+  assert.equal(saved.workerState.sleeping, false);
+  assert.equal(saved.workerState.stopped, false);
+  assert.equal(saved.workerState.events.length, 0);
+  assert(saved.messages.filter(message => message.role === "assistant").every(message => message.status === "complete"));
+  assert.equal(saved.messages.flatMap(message => message.toolCalls || []).filter(call => call.name === "spawn_workers").length, 1);
+  assert.equal(saved.messages.flatMap(message => message.toolCalls || []).filter(call => call.name === "report_work").length, 1);
+  assert.deepEqual(fixture.errors, []);
+});
+
+test("active work preserves queued completion events when a fast worker finishes before the dispatch request returns", async t => {
+  let fixture;
+  const prompt = "Start a new task: Investigate one fast worker result without changing files.";
+  fixture = await harness(t, (payload, res) => {
+    const input = payload.messages.findLast(message => message.role === "user");
+    if (input?.content === prompt) tool(res, "spawn_workers", { tasks:[{ title:"Fast fact", question:"FAST_FACT", writeScope:[] }] });
+    else if (input?.content.startsWith("FAST_FACT")) answer(res, "Fast source observation.");
+    else {
+      const chat = fixture.provider.store.load(fixture.root.id, false), reply = chat.messages.at(-1);
+      const evidence = reply.toolCalls?.find(call => call.name === "read_chat_result" && call.status === "complete");
+      if (!evidence) tool(res, "read_chat_result", {
+        receiptId:chat.messages.flatMap(message => message.delegations || [])[0].id, requireReady:true,
+      });
+      else if (chat.workGoal.status === "active") tool(res, "report_work", {
+        status:"resolved", reason:"Current fast worker observation inspected.", sourceInputIds:workGoalInputs(chat),
+        acceptance:[{ criterion:rootWorkCriterion, verified:true, evidenceCallIds:[evidence.id] }],
+      });
+      else answer(res, "Observation accepted for the investigation goal.");
+    }
+  });
+  const filestore = require("../dist/knowledge/filestore"), previousRoot = filestore.getStorePath();
+  filestore.setStorePath(fixture.directory);
+  const client = require("../dist/chat/api-chat-client"), original = client.streamApiChat;
+  t.after(() => { filestore.setStorePath(previousRoot); client.streamApiChat = original; });
+  client.streamApiChat = async (request, onText) => {
+    await original(request, onText);
+    if (request.messages.findLast(message => message.role === "user")?.content === prompt) {
+      await until(() => fixture.provider.store.load(fixture.root.id, false).messages
+        .flatMap(message => message.delegations || []).some(record => record.archived), "fast worker archived before manager transport returns");
+    }
+  };
+  await fixture.provider.send(prompt, fixture.root);
+  let saved = fixture.provider.store.load(fixture.root.id, false);
+  assert.equal(saved.messages.at(-1).status, "complete", saved.messages.at(-1).error);
+  assert.equal(saved.workGoal.status, "active");
+  assert.equal(saved.workerState.events.length, 1);
+  assert.equal(saved.workerState.sleeping, true, "Queued terminal events are pending work even with no running child");
+  assert.equal(saved.workerState.stopped, false);
+  await until(() => fixture.provider.running.size === 0
+    && fixture.provider.store.load(fixture.root.id, false).workGoal.status === "resolved", "queued terminal event wakes and verifies");
+  saved = fixture.provider.store.load(fixture.root.id, false);
+  assert.equal(saved.workerState.sleeping, false);
+  assert.equal(saved.workerState.events.length, 0);
+  assert.equal(saved.messages.flatMap(message => message.toolCalls || []).filter(call => call.name === "spawn_workers").length, 1);
+  assert.deepEqual(fixture.errors, []);
 });
 
 test("manager resumes a failed worker from recorded progress without replacing history, replaying tools or expanding quota", async t => {

@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { ApiChatStore } = require("../dist/chat/api-chat-store");
 const { handleChatLibraryAction } = require("../dist/chat/library-actions");
+const { chatGroupPkmUrl } = require("../dist/chat/chat-library");
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-library-actions-"));
@@ -30,6 +31,22 @@ function fixture(t) {
   return { directory, store, host, forgotten, action:(message, cleanup) => handleChatLibraryAction(message, store, host, () => false, id => forgotten.push(id), cleanup),
     approve(value) { approve = value; }, type(value) { typed = value; }, cancel(value) { cancel = value; }, get disposed() { return disposed; } };
 }
+
+test("Chat group paths are stable, resolve exact membership and reject invalid or deleted groups", t => {
+  const f = fixture(t);
+  const id = f.store.library.createGroup("Lead candidates");
+  const url = chatGroupPkmUrl(id);
+  assert.equal(url, `pkm://chat-groups/${id}`);
+  assert.deepEqual(f.store.library.resolveGroup(url), {id, name:"Lead candidates"});
+  f.store.library.renameGroup(id, "Renamed");
+  assert.equal(f.store.library.resolveGroup(url).name, "Renamed");
+  assert.equal(f.store.library.resolveGroup("ungroup").id, "ungroup");
+  for (const value of [null, 1, "", "trash", url + "/extra", url + "?x=1", "pkm://chat-groups/../ungroup", "pkm://chats/" + id]) {
+    assert.throws(() => f.store.library.resolveGroup(value), /Choose/);
+  }
+  f.store.library.deleteGroup(id);
+  assert.throws(() => f.store.library.resolveGroup(url), /existing Chat group/);
+});
 
 test("Move to group accepts a typed new name, reuses case-insensitive names and cancellation creates nothing", async t => {
   const f = fixture(t), chat = f.store.create();
@@ -294,11 +311,11 @@ test("current Task todos are read-only, refreshed from the owned Session and nev
   assert.throws(() => f.store.taskPlan(chat), /does not belong/);
 });
 
-test("built Automation navigation places Action Library after the profile and session views, before Recipe Library and the Action Workbench", () => {
+test("built Automation navigation places Recipe Library after Agent Snapshot, before Action Library and the Action Workbench", () => {
   const html = fs.readFileSync(path.join(__dirname, "..", "dist", "webview", "panel.html"), "utf8");
   const automation = html.match(/aria-label="Automation views">([\s\S]*?)<\/div>/)[1];
   assert.deepEqual([...automation.matchAll(/<button\b[^>]*>([^<]+)<\/button>/g)].map(match => match[1]),
-    ["User Profile", "Agent Sessions", "Agent Snapshot", "Action Library", "Recipe Library", "Action Workbench"]);
+    ["User Profile", "Agent Sessions", "Agent Snapshot", "Recipe Library", "Action Library", "Action Workbench"]);
 });
 
 test("operation identities and public summaries persist without entering the visible assistant answer", t => {

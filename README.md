@@ -5,7 +5,7 @@
 Chat with AI, reuse your Knowledge, run repeatable work, and collaborate across
 machines without scattering everything across disconnected tools.
 
-[Explore Features & Screenshots](FEATURES.md) · [Installation](FEATURES.md#installation-guide) · [Changelog](CHANGELOG.md)
+[User Guide](resources/help/en.md) · [中文使用指南](resources/help/zh-hans.md) · [Explore Features & Screenshots](FEATURES.md) · [Installation](FEATURES.md#installation-guide) · [Changelog](CHANGELOG.md)
 
 ## More Than One Solution
 
@@ -42,6 +42,14 @@ and sharing access yourself.
 3. Open PKM Chat or add a Skill, Note, or Research item.
 
 Local model retrieval is optional. Start with the built-in keyword search.
+
+Open **Help** (the question-mark icon at the bottom of PKM's navigation rail)
+for the bundled English/Chinese user guide, feature links, and copy-only Agent
+requests. Help works before Python/MCP setup and without a Knowledge Root.
+Problem banners link to the relevant guide section and offer explicit setup,
+environment rechecks or diagnostic actions; they do not silently replay writes.
+The `pkm-help:` links inside the guides navigate within PKM; use the in-app Help
+page for clickable feature navigation.
 
 [Detailed Setup](FEATURES.md#installation-guide) · [Chat Guide](docs/api-chat.md) · [Feature Guide](FEATURES.md)
 

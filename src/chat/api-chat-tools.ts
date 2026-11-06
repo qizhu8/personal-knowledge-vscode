@@ -53,6 +53,7 @@ export const builtinToolCatalog = [
   { name: "pkm_read", label: "Read PKM knowledge", permission: "Read-only bounded local knowledge and cached subscription content" },
   { name: "note_todo_read", label: "Read Todo Board / Work Items", permission: "Read-only structured Board / legacy Note Work Items and discovery" },
   { name: "note_todo_update", label: "Update Note Work Items", permission: "Approved CAS mutation as this Chat's stable worker identity; contract and acceptance protections apply" },
+  { name: "todo_board_create", label: "Create Todo Board", permission: "Approved creation of a separate structured Board; never overwrites existing Notes or starts tasks" },
   { name: "memory_read", label: "Read Chat memory", permission: "Read-only memory topics and earlier messages of this Chat only" },
   { name: "replace_text", label: "Edit text", permission: "Shared non-destructive Chat permission; edits remain unsaved" },
   { name: "save_file", label: "Save file", permission: "Shared non-destructive Chat permission; expected content hash required" },
@@ -96,6 +97,7 @@ interface StagedTextEdit {
 // to a VS Code working copy until an explicitly approved save.
 const stagedTextEdits = new WeakMap<typeof vscode, Map<string, Map<string, StagedTextEdit>>>();
 const textHash = (text: string | Buffer) => createHash("sha256").update(text).digest("hex");
+const textFileByteLimit = 16 * 1024 * 1024;
 
 export function createBuiltinTools(enabled: string[], host: typeof vscode = vscode, onApproval?: (name: string, waiting: boolean) => void, onEdit?: (change: ApiChatEditChange) => void, requestApproval?: (name: string, prompt: string, detail: string, signal: AbortSignal, boundary?: "workspace" | "outside-workspace", resource?: string) => Promise<boolean>, executionRoots?: readonly vscode.Uri[], processEvidenceDirectory?: string, requestQuestion?: (prompt: string, schema: QuestionSchema, signal: AbortSignal, verify?: (answer: Record<string, unknown>) => Promise<void>) => Promise<Record<string, unknown> | undefined>, portalContextId?: string): ApiChatTool[] {
   const roots = executionRoots ? [...executionRoots] : (host.workspace.workspaceFolders || []).map(folder => folder.uri);
@@ -134,19 +136,32 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
     active(signal);
     if (await abortable(fs.promises.realpath(location.uri.fsPath), signal) !== location.target) throw new Error("File path changed after approval.");
     const uri = host.Uri.file(location.target);
-    const readOnly = name === "read_file" || name === "search_text";
-    if ((await abortable(host.workspace.fs.stat(uri), signal)).size > (readOnly ? 16 * 1024 * 1024 : 160_000)) {
-      throw new Error(readOnly ? "Text read exceeds the 16 MiB file limit. Choose a smaller file." : "Tool file exceeds 160 KB.");
+    if ((await abortable(fs.promises.stat(uri.fsPath), signal)).size > textFileByteLimit) {
+      throw new Error("Text file exceeds the 16 MiB file limit. Choose a smaller file.");
     }
     return uri;
   };
+  const validateText = (text: string) => {
+    if (text.includes("\0")) throw new Error("Choose a text file without binary content.");
+    if (Buffer.byteLength(text, "utf8") > textFileByteLimit) throw new Error("Text document exceeds the 16 MiB tool limit.");
+    return text;
+  };
+  const openDocument = async (uri: vscode.Uri, signal: AbortSignal) => {
+    active(signal);
+    const existing = host.workspace.textDocuments?.find(document => !document.isClosed && document.uri.fsPath === uri.fsPath);
+    if (existing) return existing;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("VS Code's editor did not open the text document within 30 seconds. No edit was applied. Reconnect the window before retrying.")), 30_000);
+      });
+      return await abortable(Promise.race([Promise.resolve(host.workspace.openTextDocument(uri)), timeout]), signal);
+    } finally { clearTimeout(timer); }
+  };
   const documentFor = async (args: Record<string, unknown>, signal: AbortSignal, name: string) => {
     const uri = await resolve(args, signal, name);
-    const document = await abortable(host.workspace.openTextDocument(uri), signal);
-    const text = document.getText();
-    if (text.includes("\0")) throw new Error("Choose a text file without binary content.");
-    const limit = name === "read_file" || name === "search_text" ? 16 * 1024 * 1024 : 160_000;
-    if (Buffer.byteLength(text, "utf8") > limit) throw new Error(`Text document exceeds the ${limit}-byte tool limit.`);
+    const document = await openDocument(uri, signal);
+    validateText(document.getText());
     return document;
   };
   const checkedDraft = async (document: vscode.TextDocument, signal: AbortSignal) => {
@@ -155,6 +170,35 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
       throw new Error("Staged edit conflict: document or disk content changed. Draft retained; inspect or discard it. No edit was replayed.");
     }
     return draft;
+  };
+  const readText = async (args: Record<string, unknown>, signal: AbortSignal) => {
+    const uri = await resolve(args, signal, "read_file");
+    const workingCopy = host.workspace.textDocuments?.find(document => !document.isClosed && document.uri.fsPath === uri.fsPath);
+    const readWorkingCopy = async () => {
+      const document = workingCopy || await openDocument(uri, signal);
+      const draft = await checkedDraft(document, signal);
+      active(signal);
+      return { text:validateText(draft?.text ?? document.getText()), staged:!!draft };
+    };
+    if (workingCopy || drafts.has(uri.fsPath)) return readWorkingCopy();
+    const bytes = await abortable(fs.promises.readFile(uri.fsPath), signal);
+    active(signal);
+    if (host.workspace.textDocuments?.some(document => !document.isClosed && document.uri.fsPath === uri.fsPath)) return readWorkingCopy();
+    if (bytes.length > textFileByteLimit) throw new Error("Text file exceeds the 16 MiB file limit. Choose a smaller file.");
+    const configured = host.workspace.getConfiguration("files", uri).get<string>("encoding", "utf8");
+    const encoding = bytes[0] === 0xff && bytes[1] === 0xfe ? "utf16le"
+      : bytes[0] === 0xfe && bytes[1] === 0xff ? "utf16be"
+      : bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? "utf8" : configured;
+    if (!["utf8", "utf8bom", "utf16le", "utf16be"].includes(encoding)) return readWorkingCopy();
+    let text: string;
+    try {
+      text = new TextDecoder(encoding === "utf16le" ? "utf-16le" : encoding === "utf16be" ? "utf-16be" : "utf-8", { fatal:true }).decode(bytes);
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error;
+      return readWorkingCopy();
+    }
+    active(signal);
+    return { text:validateText(text), staged:false };
   };
   const files = async (args: Record<string, unknown>, signal: AbortSignal) => {
     const root = rootFor(args);
@@ -378,12 +422,11 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
     definition("read_file", "Read a precise text range, up to 200 lines and 12,000 characters from a file up to 16 MiB. Use search_text with a narrow glob to locate relevant lines first; use nextStartLine for subsequent pages. Workspace-relative or absolute paths; outside-workspace access requires permission. Hidden/sensitive paths excluded.", { path: { type: "string" }, startLine: { type: "integer", minimum: 1 }, endLine: { type: "integer", minimum: 1 } }, ["path"], async (args, signal) => {
       const start = Number(args.startLine ?? 1); const end = Number(args.endLine ?? start + 199);
       if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start || end - start >= 200) throw new Error("Choose 1-200 lines with valid line numbers.");
-      const document = await documentFor(args, signal, "read_file");
-      const draft = await checkedDraft(document, signal);
-      const lines = (draft?.text ?? document.getText()).split(/\r?\n/);
+      const snapshot = await readText(args, signal);
+      const lines = snapshot.text.split(/\r?\n/);
       if (start > lines.length) throw new Error(`Start line ${start} exceeds the document's ${lines.length} lines.`);
       const selected = lines.slice(start - 1, end).join("\n");
-      const result = { path: args.path, staged: !!draft, startLine: start, endLine: Math.min(end, lines.length), totalLines: lines.length,
+      const result = { path: args.path, staged: snapshot.staged, startLine: start, endLine: Math.min(end, lines.length), totalLines: lines.length,
         content: selected.slice(0, 12_000), truncated: end < lines.length || selected.length > 12_000,
         contentTruncated: selected.length > 12_000, nextStartLine: undefined as number | undefined };
       while (JSON.stringify(result).length > 15_900) { result.content = result.content.slice(0, Math.floor(result.content.length * 0.8)); result.truncated = true; }
@@ -443,14 +486,14 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
       }
       return JSON.stringify({ matches, skipped, truncated: budgetReached || uris.length > 40 || matches.length === 50 });
     }),
-    definition("replace_text", "Replace a unique exact text match in an existing workspace file. Each edit requires user approval; leaves an unsaved editor change.", { path: { type: "string" }, oldText: { type: "string" }, newText: { type: "string" } }, ["path", "oldText", "newText"], async (args, signal) => {
+    definition("replace_text", "Replace a unique exact text match in an existing text file up to 16 MiB. The match and replacement together are limited to 16,000 characters. Each edit requires user approval; leaves an unsaved editor change.", { path: { type: "string" }, oldText: { type: "string" }, newText: { type: "string" } }, ["path", "oldText", "newText"], async (args, signal) => {
       if (typeof args.oldText !== "string" || !args.oldText || typeof args.newText !== "string" || args.oldText.length + args.newText.length > 16_000) throw new Error("Provide a non-empty unique match and a bounded replacement.");
       const document = await documentFor(args, signal, "replace_text"); const text = document.getText(); const version = document.version;
       assertTodoFileEditAllowed(document.uri.fsPath);
       const offset = text.indexOf(args.oldText);
       if (offset < 0 || text.indexOf(args.oldText, offset + 1) >= 0) throw new Error("The old text must match exactly once.");
       const expected = text.slice(0, offset) + args.newText + text.slice(offset + args.oldText.length);
-      if (Buffer.byteLength(expected, "utf8") > 160_000) throw new Error("Edited file would exceed 160 KB.");
+      if (Buffer.byteLength(expected, "utf8") > textFileByteLimit) throw new Error("Edited file would exceed 16 MiB.");
       const location = await physicalPath(args, args.path, signal);
       const approval = await approve("replace_text", `Apply Agent edit to ${String(args.path)}?`, `Replace:\n${args.oldText.slice(0, 2000)}\n\nWith:\n${args.newText.slice(0, 2000)}`, "Apply edit", signal, location.outside ? "outside-workspace" : "workspace", location.target);
       active(signal);
@@ -495,8 +538,8 @@ export function createBuiltinTools(enabled: string[], host: typeof vscode = vsco
   for (const tool of tools) {
     if (independentReads.has(tool.name)) tool.execution = "parallel-read";
     if (tool.name === "read_file") tool.readVersion = async (args, signal) => {
-      const document = await documentFor(args, signal, "read_file");
-      return textHash(document.getText());
+      const snapshot = await readText(args, signal);
+      return textHash(snapshot.text);
     };
   }
   return tools.filter(tool => enabled.includes(tool.name) || tool.name === "portal" && enabled.includes("cross_machine_collaboration"));

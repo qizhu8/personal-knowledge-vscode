@@ -1,11 +1,15 @@
 import { createHash } from "crypto";
 
+export const workItemIcons = ["tasklist", "bug", "beaker", "eye", "checklist", "lightbulb"] as const;
+
 export interface NoteWorkItem {
   id: string;
   kind?: "Task" | "UserStory";
   parentId?: string;
   storyStatus?: "draft" | "confirmed";
   title: string;
+  description?: string;
+  icon?: typeof workItemIcons[number];
   goal: string;
   scope: string;
   acceptance: string[];
@@ -15,13 +19,15 @@ export interface NoteWorkItem {
   blockedReason?: string;
   owner?: string;
   ownerId?: string;
+  collaboratorIds?: string[];
+  monitoring?: { until?: string; endCondition?: string };
   projectId?: string;
   reviewerIds?: string[];
   dependsOn?: string[];
   plannedStart?: string;
   plannedEnd?: string;
   links?: string[];
-  verification?: { layer: "unit" | "functional" | "e2e"; status: "passed" | "failed" | "not-run" | "not-applicable"; evidence: string[]; reason?: string }[];
+  verification?: { layer: "unit" | "functional" | "e2e"; status: "passed" | "failed" | "blocked" | "not-run" | "not-applicable"; evidence: string[]; reason?: string }[];
   history?: { at: string; actorId: string; action: string; from?: NoteWorkItem["state"]; to?: NoteWorkItem["state"]; reason?: string;
     changes?: { field: string; before?: string; after?: string }[] }[];
   acceptanceDecision?: { by: string; at: string; decision: "accepted" };
@@ -69,12 +75,33 @@ export function validateNoteWorkItem(value: unknown): NoteWorkItem {
   const item = value as Record<string, unknown>;
   const allowed = ["id", "title", "goal", "scope", "acceptance", "state", "outcome", "evidence", "blockedReason", "owner",
     "ownerId", "projectId", "reviewerIds", "dependsOn", "plannedStart", "plannedEnd", "links", "verification", "history", "acceptanceDecision",
-    "kind", "parentId", "storyStatus", "deletedAt", "deletedBy", "comments"];
+    "kind", "parentId", "storyStatus", "deletedAt", "deletedBy", "comments", "description", "icon", "collaboratorIds", "monitoring"];
   if (Object.keys(item).some(key => !allowed.includes(key))) throw new Error("Unknown Work Item field.");
   for (const field of ["id", "title", "goal", "scope"]) {
     if (typeof item[field] !== "string" || !item[field].trim()) throw new Error(`Work Item ${field} is required.`);
   }
   if (typeof item.id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(item.id)) throw new Error("Invalid Work Item ID.");
+  if (item.description !== undefined && (typeof item.description !== "string" || !item.description.trim() || item.description.length > 16000)) {
+    throw new Error("Work Item description must contain 1-16000 characters.");
+  }
+  if (item.icon !== undefined && !workItemIcons.includes(item.icon as typeof workItemIcons[number])) throw new Error("Choose a supported Work Item icon.");
+  if (item.collaboratorIds !== undefined) {
+    strings(item.collaboratorIds, "Collaborator identities");
+    const collaborators = item.collaboratorIds as string[];
+    if (collaborators.length > 20 || new Set(collaborators).size !== collaborators.length
+      || collaborators.some(id => !/^[a-z][a-z0-9-]*:[A-Za-z0-9][A-Za-z0-9:._-]{0,159}$/.test(id) || id === item.ownerId)) {
+      throw new Error("Use up to 20 distinct stable collaborator identities, separate from the execution owner.");
+    }
+  }
+  if (item.monitoring !== undefined) {
+    const monitoring = object(item.monitoring, ["until", "endCondition"], "monitoring contract");
+    if (monitoring.until === undefined && monitoring.endCondition === undefined) throw new Error("Monitoring requires an observation deadline or explicit end condition.");
+    if (monitoring.until !== undefined) timestamp(monitoring.until);
+    if (monitoring.endCondition !== undefined) {
+      text(monitoring.endCondition, "Monitoring end condition");
+      if (monitoring.endCondition.length > 8000) throw new Error("Monitoring end condition exceeds 8000 characters.");
+    }
+  }
   if (item.kind !== undefined && item.kind !== "Task" && item.kind !== "UserStory") throw new Error("Invalid Work Item kind.");
   if (item.parentId !== undefined && (typeof item.parentId !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(item.parentId))) throw new Error("Invalid User Story parentId.");
   if (item.kind === "UserStory" && item.parentId !== undefined) throw new Error("User Stories cannot have a parent User Story.");
@@ -115,7 +142,7 @@ export function validateNoteWorkItem(value: unknown): NoteWorkItem {
     for (const entry of item.verification) {
       const record = object(entry, ["layer", "status", "evidence", "reason"], "verification");
       if (!["unit", "functional", "e2e"].includes(record.layer as string)
-        || !["passed", "failed", "not-run", "not-applicable"].includes(record.status as string)) throw new Error("Invalid Work Item verification.");
+        || !["passed", "failed", "blocked", "not-run", "not-applicable"].includes(record.status as string)) throw new Error("Invalid Work Item verification.");
       strings(record.evidence, "Verification evidence");
       if (record.reason !== undefined) text(record.reason, "Verification reason");
       if (record.status === "not-applicable" && !record.reason) throw new Error("Not-applicable verification requires a reason.");
@@ -235,7 +262,7 @@ export function commandNoteWorkItem(markdown: string, expectedDigest: string, in
     if (next.state !== "Planning") throw new Error("Create Work Items in Planning.");
     if (actor.role === "worker" && (next.ownerId !== undefined || next.owner !== undefined)) throw new Error("Workers create unowned Planning Work Items, then claim them.");
     if (actor.role === "worker" && (next.projectId !== undefined || next.reviewerIds !== undefined || next.parentId !== undefined
-      || next.kind === "UserStory" || next.storyStatus !== undefined)) throw new Error("Only users assign projectId, reviewerIds and User Story contracts.");
+      || next.kind === "UserStory" || next.storyStatus !== undefined || next.collaboratorIds?.length)) throw new Error("Only users assign projectId, reviewerIds, collaborators and User Story contracts.");
   } else if (action === "edit") {
     for (const field of ["deletedAt", "deletedBy", "comments"] as const) {
       if (actor.role === "user") {
@@ -253,7 +280,7 @@ export function commandNoteWorkItem(markdown: string, expectedDigest: string, in
     if (previous!.state === "Done") throw new Error("Done Work Items must be reopened by a user.");
     if (actor.role === "worker") {
       own();
-      for (const field of ["state", "outcome", "title", "goal", "scope", "acceptance", "owner", "ownerId", "projectId", "reviewerIds", "dependsOn", "plannedStart", "plannedEnd", "kind", "parentId", "storyStatus"] as const) {
+      for (const field of ["state", "outcome", "title", "goal", "scope", "acceptance", "owner", "ownerId", "projectId", "reviewerIds", "dependsOn", "plannedStart", "plannedEnd", "kind", "parentId", "storyStatus", "description", "icon", "collaboratorIds", "monitoring"] as const) {
         if (JSON.stringify(next[field]) !== JSON.stringify(previous![field])) throw new Error(`Worker cannot edit protected field: ${field}`);
       }
     }

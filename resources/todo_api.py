@@ -70,7 +70,9 @@ def register_todo_api_tools(mcp, request):
     @mcp.tool(annotations=write)
     def add_workitem(board_slug: str, expected_digest: str, item: dict, worker_token: str | None = None) -> dict:
         """Create Planning task: item requires id,title,goal,scope,acceptance; optional
-        parentId,projectId,dependsOn,plannedStart/plannedEnd,links. No audit/owner overrides."""
+        parentId,projectId,dependsOn,plannedStart/plannedEnd,links,description,icon,
+        collaboratorIds. monitoring requires until (UTC timestamp) or endCondition;
+        contract only, no polling or automatic completion. No audit/owner overrides."""
         return mutate("add_workitem", board_slug, expected_digest, worker_token, item=item)
 
     @mcp.tool(annotations=write)

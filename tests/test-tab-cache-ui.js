@@ -65,7 +65,7 @@ function verifyCachedTab(source, functionName, cacheName, updatedAtName, renderN
     `${functionName} must show loading only when no cached data exists`);
 }
 
-verifyCachedTab(mcp, "showMcpTab", "mcpStatusCache", "mcpStatusUpdatedAt", "renderMcpPane", "renderMcpLoading", "checkMcp");
+verifyCachedTab(mcp, "showMcpTab", "mcpStatusCache", "mcpStatusUpdatedAt", "renderMcpPane", "renderMcpLoading", "mcpStatus");
 verifyCachedTab(skillRouter, "showSkillRouterTab", "skillRouterStatusCache", "skillRouterStatusUpdatedAt", "renderSkillRouterPane", "renderSkillRouterLoading", "skillRouterStatus",
   [["ask", "retrievalSolutions", {}, null, true]]);
 

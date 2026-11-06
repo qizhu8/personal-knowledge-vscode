@@ -12,6 +12,7 @@ const parts = [
   path.join(root, "src", "webview", "components", "sortable-data-table.js"),
   "00-core.js",
   "05-onboarding.js",
+  "06-help.js",
   "10-chatroom.js",
   path.join(root, "src", "webview", "recipe-graph-shared.js"),
   path.join(root, "src", "webview", "agent-harness.js"),

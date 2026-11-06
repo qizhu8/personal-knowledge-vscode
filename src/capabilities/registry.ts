@@ -11,7 +11,7 @@ export interface Capability {
   readOnly: boolean;
   authorization: string;
   concurrency: "exclusive" | "independent-read";
-  idempotency: "read" | "digest-cas" | "operation-id";
+  idempotency: "read" | "digest-cas" | "operation-id" | "none";
   cancellation: string;
   errors: string[];
   lifecycle: { status: "stable"; legacyAlias: string };
@@ -101,7 +101,7 @@ export class CapabilityRegistry {
   readonly revision: string;
   constructor(readonly operations: readonly Capability[]) {
     if (new Set(operations.map(operation => operation.id)).size !== operations.length
-      || operations.some(operation => !/^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*){2}$/.test(operation.id))) {
+      || operations.some(operation => !/^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*){2}$/.test(operation.id))) {
       throw new Error("Capabilities require unique domain.object.operation identities.");
     }
     this.revision = createHash("sha256").update(JSON.stringify(operations)).digest("hex");
@@ -121,7 +121,7 @@ export class CapabilityRegistry {
     });
     if (input.revision !== undefined && input.revision !== this.revision) throw new CapabilityError("CONFLICT", "Capability catalog changed; restart discovery.");
     const path = String(input.path || ""), query = String(input.query || "").toLowerCase().trim();
-    if (path && !/^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*){0,2}$/.test(path)) throw new CapabilityError("INVALID_ARGUMENT", "Use a bounded capability path.");
+    if (path && !/^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*){0,2}$/.test(path)) throw new CapabilityError("INVALID_ARGUMENT", "Use a bounded capability path.");
     const tokens = query.split(/\s+/).filter(Boolean);
     const matches = this.operations.filter(item => (!path || item.id === path || item.id.startsWith(`${path}.`))
       && (!tokens.length || tokens.every(token => `${item.id} ${item.transportName} ${item.description}`.toLowerCase().includes(token))));

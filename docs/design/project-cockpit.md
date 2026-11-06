@@ -20,11 +20,26 @@ Changing goal or success criteria requires an explicit nonempty reason. An immut
 
 Threads, Gantt, Todos and Agents remain secondary existing navigation surfaces. Overview no longer uses the old demonstration execution fixture.
 
+Overview and Gantt also share an on-demand, compact Story / Work Item progress
+view. It derives from authoritative Note/Board snapshots, not Project executor
+state. See [Work Item progress and inspection](../note-work-items.md#note-and-project-ui)
+for source pins, recorded-state freshness, exact dependency/Agent navigation,
+scoped Memory and read-only historical Snapshot semantics. Loading this view
+does not start an Agent or alter execution, ownership or acceptance.
+
 `projectCockpits(root, projects, collaborationTasks)` reads execution records once per snapshot, then builds each Project's projection. Sources are `.pkm/state/actions/runs/<run_id>/run.json`, `agent-sessions/<sessionId>.json`, `recipe-runs/<runId>.json` and canonical Collaboration records. Membership comes from explicit links, native Project identity, Session Recipe Run IDs or Collaboration execution links. Unknown states, missing linked executions and unreadable/truncated sources are visible diagnostics, never fabricated success. Source reads are bounded, reject symlinks and validate identities; projections omit Action capability hashes and checkpoint resume tokens.
 
 Action waiting metadata supports top-level `checkpoint` / `checkpoints`, or `execution.checkpoint`. Checkpoints use snake_case `checkpoint_id`, `run_id`, `kind`, `state`, `owner`, exact `proposal`, `proposal_digest`, `evidence`, optional epoch-second `deadline`, `timeout_behavior`, `answer` and `options`. The precise proposal and digest are shown read-only. Pending input remains Waiting; approval/artifact-review/decision/exception or expired checkpoints enter the review inbox. `waiting` and `execution.phase: waiting` project Waiting; `outcome_unknown` or reconciling phase project Reconciling.
 
 Scheduled nonhuman triggers remain Waiting under the scheduler, not a human approval inbox. A canonical cancelled Run supersedes its retained waiting checkpoint/approval envelope: evidence remains visible but cannot be answered and does not falsely keep the Project active.
+
+## Stop and pause scope contract
+
+- **Reply Stop:** the user invokes Cancel on a specific Chat. `stopAll` requests abort of its running reply and queued drain, stops its worker state and recursively requests stop for its worker descendants, and asynchronously requests cancellation of that Chat's background processes. This is wider than just the model stream, but is not a Project-wide or agent-wide pause. The acknowledgement is not proof the reply, tools, processes or remote effects have terminated. Inspect their actual receipts/status; earlier effects are not undone. A later message or retry is a separate action, not authorization to replay uncertain effects.
+- **Chat Goal pause:** an explicit work-stop input pauses the unfinished Goal in that Chat; cancellation of its active attempt can also record `paused` with `execution_cancelled`. Identity is the Goal and attempt/input, not a Board Work Item. Existing results remain. Ordinary follow-up does not resume a paused Goal; explicit work delegation/resume in the original execution context can resume it. The user must reconcile uncertain effects before authorizing their retry/replay. The Goal transition itself neither reconciles receipts nor proves effects safe; it is not a reconciliation-enforced replay gate or authority for unrelated effects.
+- **Board Work Item pause:** conceptually targets an identified Board item and its authorized owner/control, not every item in a Project. A Chat Goal's `paused` status is not a Board state change or proof its work has stopped. A general executor-enforced Work Item pause/resume contract is not established by this Chat control; use the authoritative item and execution surfaces to inspect state and obtain any separate authorization.
+- **Agent pause:** conceptually targets an identified agent and its authorized controller across its work. Stopping a Chat's worker descendants is not an agent-wide pause. No general agent-wide pause/resume orchestration is provided by this control; recovery requires separate authority and observed state.
+- **Project pause:** conceptually targets an identified Project and its authorized controller across its items and executions. Project status describes intent, not executor state; neither Chat Stop, Goal pause nor archive freezes all Project execution. No general Project-wide pause/resume orchestration is provided here. Inspect the individual execution surfaces and obtain separate authority before any recovery action.
 
 ## Lifecycle and evidence retention
 

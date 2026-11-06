@@ -61,7 +61,7 @@ test("Ctrl+F filters the real Skill tree, opens content, and keeps ranked retrie
       brokerFolderMarker: () => "", brokerShareMarker: () => "", uiIcon: () => "", folkDisplayName: value => value,
       hl: value => window.esc(value), markdownAssetFolder: () => "",
       setPanelTitle() {}, detailPanelTitle: () => "", detailPathHtml: () => "",
-      buildToc: () => "", wordCount: value => value.length, markdownToolbar: () => "",
+      buildToc: () => "", wordCount: value => value.length, noteTodoDetailRefresh: () => false,
       safeMarked: value => window.esc(value), postProcess() {},
     });
     window.ask = (command, payload) => {
@@ -84,6 +84,7 @@ test("Ctrl+F filters the real Skill tree, opens content, and keeps ranked retrie
     section("renderList", "renderSubscribedGroups"),
     section("skillLi", "toggleSkillPin"),
     section("requestDetail", "openPromptFile"),
+    section("markdownPinButton", "detailContentPath"),
     section("renderDetail", "openMarkdownItem"),
     section("contentSearchChanged", "folkDisplayName"),
     fs.readFileSync(path.join(__dirname, "../src/webview/panel/21-search.js"), "utf8"),
@@ -129,5 +130,94 @@ test("Ctrl+F filters the real Skill tree, opens content, and keeps ranked retrie
   assert.equal(await filtered.count(), 1);
   await page.keyboard.press("Escape");
   assert.equal(await page.locator("#content-find-control").evaluate(node => node.classList.contains("panel-find-open")), false);
+  assert.deepEqual(errors, []);
+});
+
+test("document details keep Pin beside the title and expose only common toolbar actions", async t => {
+  const browser = await chromium.launch({ headless: true,
+    ...(process.env.PKM_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PKM_CHROMIUM_EXECUTABLE } : {}) });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  await page.setContent('<main id="detail"></main><div id="paper-form"></div><div id="paper-graph-view"></div>');
+  await page.addStyleTag({ path: path.join(__dirname, "../src/webview/panel.css") });
+  await page.evaluate(() => {
+    Object.assign(window, {
+      currentDetail: null, renderNonce: 0, ICON: {}, __posts: [], __edits: [],
+      esc: value => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;"),
+      uiIcon: (icon, label = "") => `<span class="codicon codicon-${icon}" aria-hidden="true"></span>${label}`,
+      privacyLock: () => "", detailPathHtml: () => "", detailPanelTitle: () => "",
+      setPanelTitle() {}, noteTodoDetailRefresh: () => false, noteTodoMount() {}, postProcess() {},
+      buildToc: () => "", wordCount: () => "", safeMarked: value => window.esc(value),
+      ask: (command, payload) => window.__posts.push({command, ...payload}),
+      pkModal: options => { window.__edits.push(options.title); options.onOk("Updated value"); },
+      copyDetailUrl: () => window.__posts.push({command:"copyDetailUrl"}),
+      exportMarkdown: mode => window.__posts.push({command:"exportMarkdown", mode}),
+    });
+  });
+  await page.addScriptTag({ content: [
+    section("markdownPinButton", "detailContentPath"),
+    section("renderDetail", "startEditScript"),
+    section("toggleNotePin", "buildCatTree"),
+    section("toggleSkillPin", "noteFilename"),
+    section("togglePin", "openPaperLink"),
+  ].join("\n") });
+  for (const width of [1000, 390]) {
+    await page.setViewportSize({width, height:800});
+    for (const type of ["note", "skill", "paper"]) {
+      const title = "Production AAGL Pipeline Consolidation";
+      await page.evaluate(({type, title}) => renderDetail({
+        type, title, name:title, slug:"Project/Design", category:"Project", note_type:"general",
+        content:"Document body", tags:type === "paper" ? ["design"] : '["design"]',
+        description:"Description", pinned:false,
+      }), {type, title});
+      const pin = page.locator(".d-title").getByRole("button", {name:"Pin", exact:true});
+      assert.equal(await pin.getAttribute("aria-pressed"), "false");
+      assert.equal(await pin.innerText(), "", "Pin is a compact icon, not another toolbar label");
+      assert.equal(await page.locator(".d-meta .detail-pin").count(), 0);
+      for (const name of ["Site", "Edit Metadata"]) {
+        assert.equal(await page.getByRole("button", {name, exact:true}).count(), 0);
+      }
+      const convert = page.getByRole("button", {name:"Convert to Todo Board", exact:true});
+      assert.equal(await convert.count(), type === "note" ? 1 : 0);
+      if (type === "note") {
+        await convert.click();
+        assert.deepEqual(await page.evaluate(() => __posts.at(-1)), {command:"todoBoardConvert", slug:"Project/Design"});
+      }
+      const heading = await page.locator(".d-title").boundingBox();
+      const button = await pin.boundingBox();
+      assert(Math.abs(button.x+button.width-heading.x-heading.width)<2, "Pin sits at the right edge of the title");
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      await pin.click();
+      assert.deepEqual(await page.evaluate(() => __posts.at(-1)), {
+        command:type === "note" ? "noteSetPinned" : type === "skill" ? "skillSetPinned" : "paperSetPinned",
+        [type === "skill" ? "name" : "slug"]:type === "skill" ? title : "Project/Design",
+        pinned:true,
+      });
+      const unpin = page.locator(".d-title").getByRole("button", {name:"Unpin", exact:true});
+      assert.equal(await unpin.getAttribute("aria-pressed"), "true");
+      await unpin.focus();
+      await page.keyboard.press("Enter");
+      assert.equal(await page.evaluate(() => __posts.at(-1).pinned), false);
+      for (const [label, field] of [[type === "skill" ? "Edit name" : "Edit title", "title"], ["Edit tags", "tags"], ["Edit description", "description"]]) {
+        await page.locator(`button[title="${label}"]`).click();
+        assert.equal(await page.evaluate(() => __posts.at(-1).command), "updateKnowledgeMetadataField");
+        assert.equal(await page.evaluate(() => __posts.at(-1).field), field);
+      }
+      await page.getByRole("button", {name:"Browser", exact:true}).click();
+      assert.equal(await page.evaluate(() => __posts.at(-1).mode), "browser");
+      await page.getByRole("button", {name:"Download", exact:true}).click();
+      assert.equal(await page.evaluate(() => __posts.at(-1).mode), "file");
+      await page.getByRole("button", {name:"Copy PKM URL", exact:true}).click();
+      assert.equal(await page.evaluate(() => __posts.at(-1).command), "copyDetailUrl");
+      await page.getByRole("button", {name:"Edit Content", exact:true}).click();
+      assert.equal(await page.evaluate(() => __posts.at(-1).command), "openKnowledgeContent");
+    }
+    await page.evaluate(() => renderDetail({type:"note", title:"Todo Board", slug:"Board", documentKind:"todo-board", pinned:true}));
+    assert.equal(await page.getByRole("button", {name:"Edit Content", exact:true}).count(), 0);
+    assert.equal(await page.getByRole("button", {name:"Convert to Todo Board", exact:true}).count(), 0);
+    assert.equal(await page.locator(".d-title .detail-pin").getAttribute("aria-pressed"), "true");
+  }
   assert.deepEqual(errors, []);
 });

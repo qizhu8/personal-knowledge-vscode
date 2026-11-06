@@ -24,7 +24,9 @@ including side-by-side layouts. Each diagram has independent zoom-in, zoom-out,
 Fit width and 100% controls; enlarged diagrams scroll within their own viewport.
 Focus the diagram viewport to use `+` / `-`, `0` (original size) or `F` (fit).
 Fit mode follows container resizing; manual zoom stays unchanged until Fit width
-is selected. These controls do not modify the Markdown source.
+is selected. Media viewports reserve scrollbar space so Fit width stays stable
+when a diagram or image is near the scrollable height limit.
+These controls do not modify the Markdown source.
 Manual zoom is bounded to 1%-400%. Printing hides the controls, fits media to the
 page and removes viewport height limits so diagrams are not cropped.
 PKM's built-in Markdown previews use the same controls for both Mermaid diagrams
@@ -43,6 +45,15 @@ Shift-drag retains selection behavior instead of starting a pan.
 
 ## Navigation and operations
 
+Notes, Skills and Research details keep **Pin** at the right of the title.
+Use the small pencil beside the title, tags or description to edit that field.
+The common toolbar contains **Browser**, **Copy PKM URL**, **Download** and
+**Edit Content** (except on command-managed Todo Boards). It no longer includes
+Site export or the duplicate Edit Metadata entry. Ordinary Notes also offer
+**Convert to Todo Board**: copy an Agent prompt, or select/create a PKM Chat to
+perform the conversion. The original Markdown is preserved; see the
+[conversion workflow](./note-work-items.md#agent-assisted-markdown-conversion).
+
 PKM browser pages and Extension webviews enable the browser's native spellcheck
 for prose inputs, including Chat, Markdown and Todo details. Code/JSON editors,
 URLs and structured Todo references opt out. Suggestions and underlines depend
@@ -59,8 +70,8 @@ knowledge). It is an indicator, not an access-mode switch.
 Private folders and their documents display the same small lock icon as the
 Extension, including inherited privacy in nested folders. Public content stays
 unlocked even in the Private reader; the Public reader still omits Private content.
-Opening a document selects its content type; switching tabs changes only the
-sidebar, never the article. Each tab retains its expanded folders, sidebar
+Opening a document selects its content type. Switching tabs preserves the
+article; leaving Research restores it if a graph is open. Each tab retains its expanded folders, sidebar
 scroll position and Research view for the browser session. **Ctrl/Command+F**
 searches the directory; select the appropriate tab to browse its results.
 
@@ -78,6 +89,9 @@ not grant access to private content. Research folders open in Directory view.
 Research offers **Directory**, **2D Graph** (Cytoscape), and **3D Graph**
 (ForceGraph3D/WebGL), using the extension's bundled renderers. Citation arrows run
 from the cited parent to the citing child; clicking a node opens its paper.
+Graphs fill the main content area, not the navigation sidebar. The Library
+directory remains available beside the graph. Selecting **Directory**, another
+Library tab, or a document returns to the article without discarding its state.
 Graphs are read-only. Missing libraries or unavailable WebGL produce an explicit
 error; Directory and 2D remain available.
 

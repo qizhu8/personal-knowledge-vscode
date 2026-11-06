@@ -67,7 +67,7 @@ function backgroundProcessesHtml() {
             <br>Running generation: ${esc(runtime.generation || 'Unknown')}<br>Configured generation: ${esc(runtime.configuredGeneration || 'Unknown')}
             <br>MCP runtime build: ${esc(runtime.runtimeBuild || 'Unknown')}</div></div>`
           : '<div class="background-process-meta">Activity / in-flight work: Unknown · No per-process runtime report available.</div>'}
-        <div class="background-process-action"><strong>Next:</strong> ${esc(actions[status] || actions.unverified)}</div>
+        <div class="background-process-action"><strong>Next:</strong> ${esc(actions[status] || actions.unverified)}${['test-leftover','missing-entry','superseded','older','newer','unverified'].includes(status) ? `<button class="tbtn" onclick="openHelpSection('troubleshooting')">Review process safety steps</button>` : ''}</div>
         <div class="background-process-path">${esc(p.entryPath)}</div></details>
       </div></article>`;
   };
@@ -76,7 +76,7 @@ function backgroundProcessesHtml() {
       <p>Processes, not active tasks.</p></div>
       <button type="button" class="tbtn" id="background-process-refresh">Refresh</button></header>
     ${!snapshot ? '<p role="status">Loading background processes…</p>' : snapshot.error
-      ? `<p role="alert">${esc(snapshot.error)}</p>`
+      ? problemGuidanceHtml(snapshot.error, helpText('Refresh the process snapshot before taking action. Unknown ownership or age is not permission to stop a process.', '采取操作前刷新进程快照。归属未知或运行时间长不代表可以停止进程。'), '', 'troubleshooting')
       : `<div class="background-process-overview"><span>${processes.length} processes</span>
           <span title="RSS includes shared pages; not reclaimable memory.">${esc((processes.reduce((sum, p) => sum + p.rssBytes, 0) / 1048576).toFixed(1))} MiB RSS</span></div>
         <details class="background-process-info"><summary>Snapshot details</summary>

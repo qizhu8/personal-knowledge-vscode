@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
-const { prepareWorkGoal, recordWorkGoalTransition, reportWork, validWorkGoal, workGoalContext, workGoalInputs, workEvidenceKey, rootWorkCriterion } = require("../dist/chat/chat-work-goal");
+const { prepareWorkGoal, recordWorkGoalTransition, reportWork, validWorkGoal, workGoalContext, workGoalInputs, workEvidenceKey, workEvidenceHint, workEvidenceBatchHint, rootWorkCriterion } = require("../dist/chat/chat-work-goal");
 
 const digest = "a".repeat(64);
 const reviewMarkup = fs.readFileSync(path.join(__dirname, "../tools/work-intent-review/index.html"), "utf8");
@@ -21,6 +21,142 @@ function report(chat, patch = {}) {
   return { status:"resolved", reason:"The endpoint regression passed.", sourceInputIds:workGoalInputs(chat),
     acceptance:[{ criterion:rootWorkCriterion, verified:true, evidenceCallIds:["probe"] }], ...patch };
 }
+
+test("batch evidence retains eight realistic identities at half the exact UTF8 cost", () => {
+  const { chat, reply } = fixture();
+  const names = ["read_file", "search_text", "run_process", "replace_text", "save_file", "capability_read", "find_files", "list_directory"];
+  reply.toolCalls = names.map((name, index) => ({ ...reply.toolCalls[0], name,
+    id:index % 2 ? `call_${randomUUID().replaceAll("-", "")}` : randomUUID(),
+    result:'{"text":"raw résult 中文 remains unchanged"}',
+  }));
+  const ids = reply.toolCalls.map(call => call.id), before = structuredClone({ chat, reply, ids });
+  const oldHints = ids.map(id => workEvidenceHint(chat, reply, id)).join("");
+  const hint = workEvidenceBatchHint(chat, reply, ids), parsed = JSON.parse(hint);
+  const oldBytes = Buffer.byteLength(oldHints, "utf8"), newBytes = Buffer.byteLength(hint, "utf8");
+  console.log(`Batch evidence UTF8 bytes: old=${oldBytes}, new=${newBytes}`);
+  assert.ok(newBytes <= oldBytes * 0.5, `${newBytes} must be <= ${oldBytes / 2}`);
+  assert.ok(hint.length <= 2000);
+  assert.equal(parsed.schema, "pkm.chat.work-evidence-hint/v2");
+  assert.equal(parsed.goalId, chat.workGoal.id);
+  assert.equal(parsed.attemptInputId, reply.inputId);
+  assert.equal(parsed.omitted, 0);
+  assert.deepEqual(parsed.evidence, reply.toolCalls.map(({ id, name }) => ({ id, name })));
+  assert.deepEqual({ chat, reply, ids }, before);
+});
+
+test("batch evidence preserves single v1 and excludes duplicates and ineligible identities", () => {
+  const { chat, reply } = fixture();
+  reply.toolCalls.push(...["session_info", "report_work", "finish_debug", "record_harness"].map(name =>
+    ({ ...reply.toolCalls[0], id:name, name })),
+    { ...reply.toolCalls[0], id:"failed", status:"failed" },
+    { ...reply.toolCalls[0], id:"running", status:"running" },
+    { ...reply.toolCalls[0], id:"no-result", result:undefined },
+    { ...reply.toolCalls[0], id:"" });
+  const ids = ["probe", "probe", "missing", "", " ", ...reply.toolCalls.slice(1).map(call => call.id)];
+  const before = structuredClone({ chat, reply, ids });
+  assert.equal(workEvidenceBatchHint(chat, reply, ids), workEvidenceHint(chat, reply, "probe"));
+  assert.equal(workEvidenceBatchHint(chat, reply, ids.slice(2)), undefined);
+  assert.equal(workEvidenceBatchHint(chat, { ...reply, inputId:randomUUID() }, ids), undefined);
+  assert.equal(workEvidenceBatchHint({ ...chat, workGoal:undefined }, reply, ids), undefined);
+  assert.equal(workEvidenceBatchHint({ ...chat, workGoal:{ ...chat.workGoal, status:"blocked" } }, reply, ids), undefined);
+  assert.deepEqual({ chat, reply, ids }, before);
+});
+
+test("batch evidence validates reserved budgets and reports exact whole-identity omissions", () => {
+  const { chat, reply } = fixture();
+  reply.toolCalls = Array.from({ length:40 }, (_, index) => ({ ...reply.toolCalls[0],
+    id:index === 0 ? "oversized-" + "x".repeat(2200) : `call_${randomUUID().replaceAll("-", "")}`,
+  }));
+  const ids = reply.toolCalls.map(call => call.id), before = structuredClone({ chat, reply, ids });
+  for (const budget of [200, 420, 700, 2000]) {
+    const hint = workEvidenceBatchHint(chat, reply, ids, budget), parsed = JSON.parse(hint);
+    assert.ok(hint.length <= budget);
+    const retained = parsed.evidence || [];
+    assert.equal(parsed.omitted, ids.length - retained.length);
+    assert.ok(parsed.omitted > 0);
+    assert.match(parsed.omissionNotice || parsed.note, /omitted|Omitted/);
+    assert.ok(!hint.includes(ids[0]));
+    for (const identity of retained) {
+      assert.deepEqual(identity, { id:ids.find(id => id === identity.id), name:"run_process" });
+    }
+  }
+  const overflow = JSON.parse(workEvidenceBatchHint(chat, reply, ids));
+  assert.ok(overflow.evidence.length > 0);
+  assert.ok(overflow.evidence.length < ids.length);
+  for (const invalid of [0, 199, 2001, -1, 400.5, NaN, Infinity, "700", null]) {
+    assert.throws(() => workEvidenceBatchHint(chat, reply, ids, invalid), RangeError);
+  }
+  const oversized = JSON.parse(workEvidenceBatchHint(chat, reply, [ids[0]]));
+  assert.equal(oversized.omitted, 1);
+  assert.deepEqual(oversized.evidence, []);
+  assert.deepEqual({ chat, reply, ids }, before);
+});
+
+test("batch evidence retains all identities that fit before adding omission text", () => {
+  const { chat, reply } = fixture();
+  reply.toolCalls = ["call_" + "a".repeat(150), randomUUID()]
+    .map(id => ({ ...reply.toolCalls[0], id }));
+  const ids = reply.toolCalls.map(call => call.id);
+  const complete = workEvidenceBatchHint(chat, reply, ids);
+  const bounded = workEvidenceBatchHint(chat, reply, ids, complete.length);
+  assert.equal(bounded, complete);
+  assert.equal(JSON.parse(bounded).omitted, 0);
+});
+
+test("work evidence hint exposes only current eligible identity without mutation", () => {
+  const { chat, reply } = fixture(), before = structuredClone(chat);
+  const hint = workEvidenceHint(chat, reply, "probe");
+  assert.equal(typeof hint, "string");
+  assert.ok(hint.length <= 2000);
+  const parsed = JSON.parse(hint);
+  assert.deepEqual(parsed, {
+    schema:"pkm.chat.work-evidence-hint/v1", goalId:chat.workGoal.id, attemptInputId:reply.inputId,
+    evidence:{ id:"probe", name:"run_process" },
+    note:"Identity candidate only; not semantic acceptance, permission, or managed completion.",
+  });
+  assert.doesNotMatch(hint, /arguments|exitCode|result|\\{\\}/);
+  assert.deepEqual(chat, before);
+
+  const oversized = structuredClone(reply);
+  const longId = "x".repeat(2100);
+  oversized.toolCalls[0].id = longId;
+  const omitted = workEvidenceHint(chat, oversized, longId);
+  assert.ok(omitted.length <= 2000);
+  assert.equal(JSON.parse(omitted).omitted, true);
+  assert.equal(JSON.parse(omitted).evidence, undefined);
+  assert.ok(!omitted.includes(longId));
+});
+
+test("work evidence hint rejects foreign, missing, ineligible, incomplete, and old-goal calls", () => {
+  const { chat, reply } = fixture();
+  assert.equal(workEvidenceHint(chat, { ...reply, inputId:randomUUID() }, "probe"), undefined);
+  assert.equal(workEvidenceHint(chat, reply, "missing"), undefined);
+  for (const [name, status, result] of [
+    ["session_info", "complete", "{}"], ["run_process", "running", undefined], ["run_process", "failed", "{}"],
+  ]) {
+    const candidate = { ...reply, toolCalls:[{ id:"candidate", name, status, result }] };
+    assert.equal(workEvidenceHint(chat, candidate, "candidate"), undefined);
+  }
+  const oldAttempt = { ...reply, inputId:randomUUID() };
+  assert.equal(workEvidenceHint(chat, oldAttempt, "probe"), undefined);
+  chat.workGoal.status = "blocked";
+  assert.equal(workEvidenceHint(chat, reply, "probe"), undefined);
+});
+
+test("work evidence hint identity can support the unchanged original report contract", () => {
+  const { chat, reply } = fixture();
+  const hint = JSON.parse(workEvidenceHint(chat, reply, "probe"));
+  const originalReport = report(chat, { acceptance:[{
+    criterion:rootWorkCriterion, verified:true, evidenceCallIds:[hint.evidence.id],
+  }] });
+  assert.deepEqual(originalReport.sourceInputIds, workGoalInputs(chat));
+  assert.equal(originalReport.acceptance[0].criterion, rootWorkCriterion);
+  reportWork(chat, reply, originalReport);
+  assert.equal(chat.workGoal.status, "resolved");
+  assert.deepEqual(chat.workGoal.acceptance[0], {
+    criterion:rootWorkCriterion, verified:true, evidenceCallIds:["probe"],
+  });
+});
 
 test("root work objective survives narrower followups and blocked-answer resume", () => {
   const { chat, reply } = fixture(), root = structuredClone(chat.workGoal);
@@ -117,6 +253,144 @@ test("a rejected replacement report names missing criteria and permits an explic
   corrected.acceptance[0].evidenceCallIds = ["probe"];
   assert.equal(JSON.parse(reportWork(chat, reply, corrected)).recorded, true);
   assert.equal(chat.workGoal.status, "resolved");
+});
+
+test("per-criterion evidence limits report the exact field and count without mutating rejected reports", () => {
+  for (const [count, index] of [[42, 0], [33, 3]]) {
+    const { chat, reply } = fixture();
+    const args = report(chat, { status:"blocked", reason:"Validation remains incomplete.", acceptance:[
+      { criterion:rootWorkCriterion, verified:false, evidenceCallIds:[] },
+      ...Array.from({ length:4 }, (_, i) => ({ criterion:`PRIVATE_CRITERION_${i}`, verified:false, evidenceCallIds:[] })),
+    ] });
+    args.acceptance[index].evidenceCallIds = Array.from({ length:count }, (_, i) => `recorded-call-${i}`);
+    const goal = chat.workGoal;
+    const before = structuredClone({ chat, reply, args });
+    assert.throws(() => reportWork(chat, reply, args), error => {
+      assert.match(error.message, new RegExp(`acceptance\\[${index}\\]\\.evidenceCallIds`));
+      assert.match(error.message, new RegExp(`contains ${count} IDs; maximum 32`));
+      assert.match(error.message, /No work state was changed/);
+      assert.doesNotMatch(error.message, /Provide 1–32 unique acceptance criteria|PRIVATE_CRITERION_|recorded-call-/);
+      return true;
+    });
+    assert.equal(chat.workGoal, goal, "rejection retains the original Goal object");
+    assert.deepEqual({ chat, reply, args }, before, "rejection changes neither Chat, Goal, reply nor submitted acceptance");
+  }
+});
+
+test("per-criterion evidence limits accept 32 without adding unverified evidence rules", () => {
+  for (const verified of [false, true]) {
+    const { chat, reply } = fixture();
+    const ids = Array.from({ length:32 }, (_, i) => `validation-${i}`);
+    if (verified) reply.toolCalls = ids.map(id => ({ ...reply.toolCalls[0], id }));
+    const args = report(chat, { status:"blocked", reason:"Other acceptance remains incomplete.", acceptance:[
+      { criterion:rootWorkCriterion, verified:false, evidenceCallIds:[] },
+      { criterion:"Boundary evidence", verified, evidenceCallIds:ids },
+    ] });
+    const before = structuredClone(args);
+    assert.equal(JSON.parse(reportWork(chat, reply, args)).recorded, true);
+    assert.equal(chat.workGoal.status, "blocked");
+    assert.deepEqual(chat.workGoal.acceptance, before.acceptance);
+    assert.deepEqual(args, before, "valid evidence is not truncated or selected");
+    assert.equal(validWorkGoal(chat.workGoal), true);
+  }
+});
+
+test("invalid evidence reports advertise only current eligible candidates and allow an exact correction", () => {
+  const { chat, reply } = fixture();
+  const actualValidationId = "actual-validation-1";
+  const hiddenArgs = "HIDDEN_ARGUMENT_SENTINEL";
+  const hiddenResult = "HIDDEN_RESULT_SENTINEL";
+  reply.toolCalls = [
+    { id:actualValidationId, name:"run_process", arguments:hiddenArgs, status:"complete", result:hiddenResult },
+    { id:"session-info-id", name:"session_info", arguments:hiddenArgs, status:"complete", result:hiddenResult },
+  ];
+  const before = structuredClone(chat.workGoal);
+  assert.throws(() => reportWork(chat, reply, report(chat, { acceptance:[
+    { criterion:rootWorkCriterion, verified:true, evidenceCallIds:[actualValidationId, "session-info-id"] },
+  ] })), error => {
+    assert.match(error.message, /unique successful execution\/validation call IDs from this attempt, not reports or another attempt/);
+    assert.match(error.message, /\[{"id":"actual-validation-1","name":"run_process"}\]/);
+    assert.match(error.message, /Omitted eligible current-reply candidate count: 0/);
+    assert(!error.message.includes(hiddenArgs));
+    assert(!error.message.includes(hiddenResult));
+    return true;
+  });
+  assert.deepEqual(chat.workGoal, before, "a rejected report leaves the entire goal unchanged");
+  const corrected = report(chat, { acceptance:[
+    { criterion:rootWorkCriterion, verified:true, evidenceCallIds:[actualValidationId] },
+  ] });
+  assert.equal(JSON.parse(reportWork(chat, reply, corrected)).recorded, true,
+    "the advertised actual validation call ID succeeds on corrected retry");
+});
+
+test("duplicate, missing, old-attempt and empty evidence still reject without changing the goal", () => {
+  for (const kind of ["duplicate", "missing", "old-attempt", "empty"]) {
+    const { chat, reply } = fixture();
+    const before = structuredClone(chat.workGoal);
+    let evidenceCallIds = ["missing-call"];
+    if (kind === "duplicate") evidenceCallIds = ["probe", "probe"];
+    if (kind === "old-attempt") {
+      chat.messages.push({ id:randomUUID(), inputId:"old-input", role:"assistant", status:"complete",
+        toolCalls:[{ id:"old-attempt-call", name:"run_process", arguments:"old args", status:"complete", result:"old result" }] });
+      evidenceCallIds = ["old-attempt-call"];
+    }
+    if (kind === "empty") {
+      reply.toolCalls = [{ id:"excluded", name:"record_harness", arguments:"hidden", status:"complete", result:"hidden" }];
+      evidenceCallIds = ["excluded"];
+    }
+    assert.throws(() => reportWork(chat, reply, report(chat, { acceptance:[
+      { criterion:rootWorkCriterion, verified:true, evidenceCallIds },
+    ] })), error => {
+      assert.match(error.message, /execution\/validation call IDs from this attempt/);
+      if (kind === "empty") {
+        assert.match(error.message, /candidates \(id,name; maximum 8\): \[\]/);
+        assert.match(error.message, /Omitted eligible current-reply candidate count: 0/);
+        assert.match(error.message, /No eligible current-reply candidates are available/);
+      } else {
+        assert.match(error.message, /\[{"id":"probe","name":"run_process"}\]/);
+      }
+      if (kind === "old-attempt") assert(!error.message.includes("old-attempt-call"));
+      return true;
+    });
+    assert.deepEqual(chat.workGoal, before, `${kind} rejection does not mutate any goal fields`);
+  }
+});
+
+test("invalid evidence candidate diagnostics are capped at eight with an exact omitted count", () => {
+  const { chat, reply } = fixture();
+  reply.toolCalls = Array.from({ length:10 }, (_, index) => ({ id:`current-${index}`, name:"run_process",
+    arguments:`ARGUMENT_${index}_SENTINEL`, status:"complete", result:`RESULT_${index}_SENTINEL` }));
+  const before = structuredClone(chat.workGoal);
+  assert.throws(() => reportWork(chat, reply, report(chat, { acceptance:[
+    { criterion:rootWorkCriterion, verified:true, evidenceCallIds:["unknown"] },
+  ] })), error => {
+    const match = error.message.match(/Eligible current-reply candidates \(id,name; maximum 8\): (\[[^]*?\])\./);
+    assert(match);
+    const candidates = JSON.parse(match[1]);
+    assert.equal(candidates.length, 8);
+    assert.deepEqual(candidates[0], { id:"current-0", name:"run_process" });
+    assert.match(error.message, /Omitted eligible current-reply candidate count: 2/);
+    assert(error.message.includes("No work state changed."));
+    assert(!error.message.includes("ARGUMENT_"));
+    assert(!error.message.includes("RESULT_"));
+    return true;
+  });
+  assert.deepEqual(chat.workGoal, before);
+});
+
+test("candidate diagnostics do not weaken current worker-version checks", () => {
+  const { chat, reply } = fixture();
+  chat.id = randomUUID();
+  const version = { schema:"pkm.chat.worker-version/v1", managerChatId:chat.id, managerNamespace:"a".repeat(16),
+    chatId:randomUUID(), namespace:"b".repeat(16), receiptId:randomUUID(), activityId:randomUUID(),
+    attemptId:randomUUID(), messageId:randomUUID(), status:"complete", sha256:digest };
+  reply.toolCalls.push({ id:"worker-evidence", name:"read_chat_result", arguments:"{}", status:"complete",
+    result:JSON.stringify({ workerVersion:version }) });
+  const before = structuredClone(chat.workGoal);
+  assert.throws(() => reportWork(chat, reply, report(chat, { acceptance:[
+    { criterion:rootWorkCriterion, verified:true, evidenceCallIds:["worker-evidence"] },
+  ] }), () => ({ ...version, sha256:"c".repeat(64) })), /Worker evidence is stale/);
+  assert.deepEqual(chat.workGoal, before);
 });
 
 test("pause and interruption require explicit resumption and never retarget", () => {
@@ -268,6 +542,8 @@ test("resolved state preserves evidence and publicly distinguishes agent claim f
   assert.equal(chat.workGoal.status, "resolved");
   assert(workGoalContext(chat).includes(chat.workGoal.objective));
   assert(workGoalContext(chat).includes("not independent certification"));
+  assert(workGoalContext(chat).includes("the first report can be the final resolved/blocked/needs_input report"));
+  assert(workGoalContext(chat).includes("call session_info only when current evidence identities or changed requirements are missing"));
   assert.equal(validWorkGoal({ ...chat.workGoal, status:"quiet" }), false);
 });
 
@@ -310,6 +586,48 @@ test("transition history is bounded and legacy goals remain valid", () => {
   assert.equal(goal.transitions[0].at, 6);
   assert(validWorkGoal(goal));
   assert.equal(validWorkGoal({ ...goal, transitions:[{ ...goal.transitions[0], reason:"unclassified" }] }), false);
+});
+
+test("explicit project, agent and Board item commands are not Chat Goal stop commands", () => {
+  const { workStop } = require("../dist/chat/chat-work-goal");
+  for (const text of ["Pause the project.", "Pause the agent.", "Pause the work item.", "暂停项目。", "暂停 agent。", "暂停 Work Item。"])
+    assert.equal(workStop.test(text), false, text);
+  for (const text of ["Stop.", "Pause the current task.", "暂停当前任务。"])
+    assert.equal(workStop.test(text), true, text);
+});
+
+test("Chat Goal pause is scoped and retains prior evidence until explicit same-context resume", () => {
+  const { chat, reply } = fixture();
+  const goalId = chat.workGoal.id, originalInputId = chat.workGoal.inputId;
+  const priorReplyEvidence = structuredClone(reply);
+  const pauseId = randomUUID();
+  prepareWorkGoal(chat, pauseId, "Stop.", digest);
+  assert.equal(chat.workGoal.status, "paused");
+  assert.equal(chat.workGoal.id, goalId);
+  assert.equal(chat.workGoal.inputId, originalInputId);
+  assert.equal(chat.workGoal.transitions.at(-1).inputId, pauseId);
+  assert.equal(chat.workGoal.transitions.at(-1).reason, "user_paused");
+  assert.deepEqual(reply, priorReplyEvidence);
+  prepareWorkGoal(chat, randomUUID(), "Here is a log.", digest);
+  assert.equal(chat.workGoal.status, "paused");
+  assert.throws(() => prepareWorkGoal(chat, randomUUID(), "Continue.", "b".repeat(64)), /another execution context/);
+  assert.equal(chat.workGoal.status, "paused");
+  prepareWorkGoal(chat, randomUUID(), "Continue.", digest);
+  assert.equal(chat.workGoal.status, "active");
+  assert.equal(chat.workGoal.id, goalId);
+  assert.deepEqual(reply, priorReplyEvidence);
+});
+
+test("a failed read-only request does not block explicit same-context Goal continuation", () => {
+  const { chat, reply } = fixture();
+  reply.toolCalls = [{ id:"invalid-range", name:"read_file", arguments:'{"path":"fixture.txt","startLine":95,"endLine":170}',
+    status:"failed", result:'{"error":"Start line 95 exceeds the document\'s 90 lines."}' }];
+  const evidence = structuredClone(reply.toolCalls);
+  prepareWorkGoal(chat, randomUUID(), "Stop.", digest);
+  prepareWorkGoal(chat, randomUUID(), "Continue.", digest);
+  assert.equal(chat.workGoal.status, "active");
+  assert.equal(chat.workGoal.transitions.at(-1).reason, "user_resumed");
+  assert.deepEqual(reply.toolCalls, evidence);
 });
 
 test("user pause and explicit resume are distinct transitions", () => {

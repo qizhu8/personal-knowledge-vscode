@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { ChatToolScheduler } from "./chat-tool-execution";
+import { ChatToolScheduler, chatToolBatchContext, chatToolResultContext } from "./chat-tool-execution";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -8,8 +8,8 @@ import { createHash } from "crypto";
 import { ContextBudgetExceededError, sdkInputBound, sdkInputGrowth } from "./chat-context";
 import { estimateInputTokens } from "./api-chat-models";
 import { ChatInferenceClock } from "./chat-inference-timing";
-import { ApiChatMessage, ApiChatRequest, ApiChatToolEvent, ChatInputBaseline, ChatToolLoopGuard, chatInferenceOutputByteLimit, chatTransportReceipt, toolBudgetSummary } from "./api-chat-client";
-import { ChatTokenUsage, checkReportedOutput } from "./api-chat-models";
+import { ApiChatMessage, ApiChatRequest, ApiChatToolEvent, ChatInputBaseline, ChatSdkSetupTiming, ChatToolLoopGuard, chatToolRoundBudgetNotice, chatInferenceOutputByteLimit, chatTransportReceipt, toolBudgetSummary } from "./api-chat-client";
+import { ChatBudgetExceededError, ChatTokenUsage, checkReportedOutput } from "./api-chat-models";
 import { abortable } from "./api-chat-tools";
 
 /** VS Code model-list vendor for models served through the Copilot SDK runtime bundled with VS Code. */
@@ -67,7 +67,9 @@ export interface CopilotSdkDeps {
 
 class CopilotSdkChatError extends Error {}
 
-export class CopilotSdkSummaryBudgetError extends CopilotSdkChatError {}
+export class CopilotSdkSummaryBudgetError extends ChatBudgetExceededError {
+  constructor(message: string) { super(message, "input"); }
+}
 
 function platformPackages(): string[] {
   const id = `${process.platform}-${process.arch}`;
@@ -201,7 +203,7 @@ export function isCopilotSdkModel(model: unknown): model is CopilotSdkModel {
   return !!model && typeof model === "object" && (model as { vendor?: unknown }).vendor === copilotSdkVendor && "copilotSdk" in model;
 }
 
-/** Passive discovery never prompts; the model picker provides an explicit connection/consent entry. */
+/** Passive discovery never prompts; choosing SDK in the model picker enables interactive account access. */
 export async function discoverCopilotSdkModels(host: typeof vscode = vscode, signal?: AbortSignal, deps: CopilotSdkDeps = defaultDeps(host), interactive = false): Promise<CopilotSdkModel[]> {
   if (signal?.aborted) throw new CopilotSdkChatError("Request cancelled.");
   if (!interactive && modelCache && Date.now() - modelCache.at < modelCacheMs) return modelCache.models;
@@ -209,7 +211,7 @@ export async function discoverCopilotSdkModels(host: typeof vscode = vscode, sig
     const tokenRequest = deps.token(interactive);
     const token = signal ? await abortable(tokenRequest, signal) : await tokenRequest;
     if (signal?.aborted) throw new CopilotSdkChatError("Request cancelled.");
-    if (!token) throw new CopilotSdkChatError("Copilot SDK needs GitHub account access. Choose Connect Copilot SDK in the model picker to sign in and grant access.");
+    if (!token) throw new CopilotSdkChatError("Copilot SDK needs GitHub account access. Choose SDK in the model picker to sign in and grant access.");
     const pending = deps.client().then(({ client }) => {
       if (signal?.aborted) throw new CopilotSdkChatError("Request cancelled.");
       return client.rpc.models.list({ gitHubToken: token });
@@ -226,12 +228,12 @@ export async function discoverCopilotSdkModels(host: typeof vscode = vscode, sig
       if (error instanceof CopilotSdkChatError) throw error;
       throw new CopilotSdkChatError("Cannot discover Copilot SDK models. Check GitHub sign-in, Copilot access and the runtime bundled with this VS Code installation.");
     }
-    console.warn("[PKM Copilot SDK]", error instanceof CopilotSdkChatError ? error.message : "Model discovery failed. Use Connect Copilot SDK in the model picker to retry interactively.");
+    console.warn("[PKM Copilot SDK]", error instanceof CopilotSdkChatError ? error.message : "Model discovery failed. Choose SDK in the model picker to retry interactively.");
     return [];
   }
 }
 
-type CopilotSdkChatRequest = Pick<ApiChatRequest, "messages" | "signal" | "timeoutMs" | "maxOutputTokens" | "thinkingBudget" | "maxToolRounds" | "hardToolRoundLimit" | "onHardToolRoundLimit" | "loopReviewAfterMs" | "loopReviewClock" | "loopExemptTools" | "onToolLoopNotice" | "contextWindow" | "tools" | "onTool" | "beforeRound" | "afterRound" | "beforeFinish" | "automaticKnowledge" | "onTransportPrepared" | "onTransportSent" | "afterTools" | "onStage" | "onModelActivity" | "onUsage" | "onUsageMetadata" | "onInferenceTiming" | "onOutputBudgetWarning" | "onThinking">;
+type CopilotSdkChatRequest = Pick<ApiChatRequest, "messages" | "signal" | "timeoutMs" | "maxOutputTokens" | "thinkingBudget" | "maxToolRounds" | "hardToolRoundLimit" | "onHardToolRoundLimit" | "loopReviewAfterMs" | "loopReviewClock" | "loopExemptTools" | "onToolLoopNotice" | "contextWindow" | "tools" | "onTool" | "onToolResultContext" | "onToolResultsContext" | "beforeRound" | "afterRound" | "beforeWork" | "beforeFinish" | "automaticKnowledge" | "onTransportPrepared" | "onTransportSent" | "afterTools" | "onStage" | "onModelActivity" | "onUsage" | "onUsageMetadata" | "onInferenceTiming" | "onOutputBudgetWarning" | "onThinking">;
 
 /** The runtime keeps no PKM history: each request is a fresh session seeded with a transcript of earlier turns. */
 export function copilotSdkPrompt(messages: ApiChatMessage[]): { system: string; prompt: string; images: NonNullable<ApiChatMessage["images"]> } {
@@ -336,6 +338,9 @@ async function streamCopilotSdkSession(model: CopilotSdkModel, request: CopilotS
     const remaining = request.maxOutputTokens ?? model.maxOutputTokens;
     if (!Number.isSafeInteger(remaining) || remaining < 1) throw new CopilotSdkChatError("Choose a positive per-inference output token budget.");
     const messages = [...request.messages];
+    const hardLimit = summaryOnly ? undefined : request.hardToolRoundLimit;
+    const initialNotice = hardLimit === undefined ? undefined : chatToolRoundBudgetNotice(0, hardLimit);
+    if (initialNotice) messages.push({ role: "system", content: initialNotice });
     const completedEvidence: ApiChatMessage[] = [];
     const messageHash = (message: ApiChatMessage) => createHash("sha256").update(JSON.stringify(message)).digest("hex");
     const inputSnapshots = new Map<number, readonly string[]>();
@@ -346,6 +351,7 @@ async function streamCopilotSdkSession(model: CopilotSdkModel, request: CopilotS
       const reason = error instanceof Error ? error.message : "Context budget exceeded.";
       const message = `${reason}${summaryOnly ? " Completed tool receipts were preserved without truncation; the final summary was not sent." : ""}`;
       if (summaryOnly && error instanceof ContextBudgetExceededError) throw new CopilotSdkSummaryBudgetError(message);
+      if (error instanceof ChatBudgetExceededError) throw error;
       throw new CopilotSdkChatError(message);
     }
     const { system, prompt, images } = copilotSdkPrompt(messages);
@@ -368,7 +374,7 @@ async function streamCopilotSdkSession(model: CopilotSdkModel, request: CopilotS
     if (!Number.isSafeInteger(inputBudget) || inputBudget < 1) throw new CopilotSdkChatError(budgetError);
     if (transport.inputTokens > inputBudget) {
       if (summaryOnly) throw new CopilotSdkSummaryBudgetError(budgetError);
-      throw new CopilotSdkChatError(budgetError);
+      throw new ChatBudgetExceededError(budgetError, "input");
     }
     try { request.onTransportPrepared?.(transport); }
     catch (error) { throw new CopilotSdkChatError(error instanceof Error ? error.message : "Transport receipt persistence failed."); }
@@ -377,7 +383,9 @@ async function streamCopilotSdkSession(model: CopilotSdkModel, request: CopilotS
     request.onModelActivity?.({ operation: "model-access", label: "Starting Copilot SDK session", status: "running" });
     const token = await abortable(deps.token(true), signal);
     if (!token) throw new CopilotSdkChatError("GitHub sign-in is required for Copilot SDK models. Sign in from the Accounts menu and allow PKM to use your GitHub account.");
+    const clientAcquisitionStartedAt = Date.now();
     const runtime = await abortable(deps.client(), signal);
+    const clientAcquisitionFinishedAt = Date.now();
     client = runtime.client;
 
     let round = -1;
@@ -395,6 +403,9 @@ async function streamCopilotSdkSession(model: CopilotSdkModel, request: CopilotS
     const contextEvents: Array<{ type:string; round:number; agent:boolean; child:boolean }> = [];
     let usageAdmission: Record<string, boolean | number | string> = { reason:"no-usage-observed" };
     let lastAssistant: { text: string; calls: number } | undefined;
+    const pendingToolContexts: ApiChatMessage[] = [];
+    const declaredToolCallIds: string[] = [];
+    const successfulToolEvents = new Map<string, ApiChatToolEvent>();
     const toolQueue = new ChatToolScheduler();
     const names = new Set(tools.map(tool => tool.name));
     const stopForHardLimit = async () => {
@@ -414,7 +425,7 @@ async function streamCopilotSdkSession(model: CopilotSdkModel, request: CopilotS
       settle?.();
     };
     const runTool = async (name: string, args: unknown, callId: string, turn: number, queuedMs: number): Promise<string> => {
-      if (stopped) return JSON.stringify({ error: "Not executed: the request has stopped." });
+      if (failure || stopped || signal.aborted) return JSON.stringify({ error: "Not executed: the request has stopped." });
       const tool = tools.find(item => item.name === name);
       const arguments_ = JSON.stringify(args ?? {});
       const event: ApiChatToolEvent = { id: callId, name: tool?.label || name, arguments: arguments_, status: "running", round: turn, queuedMs };
@@ -424,7 +435,12 @@ async function streamCopilotSdkSession(model: CopilotSdkModel, request: CopilotS
         return JSON.stringify({ error: "Not executed." });
       }
       await loop.beforeRound(request.hardToolRoundLimit === undefined ? turn + 1 : turn, signal);
-      let result: string;
+      if (failure || stopped || signal.aborted) return JSON.stringify({ error: "Not executed: the request has stopped." });
+      await request.beforeWork?.();
+      if (failure || stopped || signal.aborted) return JSON.stringify({ error: "Not executed: the request has stopped." });
+      let result: string, succeeded = false;
+      let terminalEvent: ApiChatToolEvent | undefined;
+      let reused: ReturnType<typeof loop.reuse>;
       if (loop.summarizing) {
         result = JSON.stringify({ error: "Not executed: tool-loop continuation was not approved; use completed results." });
         request.onTool?.({ ...event, status: "failed", result });
@@ -435,12 +451,12 @@ async function streamCopilotSdkSession(model: CopilotSdkModel, request: CopilotS
       } else {
         request.onTool?.(event);
         let version: string | undefined;
-        let reused: ReturnType<typeof loop.reuse>;
-        let succeeded = false;
         try {
           if (!tool) throw new Error("This tool is not enabled for the request.");
           if (!args || typeof args !== "object" || Array.isArray(args) || arguments_.length > 32_000) throw new Error("Invalid tool arguments.");
-          version = await tool.readVersion?.(args as Record<string, unknown>, signal);
+          version = await abortable(Promise.resolve().then(() => tool.readVersion?.(args as Record<string, unknown>, signal)), signal);
+          if (signal.aborted) throw new CopilotSdkChatError("Request cancelled.");
+          if (failure || stopped) throw new CopilotSdkChatError("Not executed: the request has stopped.");
           reused = loop.reuse(name, arguments_, messages, version);
           if (reused) result = reused.result;
           else {
@@ -448,8 +464,11 @@ async function streamCopilotSdkSession(model: CopilotSdkModel, request: CopilotS
             if (typeof result !== "string" || result.length > 16_000) throw new Error("Tool result exceeded the local limit.");
           }
           succeeded = true;
-          request.onTool?.({ ...event, status: "complete", result, ...(reused ? { reused: true } : {}) });
+          terminalEvent = { ...event, status: "complete", result, ...(reused ? { reused: true } : {}) };
+          request.onTool?.(terminalEvent);
         } catch (error) {
+          succeeded = false;
+          terminalEvent = undefined;
           if (signal.aborted) throw new CopilotSdkChatError("Request cancelled.");
           result = JSON.stringify({ error: error instanceof Error ? error.message : "Tool failed." });
           request.onTool?.({ ...event, status: "failed", result });
@@ -460,11 +479,22 @@ async function streamCopilotSdkSession(model: CopilotSdkModel, request: CopilotS
       const evidence: ApiChatMessage = { role: "tool", content: result, tool_call_id: callId };
       completedEvidence.push(structuredClone(evidence));
       messages.push(evidence);
+      if (succeeded && terminalEvent) {
+        if (request.onToolResultsContext !== undefined) successfulToolEvents.set(callId, terminalEvent);
+        else {
+          const context = chatToolResultContext(request, terminalEvent);
+          if (context) pendingToolContexts.push(context);
+        }
+      }
       if (--pendingCalls === 0 && !loop.summarizing) {
         if (request.afterTools?.()) { stopped = true; stopSession(); settle?.(); }
         else if (request.hardToolRoundLimit !== undefined && turn + 1 >= request.hardToolRoundLimit) {
           await loop.beforeRound(turn + 1, signal);
           await stopForHardLimit();
+        } else {
+          // Hold SDK-managed continuation until activity policy explicitly admits it.
+          await request.beforeWork?.();
+          if (failure || stopped || signal.aborted) throw new CopilotSdkChatError("Request cancelled before SDK continuation.");
         }
       }
       return result;
@@ -478,8 +508,50 @@ async function streamCopilotSdkSession(model: CopilotSdkModel, request: CopilotS
         return next.catch(error => { finish(error instanceof Error ? error : new Error(String(error))); stopSession(); return JSON.stringify({ error: "Not executed." }); });
       },
     }));
+    let noticedRound = -1;
+    const onPostToolUse = async (input: { toolName: string }, invocation: { sessionId: string }): Promise<{ additionalContext: string } | undefined> => {
+      if (failure || stopped || signal.aborted || loop.summarizing || summaryTurn !== undefined || pendingCalls !== 0 || !session
+        || invocation.sessionId !== session.sessionId || !names.has(input.toolName) || round < 0) return undefined;
+      const nextRound = round + 1;
+      const remainingRounds = hardLimit === undefined ? undefined : hardLimit - nextRound;
+      const budgetNotice = hardLimit !== undefined && remainingRounds! > 0 && remainingRounds! <= 3 && noticedRound !== nextRound
+        ? chatToolRoundBudgetNotice(nextRound, hardLimit) : undefined;
+      try {
+        const batchEvents = [...new Set(declaredToolCallIds)]
+          .map(id => successfulToolEvents.get(id)).filter((event): event is ApiChatToolEvent => !!event);
+        // Drain before the callback so undefined results and repeated hooks cannot revisit this batch.
+        declaredToolCallIds.length = 0;
+        successfulToolEvents.clear();
+        const batchContext = request.onToolResultsContext !== undefined ? chatToolBatchContext(request, batchEvents) : undefined;
+        const contexts = request.onToolResultsContext !== undefined ? (batchContext ? [batchContext.content] : [])
+          : pendingToolContexts.map(message => message.content);
+        const content = [...contexts, ...(budgetNotice ? [budgetNotice] : [])].join("\n");
+        if (!content) { pendingToolContexts.length = 0; return undefined; }
+        const notice: ApiChatMessage = { role: "system", content };
+        const reference = inputBaseline || { inputTokens: transport.inputTokens, outputTokens: 0, messageHashes: initialHashes };
+        const growth = sdkInputGrowth([...completedEvidence, notice], reference);
+        const enriched = { ...reference, inputTokens: reference.inputTokens + estimateInputTokens(growth) - 32, messageHashes: [...reference.messageHashes, ...growth.map(messageHash)] };
+        if (sdkInputBound([...messages, notice], enriched) > inputBudget) {
+          throw new ChatBudgetExceededError("SDK closing context exceeds configured input budget. Completed results were preserved.", "input");
+        }
+        completedEvidence.push(structuredClone(notice));
+        messages.push(notice);
+        pendingToolContexts.length = 0;
+        if (budgetNotice) noticedRound = nextRound;
+        return { additionalContext: content };
+      } catch (error) {
+        // The SDK swallows hook exceptions; reject the request before aborting.
+        finish(error instanceof CopilotSdkChatError || error instanceof ChatBudgetExceededError ? error
+          : new CopilotSdkChatError(`SDK closing context admission failed: ${error instanceof Error ? error.message : String(error)}. Completed results were preserved.`));
+        stopped = true;
+        stopSession();
+        return undefined;
+      }
+    };
+    const sessionCreationStartedAt = Date.now();
     session = await abortable(client.createSession({
       model: model.id, gitHubToken: token, streaming: true,
+      ...(hardLimit === undefined && !request.onToolResultContext && request.onToolResultsContext === undefined ? {} : { hooks: { onPostToolUse } }),
       reasoningSummary: "concise",
       systemMessage: { mode: "replace", content: system || "You are a helpful assistant." },
       tools: sdkTools, availableTools: [...names],
@@ -488,6 +560,11 @@ async function streamCopilotSdkSession(model: CopilotSdkModel, request: CopilotS
       onPermissionRequest: (permission: { kind?: string; toolName?: string }) => permission.kind === "custom-tool" && names.has(permission.toolName || "")
         ? { kind: "approve-once" } : { kind: "reject", feedback: "PKM exposes only its own tools." },
     }), signal);
+    const sessionCreationFinishedAt = Date.now();
+    transport.sdkSetupTiming = { schema:"pkm.chat.sdk-setup-timing/v1", observation:"extension-host-clock",
+      clientAcquisition:{ startedAt:clientAcquisitionStartedAt, finishedAt:clientAcquisitionFinishedAt },
+      sessionCreation:{ startedAt:sessionCreationStartedAt, finishedAt:sessionCreationFinishedAt } } satisfies ChatSdkSetupTiming;
+    // The existing sent checkpoint persists local timing without another preparation event.
     request.onModelActivity?.({ operation: "model-access", label: "Starting Copilot SDK session", status: "complete" });
 
     const settled = () => new Promise<void>(resolve => { settle = resolve; if (failure || stopped) resolve(); });
@@ -527,7 +604,7 @@ async function streamCopilotSdkSession(model: CopilotSdkModel, request: CopilotS
               const fallback = { inputTokens:transport.inputTokens + estimateInputTokens(completedEvidence) - 32, outputTokens:0,
                 messageHashes:[...initialHashes, ...completedEvidence.map(messageHash)] };
               const bound = sdkInputBound(messages, baseline || fallback);
-              if (bound > inputBudget) throw new CopilotSdkChatError("SDK context usage plus new input exceeds the configured input budget. Completed results were preserved.");
+              if (bound > inputBudget) throw new ChatBudgetExceededError("SDK context usage plus new input exceeds the configured input budget. Completed results were preserved.", "input");
               const subsequent = chatTransportReceipt("vscode", messages, schemas, bound,
                 baseline ? "provider-usage-plus-byte-bound" : images.length ? "utf8-byte-estimate" : "utf8-byte-upper-bound");
               subsequent.payloadScope = "sdk-managed-context";
@@ -538,7 +615,8 @@ async function streamCopilotSdkSession(model: CopilotSdkModel, request: CopilotS
               const reason = error instanceof Error ? error.message : "Context budget exceeded.";
               const diagnostic = JSON.stringify({ round, baselineRound:inputBaseline?.round ?? -1, usageAdmission, events:contextEvents });
               stopSession();
-              finish(new CopilotSdkChatError(`${reason} SDK context admission diagnostics: ${diagnostic}`));
+              const message = `${reason} SDK context admission diagnostics: ${diagnostic}`;
+              finish(error instanceof ChatBudgetExceededError ? new ChatBudgetExceededError(message, error.budget) : new CopilotSdkChatError(message));
               return;
             }
           }
@@ -564,7 +642,7 @@ async function streamCopilotSdkSession(model: CopilotSdkModel, request: CopilotS
           if (!text) break;
           clock.publicOutput();
           turnBytes += Buffer.byteLength(text, "utf8");
-          if (turnBytes > chatInferenceOutputByteLimit) { stopSession(); finish(new CopilotSdkChatError("Inference output exceeded the 100,000-byte local size limit. Partial output was preserved; no pending tool was executed.")); break; }
+          if (turnBytes > chatInferenceOutputByteLimit) { stopSession(); finish(new ChatBudgetExceededError("Inference output exceeded the 100,000-byte local size limit. Partial output was preserved; no pending tool was executed.", "output")); break; }
           streamedMessages.add(typeof data.messageId === "string" ? data.messageId : `turn:${round}`);
           onText(text);
           break;
@@ -582,7 +660,8 @@ async function streamCopilotSdkSession(model: CopilotSdkModel, request: CopilotS
           if (requests.length) {
             clock.publicOutput();
             turnBytes += Buffer.byteLength(JSON.stringify(requests), "utf8");
-            if (turnBytes > chatInferenceOutputByteLimit) { stopSession(); finish(new CopilotSdkChatError("Inference output exceeded the 100,000-byte local size limit. Partial output was preserved; no pending tool was executed.")); break; }
+            if (turnBytes > chatInferenceOutputByteLimit) { stopSession(); finish(new ChatBudgetExceededError("Inference output exceeded the 100,000-byte local size limit. Partial output was preserved; no pending tool was executed.", "output")); break; }
+            if (request.onToolResultsContext !== undefined) declaredToolCallIds.push(...requests.map(call => String(call.toolCallId || "")));
             pendingCalls += requests.length;
           }
           lastAssistant = { text: content, calls: requests.length };
@@ -642,7 +721,7 @@ async function streamCopilotSdkSession(model: CopilotSdkModel, request: CopilotS
           if (usageRound === undefined || usageRound === Math.max(0, round)) clock.finish("stream-ended");
           request.onUsage?.(usage, usageRound ?? Math.max(0, round));
           try { checkReportedOutput(usage, remaining, request.thinkingBudget); }
-          catch (error) { stopSession(); finish(new CopilotSdkChatError((error as Error).message)); }
+          catch (error) { stopSession(); finish(error instanceof Error ? error : new CopilotSdkChatError("Output budget validation failed.")); }
           break;
         }
         case "session.error": {
@@ -670,10 +749,12 @@ async function streamCopilotSdkSession(model: CopilotSdkModel, request: CopilotS
       }
       } catch (error) {
         stopSession();
-        finish(error instanceof CopilotSdkChatError ? error
+        finish(error instanceof CopilotSdkChatError || error instanceof ChatBudgetExceededError ? error
           : new CopilotSdkChatError(error instanceof Error ? error.message : "Copilot SDK event processing failed."));
       }
     });
+    await request.beforeWork?.();
+    if (signal.aborted || failure || stopped) throw new CopilotSdkChatError("Request cancelled before SDK inference.");
     request.onTransportSent?.(transport);
     activity();
     await session.send({ prompt, ...(images.length ? { attachments: images.map(image => ({ type: "blob", data: image.dataBase64, mimeType: image.mimeType, displayName: image.label })) } : {}) });
@@ -724,6 +805,8 @@ async function streamCopilotSdkSession(model: CopilotSdkModel, request: CopilotS
         return;
       }
       messages.push({ role: "system", content: continuation });
+      await request.beforeWork?.();
+      if (signal.aborted || failure || stopped) throw new CopilotSdkChatError("Request cancelled before SDK continuation.");
       lastAssistant = undefined;
       idle = settled();
       await session.send({ prompt: continuation, source: "system" });
@@ -731,7 +814,7 @@ async function streamCopilotSdkSession(model: CopilotSdkModel, request: CopilotS
   } catch (error) {
     if (timedOut) throw new CopilotSdkChatError("The Copilot SDK model call timed out due to inactivity. Partial output was preserved; no automatic retry was performed.");
     if (signal.aborted) throw new Error("Request cancelled.");
-    if (error instanceof CopilotSdkChatError) throw error;
+    if (error instanceof CopilotSdkChatError || error instanceof ChatBudgetExceededError) throw error;
     throw new Error("Copilot SDK model request failed. Check GitHub sign-in, Copilot access and model availability. Partial output was preserved.");
   } finally {
     clearTimeout(timer);

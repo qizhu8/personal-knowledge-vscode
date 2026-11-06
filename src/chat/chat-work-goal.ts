@@ -30,6 +30,78 @@ export interface WorkGoalTransition {
 }
 
 const WORK_GOAL_TRANSITION_LIMIT = 64;
+const ineligibleWorkEvidenceNames = new Set(["report_work", "finish_debug", "session_info", "record_harness"]);
+
+function eligibleWorkEvidence(call: NonNullable<ChatMessage["toolCalls"]>[number]): boolean {
+  return call.status === "complete" && typeof call.result === "string" && !ineligibleWorkEvidenceNames.has(call.name);
+}
+
+export function workEvidenceHint(chat: ApiConversation, reply: ChatMessage, callId: string): string | undefined {
+  const goal = chat.workGoal;
+  if (!goal || goal.status !== "active" || goal.attemptInputId !== reply.inputId) return undefined;
+  const evidence = (reply.toolCalls || []).find(call => call.id === callId && eligibleWorkEvidence(call));
+  if (!evidence) return undefined;
+
+  const hint = JSON.stringify({
+    schema: "pkm.chat.work-evidence-hint/v1",
+    goalId: goal.id,
+    attemptInputId: goal.attemptInputId,
+    evidence: { id: evidence.id, name: evidence.name },
+    note: "Identity candidate only; not semantic acceptance, permission, or managed completion.",
+  });
+  if (hint.length <= 2000) return hint;
+  return JSON.stringify({
+    schema: "pkm.chat.work-evidence-hint/v1",
+    omitted: true,
+    note: "Evidence identity omitted because it cannot fit within the 2000-character limit; no candidate ID is provided.",
+  });
+}
+
+export function workEvidenceBatchHint(chat: ApiConversation, reply: ChatMessage, callIds: readonly string[], characterBudget = 2000): string | undefined {
+  // A minimum guarantees room for a truthful omission-only notice, even with oversized metadata.
+  if (!Number.isInteger(characterBudget) || characterBudget < 200 || characterBudget > 2000) {
+    throw new RangeError("Work evidence character budget must be an integer from 200 to 2000.");
+  }
+  const goal = chat.workGoal;
+  if (!goal || goal.status !== "active" || goal.attemptInputId !== reply.inputId) return undefined;
+  const eligible = [...new Set(callIds)].filter(id => typeof id === "string" && !!id.trim())
+    .map(id => (reply.toolCalls || []).find(call => call.id === id && eligibleWorkEvidence(call)))
+    .filter((call): call is NonNullable<ChatMessage["toolCalls"]>[number] => !!call);
+  if (!eligible.length) return undefined;
+  if (eligible.length === 1 && characterBudget === 2000) {
+    const legacy = workEvidenceHint(chat, reply, eligible[0].id);
+    if (legacy && !JSON.parse(legacy).omitted) return legacy;
+  }
+  const candidates: Array<{ id: string; name: string }> = [];
+  const format = (evidence: typeof candidates): string => {
+    const omitted = eligible.length - evidence.length;
+    return JSON.stringify({
+      schema: "pkm.chat.work-evidence-hint/v2", goalId: goal.id, attemptInputId: goal.attemptInputId,
+      evidence, omitted,
+      note: "Identity candidates only; not semantic acceptance, permission, or managed completion.",
+      ...(omitted ? { omissionNotice: "Omitted identities cannot fit within the character budget; no omitted IDs are provided." } : {}),
+    });
+  };
+  const complete = format(eligible.map(({ id, name }) => ({ id, name })));
+  if (complete.length <= characterBudget) return complete;
+  for (const call of eligible) {
+    const candidate = { id: call.id, name: call.name };
+    if (format([...candidates, candidate]).length <= characterBudget) candidates.push(candidate);
+  }
+  const hint = format(candidates);
+  if (hint.length <= characterBudget) return hint;
+  return JSON.stringify({
+    schema: "pkm.chat.work-evidence-hint/v2", omitted: eligible.length,
+    note: "Identities omitted: character budget exceeded; no candidate IDs. Not acceptance or permission.",
+  });
+}
+
+function invalidEvidenceError(reply: ChatMessage): Error {
+  const eligible = (reply.toolCalls || []).filter(eligibleWorkEvidence);
+  const candidates = eligible.slice(0, 8).map(({ id, name }) => ({ id, name }));
+  const omitted = eligible.length - candidates.length;
+  return new Error(`Verified acceptance requires unique successful execution/validation call IDs from this attempt, not reports or another attempt. Eligible current-reply candidates (id,name; maximum 8): ${JSON.stringify(candidates)}. Omitted eligible current-reply candidate count: ${omitted}.${eligible.length ? "" : " No eligible current-reply candidates are available."} No work state changed.`);
+}
 
 export const workStop = /^\s*(?:(?:please\s+)?(?:stop|pause)(?:\s+(?:(?:(?:the\s+)?current|the|this)\s+)?(?:debugging|investigating|diagnosing|work|investigation|task))?(?:\s+(?:now|for now))?|(?:请|先)?(?:停止|暂停)(?:当前|这次|本次)?(?:调试|排查|调查|debug|任务)?)(?:[.!。！,，;；\n]|$)/i;
 export const delegatedWork = /(?:\b(?:please\s+)?(?:debug|investigate|diagnose|fix|implement|build|repair)\s+(?:this|the|my|our|a|an)\b|(?:帮我|请你|请|开始|继续|去).{0,24}(?:debug|调试|排查|调查|修复|修好|实现|开发|解决)|(?:debug|调试|排查).{0,16}(?:吧|一下))/i;
@@ -155,9 +227,11 @@ export function workGoalContext(chat: ApiConversation): string {
 Preserve the ORIGINAL objective and reconcile every later user requirement. A diagnostic subtask or successful tool is not resolution.
 Choose the next authorized action yourself; do not ask the user to supervise ordinary steps. Establish a symptom-level check, investigate, change course when evidence stops improving, implement authorized repairs, and verify against the objective.
 Use report_work to record acceptance criteria and continue/resolved/blocked/needs_input. Resolved requires each criterion verified with actual current-attempt evidence. These remain agent claims, not independent certification.
+session_info, report_work, finish_debug, and record_harness IDs are not acceptance evidence; correct rejected reports before claiming recorded success.
 At the first report establish a compact contract (scope, nonGoals, stopWhen) and phase (locating, implementing, verifying, delivering). The contract records the existing authorization, never expands it. Advance acceptance with evidence, not narration. Once all required checks pass, report resolved and deliver; do not start optional improvements.
+Do not spend a separate tool round reporting that work is about to begin. For a small bounded task, the first report can be the final resolved/blocked/needs_input report with its contract and evidence. Use the sourceInputIds and acceptance criteria already present here; call session_info only when current evidence identities or changed requirements are missing. Reserve time to report the outcome before the tool-round budget ends.
 Batch independent read/search calls in one model response. Only Host-annotated parallel reads overlap; writes, commands and unknown tools are ordered barriers. Do not mix a read that depends on a preceding result into an independent batch. Prepare tests independently, but final validation must use a ready, version-pinned implementation handoff. Do not poll independent workers.
-Copy EVERY existing acceptance criterion verbatim from session_info.workGoal.acceptance, including the original-objective criterion; append new criteria rather than replacing the list. Explicitly report each criterion's verified state and current-attempt evidenceCallIds. Leave unmet criteria unverified; never infer that specific subcriteria automatically verify the original objective.
+Copy EVERY existing acceptance criterion verbatim from the current work objective (or session_info.workGoal.acceptance when a refresh is needed), including the original-objective criterion; append new criteria rather than replacing the list. Explicitly report each criterion's verified state and current-attempt evidenceCallIds. Leave unmet criteria unverified; never infer that specific subcriteria automatically verify the original objective.
 If only part is done, record continue with the next action and keep working. For a genuine blocker, name the exact missing input/permission/external result and leave unverified criteria open.
 Cancellation/interruption disarms work: never replay uncertain effects. A resumed attempt must inspect recorded effects before repeating any operation. Existing permission, context, queue, worker and budget guards still apply.`;
 }
@@ -181,6 +255,13 @@ export function reportWork(chat: ApiConversation, reply: ChatMessage, args: Reco
     reason: args.reason, acceptance: acceptance as ChatWorkGoal["acceptance"], nextAction: args.nextAction as string | undefined,
     ...(args.contract === undefined ? {} : { contract: args.contract as ChatWorkGoal["contract"] }),
     ...(args.phase === undefined ? {} : { phase: args.phase as ChatWorkGoal["phase"] }) };
+  if (Array.isArray(acceptance)) {
+    acceptance.forEach((item, index) => {
+      if (item && Array.isArray(item.evidenceCallIds) && item.evidenceCallIds.length > 32) {
+        throw new Error(`acceptance[${index}].evidenceCallIds contains ${item.evidenceCallIds.length} IDs; maximum 32. No work state was changed.`);
+      }
+    });
+  }
   if (!validWorkGoal({ ...candidate, status: "active" }) || !candidate.acceptance.length) {
     throw new Error("Provide 1–32 unique acceptance criteria; preserve existing criteria and leave unmet ones unverified.");
   }
@@ -188,9 +269,8 @@ export function reportWork(chat: ApiConversation, reply: ChatMessage, args: Reco
   for (const item of candidate.acceptance) {
     if (!item.verified) continue;
     if (!item.evidenceCallIds.length || new Set(item.evidenceCallIds).size !== item.evidenceCallIds.length
-      || item.evidenceCallIds.some(id => !(reply.toolCalls || []).some(call => call.id === id && call.status === "complete"
-        && !["report_work", "finish_debug", "session_info", "record_harness"].includes(call.name) && typeof call.result === "string"))) {
-      throw new Error("Verified acceptance requires unique successful execution/validation call IDs from this attempt, not reports or another attempt.");
+      || item.evidenceCallIds.some(id => !(reply.toolCalls || []).some(call => call.id === id && eligibleWorkEvidence(call)))) {
+      throw invalidEvidenceError(reply);
     }
     assertCurrentWorkerEvidence((reply.toolCalls || []).filter(call => item.evidenceCallIds.includes(call.id)), chat.id, readWorker);
   }

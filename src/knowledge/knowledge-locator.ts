@@ -149,8 +149,8 @@ export function parsePkmLocator(value: string): ParsedPkmLocator {
       : { kind: "recipe-path", locator, path: parts.join("/") };
   }
   if (LOCAL_AREAS.has(authority)) {
-    if (!parts.length || locator.endsWith("/") || !parts[parts.length - 1].toLowerCase().endsWith(".md")) {
-      throw new PkmLocatorError("invalid", `pkm://${authority}/ paths must identify a Markdown file, not a folder.`);
+    if (!parts.length || locator.endsWith("/")) {
+      throw new PkmLocatorError("invalid", `pkm://${authority}/ paths must identify an item by its path or slug, not a folder.`);
     }
     return { kind: "local-path", locator, area: authority as "skills" | "notes" | "papers", path: parts.join("/") };
   }
@@ -225,8 +225,9 @@ export function resolvePkmLocator(
     return { kind: "panel", locator: parsed.locator, type: "script", key: entry.relativePath, tab: "scripts", title: entry.title };
   }
   if (parsed.kind === "local-path") {
-    const matches = inventory.filter(entry => entry.area === parsed.area && entry.relativePath === parsed.path);
-    if (!matches.length) throw new PkmLocatorError("not-found", `Knowledge file was not found: ${parsed.locator}`);
+    const matches = inventory.filter(entry => entry.area === parsed.area
+      && (entry.relativePath === parsed.path || entry.slug === parsed.path));
+    if (!matches.length) throw new PkmLocatorError("not-found", `Knowledge item was not found: ${parsed.locator}`);
     if (matches.length > 1) throw new PkmLocatorError("duplicate", `Knowledge path resolves to multiple items: ${parsed.locator}`);
     return localTarget(matches[0], parsed.locator);
   }

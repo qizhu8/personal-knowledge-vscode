@@ -60,9 +60,13 @@
   const finishedExpanded = new Map();
   const activityFilters = new Map();
   const messageExpanded = new Set(saved.expandedMessageDetails || []);
+  const activityAutoExpanded = new Map();
   const processStatuses = new Map();
   let processStatusVersion = 0;
   let state;
+  let navigation;
+  let navigationRequestId;
+  let navigationSequence = 0;
   let historyStart = 0;
   let historyPending;
   let historyLoaded = false;
@@ -73,16 +77,46 @@
   let frame;
   let clock;
   let budgetOwner;
+  let creditTargets;
+  let creditRequest;
   let presets = [];
   let advancedBudget = saved.advancedBudget === true;
   let acknowledgedResult;
   let renderedToolGroups;
   const expandedToolGroups = new Set();
-  const post = (type, extra = {}) => vscode.postMessage({ type, ...extra });
+  const post = (type, extra = {}) => {
+    if (type === "select" || type === "new") {
+      saveDraft();
+      navigationRequestId = `chat-navigation-${++navigationSequence}`;
+      navigation = { requestId: navigationRequestId, id: type === "select" ? extra.id : undefined };
+      setNavigating(true);
+      error("");
+      element("messages").replaceChildren();
+      historyPending = undefined;
+      for (const dialog of document.querySelectorAll("dialog[open]")) dialog.close();
+      showScreen("chat");
+      vscode.postMessage({ type, ...extra, requestId: navigationRequestId });
+      return;
+    }
+    if (navigation && !["chatVisibility", "hostHealth", "libraryRefresh"].includes(type)) {
+      error(t("Wait for the selected Chat to load."));
+      return;
+    }
+    vscode.postMessage({ type, ...extra });
+  };
+  function setNavigating(value) {
+    document.body.classList.toggle("chat-navigating", value);
+    element("messages").setAttribute("aria-busy", String(value));
+    element("chat-header-actions").inert = value;
+    element("composer").inert = value;
+    element("chat-navigation-status").hidden = !value;
+    element("chat-navigation-status").textContent = value ? `${t("Loading PKM Chat")}...` : "";
+    if (value) clearInterval(clock);
+  }
   const visualization = globalThis.PkmChatVisualization({ post });
   window.addEventListener("pagehide", () => visualization.dispose());
   function markResultRead() {
-    if (!state || screen === "library" || document.visibilityState !== "visible" || !state.chat.lastResultId || state.chat.lastResultId === state.chat.readResultId) return;
+    if (navigation || !state || screen === "library" || document.visibilityState !== "visible" || !state.chat.lastResultId || state.chat.lastResultId === state.chat.readResultId) return;
     const messages = element("messages");
     if (messages.scrollHeight - messages.scrollTop - messages.clientHeight > 1) return;
     const key = `${state.chat.id}:${state.chat.lastResultId}`;
@@ -111,13 +145,49 @@
     syncContextSlider(); tokenEstimate();
     post("budget", { contextWindow: current, maxOutputTokens: Number(element("output").value) });
   }
+  function syncCreditPolicy() {
+    const custom = element("credit-limit-mode").value === "custom";
+    element("credit-limit-value").hidden = !custom;
+    element("credit-limit-value-label").hidden = !custom;
+    element("credit-limit-value").disabled = !custom || !!creditRequest;
+  }
+  function configureCredits({ chatId, groupId }) {
+    if (creditRequest) { error(t("Credit settings are still awaiting confirmation. Inspect before retrying.")); return; }
+    const available = (state?.library?.chats || []).filter(chat => !chat.trashedAt);
+    const targets = groupId === undefined
+      ? [chatId === state?.chat?.id ? state.chat : available.find(chat => chat.id === chatId)].filter(Boolean)
+      : available.filter(chat => chat.groupId === groupId);
+    const defaultLimit = state?.settings?.activityCreditLimitDefault;
+    if (!targets.length || !Number.isSafeInteger(defaultLimit) || defaultLimit < -1) {
+      error(t("Credit settings are unavailable. Refresh the Chat list before configuring.")); return;
+    }
+    creditTargets = { chatIds: targets.map(chat => chat.id), ...(groupId === undefined ? {} : { groupId }) };
+    const limit = targets[0].activityCreditLimit;
+    const mixed = targets.some(chat => chat.activityCreditLimit !== limit);
+    element("credit-limit-mode").value = mixed ? "custom" : limit === undefined ? "default" : limit === -1 ? "unlimited" : "custom";
+    element("credit-limit-value").value = !mixed && limit >= 0 ? limit : 1000;
+    element("credit-limit-default").textContent = defaultLimit === -1 ? t("Global default: Unlimited credits") : `${t("Global default")} · ${defaultLimit} credits`;
+    element("credit-limit-scope").textContent = `${targets.length} ${t("Chats")} · ${groupId === undefined ? t("This Chat only") : t("Current group members only; future additions are not affected.")}`;
+    element("credit-limit-targets").replaceChildren(...targets.map(chat => {
+      const row = document.createElement("li"), id = document.createElement("code");
+      row.append(document.createTextNode(chat.title || chat.id), document.createElement("br"));
+      id.textContent = chat.id; row.append(id); return row;
+    }));
+    const bypassed = targets.some(chat => chat.activityBudgetBypass === "session");
+    element("credit-limit-status").textContent = bypassed ? t("Re-enable existing Chat session activity limits before setting a credit limit.") : mixed ? t("These Chats have different limits. Saving replaces each with the selected policy.") : "";
+    element("credit-limit-apply").disabled = bypassed;
+    element("credit-limit-mode").disabled = false;
+    element("credit-limit-cancel").disabled = false;
+    element("credit-limit-cancel").textContent = t("Cancel");
+    syncCreditPolicy(); closePopovers(); element("credit-limit-dialog").showModal(); element("credit-limit-mode").focus();
+  }
   const saveDraft = () => {
-    if (state) drafts[state.chat.id] = element("prompt").value;
+    if (state && !navigation) drafts[state.chat.id] = element("prompt").value;
     vscode.setState({ drafts, queuedDrafts, inputMode, advancedBudget, screen, workerPanelChats: [...workerPanelChats].slice(-500), chatListOrder: library?.order || saved.chatListOrder || [], expandedWorkerChats: library ? [...library.expandedWorkers].slice(-500) : saved.expandedWorkerChats || [], expandedMessageDetails: Array.from(messageExpanded).slice(-500), collapsedChatGroups: library ? Array.from(library.collapsed) : saved.collapsedChatGroups || [] });
     tokenEstimate();
   };
   function tokenEstimate() {
-    if (!state) return;
+    if (!state || navigation) return;
     const input = (state.settings.inputBaseTokens || 0) + new TextEncoder().encode(element("prompt").value).length;
     const output = Number(element("output").value) || state.settings.maxOutputTokens || 1024;
     const window = Number(element("window").value) || state.settings.contextWindow || 4096;
@@ -152,7 +222,11 @@
   }
   function chatRole(chat = state.chat) {
     const role = globalThis.PkmChatRole(chat);
-    const overviewRole = globalThis.PkmChatRole(state.workerOverview?.nodes.find(node => node.chatId === chat.id));
+    return ["controller", "controlled"].includes(role) ? role : clothingRole(chat) || role;
+  }
+  function clothingRole(chat = state.chat) {
+    const role = globalThis.PkmChatClothingRole(chat);
+    const overviewRole = globalThis.PkmChatClothingRole(state.workerOverview?.nodes.find(node => node.chatId === chat.id));
     return role === "manager" || overviewRole === "manager" ? "manager" : role || overviewRole;
   }
   function toolActivityPresentation(line, body, tool) {
@@ -217,12 +291,17 @@
     if (!run) return null;
     const key = run.attemptId || messageId || String(run.startedAt);
     const active = state.busy && (run.attemptId ? state.chat.progress?.attemptId === run.attemptId : run === state.chat.progress);
-    run = { ...run, steps: run.steps.filter(step => step.operation !== "token-count" && !/^Counting (input|output) tokens with VS Code model$/.test(step.label)) };
+    run = { ...run, steps: run.steps.filter((step, index, steps) => step.operation !== "token-count"
+      && !/^Counting (input|output) tokens with VS Code model$/.test(step.label)
+      && !(step.kind === "model" && ["Connecting to model API", "Requesting VS Code model"].includes(step.label)
+        && steps[index + 1]?.label === "Starting Copilot SDK session")) };
     const statusOf = (step, index) => step.status || (index < run.steps.length - 1 ? "complete" : active ? "running" : run.status === "running" ? "failed" : run.status);
     const section = document.createElement("details"); section.className = "workflow activity"; section.dataset.attempt = key; const expandedState = active ? workflowExpanded : finishedExpanded; section.open = expandedState.get(key) ?? active;
     const summary = document.createElement("summary"); summary.className = "workflow-summary";
     summary.dataset.status = active && run.steps.length ? statusOf(run.steps[run.steps.length - 1], run.steps.length - 1) : run.status;
-    const icon = active ? globalThis.PkmChatWorkingIcon(chatRole()) : document.createElement("span");
+    const currentStatus = run.steps.at(-1)?.status === "waiting" ? "awaiting-input"
+      : globalThis.PkmChatDisplayStatus(state.chat) === "awaiting-result" ? "awaiting-result" : "running";
+    const icon = active ? globalThis.PkmChatStatusIndicator(currentStatus || "running", chatRole(), clothingRole()) : document.createElement("span");
     if (active) icon.setAttribute("aria-hidden", "true");
     if (!active) { icon.className = "workflow-dot"; icon.setAttribute("aria-hidden", "true"); }
     const label = document.createElement("span"); label.className = "activity-label";
@@ -230,12 +309,8 @@
     // Presentation only: retain recorded stages and round identities, including older Chats.
     const modelStageLabel = (step, status) => {
       if (!step || step.kind !== "model" || !Number.isSafeInteger(step.round) || step.round < 0) return step?.label;
-      const round = t("Model round {round}", { round:step.round + 1 });
-      const phase = status === "complete" ? t("Model response received")
-        : step.label === "Waiting for first output" ? status === "running" ? `${t("Waiting for model response")} (${t("the model may be reasoning")})` : t("Waiting for model response")
-        : ["Requesting VS Code model", "Connecting to model API"].includes(step.label) ? t("Requesting model")
-        : step.label === "Generating response" ? t("Receiving model response") : step.label;
-      return `${round}: ${phase}`;
+      const model = step.model || run.model || message.model || "Model";
+      return status === "running" ? `${model} working...` : model;
     };
     const latestStep = run.steps[run.steps.length - 1], latestTool = latestStep?.toolCallId && message.toolCalls?.find(tool => tool.id === latestStep.toolCallId);
     label.textContent = `Activity [${completed} / ${(run.droppedSteps || 0) + run.steps.length}] ${active ? latestTool ? globalThis.PkmAgentHarness.describeToolCall(latestTool, t) : modelStageLabel(latestStep, statusOf(latestStep || {}, run.steps.length - 1)) || "Preparing request" : { complete: "Completed", cancelled: "Cancelled", failed: "Failed or interrupted" }[run.status] || run.status}`;
@@ -260,28 +335,40 @@
       const previous = rows.get(identity);
       rows.set(identity, { ...step, firstAt: previous?.firstAt ?? step.at, status: statusOf(step, index), index });
     });
-    const appendRow = (id, label, status, at, finishedAt, body, usage, category = "info", operation = "display", tool, credits) => {
+    const sdkStarts = run.steps.map((step, index) => step.label === "Starting Copilot SDK session" ? index : -1).filter(index => index >= 0);
+    const sdkGroupFor = step => {
+      const index = sdkStarts.findLast(start => start <= step.index);
+      if (index !== undefined && (step.index === index || step.kind === "model" || step.toolCallId || step.operation === "model-access")) return index;
+      return undefined;
+    };
+    const sdkGroups = new Map();
+    const appendRow = (id, label, status, at, finishedAt, body, usage, category = "info", operation = "display", tool, credits, thinking = false) => {
       const row = document.createElement("li"); row.dataset.status = status; row.dataset.category = category; row.dataset.operation = operation;
       const line = body ? document.createElement("summary") : document.createElement("div");
       line.className = "workflow-event-line";
-      const glyph = document.createElement("span"); glyph.className = "workflow-dot"; glyph.setAttribute("aria-hidden", "true");
+      const glyph = document.createElement("span"); glyph.className = "workflow-dot";
+      glyph.setAttribute("role", "img"); glyph.setAttribute("aria-label", status); glyph.title = status;
       const badge = document.createElement("span"); badge.className = "activity-category"; badge.textContent = category.toUpperCase();
       badge.title = category === "llm" ? operation === "token-count" ? "Model API token counting; not an inference or a reported token charge." : "Model inference; token usage is shown only when reported."
         : category === "cmd" ? "Tool / command execution. Output may consume input tokens in a later model request; tools may also call models internally."
         : "Local preparation, retrieval or display; not a model inference. Displayed data may also be included in later model input.";
       const text = document.createElement("span"); text.className = "activity-label"; text.textContent = label;
       const tokens = document.createElement("span"); tokens.className = "activity-usage";
-      const reasoning = usage && Number.isSafeInteger(usage.reasoningTokens) && usage.reasoningTokens >= 0 && usage.reasoningTokens <= usage.outputTokens ? usage.reasoningTokens : undefined;
-      tokens.textContent = usage ? `${usage.inputTokens.toLocaleString()} in / ${usage.outputTokens.toLocaleString()} out${reasoning === undefined ? "" : ` · ${t("{tokens} reasoning", { tokens:reasoning.toLocaleString() })}`}`
+      tokens.textContent = usage ? `${usage.inputTokens.toLocaleString()} in / ${usage.outputTokens.toLocaleString()} out`
         : category === "llm" && operation === "token-count" ? "Token count · not inference" : "";
       tokens.title = usage ? t("Provider-reported usage for this model round; reasoning tokens are included in output, not added again. Not a token charge for each tool.") : "No independent provider token usage is reported for this operation.";
       if (usage && category === "llm" && operation !== "token-count") {
         const cached = usage.cachedInputTokens;
         const cacheReported = Number.isSafeInteger(cached) && cached >= 0 && cached <= usage.inputTokens;
-        tokens.textContent += ` · ${cacheReported ? t("{tokens} cached input", { tokens:cached.toLocaleString() }) : t("Cache usage not reported")}`;
+        if (cacheReported && cached > 0) tokens.textContent = `${usage.inputTokens.toLocaleString()} in (${cached.toLocaleString()} cached) / ${usage.outputTokens.toLocaleString()} out`;
+        if (!cacheReported) tokens.title += " " + t("Cache usage not reported");
         tokens.title += " " + t("Cached tokens are included in input. Cache hits do not independently establish a credit discount.");
       }
-      if (category === "llm" && operation !== "token-count") tokens.textContent = [tokens.textContent, globalThis.PkmAgentHarness.creditLabel(credits, t)].filter(Boolean).join(" · ");
+      if (category === "llm" && operation !== "token-count") {
+        tokens.textContent = [tokens.textContent, globalThis.PkmAgentHarness.creditLabel(credits, t, true)].filter(Boolean).join(" · ");
+        const exactCredits = globalThis.PkmAgentHarness.creditLabel(credits, t);
+        if (exactCredits) tokens.title += ` ${exactCredits}`;
+      }
       tokens.hidden = !tokens.textContent;
       const timer = document.createElement("span"); timer.className = "elapsed";
       timer.title = t("Elapsed dispatch/result time, including waits; not CPU time or proof of remote-job completion.");
@@ -293,10 +380,11 @@
       line.append(glyph, badge, text, tokens, timer);
       if (tool) toolActivityPresentation(line, body, tool);
       if (body) {
-        const detail = messageDisclosure(messageId || key, id, "", "activity-event");
+        const detail = messageDisclosure(messageId || key, id, "", "activity-event", thinking);
         detail.firstElementChild.replaceWith(line); detail.append(body); row.append(detail);
       } else row.append(line);
       list.append(row);
+      return row;
     };
     if (run.tools) {
       // Static request context, listed first so the newest (running) event stays last.
@@ -315,7 +403,7 @@
         if (tool) { const pre = document.createElement("pre"); pre.textContent = `${tool.name}\n${tool.arguments}\n\n${tool.result || ""}`; body.append(pre); }
         for (const summary of summaries || []) {
           const heading = document.createElement("strong"); heading.textContent = "Reasoning / thinking reported by the provider";
-          const pre = document.createElement("pre"); pre.textContent = summary.text; body.append(heading, pre);
+          const pre = document.createElement("pre"); pre.className = "activity-thinking"; pre.textContent = summary.text; body.append(heading, pre);
         }
         if (receipt) { const pre = document.createElement("pre"); pre.textContent = JSON.stringify(receipt, null, 2); body.append(pre); }
       }
@@ -324,19 +412,33 @@
       const category = step.category || (step.kind === "tool" || step.toolCallId || /^(Running|Completed|Failed) tool:/.test(step.label) ? "cmd"
         : step.kind === "model" || /^Memory: (understanding the question|summarizing topic)$/.test(step.label) ? "llm" : "info");
       const operation = step.operation || (category === "llm" ? "inference" : category === "cmd" ? "command" : "display");
-      appendRow(id, `${tool ? globalThis.PkmAgentHarness.describeToolCall(tool, t) : modelStageLabel(step, step.status)} · ${step.status}`, step.status, tool?.startedAt ?? step.firstAt,
-        tool?.finishedAt ?? step.finishedAt ?? (["complete", "failed", "cancelled"].includes(step.status) ? run.steps[step.index + 1]?.at ?? run.finishedAt : undefined), body, reported, category, operation, tool, receipt?.ledger?.credits);
       const thinking = active && step.status === "running" && summaries?.map(item => item.text).join("").trim();
-      if (thinking) {
-        const live = document.createElement("div"); live.className = "activity-thinking";
-        live.textContent = `${t("Thinking")}: …${thinking.slice(-240)}`; live.title = t("Readable thinking reported by the model provider; expand the row for the full text.");
-        list.lastElementChild.append(live);
+      const sdkStart = sdkGroupFor(step);
+      let rowLabel = tool ? globalThis.PkmAgentHarness.describeToolCall(tool, t) : modelStageLabel(step, step.status);
+      if (sdkStart !== undefined) {
+        if (step.label === "Starting Copilot SDK session") rowLabel = "Start Session";
+        else if (step.label.startsWith("Auto selected ")) rowLabel = `Select Model · ${step.label.slice("Auto selected ".length)}`;
+        else if (step.kind === "model") rowLabel = `Inference · ${rowLabel}`;
+      }
+      const row = appendRow(id, `${rowLabel}${step.status === "complete" || category === "llm" && step.status === "running" ? "" : ` · ${step.status}`}`, step.status, tool?.startedAt ?? step.firstAt,
+        tool?.finishedAt ?? step.finishedAt ?? (["complete", "failed", "cancelled"].includes(step.status) ? run.steps[step.index + 1]?.at ?? run.finishedAt : undefined), body, reported, category, operation, tool, receipt?.ledger?.credits, !!thinking);
+      if (step.kind === "model") row.querySelector(".activity-label").title = `${t("Model round {round}", { round:step.round + 1 })}: ${step.label}`;
+      if (sdkStart !== undefined) {
+        let group = sdkGroups.get(sdkStart);
+        if (!group) {
+          const parent = document.createElement("li"); parent.className = "activity-model-call";
+          const detail = messageDisclosure(messageId || key, `sdk:${sdkStart}`, "Model Call", "model-call", active && sdkStart === sdkStarts.at(-1));
+          const children = document.createElement("ol"); children.className = "model-call-events";
+          detail.append(children); parent.append(detail); row.before(parent);
+          group = { parent, detail, children }; sdkGroups.set(sdkStart, group);
+        }
+        group.children.append(row);
       }
     }
     for (const tool of tools.values()) {
       const body = document.createElement("pre"); body.textContent = `${tool.name}\n${tool.arguments}\n\n${tool.result || ""}`;
       const content = document.createElement("div"); content.className = "activity-event-detail"; content.append(body);
-      appendRow(`tool:${tool.id}`, `${globalThis.PkmAgentHarness.describeToolCall(tool, t)} · ${tool.status}`, tool.status, tool.startedAt, tool.finishedAt, content, undefined, "cmd", "command", tool);
+      appendRow(`tool:${tool.id}`, `${globalThis.PkmAgentHarness.describeToolCall(tool, t)}${tool.status === "complete" ? "" : ` · ${tool.status}`}`, tool.status, tool.startedAt, tool.finishedAt, content, undefined, "cmd", "command", tool);
     }
     const latest = state.chat.messages.filter(item => item.role === "assistant").at(-1);
     const taskPlan = !message.id || message.id === latest?.id && message.taskId === state.chat.sessionId ? state.taskPlan : undefined;
@@ -354,8 +456,20 @@
       note.textContent = "The model did not report readable reasoning; some models keep reasoning hidden or encrypted."; list.append(note);
     }
     section.append(list);
+    for (const [start, group] of sdkGroups) {
+      const children = [...group.children.children];
+      const status = children.some(row => row.dataset.status === "failed") ? "failed"
+        : active && start === sdkStarts.at(-1) ? "running"
+        : start === sdkStarts.at(-1) && ["failed", "cancelled"].includes(run.status) ? run.status : "complete";
+      const heading = group.detail.firstElementChild;
+      heading.dataset.status = status;
+      const dot = document.createElement("span"); dot.className = "workflow-dot";
+      dot.setAttribute("role", "img"); dot.setAttribute("aria-label", status); dot.title = status;
+      heading.prepend(dot);
+    }
     const applyFilter = () => {
-      for (const row of list.children) row.hidden = filter.value !== "all" && (row.dataset.category || "info") !== filter.value;
+      for (const row of list.querySelectorAll("li:not(.activity-model-call)")) row.hidden = filter.value !== "all" && (row.dataset.category || "info") !== filter.value;
+      for (const group of sdkGroups.values()) group.parent.hidden = ![...group.children.children].some(row => !row.hidden);
     };
     filter.onchange = () => { activityFilters.set(key, filter.value); applyFilter(); };
     applyFilter();
@@ -364,15 +478,37 @@
     section.ontoggle = () => { if (section.isConnected) expandedState.set(key, section.open); };
     return section;
   }
-  function error(text) { element("error").textContent = text; element("error").hidden = !text; }
+  function error(text) {
+    const container = element("error");
+    container.textContent = text; container.hidden = !text;
+    if (!text) return;
+    const next = document.createElement("p");
+    next.textContent = t("Inspect saved results and tool activity before retrying. Earlier actions may already have occurred.");
+    const actions = document.createElement("div"); actions.className = "chat-error-actions";
+    for (const [label, action] of [
+      ["Review model and account", () => element("model").click()],
+      ["Open diagnostic log", () => post("showLogs")],
+      ["View troubleshooting steps", () => post("openHelp", { value:"agents" })],
+    ]) {
+      const button = document.createElement("button"); button.type = "button"; button.textContent = t(label);
+      button.addEventListener("click", action); actions.append(button);
+    }
+    container.append(next, actions);
+  }
   function iconButton(icon, label, action) {
     const button = document.createElement("button"); button.type = "button";
     button.title = t(label); button.setAttribute("aria-label", t(label));
     const glyph = document.createElement("span"); glyph.className = `codicon codicon-${icon}`;
     button.append(glyph); button.addEventListener("click", action); return button;
   }
-  function messageDisclosure(messageId, suffix, title, className) {
+  function messageDisclosure(messageId, suffix, title, className, autoOpen) {
     const key = `${state.chat.id}:${messageId}:${suffix}`;
+    if (autoOpen !== undefined) {
+      const previous = activityAutoExpanded.get(key);
+      if (autoOpen && previous !== true) messageExpanded.add(key);
+      else if (!autoOpen && previous === true) messageExpanded.delete(key);
+      activityAutoExpanded.set(key, autoOpen);
+    }
     const node = document.createElement("details"); node.className = className; node.open = messageExpanded.has(key);
     const summary = document.createElement("summary"); summary.textContent = title; node.append(summary);
     node.ontoggle = () => {
@@ -496,6 +632,7 @@
     }
   }
   function loadOlderMessages() {
+    if (navigation) return;
     const beforeId = state?.chat.messages[0]?.id;
     if (!beforeId || historyPending || historyStart <= 0 || screen !== "chat" || document.visibilityState !== "visible") return;
     historyPending = beforeId;
@@ -590,7 +727,7 @@
     return article;
   }
   function renderMessages() {
-    if (!state || screen !== "chat" || document.visibilityState !== "visible") return;
+    if (navigation || !state || screen !== "chat" || document.visibilityState !== "visible") return;
     const target = element("messages");
     renderAppliedEdits();
     const previousScrollTop = target.scrollTop;
@@ -750,8 +887,17 @@
             : t(message.error || message.status);
         if (["streaming", "cancelled"].includes(message.status)) status.className = "message-status";
         article.append(status);
+        if (["error", "failed", "cancelled"].includes(message.status)) {
+          const guide = document.createElement("button"); guide.type = "button";
+          guide.className = "message-recovery-guide"; guide.textContent = t("Review recovery steps before retrying");
+          guide.addEventListener("click", () => post("openHelp", { value:"agents" }));
+          article.append(guide);
+        }
       }
-      if (message.outputBudgetWarning) {
+      if (message.outputBudgetWarning && ![
+        "Copilot SDK models do not expose output token counting.",
+        "Output token counting is unavailable.",
+      ].some(notice => message.outputBudgetWarning.startsWith(notice))) {
         const warning = document.createElement("p"); warning.className = "message-status"; warning.textContent = message.outputBudgetWarning; article.append(warning);
       }
       const tokens = document.createElement("div"); tokens.className = "message-tokens";
@@ -759,8 +905,10 @@
       tokens.title = message.role === "user" ? "Independent user-message token usage is unavailable unless the provider reports it; request input includes history/context/tools." : "Provider-reported tokens for reported rounds only; other rounds may omit usage. Input includes history/context/tools, not just the latest user message.";
       if (message.role === "assistant") {
         const credits = document.createElement("span"); credits.className = "message-tokens message-credits";
-        credits.textContent = globalThis.PkmAgentHarness.creditLabel(message.creditUsage, t);
+        credits.textContent = globalThis.PkmAgentHarness.creditLabel(message.creditUsage, t, true);
         credits.title = t("Provider-reported Copilot credits for Chat rounds and quota clarification. Memory and workers are accounted separately. Missing reports are not zero.");
+        const exactCredits = globalThis.PkmAgentHarness.creditLabel(message.creditUsage, t);
+        if (exactCredits) credits.title += ` ${exactCredits}`;
         if (credits.textContent) {
           if (tokens.textContent) tokens.append(" · ");
           tokens.append(credits);
@@ -1223,13 +1371,13 @@
       label.className = "portal-headline visually-hidden";
       element("chat-status").title = label.textContent;
       element("chat-status").setAttribute("aria-label", label.textContent);
-      const scene = globalThis.PkmChatPortalIcon(connected, "controlled");
+      const scene = globalThis.PkmChatPortalIcon(connected, "controlled", true, clothingRole());
       scene.classList.toggle("chat-role-still", waiting);
       scene.setAttribute("role", "img"); scene.setAttribute("aria-label", label.textContent);
       element("chat-status").replaceChildren(scene, label);
     }
     host.hidden = !portal?.binding && !portal?.pending;
-    const fingerprint = JSON.stringify([state?.chat?.id, portal && { ...portal,
+    const fingerprint = JSON.stringify([state?.chat?.id, clothingRole(), portal && { ...portal,
       permissions: portal.permissions && { ...portal.permissions, now: undefined } }]);
     if (fingerprint === portalFingerprint) return;
     portalFingerprint = fingerprint;
@@ -1251,7 +1399,7 @@
     const title = document.createElement("strong");
     title.dataset.portalHeadline = "true";
     title.textContent = portalHeadline(portal);
-    const wizard = globalThis.PkmChatPortalIcon(true, role || "controller");
+    const wizard = globalThis.PkmChatPortalIcon(true, role || "controller", true, clothingRole());
     wizard.classList.add("portal-wizard", role === "controlled" ? "portal-controlled" : "portal-controller");
     wizard.setAttribute("aria-label", role === "controlled" ? "Controlled wizard beside the open Portal" : "Controller wizard beside the open Portal");
     wizard.setAttribute("role", "img");
@@ -1416,7 +1564,7 @@
   }
 
   function render() {
-    if (document.visibilityState !== "visible") return;
+    if (navigation || !state || document.visibilityState !== "visible") return;
     element("copy-chat-id").disabled = !state.chat?.id;
     element("promote-project").disabled = !state.chat?.id;
     document.body.classList.toggle("chat-backgrounded", document.visibilityState === "hidden");
@@ -1441,11 +1589,17 @@
       for (const { chat, depth, path } of group.entries) {
         const item = available.get(chat.id);
         if (!item) continue;
-        const status = globalThis.PkmChatStatusIndicator(globalThis.PkmChatDisplayStatus(item), chatRole(item));
+        const status = item.id === state.chat.id ? globalThis.PkmChatStatusIndicator(globalThis.PkmChatDisplayStatus(item), chatRole(item), clothingRole(item)) : undefined;
         const option = new Option(`${"\u00a0\u00a0".repeat(depth)}${depth ? "> " : ""}${item.title}`, item.id);
-        option.title = `${group.name} / ${path} - ${status.title}`;
+        option.title = `${group.name} / ${path} - ${status?.title || globalThis.PkmChatStatusLabel(globalThis.PkmChatDisplayStatus(item), chatRole(item))}`;
         option.selected = item.id === state.chat.id; options.append(option);
-        if (option.selected) { chats.title = option.title; element("chat-status").replaceChildren(status); }
+        if (option.selected) {
+          chats.title = option.title;
+          const host = element("chat-status"), previous = host.firstElementChild;
+          const identity = JSON.stringify([item.id, globalThis.PkmChatDisplayStatus(item), chatRole(item), clothingRole(item), status.title]);
+          status.dataset.presentationIdentity = identity;
+          if (previous?.dataset.presentationIdentity !== identity) host.replaceChildren(status);
+        }
       }
       if (options.children.length) chats.append(options);
     }
@@ -1464,6 +1618,8 @@
     element("model-label").textContent = modelLabel;
     element("model").title = `Choose model: ${modelLabel} (${native ? "VS Code" : state.settings.provider}). ${state.busy ? "Applies to the next request; current response keeps its model." : ""}`;
     element("model").setAttribute("aria-label", `Choose model: ${modelLabel}`);
+    element("credit-limit-summary").textContent = state.chat.activityBudgetBypass === "session" ? t("Activity limits are disabled for this Chat session.")
+      : state.chat.activityCreditLimit === -1 ? t("Unlimited credits") : `${t("Credit limit")} · ${state.settings.activityCreditLimit ?? state.settings.activityCreditLimitDefault ?? "?"} credits`;
     const window = element("window");
     const maximum = state.settings.selectedProfile?.contextWindow || 4096;
     const current = Math.min(state.settings.contextWindow || maximum, maximum);
@@ -1631,7 +1787,20 @@
       saveDraft(); renderMessages(); error(""); return;
     }
     if (message.type === "modelPickerClosed") { element("model").removeAttribute("aria-busy"); return; }
-    if (message.type === "showChat") { showScreen("chat"); return; }
+    if (message.type === "activityCreditsSaved") {
+      if (message.requestId !== creditRequest) return;
+      creditRequest = undefined;
+      element("credit-limit-mode").disabled = false; element("credit-limit-cancel").disabled = false;
+      element("credit-limit-cancel").textContent = t("Cancel");
+      element("credit-limit-apply").disabled = false; syncCreditPolicy();
+      element("credit-limit-status").textContent = message.error || `${t("Saved credit settings for Chats")} · ${message.saved.length}`;
+      if (message.error && !element("credit-limit-dialog").open) error(message.error);
+      return;
+    }
+    if (message.type === "showChat") {
+      if (navigation || message.requestId && message.requestId !== navigationRequestId) return;
+      showScreen("chat"); return;
+    }
     if (message.type === "showTools") { togglePopover("tools", true); element("tool-search").focus(); return; }
     if (message.type === "showMemory") { togglePopover("memory", true); return; }
     if (message.type === "workerArchive" && message.chatId === state?.chat.id) {
@@ -1660,6 +1829,11 @@
       return;
     }
     if (message.type === "error") {
+      if (message.requestId) {
+        if (message.requestId !== navigationRequestId) return;
+        navigation = undefined; setNavigating(false);
+        if (state) render(); else showScreen("library");
+      }
       if (message.profileError) {
         const dialog = element("persona-dialog");
         if (dialog.open && message.chatId === state?.chat?.id && dialog.dataset.chatId === message.chatId) {
@@ -1709,8 +1883,12 @@
       return;
     }
     if (message.type === "state") {
+      if (message.navigationRequestId && message.navigationRequestId !== navigationRequestId) return;
+      if (navigation) {
+        if (message.navigationRequestId !== navigation.requestId || navigation.id && message.chat?.id !== navigation.id) return;
+        navigation = undefined; setNavigating(false);
+      }
       if (element("persona-dialog").open && element("persona-dialog").dataset.chatId !== message.chat?.id) element("persona-dialog").close();
-      globalThis.PkmHostHealth?.ready();
       applyLocale(message.localization);
       const previous = state?.chat.id;
       if (state) drafts[state.chat.id] = element("prompt").value;
@@ -1722,7 +1900,7 @@
         historyStart = 0; historyPending = undefined; historyLoaded = false;
         clearInterval(clock); element("messages").replaceChildren(); element("chats").replaceChildren();
         element("prompt").value = ""; element("applied-edits").hidden = true;
-        library?.render(message.library); showScreen("library"); return;
+        library?.render(message.library); showScreen("library"); globalThis.PkmHostHealth?.ready(); return;
       }
       if (previous === message.chat.id && historyLoaded) {
         const latest = new Set(message.chat.messages.map(item => item.id));
@@ -1747,9 +1925,9 @@
         if (submission.id !== state.chat.id || !state.chat.messages.some(item => item.role === "user" && item.submissionId === id) && !state.chat.queuedInputs?.some(item => item.id === id)) continue;
         submissions.delete(id); if (pending === submission) pending = undefined; error("");
       }
-      saveDraft(); render(); markResultRead(); return;
+      saveDraft(); render(); globalThis.PkmHostHealth?.ready(); markResultRead(); return;
     }
-    if (message.type === "delta" && message.chatId === state?.chat.id) {
+    if (!navigation && message.type === "delta" && message.chatId === state?.chat.id) {
       const reply = state.chat.messages.find(item => item.id === message.id);
       if (reply) reply.content += message.text;
       if (!frame) frame = requestAnimationFrame(() => { frame = undefined; renderMessages(); });
@@ -1776,7 +1954,7 @@
   const showScreen = next => {
     if (next === "chat" && screen !== "chat") jumpToLatest = true;
     screen = next; document.body.classList.toggle("chat-library-visible", screen === "library");
-    post("chatVisibility", { chatId: state?.chat?.id, value: screen === "chat" && document.visibilityState === "visible" });
+    post("chatVisibility", { chatId: navigation ? undefined : state?.chat?.id, value: !navigation && screen === "chat" && document.visibilityState === "visible" });
     element("library-view").hidden = screen !== "library"; saveDraft();
     if (next === "chat" && state) { renderMessages(); markResultRead(); }
   };
@@ -1888,7 +2066,7 @@
     workerPanelChats.has(state.chat.id) ? workerPanelChats.delete(state.chat.id) : workerPanelChats.add(state.chat.id);
     renderWorkers(); saveDraft();
   };
-  library = window.PkmChatLibrary({ post, showChat: () => showScreen("chat"), save: saveDraft, saved });
+  library = window.PkmChatLibrary({ post, save: saveDraft, saved, configureCredits });
   const headerActions = element("chat-header-actions"), actionsPanel = element("chat-actions-panel"), actionsToggle = element("chat-actions-toggle");
   let restoringActionsFocus = false;
   function setHeaderActions(open, restoreFocus = false) {
@@ -1938,6 +2116,20 @@
   element("reset-activity-budget").onclick = () => {
     if (state?.chat) post("resetActivityBudget", { chatId: state.chat.id });
   };
+  element("credit-limit-open").onclick = () => configureCredits({ chatId: state?.chat?.id });
+  element("credit-limit-mode").onchange = syncCreditPolicy;
+  element("credit-limit-cancel").onclick = () => element("credit-limit-dialog").close();
+  element("credit-limit-form").onsubmit = event => {
+    event.preventDefault();
+    if (creditRequest || !creditTargets || element("credit-limit-apply").disabled || !event.target.reportValidity()) return;
+    const mode = element("credit-limit-mode").value;
+    const limit = mode === "default" ? null : mode === "unlimited" ? -1 : Number(element("credit-limit-value").value);
+    creditRequest = crypto.randomUUID();
+    element("credit-limit-status").textContent = t("Saving credit settings; no task is resumed.");
+    element("credit-limit-mode").disabled = true; element("credit-limit-apply").disabled = true;
+    element("credit-limit-cancel").textContent = t("Close"); syncCreditPolicy();
+    post("activityCredits", { requestId: creditRequest, params: { ...creditTargets, limit } });
+  };
   element("diagnostics").onclick = () => post("diagnostics");
   element("persona-profiles").onclick = () => {
     element("persona-content").textContent = "Loading current Profiles...";
@@ -1951,7 +2143,13 @@
     element("persona-dialog").close();
     post("agentConfig", { value: "profiles" });
   };
-  for (const button of document.querySelectorAll("[data-agent-config]")) button.onclick = () => { closePopovers(); post("agentConfig", { value: button.dataset.agentConfig }); };
+  for (const button of document.querySelectorAll("[data-agent-config]")) button.onclick = () => {
+    if (button.dataset.agentConfig === "model") {
+      togglePopover("options", true); element("window-slider").focus(); return;
+    }
+    closePopovers(); post("agentConfig", { value: button.dataset.agentConfig });
+  };
+  element("budget-model").onclick = () => { closePopovers(); element("model").focus(); element("model").click(); };
   element("memory-close").onclick = closePopovers;
   element("memory-policy").onclick = () => post("memoryPolicy");
   element("retrieval-top").onchange = renderMemory;
