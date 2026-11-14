@@ -1,0 +1,67 @@
+{
+  "schema": "pkm.storage-sustained-qualification/v1",
+  "node": "v22.23.1",
+  "sources": {
+    "src/storage.ts": "db7b1e04f6a960aa37cb7cb426da12a62d45b9defcfa204ceeee6a4872255c9d",
+    "src/storage-worker.ts": "1f5697cbf55bd31cf662ab860aaadb6d2e00099817d65905ca34f6473a2f77bc",
+    "src/native-runtime.ts": "b653b047bc0ba45eb4a5c02fda6e667f5998c79c54fffb030ad9c330ca4bfd76",
+    "src/http.ts": "3524757a01bfd813a8b87e05e57b4d1d7a7d83043e2eb05bac03076d786073d4",
+    "src/manager-runtime.ts": "f1fb84d411680628a95759c87403deed140ba3961679373d04ab3f846ae9611d",
+    "src/channel-runtime.ts": "6c181ef3066648f1de1822dfb8c0b9ed725a3731d39fb6397cb2fa4541c515df",
+    "tests/batch06-manager-fixtures.mjs": "a3aebf8ee4f0ea3692ca46aee274028db3d776a9d0d16ecf46dc5dc5ab7a8d7c",
+    "tests/channel-runtime-fixtures.mjs": "a96f3700a33eb07b19c02d1a985adf161afe02f0819aacf9bde1c2e2b3d6e9e5",
+    "tests/storage-fault-qualification-soak.mjs": "65189df4c6e4bc7170e735019f8dfa2c9e3bc672229f3894d6a4c734e78d09bc",
+    "dist/storage.js": "fd8ce8282755a45168178b96a3044de276a1001bded328e8fc31558ae40ccf23",
+    "dist/storage-worker.js": "e36a85b60e2bea8b6002c10067df9cf4745284f11404c6982dc5bbbc36cd39ad",
+    "dist/native-runtime.js": "8fd9f8fba3d7a52dfb45025bb6508a9bd8650574b840391f20959a1f78ca3675",
+    "dist/http.js": "2cbd9ce9ee82a5cfa5da110c1fe9f565c74359fb42b892cce67ddf82a70c045d",
+    "dist/manager-runtime.js": "05b272960702cdd57eae425d5617c71fbb39a12216cf46f519d957bb1db11a5b",
+    "dist/channel-runtime.js": "4605aa28c1238fef1cfe2601dab010cacf559da13ca3813f2e62233041528149"
+  },
+  "fixture": "disposable synthetic next-server workspace, loopback HTTP, held Manager and in-memory Channel",
+  "elapsedMs": 61106.86,
+  "requestedSeconds": 60,
+  "http": {
+    "requests": 488,
+    "success": 488,
+    "busy": 0,
+    "p50Ms": 51.31,
+    "p95Ms": 85.33,
+    "p99Ms": 109.01,
+    "maxMs": 148.29
+  },
+  "channel": {
+    "messages": 61,
+    "p95Ms": 1.15,
+    "cancelledWaits": 1,
+    "waitCancelMs": 0.36
+  },
+  "reconnectMs": 397.16,
+  "cancelMs": 10.03,
+  "rssPeakGrowthBytes": 96825344,
+  "databasePeakGrowthBytes": 4173816,
+  "eventLoopP95Ms": 20.27,
+  "backpressure": {
+    "attempted": 80,
+    "accepted": 38,
+    "busy": 42,
+    "elapsedMs": 601.02
+  },
+  "logGrowth": {
+    "processStdoutStderrBytes": 171,
+    "scope": "measured workload interval only; not external log files"
+  },
+  "bounds": {
+    "maxRequestMs": 10000,
+    "maxReconnectMs": 10000,
+    "maxCancelMs": 10000,
+    "maxRssGrowthBytes": 268435456,
+    "maxDatabaseGrowthBytes": 134217728,
+    "maxLogBytes": 1048576,
+    "maxChannelMs": 10000,
+    "concurrency": 8,
+    "intervalMs": 1000
+  },
+  "powerLossClaim": false,
+  "readinessApproval": false
+}

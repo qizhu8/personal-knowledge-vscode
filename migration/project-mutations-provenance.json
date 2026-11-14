@@ -1,0 +1,49 @@
+{
+  "schema": "pkm.domain-capture/v1",
+  "transformation": "AST-selects the original Project identity/create/update/archive and Recipe create/update/path/Knowledge-identity declarations into inert ESM string exports; captures the original focused Project model, Project cockpit, Recipe filesystem, and Project store tests verbatim as inert test-source strings. No captured source executes in the isolated adapter.",
+  "files": [
+    {
+      "source": "src/workflows/project-model.ts",
+      "captured": "src/domain/project-mutations-original-project-model.ts",
+      "sourceSha256": "505f56e2351a9f173268007990eaf02f1014abe0dc4f722b12a8f6aa81c94195",
+      "capturedSha256": "cfbed98890d2bdb383758176f33ebe2c7d852c5164481dc8861a1247178902c1"
+    },
+    {
+      "source": "src/workflows/project-cockpit.ts",
+      "captured": "src/domain/project-mutations-original-project-cockpit.ts",
+      "sourceSha256": "1952d5b2f4c7969fbd8f27beef3a955b9f36d3af7dc608c5776a26c0c499d617",
+      "capturedSha256": "49f5ea3f81a0c7557295a0747c471e36568d9a6119e7b8ae815f9f80a0f053ea"
+    },
+    {
+      "source": "src/workflows/recipe-filesystem-store.ts",
+      "captured": "src/domain/project-mutations-original-recipe-store.ts",
+      "sourceSha256": "3ecfb22753d16455ff7427993fd4d017dc00c1d2ffd65be9414157e31421b6f5",
+      "capturedSha256": "444b055f13c0b38630c86faba9e867b4956dc39bea2a068b7e4898d8c28690ad"
+    },
+    {
+      "source": "tests/test-workflow-project-model.js",
+      "captured": "src/domain/project-mutations-original-tests.ts",
+      "sourceSha256": "ed8ce71b3f37610a5b94cc122fb2287c4fb8869a5f3f9e269ae38047e1c1283e",
+      "capturedSha256": "d6f6fef2a0a5b005f8f340ed60288d96ea0f49718d34045fa80801673e3496c9"
+    },
+    {
+      "source": "tests/test-project-cockpit.js",
+      "captured": "src/domain/project-mutations-original-tests.ts",
+      "sourceSha256": "a7c96f26a6e4b28847c06f9dcc840fb575cc2a3a7a787dd8c9e4d55562cf803a",
+      "capturedSha256": "d6f6fef2a0a5b005f8f340ed60288d96ea0f49718d34045fa80801673e3496c9"
+    },
+    {
+      "source": "tests/test-recipe-filesystem-store.js",
+      "captured": "src/domain/project-mutations-original-tests.ts",
+      "sourceSha256": "a98316b26e2ab10f6c99c1baec2488392220d059e664cd38b3332217ec9f2eda",
+      "capturedSha256": "d6f6fef2a0a5b005f8f340ed60288d96ea0f49718d34045fa80801673e3496c9"
+    },
+    {
+      "source": "tests/test-workflow-project-store.js",
+      "captured": "src/domain/project-mutations-original-tests.ts",
+      "sourceSha256": "85a2d49559d524e372844989d2ed8d59ad03f8e4bfebcf130f75174c6521d0a6",
+      "capturedSha256": "d6f6fef2a0a5b005f8f340ed60288d96ea0f49718d34045fa80801673e3496c9"
+    }
+  ],
+  "qualification": "Provenance records hash the actual source/test files and exact generated captures. Mutation implementation is independently tested only against disposable next-server roots and the read-only project-recipes model. Original host/store integrations, delete/execute/providers, runtime terminal-state projection, and actual Knowledge Root access are not claimed."
+}

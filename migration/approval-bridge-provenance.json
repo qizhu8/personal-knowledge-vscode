@@ -1,0 +1,35 @@
+{
+  "schema": "pkm.domain-capture/v1",
+  "roots": {
+    "source": "..",
+    "captured": "."
+  },
+  "transformation": "Portal command activity module copied byte-for-byte; native approval, reconnect and exact-memory methods selected by TypeScript AST and preserved verbatim as evidence strings.",
+  "files": [
+    {
+      "source": "src/chat/portal-command-activity.ts",
+      "captured": "src/domain/approval-bridge-native-activity.ts",
+      "sourceSha256": "855f32824c0a2512b0da6b03ba8b4a8f1342392bd5c780569d5594822fc0e364",
+      "capturedSha256": "855f32824c0a2512b0da6b03ba8b4a8f1342392bd5c780569d5594822fc0e364"
+    },
+    {
+      "source": "src/chat/api-chat-view.ts",
+      "captured": "tests/approval-bridge-original-api-chat-view.mjs",
+      "sourceSha256": "71ddd872aaf2e1fdf1a70616ebc4d50f03e4552152a6670b0e44cfcfdc2397e6",
+      "capturedSha256": "d334826b06ed64dba4e4cd2599e0393ef212fdefb77ea166731f496369a81c9c"
+    },
+    {
+      "source": "src/chat/api-chat-store.ts",
+      "captured": "tests/approval-bridge-original-api-chat-store.mjs",
+      "sourceSha256": "0e9b9a0ddb502c0517c503b6a58634ecb27105bde9e2e6c160373a70f6063d86",
+      "capturedSha256": "0017425b491b8d583af173adb6e53304d998a994d03a5e3d55b73c201cee3b11"
+    },
+    {
+      "source": "src/chat/explicit-memory-tools.ts",
+      "captured": "tests/approval-bridge-original-explicit-memory-tools.mjs",
+      "sourceSha256": "47beb0ac920132c7bf640adfaa23abcf402e22f233fefc57054a466b1992fafe",
+      "capturedSha256": "0a13691f8c637d5c13b67382d19cc5620e5cac9fba3a07fb21a8995ea957b734"
+    }
+  ],
+  "qualification": "Only the original Portal activity reducer is executable source parity. Exact-record approval/execution durability is a NEW conservative projection. Native UI grants are not migrated as generic durable authority; interrupted execution becomes unknown and is never replayed."
+}

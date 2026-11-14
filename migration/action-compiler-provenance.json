@@ -1,0 +1,70 @@
+{
+  "schema": "pkm.domain-capture/v1",
+  "transformation": "Repeatably capture original Action JSON Schema, built-in component descriptors and engine pin, portable ModuleSet/digest fixtures, original pure validators/compiler source and selected authoring/module regression source. The Node implementation reads only explicit inline snapshots and never initializes the original ModuleRuntime, host services, credentials or filesystem paths.",
+  "qualificationStatus": {
+    "state": "unqualified",
+    "reason": "Compiler capture was unintentionally regenerated before Action parity qualification; retained as an unqualified candidate."
+  },
+  "files": [
+    {
+      "source": "resources/action_authoring.py",
+      "captured": "src/domain/action-compiler-original.ts",
+      "sourceSha256": "98eb9c5ab3109546a80d8406e63d5cdd9348004a634a0d78f72ef20eb4f658fb",
+      "capturedSha256": "432371f8615140af81599965436a5996afb34b38f060e611ec397f6435e5a302"
+    },
+    {
+      "source": "resources/action_modules.py",
+      "captured": "src/domain/action-compiler-original.ts",
+      "sourceSha256": "05dc0cdda14163eb41fb713cf69e2069dd99e681df1e721d49f3dbdda3014697",
+      "capturedSha256": "432371f8615140af81599965436a5996afb34b38f060e611ec397f6435e5a302"
+    },
+    {
+      "source": "resources/action_components.py",
+      "captured": "src/domain/action-compiler-original.ts",
+      "sourceSha256": "588c773e28e66386d72e01b872ba5b1c28480ebf348c832943b1ea337f59b065",
+      "capturedSha256": "432371f8615140af81599965436a5996afb34b38f060e611ec397f6435e5a302"
+    },
+    {
+      "source": "resources/action_run_store.py",
+      "captured": "src/domain/action-compiler-original.ts",
+      "sourceSha256": "ae79232105b21940f0addc26f1fc28a125a158ec60af7558d374f3f16531c479",
+      "capturedSha256": "432371f8615140af81599965436a5996afb34b38f060e611ec397f6435e5a302"
+    },
+    {
+      "source": "resources/action_recovery.py",
+      "captured": "src/domain/action-compiler-original.ts",
+      "sourceSha256": "7ff3d346e19964419001c4c1e8b642bfef5380596cd810f01a532c7d6573d5bc",
+      "capturedSha256": "432371f8615140af81599965436a5996afb34b38f060e611ec397f6435e5a302"
+    },
+    {
+      "source": "resources/recipe_runtime.py",
+      "captured": "src/domain/action-compiler-original.ts",
+      "sourceSha256": "2342ea420959b25e80394e18ea0a8c4c4dca43bb2231a41837c3f6920a5ce41a",
+      "capturedSha256": "432371f8615140af81599965436a5996afb34b38f060e611ec397f6435e5a302"
+    },
+    {
+      "source": "tests/test-action-authoring.py",
+      "captured": "tests/action-compiler-original-fixtures.mjs",
+      "sourceSha256": "478ea76bffb5500f19bb51cb9d522bdfc60ef555a7598616c040a4b7e246fe9b",
+      "capturedSha256": "d41cddb93be3a0c5e5aa6dcdeacf7eba84d3119b80a54e12518242b107ffcae2"
+    },
+    {
+      "source": "tests/test-action-modules.py",
+      "captured": "tests/action-compiler-original-fixtures.mjs",
+      "sourceSha256": "3bb46aa6e557fa2bbd0e19e7853081d10b4c71f7675a6d12adb265a7a77bc7d6",
+      "capturedSha256": "d41cddb93be3a0c5e5aa6dcdeacf7eba84d3119b80a54e12518242b107ffcae2"
+    },
+    {
+      "source": "dist/components/action-components.js",
+      "captured": "src/domain/action-compiler-original.ts",
+      "sourceSha256": "47c17f6d369dae297b60ae86658f30f57c908e6ef7d1e44a5949999023116e3d",
+      "capturedSha256": "432371f8615140af81599965436a5996afb34b38f060e611ec397f6435e5a302"
+    },
+    {
+      "source": "resources/action_components.js",
+      "captured": "src/domain/action-compiler-original.ts",
+      "sourceSha256": "ee0cf2ca9184342c9bfba0103550d1c52610a0a818832c4e869f0db49fa197d9",
+      "capturedSha256": "432371f8615140af81599965436a5996afb34b38f060e611ec397f6435e5a302"
+    }
+  ]
+}

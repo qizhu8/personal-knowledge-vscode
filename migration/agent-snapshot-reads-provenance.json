@@ -1,0 +1,54 @@
+{
+  "schema": "pkm.next.domain-capture/v1",
+  "notes": "Immutable read port; original automatic encryption migration intentionally unavailable. Magic Code is an identifier, not authentication. Python oracle is pure projection only; regression source is captured as text, never executed.",
+  "files": [
+    {
+      "source": "src/agent-sessions/agent-snapshots.ts",
+      "captured": "src/domain/agent-snapshot-reads-original.ts",
+      "sourceSha256": "f5a17cc8f6ea00b9708e0e5a2bfa0484885ac0948737b9dc9d4184bfe3be7fa2",
+      "capturedSha256": "ed762dd8adbcdff40365ee9603b2b141f3cc70d417c280071233559bcdb54d08"
+    },
+    {
+      "source": "resources/agent_session_runtime.py",
+      "captured": "tests/agent-snapshot-reads-original.mjs",
+      "sourceSha256": "8ea17cbcb9207633f19ae5504f5afcfefd351d0829dae13f1a56f3fe736c0d5b",
+      "capturedSha256": "4810dda5ec96baff6a9715ad0af68f3ed3ff345dcf8c126eafc8ae9cee6f6531"
+    },
+    {
+      "source": "tests/test-agent-session-mcp-runtime.py",
+      "captured": "tests/agent-snapshot-reads-original.mjs",
+      "sourceSha256": "92633642c0d487cda03fee9b13045cba9dd5b04322c2e7b91dae0eb776fcd3f8",
+      "capturedSha256": "4810dda5ec96baff6a9715ad0af68f3ed3ff345dcf8c126eafc8ae9cee6f6531"
+    },
+    {
+      "source": "resources/agent_session_runtime.py",
+      "captured": "src/domain/agent-snapshot-reads-projection.ts",
+      "sourceSha256": "8ea17cbcb9207633f19ae5504f5afcfefd351d0829dae13f1a56f3fe736c0d5b",
+      "capturedSha256": "4537a81152ea2c12e5fac41472c63a93047a3653b2be2cc13a2c0f4181819aa0"
+    },
+    {
+      "source": "src/agent-sessions/agent-snapshots.ts",
+      "captured": "src/agent-snapshot-reads-contracts.ts",
+      "sourceSha256": "f5a17cc8f6ea00b9708e0e5a2bfa0484885ac0948737b9dc9d4184bfe3be7fa2",
+      "capturedSha256": "32cfe029e66eed65fb1cd2b590657eb1439eb6462b320191dcd656527d64c7fb"
+    },
+    {
+      "source": "src/agent-sessions/agent-snapshots.ts",
+      "captured": "src/agent-snapshot-reads.ts",
+      "sourceSha256": "f5a17cc8f6ea00b9708e0e5a2bfa0484885ac0948737b9dc9d4184bfe3be7fa2",
+      "capturedSha256": "ed52cb992ccd680279fc9c53a6397e1105655ceb2c39e9215f97785dbc860913"
+    },
+    {
+      "source": "tests/test-agent-session-mcp-runtime.py",
+      "captured": "tests/agent-snapshot-reads.test.mjs",
+      "sourceSha256": "92633642c0d487cda03fee9b13045cba9dd5b04322c2e7b91dae0eb776fcd3f8",
+      "capturedSha256": "34301074be454ff69a7644d60e32298e549ed39ff707cc6f4836dccc8f90b69b"
+    },
+    {
+      "source": "tests/test-agent-session-mcp-runtime.py",
+      "captured": "tests/agent-snapshot-reads-fixtures.mjs",
+      "sourceSha256": "92633642c0d487cda03fee9b13045cba9dd5b04322c2e7b91dae0eb776fcd3f8",
+      "capturedSha256": "77f219285bdd38147ca786edbe6a8aba0b0c67641bb385d08fb3654b39dc1c65"
+    }
+  ]
+}

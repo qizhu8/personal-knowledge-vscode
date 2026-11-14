@@ -1,0 +1,25 @@
+{
+  "schema": "pkm.domain-capture/v1",
+  "transformation": "Golden lifecycle/read/audit outputs executed against the original Python Engine in a disposable temporary database. Original TypeScript preview arrow body captured unchanged with an explicit parameter type. Node tests replay the same contracts against Markdown authority. Runtime timestamps, environment-specific IDs/scope and the additive documentSha256 pin are excluded from comparison.",
+  "files": [
+    {
+      "source": "modules/pkm-memory-engine/src/pkm_memory_engine/engine.py",
+      "sourceSha256": "8d602fb5574a21632f880fefc00a4c219b40477cf33588fd0373aa462376c1a3",
+      "captured": "migration/memory-oracle.json",
+      "capturedSha256": "16997e96c2c75df95ac73cb7e7cb01de66e46aebf5f6e775ec82c09eaf849b72"
+    },
+    {
+      "source": "modules/pkm-memory-engine/tests/test_explicit_memory.py",
+      "sourceSha256": "5eb3a0762769249dabd0f50c78cd0179f1fd8013c43a1c9da042c9bb5a77c9a6",
+      "captured": "migration/memory-oracle.json",
+      "capturedSha256": "16997e96c2c75df95ac73cb7e7cb01de66e46aebf5f6e775ec82c09eaf849b72"
+    },
+    {
+      "source": "src/capabilities/memory-operations.ts",
+      "sourceSha256": "c6c6a3922a5e6d5679cb816effeab41934640a129128a1f964d05a70d3ec7ca3",
+      "captured": "src/domain/memory-search.ts",
+      "capturedSha256": "8d4d655ec037ffaa430f499c28bbbad05739535fcb0446446cbfd51f857c8065"
+    }
+  ],
+  "qualification": "No Chat-memory/model/embedding engine, native UI, full old-layout import or production qualification is claimed. The original explicit-memory unittest suite was separately run without source changes."
+}

@@ -1,0 +1,19 @@
+{
+  "schema": "pkm.legacy-import-provenance/v1",
+  "ready": true,
+  "files": [
+    {
+      "source": "src/knowledge/note-work-items.ts",
+      "captured": "src/domain/note-work-items.ts",
+      "sourceSha256": "64f39b26b1d115e92ed5fc1f31c81ef746baf325ea07689c2407449a66aab76e",
+      "capturedSha256": "64f39b26b1d115e92ed5fc1f31c81ef746baf325ea07689c2407449a66aab76e"
+    },
+    {
+      "source": "src/knowledge/knowledge-contracts.ts",
+      "captured": "src/domain/knowledge-contracts.ts",
+      "sourceSha256": "0f4c453b726e70df7c3e8df3e4eb253114d89d4cb88eb8ce3e4f561bf336ab2f",
+      "capturedSha256": "0f4c453b726e70df7c3e8df3e4eb253114d89d4cb88eb8ce3e4f561bf336ab2f"
+    }
+  ],
+  "issues": []
+}

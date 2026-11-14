@@ -1,0 +1,50 @@
+{
+  "schema": "pkm.next.domain-capture/v1",
+  "sourceRoot": "..",
+  "capturedRoot": ".",
+  "notes": "Only the listed native Chat Manager scope/budget declarations and root acceptance constant are exact captures. New structured completion/plan validation extends the original Chat plan DAG, scope ownership, work-goal preservation and Manager-integrated verification semantics; no model, runtime, live designs or complete legacy planning implementation is claimed as captured.",
+  "files": [
+    {
+      "source": "src/chat/tool-paths.ts",
+      "sourceSha256": "8da1e0bc8d2044bb745013f4fb363bbae5a10e3081334de4a8f157c22c62edf6",
+      "symbols": [
+        "relativeToolPath"
+      ],
+      "captured": "src/domain/manager-plan-original.ts",
+      "capturedSha256": "482972d6595fb3ae5a5db08865af65a8c7b4a3e553f84e24c3d49ae1617e8c6d"
+    },
+    {
+      "source": "src/chat/worker-scope.ts",
+      "sourceSha256": "80952486d008c8b42e089e4ce543e6d6563638fb108d180fd258781c0c85c6ab",
+      "symbols": [
+        "WorkerScope",
+        "canonicalPath",
+        "containsPath",
+        "workerScope",
+        "assertIndependentWorkerScopes",
+        "assertWorkerScopeWithin"
+      ],
+      "captured": "src/domain/manager-plan-original.ts",
+      "capturedSha256": "482972d6595fb3ae5a5db08865af65a8c7b4a3e553f84e24c3d49ae1617e8c6d"
+    },
+    {
+      "source": "src/chat/worker-tree.ts",
+      "sourceSha256": "59f8dc52f2007c48e7512a7d1c96814d2a97c8273022c3cba9d8551487969131",
+      "symbols": [
+        "WorkerLimits",
+        "workerLimits"
+      ],
+      "captured": "src/domain/manager-plan-original.ts",
+      "capturedSha256": "482972d6595fb3ae5a5db08865af65a8c7b4a3e553f84e24c3d49ae1617e8c6d"
+    },
+    {
+      "source": "src/chat/chat-work-goal.ts",
+      "sourceSha256": "6d3d49d01edd5685ebb19ecfb154fae2d0bd5c58a0cd2a5203d91269ff723072",
+      "symbols": [
+        "rootWorkCriterion"
+      ],
+      "captured": "src/domain/manager-plan-original.ts",
+      "capturedSha256": "482972d6595fb3ae5a5db08865af65a8c7b4a3e553f84e24c3d49ae1617e8c6d"
+    }
+  ]
+}

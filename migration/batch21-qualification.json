@@ -1,0 +1,264 @@
+{
+  "schema": "pkm.batch21-qualification/v1",
+  "batch": 21,
+  "status": "bounded-functional-and-storage-io-qualified-full-baseline-passed-no-cutover",
+  "scope": "Native-composed managed Skill source removal with strict lineage checks and ordered source/projection history, including bounded install/remove/reinstall, recognized bundle upgrade, restart, backup/restore, retry and second-restore scenarios.",
+  "boundary": "Exclusive native-owned disposable fixtures and bounded local tests only. No real Knowledge Root, production authority, workstream acceptance, full old-suite parity or cutover qualification is claimed.",
+  "schemas": {
+    "workspace": 23,
+    "memoryEngine": 2,
+    "memoryEngineChanged": false
+  },
+  "catalog": {
+    "actualRegisteredCount": 215,
+    "newOperation": "legacy.skill.source.remove",
+    "operationVersion": 1,
+    "classification": "native-composed-writer",
+    "readOnly": false,
+    "independentNativeAuthorityRequired": true,
+    "acceptedWorkstream": false
+  },
+  "sourceRemovalBoundary": {
+    "scope": "Remove only an existing managed lineage; preserve unrelated/custom sources.",
+    "input": "Strict operationId UUID, sourceSha256, sourceManifestSHA, destSHA (nullable), and destManifestSHA (nullable with destSHA).",
+    "result": "The removed destination is null.",
+    "idempotency": "Uses the same JSON fingerprint shape {actor,binding,input} and the global operation-id namespace; existing install fingerprints/history remain unchanged.",
+    "authority": "Native approveRemovePlan and reconcileRemoveAnchor callbacks are both required and must be available; approvals and native authorization remain outside SQL.",
+    "history": "Typed remove history uses kind 'remove'; old install history remains undiscriminated and unchanged. Ordered source/projection history is required; mixed source and older projection journals are denied.",
+    "unknownOutcomes": "Unknown partial unlink, directory removal or post-commit anchor outcomes require exact native recovery. Startup never applies or guesses recovery.",
+    "platformHandling": "Unix no-follow bounded UTF-8 handling is limited to disposable fixtures."
+  },
+  "qualification": {
+    "finalSourceAndTestFreezeConfirmed": true,
+    "fullBaseline": {
+      "cwd": "repository root",
+      "command": "TMPDIR=\"$PWD/next-server/.batch21-final-tmp\" npm test --prefix next-server",
+      "server": {
+        "tests": 1384,
+        "passed": 1384,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "client": {
+        "tests": 9,
+        "passed": 9,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "total": {
+        "tests": 1393,
+        "passed": 1393,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "verificationArtifact": "migration/verification.json",
+      "verificationArtifactSha256": "dbf863cd99c9a945bd3d221c184ce66497bc78f7fa2c5dc7259289c71c63e3bb",
+      "implementationDigest": "76dd7886634a0ea702ffc109ed4c776c04b01ee9e32a06b6f79b89c185426bb4",
+      "finishedAt": "2026-11-08T05:00:28.970Z",
+      "log": "/home/yuwang8/.copilot/session-state/e2f4371d-5c23-4631-b0fe-a18ef337421f/files/batch21-full-verification.log",
+      "logSha256": "12d76b33f9908f7711e53151e489288976ebaa6c0f9111b49b194990769808bb",
+      "boundary": "Current implementation baseline only; not old-suite parity, workstream acceptance, production authority, real-root qualification or cutover."
+    },
+    "fullBaselineNote": "The separate parent full verification passed against the strictly frozen implementation fingerprint.",
+    "acceptedWorkstreams": 0,
+    "totalWorkstreams": 21,
+    "readyForCutoverReview": false,
+    "cutoverAuthorized": false
+  },
+  "functionalQualification": {
+    "cwd": "repository root, then next-server",
+    "command": "npm --prefix next-server run build && cd next-server && node --test tests/legacy-skill-source.test.mjs tests/legacy-skill-source-native.test.mjs tests/host-composition-legacy-skill-source-transport.test.mjs tests/host-composition-legacy-skill-source-backup.test.mjs tests/legacy-skill-lifecycle.test.mjs tests/legacy-skill-lifecycle-native.test.mjs tests/host-composition-legacy-batch15-transport.test.mjs tests/host-composition-legacy-batch15-backup.test.mjs tests/skill-routing-legacy.test.mjs tests/skill-routing.test.mjs tests/server.test.mjs tests/workspace-backup.test.mjs tests/host-composition-legacy-shared-backup.test.mjs tests/skill-routing-prompt-legacy.test.mjs tests/skills.test.mjs",
+    "execution": "Independently executed by the qualification lane with TMPDIR set to a project-local scratch directory; the scratch directory was removed after the run.",
+    "counts": {
+      "selectors": 15,
+      "tests": 124,
+      "passed": 124,
+      "failed": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "build": "passed"
+    },
+    "log": ".batch21-independent-functional.log",
+    "logSha256": "e4b76cf7dc1fc8deeceb5c6672df998ceece78723c99078f08a7314ccbd970b2",
+    "parentRunLog": "/home/yuwang8/.copilot/session-state/e2f4371d-5c23-4631-b0fe-a18ef337421f/files/batch21-functional.log",
+    "parentRunLogSha256": "87d12731c0858858afddc704aaf46b171e716715cb8afb690fd5807cc5099aa7",
+    "srcDistDigest": {
+      "sha256": "b975c0365b48d068ef6465807f98ca369f9c4afb748194c12445b391d499bd91",
+      "regularFiles": 664,
+      "formula": "SHA256(JSON.stringify([relativePath,SHA256(bytes)] rows for regular src/dist files sorted by relativePath.localeCompare))"
+    },
+    "selectedTestScripts": {
+      "count": 15,
+      "sha256": "987a11e741e7d17bac689fe80945b803625e3f04f44b57e2b77373f31938fd18",
+      "formula": "SHA256(JSON.stringify([path,SHA256(bytes)] rows in command order))"
+    },
+    "scope": "Bounded Skill source install/remove, lifecycle, transport, backup/restore, server, workspace backup, shared backup and Skill routing regression; not the full original suite or an I/O fault qualification."
+  },
+  "sourceBoundFixedPoint": {
+    "command": "node scripts/qualify-legacy-regression-fixedpoint.mjs",
+    "fixedPoint": "stable",
+    "orderedGeneration": [
+      "tests/legacy-regression-oracle.test.mjs",
+      "tests/legacy-regression-batch12.test.mjs",
+      "tests/legacy-read-race.test.mjs"
+    ],
+    "concurrentInvocations": [
+      {
+        "command": "node --test --test-concurrency=4 tests/legacy-regression-oracle.test.mjs tests/legacy-regression-batch12.test.mjs tests/legacy-read-race.test.mjs",
+        "tests": 32,
+        "passed": 32,
+        "failed": 0
+      },
+      {
+        "command": "node --test --test-concurrency=4 tests/legacy-regression-oracle.test.mjs tests/legacy-regression-batch12.test.mjs tests/legacy-read-race.test.mjs",
+        "tests": 32,
+        "passed": 32,
+        "failed": 0
+      }
+    ],
+    "reports": [
+      {
+        "path": "tests/legacy-regression-oracle.report.json",
+        "sha256": "7b3ee647d028482e38a61315711b005ec029f7b64e1aee9f2da1cbf8e53bcaac"
+      },
+      {
+        "path": "tests/legacy-regression-batch12.report.json",
+        "sha256": "ff9e32a6a65e4b974e457495867eb85640c698894641d2268160183240823a62"
+      },
+      {
+        "path": "tests/legacy-read-race.report.json",
+        "sha256": "5a79ca3b8839c1d04a62dbd5ce6d1c6e823e33896bf1360e4d2e5a00e5a201ca"
+      }
+    ],
+    "sourceMaps": {
+      "originalOracle": {
+        "aggregateSha256": "eaf0fb3f096082c6e03711645163342f13ef8cdddc0075f2beb77ce1d8ed0ad7",
+        "nativeSourceCount": 18,
+        "originalSourceCount": 5
+      },
+      "batch12": {
+        "aggregateSha256": "f0c431749a6259cd1b872f09ac3937de0fc9417a63687ad0e611c98e8f81b2e6",
+        "nativeSourceCount": 32,
+        "originalSourceCount": 10
+      },
+      "readRace": {
+        "sourceMapCount": 26,
+        "oracleReportSha256": "7b3ee647d028482e38a61315711b005ec029f7b64e1aee9f2da1cbf8e53bcaac",
+        "batch12ReportSha256": "ff9e32a6a65e4b974e457495867eb85640c698894641d2268160183240823a62"
+      }
+    }
+  },
+  "provenanceQualification": {
+    "captureCheckCommand": "A read-only Node harness enumerated each listed script and invoked `node <script> --check`.",
+    "captureCheckScripts": [
+      "scripts/capture-agent-runtime.mjs",
+      "scripts/capture-channel-runtime.mjs",
+      "scripts/capture-coding-worker.mjs",
+      "scripts/capture-collaboration-state.mjs",
+      "scripts/capture-compute.mjs",
+      "scripts/capture-document-lifecycle.mjs",
+      "scripts/capture-knowledge-index.mjs",
+      "scripts/capture-knowledge-mutations.mjs",
+      "scripts/capture-legacy-state-import-native.mjs",
+      "scripts/capture-manager-chat.mjs",
+      "scripts/capture-manager-runtime.mjs",
+      "scripts/capture-model-config.mjs",
+      "scripts/capture-native-qualification.mjs",
+      "scripts/capture-project-recipes.mjs",
+      "scripts/capture-retrieval-learning.mjs",
+      "scripts/capture-runtime-process.mjs",
+      "scripts/capture-sync-apply.mjs",
+      "scripts/capture-sync-plans.mjs",
+      "scripts/capture-sync-transport.mjs",
+      "scripts/capture-workflow-compiler.mjs",
+      "scripts/capture-workflow-executor.mjs"
+    ],
+    "captureCheckCount": 21,
+    "captureIssues": 0,
+    "regularFilesSnapshotted": 722,
+    "snapshotScope": [
+      "src",
+      "migration",
+      "scripts",
+      "tests"
+    ],
+    "bytesModeMtimeNsPreserved": true,
+    "currentCaptureRecords": 233,
+    "currentOriginalSourceReferences": 33,
+    "currentNativeRecords": 351,
+    "nativeQualificationExactPins": 259,
+    "nativeQualificationSha256": "a5ae67e16a0c3501cc2f23947562dcd3ba4b892f909ff636510a3083f3d9bd6b",
+    "readinessAndProvenanceTests": {
+      "command": "node --test --test-concurrency=4 tests/migration.test.mjs tests/readiness.test.mjs tests/provenance-readonly.test.mjs",
+      "tests": 20,
+      "passed": 20,
+      "failed": 0
+    },
+    "readinessContract": {
+      "catalogCount": 215,
+      "batch21Operation": "legacy.skill.source.remove@1",
+      "readinessStatus": "blocked",
+      "blockers": 610,
+      "acceptedWorkstreams": 0,
+      "totalWorkstreams": 21,
+      "cutoverAuthorized": false,
+      "log": "/home/yuwang8/.copilot/session-state/e2f4371d-5c23-4631-b0fe-a18ef337421f/files/batch21-readiness.json",
+      "logSha256": "3a0dd0709f5619afaaf641203b7c4c30bed287bbbc889940ef473d4c996438b6"
+    },
+    "originalInventoryOrCaptureHistoryEdited": false
+  },
+  "storageIoQualification": {
+    "currentBatch21IoRebind": {
+      "cwd": "next-server",
+      "functionalCommand": "npm run build && node --test tests/legacy-skill-source.test.mjs tests/legacy-skill-source-native.test.mjs tests/host-composition-legacy-skill-source-transport.test.mjs tests/host-composition-legacy-skill-source-backup.test.mjs tests/legacy-skill-lifecycle.test.mjs tests/legacy-skill-lifecycle-native.test.mjs tests/host-composition-legacy-batch15-transport.test.mjs tests/host-composition-legacy-batch15-backup.test.mjs tests/skill-routing-legacy.test.mjs tests/skill-routing.test.mjs tests/server.test.mjs tests/workspace-backup.test.mjs tests/host-composition-legacy-shared-backup.test.mjs tests/skill-routing-prompt-legacy.test.mjs tests/skills.test.mjs",
+      "functionalTests": 124,
+      "functionalPassed": 124,
+      "functionalSrcDistSha256": "b975c0365b48d068ef6465807f98ca369f9c4afb748194c12445b391d499bd91",
+      "saveRepeatCommand": "PKM_STORAGE_IO_FAULT_SAVE=1 PKM_STORAGE_IO_FAULT_REPEAT=1 node --test-concurrency=4 --test tests/storage-io-fault.test.mjs",
+      "plainCommand": "node --test-concurrency=4 --test tests/storage-io-fault.test.mjs",
+      "caseCount": 28,
+      "repeatRuns": 2,
+      "recognizedRecoveriesPerRun": 24,
+      "failClosedTamperDenialsPerRun": 4,
+      "blockedRecoveriesPerRun": 0,
+      "dualTransportZeroFilesystemReplaysPerRun": 48,
+      "normalizedReportsByteIdentical": true,
+      "plainRunCoveredInputsAndOutputsUnchanged": true,
+      "coveredInputs": 957,
+      "coveredInputsAndOutputs": 959,
+      "sourceFingerprint": "82a58265d17a748ddaabd03cb730a1d66ddfccadb450c87d06f3585a01874951",
+      "report": "tests/storage-io-fault-report.mjs",
+      "reportSha256": "b04fc5fb05ff18130cc55f6c7016560c43c6c388e0f6975dc1172c547bc6efc7",
+      "observations": "tests/storage-io-fault-observations.mjs",
+      "observationsSha256": "44695a85a6e14e8c79d707c0b2a1542321f23699f6035b61c37c95a11dcbcad5",
+      "baselineInput": "tests/storage-io-fault-baseline.mjs",
+      "baselineInputSha256": "0d5e53f5bea4c8c08561b28abdaabde4d3d774f94b5f6e9a89e2b84e38b07cc6",
+      "functionalDurationMs": 40564,
+      "saveRepeatDurationMs": 97908,
+      "plainDurationMs": 47661,
+      "maxRequestMs": 208.966757,
+      "maxRecoveryMs": 1488.975291,
+      "maxCloseMs": 137.745303,
+      "peakRssBytes": 250847232,
+      "peakFileDescriptors": 45,
+      "fixtureBytes": 976283,
+      "safetyBoundsPassed": true,
+      "approvedSlo": false,
+      "fullBaseline": null
+    },
+    "priorBatch20Baseline": "stale for this source state; not carried forward as current evidence",
+    "scope": "The bounded matrix covers Document, Upload, Resource and Project only, not Skill source removal, the memory engine or memory.",
+    "pending": "The separate full baseline passed; the I/O report retains its independently observed fullBaseline:null. No production authority or power-loss claim is made here."
+  },
+  "limitations": [
+    "This is native-composed writer behavior in exclusive native-owned disposable fixtures, not a general installer/remover or production authority.",
+    "Only exact native source, target, owner, epoch, plan and anchor bindings authorize effects; operation arguments, hashes and HTTP/MCP callers do not create authority.",
+    "Mixed old projection/source journals remain denied because they cannot prove shared source-version ordering.",
+    "Unknown partial unlink, directory-removal and post-commit anchor outcomes require exact native recovery; no startup replay or guessed recovery is supported.",
+    "Unix no-follow bounded UTF-8 handling is fixture-bounded and does not establish hostile external-writer exclusion or an OS-level lock.",
+    "Backup/retry/restart flows are covered by the bounded functional command, but this is not Skill power-loss durability, full fault cross-product, full original parity, an accepted workstream, or cutover."
+  ]
+}

@@ -1,0 +1,935 @@
+{
+  "schema": "pkm.next-server.legacy-regression-batch12/v1",
+  "qualification": "bounded-original-assertion-bridge",
+  "execution": {
+    "testFile": "tests/legacy-regression-batch12.test.mjs",
+    "command": "node --test --test-concurrency=4 tests/legacy-regression-batch12.test.mjs",
+    "workingDirectory": "next-server",
+    "node": "v22.23.1"
+  },
+  "build": {
+    "command": "npm --prefix next-server run build",
+    "result": "passed",
+    "reason": null
+  },
+  "result": "passed",
+  "nativeSourceSetSha256": "4a981c34da95b83b1f416b82eca28ae21d9769931d5887b85c7757cf020a9946",
+  "nativeSources": {
+    "src/assets.ts": "7d705cae6a8bc92935319c968cb23f20db8d62d14ded955d1fb13d5a44b727f4",
+    "src/boards.ts": "821fb841a3fc6441994a75d658770189d22357a9fc823c6227388c429931a88b",
+    "src/cli.ts": "f8345ee904c0bddb2fa7ac11ed3ef99002ca5dad4025feece2adabf3e1f7b2bc",
+    "src/contracts.ts": "243be35a870d277f9b9f50160a57605614868e06520a9f457c9d2f54969d0cff",
+    "src/core.ts": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943",
+    "src/domain/knowledge-contracts.ts": "0f4c453b726e70df7c3e8df3e4eb253114d89d4cb88eb8ce3e4f561bf336ab2f",
+    "src/domain/markdown-assets.ts": "5cdb18e97503a365b08024f532ffe8f34091fcbdffa2c8f77c5d473f530f9c5d",
+    "src/domain/research.ts": "a5eeb110549c7552f2ea8a2c30b7a84db9938d7d0233a347404a9fc1ac444d60",
+    "src/domain/skills.ts": "6965b8f1a4afba6342a0fdafd0d1560edbafc611a17144bc9657f568b453d96d",
+    "src/domain/todo-api-contract.ts": "e45d04227e38daa3a64537b2a772f7057430697a5dc73bbd57efcbf82a618263",
+    "src/domain/todo-api.ts": "57a47a2581911b14e73c58246a785499258d2696e1c5b32803972270ec5488ad",
+    "src/domain/todo-board.ts": "8e45dd4a83ee98e8c4dc6bb7a05217e802d7c9cc4f5b44f61d31b7bd6a8826c1",
+    "src/domain/todo-identities.ts": "44e62b0baec88f7520c76673e481b9bd64354441ba598f47866bec6d715822bd",
+    "src/file-write.ts": "85a3b1430b476fa8cc2d5e567454603a4044bda7aa279a5b9f1c27a19f765d7d",
+    "src/http.ts": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109",
+    "src/knowledge-mutations-contracts.ts": "4390dabc9ec6dd53be282653eb710243ed6b80d1534333adba88e6788356c606",
+    "src/knowledge-mutations.ts": "eafcb7cf7174b3a6e6189c56ca3c50ace05aa6d6e6e979c2ca41dcb1d9d566f9",
+    "src/knowledge-snapshot.ts": "b9f7c55bd1181d378c754a792e8abb3f835169f1c18fe827cbfc2752266f5df4",
+    "src/markdown.ts": "281d58af8a4d8c840f3f1e288516f1b51046f067b2bd9b5125ec8527f13a15fd",
+    "src/mcp.ts": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6",
+    "src/memory-contracts.ts": "15541f78bf7376d02485edc7c279a245a7a8ffed078bb81764a59b15c827a6eb",
+    "src/memory.ts": "0eee48b78669180c12c47215296b8c5bcca94052e33e68029da330a3890daa0c",
+    "src/note-contracts.ts": "6628055bd64a7e059d68832b45c672e91ef337b773085b9f718b16efe75f95bb",
+    "src/notes.ts": "298a624cd7ce602375405019d4a8b5e4741829f13c7d9ef5def238363f484256",
+    "src/research-contracts.ts": "58c86dec09860752a03c87366926dddee91509542baebc9d4b081af856b1865b",
+    "src/research.ts": "029d6c409513f233800243a6fd024b8e732b7947171f57982851862e97111f93",
+    "src/skill-contracts.ts": "574a8835fb0684d2b41db74bfc0d6208b70228da465a9b4a3062fc82b6eb5735",
+    "src/skills.ts": "26de2a87cc51747e489eb9d42380690c9b4e02c7bdd1ada6d1077426cd68c04c",
+    "src/storage-worker.ts": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b",
+    "src/storage.ts": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6",
+    "src/todo-definitions.ts": "27a3ac96f1f46a6c171fba0e29d851b776aefd777c505e2bdac24b95927d8e95",
+    "tests/legacy-regression-batch12.test.mjs": "6d6d90f85ecd830d96f2da0f754a1f3b3884c9500b6e3bc6b3c2a11a4ecdd435"
+  },
+  "originalSources": {
+    "tests/test-browser-library.js": "0a3b34a66b1b49ca310bae5d0f0191776d4a1bbf65f40d5db1ff5b7caa8f4e8e",
+    "tests/test-capability-memory.js": "b7b7542c796b531ecaa02c6ecb0a79c23dc141f330e9b4cb2ad7c7538e84c2bb",
+    "tests/test-dual-path-search.js": "da2a713925c3eb2cec4ba47da1ed4e13de35ba425e9db039fcea48c20ca56bd0",
+    "tests/test-knowledge-contracts.js": "bf7f6631653c86882373cd94a19009573490410ccbd5c72f1bc2ac98fd4178a8",
+    "tests/test-knowledge-search-browser.js": "35f6499f628390290142614c415e8d755d2b83e6c2c8342c0b4236ce04b896a0",
+    "tests/test-knowledge-source-ranges.js": "39198b907cc541d192464eeeb41e395476694bb01442f603727290589f7c1d94",
+    "tests/test-markdown-image-assets.js": "f703f578826d5f76336974f7f8f5f308d0160dae1bbe187054aacf708585906b",
+    "tests/test-markdown-owned-assets.js": "64ec0aa046fbe000239216013563d7a3dba31df37a5524b124f054229603b4ef",
+    "tests/test-note-work-items.js": "25ad07cdf20931f54bceb65c9b6047466362ad71a8ba8ca591ea1867a015d780",
+    "tests/test-todo-board.js": "c8f9bbdcad4d9c375b5dc727a9581b433504b24076669104b05e93f7c371df17"
+  },
+  "rows": [
+    {
+      "originalFile": "tests/test-knowledge-source-ranges.js",
+      "originalTestcase": "local Note discovery and reads do not lose identities beyond the first 1,000 records (source scope; >1,000 bound not run)",
+      "nativeOperations": [
+        "knowledge.note.list",
+        "knowledge.note.get"
+      ],
+      "nativeTransport": "Core.dispatch",
+      "scenario": "An adjacent native Note projection check preserves specialized type, category, and tags without exposing body content. It does not claim the original >1,000-record stress assertion.",
+      "result": "verified",
+      "assertions": 7,
+      "evidence": [
+        "Type=decision yielded one body-free row with category and duplicate-tag metadata intact.",
+        "Pinned get by documentId returned the original Note body."
+      ],
+      "unsupportedReason": "The original >1,000-Note stress bound was not exercised; only the smaller native metadata-projection check is verified.",
+      "originalSourceSha256": "39198b907cc541d192464eeeb41e395476694bb01442f603727290589f7c1d94",
+      "nativeImplementationSources": [
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/knowledge-snapshot.ts",
+          "sha256": "b9f7c55bd1181d378c754a792e8abb3f835169f1c18fe827cbfc2752266f5df4"
+        },
+        {
+          "path": "src/markdown.ts",
+          "sha256": "281d58af8a4d8c840f3f1e288516f1b51046f067b2bd9b5125ec8527f13a15fd"
+        },
+        {
+          "path": "src/note-contracts.ts",
+          "sha256": "6628055bd64a7e059d68832b45c672e91ef337b773085b9f718b16efe75f95bb"
+        },
+        {
+          "path": "src/notes.ts",
+          "sha256": "298a624cd7ce602375405019d4a8b5e4741829f13c7d9ef5def238363f484256"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/storage.ts",
+          "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-dual-path-search.js",
+      "originalTestcase": "top-level Skill inventory path/name mismatch and exact Skill lookup assertions",
+      "nativeOperations": [
+        "knowledge.skill.list",
+        "knowledge.skill.get"
+      ],
+      "nativeTransport": "MCP stdio",
+      "scenario": "The original Skill's categorized path remains a path, not a guessed Skill name; native listing exposes stable document IDs and exact name-or-ID reads.",
+      "result": "verified",
+      "assertions": 7,
+      "evidence": [
+        "MCP list returned the exact categorized path, stable documentId, and no content field.",
+        "MCP get by documentId returned the original body; the source Markdown bytes were unchanged."
+      ],
+      "unsupportedReason": null,
+      "originalSourceSha256": "da2a713925c3eb2cec4ba47da1ed4e13de35ba425e9db039fcea48c20ca56bd0",
+      "nativeImplementationSources": [
+        {
+          "path": "src/cli.ts",
+          "sha256": "f8345ee904c0bddb2fa7ac11ed3ef99002ca5dad4025feece2adabf3e1f7b2bc"
+        },
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/domain/skills.ts",
+          "sha256": "6965b8f1a4afba6342a0fdafd0d1560edbafc611a17144bc9657f568b453d96d"
+        },
+        {
+          "path": "src/knowledge-snapshot.ts",
+          "sha256": "b9f7c55bd1181d378c754a792e8abb3f835169f1c18fe827cbfc2752266f5df4"
+        },
+        {
+          "path": "src/markdown.ts",
+          "sha256": "281d58af8a4d8c840f3f1e288516f1b51046f067b2bd9b5125ec8527f13a15fd"
+        },
+        {
+          "path": "src/mcp.ts",
+          "sha256": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6"
+        },
+        {
+          "path": "src/skill-contracts.ts",
+          "sha256": "574a8835fb0684d2b41db74bfc0d6208b70228da465a9b4a3062fc82b6eb5735"
+        },
+        {
+          "path": "src/skills.ts",
+          "sha256": "26de2a87cc51747e489eb9d42380690c9b4e02c7bdd1ada6d1077426cd68c04c"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/storage.ts",
+          "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-knowledge-search-browser.js",
+      "originalTestcase": "Ctrl+F filters the real Skill tree, opens content, and keeps ranked retrieval explicit (native metadata subset)",
+      "nativeOperations": [
+        "knowledge.skill.list"
+      ],
+      "nativeTransport": "HTTP",
+      "scenario": "Native Skill metadata filters remain exact and snapshot-pinned while keeping the legacy browser's ranked retrieval distinction out of the claim.",
+      "result": "verified",
+      "assertions": 9,
+      "evidence": [
+        "Category=General and tag=dlis returned exactly two Skills across two one-item pages.",
+        "The second page used the first snapshot revision; exact-name lookup returned One."
+      ],
+      "unsupportedReason": null,
+      "originalSourceSha256": "35f6499f628390290142614c415e8d755d2b83e6c2c8342c0b4236ce04b896a0",
+      "nativeImplementationSources": [
+        {
+          "path": "src/cli.ts",
+          "sha256": "f8345ee904c0bddb2fa7ac11ed3ef99002ca5dad4025feece2adabf3e1f7b2bc"
+        },
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/domain/skills.ts",
+          "sha256": "6965b8f1a4afba6342a0fdafd0d1560edbafc611a17144bc9657f568b453d96d"
+        },
+        {
+          "path": "src/http.ts",
+          "sha256": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109"
+        },
+        {
+          "path": "src/knowledge-snapshot.ts",
+          "sha256": "b9f7c55bd1181d378c754a792e8abb3f835169f1c18fe827cbfc2752266f5df4"
+        },
+        {
+          "path": "src/markdown.ts",
+          "sha256": "281d58af8a4d8c840f3f1e288516f1b51046f067b2bd9b5125ec8527f13a15fd"
+        },
+        {
+          "path": "src/skill-contracts.ts",
+          "sha256": "574a8835fb0684d2b41db74bfc0d6208b70228da465a9b4a3062fc82b6eb5735"
+        },
+        {
+          "path": "src/skills.ts",
+          "sha256": "26de2a87cc51747e489eb9d42380690c9b4e02c7bdd1ada6d1077426cd68c04c"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/storage.ts",
+          "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-knowledge-contracts.js",
+      "originalTestcase": "top-level Skill stable knowledgeId, category alias and frontmatter preservation block",
+      "nativeOperations": [
+        "knowledge.skill.create",
+        "knowledge.skill.update",
+        "knowledge.skill.list"
+      ],
+      "nativeTransport": "native Knowledge mutation module",
+      "scenario": "A same-path native Skill metadata update preserves its stable identity and unknown YAML/comment bytes; a related native-only guard refuses a case-insensitive duplicate name. The legacy category/path move itself is not claimed.",
+      "result": "verified",
+      "assertions": 7,
+      "evidence": [
+        "Native-only case-insensitive duplicate Skill creation returned CONFLICT.",
+        "Same-path update kept the document ID and knowledgeId and advanced revision 1 to 2.",
+        "The update retained the heading comment, unknown nested YAML, and inline tags comment."
+      ],
+      "unsupportedReason": "The original category/path move and alias rewrite are unsupported by the native Skill mutation endpoint; this row verifies only same-path metadata update plus a native duplicate-name guard.",
+      "originalSourceSha256": "bf7f6631653c86882373cd94a19009573490410ccbd5c72f1bc2ac98fd4178a8",
+      "nativeImplementationSources": [
+        {
+          "path": "src/domain/knowledge-contracts.ts",
+          "sha256": "0f4c453b726e70df7c3e8df3e4eb253114d89d4cb88eb8ce3e4f561bf336ab2f"
+        },
+        {
+          "path": "src/domain/skills.ts",
+          "sha256": "6965b8f1a4afba6342a0fdafd0d1560edbafc611a17144bc9657f568b453d96d"
+        },
+        {
+          "path": "src/file-write.ts",
+          "sha256": "85a3b1430b476fa8cc2d5e567454603a4044bda7aa279a5b9f1c27a19f765d7d"
+        },
+        {
+          "path": "src/knowledge-mutations-contracts.ts",
+          "sha256": "4390dabc9ec6dd53be282653eb710243ed6b80d1534333adba88e6788356c606"
+        },
+        {
+          "path": "src/knowledge-mutations.ts",
+          "sha256": "eafcb7cf7174b3a6e6189c56ca3c50ace05aa6d6e6e979c2ca41dcb1d9d566f9"
+        },
+        {
+          "path": "src/knowledge-snapshot.ts",
+          "sha256": "b9f7c55bd1181d378c754a792e8abb3f835169f1c18fe827cbfc2752266f5df4"
+        },
+        {
+          "path": "src/skill-contracts.ts",
+          "sha256": "574a8835fb0684d2b41db74bfc0d6208b70228da465a9b4a3062fc82b6eb5735"
+        },
+        {
+          "path": "src/skills.ts",
+          "sha256": "26de2a87cc51747e489eb9d42380690c9b4e02c7bdd1ada6d1077426cd68c04c"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-browser-library.js",
+      "originalTestcase": "top-level research projection citation-count assertion",
+      "nativeOperations": [
+        "knowledge.research.list"
+      ],
+      "nativeTransport": "Core.dispatch",
+      "scenario": "Two citations from the same child Paper contribute two references to the cited Paper's native citationCount; body bytes stay out of list projections.",
+      "result": "verified",
+      "assertions": 3,
+      "evidence": [
+        "Research list counted both resolved references, including two references from one citing document.",
+        "The body-free projection retained author metadata and omitted content."
+      ],
+      "unsupportedReason": null,
+      "originalSourceSha256": "0a3b34a66b1b49ca310bae5d0f0191776d4a1bbf65f40d5db1ff5b7caa8f4e8e",
+      "nativeImplementationSources": [
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/domain/research.ts",
+          "sha256": "a5eeb110549c7552f2ea8a2c30b7a84db9938d7d0233a347404a9fc1ac444d60"
+        },
+        {
+          "path": "src/knowledge-snapshot.ts",
+          "sha256": "b9f7c55bd1181d378c754a792e8abb3f835169f1c18fe827cbfc2752266f5df4"
+        },
+        {
+          "path": "src/markdown.ts",
+          "sha256": "281d58af8a4d8c840f3f1e288516f1b51046f067b2bd9b5125ec8527f13a15fd"
+        },
+        {
+          "path": "src/research-contracts.ts",
+          "sha256": "58c86dec09860752a03c87366926dddee91509542baebc9d4b081af856b1865b"
+        },
+        {
+          "path": "src/research.ts",
+          "sha256": "029d6c409513f233800243a6fd024b8e732b7947171f57982851862e97111f93"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/storage.ts",
+          "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-browser-library.js",
+      "originalTestcase": "top-level research graph edge direction and citation-note assertions",
+      "nativeOperations": [
+        "knowledge.research.graph"
+      ],
+      "nativeTransport": "Core.dispatch",
+      "scenario": "Resolved citations produce cited-parent to citing-child edges in source order without inventing a distinct-citer count.",
+      "result": "verified",
+      "assertions": 1,
+      "evidence": [
+        "Both case-insensitive citations resolved Base → Citing with their exact notes and order."
+      ],
+      "unsupportedReason": null,
+      "originalSourceSha256": "0a3b34a66b1b49ca310bae5d0f0191776d4a1bbf65f40d5db1ff5b7caa8f4e8e",
+      "nativeImplementationSources": [
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/domain/research.ts",
+          "sha256": "a5eeb110549c7552f2ea8a2c30b7a84db9938d7d0233a347404a9fc1ac444d60"
+        },
+        {
+          "path": "src/knowledge-snapshot.ts",
+          "sha256": "b9f7c55bd1181d378c754a792e8abb3f835169f1c18fe827cbfc2752266f5df4"
+        },
+        {
+          "path": "src/markdown.ts",
+          "sha256": "281d58af8a4d8c840f3f1e288516f1b51046f067b2bd9b5125ec8527f13a15fd"
+        },
+        {
+          "path": "src/research-contracts.ts",
+          "sha256": "58c86dec09860752a03c87366926dddee91509542baebc9d4b081af856b1865b"
+        },
+        {
+          "path": "src/research.ts",
+          "sha256": "029d6c409513f233800243a6fd024b8e732b7947171f57982851862e97111f93"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/storage.ts",
+          "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-browser-library.js",
+      "originalTestcase": "top-level research metadata facets and fallback-group assertions",
+      "nativeOperations": [
+        "knowledge.research.facets",
+        "knowledge.research.groups"
+      ],
+      "nativeTransport": "Core.dispatch",
+      "scenario": "Research facets retain legacy per-tag counting and custom-group ordering while the Papers group remains present.",
+      "result": "verified",
+      "assertions": 4,
+      "evidence": [
+        "Facet counts retained duplicate x tags and string-year parsing; years were descending.",
+        "Groups were alphabetic and included the implicit Papers group."
+      ],
+      "unsupportedReason": null,
+      "originalSourceSha256": "0a3b34a66b1b49ca310bae5d0f0191776d4a1bbf65f40d5db1ff5b7caa8f4e8e",
+      "nativeImplementationSources": [
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/domain/research.ts",
+          "sha256": "a5eeb110549c7552f2ea8a2c30b7a84db9938d7d0233a347404a9fc1ac444d60"
+        },
+        {
+          "path": "src/knowledge-snapshot.ts",
+          "sha256": "b9f7c55bd1181d378c754a792e8abb3f835169f1c18fe827cbfc2752266f5df4"
+        },
+        {
+          "path": "src/markdown.ts",
+          "sha256": "281d58af8a4d8c840f3f1e288516f1b51046f067b2bd9b5125ec8527f13a15fd"
+        },
+        {
+          "path": "src/research-contracts.ts",
+          "sha256": "58c86dec09860752a03c87366926dddee91509542baebc9d4b081af856b1865b"
+        },
+        {
+          "path": "src/research.ts",
+          "sha256": "029d6c409513f233800243a6fd024b8e732b7947171f57982851862e97111f93"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/storage.ts",
+          "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-browser-library.js",
+      "originalTestcase": "top-level research graph filter and one-hop neighbor assertions",
+      "nativeOperations": [
+        "knowledge.research.graph"
+      ],
+      "nativeTransport": "Core.dispatch",
+      "scenario": "A filtered graph seed is exact; neighbor expansion adds one incoming/outgoing hop but not a transitive grandchild.",
+      "result": "verified",
+      "assertions": 3,
+      "evidence": [
+        "Combined query, tag, topic, and year filters left Middle as the only seed.",
+        "Neighbor expansion included Root and Child, excluded transitive Grandchild."
+      ],
+      "unsupportedReason": null,
+      "originalSourceSha256": "0a3b34a66b1b49ca310bae5d0f0191776d4a1bbf65f40d5db1ff5b7caa8f4e8e",
+      "nativeImplementationSources": [
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/domain/research.ts",
+          "sha256": "a5eeb110549c7552f2ea8a2c30b7a84db9938d7d0233a347404a9fc1ac444d60"
+        },
+        {
+          "path": "src/knowledge-snapshot.ts",
+          "sha256": "b9f7c55bd1181d378c754a792e8abb3f835169f1c18fe827cbfc2752266f5df4"
+        },
+        {
+          "path": "src/markdown.ts",
+          "sha256": "281d58af8a4d8c840f3f1e288516f1b51046f067b2bd9b5125ec8527f13a15fd"
+        },
+        {
+          "path": "src/research-contracts.ts",
+          "sha256": "58c86dec09860752a03c87366926dddee91509542baebc9d4b081af856b1865b"
+        },
+        {
+          "path": "src/research.ts",
+          "sha256": "029d6c409513f233800243a6fd024b8e732b7947171f57982851862e97111f93"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/storage.ts",
+          "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-knowledge-contracts.js",
+      "originalTestcase": "top-level Research stable identity, category-alias and update assertions",
+      "nativeOperations": [
+        "knowledge.research.create",
+        "knowledge.research.update",
+        "knowledge.research.list"
+      ],
+      "nativeTransport": "native Knowledge mutation module",
+      "scenario": "A same-path CAS update changes specialized Paper metadata while retaining its Knowledge ID and advancing the revision. The legacy category/path move alias rewrite is not claimed.",
+      "result": "verified",
+      "assertions": 3,
+      "evidence": [
+        "Native CAS update retained document and Knowledge IDs and advanced revision 1 to 2."
+      ],
+      "unsupportedReason": "The legacy category/path move and alias rewrite are unsupported by the native Research mutation endpoint; this row verifies only same-path metadata update and stable identity.",
+      "originalSourceSha256": "bf7f6631653c86882373cd94a19009573490410ccbd5c72f1bc2ac98fd4178a8",
+      "nativeImplementationSources": [
+        {
+          "path": "src/domain/knowledge-contracts.ts",
+          "sha256": "0f4c453b726e70df7c3e8df3e4eb253114d89d4cb88eb8ce3e4f561bf336ab2f"
+        },
+        {
+          "path": "src/domain/research.ts",
+          "sha256": "a5eeb110549c7552f2ea8a2c30b7a84db9938d7d0233a347404a9fc1ac444d60"
+        },
+        {
+          "path": "src/file-write.ts",
+          "sha256": "85a3b1430b476fa8cc2d5e567454603a4044bda7aa279a5b9f1c27a19f765d7d"
+        },
+        {
+          "path": "src/knowledge-mutations-contracts.ts",
+          "sha256": "4390dabc9ec6dd53be282653eb710243ed6b80d1534333adba88e6788356c606"
+        },
+        {
+          "path": "src/knowledge-mutations.ts",
+          "sha256": "eafcb7cf7174b3a6e6189c56ca3c50ace05aa6d6e6e979c2ca41dcb1d9d566f9"
+        },
+        {
+          "path": "src/knowledge-snapshot.ts",
+          "sha256": "b9f7c55bd1181d378c754a792e8abb3f835169f1c18fe827cbfc2752266f5df4"
+        },
+        {
+          "path": "src/research-contracts.ts",
+          "sha256": "58c86dec09860752a03c87366926dddee91509542baebc9d4b081af856b1865b"
+        },
+        {
+          "path": "src/research.ts",
+          "sha256": "029d6c409513f233800243a6fd024b8e732b7947171f57982851862e97111f93"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-knowledge-source-ranges.js",
+      "originalTestcase": "Research exact ranges include structured conclusions, implementation and assumptions in retrieval order (changed-source pin assertion subset)",
+      "nativeOperations": [
+        "knowledge.research.list",
+        "knowledge.research.facets"
+      ],
+      "nativeTransport": "Core.dispatch",
+      "scenario": "The native snapshot pin rejects a changed research source instead of returning stale metadata after an external byte edit.",
+      "result": "verified",
+      "assertions": 1,
+      "evidence": [
+        "The prior research revision returned CONFLICT after the paper's title bytes changed."
+      ],
+      "unsupportedReason": null,
+      "originalSourceSha256": "39198b907cc541d192464eeeb41e395476694bb01442f603727290589f7c1d94",
+      "nativeImplementationSources": [
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/domain/research.ts",
+          "sha256": "a5eeb110549c7552f2ea8a2c30b7a84db9938d7d0233a347404a9fc1ac444d60"
+        },
+        {
+          "path": "src/knowledge-snapshot.ts",
+          "sha256": "b9f7c55bd1181d378c754a792e8abb3f835169f1c18fe827cbfc2752266f5df4"
+        },
+        {
+          "path": "src/markdown.ts",
+          "sha256": "281d58af8a4d8c840f3f1e288516f1b51046f067b2bd9b5125ec8527f13a15fd"
+        },
+        {
+          "path": "src/research-contracts.ts",
+          "sha256": "58c86dec09860752a03c87366926dddee91509542baebc9d4b081af856b1865b"
+        },
+        {
+          "path": "src/research.ts",
+          "sha256": "029d6c409513f233800243a6fd024b8e732b7947171f57982851862e97111f93"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/storage.ts",
+          "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-markdown-image-assets.js",
+      "originalTestcase": "top-level referenced resource decoding and exact-byte assertion (digest-change extension)",
+      "nativeOperations": [
+        "knowledge.document.create",
+        "knowledge.asset.list",
+        "knowledge.asset.get"
+      ],
+      "nativeTransport": "Core.dispatch",
+      "scenario": "A percent-escaped owned-resource URL resolves to the exact opaque bytes; a subsequent byte change invalidates the old asset digest.",
+      "result": "verified",
+      "assertions": 3,
+      "evidence": [
+        "Percent-decoded asset lookup returned the exact binary bytes.",
+        "The stale digest pin returned CONFLICT after the opaque resource changed."
+      ],
+      "unsupportedReason": null,
+      "originalSourceSha256": "f703f578826d5f76336974f7f8f5f308d0160dae1bbe187054aacf708585906b",
+      "nativeImplementationSources": [
+        {
+          "path": "src/assets.ts",
+          "sha256": "7d705cae6a8bc92935319c968cb23f20db8d62d14ded955d1fb13d5a44b727f4"
+        },
+        {
+          "path": "src/contracts.ts",
+          "sha256": "243be35a870d277f9b9f50160a57605614868e06520a9f457c9d2f54969d0cff"
+        },
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/domain/markdown-assets.ts",
+          "sha256": "5cdb18e97503a365b08024f532ffe8f34091fcbdffa2c8f77c5d473f530f9c5d"
+        },
+        {
+          "path": "src/knowledge-mutations-contracts.ts",
+          "sha256": "4390dabc9ec6dd53be282653eb710243ed6b80d1534333adba88e6788356c606"
+        },
+        {
+          "path": "src/knowledge-mutations.ts",
+          "sha256": "eafcb7cf7174b3a6e6189c56ca3c50ace05aa6d6e6e979c2ca41dcb1d9d566f9"
+        },
+        {
+          "path": "src/markdown.ts",
+          "sha256": "281d58af8a4d8c840f3f1e288516f1b51046f067b2bd9b5125ec8527f13a15fd"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/storage.ts",
+          "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-markdown-owned-assets.js",
+      "originalTestcase": "top-level assertion that owned resources are not content categories",
+      "nativeOperations": [
+        "knowledge.document.create",
+        "knowledge.note.list"
+      ],
+      "nativeTransport": "Core.dispatch",
+      "scenario": "A document's owned .assets folder is storage for attachments, not an extra Note category or document.",
+      "result": "verified",
+      "assertions": 3,
+      "evidence": [
+        "Note list retained the document and did not expose its .assets directory as a content item."
+      ],
+      "unsupportedReason": null,
+      "originalSourceSha256": "64ec0aa046fbe000239216013563d7a3dba31df37a5524b124f054229603b4ef",
+      "nativeImplementationSources": [
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/knowledge-mutations-contracts.ts",
+          "sha256": "4390dabc9ec6dd53be282653eb710243ed6b80d1534333adba88e6788356c606"
+        },
+        {
+          "path": "src/knowledge-mutations.ts",
+          "sha256": "eafcb7cf7174b3a6e6189c56ca3c50ace05aa6d6e6e979c2ca41dcb1d9d566f9"
+        },
+        {
+          "path": "src/knowledge-snapshot.ts",
+          "sha256": "b9f7c55bd1181d378c754a792e8abb3f835169f1c18fe827cbfc2752266f5df4"
+        },
+        {
+          "path": "src/markdown.ts",
+          "sha256": "281d58af8a4d8c840f3f1e288516f1b51046f067b2bd9b5125ec8527f13a15fd"
+        },
+        {
+          "path": "src/note-contracts.ts",
+          "sha256": "6628055bd64a7e059d68832b45c672e91ef337b773085b9f718b16efe75f95bb"
+        },
+        {
+          "path": "src/notes.ts",
+          "sha256": "298a624cd7ce602375405019d4a8b5e4741829f13c7d9ef5def238363f484256"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/storage.ts",
+          "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-todo-board.js",
+      "originalTestcase": "conversion requires a fresh explicit preview and preserves Story relations, acceptance and audit (native Board subset)",
+      "nativeOperations": [
+        "todo.board.create",
+        "todo.story.create",
+        "todo.workitem.create",
+        "todo.workitem.claim",
+        "todo.workitem.history"
+      ],
+      "nativeTransport": "Core.dispatch",
+      "scenario": "Native Board task creation and claim preserve parent and acceptance fields and write an auditable history record.",
+      "result": "verified",
+      "assertions": 6,
+      "evidence": [
+        "Claim retained parentId and acceptance; history contains create and claim transitions."
+      ],
+      "unsupportedReason": null,
+      "originalSourceSha256": "c8f9bbdcad4d9c375b5dc727a9581b433504b24076669104b05e93f7c371df17",
+      "nativeImplementationSources": [
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/domain/todo-api-contract.ts",
+          "sha256": "e45d04227e38daa3a64537b2a772f7057430697a5dc73bbd57efcbf82a618263"
+        },
+        {
+          "path": "src/domain/todo-api.ts",
+          "sha256": "57a47a2581911b14e73c58246a785499258d2696e1c5b32803972270ec5488ad"
+        },
+        {
+          "path": "src/domain/todo-board.ts",
+          "sha256": "8e45dd4a83ee98e8c4dc6bb7a05217e802d7c9cc4f5b44f61d31b7bd6a8826c1"
+        },
+        {
+          "path": "src/domain/todo-identities.ts",
+          "sha256": "44e62b0baec88f7520c76673e481b9bd64354441ba598f47866bec6d715822bd"
+        },
+        {
+          "path": "src/markdown.ts",
+          "sha256": "281d58af8a4d8c840f3f1e288516f1b51046f067b2bd9b5125ec8527f13a15fd"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/storage.ts",
+          "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-todo-board.js",
+      "originalTestcase": "Board JSON rejects invalid graph/duplicates instead of hiding corruption",
+      "nativeOperations": [
+        "todo.board.create",
+        "todo.board.get"
+      ],
+      "nativeTransport": "Core.dispatch",
+      "scenario": "Corrupted authoritative Board bytes produce an explicit invalid-document error rather than a partial or empty board.",
+      "result": "verified",
+      "assertions": 3,
+      "evidence": [
+        "Malformed authoritative bytes were preserved and Board get returned INVALID_DOCUMENT."
+      ],
+      "unsupportedReason": null,
+      "originalSourceSha256": "c8f9bbdcad4d9c375b5dc727a9581b433504b24076669104b05e93f7c371df17",
+      "nativeImplementationSources": [
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/domain/todo-api-contract.ts",
+          "sha256": "e45d04227e38daa3a64537b2a772f7057430697a5dc73bbd57efcbf82a618263"
+        },
+        {
+          "path": "src/domain/todo-api.ts",
+          "sha256": "57a47a2581911b14e73c58246a785499258d2696e1c5b32803972270ec5488ad"
+        },
+        {
+          "path": "src/domain/todo-board.ts",
+          "sha256": "8e45dd4a83ee98e8c4dc6bb7a05217e802d7c9cc4f5b44f61d31b7bd6a8826c1"
+        },
+        {
+          "path": "src/domain/todo-identities.ts",
+          "sha256": "44e62b0baec88f7520c76673e481b9bd64354441ba598f47866bec6d715822bd"
+        },
+        {
+          "path": "src/markdown.ts",
+          "sha256": "281d58af8a4d8c840f3f1e288516f1b51046f067b2bd9b5125ec8527f13a15fd"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/storage.ts",
+          "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-capability-memory.js",
+      "originalTestcase": "Memory permission and exact-revision review explain scope, provenance, changes and recall effects (pending-state API assertions)",
+      "nativeOperations": [
+        "memory.record.propose",
+        "memory.record.get",
+        "memory.record.search"
+      ],
+      "nativeTransport": "Core.dispatch",
+      "scenario": "A proposal remains pending, repeats idempotently for the same operation ID, and is not exposed as active recall before an injected Host decision.",
+      "result": "verified",
+      "assertions": 4,
+      "evidence": [
+        "Repeated proposal returned the same pending record.",
+        "Active search returned no record before confirmation; get retained pending status."
+      ],
+      "unsupportedReason": null,
+      "originalSourceSha256": "b7b7542c796b531ecaa02c6ecb0a79c23dc141f330e9b4cb2ad7c7538e84c2bb",
+      "nativeImplementationSources": [
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/markdown.ts",
+          "sha256": "281d58af8a4d8c840f3f1e288516f1b51046f067b2bd9b5125ec8527f13a15fd"
+        },
+        {
+          "path": "src/memory-contracts.ts",
+          "sha256": "15541f78bf7376d02485edc7c279a245a7a8ffed078bb81764a59b15c827a6eb"
+        },
+        {
+          "path": "src/memory.ts",
+          "sha256": "0eee48b78669180c12c47215296b8c5bcca94052e33e68029da330a3890daa0c"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/storage.ts",
+          "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-capability-memory.js",
+      "originalTestcase": "Memory permission and exact-revision review explain scope, provenance, changes and recall effects (provenance API assertion subset)",
+      "nativeOperations": [
+        "memory.record.propose",
+        "memory.record.audit",
+        "memory.record.get"
+      ],
+      "nativeTransport": "Core.dispatch",
+      "scenario": "The native audit retains proposal provenance and caller attribution while the record remains pending; no confirmation or active recall is claimed.",
+      "result": "verified",
+      "assertions": 4,
+      "evidence": [
+        "Audit preserved proposed action and caller attribution; get preserved the exact source locator and pending status."
+      ],
+      "unsupportedReason": null,
+      "originalSourceSha256": "b7b7542c796b531ecaa02c6ecb0a79c23dc141f330e9b4cb2ad7c7538e84c2bb",
+      "nativeImplementationSources": [
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/markdown.ts",
+          "sha256": "281d58af8a4d8c840f3f1e288516f1b51046f067b2bd9b5125ec8527f13a15fd"
+        },
+        {
+          "path": "src/memory-contracts.ts",
+          "sha256": "15541f78bf7376d02485edc7c279a245a7a8ffed078bb81764a59b15c827a6eb"
+        },
+        {
+          "path": "src/memory.ts",
+          "sha256": "0eee48b78669180c12c47215296b8c5bcca94052e33e68029da330a3890daa0c"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/storage.ts",
+          "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-note-work-items.js",
+      "originalTestcase": "Note bridge serializes concurrent writers, rejects stale manual edits and preserves lifecycle/resources",
+      "nativeOperations": [],
+      "nativeTransport": null,
+      "scenario": "The original Note Markdown work-item bridge owns serialized Markdown writes, work-item reconciliation, and attachment lifecycle.",
+      "result": "unsupported",
+      "assertions": 0,
+      "evidence": [
+        "No next-server endpoint provides the legacy Note work-item Markdown bridge; no Todo Board API was substituted as parity."
+      ],
+      "unsupportedReason": "No equivalent native Note work-item bridge operation exists. Kept explicitly unsupported rather than treating the isolated Todo Board API as equivalent.",
+      "originalSourceSha256": "25ad07cdf20931f54bceb65c9b6047466362ad71a8ba8ca591ea1867a015d780",
+      "nativeImplementationSources": []
+    }
+  ],
+  "totals": {
+    "newCases": 17,
+    "verifiedRows": 16,
+    "unsupportedRows": 1,
+    "mismatchedRows": 0,
+    "assertions": 68
+  },
+  "legacySuiteExecution": {
+    "status": "not-run",
+    "reason": "Only the bounded inherited assertions recorded in these rows ran through next-server Core, HTTP, or MCP. The original VS Code test loader and full legacy suite were not run."
+  },
+  "scopeDifferences": [
+    "No actual Knowledge Root, private fixture, VS Code global storage, external call, or secret was used.",
+    "The original >1,000-Note stress bound was not exercised; the associated row records only the smaller native metadata-projection check.",
+    "Core, HTTP, and MCP results qualify only the listed native operations; they do not prove host-specific behavior, UI parity, filesystem lifecycle parity, or full-suite compatibility.",
+    "The Note work-item Markdown bridge has no native equivalent and remains unsupported; no Board API was substituted for it.",
+    "Memory confirmation was not accepted or simulated: this tranche tests the fail-closed boundary without Host decision authority.",
+    "The prior cross-process Board race remains unsupported: the enforced single-writer lease prevents HTTP and MCP servers from concurrently opening one workspace; no other conflict check is substituted for that race.",
+    "Native Skill and Research mutation endpoints do not implement legacy category/path moves or alias rewrites; the same-path identity updates are explicitly partial coverage.",
+    "Report excludes wall-clock values, random fixture paths, operation IDs, and a self-hash."
+  ]
+}

@@ -1,0 +1,2298 @@
+{
+  "schema": "pkm.native-qualification/v1",
+  "qualification": "actual-local-cli-socket-sse-native-human-chromium-manager-text-action-process-backup-import-controls-bundle-client-boundaries-batch11-trash-project-thread-state-portal-command-batch12-project-recipe-trash-command-schema18-batch13-note-bridge-raw-project-envelope-core-read-fences-batch14-paused-snapshot-restore-inline-note-actions-batch15-fixture-only-skill-lifecycle-legacy-assets-batch16-fixture-strict-classification-derived-memory-forget-batch17-fixture-native-classification-adoption-schema21-batch18-fixture-single-workspace-paired-memory-engine-backup-restore-batch19-fixture-original-compatible-classification-immutable-adoption-schema22-batch20-canonical-skill-source-install-adoption-schema23-batch21-managed-source-remove-schema23-batch22-old-skill-source-bridge-batch23-native-subscription-identity-batch24-isolated-vscode-host-batch25-sync-complete-entity-restore-batch26-manager-client-workflow-schema23-catalog217",
+  "originalSourceReuse": "None claimed for the new native composition, Manager progress architecture, browser, encrypted state-import seam, Portal lifecycle, command extensions, Note/Board journal adapter, raw Project envelope adoption, read-race guards, paused Snapshot restore composition, inline Note writer, Batch15 Skill/asset composition, Batch18 paired memory-engine adapter, Batch19 original-compatible classification/backup/host wrappers, Batch23 subscription identity secret migration or Batch25 Sync recovery. Original Project/Thread/Recipe/Snapshot/inline-note, Batch15 Skill/asset and Batch19 actual original-writer source references are independently hash-checked without claiming new captured copies. Native implementations and host composition are separately pinned. Original source/capture pairs are independently hash-checked in existing domain provenance; the eight reviewed knowledge-index transformed references and historical/current native worker distinction are retained. Batch20/21 Skill source code and Batch22 bridge are native implementations; the original Skill writer and immutable old receipts remain independently checked source/history references, not new captured copies or original-code reuse.",
+  "limitations": [
+    "Batch20 registers only legacy.skill.source.install@1 through explicit default-deny native authority in exclusive native-owned disposable fixtures. Actual original writer and Core HTTP/MCP install, source backup, atomic fresh restore/adoption, native reopen, old retry, new install, rebackup, rerestore and restart were exercised with independently approved source and destination bindings, epochs, exact plans and durable anchors. Workspace schema23 and catalog214 are current; engine schema2 is unchanged. Unknown outcomes require explicit same-input/actor/epoch reconciliation and startup never applies them. Separate source and older projection journals cannot coexist; unrelated storage/direct-native effects require composed authority. This is not a general installer, multiple-target support, external-writer/OS locking, production authority, power-loss proof, accepted workstream or cutover. The separate bounded storage-I/O matrix excludes Skill, engine and memory. Parent full verification and current I/O rebind remain pending.",
+    "Batch19 separately registers knowledge.classification.original-compatible.command@1 behind originalClassification native actor/epoch/genesis/history/pending grants. Actual original preview/apply/rollback, ordered skips/errors, UUID results, continued known-error journal prefixes and reverse rollback bytes are compared only in exclusive native-owned disposable Unix fixtures. Strict classification is unchanged. Filesystem effects stay outside SQL transactions and current authority is checked before every original receipt replay. Native classificationBackup.originalCompatible:true grants no authority; independent authorizeClassificationAdoption and assertAdoptionAnchor bind source manifest/root, destination/stage pins, actor/epoch/policy/expiry before staging and publication. Separate immutable adoption rows preserve original history/results/journals through reopen/global retry, rollback/new apply, rebackup and second restore. Recomputed candidate hashes do not replace native anchors. Mixed strict/original backup histories, unknown residue and unapproved lineage deny. Current workspace schema22 preserves historical 12–21 workspace/backup input bytes until explicit open; engine schema2 is unchanged. This is not all-asset qualification, a hostile external-writer lock, production authority, authority enrollment/signatures, workstream acceptance or cutover. The 28-case storage-I/O matrix covers Document/Upload/Resource/Project only, not classification/engine/memory/Skill faults. Current full npm test verification remains a separate parent-run gate.",
+    "Injected synthetic Manager adapters do not qualify autonomous real providers or production tasks.",
+    "Actual configured CLI socket SSE qualifies twenty simultaneous model-only Chat workers with native exact SQLite text manifest acceptance, not generic coding or filesystem workers.",
+    "Restart replays only after a trusted host explicitly confirms an interrupted effect never executed; unknown effects stay fenced.",
+    "Real Chromium exercises a native safe-DOM modal with one-use operator enrollment and separate short-lived HttpOnly human session; machine bearer HTTP cannot decide even when a native cookie exists.",
+    "Actual native Action compiler/dispatcher/process child auth, redacted results, cancellation, receipt replay and quiescent backup/restore are qualified; Action process command policy requires trusted native callbacks and is not a CLI JSON command grant.",
+    "The single project.legacy.command@1 capability admits Project archive/create, global/project Recipe create/update and the bounded source-matched Batch11 project-create, thread-create, thread-rename and thread-move commands under explicit host authorization, original-store checks and the shared journal. Authenticated Core HTTP/MCP tests compare original ProjectStore identity/snapshots, exercise no-op receipts/replay, stale-CAS denial, recognized pre-effect and mixed-move recovery, tamper fencing and backup lineage. Historical opaque command IDs replay their current snapshot; project.update remains a separate strict-CAS path. No separate Thread canonical operation exists; other imported mutations remain fail-closed, and this is not complete legacy operation parity.",
+    "Batch11 trash import is limited to explicitly authorized quiescent original Notes/Skills/Papers trash with stable identities and exact paired assets/folder subtrees. Ordered opaque deletion history is preserved and projected through an authenticated canonical native receipt; import uses one fresh caller-owned composed stage, exact parent inventory/root identity pins, and no overwrite, in-place merge or permanent delete. Unknown buckets/journals, pending locks/temp state, symlinks, tamper, collisions, outside references, secrets, Board/Memory/System/path-derived identity and unsupported Prompts/Scripts trash fail closed. Missing native layout/policy/source authority denies access. Isolated synthetic original-writer/native-restore, receipt/history, restart/recovery and backup-rebinding tests do not constitute production-data acceptance or full cutover.",
+    "Original encrypted Agent Snapshot import is qualified only with an explicitly supplied epoch-bound native key authority and exact outer receipt/source/ownership verification. Original encrypted bytes are preserved; plaintext projections exist only in memory. Batch23 subscription private keys are imported only through the separate bounded native secret-authority path; this does not qualify snapshot restore/spawn, signing, grants, providers, plaintext persistence, production key storage, or a real Knowledge Root.",
+    "Portal qualification composes existing Channel/collaboration state only: trusted public HTTP/MCP read and directed route plus separately authorized native lifecycle operations. Revocation and fresh-admission generation fences are tested; restart does not reconnect. This does not qualify remote transport, command execution, full Portal/Meeting parity or production authority.",
+    "The original encrypted subscription-bundle path is qualified only for explicitly injected fork authority with exact wire/ciphertext/plaintext/file receipts and ACL/key-epoch fences. Unsupported archives/content and readonly or production-provider authority are not qualified.",
+    "Batch09 browser and typed VS Code tests exercise an isolated host/client bridge and rendered Chromium flows; this does not qualify installed production extension activation or complete legacy client UX.",
+    "SIGKILL restart waits the actual thirty-second owner lease; unknown model effects never replay. Immediate restart remains denied.",
+    "Backup uses an actual quiescent SQLite snapshot and refuses active Manager/Chat/Action/process work, pending/unknown intents and tampered layouts. Schema v18 and isolated workspace/backup inputs 12–17 are exercised only in migration tests and migrate only on explicit open; no pending native workspace backup, power-loss, production SLO or complete stability acceptance is claimed.",
+    "Knowledge trash restore continues to use the existing knowledge.trash.restore v1 operation and actual native receipt; legacy trash import adds no transport operation, does not mint historical move receipts, and does not qualify permanent deletion.",
+    "Batch12 adds a separate project.recipe.trash.command@1 native capability with explicit default-deny host authorization, strict opaque original-command validation, actor/workspace/source-control/root binding and one native global receipt. A move/restore uses one fresh caller-owned import stage and one atomic no-replace publish, then preserves original Recipe bytes, categories, IDs and opaque history. Exact global replay survives 258 alternating original/native operations and rolling-256 legacy receipt eviction; unknown/mixed state and unapproved operations remain fenced.",
+    "Batch13 schema v17 added the paired Note/Board journal intent; Batch14 schema v18 added paused Snapshot and inline Note journals; Batch15 schema v19 adds Skill intent/receipt/history tables while preserving the prior intents. Original workspace/backup schemas 12 through 18 remain accepted isolated inputs; backups preserve their recorded schema until explicit open migrates them. Project-create recovery validates the exact root pin before effects and recognizes only the authenticated empty-directory pre-effect state; this is bounded fixture qualification, not external-writer or power-loss proof.",
+    "Batch13 Note/Board conditional native bridge exposes only legacy.note.workitems.read@1, legacy.note.workitems.notes@1, legacy.note.workitems.command@1 and legacy.note.workitems.upsert@1 through Core HTTP/MCP. Note Markdown and Board backing files have no fixed byte ceiling; large payloads may increase latency and memory use. Admission binds the trusted native actor to exact attached-Board bytes and canonical Board authority; every ordinary workspace operation and backup is fenced while the authenticated journal intent is pending. Original worker create/edit/claim/release/comment/transition effects are admitted only when complete normalized Board/audit effects match; mcp:external upsert is limited to exact supported shapes. Full original snapshot receipts bind operation, actor, arguments and operation ID; historical replay, canonical Todo receipts, restart recovery, backup/restore and original-worker parity are exercised. Inline Markdown writes, worker-token grants and non-equivalent command effects remain unavailable.",
+    "Batch13 raw Project envelope import supports only schema-1 .pkm/state/projects.json up to 16 MiB; projected files are limited to 2 MiB each and 64 MiB total, 20,000 files and depth 32. Normal import stages exact opaque envelope bytes and canonical projection once, publishes one fresh owned stage atomically without replacement, retains the original ordered receipt prefix and records the native adoption/current-store suffix. Public Project mutation continues through project.legacy.command@1. Current reads, command retries, second close/reopen, backup/restore and tamper rejection are tested; unknown schema/records, mixed controls, pending markers/intents/locks, malformed identities/receipts and unsupported contents fail closed. These are isolated fixtures; source references are not new captured-code claims.",
+    "Batch13 selected Core read guards cover knowledge.document.list/get, knowledge.note.search/list and knowledge.asset.list/get through actual Core HTTP/MCP registration. Production-path controlled child writes return explicit conflicts without mixed results; the separate seven-row deterministic helper report includes six helper-wrapped races and one constructed mixed-aggregate denial, not six production-Core wiring claims. Guards compare pre/post identity/revision/digest and are not atomic snapshots or locks; ABA change-and-restore and original cross-process Board CAS remain unsupported.",
+    "Batch14 adds native-only agent.snapshot.restore-paused@1, agent.snapshot.resume-native@1, agent.snapshot.cancel-native@1, agent.snapshot.restore-get@1 and agent.snapshot.confirm-native@1. The source-qualified importer preserves ciphertext and original bytes, validates the complete safe state before effects, and creates a paused restore; resume and cancellation require explicit native actor/owner/epoch/expiry fences and human approval. Unknown snapshot state permits only scoped get, cancel or inspect-only native confirmation, never implicit startup replay. Native callback policy defaults unavailable; full original Agent/process/spawn/collaboration/packed-history behavior remains unsupported.",
+    "Batch14's original inline Note writer retains the eleven source actions and MCP upsert through Core HTTP/MCP with actor-specific policy, human acceptance/focus/revocation fences, exact Markdown/history receipts and schema-v18 global atomic receipt triggers. Unknown inline intent permits only an explicit identical request retry by the same currently authorized actor; startup never replays it. The inline writer is not a Board conversion and does not expand beyond exact source-qualified effects.",
+    "Snapshot restore and inline-writer suites passed 18 tests across the source oracle, transport and backup runners; schema-18 backup restores actual paused BLOBs, inline history and receipts, and prior schemas 12–17 remain input fixtures. These synthetic fixtures do not qualify real-root import, production native key authority, power loss, physical storage faults, an approved SLO, the full 379-file original suite or cutover. No workstream acceptance is implied.",
+    "Historical injected storage-I/O qualification exercised 28 cases twice: 24 recognized recoveries, four tamper denials and zero blockers per run, with 48 zero-syscall HTTP/MCP receipt replays per run and 56 injected adapter hits total. Current-fingerprint evidence must be separately checked in the source-bound report; this matrix covers Document, Upload, Resource and Project, not Skill, classification or memory fault recovery. Maximum request/recovery/close times and resource counts are bounded observations only, not approved SLOs; physical power loss and real kernel ENOSPC are not qualified.",
+    "The Batch12 source-bound oracle passed 18 cases twice with an identical report, 16 verified mappings, 68 assertions, one explicitly unsupported work item bridge and zero mismatches. It is a distinct tranche from the prior 15-case/109-assertion oracle; counts are not added into a full-suite claim. The original 379-file regression suite remains not run.",
+    "Batch15 registers only legacy.skill.router.inject@1 and legacy.skill.router.remove@1 writes plus knowledge.legacy-links.resolve@1 and knowledge.asset.ownership.validate@1 reads. All are strict-schema Core HTTP/MCP operations with native callbacks unavailable by default; Skill mutation and sidecar resolution require an explicitly trusted native-owned disposable fixture and do not grant serialized or bearer authority. The SQLite lease does not prevent hostile external parent replacement. Asset reads are actor-filtered, root-pinned and revision-CAS checked. Skill installs/upgrades, modified projections, routing materialization, remote subscriptions, execution and original classification apply/rollback writing remained unavailable in Batch15. Batch15 original writer/source references are separately hash-checked; no original code capture or general parity is claimed.",
+    "Batch16 separately registers knowledge.classification.native-strict.command@1 and memory.scope.forget.native@1 behind default-deny native callbacks. Classification is opt-in disposable-fixture-only and rejects the whole selection, unlike the original ordered skip/UUID result; it is not approved production parity. Forget is logical derived SQLite memory only, not Markdown, history, transcripts or physical erasure. Owned worker drain is not an interprocess lock or hostile-filesystem guarantee. Unknown engine journal state never autostarts or replays.",
+    "Batch17 adds fixture-only classified backup restore through a separate trusted native adoption approval before staging and again before publication. Approval binds actor, workspace, source identity, manifest, source epoch, destination parent, stage pins and policy identity; original opaque receipts remain unchanged in an immutable native-adoption ledger, and publication is no-replace with stage identity checks. The strict whole-selection classifier remains a candidate, not original ordered-skip parity. Hostile external writers, production authority, authority self-enrollment and cutover are not qualified.",
+    "Schema 21 preserves isolated workspace/backup inputs 12–21 until explicit open. Batch18 qualifies paired engine backup/restore only for an explicitly native-owned disposable fixture with one absent workspace target and the engine at packages/.pkm-native-memory/memory.sqlite3 inside that workspace. Actual Core HTTP/MCP forget receipts and an actual native Python worker are covered through coordinated worker drain/fencing, workspace quiescence/exclusive leasing, SQLite-consistent engine snapshot, no-replace directory publication, and separately trusted actor/workspace/source/manifest/epoch/target/policy/expiry adoption checks before stage and publication. Immutable original receipt bytes and source identity are preserved across retry, a later forget, restart, rebackup and rerestore; unknown outcomes remain fenced and are never autostarted. Workspace schema21 and engine schema2 are unchanged. This does not qualify external engine targets/two-target layouts, hostile external writers or a general interprocess lock, production authority, auto-replay/reconciliation, physical erasure, SLO/power-loss durability, or exhaustive malicious-lineage/fault cross-products. The separate 28-case storage-I/O matrix covers Document/Upload/Resource/Project only and is not engine-fault evidence. No production import, authority enrollment or acceptance is granted.",
+    "Batch18's independently discovered same-inode engine-content startup gap is fixed by the shared read-only engineArtifact/verifyEngineDatabase validator: identity/schema/integrity, exact byte size/hash and all SQLite objects/table hashes are checked before Python opens. The paired native host additionally supplies engineStateAuthority.read/commit outside both restore targets; commit must durably persist exact manifest, engine inode, independently current external epoch and ledger/content anchors before returning success. Serialized authorized dispatch completion and successful held-forget receipt/epoch commit update live seals; only a safely drained native-owned close may normalize and publish a closed exact-byte seal. Live/unknown effect seals cannot authorize restart, and failed content-anchor publication fences without replay. Actual tests reject same-inode payload/header tampering before initial or later sealed reopen, preserve legitimate write/forget/restart/rebackup/rerestore, and fence an actual applied effect after native seal commit denial. Workspace21/engine2 and immutable original receipt/source-root fields remain unchanged. Durable disposable-fixture authority is a trust boundary, not authority self-enrollment, a hostile-writer lock, production readiness or exhaustive fault qualification.",
+    "Batch23 subscription identity import is limited to disposable fixtures with an explicitly injected durable native secret authority. Private keys never enter plans, receipts, backups, sanitized JSON, sidecars or transport output; subscription.identity.get@1 is read-only and unaccepted. Batch24's isolated VS Code host is not the installed production extension and has no Electron acceptance claim. Batch25 Sync restore validates complete entity membership and fails closed on unsupported mode-only privacy transitions; fixture recovery does not establish hostile external-writer exclusion or power-loss durability. Batch26 adds typed Manager client workflow surfaces and does not qualify autonomous production workers or the full VS Code user journey.",
+    "No real Knowledge Root, production cutover, external calls or full legacy workstream acceptance is qualified."
+  ],
+  "batch20SkillSource": {
+    "status": "bounded-fixture-qualified-full-and-io-pending",
+    "workspaceSchema": 23,
+    "memoryEngineSchema": 2,
+    "catalogRegisteredOperationCount": 214,
+    "newOperation": "legacy.skill.source.install@1",
+    "operationClassification": "native-composed-writer",
+    "readOnly": false,
+    "independentNativeAuthorityRequired": true,
+    "qualificationReport": "batch20-qualification.json",
+    "sourcePinsAndFinalCommandsPending": false,
+    "batch19NativePinsAreHistoricalAndStaleForCurrentImplementation": true
+  },
+  "batch22SkillSourceBridge": {
+    "status": "bounded-functional-and-storage-io-qualified-full-baseline-pending-no-cutover",
+    "workspaceSchema": 23,
+    "memoryEngineSchema": 2,
+    "catalogRegisteredOperationCount": 216,
+    "newOperation": "legacy.skill.source.bridge@1",
+    "operationClassification": "native-composed-writer",
+    "readOnly": false,
+    "bridgeScope": "Only a strictly pinned INSTALLED old Skill-source head and its bound source version and target; removed old heads require old-writer reinstall before bridging.",
+    "nativeCallbacks": [
+      "approveBridge(actor, plan, pins, recovery)",
+      "verifyBridge(plan, pins)",
+      "reconcileBridgeAnchor(snapshot, actor, { plan, pins, committed })"
+    ],
+    "nativeExports": [
+      "legacySkillSourceBridgeOperation",
+      "validateNativeLegacySkillSourceBridge",
+      "verifyNativeLegacySkillSourceBridgeSql",
+      "verifyNativeLegacySkillSourceBridge",
+      "replayNativeLegacySkillSourceBridgeHistory",
+      "executeNativeLegacySkillSourceBridge"
+    ],
+    "lineage": "Sequence-one native source history retains immutable legacy genesis and old receipts; source snapshots remain { intents, receipts, history, adoptions } with no DDL change.",
+    "qualificationReport": "batch22-qualification.json",
+    "sourcePinsAndFinalFunctionalCommandComplete": true,
+    "storageIoStatus": "current-bounded-domain-matrix-qualified",
+    "storageIoReport": "tests/storage-io-fault-report.mjs",
+    "storageIoObservations": "tests/storage-io-fault-observations.mjs",
+    "storageIoScope": "Document, Upload, Resource and Project only; does not qualify Skill, memory or engine fault handling or power-loss durability.",
+    "fullBaseline": null,
+    "cutoverAuthorized": false
+  },
+  "batch18FinalQualification": {
+    "status": "isolated-fixture-qualified-for-formal-review-not-cutover",
+    "qualifierChangedPaths": [
+      "README.md",
+      "MIGRATION.md",
+      "scripts/capture-knowledge-index.mjs",
+      "scripts/capture-native-qualification.mjs",
+      "scripts/migration.mjs",
+      "migration/knowledge-index-provenance.json",
+      "migration/legacy-command-extension-provenance.json",
+      "migration/channel-runtime-provenance.json",
+      "migration/manifest.json",
+      "migration/readiness-contract.json",
+      "migration/native-qualification.json"
+    ],
+    "changeOwnership": "Qualifier made no implementation/test edits. The same implementation owner supplied the frozen three-file engine-content fix; the existing I/O owner changed only authorized currentFunctionalRegression and requested generated IO outputs. Preexisting coordinated root/next-server worktree changes remain untouched. No dependencies, commits, new agents, actual Knowledge Root, private global storage, external/model/production operations or root build/full suite were used.",
+    "databaseSchema": 21,
+    "engineSchema": 2,
+    "independentFunctionalRegression": {
+      "cwd": "/home/yuwang8/uone-knowledge/packages/personal-knowledge-vscode",
+      "buildCommand": "npm run build --prefix next-server -- --pretty false",
+      "testCommand": "set -o pipefail && NODE_NO_WARNINGS=1 node --test --test-reporter=spec next-server/tests/legacy-memory-engine-backup-paired.test.mjs next-server/tests/legacy-memory-engine-backup.test.mjs next-server/tests/legacy-memory-erasure-worker.test.mjs next-server/tests/legacy-memory-erasure.test.mjs next-server/tests/host-composition-legacy-batch16-memory.test.mjs next-server/tests/workspace-backup.test.mjs next-server/tests/compute.test.mjs next-server/tests/native-runtime-integration.test.mjs next-server/tests/standalone-host.test.mjs 2>&1 | tail -n 10",
+      "tests": 88,
+      "passed": 88,
+      "failed": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0,
+      "durationMilliseconds": 18970.425654,
+      "nativeSourceDigest": "42bd82b50919acd0ad022d3f1bfbba3d79c54a5e11d0527c3fb5ebe841bcf1b9",
+      "nativeFiles": 646,
+      "nativeDigestFormula": "SHA256(JSON.stringify(sorted [package-relative path, SHA256(file bytes)] rows for every regular src/** and dist/** file)); lexical path ordering; no Python is implied by this digest.",
+      "capturedPythonCheck": "node next-server/scripts/capture-compute.mjs --check",
+      "unchangedCapturedPythonFiles": 4,
+      "countScope": "All original86 retained plus two actual-pipeline same-inode payload/header tamper and applied-effect/native-seal-denial cases. Prior engine-only40 is not additive. The 28-case storage IO matrix is separate and not engine-fault evidence."
+    },
+    "nativePairedEngineContract": {
+      "scope": "exclusive-native-disposable-fixture",
+      "restoredEngineLayout": "native-controlled-inside-workspace",
+      "restoredEnginePath": "packages/.pkm-native-memory/memory.sqlite3",
+      "manifest": ".pkm-paired-memory-backup.json",
+      "manifestSchema": "pkm.paired-memory-backup/v1",
+      "adoption": ".pkm-native-memory-adoption.json",
+      "publication": ".pkm-native-memory-publication.json",
+      "engineStateAuthority": "Mandatory independent native read/commit provider outside both restore targets; durable before successful commit, bound to exact actor/source/workspace/adoption/manifest/target/inode/current external epoch and committed ledger/content anchors.",
+      "validators": "Shared read-only engineArtifact/verifyEngineDatabase checks private regular file, schema2/metadata identity, integrity, standalone byte size/hash and all SQLite objects/table hashes before Python startup and artifact backup/restore. Live owned dispatch/readmission validates independently accepted table/schema/ledger/epoch content; safe close after drain validates ownership and content before explicitly authorized standalone normalization and durable closed seal.",
+      "effects": "Actual SQLite Engine.backup, owned engine dispatcher fence/drain, workspace quiescence/exclusive lease and libc renameat2(RENAME_NOREPLACE) single-stage directory publication. Actual Core HTTP/MCP forget, old immutable receipt/source-root replay, later forget, restart/rebackup/rerestore retained. No filesystem await is added inside SQL transactions.",
+      "unknownOutcomes": "Unknown publication/stage/effect outcomes keep fences; live/unknown crash seals cannot authorize reopen, and native seal denial after an applied effect does not mint a safe close seal. No automatic restore, model/effect replay or native-authority enrollment.",
+      "legacyWorkspaceRestoreInputs": "12–21 unchanged; require-native-authority binds actor/source/manifest/current external epoch/target/policy/expiry before stage and publication. Known newer erasure epochs deny older backups.",
+      "limits": "One absent approved workspace target containing its adopted engine only; no external engine target/two-root layout, hostile external writer exclusion, general interprocess lock, physical erasure, power-loss/SLO/production acceptance. Logical derived-memory forget does not erase Markdown/transcripts/history. Strict whole-selection classification remains fixture-only and distinct from original ordered-skip behavior."
+    },
+    "comprehensiveReadOnlyQualification": {
+      "knowledgeIndexProvenanceCorrection": {
+        "parentFullFailure": "Exactly1 failed provenance expectation,1311 passed of1312 server tests; clients not run. batch18-full-verification.log is preserved. No full baseline or acceptance is inferred.",
+        "reason": "The removed ninth mapping was an extended native worker, not a byte-identical original source. Eight valid transformed bridge/reference pairs remain: four original source references and four native reuse references. Restoring a fake original-worker mapping or ignoring the pair count would be incorrect.",
+        "originalSourceReferences": [
+          "modules/pkm-memory-engine/src/pkm_memory_engine/engine.py",
+          "modules/pkm-memory-engine/src/pkm_memory_engine/memory.py",
+          "src/memory/chat-memory-service.ts",
+          "src/retrieval/retrieval-snapshot.ts"
+        ],
+        "nativeReuseReferences": [
+          "next-server/src/domain/knowledge-contracts.ts",
+          "next-server/src/knowledge-snapshot.ts",
+          "next-server/src/links.ts",
+          "next-server/src/compute/contracts.ts"
+        ],
+        "activeTransformedMappings": 8,
+        "historicalWorkerSource": "next-server/src/compute/chat-memory-worker.ts",
+        "historicalWorkerSourceSha256": "1c9023df5d900ad2d7af149c4116cfa7d942bb65439f38f41dc14e4684db9fbf",
+        "historicalCapturedPath": "src/compute/knowledge-index.ts",
+        "historicalCapturedSha256": "5d124574f9923b66ea3f7816f86f4f1fc15dbce97114de51bc8dae878c930e3b",
+        "currentNativeWorkerSha256": "78118937bc28fc2f9e5eb088dd266bcad19903522e6d591b4bf18fa2414468b2",
+        "testOwner": "d4d17265-1593-408e-b7b6-e82343d5b322",
+        "testPath": "tests/compute-knowledge-index.test.mjs",
+        "previousTestSha256": "d3a0175826aa4a6ae849ef480434f7c33eb89fc0f76a4fcfb4be64e48bf5dec5",
+        "currentTestSha256": "15860c2d29c95d267b5d13bb282f427f2e00385a41301b51356ac802ab05136e",
+        "assertions": "Exact8 output/count/source set; original4/native-reference4 classification; no active worker mapping; transformed/not-byte-identical claim; exact historical source/hash/captured path/hash/Batch18 reason; unchanged historical captured bytes; exactly one current native worker pin equal actual bytes and distinct from old source hash; all8 original source/captured hash checks retained.",
+        "independentBuildCommand": "npm run build --prefix next-server -- --pretty false",
+        "independentTestCommand": "set -o pipefail && NODE_NO_WARNINGS=1 node --test --test-reporter=spec next-server/tests/compute-knowledge-index.test.mjs next-server/tests/compute.test.mjs next-server/tests/provenance-readonly.test.mjs 2>&1 | tail -n 12",
+        "actualTests": 46,
+        "actualPassed": 46,
+        "actualFailed": 0,
+        "cancelledSkippedTodo": 0,
+        "durationMilliseconds": 2664.828678,
+        "scope": "Only the known tightly coupled provenance test was changed by the same owner. No compute/index/Python implementation or original captures changed; source-native scope validated before IO authorization."
+      },
+      "generatorCommandPattern": "node next-server/scripts/capture-<name>.mjs --check",
+      "generators": [
+        "channel-runtime",
+        "workflow-executor",
+        "knowledge-mutations",
+        "runtime-process",
+        "workflow-compiler",
+        "project-recipes",
+        "sync-apply",
+        "collaboration-state",
+        "knowledge-index",
+        "native-qualification",
+        "coding-worker",
+        "compute",
+        "model-config",
+        "document-lifecycle",
+        "manager-runtime",
+        "manager-chat",
+        "retrieval-learning",
+        "legacy-state-import-native",
+        "sync-plans",
+        "agent-runtime",
+        "sync-transport"
+      ],
+      "passedGenerators": 21,
+      "unchangedBytesModesNanosecondMtimes": 2000,
+      "capturePairs": 233,
+      "aggregateNativePins": 337,
+      "separateOriginalSourceReferences": 26,
+      "captureIssues": 0,
+      "focusedCommand": "set -o pipefail && NODE_NO_WARNINGS=1 node --test --test-reporter=spec --test-concurrency=4 next-server/tests/readiness.test.mjs next-server/tests/migration.test.mjs next-server/tests/migration-preflight.test.mjs next-server/tests/model-config.test.mjs next-server/tests/model-provider.test.mjs next-server/tests/model-provider-original.test.mjs next-server/tests/provenance-readonly.test.mjs next-server/tests/legacy-classification-safety.test.mjs next-server/tests/legacy-classification-native.test.mjs next-server/tests/host-composition-legacy-batch16-classification.test.mjs 2>&1 | tail -n 12",
+      "focusedTests": 110,
+      "focusedPassed": 110,
+      "focusedFailed": 0,
+      "fixedPointCommand": "node next-server/scripts/qualify-legacy-regression-fixedpoint.mjs",
+      "fixedPoint": "Ordered three producers initialize reports, then all three suites in one node --test --test-concurrency=4 runner twice;32/32 each, complete report bytes and source maps/dependencies stable.",
+      "fixedPointReports": {
+        "tests/legacy-regression-oracle.report.json": "27e60ac25adc092f08e00d677fcbad22a1c198e9090e02d17d26e1378efaccae",
+        "tests/legacy-regression-batch12.report.json": "464fb1eda9a1f7cb2f4d01ba9142fe8180bb138837e1f6ee821ea9f4fcec90fa",
+        "tests/legacy-read-race.report.json": "5bb729541456ae29fbf776c0e8f5c57faeb4209f0062509f01473e222e6d8949"
+      },
+      "actualCanonicalCatalog": 212,
+      "readOnlyOperations": 106,
+      "writeOperations": 106,
+      "operationEnvelopeVersion": 1,
+      "catalogMapping": "Exact composed definitions:206 workstream-mapped plus six explicitly cataloged but held fixture operations; no invented helper/public API or schema bump.",
+      "heldCatalogOperations": [
+        "knowledge.classification.native-strict.command",
+        "memory.scope.forget.native",
+        "legacy.skill.router.inject",
+        "legacy.skill.router.remove",
+        "knowledge.legacy-links.resolve",
+        "knowledge.asset.ownership.validate"
+      ],
+      "scenarioChecks": 26,
+      "catalogProfiles": 6,
+      "inventoryRevision": "59361c9230a3934c5dcae2ff3205c8b70d4814fbf71f19b5e9ef0367ede0c889",
+      "exactCurrentOriginalInventoryPins": 701,
+      "originalSources": 322,
+      "originalTests": 379,
+      "sourceDeclarations": 130,
+      "extensionCommands": 86,
+      "configurationKeys": 44,
+      "currentOriginalPackageSha256": "381e8b3b7313a6c37775fa05704d257379bd6aa68c287837bde9070045d58698",
+      "inventoryPolicy": "Current original inventory/package and previously approved package/script-diff/inventory review history are preserved, not recaptured/reverted. Extended native ChatMemoryWorker is separately pinned; its old source/capture mapping remains historical rather than claiming native code as an unchanged original."
+    },
+    "freshPostFixStorageIo": {
+      "owner": "d74651e3-6d6f-4ca5-a38f-dc7824b6ecca",
+      "cwd": "/home/yuwang8/uone-knowledge/packages/personal-knowledge-vscode/next-server",
+      "command": "PKM_STORAGE_IO_FAULT_SAVE=1 PKM_STORAGE_IO_FAULT_REPEAT=1 node --test-concurrency=4 --test tests/storage-io-fault.test.mjs",
+      "actualRuns": 2,
+      "casesPerRun": 28,
+      "injectedHitsPerRun": 28,
+      "recognizedRecoveriesPerRun": 24,
+      "tamperDenialsPerRun": 4,
+      "blockedCasesPerRun": 0,
+      "zeroFilesystemHttpMcpReceiptRetriesPerRun": 48,
+      "entireCanonicalReportByteIdentical": true,
+      "durationSeconds": 92.203,
+      "plainNoSaveCommand": "node --test-concurrency=4 --test tests/storage-io-fault.test.mjs",
+      "plainNoSaveActualPassedCases": 28,
+      "plainNoSaveDurationSeconds": 46.491,
+      "plainNoSaveUnchangedCoveredFiles": 936,
+      "coveredInputs": 934,
+      "coveredOutputs": 2,
+      "sourceFingerprint": "076de9c0e078266caa8da5247a2e40b956728c8f11cb44e86656b06f4b8e29df",
+      "fingerprintFormula": "SHA256(JSON.stringify([package-relative path,SHA256(bytes)] rows sorted with a.localeCompare(b))); all regular src/dist recursively, package.json/package-lock.json/tsconfig.json, top-level tests/*.mjs excluding the two IO outputs, and scripts/*.mjs. Python is separately captured/pinned, not implied by tests/*.mjs.",
+      "reportSha256": "4deef1e4de956ab6cd6597c92f49142951fcd4e8908ead793e52143eff29b788",
+      "observationsSha256": "5d170892f4a0c174e28f758a08664206e7f4dec9997c350dbf7f33266bc1ce4e",
+      "currentFunctional88NativeDigestMatches": true,
+      "maximumRequestMilliseconds": 36.359664,
+      "maximumRecoveryMilliseconds": 513.832143,
+      "maximumCloseMilliseconds": 65.555651,
+      "peakRssBytes": 252567552,
+      "maximumFileDescriptors": 45,
+      "maximumFixtureBytes": 914843,
+      "scope": "Document/Upload/Resource/Project injected filesystem faults only; no engine/classification/memory/Skill fault cross-product, physical power loss, production writer exclusion or SLO claim.",
+      "baselinePolicy": "Qualifier authorized ONLY actual currentFunctionalRegression88/current native digest. Historical schema15/16 red baselines remain; fullBaseline remains null. I/O owner is not a native-authority/readiness reviewer or self-enrollment mechanism.",
+      "freeze": "The source/test/script audit freeze after the same-owner intentional8-pair provenance assertion correction preceded this fresh SAVE+REPEAT and actual noSAVE execution. Post-I/O changes are migration metadata/docs only; no further source/test/script edits. Two preceding actual IO freezes are retained as superseded history."
+    },
+    "fullVerification": {
+      "current": false,
+      "currentVerificationArtifact": "migration/verification.json is absent after the parent failed full attempt; this qualifier does not recreate it or substitute historical Batch17 evidence. The prior successful digest/time remain historical fields only. Parent must produce a new successful full artifact after final freeze.",
+      "subsequentParentBatch18Attempt": {
+        "serverTests": 1312,
+        "passed": 1311,
+        "failed": 1,
+        "skipped": 0,
+        "cancelled": 0,
+        "clientTestsRun": false,
+        "failure": "tests/compute-knowledge-index.test.mjs:73 stale9 expected transformed source/capture pairs versus intentional8-pair reclassification",
+        "log": "batch18-full-verification.log",
+        "logPolicy": "Existing parent red log retained unchanged; this qualifier does not rerun full, overwrite verification evidence, ignore the count or mint a full baseline.",
+        "correction": "Same-owner tightly coupled exact8/original4/native-reference4/history/current-nativepin assertion fix independently built and verified46/46 before renewed IO authorization.",
+        "fullBaseline": null
+      },
+      "historicalBatch17Digest": "6bfd4cf228f940f68fe35c04eef53cb94bfc8aef718933839334cc198e39712e",
+      "historicalBatch17FinishedAt": "2026-11-08T00:12:08.071Z",
+      "acceptedWorkstreams": 0,
+      "totalWorkstreams": 21,
+      "readinessBlockers": 611,
+      "parentNextStep": "Only after final qualification freeze, parent may run next-server npm test and continue formal review. No current full baseline, cutover, policy autoaccept, signing or production acceptance is supplied here."
+    }
+  },
+  "native": [
+    {
+      "file": "browser/bootstrap.mjs",
+      "sha256": "090cc5bac3e1200f046a1c102b679b59c414084246bcc8641601675fae44f859"
+    },
+    {
+      "file": "browser/host-config.mjs",
+      "sha256": "4390acba8af4563a57cd1ec960f1f9724ffbf5ddcb8553f028a94294d5e8df5d"
+    },
+    {
+      "file": "browser/human-review.css",
+      "sha256": "94044f98004f7e68210e910a3f6e518b486c7de59233675dfe15c5149511e248"
+    },
+    {
+      "file": "browser/human-review.mjs",
+      "sha256": "edb5779ae243db96351e9f49a5bfd2206a21728601556cc73d42cf155ffbfbd8"
+    },
+    {
+      "file": "browser/index.html",
+      "sha256": "7db7665a0fca846ad85ae16bd26ab7acbbd84e5a65986e78808d2d1de997221f"
+    },
+    {
+      "file": "browser/integration.mjs",
+      "sha256": "e8f303bc5920c7c58d49ad0a96a25f5d8ded400c51222594d3ab70b14d1c8992"
+    },
+    {
+      "file": "browser/protocol.mjs",
+      "sha256": "96bd0ac89a55946fc3c02af727691a10fcccb78ea6ee82a8169a95fff5428326"
+    },
+    {
+      "file": "browser/workflow-surfaces.mjs",
+      "sha256": "534a270ca3f6760ea69ba23fd0ed4a93336b309cdabc670b962719f4503760a1"
+    },
+    {
+      "file": "browser/workspace.css",
+      "sha256": "59f6ff52bee74667bf95da31af0867808859acb0a87918d13d55a8f0f94acbac"
+    },
+    {
+      "file": "browser/workspace.mjs",
+      "sha256": "1304b4946704b6305145e90dca3923a92d55cc0ecfbc277deb6c52bf9fc833a2"
+    },
+    {
+      "file": "clients/vscode-host/build.mjs",
+      "sha256": "3e9873df03374236b2f78fae7619935953f9967093113c7400aa57d5d3606ad5"
+    },
+    {
+      "file": "clients/vscode-host/extension.ts",
+      "sha256": "0be5af8677c20e57b2f3f15d4e2c66e9a1d3199328cf9ca526f1705fe022cec7"
+    },
+    {
+      "file": "clients/vscode-host/managed-migration.ts",
+      "sha256": "b88d749a90102be6e5b2d953eed273f965f34ff56d41f9767c518c2a1180c1f0"
+    },
+    {
+      "file": "clients/vscode-host/migration-electron-test-runner.cjs",
+      "sha256": "549d967983bdf55adb32348b0ee0c4b1b989b861ac26e85b842523610c161c38"
+    },
+    {
+      "file": "clients/vscode-host/migration-electron-test.mjs",
+      "sha256": "cc76e8ec289812ae70b145c982c1c9f6508f0d42c873ad6d9c29c7f6cb8f568f"
+    },
+    {
+      "file": "clients/vscode-host/package.json",
+      "sha256": "fc01f43e85ac3625b8c0556eb872f52305b3d06f4f766b10538a45907adf7402"
+    },
+    {
+      "file": "clients/vscode/activity.ts",
+      "sha256": "badf04de5450fee572028010276e2d5b4439ff8221ba5372fc72b477c576f8ed"
+    },
+    {
+      "file": "clients/vscode/bridge.ts",
+      "sha256": "0cc842c46aca8b70b423e7dde13140a3a5ab6371ea2962cbfb9369d941ae9ea2"
+    },
+    {
+      "file": "clients/vscode/client.ts",
+      "sha256": "28dc208405b3fe29602ec58d1c36254932f0530272b6294406af846f60617dff"
+    },
+    {
+      "file": "clients/vscode/contracts.ts",
+      "sha256": "8db15efece00d24aa165a6acdbef75ce467800be1301d94a13896d211f5aa2cd"
+    },
+    {
+      "file": "clients/vscode/index.ts",
+      "sha256": "b5804f6760aee4075240a1a2bb3dee3772365e23c76e06e5109f1ec0c4f1d939"
+    },
+    {
+      "file": "clients/vscode/knowledge-lifecycle.ts",
+      "sha256": "2334ad7cac128c94f2252eaa5043f381343680050ae94dad8db7036b19b19d05"
+    },
+    {
+      "file": "clients/vscode/workflow-surfaces.ts",
+      "sha256": "3f6c011b3e8a4fceb3013b8bd1f9325b9056fb6311330aba3021adbfa09dcf0c"
+    },
+    {
+      "file": "compat/legacy-action-package.py",
+      "sha256": "1866a4185737d08e80c855962e485f43cd2e1a4bf6e589a80c84e18fb82c9d32"
+    },
+    {
+      "file": "compat/legacy-agent-captured.py",
+      "sha256": "8ea17cbcb9207633f19ae5504f5afcfefd351d0829dae13f1a56f3fe736c0d5b"
+    },
+    {
+      "file": "compat/legacy-compact-mcp.py",
+      "sha256": "30c346012d4927f9a0000c185351784cbb730a9a809c3aadcb5739600d6b36d9"
+    },
+    {
+      "file": "compat/legacy-knowledge-captured.py",
+      "sha256": "c0f8452e80e7db699efffa591613c7d29c8d6736b2f3ad4fee3ab5fce3cf4cd5"
+    },
+    {
+      "file": "compat/legacy-knowledge-mcp.py",
+      "sha256": "3c1e01eb8de19e973ba49ab84fcc13be9ea9b901fd03bd94c76c723b012602f8"
+    },
+    {
+      "file": "compat/legacy-knowledge-snapshots-captured.py",
+      "sha256": "406527c1886d1228d690d67586cf68e70b58ce7fb7b948b60f6e0ac6ca577fd8"
+    },
+    {
+      "file": "compat/legacy-knowledge-snapshots.py",
+      "sha256": "d6fdcf7dcbec9d596aa5900e633279712c424cfdc0de9a13a94c7fdf4f8b528b"
+    },
+    {
+      "file": "compat/legacy-note-inventory.py",
+      "sha256": "2beadb04366b2be56d3dd47912773440a7faa261dd70bd9f6c0b25450ea1c72c"
+    },
+    {
+      "file": "compat/legacy-recipe-run-read.py",
+      "sha256": "d024739ad6f65a5933d89791f35539435caf771480a74153a1f67fdf423e83e2"
+    },
+    {
+      "file": "compat/legacy-retrieval-index.py",
+      "sha256": "b7b10fc23f91b32e23cb0cbb9d2a4da67de0ba95e57460ccbdbf99142cd2377f"
+    },
+    {
+      "file": "compat/legacy-retrieval-learning-captured.py",
+      "sha256": "4a2053ab41e473625ad192cfb962d6efd7d872fa05bfc7911a4a311b45a21aef"
+    },
+    {
+      "file": "compat/legacy-retrieval-learning.py",
+      "sha256": "8b40d6a9f40f1a0133c45e25815910e972ac30dab5d50ef6e83b0ee82cdba702"
+    },
+    {
+      "file": "compat/legacy-retrieval-model.py",
+      "sha256": "0c92bb4ff2c4e8cb2d328b3aa7a62d3edeac585f42b8b67d9c78834b777952e3"
+    },
+    {
+      "file": "compat/legacy-retrieval-worker-captured.py",
+      "sha256": "03019607008fa493463c60bbeae1c8499770fb9c5ec1df5c096e8bfecd555649"
+    },
+    {
+      "file": "experimental/managed-launch-client.d.mts",
+      "sha256": "d7b7f7cf9f12445bd88ada5e5d11b9c03ddf6de9126e05016ec7000beebd163d"
+    },
+    {
+      "file": "experimental/managed-launch-client.mjs",
+      "sha256": "a74b6563c18b8d18ba97cdc721cee976ab6bc7f818e2b7dd13f9ff8eeb5b626d"
+    },
+    {
+      "file": "experimental/managed-launcher.py",
+      "sha256": "26107063ed09b0982cc6f07643a6bd2cdb81a9aab59d0924b0131d0881c5f8eb"
+    },
+    {
+      "file": "experimental/managed-migration.d.mts",
+      "sha256": "2613700bba6dbd7e6ce5ee84df15b0578a56817469475d422699d3f0610a89c8"
+    },
+    {
+      "file": "experimental/managed-migration.mjs",
+      "sha256": "1c2f6ceb58d57e367a477ecc176965e7bfd1e12e1eb9158b442dff7becccf756"
+    },
+    {
+      "file": "experimental/python-bootstrap.py",
+      "sha256": "60b64f44af8c3b5f5840b901d00729eabdb171bf74dd33871ca54229dfb82821"
+    },
+    {
+      "file": "experimental/python-dependencies.py",
+      "sha256": "9f1e6c614dea8814f31e20461fc19759db61d993572911f28a892e0784849356"
+    },
+    {
+      "file": "migration/readiness-contract.json",
+      "sha256": "8b692da4ee93072129a263528b8529e73a4907a681348758b3e6ddcc95695917"
+    },
+    {
+      "file": "scripts/assess-legacy-mcp-coverage.mjs",
+      "sha256": "f1f500b81869516cfad1fda1bd2a35eb4b0e168c0da42b29e837f37fe9bc9bbb"
+    },
+    {
+      "file": "scripts/capture-channel-runtime.mjs",
+      "sha256": "91ce64d67f394c173e8ea35e5cd6a273dfa773ae800330f284863481282fe11e"
+    },
+    {
+      "file": "scripts/capture-knowledge-snapshots.mjs",
+      "sha256": "082e8f9a677264085d087ad6fb46be209b323cf80fa576c1c6d82bec6483a1f3"
+    },
+    {
+      "file": "scripts/capture-legacy-action-mcp.mjs",
+      "sha256": "0911bd77365f07ec8e25d5e5e195e20fe848e798f9718f0d06f2b6df5c91650a"
+    },
+    {
+      "file": "scripts/capture-legacy-knowledge-mcp.mjs",
+      "sha256": "ec4aeaf48113cf149a7bc3fe758b74e169574851e09bca2ed73a7337e357f8f5"
+    },
+    {
+      "file": "scripts/capture-legacy-mcp-contracts.mjs",
+      "sha256": "bc0759682170df02c6fc4c8ab3b9ce48c5fafa2400700a9e7e6d69fd36205f0f"
+    },
+    {
+      "file": "scripts/capture-legacy-retrieval.mjs",
+      "sha256": "7e8cd17e8c0f0efb6b996845dfe5e6bed54f51f6c1657ba166582fd41d218fd4"
+    },
+    {
+      "file": "scripts/capture-legacy-state-import-native.mjs",
+      "sha256": "efe96471fc9485f4daa8ac6a628f6b5ee62bbfe9753522f4f07e22973f9e2f4d"
+    },
+    {
+      "file": "scripts/capture-model-config.mjs",
+      "sha256": "894336b7a83ab30d4abb4891145cdfa34e474e166d1b49792013d804537371e6"
+    },
+    {
+      "file": "scripts/capture-native-qualification.mjs",
+      "sha256": "71b6b81e96b17139e347a516fc4547f2b0b1412bf7f4d9058329b99aec03c244"
+    },
+    {
+      "file": "scripts/capture-project-recipes.mjs",
+      "sha256": "dddd0b31af9e6f4c80257725774d1fe710ae784adb653a73da8598d5c0bf23a4"
+    },
+    {
+      "file": "scripts/migration.mjs",
+      "sha256": "5043132ad79b2294dc0db766b65009fc7eb79c02e38ca19e9fb85a058ac92b39"
+    },
+    {
+      "file": "scripts/qualify-legacy-regression-fixedpoint.mjs",
+      "sha256": "fbfa2ee658522eb70ba131040f713319e91090271c9345e5bdd773f42a0570b6"
+    },
+    {
+      "file": "scripts/readiness.mjs",
+      "sha256": "8f80031eeb14d86945c41458a61d2f45d9df3e1091c0636bae418f96c36c63ad"
+    },
+    {
+      "file": "scripts/verify.mjs",
+      "sha256": "1d440992fa467c7ffcb3530ca728a354634c081ff33b49d73f3e0fcf088486d4"
+    },
+    {
+      "file": "src/action-runtime-process.ts",
+      "sha256": "7755d2fdd90b0ccd105809d1b6160799566c374791565c48b5f3bffc7f9d7bf2"
+    },
+    {
+      "file": "src/action-runtime.ts",
+      "sha256": "a7e5682f6f802c56a5f439ab1b16715d4b96ac429d15ff3313dcf5a45ed371a2"
+    },
+    {
+      "file": "src/browser-host.ts",
+      "sha256": "dbba9b42d3a73063b6ebcceeba14cb28dde0c942568f19bf42ffd154ab859ba7"
+    },
+    {
+      "file": "src/channel-runtime.ts",
+      "sha256": "f1219926c13e6c6aa164a95721f0c734278576089319637aa90576fd4b9a6c66"
+    },
+    {
+      "file": "src/cli.ts",
+      "sha256": "f8345ee904c0bddb2fa7ac11ed3ef99002ca5dad4025feece2adabf3e1f7b2bc"
+    },
+    {
+      "file": "src/compute/chat-memory-worker.ts",
+      "sha256": "78118937bc28fc2f9e5eb088dd266bcad19903522e6d591b4bf18fa2414468b2"
+    },
+    {
+      "file": "src/contracts.ts",
+      "sha256": "243be35a870d277f9b9f50160a57605614868e06520a9f457c9d2f54969d0cff"
+    },
+    {
+      "file": "src/core.ts",
+      "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+    },
+    {
+      "file": "src/domain/channel-runtime-model.ts",
+      "sha256": "a70d5caa6ecd15b04bd5a4a727c654969ffa2893832a52c6bf0bc51ad813811e"
+    },
+    {
+      "file": "src/domain/human-review-intent.ts",
+      "sha256": "f50a6c3e537638eee63ef34f3082d065dd14ad15f790445f703076ef4a881819"
+    },
+    {
+      "file": "src/domain/legacy-action-mcp-original.ts",
+      "sha256": "7ffa4397299d84bdacb406a8e602aea7dd130b1ee79dedd89f228a784c3601e2"
+    },
+    {
+      "file": "src/domain/legacy-import.ts",
+      "sha256": "02528e98ed13152c471a15cb7fc45f709cb017d2bab99d5b8594bdaa9f48aac9"
+    },
+    {
+      "file": "src/domain/legacy-inline-note-reducer.ts",
+      "sha256": "481f1b82720b8ac4f15613ebc962b1ebf204751a21975124ad707a285b15c820"
+    },
+    {
+      "file": "src/domain/legacy-mcp-memory-contract.ts",
+      "sha256": "7f04467cb36922c61451d103b009633d19f221f08d8fac4829850b643521173b"
+    },
+    {
+      "file": "src/domain/legacy-mcp-registry.ts",
+      "sha256": "065cb4479d3959ede0fb2ee0f36810ca962849d4664305be618e13e72b367a68"
+    },
+    {
+      "file": "src/domain/legacy-note-workitems-provenance.json",
+      "sha256": "f10406b47389be229f4545379cb7bd2c5430ebaa69ee6ef902058b00261a9034"
+    },
+    {
+      "file": "src/domain/legacy-project-envelope-provenance.ts",
+      "sha256": "5486e4063a82e3664a680a2084c189d49f8de42e66a469632e139b04817631e6"
+    },
+    {
+      "file": "src/domain/legacy-snapshot-restore-recovery.ts",
+      "sha256": "f31b377331d66e17b3c4c9785638c3c5992a1680fff3467d0fa3eda1d4d84d57"
+    },
+    {
+      "file": "src/domain/legacy-snapshot-restore-source-pins.ts",
+      "sha256": "1abbc497e66777221c4433b1dc41c78aa9f1bec67ad744a3970eacef4fbe34d5"
+    },
+    {
+      "file": "src/domain/legacy-trash-import-contracts.ts",
+      "sha256": "e3f4a7a51da90b806ef0bad0c83e87b91058735bc3a60a3543883c1ffeaaf22c"
+    },
+    {
+      "file": "src/domain/legacy-trash-import-original.ts",
+      "sha256": "1405665ecbc1e640f31ca9fc3b2c17ca458b3ec8d889a216a454aa44e973694d"
+    },
+    {
+      "file": "src/domain/manager-chat-contracts.ts",
+      "sha256": "8856e3987d9f7eab8f6b22bcc9ded736aa35e61266a06e71509d33c9fa1bed7c"
+    },
+    {
+      "file": "src/domain/manager-progress.ts",
+      "sha256": "6728cabcf5cbe35e5049cedeb5b6b3c40c2e24b4d1ac52bc7bf9a3675b501d5c"
+    },
+    {
+      "file": "src/domain/memory-import-contracts.ts",
+      "sha256": "85f93e41aee9a503d2d9f56ffe901a4d32c3d07b285ed1ed243b78f624631c05"
+    },
+    {
+      "file": "src/domain/project-recipes.ts",
+      "sha256": "bcaaf51c01081e993c1b4fa39dd1130975d8b66136cfd5d1f58f7aba2e7b127a"
+    },
+    {
+      "file": "src/file-mtime.ts",
+      "sha256": "55577ab96d77579314ad1086bbbde66cde36a644ee362a5afde65cb2a07508f2"
+    },
+    {
+      "file": "src/host-composition-legacy-batch15-assets.ts",
+      "sha256": "f60c96607462250d068bc9656f9cd7540cc15d1d41e98d496bf41e6939a499a8"
+    },
+    {
+      "file": "src/host-composition-legacy-batch15-contracts.ts",
+      "sha256": "c0487f8fed5a3fc72e7829f0594936125de00c4e631dcc6b491e68c62ccbf845"
+    },
+    {
+      "file": "src/host-composition-legacy-batch15-errors.ts",
+      "sha256": "567bca508d30cb5442adfcf006da612baddfb1492bd2cabc96c68845c5a37801"
+    },
+    {
+      "file": "src/host-composition-legacy-batch15-skill.ts",
+      "sha256": "afeb79774e3103c68a291010dffcfb522be9112ebcf3546927b1a11762a40faa"
+    },
+    {
+      "file": "src/host-composition-legacy-batch16-classification.ts",
+      "sha256": "32a1ec86c2ca4373eb77623de72dcd2544191a8cf3cd6216840775ec987dd858"
+    },
+    {
+      "file": "src/host-composition-legacy-batch16-contracts.ts",
+      "sha256": "43951f5dcfd8b6c177bc16d6bec00935c367f99cb1e62b8c006a35b3331ec71b"
+    },
+    {
+      "file": "src/host-composition-legacy-batch16-fence.ts",
+      "sha256": "1f76abf18994a4642ad30e132c5566a43d7750751537e53d7b66263d63a60f03"
+    },
+    {
+      "file": "src/host-composition-legacy-batch16-memory.ts",
+      "sha256": "6e0f86b43f436ac50832718abc672b1d221021e4364dccc531b9989a3b429364"
+    },
+    {
+      "file": "src/host-composition-legacy-commands.ts",
+      "sha256": "327bb4c53e061fa23f901e64ccb2232eb1a814190c670520e5c6ff683a2271bc"
+    },
+    {
+      "file": "src/host-composition-legacy-inline-note.ts",
+      "sha256": "2d24517eafd6c01aeb4c29a3707883dc56f8edf080993ffb3649b6d661fd50dc"
+    },
+    {
+      "file": "src/host-composition-legacy-note-workitems.ts",
+      "sha256": "57eb364fa03136230a79adcec6c0882859296555bb056d1dd21cd943e7cda1ed"
+    },
+    {
+      "file": "src/host-composition-legacy-project-contracts.ts",
+      "sha256": "bfb97df161d694a7b666af723795b32a996bde66af521f5ac9078cbbd429fc56"
+    },
+    {
+      "file": "src/host-composition-legacy-recipe-trash.ts",
+      "sha256": "9a1be6375d9a28a2fff503bf0e3b128dfeb0eb02aaa3903b239669bfa7f1ff36"
+    },
+    {
+      "file": "src/host-composition-legacy-skill-source-contracts.ts",
+      "sha256": "044169a5bd418be3f7de47f98b396fdd5548477b6d266f6042924e9e46a96a09"
+    },
+    {
+      "file": "src/host-composition-legacy-skill-source.ts",
+      "sha256": "1b3308da507cda7d1b5fad0854616b6dcdbd0dcbb5936d1443bfd246186314cc"
+    },
+    {
+      "file": "src/host-composition-legacy-snapshot-restore.ts",
+      "sha256": "bc3e04a321d2b48c0a00e300b3f826d03dc98fcc5134f05ef0689380c45c6192"
+    },
+    {
+      "file": "src/host-composition-legacy-state.ts",
+      "sha256": "dbb0f3395a587b6631eb5b826953bca2e8baadf958ad7e36d542cfd66abd2aa3"
+    },
+    {
+      "file": "src/host-composition-legacy-trash.ts",
+      "sha256": "e8ac54677631ea481594f30b9ff72f719098291d9391ff5b14df634c05cb6a25"
+    },
+    {
+      "file": "src/host-composition-manager.ts",
+      "sha256": "e8578f6d983e9de39e2059baeb3b04d7a51d3c1df60bb47cb97d7ac1c3eb2095"
+    },
+    {
+      "file": "src/host-composition-portal.ts",
+      "sha256": "31528ef1f5663253b98ddb976be5c9231b3c18b19680d91e797b4095e60d8dc9"
+    },
+    {
+      "file": "src/host-composition-review.ts",
+      "sha256": "4fc416bf2c811cacb53ee1fe1127bd02574fedf6094bf7bc56d9de3b3f0af858"
+    },
+    {
+      "file": "src/host-composition-subscription-bundle.ts",
+      "sha256": "7119d1d2b90f4ecb083eb56de3b4c6b022be5545af3604790446f068fb02163f"
+    },
+    {
+      "file": "src/host-config.ts",
+      "sha256": "0ee439bf069a8559f68252afee6089c967611eb929db07249cf724cd14274266"
+    },
+    {
+      "file": "src/host-services.ts",
+      "sha256": "48e617c97be320cdc4ea4a5a5b70a1b42a95835ce12158ee863b5c289e919431"
+    },
+    {
+      "file": "src/http.ts",
+      "sha256": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109"
+    },
+    {
+      "file": "src/human-review-contracts.ts",
+      "sha256": "80361a8d832b410162e1d908560beac73b3ea9b957fba27168bef8e824e85f04"
+    },
+    {
+      "file": "src/human-review.ts",
+      "sha256": "802da933e9815f11f642e65a721fff8831faa045e4af4cdd9b4d1270d8531fa6"
+    },
+    {
+      "file": "src/import-parity-project.ts",
+      "sha256": "f6cba7508a0b70f5eff2b1083d165123d087db47a99b1a77af3db1e078b9b2c3"
+    },
+    {
+      "file": "src/knowledge-mutations-contracts.ts",
+      "sha256": "4390dabc9ec6dd53be282653eb710243ed6b80d1534333adba88e6788356c606"
+    },
+    {
+      "file": "src/knowledge-mutations.ts",
+      "sha256": "eafcb7cf7174b3a6e6189c56ca3c50ace05aa6d6e6e979c2ca41dcb1d9d566f9"
+    },
+    {
+      "file": "src/legacy-action-artifacts.ts",
+      "sha256": "d24e7eab268c1719f8da94d3df4892538be16b9f82130116356108c68843daa7"
+    },
+    {
+      "file": "src/legacy-action-catalog.ts",
+      "sha256": "cbbdc0dd98f221e8c2b061ae9e8ed3c89b68b856752fb400122187bf92380982"
+    },
+    {
+      "file": "src/legacy-action-mcp.ts",
+      "sha256": "bcbf66a8a0f71c491c472e72c16501ddc4d708307754b67922fdf974b486d6d6"
+    },
+    {
+      "file": "src/legacy-action-package.ts",
+      "sha256": "7ba1db72c9ce04c45c15a5db3d30e12acee4ea34e59bf94856eec5f14bf3a5b5"
+    },
+    {
+      "file": "src/legacy-asset-provider.ts",
+      "sha256": "08e91542f58db20d93d45ecfcd4b51bd5d5182dc2d9c442449f901f89250f450"
+    },
+    {
+      "file": "src/legacy-capability-mcp.ts",
+      "sha256": "a876fc822171155392a6120f22198445fb7e19ea8ab12cd2b3f5165c6a71533c"
+    },
+    {
+      "file": "src/legacy-classification-command-backup.ts",
+      "sha256": "50ec58bcc051853239f3d070961878bd6904d672f343ebd5539cb78a522545d9"
+    },
+    {
+      "file": "src/legacy-classification-command-contracts.ts",
+      "sha256": "37bf63b617b17407766d9e22c666f42bf8352e86ac0aaf9d94ccf1f7589ed632"
+    },
+    {
+      "file": "src/legacy-classification-command-host.ts",
+      "sha256": "f58e0eac677b7db6c3d97c5815ae442c66bff6b47b04133655a1674f8fff724c"
+    },
+    {
+      "file": "src/legacy-classification-command.ts",
+      "sha256": "55140c204ce71e1a2489429ac77bbb8a062929b0987eb446d396b05bd3fee1c0"
+    },
+    {
+      "file": "src/legacy-classification-native.ts",
+      "sha256": "38cae3e55105f077b0431e089ee4d5c3dc95ae3c2296ecd59491fb87062f7dbb"
+    },
+    {
+      "file": "src/legacy-command-extension-journal.ts",
+      "sha256": "35d52c8207f2b547a060c0be468ab8fce6b0d16a0d0c486bdb84c9f3d224858c"
+    },
+    {
+      "file": "src/legacy-command-extension-recovery.ts",
+      "sha256": "a6bb71170f17b17e3035c47c5238e490e8a532d33b9b3e4effc2b841f855abe8"
+    },
+    {
+      "file": "src/legacy-command-extension-runtime.ts",
+      "sha256": "6de33b372b8ec82cee781cbf35aac839fb7c389305b7021c63732699cb40c432"
+    },
+    {
+      "file": "src/legacy-command-extension-seam.ts",
+      "sha256": "318604efefbf0a16feabcba884d0c00412147d4fa3775f897740b75833905aad"
+    },
+    {
+      "file": "src/legacy-control-import.ts",
+      "sha256": "62453125e401cbea63c4766b1b74ef454a1539d7ae7736967434af3f0680d11b"
+    },
+    {
+      "file": "src/legacy-import-cli.ts",
+      "sha256": "6bad2f50671eba9889733d9a3f9bcd1a4236f5de28127cf4181f80100470638e"
+    },
+    {
+      "file": "src/legacy-import.ts",
+      "sha256": "8a6ea2fa8b88953a3290c77e73627c6760d66b2822b99c7796722d94b31b68b6"
+    },
+    {
+      "file": "src/legacy-inline-note-contracts.ts",
+      "sha256": "e16884ffcbbe3117721bfb880c3f06c50aa60f965e0e73851b98a91acaaa6e0f"
+    },
+    {
+      "file": "src/legacy-inline-note-journal.ts",
+      "sha256": "e2a4697c7019241e7be71eee8d894c3850b417065aea8521940e1ef84f708419"
+    },
+    {
+      "file": "src/legacy-inline-note-native.ts",
+      "sha256": "9eba9ef2c01ea692a4cbf6ce936e631f6073bc0918f661291535994c4df54a8f"
+    },
+    {
+      "file": "src/legacy-knowledge-recovery.ts",
+      "sha256": "7c99c0612779aa8f1c84feba57f57771c82b2e08f1777ee353123de6ef44ff71"
+    },
+    {
+      "file": "src/legacy-knowledge-snapshot-scheduler-state.ts",
+      "sha256": "1bdbb0d78e4887eced244fb13609f3fb5beb81612ea50038e7bda55b9ab54317"
+    },
+    {
+      "file": "src/legacy-knowledge-snapshot-scheduler.ts",
+      "sha256": "19d13737e7420228cfcd6d2a64796647af5d1027415dca6e9434df44d140d60f"
+    },
+    {
+      "file": "src/legacy-knowledge-snapshot.ts",
+      "sha256": "cba2c8065c35271766925e3a215dc1c6fb17d917c6e263473cea9d4ade15d055"
+    },
+    {
+      "file": "src/legacy-knowledge-snapshots.ts",
+      "sha256": "18117929e15673fc19b6cb7d1bad39ec21ea759a0fedebedf311219ba86040f3"
+    },
+    {
+      "file": "src/legacy-knowledge-trash.ts",
+      "sha256": "31e4729f1c5bfbb0bb31f0c9628ad013c3cee4af27d115d2eab50a670615100b"
+    },
+    {
+      "file": "src/legacy-knowledge-write.ts",
+      "sha256": "a8c8d67bb1bd6c640e2a6ff95cffd2b4f269d0133d346a533e3070d5a90e6503"
+    },
+    {
+      "file": "src/legacy-library.ts",
+      "sha256": "3ce7dfcf5a749496700f164963474b27170fea7c6d56950c63316e132232e91d"
+    },
+    {
+      "file": "src/legacy-mcp-note-policy.ts",
+      "sha256": "47d98021ae049d56aebacd5b255e1fcc6d9dfdc32e597444c541e6d27c1a5d13"
+    },
+    {
+      "file": "src/legacy-mcp-python-worker.ts",
+      "sha256": "e178516c266b39004d2b2aac94e45b01f7fc59d2c3f78a473bf66724d1e7dada"
+    },
+    {
+      "file": "src/legacy-mcp-python.ts",
+      "sha256": "f234394dd8a593fd8432ceeebb3386a192354728cd45edf754c3e3ced381e05e"
+    },
+    {
+      "file": "src/legacy-memory-engine-backup-paired.ts",
+      "sha256": "2d176a5f03be8724bd8d9c8c08477b8b98223f835503e3d1cfd7f846ea9f6a44"
+    },
+    {
+      "file": "src/legacy-memory-engine-backup-python.ts",
+      "sha256": "282f093df6dfb614ebb713ffbf61dfe5c4f93feada768acb1253ac802dec4edf"
+    },
+    {
+      "file": "src/legacy-memory-engine-backup.ts",
+      "sha256": "820181bc6fa31d1d33711fadc0f59f2c228dd1cda8a4a7dfa8a646c88486ddaf"
+    },
+    {
+      "file": "src/legacy-memory-erasure-worker.ts",
+      "sha256": "e0a79b952c0e7b2b846f2188ee9edbc160777773326156a12255166c6559d8aa"
+    },
+    {
+      "file": "src/legacy-memory-erasure.ts",
+      "sha256": "92b54ea579cbd976797906f8a2707b6166f699165a25772ccec553c77e85e3c7"
+    },
+    {
+      "file": "src/legacy-note-mcp.ts",
+      "sha256": "3a8a9e9b6f06c2e2addb3cc15a3a0164f7e28733871e70a3fed8f4568124e917"
+    },
+    {
+      "file": "src/legacy-note-workitems-admission.ts",
+      "sha256": "17c38035c5d8cb545abe3170373ee3352b1fac83560790adc231e3d401296f26"
+    },
+    {
+      "file": "src/legacy-note-workitems-contracts.ts",
+      "sha256": "3d88a4ec942df4da526a320103061752307ddd4080e74c7190fcd391ec537877"
+    },
+    {
+      "file": "src/legacy-note-workitems-journal.ts",
+      "sha256": "123fd8c2d919c7113211fe6c95e246a246f6c64db589e68ff30f509b79859768"
+    },
+    {
+      "file": "src/legacy-note-workitems.ts",
+      "sha256": "00bfcd1f37e252675d1943560707654d767bc40427db2c10ea5cd0c2cc38c150"
+    },
+    {
+      "file": "src/legacy-project-command-contracts.ts",
+      "sha256": "9049df9ae49d611f049f8b0824318dfb39b7a0fd4ae3413ed1f4de8985807c74"
+    },
+    {
+      "file": "src/legacy-project-command.ts",
+      "sha256": "2ab52a6b0a60ad2d2be7821c4d12746149623220168a786f3c8e63f1ccbcede3"
+    },
+    {
+      "file": "src/legacy-project-envelope.ts",
+      "sha256": "3e4b2bf9f0bdc0c43878e42cfb1d9afa1b92129b1ec036fd667d40871a2e2887"
+    },
+    {
+      "file": "src/legacy-project-thread-parity.ts",
+      "sha256": "9b21f64b163dbac29c4e2f1c573e59fb48e89d5e4bad3e1978a4200bb74bb98c"
+    },
+    {
+      "file": "src/legacy-read-race.ts",
+      "sha256": "c5c7b959b8ad1f8dfc9b1c8f8fae83a45f267b5db6d42293b07f07f90a89459a"
+    },
+    {
+      "file": "src/legacy-recipe-trash-contracts.ts",
+      "sha256": "7e1519e7e6f84c5b3fe202d510feff1dc0839ab687623ac71c07032f4541c06c"
+    },
+    {
+      "file": "src/legacy-recipe-trash.ts",
+      "sha256": "f6b8ae40a2fcd44f3310a629d0175b6923c954b4fa6a09418b1993fa8a51bf3e"
+    },
+    {
+      "file": "src/legacy-retrieval-history-import.ts",
+      "sha256": "e7835b8dc881c39dba87ad2f2849cfc39a3d696da92ecacbb0ca6454b1c825cd"
+    },
+    {
+      "file": "src/legacy-retrieval-index.ts",
+      "sha256": "318fa710515865c441d873b2eb398ebdab81cb964db765559d8ef27234d94135"
+    },
+    {
+      "file": "src/legacy-retrieval-learning-upgrade.ts",
+      "sha256": "bf870dd0c6a19a7d3019a7317735780493ae719109e5de88c2d6d7f26a96276b"
+    },
+    {
+      "file": "src/legacy-retrieval-learning.ts",
+      "sha256": "a613c84399b18cf7567abf62a54922e80ba035737740bd5c1d42919bf3b0731e"
+    },
+    {
+      "file": "src/legacy-retrieval-model.ts",
+      "sha256": "0bed3ba2193187d7556100534d5a8c2e9a057e136b83cf2a6fca3f146c34fac8"
+    },
+    {
+      "file": "src/legacy-retrieval-projection-captured.ts",
+      "sha256": "cc41124b631f3b42e7e9137426bef6c2cc51cd3a6338fde65822ad11888372f7"
+    },
+    {
+      "file": "src/legacy-retrieval-snapshot-captured.ts",
+      "sha256": "94536029689fc6915d39d8916b5dd444938a6cb7c22a948696b8edd916abe468"
+    },
+    {
+      "file": "src/legacy-retrieval-subscriptions.ts",
+      "sha256": "ba111855ed854a5db8b9110aec64f63875e68e118873a501be3bd54d0cb34dc1"
+    },
+    {
+      "file": "src/legacy-router-config.ts",
+      "sha256": "4e6f6be3191e6991751a3679b501be05aab52a0e5d6ae4f1f354931c6a68b8f3"
+    },
+    {
+      "file": "src/legacy-skill-lifecycle-native.ts",
+      "sha256": "6683c6a652fd3297fdd6a03a770af1635ef2e2dfc52661fb0a170d25103819ab"
+    },
+    {
+      "file": "src/legacy-skill-lifecycle.ts",
+      "sha256": "d41496c5ce972dfad9e1e5b5bea7452ca60b4bf407ca5c1ca987b94f12651ef5"
+    },
+    {
+      "file": "src/legacy-skill-maintenance.ts",
+      "sha256": "95e3cd6c75a13373bcf515a1b22dae486ca86bb41fc07c02ca178c08a9182e18"
+    },
+    {
+      "file": "src/legacy-skill-source-backup.ts",
+      "sha256": "37626876b7514d4719ccd8c456fecbf9eb78328a2cfbb346c3c7c29d94bbb105"
+    },
+    {
+      "file": "src/legacy-skill-source-native.ts",
+      "sha256": "6d2753738e946a0bc1f1579dec64e77ea6e0daa9e0b76eeb10ea964d51095e25"
+    },
+    {
+      "file": "src/legacy-skill-source.ts",
+      "sha256": "452476d04440d023804f746c1abefe0cb98e6b5e01ef68eeba68602e81c5e2b9"
+    },
+    {
+      "file": "src/legacy-snapshot-restore-contracts.ts",
+      "sha256": "c62fbf65082c0af25c8b5a0c901f3f8800be28da164ebe4a24c75cc85efec357"
+    },
+    {
+      "file": "src/legacy-snapshot-restore.ts",
+      "sha256": "32870db57aed1f1495fb906cdc78f44b538da4ef8a96f69cbf47a739010d136a"
+    },
+    {
+      "file": "src/legacy-state-import.ts",
+      "sha256": "a3dd0b5236ce7fd2caa0675c157dd2fad7e55b66f52640af3e629698ef3bb039"
+    },
+    {
+      "file": "src/legacy-subscription-cache-import.ts",
+      "sha256": "20950af3f39a112aed969aa3b3ba2abb34932b5271693ffa7d0c88f711d31bd1"
+    },
+    {
+      "file": "src/legacy-subscription-identity.ts",
+      "sha256": "2f59cf86053a7f22f08e41ba21779687debd3285e5c395e52069f10ff0943b29"
+    },
+    {
+      "file": "src/legacy-todo-board-create-contracts.ts",
+      "sha256": "7e19616aab3386bd217f51aec2b9a5fd367d73d94bb76b35645460650f18968a"
+    },
+    {
+      "file": "src/legacy-todo-board-create.ts",
+      "sha256": "538d6a3ba6bb2d755264767f7066c38ab1c43651b45ec23ee3357573418ce3eb"
+    },
+    {
+      "file": "src/legacy-trash-import-backup.ts",
+      "sha256": "1acfb86a8071321cbdb41fca66dae371d0a4985a20598275ba876f272104e579"
+    },
+    {
+      "file": "src/legacy-trash-import-native.ts",
+      "sha256": "55751cb2caf6670395471dc8883de75aa0d94034eb4da7f8829a1eee23ca7a5a"
+    },
+    {
+      "file": "src/legacy-trash-import.ts",
+      "sha256": "85cc339154d8756eec8c1ad9ef319cdcc34134514a5599b227682a59a22025b7"
+    },
+    {
+      "file": "src/manager-chat.ts",
+      "sha256": "afd698751d2b7c424dc2ee6781f0aac7a4cc95d9e2cfdf92cc7cc079dc6fb02d"
+    },
+    {
+      "file": "src/manager-plan.ts",
+      "sha256": "14a65d52050da30497e6c00a3900c03d9b1295bc406837c484c8c09473b6bf48"
+    },
+    {
+      "file": "src/manager-progress.ts",
+      "sha256": "88d0dc5ef4d8f6fe356b32445fe41d551b45f83aefdac915591f82287379216f"
+    },
+    {
+      "file": "src/manager-runtime-contracts.ts",
+      "sha256": "1a9a9dba7f3610dd9687baa199ead0459938c37448c944e29a847cf6f5e79ae2"
+    },
+    {
+      "file": "src/manager-runtime.ts",
+      "sha256": "f1fb84d411680628a95759c87403deed140ba3961679373d04ab3f846ae9611d"
+    },
+    {
+      "file": "src/mcp.ts",
+      "sha256": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6"
+    },
+    {
+      "file": "src/memory-import.ts",
+      "sha256": "b388d56b36e413f6fd499d6981b748e891b8c123bfe470500b25caf53fa8c858"
+    },
+    {
+      "file": "src/memory-scope-continuity.ts",
+      "sha256": "b1c52d9ae3b1a16ddc759f6015630e60d1e3ff9a8d8d7b4823ebbd9ffe057cbf"
+    },
+    {
+      "file": "src/migration-preflight.ts",
+      "sha256": "a9ef715423d0b0b4b6bfefd53f3dd2b36573bdb492780ceb53142e1df7fe3592"
+    },
+    {
+      "file": "src/migration-runtime.ts",
+      "sha256": "bbcecd4d93eb4035526c5824a104896d539230f421fd6e09791f307355fcfb42"
+    },
+    {
+      "file": "src/native-runtime.ts",
+      "sha256": "2c47d88f1f49c9492585b0ef84be1dbb65beca9806c2d9716185f0fe81953a23"
+    },
+    {
+      "file": "src/portal-lifecycle-contracts.ts",
+      "sha256": "74c0b5a9fd3dd5f3abe5f794bdc5eb91c0633ae61e8a3f561528efd561377459"
+    },
+    {
+      "file": "src/portal-lifecycle.ts",
+      "sha256": "79355675de36a9e3ca612f4cf31f34ba4c6505f2c103926948c9916c3b9edfa6"
+    },
+    {
+      "file": "src/project-mutations-contracts.ts",
+      "sha256": "580ec5038a7c1a6237f62539013527bfb4cd31045db81e21d79b726e36692851"
+    },
+    {
+      "file": "src/project-mutations.ts",
+      "sha256": "2c31d3095338708ecf8d963a71d89ffb0dfe09fa3d987f34eab332ff41468bbb"
+    },
+    {
+      "file": "src/project-recipes-contracts.ts",
+      "sha256": "94a06da4aa612f686ba5e5bc88721a1aa8399dec1dafbcd914579c9037f05358"
+    },
+    {
+      "file": "src/project-recipes.ts",
+      "sha256": "495a663768652c40305b195eac9f6393568c33b510011941c144b1184964434f"
+    },
+    {
+      "file": "src/remote-runtime-subscription-bundle-contracts.ts",
+      "sha256": "0ff24e77c71e25125c19d4a8d0090ecfca43c2ebc72102974aa80dd4f1950b4b"
+    },
+    {
+      "file": "src/remote-runtime-subscription.ts",
+      "sha256": "d81aa03cab98273c5bab75a7e5a77ec7c937e8ca02b7bfc43493116cd6785ee3"
+    },
+    {
+      "file": "src/remote-runtime.ts",
+      "sha256": "172152bc23c992730137683bc4a46928457a442a99cbb59d9a11c1174d1b7acf"
+    },
+    {
+      "file": "src/rename-no-replace.ts",
+      "sha256": "5074a29eb73c76e0aa9e4c09d2fb07797bfb1068b6523a9e2a86f3b325e456b1"
+    },
+    {
+      "file": "src/standalone-host.ts",
+      "sha256": "15309d095e9346376b9d3f15c1d328b8c4a4b785b80976097f0c3e35f07843f4"
+    },
+    {
+      "file": "src/storage-io-fault-probe.ts",
+      "sha256": "43ee52670f17068e6c8c5ab331536b7fef8cf8f4deb20fab4d49370adf3f0851"
+    },
+    {
+      "file": "src/storage-worker.ts",
+      "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+    },
+    {
+      "file": "src/storage.ts",
+      "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+    },
+    {
+      "file": "src/subscription-reads-contracts.ts",
+      "sha256": "fe17efa7af8e728418f39fe85cbb3546ba7027fa1de527058199926e2c542a0f"
+    },
+    {
+      "file": "src/sync-apply-contracts.ts",
+      "sha256": "5cb4b4e9467a501f3e5297910cb720e915a66c1afd3e529347975d8628d9f27c"
+    },
+    {
+      "file": "src/sync-apply.ts",
+      "sha256": "99ce8b4441d939da5a4ad94061fec9b1694d9320c8695555f87968f7055b7679"
+    },
+    {
+      "file": "src/sync-plan.ts",
+      "sha256": "ddf623bfa94fbae7f98f9f3c581d12565a7d9992a896d82f8b3c9c4c37eadf9c"
+    },
+    {
+      "file": "src/trash-lifecycle-contracts.ts",
+      "sha256": "44f621cf50843d423868dffda31eb3b7fc996987b1ad232b06637f39b0303cea"
+    },
+    {
+      "file": "src/trash-lifecycle.ts",
+      "sha256": "a1503c0c76cc830479cf3b2338b5127e51bb65d3f09b8ba92c3bc461b41623b4"
+    },
+    {
+      "file": "src/trash-remove.ts",
+      "sha256": "d3e3fe37d0e71d23435c0b7ac9adb3f3d289b35672027e8903d7fdd07392b19d"
+    },
+    {
+      "file": "src/workspace-backup.ts",
+      "sha256": "367d06b12b067cb5c93977d75d554b8e2504e0e39a92da49e7e095739d746799"
+    },
+    {
+      "file": "tests/batch04-integration.test.mjs",
+      "sha256": "5f8fd1581afee9baee03967308286c29e5ec3363616991eadf5ab057d22bb196"
+    },
+    {
+      "file": "tests/batch06-browser-qualification.py",
+      "sha256": "f1758b0aec7b2143cdc21dbaa9f6929f5dcc5b6ea6990712c0d1d9dfe455c25d"
+    },
+    {
+      "file": "tests/batch06-browser.test.mjs",
+      "sha256": "e0bb5a4539968bb63a6f8e151848b2141e65d8d2d104f71c2c1972cb20bb34cf"
+    },
+    {
+      "file": "tests/batch06-data-integration.test.mjs",
+      "sha256": "d020ddba1bc71b1de7632b44f731a0401cfac2f80714bce45953b2c95e39edc4"
+    },
+    {
+      "file": "tests/batch06-manager-fixtures.mjs",
+      "sha256": "a3aebf8ee4f0ea3692ca46aee274028db3d776a9d0d16ecf46dc5dc5ab7a8d7c"
+    },
+    {
+      "file": "tests/batch06-manager-integration.test.mjs",
+      "sha256": "586d0e2167df06ef1f4a7019d30fbd02f736b705225d2205a3e21ea9193ce13b"
+    },
+    {
+      "file": "tests/batch06-manager-mcp-child.mjs",
+      "sha256": "af992e22946b07385a45119f888e8827174244836862d0a2625aff88739d534a"
+    },
+    {
+      "file": "tests/batch06-process-integration.test.mjs",
+      "sha256": "f4077e29b7fab57a6ced197a6aa11badf9a6bcad5de2f035ff59ea12086928ad"
+    },
+    {
+      "file": "tests/batch07-cli-fixtures.mjs",
+      "sha256": "83bcbf36342469a4f65b120b946fab64e513f7033498c30c0657aadac826dabe"
+    },
+    {
+      "file": "tests/batch07-cli.test.mjs",
+      "sha256": "9d988afac6574dc8716501151932b8ddb4e22197a990fe01831677fdb9fdc2d0"
+    },
+    {
+      "file": "tests/batch07-human-browser.py",
+      "sha256": "fb5518f5495014e81596901124e04d44d2e7dfe72af1963280ecd4736176f1a6"
+    },
+    {
+      "file": "tests/batch07-human-browser.test.mjs",
+      "sha256": "184336b944d17e981ed03848a705942bf71bb05792a3cb08fdbdd5265e54e85b"
+    },
+    {
+      "file": "tests/batch07-manager-cli.test.mjs",
+      "sha256": "b62cc4e39e1a5860e4d3b6fc5e0fd3995a3e56f055c3fd47ce723d4e7d5a3360"
+    },
+    {
+      "file": "tests/batch07-native-services.test.mjs",
+      "sha256": "c0601f1ed122512bc4f332491b645ed2f89c962357b2f70cbb928583da4d8cad"
+    },
+    {
+      "file": "tests/batch08-browser-workflows.py",
+      "sha256": "43ef708fc5d49da7450855d516ecd340def73904b6cda898c6244c454e488329"
+    },
+    {
+      "file": "tests/batch08-browser-workflows.test.mjs",
+      "sha256": "a5fc995f0098fa5f3aa7900d24b30d6fd9a61baba4a514383c01c1e95129accf"
+    },
+    {
+      "file": "tests/batch08-channel-native.test.mjs",
+      "sha256": "142d94b0f8b8428895cae97196bbbf90411a1bf176414d43dfd84607717e3266"
+    },
+    {
+      "file": "tests/batch08-coding-cli.test.mjs",
+      "sha256": "1339ca21c25574aee52e783070529e825a1d7124e6888a314709c7c16116bb68"
+    },
+    {
+      "file": "tests/batch08-remote-runtime.test.mjs",
+      "sha256": "445d0f71ea3d99b5095c9c964c207885985a51dd7bb7fe7d0b54273f86933678"
+    },
+    {
+      "file": "tests/batch09-client-browser.py",
+      "sha256": "7a973c70d3c1b67fd3de305f36fd70180055c90c734dfc8e5d3a53e0cf3bbcf1"
+    },
+    {
+      "file": "tests/batch09-client-browser.test.mjs",
+      "sha256": "8d3b61b4a26012785a072e67637d08bb3093f81ea0365a2ca6fbb5c027fd3c2c"
+    },
+    {
+      "file": "tests/batch09-client-vscode.test.mjs",
+      "sha256": "412dfb294864f6683caa65335d1aa8f168fd039f5062d4154e057ccd04b771ae"
+    },
+    {
+      "file": "tests/batch09-native-bundles-mcp-child.mjs",
+      "sha256": "41a2068b4f84bf67be5feb1f54beea73e25bf93634cbbcfda9bd264486032623"
+    },
+    {
+      "file": "tests/batch09-native-bundles.test.mjs",
+      "sha256": "8dda8367912a0fccdc2633cb3f9a33c611d1b27eff34f8db418e4c239e3e552b"
+    },
+    {
+      "file": "tests/batch09-native-controls.test.mjs",
+      "sha256": "4828b22f00c60088fe26b48fd41d0fdf08c7de06b9d0399fc746490caaa85fb1"
+    },
+    {
+      "file": "tests/batch09-original-control-fixtures.mjs",
+      "sha256": "177a981b55a517ff849da03a8b7ee23557d7a731600a4e4f79960fa3b09de1f9"
+    },
+    {
+      "file": "tests/batch09-original-control-import.test.mjs",
+      "sha256": "5581bd2c5900ce8d2f5caf45fdd07a7153c43b23351ecdc462b142a9e9672d20"
+    },
+    {
+      "file": "tests/batch10-native-commands.test.mjs",
+      "sha256": "2b0d705a430ee26cc952b9ddb180b5ca293603ee83c79476f06dd104128805b3"
+    },
+    {
+      "file": "tests/batch10-native-portal.test.mjs",
+      "sha256": "8d22b80caf7af58542fd5761c48bec139ccc42388a2697d6152df93280b28c81"
+    },
+    {
+      "file": "tests/batch11-native-trash-import.test.mjs",
+      "sha256": "29461291c6954e19656cd63fbddd68996f40ded7c81a2e69e8e57e71cab468e6"
+    },
+    {
+      "file": "tests/channel-runtime.test.mjs",
+      "sha256": "c1024ae622578a6fd3ecb59f81bd53e63b3db5706cacb284ab99cc8c36f49791"
+    },
+    {
+      "file": "tests/client-manager-workflow.test.mjs",
+      "sha256": "450816fa80c16e988ab606ed2fed46f86a7e00d4e9a3f651548294e4c868c5ba"
+    },
+    {
+      "file": "tests/compute-knowledge-index.test.mjs",
+      "sha256": "58c4f5f89c6e8925cfc1613fac535538912b5874da9786bf9e95298a24bc3c3d"
+    },
+    {
+      "file": "tests/folder-lifecycle.test.mjs",
+      "sha256": "e32cf9c0b6f8f645a5bef1b773d1f10122ed81d1e4fc99197f2ad7726cceb2e1"
+    },
+    {
+      "file": "tests/host-composition-legacy-batch15-backup.test.mjs",
+      "sha256": "c65250346f31edc046371c8aef9e239670cc35c51766f698d2f35cfbe0a6362c"
+    },
+    {
+      "file": "tests/host-composition-legacy-batch15-captures.mjs",
+      "sha256": "b6f0825339ce6cfa0aa366d8c612e13ae81a0760fcbb2802b09b2078b944e042"
+    },
+    {
+      "file": "tests/host-composition-legacy-batch15-transport.test.mjs",
+      "sha256": "8ae42dcc9d9160911a8f14251f2ce65df38e62e979e4995a857653f2fa955d51"
+    },
+    {
+      "file": "tests/host-composition-legacy-batch16-backup-fence.test.mjs",
+      "sha256": "12be37ced3fbaceab35c26d39d994d183b98cedbf24cb6004572e53a7f81baa6"
+    },
+    {
+      "file": "tests/host-composition-legacy-batch16-classification.test.mjs",
+      "sha256": "cac5f4695595be4e82b3c8b404b8a5e51fc2f0d9131d5fde4af1b67ff2dd93d2"
+    },
+    {
+      "file": "tests/host-composition-legacy-batch16-memory.test.mjs",
+      "sha256": "1138bbd69f218522a4b63714f5e809539808e08c7dab1c534572888a3f39499c"
+    },
+    {
+      "file": "tests/host-composition-legacy-batch16-restore-fixture.mjs",
+      "sha256": "e9744345a959d4389e1912348e2c59bd9da5f31fe62a8265db84efa26ade87c0"
+    },
+    {
+      "file": "tests/host-composition-legacy-recipe-trash.test.mjs",
+      "sha256": "ed9d1faa1f26d9bfaf17002a7b27eb0763f772d4adcac233bbeb32473fdac9d8"
+    },
+    {
+      "file": "tests/host-composition-legacy-shared-backup.test.mjs",
+      "sha256": "af49291dd9d7debad0ee6478cf23b1a00ce37f6635381ac4b3243ce8763859dc"
+    },
+    {
+      "file": "tests/host-composition-legacy-shared-captures.mjs",
+      "sha256": "de925470db040b299dabdee6542b78a58f8b5fb6365ac49f46eceb61b43fc2f2"
+    },
+    {
+      "file": "tests/host-composition-legacy-shared-transport.test.mjs",
+      "sha256": "a799a785eb9beaf010cf948eb261a8e5182ae093861855f4196a34ac93dc6360"
+    },
+    {
+      "file": "tests/host-composition-legacy-skill-source-backup.test.mjs",
+      "sha256": "d63102426d74ffcb3f39d69f4b4f2c336f79961c6b8ca3e9134d9a3763c12979"
+    },
+    {
+      "file": "tests/host-composition-legacy-skill-source-transport.test.mjs",
+      "sha256": "e4be52569bc03ea75620fb935487549b523e1da4d301d78176a7c7df6a327776"
+    },
+    {
+      "file": "tests/host-composition-legacy-state.test.mjs",
+      "sha256": "9d229d5dd21bc57e99892dd49afabdbed04235324297123e7beb18ca67d999a4"
+    },
+    {
+      "file": "tests/import-parity-project.test.mjs",
+      "sha256": "91cb094b787c6aafad9f0f1ac91617a8097d95d5334003542a45cbd33b6305ef"
+    },
+    {
+      "file": "tests/import-parity.test.mjs",
+      "sha256": "c64ab27d890a7b2397a4c1e241cd7a8c6e7ed431840135da05a1466178081a0d"
+    },
+    {
+      "file": "tests/knowledge-mutations.test.mjs",
+      "sha256": "97472fcd36dbb1e3594c294f23c079210c9cebfaf9fdd3ae46bc8d8a9be951e3"
+    },
+    {
+      "file": "tests/legacy-action-artifact-snapshot-coexistence.test.mjs",
+      "sha256": "32506ee17481aa255cb7f8d54949204e390a14cc7557fda0fa0778db2e695705"
+    },
+    {
+      "file": "tests/legacy-action-artifacts-mcp.test.mjs",
+      "sha256": "685f6a3bd31189dbcc181732994cedd050c777f89166222cf42889610932c86b"
+    },
+    {
+      "file": "tests/legacy-action-artifacts.test.mjs",
+      "sha256": "aa2efc1f6320000dafdaf335e38cc0875d91fa10b73c8588d9faa53c8a92dce1"
+    },
+    {
+      "file": "tests/legacy-action-catalog-fixture.mjs",
+      "sha256": "d3b77af55b157dccdda3531b65a8f4521cb613d03f5672d5fb5e583279b80514"
+    },
+    {
+      "file": "tests/legacy-action-catalog.test.mjs",
+      "sha256": "36c0c672322f58e7ac0b2812a3bce71da01a015d5a51052a1428dfee15ab3d16"
+    },
+    {
+      "file": "tests/legacy-action-get-mcp.test.mjs",
+      "sha256": "ee458ad6c418c40bc885d6f5e8ea1bb58d290cf05cc63cd5f537b11c3c721bdd"
+    },
+    {
+      "file": "tests/legacy-action-mcp.test.mjs",
+      "sha256": "b65ecb7392f57b3fd4ba3dd0f617076bf3a565d20695cf08be83fc8128bd4f69"
+    },
+    {
+      "file": "tests/legacy-agent-read-mcp.test.mjs",
+      "sha256": "c5f32689171ecf70772a4e9d9b6e98d5c9bb1ad6bf76c9e7cf8d82e518e005e4"
+    },
+    {
+      "file": "tests/legacy-asset-provider.test.mjs",
+      "sha256": "23100d8ed3d5eb9825678c0616d47c9edefdbd760f686695ba05051aadff143f"
+    },
+    {
+      "file": "tests/legacy-classification-command.test.mjs",
+      "sha256": "810361bda2a24c6f3811a3f10f7638674e48a2bddc3c74657d5a11b892156a58"
+    },
+    {
+      "file": "tests/legacy-classification-native.test.mjs",
+      "sha256": "07c141ef3ecf51549f165fe469347ba72ab08ab9773bc8fa3855733566bb5e21"
+    },
+    {
+      "file": "tests/legacy-classification-safety.test.mjs",
+      "sha256": "31906420413ea87fce82aa76b4f898436f8a3bde22b0b62491aa60fe1be80247"
+    },
+    {
+      "file": "tests/legacy-command-extension-journal.test.mjs",
+      "sha256": "32bc49fb610deb84cad44d4dc7d8d57874d0c0de2e2f69519de509b6894a68e9"
+    },
+    {
+      "file": "tests/legacy-command-extension-recovery.test.mjs",
+      "sha256": "e5249823a99a4297c1806e8625ec821713333b0315125ca978bb8bbd9bacce7c"
+    },
+    {
+      "file": "tests/legacy-import-cli.test.mjs",
+      "sha256": "e3b0d225d1223117d8d8ac05644020312740b5a98d696f06212b06388691bc30"
+    },
+    {
+      "file": "tests/legacy-import.test.mjs",
+      "sha256": "288fe77db84e205c483ff60ed3724ae31118afee37b30be1a493e9d17bc456bc"
+    },
+    {
+      "file": "tests/legacy-inline-note-backup.test.mjs",
+      "sha256": "8d3f3d6e72936a4cc2c5349fa6e19d38824cc575704350d097142bb36e0a306f"
+    },
+    {
+      "file": "tests/legacy-inline-note-captures.mjs",
+      "sha256": "d9486b9b7daa7743a3b8f2fd7697b56f7f52321f464ed9d1aee8a1ca9d1652a9"
+    },
+    {
+      "file": "tests/legacy-inline-note-journal.test.mjs",
+      "sha256": "d9ddf7beef1df2af22a818def7c91922d6eb56078792a5da04b506d0331843be"
+    },
+    {
+      "file": "tests/legacy-inline-note-original.test.mjs",
+      "sha256": "9c3d7bcdd684e8aae273fb6ce0cfbd29daa27d51e365689e530723422488a835"
+    },
+    {
+      "file": "tests/legacy-inline-note-policy.test.mjs",
+      "sha256": "4eae21413a9620b4f205ff373ab0163d58874d7564766b06e358a75b0e85bb24"
+    },
+    {
+      "file": "tests/legacy-knowledge-import-writer.test.mjs",
+      "sha256": "ce610d89fa91537a40a67fd348858fdafecbbabffb335f5e10ef8b2bd4853955"
+    },
+    {
+      "file": "tests/legacy-knowledge-mcp.test.mjs",
+      "sha256": "0666805167605950f8adeaab7094e921b04a4be260d393e839ca1615df6936b4"
+    },
+    {
+      "file": "tests/legacy-knowledge-move-mcp.test.mjs",
+      "sha256": "e71ea0ca0c33a62451791e7c3a0a9ff9f4472ed7498298b3753c1433bea070c6"
+    },
+    {
+      "file": "tests/legacy-knowledge-recovery-mcp.test.mjs",
+      "sha256": "6dec143a258e98d105f315fcbbbdef9bbd55b7e274ed95a7f8baf19b65ab88cb"
+    },
+    {
+      "file": "tests/legacy-knowledge-recovery.test.mjs",
+      "sha256": "057cce5c13a989b0041024935e7a5eee15783b2f1f10d8750ae33a86c40fdb9d"
+    },
+    {
+      "file": "tests/legacy-knowledge-snapshot-scheduler-mcp.test.mjs",
+      "sha256": "9de36469adc23c3c1ffad2f3a08ecc96285f0b59a835e3dc0b0430e5bd851465"
+    },
+    {
+      "file": "tests/legacy-knowledge-snapshot-scheduler.test.mjs",
+      "sha256": "dccebe332dd1316b49e598f35fa8ca2783ae70df9cca732feafeaa1a1be80fc4"
+    },
+    {
+      "file": "tests/legacy-knowledge-snapshots-mcp.test.mjs",
+      "sha256": "99620128ad782b088c9fabe1305936a4a84023c8a3c84ed98279eff045d59992"
+    },
+    {
+      "file": "tests/legacy-knowledge-snapshots.test.mjs",
+      "sha256": "0a5ac0b2be1ea0369445e1076b26de9c7282a7d47aed8027e5c9c8d661608e49"
+    },
+    {
+      "file": "tests/legacy-knowledge-trash-mcp.test.mjs",
+      "sha256": "48e781d478b7f4525f19103d6799bcced6188c29ffe3f3416478e177e31e70ff"
+    },
+    {
+      "file": "tests/legacy-knowledge-write-mcp.test.mjs",
+      "sha256": "9ed739ebeb3689d7b31e473db354d40af15057a36c6760237dca52da17005081"
+    },
+    {
+      "file": "tests/legacy-library-import.test.mjs",
+      "sha256": "e01acfe59b6f0075685575c46344e648b6a768d10e62dfd08d4650ae94ad8f68"
+    },
+    {
+      "file": "tests/legacy-managed-fixture.mjs",
+      "sha256": "3e66654766c476f283175a6e04633dc9bc65422e096c4c086f3d9553b760b2f5"
+    },
+    {
+      "file": "tests/legacy-mcp-chat.test.mjs",
+      "sha256": "212ee0f99d5d6e87c5b89b323252d7e31ed9e1037ae29091f002b74b90d6ede7"
+    },
+    {
+      "file": "tests/legacy-mcp-coverage.test.mjs",
+      "sha256": "088ab441c47886faf9b0549bcc810c7c20cd9ad60784cd3e08d2250b7afb4046"
+    },
+    {
+      "file": "tests/legacy-mcp-note-policy.test.mjs",
+      "sha256": "812451c722ce1ad4c3dfa4f8732cd65d2db01e9b9b64cbc160789c4198bcfc10"
+    },
+    {
+      "file": "tests/legacy-memory-engine-backup-paired.test.mjs",
+      "sha256": "9cbb233788a93eb55e95533b8a5d33768412869f50fb0ce2c3a16645e21dead1"
+    },
+    {
+      "file": "tests/legacy-memory-engine-backup.test.mjs",
+      "sha256": "1ddd42d8790a8b5305519f647bd3564af08a0c65b76b8d6290b9a604b90923eb"
+    },
+    {
+      "file": "tests/legacy-memory-erasure-worker.test.mjs",
+      "sha256": "e7bc6b387ea73c82f345d410074afda55123a7576eac8e30c90fbbbfc2133705"
+    },
+    {
+      "file": "tests/legacy-memory-erasure.test.mjs",
+      "sha256": "a15cd1a203191186149fe8ac6dca6585df123b4c799924be276d215e7ad402a4"
+    },
+    {
+      "file": "tests/legacy-native-read-mcp.test.mjs",
+      "sha256": "c21fbdc6a2cdec70291f698533ea02ee046ef372b6279f3e70a9d62ac5136b86"
+    },
+    {
+      "file": "tests/legacy-note-mcp.test.mjs",
+      "sha256": "350ef77548bd842dd7c932361ce80182654bdc452e28111d2acec5caf16c4945"
+    },
+    {
+      "file": "tests/legacy-note-workitems-bridge.test.mjs",
+      "sha256": "607a3f7354bb766fbe5bc3d95f3ab85a0ef08fcba29aca191351b418ed13f0f1"
+    },
+    {
+      "file": "tests/legacy-note-workitems-journal.test.mjs",
+      "sha256": "ecde2b7fd76ddcb24e5b08db6ccf567cffc81f927a3d8a4e902a50d905bbc4fc"
+    },
+    {
+      "file": "tests/legacy-note-workitems-runtime.test.mjs",
+      "sha256": "81b8e9c871fbcc9fde19fa3fbf5e6f105cba4772dcc085529142929510ea7ac4"
+    },
+    {
+      "file": "tests/legacy-note-workitems-schema.test.mjs",
+      "sha256": "7d101d4a7beff17ed8ef864fe67f2a578b28aec22a556afc4b2cfcd0e1d82205"
+    },
+    {
+      "file": "tests/legacy-note-write-mcp.test.mjs",
+      "sha256": "0dacd39c5caf9d4f94635221f59dc7830fc3e17fbcf06626e3dfdf3f74685bf0"
+    },
+    {
+      "file": "tests/legacy-project-envelope-normal-import.test.mjs",
+      "sha256": "6b4433fa3b424c0cfbdc9835ed7831af14e6e4dde225bcb6fa767f93e82d8cc0"
+    },
+    {
+      "file": "tests/legacy-project-envelope.test.mjs",
+      "sha256": "c5442a182ece70a5f5dec20701367d7d10051b585c0c615cb3ff34122992feeb"
+    },
+    {
+      "file": "tests/legacy-project-thread-parity.test.mjs",
+      "sha256": "af08415c4c30acfe1b25db1f3fb365822c19f68e9c3fe3369b244912bd3f64b0"
+    },
+    {
+      "file": "tests/legacy-read-race-hook.mjs",
+      "sha256": "9fa325a9343991682f1d689d73892cefc199bbaf1a2c7163b10c5d72b1bdcb94"
+    },
+    {
+      "file": "tests/legacy-read-race-runner.mjs",
+      "sha256": "585c7e03b0db754836204fffd9e3354008bf6f6b83ad9bf97022f2e831b84c04"
+    },
+    {
+      "file": "tests/legacy-read-race-writer.mjs",
+      "sha256": "60fe8699990b15e1fd917ccbb91a047b8c37893b6caa07374af5b9f886f1f0ec"
+    },
+    {
+      "file": "tests/legacy-read-race.report.json",
+      "sha256": "12e20abeeada0681ef4fc4714d661913d870e97fe969e8c3d154c84c15b7e3c8"
+    },
+    {
+      "file": "tests/legacy-read-race.test.mjs",
+      "sha256": "7272dd1ddf8a05cdf4ab9e51b0e76722245366d797e70937420e6e8288e11dd5"
+    },
+    {
+      "file": "tests/legacy-recipe-read-mcp.test.mjs",
+      "sha256": "8a970d494e519ad7f9f27f2cdc56f1bc0b5f78bdde0d5d704963610556f1204c"
+    },
+    {
+      "file": "tests/legacy-recipe-run-get-mcp.test.mjs",
+      "sha256": "a13ad8b083c499998a1fe72d294c112e7a9f533f8357c41b6c250bc123b89a01"
+    },
+    {
+      "file": "tests/legacy-recipe-trash.test.mjs",
+      "sha256": "ffb10120c5526abce2f8e5ae2e8c1afc7b8b45ddd3be33446daf4819548a767c"
+    },
+    {
+      "file": "tests/legacy-regression-batch12.report.json",
+      "sha256": "063cde84f1101b952cf60a63982839cc59a8e913b72b1ee0deccfe76b270b5e3"
+    },
+    {
+      "file": "tests/legacy-regression-batch12.test.mjs",
+      "sha256": "6d6d90f85ecd830d96f2da0f754a1f3b3884c9500b6e3bc6b3c2a11a4ecdd435"
+    },
+    {
+      "file": "tests/legacy-regression-oracle.report.json",
+      "sha256": "c098416b7c8af9de40039d783724241d53509abb4683c232c3a10b229e4876bb"
+    },
+    {
+      "file": "tests/legacy-regression-oracle.test.mjs",
+      "sha256": "a77daeb8afcfa012d13076c181506e0546ad262d99142982d168877250706bf8"
+    },
+    {
+      "file": "tests/legacy-retrieval-architecture-oracle.py",
+      "sha256": "f6ccdab1541540a0e6dc5bdc399dcd79280687451273d1c27ba27d04a8151ada"
+    },
+    {
+      "file": "tests/legacy-retrieval-frozen-fixture.py",
+      "sha256": "8c6839a4e30d1944dbeeee84cd10f2efad167e8b19203e5f5ec5d3ff8a32672e"
+    },
+    {
+      "file": "tests/legacy-retrieval-history-fixture.py",
+      "sha256": "d2bd1c5dba9de03506609ab37ab9a98a5edda997a81e447c304a71b0d53ab395"
+    },
+    {
+      "file": "tests/legacy-retrieval-history-import.test.mjs",
+      "sha256": "f1fa9c72a37e62f8e81dd2de8c65a36ee480e80a6077219ec286f817dd355b04"
+    },
+    {
+      "file": "tests/legacy-retrieval-index.test.mjs",
+      "sha256": "49b8419b9d009c359963a944d3915f641ea2047aea82ed1566ea296448728118"
+    },
+    {
+      "file": "tests/legacy-retrieval-learning-oracle.py",
+      "sha256": "250af1316e1453d4c2ab79c5f3c0877b00c7d1aca678cb2c0f7d5446980442ff"
+    },
+    {
+      "file": "tests/legacy-retrieval-learning-upgrade.test.mjs",
+      "sha256": "d64e45ca3654a473835a4b229d9c993df31a3a5c4381b4de498f89b353e2264b"
+    },
+    {
+      "file": "tests/legacy-retrieval-learning.test.mjs",
+      "sha256": "66f2dc8ab761bd362f53e7eccd85d04c69ee14c741c4fb9bc746ae3c19cdb30c"
+    },
+    {
+      "file": "tests/legacy-retrieval-mcp.test.mjs",
+      "sha256": "2bd84254847422aaf0da679a54d4b955b16cc3e46f4298eb10e8f7270bb0e22d"
+    },
+    {
+      "file": "tests/legacy-retrieval-model-owner.test.mjs",
+      "sha256": "8793449304105a4f846e3f54541d629b63f315899e9544ddd83a582773cd0b05"
+    },
+    {
+      "file": "tests/legacy-retrieval-model.test.mjs",
+      "sha256": "e699a620f24bbcdf95dd0655046953922dcc4932b7b153403b7205ca98fed45c"
+    },
+    {
+      "file": "tests/legacy-retrieval-no-model-deps.py",
+      "sha256": "328a0c6a4b1b568319d004d25db56399ae16355630d170ce173d6ba0a2223893"
+    },
+    {
+      "file": "tests/legacy-retrieval-subscriptions.test.mjs",
+      "sha256": "b1c6104454d01f44f907c13698a9ca0a7d180c15e94508693ad955439a38e0ad"
+    },
+    {
+      "file": "tests/legacy-retrieval-tiny-model.py",
+      "sha256": "658d7bcac4ae3f3e447faf9aa0ac6a2651c2a28d8c030bbd4ec19e52693b887a"
+    },
+    {
+      "file": "tests/legacy-router-config-mcp.test.mjs",
+      "sha256": "de853af4bf61a283423be3112b1f759c700c96edc85c9569aa06836c62ac82dd"
+    },
+    {
+      "file": "tests/legacy-skill-lifecycle-native.test.mjs",
+      "sha256": "b9246178be876105c79e5ed54cdc5795a84af224a267f0684b91818b44469521"
+    },
+    {
+      "file": "tests/legacy-skill-lifecycle.test.mjs",
+      "sha256": "6f0cc6793ac33a9db146b9c69ba24021c39b1c79186e947bdc883b72114dad10"
+    },
+    {
+      "file": "tests/legacy-skill-maintenance-import.test.mjs",
+      "sha256": "ec93e231e68ad8799f74f48cbe9dcef252f55d6d12ec0ca1c1a18992b36fce5d"
+    },
+    {
+      "file": "tests/legacy-skill-maintenance-mcp.test.mjs",
+      "sha256": "d7078126b05c6a08d347ccf11a4edf4263c3c261cd9e2e8527d4b635100a7715"
+    },
+    {
+      "file": "tests/legacy-skill-maintenance-oracle.mjs",
+      "sha256": "a5e7c18ecf0cc84ae2cf3f975457cf15c1396e4ef9abbb4be6ff80b02f30b7bd"
+    },
+    {
+      "file": "tests/legacy-skill-maintenance.test.mjs",
+      "sha256": "cd32a65c7adacc0b058482f608a484690a9f6687bd4e2c8107d3d7959ef10617"
+    },
+    {
+      "file": "tests/legacy-skill-source-native.test.mjs",
+      "sha256": "02b469a52db6264bb99dd5e2c5e46b1528d9ec45b28210849a8d74e6ec86692a"
+    },
+    {
+      "file": "tests/legacy-skill-source.test.mjs",
+      "sha256": "e6601ac4d0b1136e4cb8a035320399f6f73bf5adb3bd26c1efe3d4075999fa11"
+    },
+    {
+      "file": "tests/legacy-snapshot-restore-captures.mjs",
+      "sha256": "7955dc0cbcf76bccb70ab90e43cd5634f3a7e34c614e20fe837fd628d2b8bd57"
+    },
+    {
+      "file": "tests/legacy-snapshot-restore.test.mjs",
+      "sha256": "0debf6b614047d2d21953536f99358d444ea654a38f4b0e5eacf74c791eade2c"
+    },
+    {
+      "file": "tests/legacy-state-import.test.mjs",
+      "sha256": "fe18bb66058a3fe61be4598df16da82aec3580e9e64f4c2a153baa9f38c49906"
+    },
+    {
+      "file": "tests/legacy-subscription-cache-import.test.mjs",
+      "sha256": "20d2e215bc16f28151fc54212592e6eb735e88dc77aed9ad8a21a850faa70eb6"
+    },
+    {
+      "file": "tests/legacy-subscription-identity-child.mjs",
+      "sha256": "20c5df691a43d62df240f14318304382a70f06c080ac6a43178423dc2d203d9b"
+    },
+    {
+      "file": "tests/legacy-subscription-identity-fixture.mjs",
+      "sha256": "9f2958aee55d7746944b971fcf8bd7092b46e6e87d07d22b01a62c9837aaafce"
+    },
+    {
+      "file": "tests/legacy-subscription-identity.test.mjs",
+      "sha256": "b28412a2dc9d26cc25943bad6518f15057fec72d45e45139f5fec5c365c82295"
+    },
+    {
+      "file": "tests/legacy-todo-board-create-mcp.test.mjs",
+      "sha256": "d3f1cd7f155d9bbc87f4434f29b8a2fa126f1dbe5a1b8c9baefc261e96842d90"
+    },
+    {
+      "file": "tests/legacy-todo-board-create.test.mjs",
+      "sha256": "02480dbfe02820daa88041f9db03fcfcad8bf346bcccc241ad368c6046736cd2"
+    },
+    {
+      "file": "tests/legacy-trash-coexistence.test.mjs",
+      "sha256": "c5fa3f2ba436d7944305830cf299640dd68d537649be2305deb276852f9ddfa2"
+    },
+    {
+      "file": "tests/legacy-trash-import-native.test.mjs",
+      "sha256": "1a0a5feeeddd85c66c2b6dd3356f2259b7f63b96692c80ac362c8cdb796e06c4"
+    },
+    {
+      "file": "tests/managed-memory-migration.test.mjs",
+      "sha256": "1af63e74a22cb20618af21dad93df7ac7387728a4ab30465f41dd65bdd86f87c"
+    },
+    {
+      "file": "tests/managed-migration.test.mjs",
+      "sha256": "f67bd8a49ddb5d03b987e32caa30691b714f9370ccf58ee4d0ce18fbd9ac24ce"
+    },
+    {
+      "file": "tests/managed-snapshot-scheduler.test.mjs",
+      "sha256": "282da577e378ba2eda2ec0c9515dbca71422b852e23a5c81b3791e19ca1944f8"
+    },
+    {
+      "file": "tests/markdown.test.mjs",
+      "sha256": "39cff461b1fac07f5bb763f071b03d51d9c7d23081bae3ac22eddca79284a174"
+    },
+    {
+      "file": "tests/memory-import.test.mjs",
+      "sha256": "dfe44f26d9b951160e6f7a42c1b06db600f0d1bacbc076e8fd9795e9f511a505"
+    },
+    {
+      "file": "tests/memory.test.mjs",
+      "sha256": "90344985612210839fdb9357e31f1f1050f62cd7ce622c41f9cf1cf39660bf8f"
+    },
+    {
+      "file": "tests/migration-preflight.test.mjs",
+      "sha256": "756cf4dd970efe83e0701d5583f390229e33ac6384096e26369d159c956eed68"
+    },
+    {
+      "file": "tests/migration.test.mjs",
+      "sha256": "81a16f3c02ed53ecc9b61867e8133a0b9a783f64ecd65fed68aa9973cfbce037"
+    },
+    {
+      "file": "tests/native-runtime-integration.test.mjs",
+      "sha256": "8fd731de88ef84117175547a86c582232d78cad680b73ad3776ed7760d5b5e4b"
+    },
+    {
+      "file": "tests/portal-lifecycle.test.mjs",
+      "sha256": "d2a33ec77218e58c757cab3a44c2c2024cb59a20ea5b88b82245862a19ef1f35"
+    },
+    {
+      "file": "tests/project-create-recovery.test.mjs",
+      "sha256": "a37d6e9af325f7af30a1b0a768c8d517cf263f32d766d9a2081c0415b7bf232b"
+    },
+    {
+      "file": "tests/project-mutations-fixtures.mjs",
+      "sha256": "6e3596815f2c2d3b9fc8da947abb5150e475a099a37ea8f9e6c905bfa45dfb4e"
+    },
+    {
+      "file": "tests/project-mutations-fixtures.test.mjs",
+      "sha256": "0ad383d73565b459c260bb4d615ebbd76830bac92f3075730f34d485712afcf7"
+    },
+    {
+      "file": "tests/project-mutations.test.mjs",
+      "sha256": "2cd31e8430bef9dbc7fae280720d9611b5f25324114990edce68fa70250e1394"
+    },
+    {
+      "file": "tests/project-recipes.test.mjs",
+      "sha256": "f91575800147d2a209c2beee4faed991a80b12b98dafa1528a6c3203f09634a2"
+    },
+    {
+      "file": "tests/provenance-readonly.test.mjs",
+      "sha256": "5b5cf09ff66ea961a5b3bd0345a064ba3c4e74dd5e09646c2b0cb31c726a22ed"
+    },
+    {
+      "file": "tests/readiness-fixtures.mjs",
+      "sha256": "7fc510257d6902e1d99f028aef23d22c72b01f022c21e56d8c2db25bc48cdbca"
+    },
+    {
+      "file": "tests/readiness.test.mjs",
+      "sha256": "545d7c6c90db5afe854eb1937a1b0123eb93646dde5bda1c338333e7dc773004"
+    },
+    {
+      "file": "tests/rename-no-replace.test.mjs",
+      "sha256": "c005daf9f7978d929970bf5c06474278d552e6098d95dc5bc0d49cc733101abe"
+    },
+    {
+      "file": "tests/server.test.mjs",
+      "sha256": "4c485629dfffed05e3b242e59f3945f28e9d8657784b56664a2dd7626782dff6"
+    },
+    {
+      "file": "tests/storage-io-fault-baseline.mjs",
+      "sha256": "8970fc54a3c1b5ebfc25fa762f76a1aaa6777daae070b55db604a65ec6983266"
+    },
+    {
+      "file": "tests/storage-io-fault-cases.mjs",
+      "sha256": "5ab70502bdf546e60359a9c3392ad2400acfb2de84d4d80c0526e26c2635a4bf"
+    },
+    {
+      "file": "tests/storage-io-fault-child.mjs",
+      "sha256": "bfd660dcdf549fa7e12a381c2ebab765aae9715f1200cc62fdeb04db902809f2"
+    },
+    {
+      "file": "tests/storage-io-fault-observations.mjs",
+      "sha256": "6ae20fb985b2f35aab6f029b1d1f8518d808a57bd5108ee50d96a8668c3d7cf2"
+    },
+    {
+      "file": "tests/storage-io-fault-report.mjs",
+      "sha256": "4924496694819cbd77f3920dc2542a5cdc92f81d5baefdaa2f68c13f6e7765d5"
+    },
+    {
+      "file": "tests/storage-io-fault.test.mjs",
+      "sha256": "d5a0c9a1ed73f1584201c9c355ac3d7e43ab21c4b91232ea6239303706e188f8"
+    },
+    {
+      "file": "tests/subscription-reads.test.mjs",
+      "sha256": "78b4be54850872c701af43a5bb905cb80e351e11e43484bbb14a26168e303ca5"
+    },
+    {
+      "file": "tests/subscription-transport-fixtures.mjs",
+      "sha256": "bf88a0179b0ddb29cec6037a39f324ab78b1f49730a147f6e7cd2455d0a023c8"
+    },
+    {
+      "file": "tests/sync-privacy-transition.test.mjs",
+      "sha256": "6802a129a07f4c90d5b73ed7dc7d0dc66754400df683700193530d303f045ce2"
+    },
+    {
+      "file": "tests/sync-transport-fixture.mjs",
+      "sha256": "f034ba4794727f07b1b1934c313b9c6147588639ebbe73f67f42d4b695aa99df"
+    },
+    {
+      "file": "tests/trash-lifecycle.test.mjs",
+      "sha256": "e6aa95847d269b447b23fb1d77b7e176c5aa4c072ff583f122560b11f1f131fc"
+    },
+    {
+      "file": "tests/trash-remove.test.mjs",
+      "sha256": "340ad0d4ee76474c5a2301dcc95db53b73e713409f68c02f86f392cf871cfc19"
+    },
+    {
+      "file": "tests/uploads.test.mjs",
+      "sha256": "6f39a5996db980031a8a6624081c8df4bf1953edcf5c2cecece3860c5506b3f7"
+    },
+    {
+      "file": "tests/workspace-backup.test.mjs",
+      "sha256": "3307ceebab9f8c72b4372e1c68eede5644ba2684b281a1781cb00a5c8c8f6e84"
+    }
+  ],
+  "historicalQualificationRuns": [
+    {
+      "batch": 18,
+      "status": "superseded-test-freeze",
+      "reason": "Parent Batch18 full run subsequently failed only the stale9 knowledge-index transformed provenance count assertion (1311 server passes,1 failure,1312 total; clients not run). The ninth active native worker mapping had intentionally been reclassified to native-only evidence with original hash/history retained, leaving8 valid transformed original/native reuse reference mappings. Same owner fixes the tightly coupled assertion and independently verifies source/reference/native/history scope before new IO execution.",
+      "command": "cd next-server && PKM_STORAGE_IO_FAULT_SAVE=1 PKM_STORAGE_IO_FAULT_REPEAT=1 node --test-concurrency=4 --test tests/storage-io-fault.test.mjs",
+      "sourceFingerprint": "65fa6cde5bc2f9f709bf689d7ccef5f1b645698155f0f1028b63cd3e54a6ac74",
+      "nativeSourceDigest": "42bd82b50919acd0ad022d3f1bfbba3d79c54a5e11d0527c3fb5ebe841bcf1b9",
+      "runs": 2,
+      "casesPerRun": 28,
+      "recognizedRecoveriesPerRun": 24,
+      "tamperDenialsPerRun": 4,
+      "blockedCasesPerRun": 0,
+      "zeroFilesystemReceiptRetriesPerRun": 48,
+      "reportSha256": "68a61954d7ff753234127cbe081265d5e591d0944e2a6158d4ad30ffcba0d716",
+      "observationsSha256": "cd560374258fea058c9c35c1d2335a92e421706bba49431b7e7d522f2d7f7e7d",
+      "plainNoSavePassedCases": 28,
+      "plainNoSaveUnchangedCoveredFiles": 936,
+      "fullFailureLog": "batch18-full-verification.log",
+      "fullBaseline": null,
+      "scope": "Historical actual Document/Upload/Resource/Project injection evidence under the pre-test-fix fingerprint, not current qualification or engine-fault/full acceptance. Parent red log and historical schemas15/16 reds preserved."
+    },
+    {
+      "batch": 18,
+      "status": "superseded-source-freeze",
+      "reason": "Independent audit found a same-inode engine-content startup validation gap after this I/O run; the same implementation owner is fixing it. These observed counts are retained as history, not current qualification.",
+      "command": "cd next-server && PKM_STORAGE_IO_FAULT_SAVE=1 PKM_STORAGE_IO_FAULT_REPEAT=1 node --test-concurrency=4 --test tests/storage-io-fault.test.mjs",
+      "sourceFingerprint": "fa29b90db66943ff97512c957ca5d11baa5196c19a5fb187498435612843eba4",
+      "nativeSourceDigest": "0daab90eaa6d38272087debbcf5ba8cc807a61b1c477c988d7f4108cde0aa61f",
+      "runs": 2,
+      "casesPerRun": 28,
+      "recognizedRecoveriesPerRun": 24,
+      "tamperDenialsPerRun": 4,
+      "blockedCasesPerRun": 0,
+      "zeroFilesystemReceiptRetriesPerRun": 48,
+      "reportSha256": "0b151447cdd368b5b65cd4938377535d9490f88a55b00bea7b4652a430276fd3",
+      "observationsSha256": "aa1887b9af0f000dc7ca096a722628eb17150dfdb11cf74f528df402487d84cf",
+      "plainNoSaveCommand": "cd next-server && node --test-concurrency=4 --test tests/storage-io-fault.test.mjs",
+      "plainNoSavePassedCases": 28,
+      "plainNoSaveUnchangedCoveredFiles": 936,
+      "scope": "Injected Document/Upload/Resource/Project faults only; not engine faults, physical power loss, production SLO or full acceptance."
+    }
+  ],
+  "supersededPinHistory": [
+    {
+      "file": "tests/compute-knowledge-index.test.mjs",
+      "previousSha256": "d3a0175826aa4a6ae849ef480434f7c33eb89fc0f76a4fcfb4be64e48bf5dec5",
+      "currentSha256": "15860c2d29c95d267b5d13bb282f427f2e00385a41301b51356ac802ab05136e",
+      "reason": "Same-owner tightly coupled provenance8-pair exact original/native-reference/history/current-nativepin assertion update; independently build/46 tests passed. Parent red full log retained; no fake ninth capture, implementation changes or acceptance."
+    },
+    {
+      "file": "src/legacy-memory-erasure-worker.ts",
+      "previousSha256": "5d4b05680e81c18eac13b0040c7d1c215ff15cb194a5545be3b622f280bd8442",
+      "currentSha256": "dc6b0ce53570b3ed4465a9afc5255731d6f178c51fbfa6a5d4a31cf028231cec",
+      "reason": "Batch18 paired memory-engine backup/restore integration; prior hash retained while current qualified bytes are pinned above."
+    },
+    {
+      "file": "src/legacy-memory-erasure.ts",
+      "previousSha256": "1fddeb04fb206ff083f5153628ba106b2ecac81dcc27fe366f1b56b48535051c",
+      "currentSha256": "2aeee3c317f5fe682aea15b46e2b75ec24010d86a6b323541e3e1be8b9698e82",
+      "reason": "Batch18 paired memory-engine backup/restore integration; prior hash retained while current qualified bytes are pinned above."
+    },
+    {
+      "file": "src/native-runtime.ts",
+      "previousSha256": "867e7190501cc39ee4a9a5132918151b80668a159249d814951175aca5cd458e",
+      "currentSha256": "e7b2193210844e6f9bc2f2dd8456db486b0882f9b5e9296fc3347af6a72f441d",
+      "reason": "Batch18 paired memory-engine backup/restore integration; prior hash retained while current qualified bytes are pinned above."
+    },
+    {
+      "file": "src/storage.ts",
+      "previousSha256": "79b48fa6cbc76b3e069cbee99f7fb0d523323d19520a593c3c537fa2136e002b",
+      "currentSha256": "4d758937fa20b0e6a1654bf69c846bda9fde8a1fb7094d848bea5fcf96eee0cf",
+      "priorReferences": [
+        "native-qualification.native",
+        "legacy-command-extension-provenance.reuse",
+        "channel-runtime-provenance.nextServerEvidence"
+      ],
+      "reason": "Batch18 paired memory-engine backup/restore integration; prior hash retained while current qualified bytes are pinned above."
+    },
+    {
+      "file": "src/workspace-backup.ts",
+      "previousSha256": "b75a1b70bc031e2d54ab03b97bf104c2d65cd093ecdab9e66f69c79cdcd5df9b",
+      "currentSha256": "a877091e23143c84ef3e4b2cf7318bfcc12367674598cdd4897a765d370c76c2",
+      "reason": "Batch18 paired memory-engine backup/restore integration; prior hash retained while current qualified bytes are pinned above."
+    },
+    {
+      "file": "scripts/migration.mjs",
+      "previousSha256": "cf0c0e4ef7b1d62aba6927477a247941f81900ba1c8d5575504d18e1f4ca00e0",
+      "currentSha256": "bfa67bb68297e61c460522df92f9003e9371d2e191de97906b93d45c46305653",
+      "reason": "Batch18 migration report summary now includes the bounded paired-engine scope."
+    },
+    {
+      "file": "tests/storage-io-fault-baseline.mjs",
+      "previousSha256": "c37e388d487b2fb4706684c0528b3bfd157e84869d1e1028ed8cbf35dac73a8c",
+      "currentSha256": "c7b62c5819548ae2c7339ad6c35047f4611e6dda1214aa72dea8b074dc1c843b",
+      "reason": "Authorized Batch18 currentFunctionalRegression observation only; historical schema15/16 records and fullBaseline null remain unchanged."
+    },
+    {
+      "file": "tests/legacy-regression-oracle.report.json",
+      "previousSha256": "c1d1e8e927060d9b87957473a4fd137faa4a18e17dbf8c8493d38fdfd3d67a55",
+      "currentSha256": "27e60ac25adc092f08e00d677fcbad22a1c198e9090e02d17d26e1378efaccae",
+      "reason": "Source-bound oracle fixed point regenerated in ordered sequence and verified byte-identically under two concurrent four-worker runs."
+    },
+    {
+      "file": "tests/legacy-regression-batch12.report.json",
+      "previousSha256": "cb7c7b957852aad21eac11c621ec5e4e86b9f99189639e06b095cb87b0d27540",
+      "currentSha256": "464fb1eda9a1f7cb2f4d01ba9142fe8180bb138837e1f6ee821ea9f4fcec90fa",
+      "reason": "Source-bound Batch12 report fixed point regenerated in ordered sequence and verified byte-identically under two concurrent four-worker runs."
+    },
+    {
+      "file": "tests/legacy-read-race.report.json",
+      "previousSha256": "08ab802cbb267dcaf2e5c9acfd7418f58c43a4643a141f56b123c8d1662e58e7",
+      "currentSha256": "5bb729541456ae29fbf776c0e8f5c57faeb4209f0062509f01473e222e6d8949",
+      "reason": "Source-bound read-race report fixed point regenerated in ordered sequence and verified byte-identically under two concurrent four-worker runs with dependencies pinned."
+    },
+    {
+      "file": "scripts/capture-native-qualification.mjs",
+      "previousSha256": "d3a2b09cf026b9f9b778e58ad44a468022b660499f57846f19c4eb6fc639f007",
+      "currentSha256": "419f9fbf23b8ee06da4eccbe127c00a176c1c0e3da2bcebd499b8adb954e8999",
+      "reason": "Native refresh includes the new paired engine files and preserves reviewed qualification claims and history instead of overwriting them with Batch17 wording."
+    },
+    {
+      "file": "src/legacy-memory-engine-backup-paired.ts",
+      "previousSha256": "76efe435578a3520da88763e7ec22206309e5bae6467af03fe601b70c95cb0d2",
+      "currentSha256": "321e96cb4682b5c68ace44a549e50e533a1b15365a6269880c611c509f69e947",
+      "reason": "Same-owner root fix for independently discovered same-inode engine-content startup gap; actual pipeline requalified 88/88."
+    },
+    {
+      "file": "src/legacy-memory-erasure-worker.ts",
+      "previousSha256": "dc6b0ce53570b3ed4465a9afc5255731d6f178c51fbfa6a5d4a31cf028231cec",
+      "currentSha256": "e0a79b952c0e7b2b846f2188ee9edbc160777773326156a12255166c6559d8aa",
+      "reason": "Serialized native-owned dispatch and successful effect/safe-close seal lifecycle preserve legitimate changes and fence unknown outcomes."
+    },
+    {
+      "file": "tests/legacy-memory-engine-backup-paired.test.mjs",
+      "previousSha256": "a6646b7584cc421935ff6b94e8df836eb17323a4a41f2909f6a10010b4f0a617",
+      "currentSha256": "66c4e3de21bb621a70210f1361195ef3f189cd07cf100c031015ca4ee9a2fdc8",
+      "reason": "Two added actual-pipeline tamper and denied-native-seal cases; original86 retained, combined88/88 independently passed."
+    },
+    {
+      "file": "migration/readiness-contract.json",
+      "previousSha256": "f5d89cfa714083d11b464bdb674e84a6ee9385f38d7981ede538b6bce0028bd4",
+      "currentSha256": "14a67ea132744441453c8d01857e2e1556709e599e863d123fc374da165ef2d2",
+      "reason": "Informational Batch16 limit wording now acknowledges only Batch18's native-controlled paired single-workspace layout and independently durable content-seal requirement; no schema, contracts, evidence gates, authorities or acceptance changed."
+    },
+    {
+      "file": "scripts/capture-native-qualification.mjs",
+      "previousSha256": "845eca0ff11d14b8071c8f08fe01b3a9674950f216a00d345011091be991fa3b",
+      "currentSha256": "a8ba5d343ea2ecf12953f62f07231374c1869e10902b45257b30d69aa052bb23",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "scripts/migration.mjs",
+      "previousSha256": "394ba920f43911b3bb5e2ba43eaad0887866b24216b543a264fb433f029fdb97",
+      "currentSha256": "dd2eaa96c99351045c9c4dc53b64c36d56388b9010dbec4d454793b4d7f5304b",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "src/core.ts",
+      "previousSha256": "509cc5bc98ed91d2b5b9a6f0e4cde055ed8a09d95bce31380cfd60cca6cfe4c0",
+      "currentSha256": "c57aa0f0c208aff0f417609763c81b7e6f687a3a7615297db08d74da44798390",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "src/host-composition-legacy-batch15-contracts.ts",
+      "previousSha256": "4a2fd0205de3c73818ebb9d299ec92cb5aaf9076a9648fc178eeb3964607adf9",
+      "currentSha256": "c0487f8fed5a3fc72e7829f0594936125de00c4e631dcc6b491e68c62ccbf845",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "src/host-composition-legacy-batch15-skill.ts",
+      "previousSha256": "c3bb2563b472481c374486df1c21bd336af79de53231e84e6c0bc3133001efdc",
+      "currentSha256": "7d97c9b75bf7bdcd4be19d2ed60d898b76b1c1d0017502b92c6625fafa179420",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "src/host-composition-legacy-snapshot-restore.ts",
+      "previousSha256": "fcec07908e828d2e9f013685c1463a20c39b9b444c066bfeed8dedc91599aef8",
+      "currentSha256": "bc3e04a321d2b48c0a00e300b3f826d03dc98fcc5134f05ef0689380c45c6192",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "src/legacy-memory-engine-backup-paired.ts",
+      "previousSha256": "b82472110c76e56492a90629b2ef0f3a2ad80809a0fed776d7bc7a6c373e45c4",
+      "currentSha256": "2d176a5f03be8724bd8d9c8c08477b8b98223f835503e3d1cfd7f846ea9f6a44",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "src/legacy-memory-erasure.ts",
+      "previousSha256": "4206943503e7190b497834f46dc156b2a56c5c48b1b2d6eb279ae1814585d473",
+      "currentSha256": "92b54ea579cbd976797906f8a2707b6166f699165a25772ccec553c77e85e3c7",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "src/legacy-skill-lifecycle-native.ts",
+      "previousSha256": "8783c6ab7f36c9c7194d8f21e6631307a25c1c5f5fbf22602127ce11bf672c88",
+      "currentSha256": "6683c6a652fd3297fdd6a03a770af1635ef2e2dfc52661fb0a170d25103819ab",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "src/legacy-skill-lifecycle.ts",
+      "previousSha256": "c2d56dee8657dbd41c07260611f45b118678fc7e49c82acb42f21b16cfddb302",
+      "currentSha256": "d41496c5ce972dfad9e1e5b5bea7452ca60b4bf407ca5c1ca987b94f12651ef5",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "src/native-runtime.ts",
+      "previousSha256": "490e0f0978344272e1ca5ffc5e7ad91b7675d0736abda85d02b1fca64a4d65ea",
+      "currentSha256": "aac8550772372e6fd3fe3a8b55844e91dc152842ac5fecd859ede87bf8d7121e",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "src/standalone-host.ts",
+      "previousSha256": "b02210934e9d552919eef4c48f6fd82f95294ef37193e3de0facf2bb1fa5dcfe",
+      "currentSha256": "15309d095e9346376b9d3f15c1d328b8c4a4b785b80976097f0c3e35f07843f4",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "src/storage-worker.ts",
+      "previousSha256": "6bbd3797d7a6a7eeb2af17b7cffe1568abe929dde56ba37fbf5dfef2fc63d681",
+      "currentSha256": "8001657ced72d732d96985f04ba49e505a09b692be6cbcfba5276b6edcf8a251",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "src/storage.ts",
+      "previousSha256": "072cdb25b43ce2e34717be13b2541d43fb5c1955697bff29d23c03bb6a876019",
+      "currentSha256": "aaa590a51d1dcb17110ef6bbdc7e105c568418de5dbad6053790d707f7da55c3",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "src/workspace-backup.ts",
+      "previousSha256": "1efef0e80b8b13a536a78bbd9d76445c2ec04ed16332bf2728f2350e156cc0b7",
+      "currentSha256": "51cf06ed09de4e31714a19e7183d26011fa032342bfb9f7dc6d21123520f76b9",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "tests/batch04-integration.test.mjs",
+      "previousSha256": "7619bc41fd8673bec152249f2da899f9b5d4b5d711162ebbc6c1f03f3d1a9fe0",
+      "currentSha256": "5f8fd1581afee9baee03967308286c29e5ec3363616991eadf5ab057d22bb196",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "tests/batch06-data-integration.test.mjs",
+      "previousSha256": "d0a3fd9acfad52f452f6cc1b909e020a51db9c12664d1e04a859c98afb2a5380",
+      "currentSha256": "d020ddba1bc71b1de7632b44f731a0401cfac2f80714bce45953b2c95e39edc4",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "tests/batch09-native-controls.test.mjs",
+      "previousSha256": "9db041177d31be4d0744ae21577eefc6690c9b080ab429529a183ed4d926d38c",
+      "currentSha256": "4828b22f00c60088fe26b48fd41d0fdf08c7de06b9d0399fc746490caaa85fb1",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "tests/batch10-native-portal.test.mjs",
+      "previousSha256": "df118a7b5dcff2f794a1eb421b7db75050578146c62ca3ee564c2be72942f0d9",
+      "currentSha256": "a41daaa0123fc2935515f5fccf6dd2c267a3191e045019c0e124332f3ce7e3fa",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "tests/batch11-native-trash-import.test.mjs",
+      "previousSha256": "c2d63b8556412198839046efba52389ccbc92fee52cb3973ff16642ce464aec6",
+      "currentSha256": "c66060ba2223a3a3c81f99609034ba879245e10240607cf3d3476561a16df5a8",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "tests/host-composition-legacy-batch15-backup.test.mjs",
+      "previousSha256": "abf42eb9df39c8aad99736490864749c7dccd7ba676dbc3551a6e84b49808688",
+      "currentSha256": "c65250346f31edc046371c8aef9e239670cc35c51766f698d2f35cfbe0a6362c",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "tests/host-composition-legacy-batch16-classification.test.mjs",
+      "previousSha256": "9c912cf202a69a0d62685bb51fcece3fb725eb8fe2d7106a55f960b5cd929ea0",
+      "currentSha256": "cac5f4695595be4e82b3c8b404b8a5e51fc2f0d9131d5fde4af1b67ff2dd93d2",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "tests/host-composition-legacy-recipe-trash.test.mjs",
+      "previousSha256": "72a38eb13c4f2005da5b33712e1712f3bebbb9beec9a0c80c2a6dd3556503efb",
+      "currentSha256": "ed9d1faa1f26d9bfaf17002a7b27eb0763f772d4adcac233bbeb32473fdac9d8",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "tests/host-composition-legacy-shared-backup.test.mjs",
+      "previousSha256": "582afb5a90237285753c0d51cebc97d93de55c581597845b826f737ee83f1957",
+      "currentSha256": "c06462cb2a44ce7103f6e497ecd522de46ade67401508c75120fb187ce54fba4",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "tests/host-composition-legacy-state.test.mjs",
+      "previousSha256": "c7a7f413e0ecb498f9bebf2e5121177074ce8d844f12af2981f13d0c1dfb32d6",
+      "currentSha256": "d1dda97b6947304f0a44bbc45f24dd73e3e42bfadc8d8cfbb83d31e9ba957a75",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "tests/legacy-classification-command.test.mjs",
+      "previousSha256": "4dc92a85970bd1624bda4f812708bba700c2c0241c6ebf89336ed53370d8de49",
+      "currentSha256": "17f0fad9a1282f579c4222934bdf72b6297b24ddc50cf5fa0fcb517d1c2dc006",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "tests/legacy-memory-erasure.test.mjs",
+      "previousSha256": "2807cf50b98e4d3669e88b2bf4c6b7ec15db4d6f651ce892ca9e282ffa605b68",
+      "currentSha256": "a15cd1a203191186149fe8ac6dca6585df123b4c799924be276d215e7ad402a4",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "tests/legacy-read-race.report.json",
+      "previousSha256": "183b11a385f86295c9285cf3c86421460c8d5125a0afe8356914ea7c654045d7",
+      "currentSha256": "481df4796ed44f92d5eba651e5487d6aa6ab3a8736f99fb2200da57c9b7b355f",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "tests/legacy-regression-batch12.report.json",
+      "previousSha256": "5b3d7265f059a1f00f15ddd9a4421abdbf070d4f5f689acb8afd7e0384f7bf81",
+      "currentSha256": "ee9ebadd21dcf5bd12ea821c3c0fc95d4cfaf7709fabfaf78f61c1fe4849ab98",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "tests/legacy-regression-oracle.report.json",
+      "previousSha256": "8a4c9f478ae4f501f0e067116053e6b78efdf9318dc8da86a03e09e04cbf82be",
+      "currentSha256": "4d04ef3d51486aee58d34d31a9b095fba553cfe96f7003892a9d37defbb49c49",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "tests/markdown.test.mjs",
+      "previousSha256": "e78432a3a06ad8d184ce67de8cb7e07053b7e091d33b7de37581e6953badb118",
+      "currentSha256": "a7712f773ce7112586347add424f393febfa872abff44bb23f8b4c6af81ed81a",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "tests/memory.test.mjs",
+      "previousSha256": "8feed72663f47b81b681a998eb8e5da7ad99ec717bb0eedf60003f58728d1277",
+      "currentSha256": "90344985612210839fdb9357e31f1f1050f62cd7ce622c41f9cf1cf39660bf8f",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "tests/uploads.test.mjs",
+      "previousSha256": "70b1e0234610d7dd2a3722bf1930eca1750c8d9510d44dc6c5e4f60ba260fc81",
+      "currentSha256": "6f39a5996db980031a8a6624081c8df4bf1953edcf5c2cecece3860c5506b3f7",
+      "reason": "Batch20 current frozen source or qualification input; historical qualified native pin retained, current bytes independently requalified before refresh."
+    },
+    {
+      "file": "migration/readiness-contract.json",
+      "previousSha256": "808b8c0a40b97f848d72cf5c201e4dc718461eef64fdb98e7596a9511b2d4bcb",
+      "currentSha256": "06e19739b389ffa5f2346f5feafc34d354fbf79d98d897313366e3a7128bcf37",
+      "reason": "Batch20 current readiness metadata updates the schema23 catalog214 candidate without accepting it; previous native pin retained."
+    },
+    {
+      "file": "tests/readiness.test.mjs",
+      "previousSha256": "6e8c994c42b48cd04eadf2693e8d2808029c04d05100afaf8ff3b2c2b459a91b",
+      "currentSha256": "cc35d9503a99e8e7dc82fbaaa2bff7343f9322d0bb11250e6264416fb02b9177",
+      "reason": "Batch20 refreeze: exact readiness catalog test recognizes the new native-composed writer as an unaccepted candidate; previous pin retained."
+    },
+    {
+      "file": "tests/storage-io-fault-baseline.mjs",
+      "previousSha256": "3e6ae09cf65ece7650d7b339d02022593998c245a684cba830d34f64b89f2e4b",
+      "currentSha256": "d2dac33000abbb7c3132e12ce6bc1985b0617a717e284ced587dc15b5725cac1",
+      "reason": "Batch20 post-I/O: parent-authorized schema23/current functional qualification metadata and actual regenerated I/O outputs; prior native pin retained."
+    },
+    {
+      "file": "tests/storage-io-fault-cases.mjs",
+      "previousSha256": "0dcbba53cd42d9145c6cdc9548607a7a9c6132923f1ca9538f8c4c789ffe372c",
+      "currentSha256": "5ab70502bdf546e60359a9c3392ad2400acfb2de84d4d80c0526e26c2635a4bf",
+      "reason": "Batch20 post-I/O: parent-authorized schema23/current functional qualification metadata and actual regenerated I/O outputs; prior native pin retained."
+    },
+    {
+      "file": "tests/storage-io-fault-observations.mjs",
+      "previousSha256": "5e5564e2df0d5b693d4015408edc8a1d82a15f20ab1d27a64923fac6d0c0de16",
+      "currentSha256": "1eb592ea84262a988b345ddeb8a65692583c2aaf56cab591521affd30561009e",
+      "reason": "Batch20 post-I/O: parent-authorized schema23/current functional qualification metadata and actual regenerated I/O outputs; prior native pin retained."
+    },
+    {
+      "file": "tests/storage-io-fault-report.mjs",
+      "previousSha256": "8810d3f80692dbbc1cd0f7d63b34003702a71f3e2a8a364ba868d5e3eba55fc7",
+      "currentSha256": "899100775636f61affc4950a02f2958168ec39893b6469b018ade9dd27ed3a45",
+      "reason": "Batch20 post-I/O: parent-authorized schema23/current functional qualification metadata and actual regenerated I/O outputs; prior native pin retained."
+    }
+  ]
+}

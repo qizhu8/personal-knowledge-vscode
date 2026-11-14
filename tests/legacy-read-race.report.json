@@ -1,0 +1,222 @@
+{
+  "schema": "pkm.legacy-read-race-qualification/v1",
+  "sourceHashes": {
+    "src/assets.ts": "7d705cae6a8bc92935319c968cb23f20db8d62d14ded955d1fb13d5a44b727f4",
+    "src/contracts.ts": "243be35a870d277f9b9f50160a57605614868e06520a9f457c9d2f54969d0cff",
+    "src/core.ts": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943",
+    "src/domain/knowledge-contracts.ts": "0f4c453b726e70df7c3e8df3e4eb253114d89d4cb88eb8ce3e4f561bf336ab2f",
+    "src/domain/knowledge-index.ts": "b583b87d7633a6a310340403a6cd09b56cc72d53be9e9abbb1a23683c5158314",
+    "src/http.ts": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109",
+    "src/knowledge-snapshot.ts": "b9f7c55bd1181d378c754a792e8abb3f835169f1c18fe827cbfc2752266f5df4",
+    "src/legacy-read-race.ts": "c5c7b959b8ad1f8dfc9b1c8f8fae83a45f267b5db6d42293b07f07f90a89459a",
+    "src/links.ts": "32ec06a7fc645426d34ee5b07e480acbd495fcf6dadc5de7df953ab755781b26",
+    "src/markdown.ts": "281d58af8a4d8c840f3f1e288516f1b51046f067b2bd9b5125ec8527f13a15fd",
+    "src/mcp.ts": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6",
+    "src/metadata.ts": "f74c7c15dc2c9e35e73bb3628a3a37eeee632a75bcec3c013f1f9780b3d7ba1c",
+    "src/note-contracts.ts": "6628055bd64a7e059d68832b45c672e91ef337b773085b9f718b16efe75f95bb",
+    "src/notes.ts": "298a624cd7ce602375405019d4a8b5e4741829f13c7d9ef5def238363f484256",
+    "src/research-contracts.ts": "58c86dec09860752a03c87366926dddee91509542baebc9d4b081af856b1865b",
+    "src/search-contracts.ts": "31ae3e33bf23447ca434edd26c868f38decf4104aaa02553c2d9ea8e547cb9a4",
+    "src/search.ts": "f4ac57bc2a924c00fe78e238139121f1cd5dc64d3ee5daf4b2837e7f1e166b80",
+    "src/skill-contracts.ts": "574a8835fb0684d2b41db74bfc0d6208b70228da465a9b4a3062fc82b6eb5735",
+    "src/skill-routing-contracts.ts": "34c7c7fc32948c55d4a9b153ea1f514cd632f16bf4d17416444baf9fc05e31d4",
+    "src/storage-worker.ts": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b",
+    "src/storage.ts": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6",
+    "tests/legacy-read-race-hook.mjs": "9fa325a9343991682f1d689d73892cefc199bbaf1a2c7163b10c5d72b1bdcb94",
+    "tests/legacy-read-race-runner.mjs": "585c7e03b0db754836204fffd9e3354008bf6f6b83ad9bf97022f2e831b84c04",
+    "tests/legacy-read-race-writer.mjs": "60fe8699990b15e1fd917ccbb91a047b8c37893b6caa07374af5b9f886f1f0ec",
+    "tests/legacy-read-race.test.mjs": "7272dd1ddf8a05cdf4ab9e51b0e76722245366d797e70937420e6e8288e11dd5",
+    "tests/legacy-regression-batch12.test.mjs": "6d6d90f85ecd830d96f2da0f754a1f3b3884c9500b6e3bc6b3c2a11a4ecdd435"
+  },
+  "originalOracle": {
+    "path": "tests/legacy-regression-oracle.report.json",
+    "sha256": "c098416b7c8af9de40039d783724241d53509abb4683c232c3a10b229e4876bb",
+    "priorBatch12Report": {
+      "path": "tests/legacy-regression-batch12.report.json",
+      "sha256": "063cde84f1101b952cf60a63982839cc59a8e913b72b1ee0deccfe76b270b5e3",
+      "totals": {
+        "newCases": 17,
+        "verifiedRows": 16,
+        "unsupportedRows": 1,
+        "mismatchedRows": 0,
+        "assertions": 68
+      }
+    },
+    "originalFile": "tests/test-todo-board.js",
+    "originalTestcase": "competing Board commands across processes have exactly one CAS winner",
+    "originalSourceSha256": "c8f9bbdcad4d9c375b5dc727a9581b433504b24076669104b05e93f7c371df17",
+    "nativeOperations": [
+      "todo.workitem.create",
+      "todo.workitem.list"
+    ],
+    "result": "unsupported",
+    "assertions": 0,
+    "scenario": "The native transport performs a stale-digest conflict check in a single writer process, but cannot execute the original simultaneous multi-process race.",
+    "evidence": [
+      "Only sequential stale-digest behavior ran; simultaneous process race deliberately not claimed."
+    ],
+    "unsupportedReason": "The enforced single-writer lease prevents an HTTP and an MCP server from concurrently opening the same workspace; only sequential stale-CAS behavior was verified.",
+    "originalReadContract": {
+      "originalFile": "tests/test-knowledge-contracts.js",
+      "originalTestcase": "top-level original knowledge identity/revision assertions",
+      "originalSourceSha256": "bf7f6631653c86882373cd94a19009573490410ccbd5c72f1bc2ac98fd4178a8",
+      "nativeOperations": [
+        "knowledge.note.list",
+        "knowledge.note.get"
+      ],
+      "result": "passed",
+      "assertions": 3,
+      "scenario": "An external body edit invalidates the previously issued Note snapshot; conflicting id+path selectors and an escaping path fail with exact INVALID_ARGUMENT errors.",
+      "evidence": [
+        "knowledge.note.list(snapshotRevision=pre-edit) returned CONFLICT after direct external body edit.",
+        "knowledge.note.get({id,path}) and knowledge.note.get({path:'../unsafe.md'}) each returned INVALID_ARGUMENT."
+      ],
+      "unsupportedReason": null,
+      "nativeImplementationSources": [
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/http.ts",
+          "sha256": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109"
+        },
+        {
+          "path": "src/markdown.ts",
+          "sha256": "281d58af8a4d8c840f3f1e288516f1b51046f067b2bd9b5125ec8527f13a15fd"
+        },
+        {
+          "path": "src/mcp.ts",
+          "sha256": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6"
+        },
+        {
+          "path": "src/note-contracts.ts",
+          "sha256": "6628055bd64a7e059d68832b45c672e91ef337b773085b9f718b16efe75f95bb"
+        },
+        {
+          "path": "src/notes.ts",
+          "sha256": "298a624cd7ce602375405019d4a8b5e4741829f13c7d9ef5def238363f484256"
+        }
+      ]
+    }
+  },
+  "readConsistency": {
+    "finding": "Client revision pins are preserved, but scan and asset re-reads are not atomic against non-PKM external writers; the native owner lease excludes competing native owners only.",
+    "helper": {
+      "path": "src/legacy-read-race.ts",
+      "seam": "Wrap the existing read dispatch with withLegacyReadPreflight(captureExactSourcePins, readDispatch).",
+      "failure": "CONFLICT with effect not-committed; callers restart pagination from its first page.",
+      "existingReadRevisionContractsChanged": false,
+      "noSilentFallback": true,
+      "writesOrRetriesPerformed": false
+    },
+    "nativeOwnership": {
+      "unchanged": true,
+      "secondNativeOwnerRejected": true,
+      "externalFileWriterDoesNotAcquireOrBypassNativeLease": true,
+      "nativeOwnerConcurrencyClaim": "single native workspace owner only"
+    },
+    "limitations": [
+      "Preflight/postflight digest comparison detects source changes observed across the read; it is not an atomic filesystem snapshot or a lock.",
+      "An external writer that changes and restores identical bytes between both captures (ABA) is not detected.",
+      "This does not qualify production storage SLOs, physical faults, or native-owner concurrent writes.",
+      "No original oracle testcase claims this external Markdown-writer read guarantee; the separately listed original simultaneous Board command race remains unsupported."
+    ]
+  },
+  "cases": [
+    {
+      "id": "http-paginated-document-list-update",
+      "protocol": "http",
+      "operation": "knowledge.document.list",
+      "externalMutation": "update",
+      "interleaving": "writer completed after a source read was paused and before the request finished",
+      "stableBaselinePins": [
+        "identity",
+        "revision",
+        "sha256"
+      ],
+      "racedOutcome": "CONFLICT",
+      "mixedOrPartialResultReturned": false
+    },
+    {
+      "id": "mcp-document-read-rename",
+      "protocol": "mcp",
+      "operation": "knowledge.document.get",
+      "externalMutation": "rename",
+      "interleaving": "writer completed after a source read was paused and before the request finished",
+      "stableBaselinePins": [
+        "identity",
+        "revision",
+        "sha256"
+      ],
+      "racedOutcome": "CONFLICT",
+      "mixedOrPartialResultReturned": false
+    },
+    {
+      "id": "http-note-search-delete",
+      "protocol": "http",
+      "operation": "knowledge.note.search",
+      "externalMutation": "delete",
+      "interleaving": "writer completed after a source read was paused and before the request finished",
+      "stableBaselinePins": [
+        "identity",
+        "revision",
+        "sha256"
+      ],
+      "racedOutcome": "CONFLICT",
+      "mixedOrPartialResultReturned": false
+    },
+    {
+      "id": "http-note-state-page-delete",
+      "protocol": "http",
+      "operation": "knowledge.note.list",
+      "externalMutation": "delete",
+      "interleaving": "writer completed after a source read was paused and before the request finished",
+      "stableBaselinePins": [
+        "identity",
+        "revision",
+        "sha256"
+      ],
+      "racedOutcome": "CONFLICT",
+      "mixedOrPartialResultReturned": false
+    },
+    {
+      "id": "mcp-asset-list-write",
+      "protocol": "mcp",
+      "operation": "knowledge.asset.list",
+      "externalMutation": "asset",
+      "interleaving": "writer completed after a source read was paused and before the request finished",
+      "stableBaselinePins": [
+        "identity",
+        "revision",
+        "sha256"
+      ],
+      "racedOutcome": "CONFLICT",
+      "mixedOrPartialResultReturned": false
+    },
+    {
+      "id": "http-asset-chunk-write",
+      "protocol": "http",
+      "operation": "knowledge.asset.get",
+      "externalMutation": "asset",
+      "interleaving": "writer completed after a source read was paused and before the request finished",
+      "stableBaselinePins": [
+        "identity",
+        "revision",
+        "sha256"
+      ],
+      "racedOutcome": "CONFLICT",
+      "mixedOrPartialResultReturned": false
+    },
+    {
+      "id": "helper-rejects-explicit-old-new-mix",
+      "protocol": "helper-seam",
+      "operation": "multi-source-read",
+      "externalMutation": "update",
+      "interleaving": "first source read before update; later source read after atomic replacement",
+      "racedOutcome": "CONFLICT",
+      "mixedAggregateWasConstructed": true,
+      "mixedAggregateWasReturned": false
+    }
+  ]
+}

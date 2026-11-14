@@ -1,0 +1,96 @@
+{
+  "schema": "pkm.domain-capture/v1",
+  "originalRoot": "/home/yuwang8/uone-knowledge/packages/personal-knowledge-vscode",
+  "nextRoot": "/home/yuwang8/uone-knowledge/packages/personal-knowledge-vscode/next-server",
+  "files": [
+    {
+      "source": "src/subscriptions/subscriptions.ts",
+      "sourceSha256": "17232c71fbd5ac884b1a9e5c657940845828316828db3089be62bc219b24da09",
+      "captured": "src/domain/subscription-transport-original-summary.ts",
+      "capturedSha256": "3594100eea26355b1a3a5aac84968f32b5cb0d908acb66c64a3afa15655a85af",
+      "functions": [
+        "hash",
+        "nodeIdForPublicKey",
+        "withoutSignature",
+        "verifyShareSummary"
+      ]
+    }
+  ],
+  "sourceReferences": [
+    {
+      "source": "src/subscriptions/subscription-gateway-entry.ts",
+      "sourceSha256": "a65bd72a7e70fd4bc06096a384b14847f7ab77332915be74fb72efdf589ebb0c"
+    },
+    {
+      "source": "src/subscriptions/subscription-mqtt-client.ts",
+      "sourceSha256": "3fd05e1a05349d4b3355c49972521f162a8e77770db1607a515a47c701a5e9ce"
+    },
+    {
+      "source": "src/subscriptions/subscription-materialize-worker.ts",
+      "sourceSha256": "41bd68533e1cac3769c101bfd95983acab6ec0ac4f18f874ea369b4ac0857c94"
+    },
+    {
+      "source": "src/subscriptions/subscription-fork.ts",
+      "sourceSha256": "f6700499cec43dc4183b2660fe0d6ca3a07041542862342c88725ee686cd4458"
+    },
+    {
+      "source": "src/subscriptions/subscription-acl.ts",
+      "sourceSha256": "7928b90379a22e8269dfa466066540322a95dfa4f4bb578620271672634083a1"
+    },
+    {
+      "source": "src/subscriptions/subscription-ip-policy.ts",
+      "sourceSha256": "023822af26c3f773d25fa33db92745a7fb65cc6af447527280d494284c16be5d"
+    }
+  ],
+  "native": [
+    {
+      "file": "src/subscription-transport.ts",
+      "sha256": "2da95176d0eda3497af88997f97ae143209002f741f9a0339a42e2965e7c7683"
+    },
+    {
+      "file": "src/subscription-transport-contracts.ts",
+      "sha256": "ef828ac0e1eb83e6f4c2a8b5861ea55f06e93893e1e8a4fcfab2aff5c1eae90e"
+    },
+    {
+      "file": "src/domain/subscription-transport-protocol.ts",
+      "sha256": "2bcae2fe963729bb1209c8252104a364ba44ab9f4ab35763406dae06e77de399"
+    },
+    {
+      "file": "src/domain/subscription-transport-socket.ts",
+      "sha256": "fd8762c1eba5892455094603292c3269abae6ceae74a1b6494e9214038aa0246"
+    },
+    {
+      "file": "src/domain/subscription-transport-staging.ts",
+      "sha256": "6b66d113b5929a62fac96aded5f8f6a2c4e7df1398afa5c0f0e8e896eaa21639"
+    },
+    {
+      "file": "tests/subscription-transport.test.mjs",
+      "sha256": "eab1983b5555ee6a62aa5fd72e421501461cae3e45ec50e5e57bc084a30aeb7f"
+    },
+    {
+      "file": "tests/subscription-transport-fixtures.mjs",
+      "sha256": "bf88a0179b0ddb29cec6037a39f324ab78b1f49730a147f6e7cd2455d0a023c8"
+    },
+    {
+      "file": "scripts/capture-subscription-transport.mjs",
+      "sha256": "b16a35c93e03ffe3e6c9b16ee8ba9855a3d1e19ebe46049a89617616f5fbf3ab"
+    }
+  ],
+  "capture": {
+    "path": "src/domain/subscription-transport-original-summary.ts",
+    "sha256": "3594100eea26355b1a3a5aac84968f32b5cb0d908acb66c64a3afa15655a85af",
+    "functions": [
+      "hash",
+      "nodeIdForPublicKey",
+      "withoutSignature",
+      "verifyShareSummary"
+    ]
+  },
+  "protocol": {
+    "summary": "GET /v1/shares/{shareId}/summary: signed ShareSummary; conditional 304 is not fresh authorization.",
+    "ticket": "POST /v1/shares/{shareId}/sync-ticket: brokerUrl,ticket,expiresAt,revision,collectionHash",
+    "bundle": "GET /sync/bundle: one-use Bearer ticket; open application/json; no Range/resume protocol",
+    "mqtt": "pkm/v1/nodes/{nodeId}/shares/{shareId}/summary, MQTT 3.1.1 websocket: untrusted refresh hints only"
+  },
+  "qualification": "Original signature verifier executed. HTTP socket adapter defaults disabled; all tests synthetic loopback only. Open JSON Markdown/assets supported; secret-protected encryption, package file arrays and other content kinds explicitly unsupported; original has no archive wire format. Fork delegates to SubscriptionApplyHost and preserves original Markdown IDs/aliases/bytes; distinct destination/path-derived implicit identity, not fabricated rekeying. Readonly mirror retains source identity in an immutable verified snapshot, outside writable knowledge areas. Shared global DB hooks required, no production private DB."
+}

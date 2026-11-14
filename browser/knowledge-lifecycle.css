@@ -1,0 +1,60 @@
+.knowledge-lifecycle {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.knowledge-lifecycle-content {
+  display: grid;
+  gap: 1rem;
+}
+
+.knowledge-lifecycle .surface-details {
+  min-width: 0;
+}
+
+.knowledge-lifecycle .surface-editor,
+.knowledge-lifecycle .surface-tools,
+.knowledge-lifecycle .surface-list {
+  min-width: 0;
+}
+
+.knowledge-lifecycle select,
+.knowledge-lifecycle input,
+.knowledge-lifecycle textarea {
+  box-sizing: border-box;
+  max-width: 100%;
+  padding: 0.45rem;
+  color: var(--vscode-input-foreground, #24292f);
+  background: var(--vscode-input-background, #fff);
+  border: 1px solid var(--vscode-panel-border, #d0d7de);
+  border-radius: 3px;
+  font: inherit;
+}
+
+.knowledge-lifecycle textarea {
+  min-height: 4rem;
+  resize: vertical;
+  font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+}
+
+.knowledge-lifecycle .surface-field input,
+.knowledge-lifecycle .surface-field textarea {
+  width: 100%;
+}
+
+.knowledge-lifecycle .surface-status {
+  overflow-wrap: anywhere;
+}
+
+.knowledge-lifecycle .surface-list > button,
+.knowledge-lifecycle .surface-list > article {
+  min-width: 0;
+}
+
+.knowledge-lifecycle button:focus-visible,
+.knowledge-lifecycle input:focus-visible,
+.knowledge-lifecycle textarea:focus-visible,
+.knowledge-lifecycle select:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder, #0969da);
+  outline-offset: 2px;
+}

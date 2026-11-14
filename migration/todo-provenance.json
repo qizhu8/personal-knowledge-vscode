@@ -1,0 +1,36 @@
+{
+  "schema": "pkm.domain-capture/v1",
+  "transformation": "ESM import suffixes; Todo API host/storage functions replaced with an injected TodoStore. Business reducer, validation, schemas and API branches retained.",
+  "files": [
+    {
+      "source": "src/knowledge/note-work-items.ts",
+      "sourceSha256": "64f39b26b1d115e92ed5fc1f31c81ef746baf325ea07689c2407449a66aab76e",
+      "captured": "src/domain/note-work-items.ts",
+      "capturedSha256": "64f39b26b1d115e92ed5fc1f31c81ef746baf325ea07689c2407449a66aab76e"
+    },
+    {
+      "source": "src/knowledge/todo-board.ts",
+      "sourceSha256": "8e90ec90b520d5d7fec2af92602660f9e5e0369e476a551095563623828f6558",
+      "captured": "src/domain/todo-board.ts",
+      "capturedSha256": "8e45dd4a83ee98e8c4dc6bb7a05217e802d7c9cc4f5b44f61d31b7bd6a8826c1"
+    },
+    {
+      "source": "src/knowledge/todo-api-contract.ts",
+      "sourceSha256": "aa2b563f1c71c825f38a57b65cdacded3ae645dae3d6bad8a607779f833b63d9",
+      "captured": "src/domain/todo-api-contract.ts",
+      "capturedSha256": "e45d04227e38daa3a64537b2a772f7057430697a5dc73bbd57efcbf82a618263"
+    },
+    {
+      "source": "src/knowledge/todo-api.ts",
+      "sourceSha256": "721b02f042451418832d942bb98acc4360d17837e70a02542fd5fb70d947cb8b",
+      "captured": "src/domain/todo-api.ts",
+      "capturedSha256": "57a47a2581911b14e73c58246a785499258d2696e1c5b32803972270ec5488ad"
+    },
+    {
+      "source": "src/capabilities/registry.ts",
+      "sourceSha256": "4ad17aa21a16a77789664a0524d1ee06bd63758e0b5384e240d83ae19cf4923c",
+      "captured": "src/domain/todo-identities.ts",
+      "capturedSha256": "44e62b0baec88f7520c76673e481b9bd64354441ba598f47866bec6d715822bd"
+    }
+  ]
+}

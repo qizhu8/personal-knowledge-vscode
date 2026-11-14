@@ -1,0 +1,45 @@
+{
+  "schema": "pkm.domain-capture/v1",
+  "actualRootSha": "ec92febf240991770172f144fc0138b298491fb0",
+  "transformation": "Exact AST capture of manifestJson and private Profile validation/path helpers with literal version/constants and type-only substitutions. Original transport is Git CLI force-with-lease, not REST. New REST adapter requires native expected-commit CAS authority; no production cutover or network default.",
+  "files": [
+    {
+      "source": "src/sync/github-sync.ts",
+      "sourceSha256": "d4982ae0b6dfecfe234155eaf6ee2df7062d15212a7847162a7e5e67802c35aa",
+      "captured": "src/domain/sync-transport-original.ts",
+      "capturedSha256": "9e7b4d3f260f385091211e4180b2871745d0bf2be7f5f6427301c3bcb8031d2b"
+    },
+    {
+      "source": "src/chat/persona-profiles.ts",
+      "sourceSha256": "ae91e0c89bed7fb302132307289e7e73a7244bf2b57ea5c1d5bcb84a4c07388e",
+      "captured": "src/domain/sync-transport-original.ts",
+      "capturedSha256": "9e7b4d3f260f385091211e4180b2871745d0bf2be7f5f6427301c3bcb8031d2b"
+    }
+  ],
+  "inspectedSources": [
+    {
+      "path": "src/sync/github-sync-publication-plan.ts",
+      "sha256": "6f7299e682da43a256a243505455e909b69fb4f925317ee6e90b84e3dbadfad1"
+    },
+    {
+      "path": "src/sync/github-sync-recovery.ts",
+      "sha256": "c7828abe5fc53715738b80672de48e22f0d05c27974280912fea0981959a1812"
+    },
+    {
+      "path": "src/sync/github-sync-credentials.ts",
+      "sha256": "930e6de7f1c3cc1520c9dc5307386589697d0771d49787ab4ba1eb379ae1facc"
+    },
+    {
+      "path": "src/sync/github-sync-profiles.ts",
+      "sha256": "10dcaea08ca0eb9ff963cc1880c49af8a4f56501209495118a18a7aade7624ba"
+    },
+    {
+      "path": "next-server/src/sync-plan.ts",
+      "sha256": "3671337217de6e691df1fc1a52e7e5234e129ca282cb1aa49d309ebaf3744536"
+    },
+    {
+      "path": "next-server/src/sync-apply.ts",
+      "sha256": "3d27f5a01532cd08250af874ffa69de0f908fd9566d9e7e01de6f14f3cb8d9fa"
+    }
+  ]
+}

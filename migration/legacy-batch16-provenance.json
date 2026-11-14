@@ -1,0 +1,26 @@
+{
+  "schema": "pkm.original-source-references/v1",
+  "scope": "Original classification source oracle references; memory engine source reuses the already qualified byte-identical compute-provenance.json capture. No original partial-success parity or new source capture claimed.",
+  "originalSources": [
+    {
+      "path": "src/knowledge/asset-classification.ts",
+      "sha256": "862d3566db8a8bd45b670ba2e5ed3de2ce0570693f92f0730249add8d19e7523",
+      "role": "Actual original disposable-fixture classification writer or supporting source; reference, not a native capture"
+    },
+    {
+      "path": "src/knowledge/markdown-assets.ts",
+      "sha256": "3efa04f06f6b5fd7e649874d031e0ddb8a6ff4f33182747135c6601658922741",
+      "role": "Actual original disposable-fixture classification writer or supporting source; reference, not a native capture"
+    },
+    {
+      "path": "src/workflows/project-store.ts",
+      "sha256": "a88568af85c6cbf714cc8c9efcfb641da12502df888b4c6dd9e4b7e24dacc010",
+      "role": "Actual original disposable-fixture classification writer or supporting source; reference, not a native capture"
+    },
+    {
+      "path": "src/sync/github-sync-script-identity.ts",
+      "sha256": "cb4a8fbe28d08ffc1dd018cd788bc3c61c61ae9bddf1919acc16348d36bf8fbb",
+      "role": "Actual original disposable-fixture classification writer or supporting source; reference, not a native capture"
+    }
+  ]
+}

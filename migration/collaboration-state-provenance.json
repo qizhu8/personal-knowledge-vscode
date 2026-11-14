@@ -1,0 +1,75 @@
+{
+  "schema": 1,
+  "rootsRelativeTo": "provenance-file-directory",
+  "sourceRoot": "../..",
+  "captureRoot": "..",
+  "captures": [
+    {
+      "source": "src/chatroom/collaboration-model.ts",
+      "destination": "src/domain/collaboration-state-model.ts",
+      "sourceSha256": "56a7e33e2e89056f0b2f4c217c3969d1fae84425da5c6951c4d40faec34805d4",
+      "captureSha256": "56a7e33e2e89056f0b2f4c217c3969d1fae84425da5c6951c4d40faec34805d4"
+    },
+    {
+      "source": "src/chatroom/portal-permissions.ts",
+      "destination": "src/domain/collaboration-state-permissions.ts",
+      "sourceSha256": "6908f4e4ec74da28c76f6a3d45ad75ac7e3116726911660ae0b1b436367f2bb4",
+      "captureSha256": "6908f4e4ec74da28c76f6a3d45ad75ac7e3116726911660ae0b1b436367f2bb4"
+    },
+    {
+      "source": "src/chatroom/portal-connections.ts",
+      "destination": "src/domain/collaboration-state-connections.ts",
+      "sourceSha256": "1723ce543c520f36bd909e24b92513a9d1a0699d9fa181d0a591f71de58944c5",
+      "captureSha256": "692b449cbae9ab9288b59ae9bb8ae4f2714f4ae8c4b4825356f99f93cf6829c7"
+    },
+    {
+      "source": "src/chatroom/portal-routing.ts",
+      "destination": "src/domain/collaboration-state-routing.ts",
+      "sourceSha256": "c7585bc68cc9e1fe973efa7dc19b9110d8ab26c1e36343fa5c07686fb3a290e9",
+      "captureSha256": "c7585bc68cc9e1fe973efa7dc19b9110d8ab26c1e36343fa5c07686fb3a290e9"
+    },
+    {
+      "source": "src/chatroom/chatroom-hub.ts",
+      "destination": "src/domain/collaboration-state-mentions.ts",
+      "sourceSha256": "983d6403369f514f0bf62d73b9a61dd96040c593e044d4ff839243a0914ff4c5",
+      "captureSha256": "4ce612e224211b061a7c51259cf601c6f2373c395be4eb5b3e85efc8d7196d31"
+    }
+  ],
+  "evidence": [
+    {
+      "source": "src/chatroom/chatroom-hub.ts",
+      "sourceSha256": "983d6403369f514f0bf62d73b9a61dd96040c593e044d4ff839243a0914ff4c5"
+    },
+    {
+      "source": "src/chatroom/chat-join-approval.ts",
+      "sourceSha256": "9528a29e0ac4e3fc63ab5f456bc975493a9ea5c350f1388c36291fcc9d2784ac"
+    },
+    {
+      "source": "src/chatroom/meeting-state.ts",
+      "sourceSha256": "777ea01d26cd721e61b8cb6599b640086d5bb10e80e3f8753732c83983f9201a"
+    },
+    {
+      "source": "src/chatroom/chat-meeting-lifecycle.ts",
+      "sourceSha256": "fa9f4506dcc167cbba00ae4b1ef4886455781676fbeda51f73786458e60d09f8"
+    },
+    {
+      "source": "src/chatroom/chatroom-protocol.ts",
+      "sourceSha256": "ed74872a220719fa476e0cfc5d51dcbd56ac604faa71179c8e194fde0cb42fe0"
+    }
+  ],
+  "subset": [
+    "Exact original structured collaboration reducer and Portal permission/routing/view policies.",
+    "Local room membership/history CAS aggregate; actor-bound participant identity; original explicit-recipient routing only.",
+    "Original meeting start/adjourn phase/status projection only; no Markdown, topics, scheduling or session creation."
+  ],
+  "restrictions": [
+    "No original Knowledge or session data is read. No transports, peers, commands or sessions are invoked.",
+    "Portal bindings/leases remain volatile and cannot be restored; persisted room state is not a live connection.",
+    "Public list/read/self-leave only. Human room creation/join/mute/close and meeting adapters are not advertised.",
+    "Injected authorizeHuman gate must authenticate out of band; no request role, host, owner or actor override.",
+    "No browser identity reuse, credential/invitation import, host reassignment, meeting trash or permanent delete.",
+    "One logical presence per trusted human actor; transport windows, agent/browser admission and reconnect grace timers are withheld.",
+    "Structured recipients only: original case-insensitive alias resolution and quoted/code mention filtering; absent roster identities may remain recipients.",
+    "Two-MiB room aggregate, 64 roster/tasks, 5000 history entries, 1000 rooms and 10000 non-evicting receipts per room are new isolation bounds."
+  ]
+}

@@ -1,0 +1,302 @@
+{
+  "schema": "pkm.memory-oracle/v1",
+  "steps": [
+    {
+      "action": "propose",
+      "arguments": {
+        "operation_id": "p",
+        "content": "Use SQLite.",
+        "sources": [
+          {
+            "id": "input-1",
+            "chat": "fixture-chat",
+            "revision": "turn-1",
+            "locator": "message/input-1"
+          }
+        ]
+      },
+      "expected": {
+        "id": "record-1",
+        "scope": "fixture-scope",
+        "revision": 1,
+        "current_revision": 1,
+        "status": "pending",
+        "current_status": "pending",
+        "content": "Use SQLite.",
+        "sources": [
+          {
+            "id": "record-1",
+            "chat": "fixture-chat",
+            "revision": "turn-1",
+            "locator": "message/input-1"
+          }
+        ]
+      }
+    },
+    {
+      "action": "search",
+      "arguments": {
+        "query": "sqlite",
+        "limit": 3
+      },
+      "expected": {
+        "records": []
+      }
+    },
+    {
+      "action": "confirm",
+      "arguments": {
+        "id": "record-1",
+        "expected_revision": 1,
+        "operation_id": "c"
+      },
+      "expected": {
+        "id": "record-1",
+        "scope": "fixture-scope",
+        "revision": 2,
+        "current_revision": 2,
+        "status": "confirmed",
+        "current_status": "confirmed",
+        "content": "Use SQLite.",
+        "sources": [
+          {
+            "id": "record-1",
+            "chat": "fixture-chat",
+            "revision": "turn-1",
+            "locator": "message/input-1"
+          }
+        ]
+      }
+    },
+    {
+      "action": "get",
+      "arguments": {
+        "id": "record-1",
+        "revision": 1
+      },
+      "expected": {
+        "id": "record-1",
+        "scope": "fixture-scope",
+        "revision": 1,
+        "current_revision": 2,
+        "status": "superseded",
+        "current_status": "confirmed",
+        "content": "Use SQLite.",
+        "sources": [
+          {
+            "id": "record-1",
+            "chat": "fixture-chat",
+            "revision": "turn-1",
+            "locator": "message/input-1"
+          }
+        ]
+      }
+    },
+    {
+      "action": "search",
+      "arguments": {
+        "query": "SQLITE",
+        "limit": 3
+      },
+      "expected": {
+        "records": [
+          {
+            "id": "record-1",
+            "revision": 2,
+            "status": "confirmed",
+            "preview": "Use SQLite.",
+            "contentCharacters": 11,
+            "truncated": false,
+            "sourceCount": 1,
+            "readOperation": "memory.record.get"
+          }
+        ]
+      }
+    },
+    {
+      "action": "revise",
+      "arguments": {
+        "id": "record-1",
+        "expected_revision": 2,
+        "operation_id": "r",
+        "content": "Use SQLite WAL.",
+        "sources": [
+          {
+            "id": "input-1",
+            "chat": "fixture-chat",
+            "revision": "turn-1",
+            "locator": "message/input-1"
+          }
+        ]
+      },
+      "expected": {
+        "id": "record-1",
+        "scope": "fixture-scope",
+        "revision": 3,
+        "current_revision": 3,
+        "status": "pending",
+        "current_status": "pending",
+        "content": "Use SQLite WAL.",
+        "sources": [
+          {
+            "id": "record-1",
+            "chat": "fixture-chat",
+            "revision": "turn-1",
+            "locator": "message/input-1"
+          }
+        ]
+      }
+    },
+    {
+      "action": "search",
+      "arguments": {
+        "query": "sqlite",
+        "limit": 3
+      },
+      "expected": {
+        "records": []
+      }
+    },
+    {
+      "action": "confirm",
+      "arguments": {
+        "id": "record-1",
+        "expected_revision": 3,
+        "operation_id": "c2"
+      },
+      "expected": {
+        "id": "record-1",
+        "scope": "fixture-scope",
+        "revision": 4,
+        "current_revision": 4,
+        "status": "confirmed",
+        "current_status": "confirmed",
+        "content": "Use SQLite WAL.",
+        "sources": [
+          {
+            "id": "record-1",
+            "chat": "fixture-chat",
+            "revision": "turn-1",
+            "locator": "message/input-1"
+          }
+        ]
+      }
+    },
+    {
+      "action": "revoke",
+      "arguments": {
+        "id": "record-1",
+        "expected_revision": 4,
+        "operation_id": "x"
+      },
+      "expected": {
+        "id": "record-1",
+        "scope": "fixture-scope",
+        "revision": 5,
+        "current_revision": 5,
+        "status": "revoked",
+        "current_status": "revoked",
+        "content": "Use SQLite WAL.",
+        "sources": [
+          {
+            "id": "record-1",
+            "chat": "fixture-chat",
+            "revision": "turn-1",
+            "locator": "message/input-1"
+          }
+        ]
+      }
+    },
+    {
+      "action": "get",
+      "arguments": {
+        "id": "record-1"
+      },
+      "expected": {
+        "id": "record-1",
+        "scope": "fixture-scope",
+        "revision": 5,
+        "current_revision": 5,
+        "status": "revoked",
+        "current_status": "revoked",
+        "content": "Use SQLite WAL.",
+        "sources": [
+          {
+            "id": "record-1",
+            "chat": "fixture-chat",
+            "revision": "turn-1",
+            "locator": "message/input-1"
+          }
+        ]
+      }
+    },
+    {
+      "action": "search",
+      "arguments": {
+        "query": "sqlite",
+        "limit": 3
+      },
+      "expected": {
+        "records": []
+      }
+    },
+    {
+      "action": "audit",
+      "arguments": {
+        "id": "record-1",
+        "after": 0,
+        "limit": 10
+      },
+      "expected": {
+        "events": [
+          {
+            "sequence": 1,
+            "revision": 1,
+            "action": "proposed",
+            "status": "pending",
+            "actor": "caller",
+            "decision_id": null,
+            "operation_id": "p"
+          },
+          {
+            "sequence": 2,
+            "revision": 2,
+            "action": "confirmed",
+            "status": "confirmed",
+            "actor": "user:local",
+            "decision_id": "decision-c",
+            "operation_id": "c"
+          },
+          {
+            "sequence": 3,
+            "revision": 3,
+            "action": "revised",
+            "status": "pending",
+            "actor": "user:local",
+            "decision_id": "decision-r",
+            "operation_id": "r"
+          },
+          {
+            "sequence": 4,
+            "revision": 4,
+            "action": "confirmed",
+            "status": "confirmed",
+            "actor": "user:local",
+            "decision_id": "decision-c2",
+            "operation_id": "c2"
+          },
+          {
+            "sequence": 5,
+            "revision": 5,
+            "action": "revoked",
+            "status": "revoked",
+            "actor": "user:local",
+            "decision_id": "decision-x",
+            "operation_id": "x"
+          }
+        ],
+        "next": null
+      }
+    }
+  ]
+}

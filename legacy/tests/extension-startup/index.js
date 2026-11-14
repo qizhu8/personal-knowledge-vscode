@@ -1,0 +1,125 @@
+const assert = require("assert");
+const fs = require("fs");
+const path = require("path");
+const vscode = require("vscode");
+
+function readStartupLog(directory) {
+  if (!fs.existsSync(directory)) return "";
+  return fs.readdirSync(directory).filter(name => name.endsWith(".jsonl")).sort()
+    .flatMap(name => fs.readFileSync(path.join(directory, name), "utf8").split(/\r?\n/))
+    .flatMap(line => {
+      try {
+        const entry = JSON.parse(line);
+        return entry.schema === "pkm.diagnostic/v1" && entry.event === "extension.log" && typeof entry.message === "string" ? [entry.message] : [];
+      } catch { return []; }
+    }).join("\n");
+}
+
+async function waitFor(check, message, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  throw new Error(message);
+}
+
+async function run() {
+  const extension = vscode.extensions.getExtension("uone.personal-knowledge");
+  assert.ok(extension, "Personal Knowledge extension was not discovered");
+
+  await extension.activate();
+  assert.strictEqual(extension.isActive, true, "extension did not activate");
+  const { stableUserPort } = require(path.join(extension.extensionPath, "dist", "runtime", "user-service-ports.js"));
+  const portConfiguration = vscode.workspace.getConfiguration("personalKnowledge");
+  for (const setting of ["serversProxyPort", "contentGatewayPort", "chatHubPort"]) {
+    assert.strictEqual(portConfiguration.get(setting), stableUserPort(setting),
+      `startup must persist the deterministic default for ${setting}`);
+  }
+  const store = require(path.join(extension.extensionPath, "dist", "knowledge", "filestore.js"));
+  assert.strictEqual(path.resolve(store.getStorePath()), path.resolve(process.env.PKM_STARTUP_STORE_PATH),
+    "startup acceptance must use its isolated knowledge store, never an account-bound production store");
+
+  const commands = await vscode.commands.getCommands(true);
+  assert.ok(commands.includes("personalKnowledge.open"), "open command was not registered");
+  assert.ok(commands.includes("personalKnowledge.setupMcp"), "config command was not registered");
+  assert.ok(commands.includes("personalKnowledge.hostStatus"), "Host status command was not registered");
+  assert.ok(commands.includes("personalKnowledge.reloadAllHosts"), "Coordinated reload command was not registered");
+  assert.ok(commands.includes("personalKnowledge.openActions"), "Action Workbench command was not registered");
+  assert.ok(commands.includes("personalKnowledge.openActionsInBrowser"), "Browser Action Workbench command was not registered");
+  assert.ok(commands.includes("personalKnowledge.answerActionChoice"), "Action answer compatibility command was not registered");
+  assert.strictEqual(extension.packageJSON.contributes.chatParticipants, undefined,
+    "Packaged extension must not declare deprecated Chat Participants");
+  assert(extension.packageJSON.contributes.mcpServerDefinitionProviders.some(provider => provider.id === "personalKnowledge.pkm"),
+    "Packaged extension did not declare the PKM MCP provider");
+  for (const resource of ["action_modules.py", "action_run_store.py", "action_components.py", "action_components.js", "action-workbench.html"]) {
+    assert(fs.existsSync(path.join(extension.extensionPath, "resources", resource)), `Missing packaged Action resource: ${resource}`);
+  }
+  assert(fs.existsSync(path.join(extension.extensionPath, "dist", "components", "action-components.js")), "Missing packaged TypeScript component implementation");
+  assert(fs.existsSync(path.join(extension.extensionPath, "dist", "runtime", "action-workbench-server.js")), "Missing packaged browser Action server");
+  const navigation = await vscode.commands.executeCommand(
+    "_personalKnowledge.testNavigationPath",
+    "notes",
+    ["Project", "AAGL_Improvement", "Module Optimizer", "LP Processor"],
+  );
+  assert.strictEqual(navigation.found, true, `Navigation hierarchy was missing: ${JSON.stringify(navigation)}`);
+  const progress = navigation.children.find(item => item.description === "progress.md.md");
+  assert.ok(progress, `progress.md.md was not visible under LP Processor: ${JSON.stringify(navigation.children)}`);
+  assert.strictEqual(progress.label, "LPFeatureProcessor v1.1 Optimization Progress");
+  assert.strictEqual(progress.relPath, "Project/AAGL_Improvement/Module Optimizer/LP Processor/progress.md.md");
+
+  const expectPanel = process.env.PKM_STARTUP_EXPECT_PANEL === "true";
+  if (expectPanel) await vscode.commands.executeCommand("workbench.view.extension.personalKnowledgeBar");
+  if (process.env.PKM_STARTUP_SCENARIO === "clean-install") {
+    const recipeIntentDraft = await vscode.commands.executeCommand("_personalKnowledge.testRecipeIntentDraft");
+    assert.strictEqual(recipeIntentDraft.refreshedFromWebview, true, "an open clean editor did not receive the latest webview draft");
+    assert.strictEqual(recipeIntentDraft.applied, true, "Recipe intent edit was not applied");
+    assert.strictEqual(recipeIntentDraft.saved, true, "Recipe intent document did not save");
+    assert.strictEqual(recipeIntentDraft.persistedDraft, "Brief: edited through a real VS Code document save.");
+    assert.strictEqual(recipeIntentDraft.projectStoreUnchanged, true, "saving an Intent draft persisted the Recipe prematurely");
+  }
+  const logPath = process.env.PKM_STARTUP_LOG_PATH;
+  assert.ok(logPath, "startup log path was not provided");
+  await waitFor(() => {
+    if (!fs.existsSync(logPath)) return false;
+    const log = readStartupLog(logPath);
+    return /activation complete durationMs=\d+/.test(log) && (!expectPanel || log.includes("panel created") && log.includes('handleMessage: ready') && log.includes("webview startup scriptStartMs="));
+  }, expectPanel ? "Panel did not complete its Webview ready handshake" : "Extension activation did not complete with the panel closed");
+  if (!expectPanel) await new Promise(resolve => setTimeout(resolve, 500));
+
+  const resultPath = process.env.PKM_STARTUP_RESULT_PATH;
+  assert.ok(resultPath, "startup result path was not provided");
+  const startupLog = readStartupLog(logPath);
+  const durationMs = Number(/activation complete durationMs=(\d+)/.exec(startupLog)?.[1]);
+  const panelHtmlDurationMs = Number(/panel (?:created|restored) \(html \d+ bytes, generated (\d+)ms\)/.exec(startupLog)?.[1]);
+  const webviewTiming = /webview startup scriptStartMs=(\d+) firstPaintMs=(\d+) firstContentfulPaintMs=(\d+)/.exec(startupLog);
+  assert(Number.isFinite(durationMs), "activation duration metric was not recorded");
+  const panelCreatedAt = startupLog.indexOf("panel created");
+  const activationCompleteAt = startupLog.indexOf("activation complete durationMs=");
+  if (expectPanel) {
+    assert(panelCreatedAt >= 0 && panelCreatedAt < activationCompleteAt, "the panel framework must appear before activation completes");
+    assert(Number.isFinite(panelHtmlDurationMs) && panelHtmlDurationMs <= 1000, `panel HTML generation exceeded 1000ms: ${panelHtmlDurationMs}`);
+    assert(webviewTiming, "webview startup timing was not recorded");
+    assert(Number(webviewTiming[1]) <= 2000, `webview script start exceeded 2000ms: ${webviewTiming[1]}`);
+    assert(Number(webviewTiming[2]) <= 2500, `webview first paint exceeded 2500ms: ${webviewTiming[2]}`);
+  }
+  else assert.strictEqual(panelCreatedAt, -1, `panel must remain closed during ${process.env.PKM_STARTUP_SCENARIO || "closed-panel startup"}`);
+  const runtime = await vscode.commands.executeCommand("personalKnowledge.hostStatus");
+  assert.strictEqual(runtime.current.pid, process.pid);
+  assert.strictEqual(runtime.current.vscodeVersion, vscode.version);
+  assert.match(runtime.current.buildId, /^[a-f0-9]{64}$/);
+  assert.strictEqual(runtime.current.buildId, runtime.installed.buildId);
+  assert(runtime.online.some(host => host.hostId === runtime.current.hostId), "Current runtime must register its online identity");
+  fs.writeFileSync(resultPath, JSON.stringify({
+    activated: extension.isActive,
+    commandsRegistered: true,
+    panelExpectationMet: expectPanel ? panelCreatedAt >= 0 && startupLog.includes('handleMessage: ready') : panelCreatedAt === -1,
+    deepNavigationNoteVisible: true,
+    activationDurationMs: durationMs,
+    panelHtmlDurationMs: expectPanel ? panelHtmlDurationMs : null,
+    webviewScriptStartMs: expectPanel ? Number(webviewTiming[1]) : null,
+    webviewFirstPaintMs: expectPanel ? Number(webviewTiming[2]) : null,
+  }));
+}
+
+module.exports = { run };

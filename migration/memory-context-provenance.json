@@ -1,0 +1,127 @@
+{
+  "schema": "pkm.domain-capture/v1",
+  "sourceRoot": "..",
+  "capturedRoot": ".",
+  "transformation": "AST-extracted original query/segmentation/coverage ranking/age filtering and original UTF-8 token upper-bound function bodies, unchanged. Native injected snapshot/retriever bridge adds actor+namespace+epoch fences, confirmed-current lifecycle filtering, JSON quoted non-authority context and immutable attribution. Original recall fixture file is executed directly by a restricted require adapter without writing or reading private Chat data.",
+  "files": [
+    {
+      "source": "src/chat/chat-memory-policy.ts",
+      "sourceSha256": "7f3a72178d5384f86cb9d60805ece63290c3cbdec4b2d460589656011e3671bd",
+      "functions": [
+        "memoryPolicy",
+        "memorySourceTime",
+        "memoryExclusionReason",
+        "memoryAgeAllows"
+      ],
+      "captured": "src/domain/memory-context-selection.ts",
+      "capturedSha256": "80f9aa133f9c1d18f460ef773551939a79040fda3ea31b347ff7f324d2bac482"
+    },
+    {
+      "source": "src/chat/task-context-checkpoint.ts",
+      "sourceSha256": "66f19a1b8b250c11a0a5168c279fbe608e6913b53527db2b31a5e031451f65db",
+      "functions": [
+        "currentTaskReport"
+      ],
+      "captured": "src/domain/memory-context-selection.ts",
+      "capturedSha256": "80f9aa133f9c1d18f460ef773551939a79040fda3ea31b347ff7f324d2bac482"
+    },
+    {
+      "source": "src/chat/chat-memory.ts",
+      "sourceSha256": "84b779aee0fcbf48b22cfab781fe8838fcf44d176897b39ea5d06866db42f2d4",
+      "functions": [
+        "chatMemoryQuery",
+        "memoryTerms",
+        "memoryMatchScore",
+        "chatMemorySegments",
+        "recentChatDialogue",
+        "retrieveChatMemory"
+      ],
+      "captured": "src/domain/memory-context-selection.ts",
+      "capturedSha256": "80f9aa133f9c1d18f460ef773551939a79040fda3ea31b347ff7f324d2bac482"
+    },
+    {
+      "source": "src/chat/api-chat-models.ts",
+      "sourceSha256": "68ce8a3809e16feccd02235e71bc7d5e8f5a9856482c6ea75bb659204555e9f3",
+      "functions": [
+        "estimateInputTokens"
+      ],
+      "captured": "src/domain/memory-context-selection.ts",
+      "capturedSha256": "80f9aa133f9c1d18f460ef773551939a79040fda3ea31b347ff7f324d2bac482"
+    },
+    {
+      "source": "src/memory/chat-memory-service.ts",
+      "sourceSha256": "73aca4125e88d5fa9c4f4f40ad74e9a17a7ed1521ee47f64c69ffd3e61e55673",
+      "captured": "src/memory-context.ts",
+      "capturedSha256": "0b1f98d5f6c483a9520501ed8e03548714936f4bcd4386b5465ccfd826a65c42"
+    },
+    {
+      "source": "src/memory/explicit-memory-service.ts",
+      "sourceSha256": "ffd36eeae52e74b54ad34465073f293cd79b36600e2f55c62790a4a635fe0aae",
+      "captured": "src/memory-context.ts",
+      "capturedSha256": "0b1f98d5f6c483a9520501ed8e03548714936f4bcd4386b5465ccfd826a65c42"
+    },
+    {
+      "source": "src/chat/chat-memory-scope.ts",
+      "sourceSha256": "b16f128290e2745fe59eae26b5ab1afe44364e679dd04896b316fb5c9b383564",
+      "captured": "src/memory-context.ts",
+      "capturedSha256": "0b1f98d5f6c483a9520501ed8e03548714936f4bcd4386b5465ccfd826a65c42"
+    },
+    {
+      "source": "src/chat/chat-context.ts",
+      "sourceSha256": "ba14e464abec03028bdb0a458653ad823b649405c271575dc0465495961406be",
+      "captured": "src/memory-context.ts",
+      "capturedSha256": "0b1f98d5f6c483a9520501ed8e03548714936f4bcd4386b5465ccfd826a65c42"
+    },
+    {
+      "source": "src/chat/api-chat-view.ts",
+      "sourceSha256": "71ddd872aaf2e1fdf1a70616ebc4d50f03e4552152a6670b0e44cfcfdc2397e6",
+      "captured": "src/memory-context.ts",
+      "capturedSha256": "0b1f98d5f6c483a9520501ed8e03548714936f4bcd4386b5465ccfd826a65c42"
+    },
+    {
+      "source": "tests/test-chat-memory-recall.js",
+      "sourceSha256": "fc76a2ddcd5009af5abd7ad002daccea748a0c0e7cdff60ca6793aef3886c84c",
+      "captured": "tests/memory-context-original.test.mjs",
+      "capturedSha256": "8a19b59c6ea362f4b47b5dbdb4d449552f3f1222f6af7be3f419205a35c7a5de"
+    },
+    {
+      "source": "tests/test-chat-memory-scope.js",
+      "sourceSha256": "39af74052062672583b6a2fe90354162f0773d641d5a5784ab61967f2f9be2de",
+      "captured": "tests/memory-context.test.mjs",
+      "capturedSha256": "60101fe8f582be2d8da152b4f7b334342ebe6753331a7bd142ad8ea36978f7d6"
+    },
+    {
+      "source": "tests/test-chat-context-mechanisms.js",
+      "sourceSha256": "6c4b0f9eb2977c54f4f2283620623e65946894a12b08688b3888ac444c943eaf",
+      "captured": "tests/memory-context.test.mjs",
+      "capturedSha256": "60101fe8f582be2d8da152b4f7b334342ebe6753331a7bd142ad8ea36978f7d6"
+    }
+  ],
+  "migrated": [
+    {
+      "path": "src/memory-context.ts",
+      "sha256": "0b1f98d5f6c483a9520501ed8e03548714936f4bcd4386b5465ccfd826a65c42"
+    },
+    {
+      "path": "src/memory-context-contracts.ts",
+      "sha256": "a90d4c9e290cdc39cd5870c023277d5df8d4031dd2c901a23c6cedf76ff00705"
+    },
+    {
+      "path": "src/domain/memory-context-selection.ts",
+      "sha256": "80f9aa133f9c1d18f460ef773551939a79040fda3ea31b347ff7f324d2bac482"
+    },
+    {
+      "path": "scripts/capture-memory-context.mjs",
+      "sha256": "14f21d96aa6601f030276438f44f748fa3bc638698f58eba9f31e47aa44dfa5e"
+    },
+    {
+      "path": "tests/memory-context.test.mjs",
+      "sha256": "60101fe8f582be2d8da152b4f7b334342ebe6753331a7bd142ad8ea36978f7d6"
+    },
+    {
+      "path": "tests/memory-context-original.test.mjs",
+      "sha256": "8a19b59c6ea362f4b47b5dbdb4d449552f3f1222f6af7be3f419205a35c7a5de"
+    }
+  ],
+  "qualification": "Native context service only; no public capability dispatch, no model generation/network, no lifecycle writes or human-decision bypass. Compute policy/model execution remains injected; no worker dependencies changed. Exact token accounting only when an exact full-prompt counter is supplied; otherwise original byte upper bound."
+}

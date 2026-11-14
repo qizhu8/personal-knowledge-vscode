@@ -1,0 +1,19 @@
+{
+  "schema": "pkm.domain-capture/v1",
+  "transformation": "AST-selected settleProgressSteps body unchanged; its local step type is reproduced with reducer-used fields only. Original test case captured with ESM imports rewritten.",
+  "files": [
+    {
+      "source": "src/chat/api-chat-store.ts",
+      "captured": "src/domain/execution-state-progress.ts",
+      "sourceSha256": "0e9b9a0ddb502c0517c503b6a58634ecb27105bde9e2e6c160373a70f6063d86",
+      "capturedSha256": "fd35611a58eb3a658fc25d0d77d7ec98634de6fa1abb27d97a69b63918a0fa60"
+    },
+    {
+      "source": "tests/test-task-progress.js",
+      "captured": "tests/execution-state-original.test.mjs",
+      "sourceSha256": "e145f5ef729e5d5667f1682d063af3e4d3a279868fa938852ccdc61c6bb2d70e",
+      "capturedSha256": "add0ec08979565f07bb2fe855efd3e4a88d697c43e238b4e092daaee55264944"
+    }
+  ],
+  "qualification": "Progress reducer only; durable execution state is a conservative new projection, not original recovery parity. No model, tool, approval UI or replay adapter."
+}

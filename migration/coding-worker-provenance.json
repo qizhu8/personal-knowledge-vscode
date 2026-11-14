@@ -1,0 +1,110 @@
+{
+  "schema": "pkm.next.native-composition/v1",
+  "captures": [],
+  "notes": "New narrow native coding composition, not copied legacy code. Captures is deliberately empty; only imports actually used by this implementation are claimed as native reuse.",
+  "implementation": [
+    {
+      "path": "src/coding-worker.ts",
+      "sha256": "ecf420d947d3aec65844652100c11e296346879c4ee508ad74ce7d98ef2045f1"
+    },
+    {
+      "path": "src/coding-worker-workspace.ts",
+      "sha256": "9b0b4f51738d6be801e6c4b5c4e609ee4aac71c3ad210e55fc1306e8cacd97e2"
+    },
+    {
+      "path": "src/domain/coding-worker-contracts.ts",
+      "sha256": "e9e2377e5562005c4a1941a76f3ada480449cac0304bf89495f9e2496a55dac8"
+    }
+  ],
+  "reuse": [
+    {
+      "path": "src/manager-runtime.ts",
+      "sha256": "f1fb84d411680628a95759c87403deed140ba3961679373d04ab3f846ae9611d"
+    },
+    {
+      "path": "src/manager-plan.ts",
+      "sha256": "14a65d52050da30497e6c00a3900c03d9b1295bc406837c484c8c09473b6bf48"
+    },
+    {
+      "path": "src/domain/manager-plan-validation.ts",
+      "sha256": "97b15304bfe494dcb7de4be6448d34a538323f90538baeb3f90e2ff425b0ef30"
+    },
+    {
+      "path": "src/chat-turn.ts",
+      "sha256": "837f0eaa267273936a02834b9a59c75cdb8f4a90b1aca21b2e5714f1e9f11bc2"
+    },
+    {
+      "path": "src/chat-turn-store.ts",
+      "sha256": "a1d1aa622f2ae479d57478479267a5c31642437d3cb8fd4224bb5ae3a7197835"
+    },
+    {
+      "path": "src/chat-turn-adapters.ts",
+      "sha256": "2c33e43f2581c950a4c85276846d2e7be132e9e90ee0831cd3dc298309ad2de1"
+    },
+    {
+      "path": "src/model-provider.ts",
+      "sha256": "fa35ce2a4cc40c6d1567b146428f2cd340e3825e2aba45543b0e5b0a798b2511"
+    },
+    {
+      "path": "src/model-config.ts",
+      "sha256": "da472f68d0a38e3b03f2b93d38b5deeab93f33a5f4775f80d89c022fe176202b"
+    },
+    {
+      "path": "src/process-bridge.ts",
+      "sha256": "baf8576b0f8c028f85b6faae1cb21682435be8197d408d9e8fc8a22cc90466a0"
+    },
+    {
+      "path": "src/runtime-process.ts",
+      "sha256": "875b32e698608aaa7f8c5761a8ed1753559632b3d93e778b61b6e85b46e895a6"
+    },
+    {
+      "path": "src/runtime-process-store.ts",
+      "sha256": "5ca8f4b94b735149c21744cd4451c3b2a437f2d0187168731d242fdcb5d4ee0b"
+    },
+    {
+      "path": "src/tool-gateway.ts",
+      "sha256": "5617e441bf3811f6368cc2a6feb70a1f4ed3dea31ee88a1b4d015277df11c74f"
+    },
+    {
+      "path": "src/domain/tool-gateway-projection.ts",
+      "sha256": "975966d472bdfba2bdfca8bf798cedae0780462a1900606715185828fa15c83c"
+    }
+  ],
+  "fixtures": [
+    {
+      "path": "tests/coding-worker-fixtures.mjs",
+      "sha256": "49faac2a32f60e7131ed287a8b30327328ddb5ff4444bff292f7923b6b090239"
+    },
+    {
+      "path": "tests/coding-worker.test.mjs",
+      "sha256": "a32bfb74c8a0aaffd2ff131a96a4225620561bbec69886de1319cb77972892da"
+    }
+  ],
+  "exports": [
+    "createCodingWorkerWorkspace",
+    "createCodingWorkerManagerHost",
+    "recoverCodingWorkerEffects",
+    "codingWorkerHash",
+    "codingWorkerProposalSchema",
+    "codingWorkerReadSchema",
+    "codingWorkerListSchema",
+    "codingWorkerPath",
+    "CODING_WORKER_LIMITS"
+  ],
+  "authority": "Host-only opaque disposable workspace capability; fresh source clones only. Host fixes owner, original source hashes, exact readable/writable relative paths, immutable Node check scripts/literal arguments, source data admission, check approval and output redaction. Never writes the original source, KnowledgeRoot, Board, real checkout, Git state, production, or external network. No public catalog or absolute-root/shell capability is installed.",
+  "integration": "createCodingWorkerManagerHost returns the existing ManagerRuntimeHost and native scopes/receipt/manifest/recover/close hooks. Canonical Manager plan validation and exact contract/task pin gates are reused. Native ChatTurnService uses the existing ModelProviderService SSE adapter and only source.list/source.read ChatTurnToolPort. The existing ToolGateway canonical projection binds pins; the unrestricted Core gateway is intentionally not installed for coding. All writes are native execution of strict structured substring-edit proposals with host scope/before-hash/source-read receipts, not executable model tool calls.",
+  "execution": "Pinned immutable host Node check scripts run actual stage modules via the existing process-bridge and RuntimeProcessService. A distinct durable host-owned process journal and per-journal serialized checks respect its exclusive singleton lease; no takeover of an existing runtime. Source/task/effect/input pins and full check-script hashes bind acceptance. Changed source/contract invalidates proof. Model self-checks are rejected as extra proposal fields, never certificates.",
+  "persistence": "Full-synchronous distinct file-backed SQLite journals required. Main DB file effect intents commit before directory/file writes, contain exact before/after contents and hashes, and precede exclusive staging-file+fsync+rename+directory-fsync effects. Multi-file atomicity is logical/failclosed, NOT a filesystem transaction: mixed crash outcomes are unknown and fenced. Recovery observes exact before/after/mixed/other without modifying files, replaying patches, or inferring authorization. Interrupted inference/checks stay unknown; completed old proofs cannot be installed in a newly-issued capability.",
+  "concurrency": "Fresh per-attempt stages isolate parallel workers. Frozen delivery manifests require accepted native proof and complete worker coverage. Only valid disjoint changes merge into the fresh Integrator clone; duplicate paths, changed before hashes and stale inputs escalate without overwrite. Feedback remains task-scoped data; cancellation fences authority and close drains every tracked native model/check effect.",
+  "bounds": "Native defaults cap files128, file bytes32768, all source bytes131072, patches16, reserved turns64, active workers4, input65536/output8192 per turn, run input4194304/output524288, deadline120000ms. Host can only lower bounds; no command/network/model-created permissions. Native checks retain original process bounds, raw stdout is ephemeral, stderr persistence is zero, and host-redacted structured check results alone become acceptance evidence.",
+  "validation": "npm run build; node --test tests/coding-worker.test.mjs tests/manager-runtime.test.mjs tests/manager-plan.test.mjs tests/chat-turn-chain.test.mjs tests/process-bridge.test.mjs; node scripts/capture-coding-worker.mjs --check",
+  "scenarios": [
+    "Native fragmented SSE -> real source read -> structured patch -> actual Node numeric assertions -> delivery -> two-file frozen merge -> actual composed-module E2E; one task fails and repairs.",
+    "Parallel independent stages, stable task owner/hash, fenced wrong actor, scope traversal/absolute/check script/hash/ambiguous/shell/self-check attacks.",
+    "Changed stage or immutable check invalidates acceptance; changed Integrator beforehash conflicts without overwrite; changed contract or source invalidates final proof.",
+    "Journal crash before/after files and mixed Integrator write; exact recovery observations remain unknown with no automatic patch or rollback.",
+    "Conservative durable run budget and k bounds, targeted urgent feedback, run cancellation, native timeout/drain, distinct restart capability refusing stale proofs.",
+    "Root/path/ancestor symlinks, hardlinks, original source hash pins, source admission and check policy denial."
+  ],
+  "qualification": "These are disposable synthetic functional E2E evidence through actual native protocols and real files, NOT installed native-model endpoint parity, production isolation certification, OS sandbox enforcement, full Manager/Portal meeting lifecycle, measured power-loss durability, resource soak, signed operator readiness, or production cutover authorization. This slice is not automatically added to public server/CLI/client configuration; the trusted parent must explicitly assemble it with approved capabilities."
+}

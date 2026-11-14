@@ -1,0 +1,97 @@
+{
+  "schema": 1,
+  "rootsRelativeTo": "provenance-file-directory",
+  "sourceRoot": "../..",
+  "captureRoot": "..",
+  "captures": [
+    {
+      "source": "src/chatroom/peer-protocol.ts",
+      "destination": "src/domain/channel-runtime-original-peer.ts",
+      "sourceSha256": "6bcca3b70164157811ab153371b0550246b45107ab5f51c684885820659fa130",
+      "captureSha256": "6bcca3b70164157811ab153371b0550246b45107ab5f51c684885820659fa130",
+      "transform": "none; exact bytes"
+    }
+  ],
+  "evidence": [
+    {
+      "source": "src/chatroom/chatroom-protocol.ts",
+      "sourceSha256": "ed74872a220719fa476e0cfc5d51dcbd56ac604faa71179c8e194fde0cb42fe0"
+    },
+    {
+      "source": "src/chatroom/chatroom-hub.ts",
+      "sourceSha256": "983d6403369f514f0bf62d73b9a61dd96040c593e044d4ff839243a0914ff4c5"
+    },
+    {
+      "source": "src/chatroom/peer-session.ts",
+      "sourceSha256": "f63f93a01da9950b76c0288c2ce499389be59b0d22c779bf91e4bb5548c611cf"
+    },
+    {
+      "source": "src/chatroom/chat-join-approval.ts",
+      "sourceSha256": "9528a29e0ac4e3fc63ab5f456bc975493a9ea5c350f1388c36291fcc9d2784ac"
+    },
+    {
+      "source": "src/chatroom/chat-room-identity.ts",
+      "sourceSha256": "d3b01935d49b3a1e2e1928e82c3d24d4e34c0cd5907e783e6424f1532c449082"
+    },
+    {
+      "source": "src/chatroom/collaboration-model.ts",
+      "sourceSha256": "56a7e33e2e89056f0b2f4c217c3969d1fae84425da5c6951c4d40faec34805d4"
+    },
+    {
+      "source": "src/chatroom/portal-connections.ts",
+      "sourceSha256": "1723ce543c520f36bd909e24b92513a9d1a0699d9fa181d0a591f71de58944c5"
+    },
+    {
+      "source": "src/chatroom/meeting-state.ts",
+      "sourceSha256": "777ea01d26cd721e61b8cb6599b640086d5bb10e80e3f8753732c83983f9201a"
+    },
+    {
+      "source": "src/chatroom/chat-meeting-lifecycle.ts",
+      "sourceSha256": "fa9f4506dcc167cbba00ae4b1ef4886455781676fbeda51f73786458e60d09f8"
+    }
+  ],
+  "nextServerEvidence": [
+    {
+      "source": "src/collaboration-state.ts",
+      "sourceSha256": "22d11c7e86214b4d5b2a3c021a4154f540b1a74253c5f16373d39ef9f8c1e16f"
+    },
+    {
+      "source": "src/manager-runtime.ts",
+      "sourceSha256": "f1fb84d411680628a95759c87403deed140ba3961679373d04ab3f846ae9611d"
+    },
+    {
+      "source": "src/manager-runtime-contracts.ts",
+      "sourceSha256": "1a9a9dba7f3610dd9687baa199ead0459938c37448c944e29a847cf6f5e79ae2"
+    },
+    {
+      "source": "src/agent-runtime-contracts.ts",
+      "sourceSha256": "0ca96340b61afa3f46d354e436eef7c15d8b1c66016a9ea423479aa2028484e1"
+    },
+    {
+      "source": "src/storage.ts",
+      "sourceSha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+    },
+    {
+      "source": "src/channel-runtime.ts",
+      "sourceSha256": "f1219926c13e6c6aa164a95721f0c734278576089319637aa90576fd4b9a6c66"
+    },
+    {
+      "source": "src/domain/channel-runtime-model.ts",
+      "sourceSha256": "a70d5caa6ecd15b04bd5a4a727c654969ffa2893832a52c6bf0bc51ad813811e"
+    }
+  ],
+  "implementation": [
+    "Exact original Portal peer envelope parser is reused for optional identity-bound wake hints, never authorization.",
+    "New Channel mailbox slice: invited identity, human consent, directed-edge ACL, parent CAS/global receipt transaction and durable per-recipient cursor.",
+    "Exact Manager/Board attempt definition/version pin resolves via required native SQL-only authority hooks; Channel stores delivery references, not a second task state machine.",
+    "A bounded non-evicting delivery acknowledgement ledger preserves duplicate/reply fencing independently of mailbox retention.",
+    "Two synthetic native identities may communicate locally; no external, production, legacy session, auto-spawn, broker or MagicCode calls."
+  ],
+  "withheld": [
+    "No claim of complete Portal/room/meeting parity: meeting topics/Markdown, original transports and role migration are not implemented here.",
+    "No shared host, capability registry, package, browser or Manager changes. Parent must compose identity, lease, transaction, global receipts, directed ACL and task authority.",
+    "No live connection recovery from persisted presence. Reconnect requires an authenticated native identity with existing current membership.",
+    "Invitation plaintext is returned once only; only its SHA-256 and a request fingerprint are durable. Reissuing the same operation returns an explicit error.",
+    "Unavailability is explicit; no offline assignment queueing, unauthorized read, broadcast wake or reply effect replay."
+  ]
+}

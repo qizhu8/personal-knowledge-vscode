@@ -1,0 +1,36 @@
+{
+  "schema": "pkm.domain-capture/v1",
+  "transformation": "Original pure runtime and scheduler reducers unchanged; original runtime/scheduler regressions ESM import rewrites only. AST-selected control expressions, branch/merge/join and loop budgets; human gates and subflow authority deliberately omitted. Durable SQLite adapter is new, not a capture of filesystem journal storage. No executor, provider, process or network adapters.",
+  "files": [
+    {
+      "source": "src/workflows/runtime-model.ts",
+      "captured": "src/domain/workflow-runtime-runtime.ts",
+      "sourceSha256": "d8a5b8decb449a3298ca0e3c4e874d1456e385232f6a6d5df86768aae00d77d6",
+      "capturedSha256": "d8a5b8decb449a3298ca0e3c4e874d1456e385232f6a6d5df86768aae00d77d6"
+    },
+    {
+      "source": "tests/test-workflow-runtime-model.js",
+      "captured": "tests/workflow-runtime-original-runtime.test.mjs",
+      "sourceSha256": "06fc610838de48887442275ade75c061b6aa24373b17d5f96816421c10bb0e95",
+      "capturedSha256": "7b0611c3bc62efe7168601f50a20fc9c4c0431a2a1c97db9c809f9c253377c8b"
+    },
+    {
+      "source": "src/workflows/scheduler-model.ts",
+      "captured": "src/domain/workflow-runtime-scheduler.ts",
+      "sourceSha256": "ad5c786e3d23f5d51ff712117819da0a662eac7548c6e883dcab84daa39ac1d6",
+      "capturedSha256": "ad5c786e3d23f5d51ff712117819da0a662eac7548c6e883dcab84daa39ac1d6"
+    },
+    {
+      "source": "tests/test-workflow-scheduler-model.js",
+      "captured": "tests/workflow-runtime-original-scheduler.test.mjs",
+      "sourceSha256": "b4a14d5316deee9dbeb679116fe4038421e1b021e102f5e02b709c405f544f9a",
+      "capturedSha256": "26d992193fdbcd4f41a5e684aa21d6a4f69a675325e1333b6ccd9936bc7591c4"
+    },
+    {
+      "source": "src/workflows/control-model.ts",
+      "captured": "src/domain/workflow-runtime-control.ts",
+      "sourceSha256": "ac229ecc49c59d61dfc9e304f3d10953d0940d149460b115663b307d1bf7f884",
+      "capturedSha256": "c685ebfab6a260677e0c380587f3442b6d130a59ff0cb430f4f4d83bc2f891de"
+    }
+  ]
+}

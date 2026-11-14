@@ -1,0 +1,26 @@
+.human-review {
+  --review-ink: var(--vscode-editor-foreground, #dce4e0);
+  --review-paper: var(--vscode-editor-background, #15201d);
+  --review-line: var(--vscode-panel-border, #43574d);
+  color: var(--review-ink);
+  background: var(--review-paper);
+  border: 1px solid var(--review-line);
+  padding: clamp(1rem, 3vw, 2rem);
+  font: 15px/1.5 "Segoe UI", sans-serif;
+  max-width: 960px;
+}
+.human-review-header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 1rem; border-bottom: 2px solid var(--review-line); }
+.human-review h2 { font: 2.2rem/1.2 Georgia, serif; letter-spacing: -.03em; margin: 0 0 1rem; flex: 1; }
+.human-review h3 { font: 1.4rem Georgia, serif; margin-top: 0; }
+.human-review-eyebrow { font: 11px/1.4 "Cascadia Code", monospace; letter-spacing: .13em; }
+.human-review-status { border-left: 3px solid #e8bb68; padding-left: 1rem; }
+.human-review-card { border-top: 1px solid var(--review-line); padding: 1.5rem 0; }
+.human-review-scope { font-weight: 600; }
+.human-review-detail { font: 13px/1.65 "Cascadia Code", "Courier New", monospace; white-space: pre-wrap; overflow-wrap: anywhere; padding: 1rem; border: 1px solid var(--review-line); }
+.human-review-pin { font: 11px/1.6 "Cascadia Code", monospace; overflow-wrap: anywhere; }
+.human-review-actions { display: flex; flex-wrap: wrap; gap: .7rem; }
+.human-review button { color: inherit; background: transparent; border: 1px solid var(--review-line); padding: .65rem 1rem; cursor: pointer; font: inherit; }
+.human-review .human-review-approve { background: #dae8cf; color: #142119; border-color: #dae8cf; font-weight: 600; }
+.human-review .human-review-reject { border-color: #c77e69; }
+.human-review button:focus-visible { outline: 2px solid var(--vscode-focusBorder, #e8bb68); outline-offset: 3px; }
+.human-review button:disabled { opacity: .45; cursor: default; }

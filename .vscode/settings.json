@@ -1,0 +1,8 @@
+{
+  "files.watcherExclude": {
+    "**/.migration-test-work/**": true
+  },
+  "search.exclude": {
+    "**/.migration-test-work/**": true
+  }
+}

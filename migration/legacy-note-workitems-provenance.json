@@ -1,0 +1,16 @@
+{
+  "schema": "pkm.original-source-references/v1",
+  "scope": "Read-only SHA-256 references to current Note/Board worker code and tests. historicalSha256 fields preserve superseded source pins. These are not captured-copy records and do not claim native glue is original code.",
+  "originalSources": [
+    { "path": "resources/knowledge_mutations.py", "sha256": "a17e86d059b23132eaddcd3ab6222e7b909a4f4a1215c3e3ee6a8fbc0d2880f2" },
+    { "path": "resources/knowledge_mutations.js", "sha256": "3d087d458de580e30cc31b670ab657b00e938c2aead653766ded7c07a9124ba5" },
+    { "path": "src/knowledge/filestore.ts", "sha256": "c5c3a9761562818529a00aedb96aef254bef34dc80a4ed31f31efd39bc7a97a5", "historicalSha256": "b0c369ae16a56772fe5ea7f704919f32dc58f3192ddac790ff59987b391ceeab" },
+    { "path": "src/knowledge/note-work-items.ts", "sha256": "64f39b26b1d115e92ed5fc1f31c81ef746baf325ea07689c2407449a66aab76e" },
+    { "path": "src/knowledge/todo-board.ts", "sha256": "8e90ec90b520d5d7fec2af92602660f9e5e0369e476a551095563623828f6558" },
+    { "path": "src/knowledge/todo-api.ts", "sha256": "721b02f042451418832d942bb98acc4360d17837e70a02542fd5fb70d947cb8b", "historicalSha256": "61a737f270cb52838bd8171c40eaa9f096d4678d7a048a4414e17470f55a5a06" },
+    { "path": "src/knowledge/todo-api-contract.ts", "sha256": "aa2b563f1c71c825f38a57b65cdacded3ae645dae3d6bad8a607779f833b63d9" },
+    { "path": "tests/test-note-work-items.js", "sha256": "25ad07cdf20931f54bceb65c9b6047466362ad71a8ba8ca591ea1867a015d780" },
+    { "path": "tests/test-note-work-item-lifecycle.js", "sha256": "ad3c9e359d7b958af35a4550b01c6a6019413a7052af380fedfa96f75fe32c08", "historicalSha256": "89f1de5274aef9d711df5e0c6e323b73a078bc7097269bf20d86504369765f11" },
+    { "path": "tests/test-todo-api-mcp.py", "sha256": "ca35fc4d71400a0e33b8e7679d8512281f79acdb0b307387549b7076cea88064" }
+  ]
+}

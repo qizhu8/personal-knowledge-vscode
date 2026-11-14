@@ -1,0 +1,1591 @@
+const panelNativeApi = globalThis.PkmWebviewApi || acquireVsCodeApi();
+let panelInitialSnapshot = null;
+try { const value = document.querySelector('meta[name="pkm-panel-snapshot"]')?.content; if (value) panelInitialSnapshot = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(value), c => c.charCodeAt(0)))); } catch {}
+// Each VS Code webview owns its own API state. Host snapshots seed duplicate/serializer instances only.
+if (!panelNativeApi.getState() && panelInitialSnapshot && Object.keys(panelInitialSnapshot).length) panelNativeApi.setState(panelInitialSnapshot);
+const vscode = { getState:()=>panelNativeApi.getState(), postMessage:message=>panelNativeApi.postMessage(message), setState:value=>{ panelNativeApi.setState(value); panelNativeApi.postMessage({command:'panelViewState',state:value}); return value; } };
+const panelStylesReady = getComputedStyle(document.documentElement).getPropertyValue('--pkm-panel-css-ready').trim() === '1';
+if (panelStylesReady) {
+  for (const id of ['topbar', 'mcp-global-warning', 'workspace-shell', 'ctx-menu', 'sync-modal-bg']) {
+    document.getElementById(id)?.removeAttribute('hidden');
+  }
+  document.querySelectorAll('#loading-banner [hidden]').forEach(element => element.removeAttribute('hidden'));
+} else {
+  const loadingMessage = document.querySelector('#loading-banner .loading-sub');
+  if (loadingMessage) loadingMessage.textContent = 'The interface styles did not load. Reload this window to try again.';
+  vscode.postMessage({ command:'webviewDiagnostic', kind:'error', message:'Panel stylesheet did not load; startup UI remained isolated.' });
+}
+const webviewScriptStartedAt = performance.now();
+requestAnimationFrame(() => requestAnimationFrame(() => {
+  const paints = performance.getEntriesByType?.('paint') || [];
+  vscode.postMessage({
+    command: 'webviewStartupTiming',
+    scriptStartMs: Math.round(webviewScriptStartedAt),
+    firstPaintMs: Math.round(paints.find(entry => entry.name === 'first-paint')?.startTime || performance.now()),
+    firstContentfulPaintMs: Math.round(paints.find(entry => entry.name === 'first-contentful-paint')?.startTime || 0),
+  });
+}));
+window.addEventListener('error', event => vscode.postMessage({
+  command: 'webviewDiagnostic', kind: 'error', message: `${event.message || 'window error'} @ ${event.filename || '?'}:${event.lineno || 0}`,
+}));
+window.addEventListener('unhandledrejection', event => vscode.postMessage({
+  command: 'webviewDiagnostic', kind: 'unhandledrejection', message: String(event.reason?.stack || event.reason || 'unknown rejection'),
+}));
+setInterval(() => { if (document.visibilityState === 'visible') vscode.postMessage({ command: 'webviewDiagnostic', kind: 'heartbeat' }); }, 120000);
+// KaTeX math support for marked: $$...$$ (block) and $...$ (inline). marked
+// tokenizes code fences/spans first, so `$` inside code is left untouched.
+function renderMath(tex, display) {
+  try { return katex.renderToString(tex, { displayMode: display, throwOnError: false, strict: false }); }
+  catch (e) { return '<code class="math-error">' + String(tex).replace(/</g,'&lt;') + '</code>'; }
+}
+let markdownLibrariesConfigured = false;
+function configureMarkdownLibraries() {
+  if (markdownLibrariesConfigured || typeof marked === 'undefined' || typeof katex === 'undefined') return false;
+  try {
+  marked.setOptions({ breaks: true });
+  if (typeof marked !== 'undefined' && typeof katex !== 'undefined') {
+    marked.use({ extensions: [
+      { name: 'blockMath', level: 'block',
+        start(src) { const i = src.indexOf('$$'); return i < 0 ? undefined : i; },
+        tokenizer(src) { const m = /^\$\$([\s\S]+?)\$\$/.exec(src); if (m) return { type: 'blockMath', raw: m[0], text: m[1].trim() }; },
+        renderer(t) { return '<div class="math-block">' + renderMath(t.text, true) + '</div>'; } },
+      { name: 'inlineMath', level: 'inline',
+        start(src) { const i = src.indexOf('$'); return i < 0 ? undefined : i; },
+        tokenizer(src) { const m = /^\$(?!\$)((?:\\.|[^$\\])+?)\$(?!\d)/.exec(src); if (m && m[1].trim()) return { type: 'inlineMath', raw: m[0], text: m[1].trim() }; },
+        renderer(t) { return renderMath(t.text, false); } },
+    ] });
+  }
+  marked.use({ extensions: [
+    { name: 'wikiLink', level: 'inline',
+        start(src) { const i = src.indexOf('[['); return i < 0 ? undefined : i; },
+        tokenizer(src) { const m = /^\[\[([^\]|\n]+)(?:\|([^\]\n]+))?\]\]/.exec(src); if (m) return { type: 'wikiLink', raw: m[0], target: m[1].trim(), label: (m[2] || m[1]).trim() }; },
+        renderer(t) { const e = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); return '<a href="#" class="wikilink" data-note="' + e(t.target) + '">' + e(t.label) + '</a>'; } },
+    ] });
+    markdownLibrariesConfigured = true;
+    return true;
+  } catch(e) {
+    console.error('Markdown library configuration failed', e);
+    return false;
+  }
+}
+const CONTENT_BASES = {
+  skills: document.querySelector('meta[name="pkm-skills-base"]')?.content || '',
+  notes: document.querySelector('meta[name="pkm-notes-base"]')?.content || '',
+  papers: document.querySelector('meta[name="pkm-papers-base"]')?.content || '',
+};
+const SUBSCRIPTIONS_BASE = document.querySelector('meta[name="pkm-subscriptions-base"]')?.content || '';
+// Cache-buster for note/paper `_assets/` images. Seeded uniquely and bumped on
+// every detail render + Refresh, so a newly-added image is never blocked by a
+// stale (or negative/404) webview resource cache entry from an earlier render.
+let renderNonce = Date.now();
+function resourceSegments(value) {
+  return String(value || '').replace(/\\/g, '/').split('/').map(segment => segment.trim()).filter(Boolean);
+}
+function encodeResourceSegment(value) {
+  try { return encodeURIComponent(decodeURIComponent(value)); }
+  catch { return encodeURIComponent(value); }
+}
+function resolveRelativeResource(reference, root, directory, cacheBust) {
+  const value = String(reference || '').replace(/&amp;/g, '&');
+  if (!value || value.startsWith('/') || value.startsWith('#') || /^[a-z][a-z0-9+.-]*:/i.test(value) || value.startsWith('//')) return '';
+  const match = /^([^?#]*)(\?[^#]*)?(#.*)?$/.exec(value);
+  if (!match) return '';
+  const segments = resourceSegments(directory);
+  for (const segment of match[1].split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') {
+      if (!segments.length) return '';
+      segments.pop();
+    } else {
+      segments.push(segment);
+    }
+  }
+  if (!root || !segments.length) return '';
+  let query = match[2] || '';
+  if (cacheBust) query += (query ? '&' : '?') + '_r=' + renderNonce;
+  return root.replace(/\/+$/, '') + '/' + segments.map(encodeResourceSegment).join('/') + query + (match[3] || '');
+}
+function fixAssets(html, category, area, resourceRoot, resourceDirectory) {
+  const root = resourceRoot || CONTENT_BASES[area || 'notes'] || '';
+  const directory = resourceDirectory === undefined ? category : resourceDirectory;
+  return String(html).replace(/\b(src|href)=("|')([^"']+)\2/g, function(m, attr, q, reference) {
+    if (attr === 'href' && !/(^|\/)_assets\//.test(reference)) return m;
+    const resolved = resolveRelativeResource(reference, root, directory, attr === 'src');
+    return resolved ? attr + '=' + q + resolved + q : m;
+  });
+}
+// Wiki links are handled by the `wikiLink` marked extension above (code-safe).
+function safeMarked(text, category, area, resourceRoot, resourceDirectory) {
+  try { return styleTasks(fixAssets(typeof marked !== 'undefined' ? marked.parse(text||'') : '<pre>' + esc(text||'') + '</pre>', category, area, resourceRoot, resourceDirectory)); }
+  catch(e) { return '<pre>' + esc(text||'') + '</pre>'; }
+}
+function subscriptionResourceDirectory(data) {
+  const source = data?.provenance || {};
+  const path = String(data?.path || '').replace(/\\/g, '/');
+  const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+  if (!source.nodeId || !source.shareId || !data?.contentType) return '';
+  return [source.nodeId, source.shareId, 'content', data.contentType, parent].filter(Boolean).join('/');
+}
+// Turn task-list markers into clearly-coloured status badges so checked/unchecked
+// and the custom [~]/[!] states are distinguishable in any theme. marked emits
+// disabled checkboxes for [ ]/[x]; [~]/[!] arrive as literal text at li start.
+function styleTasks(html) {
+  return String(html)
+    .replace(/<li>\s*<input(?=[^>]*\bchecked\b)[^>]*type="checkbox"[^>]*>\s*/g, '<li class="tk tk-done"><span class="tkm">\u2713</span>')
+    .replace(/<li>\s*<input(?![^>]*\bchecked\b)[^>]*type="checkbox"[^>]*>\s*/g, '<li class="tk tk-todo"><span class="tkm"></span>')
+    .replace(/<li>\s*\[~\]\s*/g, '<li class="tk tk-prog"><span class="tkm">~</span>')
+    .replace(/<li>\s*\[!\]\s*/g, '<li class="tk tk-block"><span class="tkm">!</span>');
+}
+function safeHljs(el) { try { if (typeof hljs !== 'undefined') hljs.highlightElement(el); } catch(e) {} }
+const panelLibraryLoads = new Map();
+function ensurePanelLibrary(globalName, metaName) {
+  if (globalThis[globalName]) return Promise.resolve(globalThis[globalName]);
+  if (panelLibraryLoads.has(globalName)) return panelLibraryLoads.get(globalName);
+  const source = document.querySelector(`meta[name="${metaName}"]`)?.content;
+  if (!source) return Promise.reject(new Error(`${globalName} library URL is unavailable.`));
+  const load = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = source;
+    script.onload = () => globalThis[globalName]
+      ? resolve(globalThis[globalName])
+      : reject(new Error(`${globalName} did not initialize after loading.`));
+    script.onerror = () => reject(new Error(`Could not load ${globalName}.`));
+    document.head.appendChild(script);
+  }).catch(error => {
+    panelLibraryLoads.delete(globalName);
+    console.error(error);
+    throw error;
+  });
+  panelLibraryLoads.set(globalName, load);
+  return load;
+}
+function ensurePanelStylesheet(metaName) {
+  const source = document.querySelector(`meta[name="${metaName}"]`)?.content;
+  if (!source || document.querySelector(`link[data-pkm-library="${metaName}"]`)) return;
+  const link = document.createElement('link');
+  link.rel = 'stylesheet';
+  link.href = source;
+  link.dataset.pkmLibrary = metaName;
+  document.head.appendChild(link);
+}
+async function loadMarkdownLibraries() {
+  const startedAt = performance.now();
+  ensurePanelStylesheet('pkm-highlight-css');
+  ensurePanelStylesheet('pkm-katex-css');
+  const results = await Promise.allSettled([
+    ensurePanelLibrary('marked', 'pkm-marked-src'),
+    ensurePanelLibrary('hljs', 'pkm-highlight-src'),
+    ensurePanelLibrary('katex', 'pkm-katex-src'),
+  ]);
+  configureMarkdownLibraries();
+  vscode.postMessage({
+    command: 'webviewLibraryTiming',
+    durationMs: Math.round(performance.now() - startedAt),
+    loaded: results.filter(result => result.status === 'fulfilled').length,
+    failed: results.filter(result => result.status === 'rejected').length,
+  });
+}
+// ── Mermaid diagrams (```mermaid fenced blocks) ─────────────────────────────
+let _mermaidReady = false;
+let _mermaidTheme = '';
+function initMermaidOnce(theme) {
+  if (_mermaidReady || typeof mermaid === 'undefined') return _mermaidReady;
+  try {
+    const light = /vscode-light|vscode-high-contrast-light/.test(document.body.className || '');
+    const selectedTheme = theme || (light ? 'default' : 'dark');
+    // 'antiscript' keeps <b>/<br/> HTML labels working while stripping <script>.
+    mermaid.initialize({ startOnLoad: false, suppressErrorRendering: true, securityLevel: 'antiscript', theme: selectedTheme, fontFamily: 'inherit' });
+    _mermaidReady = true;
+    _mermaidTheme = selectedTheme;
+  } catch (e) {}
+  return _mermaidReady;
+}
+let _mmSeq = 0;
+// Replace each mermaid code block inside `root` with a rendered SVG diagram.
+// Returns a promise that resolves once every diagram in `root` has rendered,
+// so callers (e.g. HTML export) can await fully-inlined SVGs.
+async function renderMermaid(root, theme, interactive = true) {
+  if (!root) return;
+  if (interactive) PkmMediaZoom.renderImages(root);
+  const blocks = [...root.querySelectorAll('code.language-mermaid')];
+  if (!blocks.length) return;
+  try {
+    await ensurePanelLibrary('mermaid', 'pkm-mermaid-src');
+  } catch (error) {
+    blocks.forEach(code => {
+      const holder = document.createElement('div');
+      holder.className = 'mermaid-diagram mermaid-error';
+      holder.textContent = error instanceof Error ? error.message : String(error);
+      (code.closest('pre') || code).replaceWith(holder);
+    });
+    return;
+  }
+  const light = /vscode-light|vscode-high-contrast-light/.test(document.body.className || '');
+  const selectedTheme = theme || (light ? 'default' : 'dark');
+  if (_mermaidTheme !== selectedTheme) _mermaidReady = false;
+  if (!initMermaidOnce(selectedTheme)) return;
+  const jobs = blocks.map(code => {
+    const pre = code.closest('pre') || code;
+    const src = code.textContent || '';
+    const holder = document.createElement('div');
+    holder.className = 'mermaid-diagram';
+    pre.replaceWith(holder);
+    const id = 'mmd-' + (++_mmSeq);
+    const cleanupTemporaryNodes = () => {
+      Array.from(document.body.children).forEach(el => {
+        if (el !== root && (el.id === id || el.id === 'd' + id || el.id === 'i' + id || el.querySelector('[id="' + id + '"]'))) el.remove();
+      });
+    };
+    return Promise.resolve().then(() => mermaid.render(id, src)).then(res => {
+      cleanupTemporaryNodes();
+      holder.innerHTML = res.svg;
+      if (interactive) {
+        const svg = holder.querySelector('svg');
+        if (!svg) throw new Error('Mermaid did not produce an SVG diagram.');
+        PkmMediaZoom.attach(holder, svg, svg.viewBox.baseVal.width || svg.width.baseVal.value, 'Diagram');
+      }
+      if (res.bindFunctions) res.bindFunctions(holder);
+    }).catch(err => {
+      cleanupTemporaryNodes();
+      holder.className = 'mermaid-diagram mermaid-error';
+      const message = String(err && err.message ? err.message : err || 'Invalid diagram').split('\n')[0].slice(0, 500);
+      holder.textContent = 'Mermaid syntax error: ' + message;
+    });
+  });
+  await Promise.all(jobs);
+}
+const esc = s => String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+function fileSelectorCategoryTree(items) {
+  const root = { folders:{}, items:[] };
+  for (const item of items) {
+    const parts = String(item.treePath ?? item.cat ?? '').split('/').map(part => part.trim()).filter(Boolean);
+    let node = root;
+    for (const part of parts) node = node.folders[part] ||= { folders:{}, items:[] };
+    node.items.push(item);
+  }
+  return root;
+}
+function fileSelectorTreeItems(node) { return [...node.items, ...Object.values(node.folders).flatMap(fileSelectorTreeItems)]; }
+const uiIcon = (name, label = '') => `<span class="codicon codicon-${name}" aria-hidden="true"></span>${label ? `<span>${esc(label)}</span>` : ''}`;
+const ICON = {todo:uiIcon('circle-outline'),done:uiIcon('pass-filled'),'data-path':uiIcon('folder'),observation:uiIcon('eye'),general:uiIcon('note')};
+const surfacePanelTitles = { help:'Help', skills:'Skills', notes:'Notes', papers:'Research', agentSessions:'Agent Sessions', recipes:'Recipe Library', actionLibrary:'Action Library', actions:'Action Workbench', prompts:'Prompts', scripts:'Scripts', packages:'Packages', environments:'Environments', servers:'Servers', projects:'Projects', chatroom:'Threads', portalConnections:'Portal Connections', subscriptions:'Network & Sharing', githubSync:'GitHub Sync', backgroundTasks:'Background Tasks', mcp:'General & MCP', userProfile:'User Profile', skillRouter:'Router' };
+let lastPanelTitle = '';
+function setPanelTitle(title) {
+  const next = String(title || 'Personal Knowledge Manager').trim();
+  if (!next || next === lastPanelTitle) return;
+  lastPanelTitle = next;
+  document.title = next;
+  vscode.postMessage({ command:'setPanelTitle', title:next });
+}
+function detailPanelTitle(data) {
+  if (!data) return surfacePanelTitles[state.tab] || 'Personal Knowledge Manager';
+  if (data.type === 'skill') return data.name;
+  if (data.type === 'note' || data.type === 'paper' || data.type === 'subscription') return data.title;
+  if (data.type === 'prompt') return data.meta?.title || data.file || data.task;
+  if (data.type === 'promptDiff') return `${data.file || data.task || 'Prompt'} · Compare`;
+  if (data.type === 'package') return data.name;
+  if (data.type === 'script') return data.file || String(data.path || '').split('/').pop();
+  return surfacePanelTitles[state.tab] || 'Personal Knowledge Manager';
+}
+
+let uiI18n = (() => {
+  try {
+    const encoded = atob(document.querySelector('meta[name="pkm-i18n"]')?.content || '');
+    return JSON.parse(new TextDecoder().decode(Uint8Array.from(encoded, character => character.charCodeAt(0))));
+  }
+  catch { return { setting: 'en', resolved: 'en', catalogs: { en: { strings: {} } } }; }
+})();
+const i18nOriginalText = new WeakMap();
+const i18nOriginalAttrs = new WeakMap();
+let i18nScheduled = false;
+
+function i18nStrings(locale = uiI18n.resolved) { return uiI18n.catalogs?.[locale]?.strings || {}; }
+function t(key, params = {}) {
+  let value = i18nStrings()[key] || i18nStrings('en')[key] || key;
+  Object.entries(params).forEach(([name, replacement]) => { value = value.replaceAll(`{${name}}`, String(replacement)); });
+  return value;
+}
+function i18nEnglishLookup() {
+  return new Map(Object.entries(i18nStrings('en')).map(([key, value]) => [value, key]));
+}
+function i18nElementParams(element) {
+  const params = {};
+  for (const attribute of element.attributes || []) {
+    if (attribute.name.startsWith('data-i18n-param-')) params[attribute.name.slice(16)] = attribute.value;
+  }
+  return params;
+}
+function translateUiNode(node, lookup) {
+  if ((node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement)?.closest('.pkm-help,[data-pkm-guidance]')) return;
+  if (node.nodeType === Node.TEXT_NODE) {
+    const parent = node.parentElement;
+    if (!parent || parent.closest('script,style,code,pre,textarea,option[data-i18n-skip]')) return;
+    if (!i18nOriginalText.has(node)) i18nOriginalText.set(node, node.nodeValue || '');
+    const original = i18nOriginalText.get(node) || '';
+    const trimmed = original.trim();
+    const key = lookup.get(trimmed);
+    if (!key) return;
+    const translated = t(key);
+    const next = original.replace(trimmed, translated);
+    if (node.nodeValue !== next) node.nodeValue = next;
+    return;
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) return;
+  const element = node;
+  const explicitKey = element.getAttribute('data-i18n');
+  if (explicitKey) {
+    const translated = t(explicitKey, i18nElementParams(element));
+    if (element.textContent !== translated) element.textContent = translated;
+  }
+  for (const attribute of ['title','placeholder','aria-label']) {
+    const key = element.getAttribute(`data-i18n-${attribute}`);
+    if (key && element.getAttribute(attribute) !== t(key)) element.setAttribute(attribute, t(key));
+  }
+  let originals = i18nOriginalAttrs.get(element);
+  if (!originals) { originals = {}; i18nOriginalAttrs.set(element, originals); }
+  for (const attribute of ['title','placeholder','aria-label']) {
+    if (!element.hasAttribute(attribute)) continue;
+    if (!(attribute in originals)) originals[attribute] = element.getAttribute(attribute) || '';
+    const key = lookup.get(originals[attribute]);
+    if (key && element.getAttribute(attribute) !== t(key)) element.setAttribute(attribute, t(key));
+  }
+}
+function translateUi(root = document.body) {
+  if (!root) return;
+  const lookup = i18nEnglishLookup();
+  translateUiNode(root, lookup);
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) translateUiNode(walker.currentNode, lookup);
+  document.documentElement.lang = uiI18n.resolved;
+}
+function scheduleUiTranslation() {
+  if (i18nScheduled) return;
+  i18nScheduled = true;
+  requestAnimationFrame(() => { i18nScheduled = false; translateUi(); });
+}
+function applyUiLanguage(payload) {
+  uiI18n = Object.assign({}, uiI18n, payload || {});
+  refreshEmptyDetailHint();
+  translateUi();
+  const locale = (uiI18n.locales || []).find(item => item.id === uiI18n.resolved);
+  document.documentElement.dir = locale?.direction || 'ltr';
+  const selector = document.getElementById('pkm-language-select');
+  if (selector) selector.value = uiI18n.setting || 'auto';
+  if (state.tab === 'help') showHelpTab();
+}
+function changeUiLanguage(setting) {
+  if (uiI18n.catalogs?.[setting]) applyUiLanguage({ setting, resolved: setting });
+  ask('setUiLanguage', { language: setting });
+}
+function languageOptionsHtml() {
+  const options = [`<option value="auto" data-i18n="language.auto" ${uiI18n.setting === 'auto' ? 'selected' : ''}>${esc(t('language.auto'))}</option>`];
+  for (const locale of uiI18n.locales || []) options.push(`<option value="${esc(locale.id)}" ${uiI18n.setting === locale.id ? 'selected' : ''}>${esc(locale.label)}</option>`);
+  return options.join('');
+}
+new MutationObserver(scheduleUiTranslation).observe(document.body, { childList: true, subtree: true });
+scheduleUiTranslation();
+
+const workspaceSurfaces = Object.freeze({
+  knowledge:['skills','notes','papers'],
+  tools:['prompts','scripts','packages','environments','servers'],
+  automation:['userProfile','agentSessions','agentSnapshots','actionLibrary','recipes','actions'],
+  projects:['projects','chatroom','portalConnections'],
+  settings:['mcp','skillRouter','subscriptions','githubSync','backgroundTasks'],
+  help:['help']
+});
+const workspaceDefaultSurface = Object.freeze({ knowledge:'skills', tools:'prompts', automation:'agentSessions', projects:'projects', settings:'mcp', help:'help' });
+function workspaceForTab(tab) {
+  return Object.keys(workspaceSurfaces).find(workspace => workspaceSurfaces[workspace].includes(tab)) || 'projects';
+}
+let state = { workspace:'knowledge', tab:'skills', filter:'all', search:'', items:[], folders:[], knowledgeGroups:null, subscriptionGroups:[], knowledgeTrash:[], privateTopLevels:[], brokerSharedFolders:{}, active:null };
+let loadProfilingEnabled = false;
+let loadProfileRequestSequence = 0;
+const loadProfileRequests = new Map();
+const loadProfileResponseCommands = Object.freeze({
+  list:'list', projectState:'projectState', envList:'envList', serverList:'serverList',
+  subscriptionState:'subscriptionState', githubSyncState:'githubSyncState',
+  userProfile:'userProfile', userProfileEdit:'userProfile', backgroundTasks:'backgroundTasks', portalConnections:'portalConnections', chatState:'chatState', checkMcp:'mcpStatus',
+  skillRouterStatus:'skillRouterStatus', setLoadProfiling:'mcpStatus',
+});
+function loadProfileEvent(event, detail = {}) {
+  if (!loadProfilingEnabled) return;
+  vscode.postMessage({ command:'loadProfileEvent', event, ...detail });
+}
+function loadProfileRequest(command) {
+  const traceId = `wv-${Date.now().toString(36)}-${(++loadProfileRequestSequence).toString(36)}`;
+  const responseCommand = loadProfileResponseCommands[command];
+  if (responseCommand) {
+    loadProfileRequests.set(traceId, {
+      command, responseCommand, surface:state.tab, workspace:state.workspace, startedAt:performance.now(),
+    });
+  }
+  return traceId;
+}
+function loadProfileResponse(command, message) {
+  const traceId = String(message?.profileRequestId || '');
+  const request = traceId ? loadProfileRequests.get(traceId) : null;
+  if (!request || request.responseCommand !== command) return null;
+  loadProfileRequests.delete(traceId);
+  const responseAt = performance.now();
+  loadProfileEvent('webview.response.received', {
+    traceId, profileCommand:request.command, surface:request.surface, workspace:request.workspace,
+    durationMs:Math.round(responseAt - request.startedAt),
+  });
+  return { ...request, traceId, responseAt };
+}
+function loadProfileRendered(request) {
+  if (!request) return;
+  requestAnimationFrame(() => requestAnimationFrame(() => loadProfileEvent('webview.response.rendered', {
+    traceId:request.traceId, profileCommand:request.command, surface:request.surface, workspace:request.workspace,
+    durationMs:Math.round(performance.now() - request.startedAt),
+  })));
+}
+let initialLoadComplete = !panelStylesReady;
+let loadingProgressTimer = null;
+let loadingRevealTimer = null;
+let latestLoadingProgress = null;
+let loadingProgressVisible = false;
+const TAB_CACHE_FRESH_MS = 2 * 60_000;
+function tabCacheIsFresh(updatedAt, now = Date.now()) {
+  return Number(updatedAt) > 0 && now - Number(updatedAt) < TAB_CACHE_FRESH_MS;
+}
+const pendingActionButtons = new Map();
+const knowledgeTrashActionLabels = {
+  deleteNote:'Moving Note to Trash...', deleteSkill:'Moving Skill to Trash...', deletePaper:'Moving Paper to Trash...',
+  deleteScript:'Moving Script to Trash...', deleteAllPapers:'Moving Research to Trash...',
+  skillTrashFolder:'Moving Skill folder to Trash...', knowledgeTrashMove:'Moving to Trash...',
+  skillTrashRestore:'Restoring from Trash...', knowledgeTrashRestore:'Restoring from Trash...',
+  skillTrashDelete:'Permanently deleting Trash entry...', knowledgeTrashDelete:'Permanently deleting Trash entry...',
+  skillTrashEmpty:'Emptying Trash...', knowledgeTrashEmpty:'Emptying Trash...',
+};
+const actionTimeouts = {
+  subscriptionCopyLink:10000, subscriptionConfigure:15000, subscriptionSetOnline:30000, subscriptionSetSharePublished:30000,
+  subscriptionUpsertShare:30000, subscriptionDeleteShare:30000, subscriptionAdd:60000,
+  subscriptionTestGitHubBranch:150000, subscriptionMountGitHub:150000,
+  subscriptionRename:10000, subscriptionSetPriority:15000, subscriptionRefresh:60000, subscriptionRemove:30000,
+  subscriptionRevealSecret:10000, subscriptionRotateSecret:30000, subscriptionUnblockIp:15000, subscriptionFork:30000, subscriptionOpenServerLink:15000,
+  deleteNote:15000, deleteSkill:15000, deletePaper:15000, deleteScript:15000, deleteAllPapers:30000,
+  skillTrashFolder:15000, skillTrashRestore:15000, skillTrashDelete:15000, skillTrashEmpty:30000,
+  knowledgeTrashMove:15000, knowledgeTrashRestore:15000, knowledgeTrashDelete:15000, knowledgeTrashEmpty:30000,
+  serverSubscriptionStatus:15000,
+  serverSubscriptionRefresh:60000,
+  serverList:30000, serverStart:60000, serverStop:60000, serverRestart:90000, serverInspectExternal:30000,
+  chatAddManagedAgent:180000,
+  agentSnapshotCreate:30000, agentSnapshotDelete:15000,
+  recipeOpenBrowser:30000,
+  githubSyncSave:30000, githubSyncDelete:120000, githubSyncRun:120000, githubSyncCreateIdentity:30000, githubSyncTestAuthentication:30000,
+  githubSyncForceUpdate:900000, githubSyncForceRemote:900000,
+  githubSyncMigration:180000,
+  githubSyncState:120000, githubSyncRestore:180000, githubSyncPickIdentity:30000,
+  githubSyncConflictChoose:120000, githubSyncConflictValidate:120000,
+  githubSyncRepairOpen:30000, githubSyncRepairPreview:30000, githubSyncRepairApply:180000,
+  githubSyncRecipeRecompilePreview:60000, githubSyncRecipeRecompileApply:180000,
+  githubSyncRepairRevalidate:180000, githubSyncRepairRevalidateOnly:180000,
+  githubSyncRepairPause:180000, githubSyncRepairResume:180000, githubSyncRepairTrash:180000,
+  githubSyncConflictOpen:30000, githubSyncConflictChooseAll:120000, githubSyncConflictDelete:120000, githubSyncConflictDeleteAll:120000, githubSyncConflictDeleteLocal:120000, githubSyncConflictDeleteLocalAll:120000, githubSyncConflictAgent:120000, githubSyncConflictAgentAll:1800000, githubSyncConflictAccept:900000, githubSyncConflictDiscard:30000,
+  mcpRepairRuntime:600000, mcpSetPython:600000, mcpBrowsePython:600000, generateMcp:90000,
+  reconfigureKnowledgeRoot:600000, reconfigureEnvironmentsRoot:600000, reconfigureMcpRuntimePath:600000, reconfigureMcpServerPath:600000,
+  checkMcp:600000, mcpDetectPython:60000, refreshMcpPathSizes:30000,
+  configureNativeMcpDiscovery:600000, registerCopilotMcp:600000,
+};
+
+function restoreActionButton(entry) {
+  clearTimeout(entry.timer);
+  entry.progress?.remove();
+  if (!entry.button.isConnected) return;
+  entry.button.disabled = false;
+  entry.button.removeAttribute('aria-busy');
+  entry.button.classList.remove('action-pending');
+  entry.button.innerHTML = entry.html;
+}
+
+function actionMessageHost(button) {
+  return button.closest('.sub-editor-actions,.sub-gateway-actions,.sub-add,.sub-row-actions,.pkm-config-actions,.mcp-row-action,.mcp-running') || button.parentElement;
+}
+
+function clearActionError(button) {
+  actionMessageHost(button)?.parentElement?.querySelectorAll(':scope > .pk-action-error').forEach(error => error.remove());
+}
+
+function showActionError(button, message) {
+  const host = actionMessageHost(button);
+  if (!host?.parentElement) return;
+  host.parentElement.querySelectorAll(':scope > .pk-action-error').forEach(error => error.remove());
+  const error = document.createElement('div');
+  error.className = 'pk-action-error';
+  error.setAttribute('role','alert');
+  const text = document.createElement('span');
+  text.textContent = message;
+  const dismiss = document.createElement('button');
+  dismiss.type = 'button';
+  dismiss.className = 'pk-action-error-dismiss';
+  dismiss.textContent = '×';
+  dismiss.title = 'Dismiss error';
+  dismiss.setAttribute('aria-label','Dismiss error');
+  dismiss.onclick = () => error.remove();
+  error.append(text, dismiss);
+  appendProblemGuide(error);
+  host.insertAdjacentElement('afterend', error);
+}
+
+function showViewActionError(message) {
+  const host = document.getElementById('detail');
+  if (!host) return;
+  host.querySelectorAll(':scope > .pk-action-error').forEach(error => error.remove());
+  const error = document.createElement('div');
+  error.className = 'pk-action-error'; error.setAttribute('role','alert');
+  const text = document.createElement('span'); text.textContent = message;
+  const dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.className = 'pk-action-error-dismiss'; dismiss.textContent = '×'; dismiss.title = 'Dismiss error'; dismiss.setAttribute('aria-label','Dismiss error'); dismiss.onclick = () => error.remove();
+  error.append(text, dismiss); appendProblemGuide(error); host.prepend(error);
+}
+
+function showInitialViewError(title, message, retryCommand) {
+  const detail = document.getElementById('detail');
+  if (!detail) return;
+  const container = document.createElement('div');
+  container.className = 'empty';
+  const heading = document.createElement('strong');
+  heading.textContent = title;
+  const body = document.createElement('p');
+  body.textContent = message;
+  const retry = document.createElement('button');
+  retry.className = 'tbtn primary';
+  retry.type = 'button';
+  retry.textContent = 'Retry';
+  retry.addEventListener('click', () => {
+    detail.innerHTML = '<div class="empty">Retrying…</div>';
+    ask(retryCommand, {});
+  });
+  container.append(heading, body, retry);
+  appendProblemGuide(container);
+  detail.replaceChildren(container);
+}
+
+function timeoutAction(command, entry) {
+  const remaining = (pendingActionButtons.get(command) || []).filter(candidate => candidate !== entry);
+  if (remaining.length) pendingActionButtons.set(command, remaining); else pendingActionButtons.delete(command);
+  restoreActionButton(entry);
+  const message = `${entry.label} timed out. The background operation may still be running; check PKM logs before retrying.`;
+  if (typeof githubSyncRepairCommands !== 'undefined' && githubSyncRepairCommands.has(command)) {
+    for (const [targetId, pending] of githubSyncRepairPending) {
+      if (pending.command === command) githubSyncOnRepairResult({ targetId, action:command, error:message });
+    }
+  }
+  if (entry.button.isConnected) showActionError(entry.button, message);
+  else showViewActionError(message);
+}
+
+function beginAction(command, button) {
+  const timeout = actionTimeouts[command];
+  const trashLabel = knowledgeTrashActionLabels[command];
+  if (!timeout || (!trashLabel && !(button instanceof HTMLButtonElement))) return true;
+  if (trashLabel && Object.keys(knowledgeTrashActionLabels).some(action => pendingActionButtons.has(action))) return false;
+  if (!(button instanceof HTMLButtonElement)) button = document.createElement('button');
+  if (button.disabled) return false;
+  if (pendingActionButtons.has(command)) {
+    const running = pendingActionButtons.get(command).find(entry => entry.button.isConnected) || pendingActionButtons.get(command)[0];
+    showActionError(button, `${running?.label || 'The previous request'} is still running. Wait for it to finish before trying again.`);
+    return false;
+  }
+  clearActionError(button);
+  const entries = pendingActionButtons.get(command) || [];
+  const entry = { button, html:button.innerHTML, label:(button.textContent || command).trim(), timer:0, progress:null };
+  if (trashLabel) {
+    entry.progress = document.createElement('div');
+    entry.progress.className = 'pk-action-progress';
+    entry.progress.setAttribute('role','status');
+    entry.progress.setAttribute('aria-live','polite');
+    entry.progress.setAttribute('aria-busy','true');
+    entry.progress.textContent = trashLabel;
+    document.body.appendChild(entry.progress);
+  }
+  entry.timer = setTimeout(() => timeoutAction(command, entry), timeout);
+  entries.push(entry);
+  pendingActionButtons.set(command, entries);
+  button.disabled = true;
+  button.setAttribute('aria-busy','true');
+  button.classList.add('action-pending');
+  button.textContent = button.dataset.pendingLabel || 'Working…';
+  return true;
+}
+
+function finishAction(...commands) {
+  for (const command of commands) {
+    for (const entry of pendingActionButtons.get(command) || []) {
+      restoreActionButton(entry);
+    }
+    pendingActionButtons.delete(command);
+  }
+}
+
+function refreshActionTimeout(command) {
+  const timeout = actionTimeouts[command];
+  if (!timeout) return;
+  for (const entry of pendingActionButtons.get(command) || []) {
+    clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => timeoutAction(command, entry), timeout);
+  }
+}
+
+function updateActionProgress(command, label) {
+  refreshActionTimeout(command);
+  for (const entry of pendingActionButtons.get(command) || []) {
+    if (entry.button.isConnected) entry.button.textContent = label || entry.button.dataset.pendingLabel || 'Working…';
+  }
+}
+
+function hasPendingActionPrefix(prefix) { return [...pendingActionButtons.keys()].some(command => command.startsWith(prefix)); }
+
+function failAction(message, ...commands) {
+  for (const command of commands) {
+    for (const entry of pendingActionButtons.get(command) || []) {
+      restoreActionButton(entry);
+      if (entry.button.isConnected) showActionError(entry.button, message);
+      else showViewActionError(message);
+    }
+    pendingActionButtons.delete(command);
+  }
+}
+let ctxTarget = null; // slug of note under right-click
+let ctxPinned = false; // pinned state of the note under right-click
+let notePinnedFolders = []; // note folder paths pinned to the top of their level
+let currentDetail = null; // current detail item for edit/delete actions
+let currentDetailRequest = null; // authoritative {type,key}, including packageFile/prompt variants
+let detailRequestSequence = 0;
+let catExpanded = {}; // expanded state per folder key (default: collapsed)
+let pendingTreeRefresh = null; // identifies disk changes whose category path should be revealed
+let pendingEditSlug = null; // note slug awaiting detail load for edit
+let pendingEditType = null; // item type awaiting detail load to enter edit mode (from tree right-click)
+let searchDebounce = null; // debounce timer for search
+const findState = { content: { index: -1, targets: [] }, chat: { index: -1, targets: [] } };
+
+function compileFindPattern(query, regex, caseSensitive) {
+  if (!query) return null;
+  const source = regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  try { return new RegExp(source, caseSensitive ? 'g' : 'gi'); } catch { return false; }
+}
+function findOptions(scope) {
+  return {
+    query: document.getElementById(scope === 'chat' ? 'chat-searchbox' : 'searchbox')?.value || '',
+    regex: !!document.getElementById(scope === 'chat' ? 'chat-search-regex' : 'search-regex')?.classList.contains('active'),
+    caseSensitive: !!document.getElementById(scope === 'chat' ? 'chat-search-case' : 'search-case')?.classList.contains('active'),
+  };
+}
+function clearFindMarks(root) {
+  root?.querySelectorAll('mark.search-match').forEach(mark => mark.replaceWith(document.createTextNode(mark.textContent || '')));
+  root?.normalize();
+}
+function markFindMatches(root, pattern) {
+  clearFindMarks(root);
+  if (!root || !pattern) return [];
+  const nodes = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode(node) {
+    const parent = node.parentElement;
+    if (!node.nodeValue || !parent || parent.closest('button,input,textarea,select,option,script,style,svg,mark,.mermaid-diagram')) return NodeFilter.FILTER_REJECT;
+    pattern.lastIndex = 0;
+    return pattern.test(node.nodeValue) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+  }});
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  const marks = [];
+  for (const textNode of nodes) {
+    const text = textNode.nodeValue || '';
+    const fragment = document.createDocumentFragment();
+    let last = 0; pattern.lastIndex = 0; let match;
+    while ((match = pattern.exec(text)) !== null) {
+      if (match.index > last) fragment.appendChild(document.createTextNode(text.slice(last, match.index)));
+      const mark = document.createElement('mark'); mark.className = 'search-match'; mark.textContent = match[0];
+      fragment.appendChild(mark); marks.push(mark); last = match.index + match[0].length;
+      if (!match[0].length) pattern.lastIndex += 1;
+    }
+    if (last < text.length) fragment.appendChild(document.createTextNode(text.slice(last)));
+    textNode.replaceWith(fragment);
+  }
+  return marks;
+}
+function updateFindStatus(scope, error) {
+  const current = findState[scope];
+  const count = document.getElementById(scope === 'chat' ? 'chat-search-count' : 'search-count');
+  if (count) count.textContent = error ? 'Invalid regex' : current.targets.length ? `${current.index + 1}/${current.targets.length}` : '0/0';
+}
+function navigateFind(scope, delta) {
+  const current = findState[scope];
+  if (!current.targets.length) return;
+  current.targets[current.index]?.classList.remove('search-current');
+  current.index = (current.index + delta + current.targets.length) % current.targets.length;
+  const target = current.targets[current.index];
+  target.classList.add('search-current');
+  target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  updateFindStatus(scope, false);
+}
+function preservedFindIndex(targets, messageId, previousIndex) {
+  if (!targets.length) return -1;
+  if (messageId) {
+    const matched = targets.findIndex(target => target.dataset?.messageId === messageId);
+    if (matched >= 0) return matched;
+  }
+  return Math.max(0, Math.min(previousIndex, targets.length - 1));
+}
+function toggleFindOption(scope, option) {
+  const id = scope === 'chat' ? `chat-search-${option}` : `search-${option}`;
+  document.getElementById(id)?.classList.toggle('active');
+  if (scope === 'chat') chatRefreshSearch(); else contentSearchChanged(true);
+}
+
+// ── Context menu ──────────────────────────────────────────────────────────
+const ctxMenu = document.getElementById('ctx-menu');
+
+document.getElementById('item-list').addEventListener('contextmenu', e => {
+  const li = e.target.closest('.li[data-note-slug]');
+  if (!li) return;
+  e.preventDefault();
+  ctxTarget = li.dataset.noteSlug;
+  ctxPinned = li.dataset.notePinned === '1';
+  showPaperMenu(e.clientX, e.clientY, noteContextMenuItems(ctxTarget, ctxPinned));
+});
+
+function noteContextMenuItems(slug, pinned) {
+  const note = state.items.find(item => item.slug === slug);
+  return [
+    { label: 'Open', onClick: () => openItem('note', slug) },
+    { label: 'Copy Path', onClick: () => copyContextPath('notes/' + slug + '.md') },
+    { sep: true },
+    { label: pinned ? 'Unpin' : 'Pin', onClick: () => ask('noteSetPinned', { slug, pinned: !pinned }) },
+    { label: 'Edit Content', onClick: () => openMarkdownItem('notes', '', slug) },
+    { label: 'Edit Metadata', onClick: () => editMarkdownMetadataItem('notes', note?.category || '', slug) },
+    { label: 'Move', onClick: () => pkModal({ title:'Move note', message:'Target folder path (blank = root; missing parents are created).', input:true, defaultValue:note?.category||'', okLabel:'Move', onOk:value=>ask('noteMove',{slug,category:value.trim()}) }) },
+    { label: 'Mark as Done', onClick: () => ask('markDone', { slug }) },
+    { sep: true },
+    { label: 'Move to Trash…', danger: true, onClick: () => pkModal({ title:'Move Note to Trash?', message:slug+'\n\nThe Note remains recoverable from Trash.', okLabel:'Move to Trash', danger:true, onOk:()=>ask('knowledgeTrashMove',{area:'notes',path:slug+'.md',kind:'item',name:slug}) }) },
+  ];
+}
+
+// Right-click blank space in a content list -> create a top-level item/folder.
+document.getElementById('item-list').addEventListener('contextmenu', e => {
+  if (!['skills', 'notes', 'papers', 'prompts', 'scripts'].includes(state.tab)) return;
+  if (e.target.closest('.li') || e.target.closest('.tree-cat-hdr')) return;  // items/folders have their own menus
+  e.preventDefault();
+  showPaperMenu(e.clientX, e.clientY, blankContextMenuItems(state.tab));
+});
+
+function blankContextMenuItems(area) {
+  const items = [];
+  if (area === 'skills') items.push({ label: 'New Skill…', onClick: () => ask('createKnowledgeItem', { area: 'skills', category: '' }) });
+  if (area === 'notes') items.push({ label: 'New Note…', onClick: () => ask('createKnowledgeItem', { area: 'notes', category: '' }) });
+  if (area === 'papers') {
+    items.push({ label: 'New Paper…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'paper', category: '' }) });
+    items.push({ label: 'New Idea…', onClick: () => ask('createKnowledgeItem', { area: 'papers', kind: 'idea', category: '' }) });
+  }
+  if (area === 'prompts') items.push({ label: 'New Prompt…', onClick: () => ask('createPromptItem', {}) });
+  if (area === 'scripts') items.push({ label: 'New Script…', onClick: () => ask('createScript', { folder: '' }) });
+  if (area === 'skills' || area === 'notes') items.push({ label: 'Create Folder…', onClick: () => pkModal({
+      title: 'Create folder', message: 'New top-level folder in ' + area + '.',
+      input: true, okLabel: 'Create', onOk: v => { const n = v.trim(); if (n) ask('folderCreate', { area, parent: '', name: n }); } }) }
+  );
+  return items;
+}
+
+document.addEventListener('click', () => ctxMenu.classList.remove('open'));
+document.addEventListener('contextmenu', e => {
+  if (!e.target.closest('#item-list .li[data-note-slug]')) ctxMenu.classList.remove('open');
+});
+
+// Cross-note links: [[Title]] (data-note) and relative/absolute .md links open the target note
+document.getElementById('detail').addEventListener('click', e => {
+  const a = e.target.closest('a');
+  if (!a) return;
+  const from = (currentDetail && currentDetail.type === 'note') ? currentDetail.slug : '';
+  const wiki = a.getAttribute('data-note');
+  if (wiki) { e.preventDefault(); ask('resolveNoteLink', { target: wiki, from, wiki: true }); return; }
+  const href = a.getAttribute('href') || '';
+  // Skip real URL schemes (http:, mailto:, vscode-webview:, …); allow bare
+  // relative paths and absolute filesystem paths that point at a .md note.
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(href) && /\.md($|[?#])/i.test(href)) {
+    e.preventDefault();
+    ask('resolveNoteLink', { target: href, from });
+  }
+});
+
+document.getElementById('ctx-open').addEventListener('click', () => {
+  if (ctxTarget) openItem('note', ctxTarget);
+});
+document.getElementById('ctx-pin').addEventListener('click', () => {
+  if (ctxTarget) { ask('noteSetPinned', { slug: ctxTarget, pinned: !ctxPinned }); ctxTarget = null; }
+});
+document.getElementById('ctx-mark-done').addEventListener('click', () => {
+  if (ctxTarget) { ask('markDone', { slug: ctxTarget }); ctxTarget = null; }
+});
+document.getElementById('ctx-delete').addEventListener('click', () => {
+  if (ctxTarget) {
+    const slug = ctxTarget; ctxTarget = null;
+    pkModal({ title:'Move Note to Trash?', message:'The Note remains recoverable until permanently deleted.', okLabel:'Move to Trash', danger:true, onOk:()=>ask('deleteNote',{slug}) });
+  }
+});
+document.getElementById('ctx-edit').addEventListener('click', () => {
+  if (ctxTarget) { openMarkdownItem('notes', '', ctxTarget); ctxTarget = null; }
+});
+document.getElementById('ctx-move').addEventListener('click', () => {
+  if (!ctxTarget) return;
+  const slug = ctxTarget; ctxTarget = null;
+  const cat = slug.includes('/') ? slug.slice(0, slug.lastIndexOf('/')) : '';
+  pkModal({ title: 'Move note', message: 'Target folder path (blank = root; missing parents are created).', input: true, defaultValue: cat, okLabel: 'Move', onOk: v => ask('noteMove', { slug, category: v.trim() }) });
+});
+
+// ── Message from extension ─────────────────────────────────────────────────
+window.addEventListener('message', e => {
+  const { command, data } = e.data;
+  const loadProfileRender = loadProfileResponse(command, e.data);
+  if (isInitialViewResponse(command, e.data)) finishLoadingProgress();
+  if      (command === 'loadingProgress') { updateLoadingProgress(data); }
+  else if (command === 'mcpSummary') { updateGlobalMcpWarning(data || {}); }
+  else if (command === 'mcpUsage') { mcpOnUsage(data || {}); }
+  else if (command === 'inventoryBatch') { /* progress only; refresh once when the inventory is ready */ }
+  else if (command === 'inventoryReady') {
+    ['skills','notes','scripts'].forEach(invalidateKnowledgeTabView);
+    if (['skills','notes','scripts'].includes(state.tab)) ask('list', { tab: state.tab, filter: state.filter, q: state.search }, null, true);
+  }
+  else if (command === 'list' || command === 'listPartial')     { if (e.data.tab && e.data.tab !== state.tab) return; if (state.tab === 'skills' && (e.data.q || '') !== state.search) return; if (command === 'list') { skillsListLoading = false; finishAction('list'); } if (command === 'list' && revealRefreshedTreeItems(state.tab, state.items, data, pendingTreeRefresh)) pendingTreeRefresh = null; state.items = data; state.folders = e.data.folders || []; state.knowledgeGroups = e.data.knowledgeGroups || null; state.subscriptionGroups = e.data.subscriptionGroups || []; state.knowledgeTrash = e.data.knowledgeTrash || []; state.brokerSharedFolders = e.data.brokerSharedFolders || {}; if (Array.isArray(e.data.privateTopLevels)) state.privateTopLevels = e.data.privateTopLevels; renderList(); highlightDetailMatches(document.getElementById('layout'), state.search); }
+  else if (command === 'listSubscriptionGroups') {
+    if (e.data.tab !== state.tab) {
+      updateCachedKnowledgeTabSubscriptions(e.data.tab, data || []);
+      return;
+    }
+    state.subscriptionGroups = data || [];
+    renderSubscribedGroups(document.getElementById('item-list'));
+  }
+  else if (command === 'detail') {
+    if (e.data.editIdentity && e.data.editRevision) {
+      const snapshot = vscode.getState() || {};
+      const preserve = panelRestoreActive && panelRestoreState.view?.selection && Object.keys(panelRestoreState.view?.forms || {}).length;
+      if (!preserve || !snapshot.editRevisions?.[e.data.editIdentity]) vscode.setState({ ...snapshot, editRevisions:{ ...(snapshot.editRevisions || {}), [e.data.editIdentity]:e.data.editRevision } });
+    }
+    if (e.data.detailRequestId !== undefined
+      && (e.data.detailRequestId !== detailRequestSequence || e.data.detailTab !== state.tab || !currentDetailRequest)) return;
+    if (pendingEditSlug && data?.type === 'note' && data.slug === pendingEditSlug) {
+      pendingEditSlug = null; editNote(data);
+    } else {
+      renderDetail(data);
+      // Enter edit mode if this detail was opened via a tree "Edit" action
+      if (pendingEditType && data && data.type === pendingEditType) {
+        const t = pendingEditType; pendingEditType = null;
+        setTimeout(() => {
+          if (t === 'skill')  openMarkdownItem('skills', data.category, data.name);
+          else if (t === 'note')   openMarkdownItem('notes', '', data.slug);
+          else if (t === 'paper')  openMarkdownItem('papers', '', data.slug);
+          else if (t === 'script') startEditScript();
+        }, 30);
+      }
+    }
+  }
+  else if (command === 'saved')    { ask('list', { tab: state.tab, filter: state.filter, q: state.search }); if (state.tab === 'papers') { ask('paperGroups', {}); ask('paperFacets', {}); } }
+  else if (command === 'skillTrashResult') {
+    finishAction('deleteSkill','skillTrashFolder','skillTrashRestore','skillTrashDelete','skillTrashEmpty');
+    if (!data?.ok) pkModal({ title:'Skills Trash', message:data?.error || 'Trash action failed.', okLabel:'OK' });
+    else vscode.postMessage({ command:'toast', text:data.action === 'emptied' ? `Emptied ${Number(data.count)||0} Trash entries` : `${data.action === 'restored' ? 'Restored' : data.action === 'deleted' ? 'Permanently deleted' : 'Moved to Trash'}: ${data.path || ''}` });
+    if (data?.ok) { currentDetail = null; currentDetailRequest = null; renderEmptyDetail(); }
+    ask('list', { tab:'skills', filter:'all', q:state.tab === 'skills' ? state.search : '', fresh:true });
+  }
+  else if (command === 'knowledgeTrashResult') {
+    finishAction('deleteNote','deletePaper','deleteScript','knowledgeTrashMove','knowledgeTrashRestore','knowledgeTrashDelete','knowledgeTrashEmpty','deleteAllPapers');
+    applyKnowledgeTrashResultToView(data);
+    if (!data?.ok) pkModal({ title:'Trash', message:data?.error || 'Trash action failed.', okLabel:'OK' });
+    else vscode.postMessage({ command:'toast', text:data.action === 'emptied'
+      ? `Emptied ${Number(data.count)||0} Trash entries`
+      : data.action === 'moved-all'
+        ? `Moved ${Number(data.count)||0} Research Paper${Number(data.count) === 1 ? '' : 's'} to Trash`
+        : `${data.action === 'restored' ? 'Restored' : data.action === 'deleted' ? 'Permanently deleted' : 'Moved to Trash'}: ${data.path || ''}` });
+    if (data?.ok) { currentDetail = null; currentDetailRequest = null; renderEmptyDetail(); }
+    ask('list', { tab:data?.area || state.tab, filter:'all', q:data?.area === state.tab ? state.search : '', fresh:true });
+  }
+  else if (command === 'noteFolderPins') {
+    notePinnedFolders = e.data.data || [];
+    if (state.tab === 'notes') renderList();
+  }
+  else if (command === 'assetSaved') {
+    const cb = pendingAssets[e.data.reqId];
+    if (cb) { delete pendingAssets[e.data.reqId]; cb(e.data.markdown, e.data.error); }
+  }
+  else if (command === 'markdownAssetList') { showMarkdownAssetList(data); }
+  else if (command === 'noteLinkMissing') {
+    vscode.postMessage({ command: 'toast', text: 'No note found for “' + (e.data.target || '') + '”' });
+  }
+  else if (command === 'linkedNotes') { renderLinkedExport(e.data); }
+  else if (command === 'envList') {
+    envCache = data || [];
+    if (state.tab === 'environments') renderEnvDashboard(envCache);
+    if (e.data.refreshErrors?.length && state.tab === 'environments') showEnvProblem(e.data.refreshErrors.join('; '));
+    const refresh = document.querySelector('#content-toolbar .tbtn[onclick="doReload()"]');
+    if (refresh) { refresh.disabled = false; refresh.innerHTML = uiIcon('refresh', 'Refresh'); }
+  }
+  else if (command === 'envPackages') { onEnvPackages(e.data); }
+  else if (command === 'envCompare') { renderEnvCompare(data); }
+  else if (command === 'envSimilarity') { renderEnvSimilarity(data); }
+  else if (command === 'envMergeScript') { onEnvMergeScript(e.data); }
+  else if (command === 'envSize') { onEnvSize(e.data); }
+  else if (command === 'envActivate') { onEnvActivate(e.data); }
+  else if (command === 'envCreated') { onEnvCreated(e.data); }
+  else if (command === 'envCreatePickDir') { onEnvCreatePickDir(e.data); }
+  else if (command === 'envDeleteResult') { onEnvDeleteResult(e.data); }
+  else if (command === 'envMigrated') { onEnvMigrated(e.data); }
+  else if (command === 'envDeleteScript') { onEnvDeleteScript(e.data); }
+  else if (command === 'envCondaList') { onCondaList(data); }
+  else if (command === 'envDetectFolder') { onEnvFolderDetected(e.data.data); }
+  else if (command === 'envPickFolder') { onEnvPickFolder(e.data.dir); }
+  else if (command === 'serverList') { finishAction('serverList','serverStart','serverStop','serverRestart','serverInspectExternal'); serverCache = data || []; if (state.tab === 'servers') renderServerDashboard(serverCache); }
+  else if (command === 'serverGroupList') { serverGroupPaths = data || ['Hidden']; if (state.tab === 'servers') renderServerDashboard(serverCache); }
+  else if (command === 'serverPrivacy') { serverPrivateTopLevels = data || []; if (state.tab === 'servers') renderServerDashboard(serverCache); }
+  else if (command === 'serverSubscriptionGroups') { finishAction('serverSubscriptionStatus','serverSubscriptionRefresh'); serverSubscriptionGroups = data || []; if (state.tab === 'servers') renderServerDashboard(serverCache); }
+  else if (command === 'recipeSubscriptionGroups') { recipeSubscriptionGroupsOnResult(data); }
+  else if (command === 'privacyChanged') {
+    if (state.tab === 'servers') { serverPrivateTopLevels = data?.type === 'servers' ? (data?.isPrivate ? [...new Set([...serverPrivateTopLevels, data.topLevel])] : serverPrivateTopLevels.filter(name => name !== data.topLevel)) : serverPrivateTopLevels; ask('serverList', {}); }
+    else if (state.tab === 'recipes' && data?.type === 'recipes') ask('projectState', {});
+    else if (['skills','notes','papers','prompts','packages','scripts'].includes(state.tab)) ask('list', { tab: state.tab, filter: state.filter, q: state.search });
+    if (currentDetailRequest) requestDetail(currentDetailRequest.type, currentDetailRequest.key);
+  }
+  else if (command === 'serverLog') { onServerLog(e.data.slug, e.data.text); }
+  else if (command === 'serverPickFolder') { onServerPickFolder(e.data.dir); }
+  else if (command === 'subscriptionState') { finishAction('subscriptionState','subscriptionConfigure','subscriptionSetOnline','subscriptionUpsertShare','subscriptionDeleteShare','subscriptionAdd','subscriptionMountGitHub','subscriptionRename','subscriptionSetPriority','subscriptionRefresh','subscriptionRemove','subscriptionUnblockIp','subscriptionRotateSecret'); subscriptionOnState(data); finishLoadingProgress(); }
+  else if (command === 'githubSyncState') { if (githubSyncOnState(data) !== false) { finishAction('githubSyncState','githubSyncSave','githubSyncDelete','githubSyncRun','githubSyncAutomationToggle','githubSyncMigration','githubSyncConflictChoose','githubSyncConflictChooseAll','githubSyncConflictDelete','githubSyncConflictDeleteAll','githubSyncConflictDeleteLocal','githubSyncConflictDeleteLocalAll','githubSyncConflictValidate','githubSyncConflictAgent','githubSyncConflictAgentAll','githubSyncConflictDiscard'); finishLoadingProgress(); } }
+  else if (command === 'githubSyncNativeError') { githubSyncNativeFailure(data?.message); }
+  else if (command === 'githubSyncMigrationResult') { finishAction('githubSyncMigration'); }
+  else if (command === 'githubSyncRepairResult') { githubSyncOnRepairResult(data); }
+  else if (command === 'githubSyncConflictAcceptProgress') { updateActionProgress('githubSyncConflictAccept', data?.text || 'Applying choices…'); }
+  else if (command === 'githubSyncConflictAccepted') {
+    finishAction('githubSyncConflictAccept');
+    vscode.postMessage({ command:'toast', text:data?.refreshed?.length ? `${data.refreshed.length} changed files need review` : `Applied ${data?.accepted || 0} choices; Initial Sync is queued` });
+  }
+  else if (command === 'githubSyncRunQueued') { finishAction('githubSyncRun'); finishAction('githubSyncForceUpdate'); githubSyncOnRunQueued(data); }
+  else if (command === 'githubSyncForceRemoteResult') { finishAction('githubSyncForceRemote'); githubSyncOnForceRemoteResult(data); }
+  else if (command === 'githubSyncRuntimeState') { githubSyncOnRuntimeState(data); }
+  else if (command === 'githubSyncAutomationResult') { githubSyncOnAutomationResult(data); }
+  else if (command === 'githubSyncRuntimeSnapshot') { for (const [targetId, runtime] of Object.entries(data || {})) githubSyncOnRuntimeState({ targetId, state:runtime }); }
+  else if (command === 'userProfile') { userProfileOnSnapshot(data); finishAction('userProfileEdit'); finishAction('userProfileFragmentAction'); finishLoadingProgress(); }
+  else if (command === 'backgroundTasks') { backgroundTasksOnSnapshot(data); finishLoadingProgress(); }
+  else if (command === 'backgroundProcesses') { backgroundProcessesOnSnapshot(data); }
+  else if (command === 'retrievalSolutions') { skillRouterSolutionsOnSnapshot(data); }
+  else if (command === 'retrievalPerformance') { skillRouterPerformanceOnSnapshot(data); }
+  else if (command === 'retrievalModelSetup') { skillRouterModelSetupOnProgress(data); }
+  else if (command === 'portalConnections') { portalConnectionsOnSnapshot(data); finishLoadingProgress(); }
+  else if (command === 'githubSyncRestored') { finishAction('githubSyncRestore'); vscode.postMessage({ command:'toast', text:`Restored ${data?.restored?.length || 0} file(s) from GitHub` }); }
+  else if (command === 'githubSyncRestoreCancelled') { finishAction('githubSyncRestore'); }
+  else if (command === 'githubSyncIdentityPicked') { finishAction('githubSyncPickIdentity'); githubSyncIdentityPicked(data?.identityFile || ''); }
+  else if (command === 'githubSyncIdentityCreated') { finishAction('githubSyncCreateIdentity'); githubSyncIdentityPicked(data?.identityFile || ''); vscode.postMessage({ command:'toast', text:'SSH public key copied; add it to GitHub, then test the account' }); }
+  else if (command === 'githubSyncAuthenticationResult') { finishAction('githubSyncTestAuthentication'); githubSyncOnAuthenticationResult(data); vscode.postMessage({ command:'toast', text:`Authenticated as ${data?.login || 'unknown'}` }); }
+  else if (command === 'githubSyncError') { githubSyncSaving = false; const action = String(data?.action || ''); const message = data?.error || 'GitHub Sync failed.'; if (githubSyncRepairCommands.has(action)) githubSyncOnRepairResult({ ...data, error:message }); if (action === 'githubSyncAutomationToggle') githubSyncOnAutomationResult(data); if (action === 'githubSyncForceRemote') githubSyncOnForceRemoteResult({ targetId:data?.targetId, cancelled:true }); if (action === 'githubSyncRun' || action === 'githubSyncForceUpdate') { githubSyncForcePending.delete(data?.targetId); if (state.tab === 'githubSync') renderGitHubSyncPane(); } if (action === 'githubSyncState' && !githubSyncUpdatedAt && state.tab === 'githubSync') { githubSyncStatusRequested = false; showInitialViewError('GitHub Sync could not load', message, 'githubSyncState'); } else if (action === 'githubSyncState') githubSyncOnRefreshError(message); else if (!githubSyncRepairCommands.has(action) && action && pendingActionButtons.has(action)) failAction(message, action); else if (!githubSyncRepairCommands.has(action)) showViewActionError(message); finishLoadingProgress(); }
+  else if (command === 'subscriptionChanged') {
+    invalidateSubscriptionKnowledgeViews();
+    invalidateRecipeSubscriptionGroups();
+    if (state.tab === 'subscriptions' && !hasPendingActionPrefix('subscription')) ask('subscriptionState', {});
+    else if (state.tab === 'servers') {
+      serverSubscriptionGroups = [];
+      renderServerDashboard(serverCache);
+      ask('serverList', {});
+    }
+    else if (cachedKnowledgeTabs.has(state.tab)) ask('list', { tab: state.tab, filter: state.filter, q: state.search, fresh: true });
+  }
+  else if (command === 'actionToolchainsConfigured') { finishAction('actionToolchainsConfigure'); }
+  else if (command === 'subscriptionError') {
+    const action = String(data?.action || '');
+    const message = data?.error || 'Subscription action failed.';
+    if (action === 'subscriptionMountGitHub' || action === 'subscriptionTestGitHubBranch') subscriptionGitHubProgressUpdate(null);
+    if (action === 'subscriptionState' && state.tab === 'subscriptions') showInitialViewError('Sharing & Subscribe could not load', message, 'subscriptionState');
+    else if (action && pendingActionButtons.has(action)) failAction(message, action);
+    else showViewActionError(message);
+    finishLoadingProgress();
+  }
+  else if (command === 'subscriptionGitHubProgress') { refreshActionTimeout(data?.operation === 'test' ? 'subscriptionTestGitHubBranch' : 'subscriptionMountGitHub'); subscriptionGitHubProgressUpdate(data || {}); }
+  else if (command === 'subscriptionSecret') { finishAction('subscriptionRevealSecret','subscriptionRotateSecret'); subscriptionShowSecret(data?.secret || ''); finishLoadingProgress(); }
+  else if (command === 'subscriptionGitHubTestResult') { finishAction('subscriptionTestGitHubBranch'); subscriptionGitHubTestResult(data || {}); finishLoadingProgress(); }
+  else if (command === 'subscriptionRenamed') {
+    const subscription = (subscriptionData.subscriptions || []).find(item => item.id === data?.id);
+    if (subscription) subscription.alias = data?.alias || '';
+    const fallbackName = subscription?.brokerName || subscription?.shareId || '';
+    for (const group of state.subscriptionGroups || []) if (group.subscriptionId === data?.id) group.alias = data?.alias || fallbackName;
+    if (['skills','notes','papers','prompts','scripts','packages'].includes(state.tab)) renderList();
+    vscode.postMessage({ command:'toast', text:data?.alias ? `Local name changed to ${data.alias}` : 'Using published Broker name' });
+  }
+  else if (command === 'subscriptionCompleted') {
+    finishLoadingProgress();
+    const completedCommands = {
+      configured:'subscriptionConfigure', online:'subscriptionSetOnline', offline:'subscriptionSetOnline',
+      published:'subscriptionUpsertShare', created:'subscriptionUpsertShare', copied:'subscriptionCopyLink',
+      subscribed:'subscriptionAdd', githubMounted:'subscriptionMountGitHub', prioritySet:'subscriptionSetPriority', refreshed:'subscriptionRefresh', removed:'subscriptionRemove',
+      brokerDeleted:'subscriptionDeleteShare', brokerDeleteCancelled:'subscriptionDeleteShare',
+      brokerPaused:'subscriptionSetSharePublished', brokerPublished:'subscriptionSetSharePublished',
+      unblocked:'subscriptionUnblockIp', serverOpened:'subscriptionOpenServerLink',
+      serverContentRefreshed:'serverSubscriptionRefresh',
+    };
+    if (completedCommands[data?.action]) finishAction(completedCommands[data.action]);
+    if (data?.action === 'githubMounted') {
+      subscriptionGitHubProgress = null;
+      subscriptionExpandedId = String(data.id || '');
+      subscriptionGitHubMounted = { id:subscriptionExpandedId, name:String(data.name || 'GitHub branch'), itemCount:Number(data.itemCount) || 0 };
+      subscriptionGitHubDraft = { repository:'', branch:'main', credentialTargetId:'', alias:'', result:null };
+      if (state.tab === 'subscriptions') renderSubscriptionPane();
+    }
+    if (data?.action === 'published' || data?.action === 'created') {
+      subscriptionSelectionDrafts.delete(subscriptionEditingShare);
+      if (data.action === 'created') subscriptionEditingShare = String(data.shareId || '');
+    }
+    const messages = {
+      configured:'Gateway settings applied', online:'Gateway is online', offline:'Gateway is offline', copied:'Magic Link copied',
+      brokerDeleted:`Deleted ${data?.name || 'Broker'}`, brokerDeleteCancelled:`Kept ${data?.name || 'Broker'}`, brokerPaused:`Paused ${data?.name || 'Broker'}`, brokerPublished:`Publishing ${data?.name || 'Broker'}`, removed:'Subscription removed', unblocked:`Unblocked ${data?.ip || 'address'}`, serverOpened:`Opened ${data?.name || 'Server'}`, serverContentRefreshed:`Refreshed ${data?.name || 'Server subscription'} at revision ${data?.revision || 0}`,
+    };
+    const text = data?.action === 'published' ? `Published ${data.name} revision ${data.revision}` : data?.action === 'created' ? `Created Broker ${data.name}` : data?.action === 'subscribed' || data?.action === 'githubMounted' ? `Subscribed to ${data.name}` : data?.action === 'refreshed' ? `Refreshed ${data.name} at revision ${data.revision}` : messages[data?.action] || 'Subscription action completed';
+    vscode.postMessage({ command:'toast', text });
+  }
+  else if (command === 'subscriptionForked') {
+    finishAction('subscriptionFork');
+    ask('list', { tab: state.tab, filter: state.filter, q: state.search });
+    vscode.postMessage({ command: 'toast', text: `Forked to ${data?.path || 'local knowledge'}` });
+  }
+  else if (command === 'paperFacets') {
+    paperFacetsData = e.data.data || { topics: [], tags: [], years: [] };
+    if (state.tab === 'papers' && !paperGraphOpen) renderPaperFilters(document.getElementById('sidebar-filters'));
+    if (paperGraphOpen) populatePaperTopicSelect();
+  }
+  else if (command === 'paperGroups') {
+    paperGroupsList = (e.data.data && e.data.data.length) ? e.data.data : [{ name: 'Papers', count: 0 }];
+  }
+  else if (command === 'paperPicker') {
+    const draft = readPaperCites();
+    paperPickerItems = e.data.data || [];
+    if (!document.getElementById('paper-form').classList.contains('hidden')) renderPaperCites(draft);
+  }
+  else if (command === 'paperGraph') { renderPaperGraph(e.data.data); }
+  else if (command === 'projectState') { projectOnState(data); }
+  else if (command === 'projectStateChanged') {
+    projectSnapshotDirty = true;
+    const scopes = Array.isArray(data?.scopes) ? data.scopes : [String(data?.scope || 'all')];
+    const relevant = scopes.some(scope => state.tab === 'recipes' ? scope === 'recipes' || scope === 'all'
+      : ['agentSessions','agentSnapshots'].includes(state.tab) ? ['agentSessions','recipeRuns','all'].includes(scope)
+      : state.tab === 'projects' && (scope === 'projects' || scope === 'all'));
+    if (relevant) {
+      nativeHarnessStateChanged();
+      ask('projectState', {});
+    }
+  }
+  else if (command === 'projectResult') { projectOnResult(data); }
+  else if (command === 'agentSnapshotCreated') { finishAction('agentSnapshotCreate'); agentSnapshotOnCreated(data); }
+  else if (command === 'agentSnapshotRecovered') finishAction('agentSnapshotRecover');
+  else if (command === 'agentSnapshotContents') { finishAction('agentSnapshotContents'); agentSnapshotOnContents(data); }
+  else if (command === 'recipeValidationResult') { recipeOnValidation(data); }
+  else if (command === 'recipeIntentEdited') { recipeOnIntentEdited(data); }
+  else if (command === 'projectError') { projectOnError(data); }
+  else if (command === 'promptRendered') { promptRendered(data); }
+  else if (command === 'promptInferenceResult') { promptInferenceResult(data); }
+  else if (command === 'promptVersionAnalysis') { promptOnVersionAnalysis(data); }
+  else if (command === 'promptTaskVariables') { promptOnTaskVariables(data); }
+  else if (command === 'promptVersionNoteSaved') { promptVersionNoteSaved(data); }
+  else if (command === 'paperFileSaved') {
+    if (pendingPaperFile) { const cb = pendingPaperFile; pendingPaperFile = null; cb(e.data.file, e.data.error); }
+  }
+  else if (command === 'reloaded') {
+    renderNonce++; // force cached note images to reload after external regeneration
+    pendingTreeRefresh = data || {};
+    const changedArea = String(data?.changedPath || '').split('/')[0];
+    if (cachedKnowledgeTabs.has(changedArea)) invalidateKnowledgeTabView(changedArea);
+    else cachedKnowledgeTabs.forEach(invalidateKnowledgeTabView);
+    if (cachedKnowledgeTabs.has(state.tab) && (!changedArea || changedArea === state.tab)) {
+      ask('list', { tab: state.tab, filter: state.filter, q: state.search, fresh:!!data?.manual }, null, true);
+    }
+    githubSyncUpdatedAt = 0;
+    if ((githubSyncTypes.includes(state.tab) && state.tab !== 'agentSnapshots') || state.tab === 'actionLibrary') ensureGitHubSyncStatus();
+    // Re-render the currently open note/skill so external edits and regenerated
+    // images (same path) are picked up, not just the sidebar list.
+    if (currentDetailRequest) ask('detail', currentDetailRequest);
+    const btn = document.querySelector('#content-toolbar .tbtn[onclick="doReload()"]');
+    if (btn) { btn.disabled = false; btn.innerHTML = uiIcon('refresh', 'Refresh'); }
+  }
+  else if (command === 'knowledgeFolderScanFailed') {
+    vscode.postMessage({ command: 'toast', text: `Could not refresh ${data?.category || 'folder'}: ${data?.error || 'scan failed'}` });
+  }
+  else if (command === 'exported') {
+    const a = document.createElement('a');
+    a.href = 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(data, null, 2));
+    a.download = 'pkm-export-' + new Date().toISOString().slice(0,10) + '.json';
+    a.click();
+  }
+  // ── Sync responses ──────────────────────────────────────────────────────
+  else if (command === 'syncContentList') {
+    buildTypeSections(data);
+  }
+  else if (command === 'syncSkillList') {
+    // legacy fallback — ignored now
+  }
+  else if (command === 'syncStarted') {
+    const s = data;
+    const code = s.magicCode || '';
+    document.getElementById('sm-cred-result').innerHTML = `
+      <div class="cred-box">
+        <div style="font-size:11px;color:#4ade80;margin-bottom:8px">✅ Magic Code active — share it with the recipient:</div>
+        <div class="cred-row"><span class="cred-label">Magic Code</span><span class="cred-val" title="One-paste Magic Code">${esc(code)}</span><button class="cred-copy" onclick="navigator.clipboard.writeText('${esc(code)}')">Copy</button></div>
+        <div style="font-size:10px;color:var(--muted);margin:2px 0 8px">This code grants temporary access to the selected content. Share it securely.</div>
+        <div class="cred-row"><span class="cred-label">Expires</span><span class="cred-val">${new Date(s.expires).toLocaleTimeString()}</span></div>
+        <div class="cred-row"><span class="cred-label">Shares</span><span class="cred-val">${esc(s.summary || 'nothing selected')}</span></div>
+      </div>`;
+  }
+  else if (command === 'syncMagicCodeVerified') {
+    const input = document.getElementById('join-code');
+    const status = document.getElementById('join-code-verification');
+    const button = document.getElementById('join-download');
+    if (data.ok) {
+      input.dataset.verifiedValue = input.value.trim();
+      status.innerHTML = '<span style="color:#4ade80">✓ Checksum and encryption authentication verified.</span>';
+      button.disabled = false;
+    } else {
+      delete input.dataset.verifiedValue;
+      status.innerHTML = `<span style="color:#f87171">${uiIcon('error')} ${esc(data.error || 'Magic Code verification failed.')}</span>`;
+      button.disabled = true;
+    }
+  }
+  else if (command === 'syncJoined')   {
+    document.getElementById('join-result').innerHTML =
+      `<span style="color:#4ade80">✅ Synced from ${esc(data.from)}: ${esc(data.summary||data.count+' items')}${data.group ? ' → group “'+esc(data.group)+'” (review &amp; merge offline)' : ''}</span>`;
+    const button = document.getElementById('join-download');
+    if (button) { button.disabled = false; button.removeAttribute('aria-busy'); button.textContent = 'Download'; }
+  }
+  else if (command === 'syncProgress') {
+    const progress = document.getElementById('join-result');
+    if (progress) {
+      const percent = Number.isFinite(data?.percent) ? Math.max(0, Math.min(100, data.percent)) : null;
+      const amount = data?.stage === 'downloading' && data?.current
+        ? `${mcpPathSizeText(Number(data.current))}${data.total ? ' / ' + mcpPathSizeText(Number(data.total)) : ''}`
+        : data?.total ? `${data.current || 0} / ${data.total}${data.type ? ' ' + data.type : ''}` : '';
+      progress.innerHTML = `<div class="sync-progress"><div><strong>${esc(data.message || 'Synchronizing…')}</strong><span>${percent === null ? '' : percent + '%'}${amount ? ' · ' + esc(amount) : ''}</span></div><progress ${percent === null ? '' : `value="${percent}" max="100"`}></progress></div>`;
+    }
+  }
+  else if (command === 'mcpStatus')    { mcpOnStatus(data); finishAction('mcpStatus'); }
+  else if (command === 'mcpCheckComplete') {
+    if (data?.state === 'error' || data?.state === 'action-required') failAction(data?.error || 'PKM integration setup needs attention.','checkMcp');
+    else finishAction('checkMcp');
+  }
+  else if (command === 'mcpActionResult') {
+    const action = String(data?.action || '');
+    if (data?.cancelled) finishAction(action);
+    else if (data?.ok) { finishAction(action); completeMcpUiAction(data?.message || 'MCP configuration updated successfully.'); }
+    else failAction(data?.error || 'MCP configuration failed.', action);
+  }
+  else if (command === 'skillRouterStatus') { skillRouterOnStatus(data); }
+  else if (command === 'uiLanguage')   { applyUiLanguage(data); }
+  else if (command === 'helpGuide') { helpOnGuide(data); }
+  else if (command === 'tourCatalog') { updateFeatureTourCatalog(data); }
+  else if (command === 'initialExperience') { queueInitialExperience(data); }
+  else if (command === 'mcpPathSize')  { finishAction('refreshMcpPathSizes'); mcpOnPathSize(data); }
+  else if (command === 'chatReadReceipt') { chatUpdateReadReceipt(data); }
+  else if (command === 'mcpPythonResult') { finishAction('mcpSetPython','mcpBrowsePython'); renderMcpPythonResult(data); }
+  else if (command === 'mcpPythonBrowseCancelled') { finishAction('mcpBrowsePython'); }
+  else if (command === 'mcpPythonCandidates') { renderMcpPythonCandidates(data); }
+  else if (command === 'mcpPythonScanStarted') { startMcpPythonScan(data); }
+  else if (command === 'mcpPythonCandidate') { appendMcpPythonCandidate(data); }
+  else if (command === 'mcpPythonScanProgress') { updateMcpPythonScan(data); }
+  else if (command === 'mcpPythonScanComplete') { finishAction('mcpDetectPython','mcpCancelPythonScan'); finishMcpPythonScan(data); }
+  else if (command === 'mcpRuntimeProgress') { renderMcpRuntimeProgress(data); }
+  else if (command === 'mcpRuntimeResult') { finishAction('mcpRepairRuntime','mcpSetPython','reconfigureMcpRuntimePath'); renderMcpRuntimeResult(data); }
+  else if (command === 'mcpGenerated') { finishAction('generateMcp','reconfigureMcpServerPath'); mcpOnGenerated(data); }
+  else if (command === 'mcpError')     {
+    failAction(data?.error || 'The operation failed.','checkMcp','mcpRepairRuntime','mcpSetPython','generateMcp','mcpDetectPython','refreshMcpPathSizes','reconfigureKnowledgeRoot','reconfigureEnvironmentsRoot','reconfigureMcpRuntimePath','reconfigureMcpServerPath');
+    const el = document.getElementById('mcp-result');
+    if (el) el.innerHTML = `<span style="color:#f87171">❌ ${esc(data.error)}</span>`;
+  }
+  else if (command === 'aiBackends') { renderAiBackends(data.backends); }
+  else if (command === 'aiSummary') {
+    if (data.miss) return; // cache-only peek with no cached summary — leave the panel as-is
+    const box = document.getElementById('ai-summary');
+    if (box) {
+      if (data.error) {
+        box.innerHTML = `<div style="padding:12px 14px;margin:12px 0;border:1px solid #f87171;border-radius:8px">
+          <span style="color:#f87171;font-size:12px">❌ ${esc(data.error)}${data.backend?' ('+esc(data.backend)+')':''}</span></div>`;
+      } else {
+        // Strip the machine-readable header comment before rendering
+        const body = (data.summary||'').replace(/^<!--[^>]*-->\s*/, '');
+        box.innerHTML = `<div style="padding:14px 16px;margin:12px 0;border:1px solid var(--accent);border-radius:8px;background:var(--panel)">
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--accent);margin-bottom:8px">${uiIcon('sparkle')} AI Summary${data.cached?' (cached)':''}${data.backend?' · '+esc(data.backend):''}</div>
+          <div class="prose" style="font-size:13px">${safeMarked(body)}</div></div>`;
+        postProcess();
+      }
+    }
+  }
+  else if (command === 'scriptSaved') {
+    if (data.error) { alert('Save failed: ' + data.error); return; }
+    if (data.cancelled) return; // user declined confirmation — stay in editor
+    if (data.ok && data.path && currentDetail?.type === 'script' && currentDetail.path === data.path) {
+      document.getElementById('se-script')?.remove();
+      ask('detail', currentDetailRequest || { type: 'script', key: data.path });
+    }
+  }
+  else if (command === 'metadataUpdateResult') {
+    if (!data.ok) pkModal({ title: 'Duplicate name', message: data.error || 'Metadata could not be saved.', okLabel: 'OK' });
+  }
+  else if (command === 'openItem') {
+    // Navigate to a specific item (triggered from sidebar tree view).
+    // NOTE: type/key are top-level on the message, not under `data`.
+    const itemType = e.data.type, itemKey = e.data.key, wantEdit = e.data.edit;
+    const TAB = { note:'notes', skill:'skills', paper:'papers', prompt:'prompts', package:'packages', script:'scripts', packageFile:'packages' };
+    const tabName = e.data.tab || TAB[itemType] || 'skills';
+    const btn = document.querySelector(`.tab[data-tab="${tabName}"]`);
+    if (btn) btn.dispatchEvent(new MouseEvent('click'));
+    pendingEditType = wantEdit ? itemType : null; // enter edit mode once detail loads
+    setTimeout(() => ask('detail', { type: itemType, key: itemKey }), 150);
+  }
+  else if (command === 'openTab') {
+    if (e.data.tab === 'help' && e.data.helpSection) { openHelpSection(e.data.helpSection); return; }
+    const btn = document.querySelector(`.tab[data-tab="${e.data.tab}"]`);
+    if (btn) btn.dispatchEvent(new MouseEvent('click'));
+  }
+  else if (command === 'openNativeHarness') {
+    selectedAgentSessionId = String(e.data.sessionId || '');
+    const btn = document.querySelector('.tab[data-tab="agentSessions"]');
+    if (btn) btn.dispatchEvent(new MouseEvent('click'));
+    ask('projectState', {});
+  }
+  else if (command === 'focusServer') { focusServerDashboard(String(e.data.slug || '')); }
+  else if (command === 'focusEnvironment') { focusEnvironmentDashboard(String(e.data.environmentId || '')); }
+  else if (command === 'openSubscription') { subscriptionOpen(String(e.data.shareId || '')); }
+  else if (command === 'openNativeSync') { document.querySelector('.tab[data-tab="githubSync"]')?.dispatchEvent(new MouseEvent('click')); }
+  else if (command === 'highlightMcpRegenerate') {
+    openMcpSetup('progress');
+  }
+  else if (command === 'focusMcpSetup') { openMcpSetup(e.data.target); }
+  else if (command === 'chatConfig') { chatOnConfig(data); }
+  else if (command === 'chatState')  { chatOnState(data); }
+  else if (command === 'chatRecents'){ chatOnRecents(data); }
+  else if (command === 'chatMessage'){ chatOnMessage(data); }
+  else if (command === 'chatAgentState'){ chatOnAgentState(data); }
+  else if (command === 'chatFileReady') { chatOnFileReady(data); }
+  else if (command === 'noteTodoResult') { noteTodoResult(data); }
+  else if (command === 'noteTodoProjectResult') { noteTodoProjectResult(data); }
+  else if (command === 'chatImagePreview') { chatOnImagePreview(data); }
+  else if (command === 'chatSendImagesResult') { chatOnSendImagesResult(data); }
+  else if (command === 'chatToast')  { chatToast(data && data.error); }
+  else if (command === 'chatAddManagedAgentProgress') { updateLoadingProgress({ stage:'agent', percent:data?.percent || 20, message:data?.message || 'Summoning a house-elf…' }); }
+  else if (command === 'chatAddManagedAgentResult') { finishAction('chatAddManagedAgent'); finishLoadingProgress(); if (data?.error) chatToast(data.error); }
+  else if (command === 'chatSecret') { chatOnSecret(data && data.secret); }
+  else if (command === 'chatHubResult') { chatOnHubResult(data); }
+  else if (command === 'syncError') {
+    const errEl = smCurrentTab === 'join'
+      ? document.getElementById('join-result')
+      : document.getElementById('sm-cred-result');
+    if (errEl) errEl.innerHTML = `<span style="color:#f87171">❌ ${esc(data.error)}</span>`;
+    if (smCurrentTab === 'join') {
+      const button = document.getElementById('join-download');
+      if (button) { button.disabled = false; button.removeAttribute('aria-busy'); button.textContent = 'Download'; }
+    }
+  }
+  loadProfileRendered(loadProfileRender);
+});
+
+function ask(command, payload, button, silent = false) {
+  if (typeof githubSyncRepairCommands !== 'undefined' && githubSyncRepairCommands.has(command)
+    && githubSyncRepairPending.has(payload.targetId)) return;
+  const actionButton = button || (silent ? null : window.event?.currentTarget);
+  if (!beginAction(command, actionButton)) return;
+  if (typeof githubSyncBeginRepairAction === 'function') githubSyncBeginRepairAction(command, payload);
+  if (command === 'detail') {
+    currentDetailRequest = { type:payload.type, key:payload.key };
+    payload = { ...payload, detailRequestId:++detailRequestSequence, detailTab:state.tab };
+  }
+  if (command === 'recipeUpdate' && typeof panelRecipeRevision === 'function') payload = { ...payload, expectedRecipeRevision:panelRecipeRevision(payload.recipeId) };
+  const knowledgeLoadingLabels = {
+    skills: 'Opening the spellbook…',
+    notes: 'Opening the enchanted notebook…',
+    papers: 'Consulting the ancient scrolls…',
+    prompts: 'Preparing the incantations…',
+    packages: 'Unlocking the supply chest…',
+    scripts: 'Reading the runes…',
+  };
+  const loadingLabels = { list:knowledgeLoadingLabels[state.tab] || 'Brewing a potion…', subscriptionState:'Consulting the exchange ledger…', serverList:'Preparing the Muggle gateway…', envList:'Inspecting the alchemy instruments…', checkMcp:'Checking the protective wards…', chatAddManagedAgent:'Summoning a house-elf…', reload:'Reopening the archive…' };
+  if (!silent && loadingLabels[command]) updateLoadingProgress({ stage:'request', percent:8, message:loadingLabels[command] });
+  const profileRequestId = loadProfileRequest(command);
+  vscode.postMessage({
+    command, ...payload, ...(silent ? { silent:true } : {}),
+    profileRequestId, profileSurface:state.tab, profileWorkspace:state.workspace,
+  });
+}
+
+function captureRefreshView(root, selectors = []) {
+  const scrolls = [{ selector:null, index:0, left:root?.scrollLeft || 0, top:root?.scrollTop || 0 }];
+  for (const selector of selectors) [...(root?.querySelectorAll?.(selector) || [])].forEach((element, index) => {
+    scrolls.push({ selector, index, left:element.scrollLeft, top:element.scrollTop });
+  });
+  const active = document.activeElement;
+  const focus = active?.id && root?.contains?.(active)
+    ? { id:active.id, start:active.selectionStart, end:active.selectionEnd, direction:active.selectionDirection } : null;
+  return { scrolls, focus };
+}
+
+function restoreRefreshView(root, view) {
+  if (!root || !view) return;
+  const focus = view.focus && document.getElementById(view.focus.id);
+  if (focus && root.contains?.(focus)) {
+    focus.focus({ preventScroll:true });
+    if (Number.isInteger(view.focus.start) && typeof focus.setSelectionRange === 'function') {
+      focus.setSelectionRange(view.focus.start, view.focus.end, view.focus.direction || 'none');
+    }
+  }
+  for (const saved of view.scrolls) {
+    const element = saved.selector ? root.querySelectorAll(saved.selector)[saved.index] : root;
+    if (element) { element.scrollLeft = saved.left; element.scrollTop = saved.top; }
+  }
+}
+
+function captureRefreshInputs(root, selector, dirtyOnly = false) {
+  return [...(root?.querySelectorAll?.(selector) || [])].filter(input => {
+    if (!dirtyOnly) return true;
+    if (input.type === 'checkbox' || input.type === 'radio') return input.checked !== input.defaultChecked;
+    const baseline = input.tagName === 'SELECT'
+      ? ([...input.options].find(option => option.defaultSelected) || input.options[0])?.value : input.defaultValue;
+    return input.value !== baseline;
+  }).map(input => ({ id:input.id, value:input.value, checked:input.checked }));
+}
+
+function restoreRefreshInputs(root, inputs) {
+  for (const saved of inputs) {
+    const input = document.getElementById(saved.id);
+    if (!input || !root.contains(input)) continue;
+    if (input.tagName === 'SELECT' && ![...input.options].some(option => option.value === saved.value)) continue;
+    input.value = saved.value;
+    if (typeof saved.checked === 'boolean') input.checked = saved.checked;
+  }
+}
+
+function updateLoadingProgress(progress = {}) {
+  if (initialLoadComplete) return;
+  latestLoadingProgress = progress;
+  if (progress.stage === 'ready') { finishLoadingProgress(); return; }
+  if (!loadingProgressVisible && !loadingRevealTimer) {
+    loadingRevealTimer = setTimeout(() => {
+      loadingRevealTimer = null;
+      if (!latestLoadingProgress || latestLoadingProgress.stage === 'ready') return;
+      loadingProgressVisible = true;
+      renderLoadingProgress(latestLoadingProgress);
+    }, 1000);
+  }
+  if (loadingProgressVisible) renderLoadingProgress(progress);
+}
+
+function isInitialViewResponse(command, message = {}) {
+  const responseByTab = {
+    skills:'list', notes:'list', papers:'list', prompts:'list', packages:'list', scripts:'list',
+    environments:'envList', servers:'serverList', agentSessions:'projectState', recipes:'projectState', projects:'projectState',
+    userProfile:'userProfile', chatroom:'chatState', mcp:'mcpStatus', help:'helpGuide', skillRouter:'skillRouterStatus', subscriptions:'subscriptionState', githubSync:'githubSyncState', backgroundTasks:'backgroundTasks', portalConnections:'portalConnections',
+  };
+  return responseByTab[state.tab] === command && (command !== 'list' || message.tab === state.tab);
+}
+
+function finishLoadingProgress() {
+  globalThis.PkmHostHealth?.ready();
+  clearTimeout(loadingRevealTimer);
+  loadingRevealTimer = null;
+  latestLoadingProgress = { stage:'ready' };
+  loadingProgressVisible = false;
+  initialLoadComplete = true;
+  const banner = document.getElementById('loading-banner');
+  const strip = document.getElementById('view-loading-progress');
+  if (banner) { banner.classList.add('hidden'); setTimeout(() => banner.remove(), 400); }
+  if (strip) strip.classList.add('hidden');
+  if (typeof maybeStartPendingExperience === 'function') maybeStartPendingExperience();
+}
+
+function renderLoadingProgress(progress = {}) {
+  const percent = Math.max(0, Math.min(100, Number(progress.percent ?? 0)));
+  const message = String(progress.message || 'Brewing a potion…');
+  const count = progress.total !== undefined
+    ? `${Number(progress.current || 0).toLocaleString()} / ${Number(progress.total || 0).toLocaleString()}`
+    : progress.current !== undefined ? `${Number(progress.current || 0).toLocaleString()} found` : '';
+  const banner = document.getElementById('loading-banner');
+  if (!initialLoadComplete && banner) {
+    banner.classList.remove('hidden');
+    const sub = banner.querySelector('.loading-sub');
+    const amount = banner.querySelector('.loading-stage-count');
+    const bar = banner.querySelector('progress');
+    if (sub) sub.textContent = message;
+    if (amount) amount.textContent = count;
+    if (bar) bar.value = percent;
+  }
+  const strip = document.getElementById('view-loading-progress');
+  if (strip) {
+    clearTimeout(loadingProgressTimer);
+    strip.classList.add('hidden');
+    document.getElementById('view-loading-stage').textContent = message;
+    document.getElementById('view-loading-detail').textContent = progress.detail || '';
+    document.getElementById('view-loading-count').textContent = count;
+    const bar = document.getElementById('view-loading-bar');
+    if (bar) bar.value = percent;
+  }
+}
+
+// ── Topbar overflow: sliding tabs + collapsing action buttons ───────────
+function scrollTabs(dir, group = document.querySelector('.workspace-context-group.active')) {
+  group?.querySelector('.workspace-context-tabs,.settings-subtabs')?.scrollBy({ left:dir * 160, behavior:'smooth' });
+}
+function updateTabNav() {
+  document.querySelectorAll('.workspace-context-group,.settings-tabs-group').forEach(group => {
+    const tabs = group.querySelector('.workspace-context-tabs,.settings-subtabs');
+    if (!tabs) return;
+    const overflow = tabs.scrollWidth > tabs.clientWidth + 2;
+    group.querySelectorAll('.tab-scroll').forEach(button => {
+      button.hidden = !overflow;
+      button.disabled = button.dataset.direction === '-1' ? tabs.scrollLeft <= 1 : tabs.scrollLeft + tabs.clientWidth >= tabs.scrollWidth - 1;
+    });
+  });
+}
+function sortToolbar() {
+  const tb = document.getElementById('toolbar'); if (!tb) return;
+  [...tb.children].sort((a, b) => (+a.dataset.ord || 0) - (+b.dataset.ord || 0)).forEach(c => tb.appendChild(c));
+}
+function layoutTopbar() {
+  const actionbar = document.getElementById('content-toolbar'), tb = document.getElementById('toolbar'),
+        menu = document.getElementById('more-menu'), moreBtn = document.getElementById('more-btn');
+  if (!actionbar || !tb || !menu || !moreBtn) return;
+  while (menu.firstChild) tb.appendChild(menu.firstChild);
+  sortToolbar();
+  moreBtn.style.display = 'none';
+  updateTabNav();
+  let guard = 40;
+  while (actionbar.scrollWidth > actionbar.clientWidth + 1 && guard-- > 0) {
+    const vis = [...tb.children].filter(b => b.offsetParent !== null);
+    if (!vis.length) break;
+    menu.insertBefore(vis[vis.length - 1], menu.firstChild);
+    moreBtn.style.display = '';
+  }
+  updateTabNav();
+}
+function relayoutTopbar() { requestAnimationFrame(layoutTopbar); }
+function toggleMoreMenu(e) { if (e) e.stopPropagation(); const m = document.getElementById('more-menu'); if (m) m.classList.toggle('open'); }
+document.addEventListener('click', e => {
+  const menu = document.getElementById('more-menu'); if (!menu || !menu.classList.contains('open')) return;
+  const wrap = document.getElementById('more-wrap');
+  if (!wrap) return;
+  if (wrap.contains(e.target) && e.target.id !== 'more-btn') setTimeout(() => menu.classList.remove('open'), 0);
+  else if (!wrap.contains(e.target)) menu.classList.remove('open');
+});
+if (window.ResizeObserver) {
+  const ro = new ResizeObserver(() => relayoutTopbar());
+  const topbar = document.getElementById('topbar'); if (topbar) ro.observe(topbar);
+  const actionbar = document.getElementById('content-toolbar'); if (actionbar) ro.observe(actionbar);
+}
+(() => {
+  document.querySelectorAll('.workspace-context-tabs').forEach(tabs => {
+    for (const direction of [-1,1]) {
+      const button = document.createElement('button');
+      button.className = 'tab-scroll'; button.type = 'button'; button.hidden = true;
+      button.dataset.direction = String(direction);
+      button.title = direction < 0 ? 'Previous tabs' : 'Next tabs';
+      button.setAttribute('aria-label',button.title);
+      button.innerHTML = uiIcon(direction < 0 ? 'chevron-left' : 'chevron-right');
+      button.onclick = () => scrollTabs(direction,tabs.parentElement);
+      direction < 0 ? tabs.before(button) : tabs.after(button);
+    }
+    tabs.addEventListener('scroll',updateTabNav,{passive:true});
+    tabs.addEventListener('wheel',event => { if(Math.abs(event.deltaY)>Math.abs(event.deltaX)){tabs.scrollLeft+=event.deltaY;event.preventDefault()} },{passive:false});
+    if(window.ResizeObserver)new ResizeObserver(updateTabNav).observe(tabs);
+  });
+})();
+relayoutTopbar();
+
+const settingsSubtabs = { ...(vscode.getState()?.settingsSubtabs || {}) };
+function settingsTabBar(owner, entries) {
+  if (!entries.some(([id]) => id === settingsSubtabs[owner])) settingsSubtabs[owner] = entries[0][0];
+  const arrow = direction => `<button class="tab-scroll" data-direction="${direction}" type="button" hidden onclick="scrollTabs(${direction},this.parentElement)" aria-label="${direction < 0 ? 'Previous' : 'Next'} settings tabs" title="${direction < 0 ? 'Previous' : 'Next'} settings tabs">${uiIcon(direction < 0 ? 'chevron-left' : 'chevron-right')}</button>`;
+  return `<div class="settings-tabs-group">${arrow(-1)}<nav class="settings-subtabs" role="tablist" aria-label="${esc(owner)} sections" onscroll="updateTabNav()">${entries.map(([id,label]) => `<button role="tab" type="button" data-settings-tab="${id}" aria-selected="${settingsSubtabs[owner] === id}" class="${settingsSubtabs[owner] === id ? 'active' : ''}" onclick="selectSettingsSubtab('${owner}','${id}')">${esc(label)}</button>`).join('')}</nav>${arrow(1)}</div>`;
+}
+function selectSettingsSubtab(owner, id) {
+  settingsSubtabs[owner] = id;
+  vscode.setState({ ...(vscode.getState() || {}), settingsSubtabs:{...settingsSubtabs} });
+  applySettingsSubtab(owner);
+}
+function applySettingsSubtab(owner) {
+  const root = document.querySelector(`[data-settings-owner="${owner}"]`);
+  if (!root) return;
+  root.querySelectorAll('[data-settings-panel]').forEach(panel => { panel.hidden = !panel.dataset.settingsPanel.split(' ').includes(settingsSubtabs[owner]); });
+  root.querySelectorAll('[data-settings-tab]').forEach(button => {
+    const active = button.dataset.settingsTab === settingsSubtabs[owner];
+    button.classList.toggle('active',active); button.setAttribute('aria-selected',String(active));
+    button.tabIndex = active ? 0 : -1;
+    button.onkeydown = event => {
+      const buttons = [...button.parentElement.querySelectorAll('[data-settings-tab]')];
+      let next = buttons.indexOf(button);
+      if (event.key === 'ArrowRight') next = (next + 1) % buttons.length;
+      else if (event.key === 'ArrowLeft') next = (next + buttons.length - 1) % buttons.length;
+      else if (event.key === 'Home') next = 0;
+      else if (event.key === 'End') next = buttons.length - 1;
+      else return;
+      event.preventDefault(); buttons[next].click(); buttons[next].focus();
+    };
+  });
+  requestAnimationFrame(updateTabNav);
+  if (owner === 'router' && typeof skillRouterSchedulePerformanceRefresh === 'function') skillRouterSchedulePerformanceRefresh();
+}
+
+function initColumnResizer(handleId, targetId, storageKey, minWidth, maxWidth, direction, useFlex) {
+  const handle = document.getElementById(handleId);
+  const target = document.getElementById(targetId);
+  if (!handle || !target || handle.dataset.resizeBound) return;
+  handle.dataset.resizeBound = '1';
+  const applyWidth = width => {
+    const value = Math.max(minWidth, Math.min(maxWidth, width));
+    if (useFlex) target.style.flex = '0 0 ' + value + 'px';
+    else target.style.width = value + 'px';
+  };
+  try {
+    const saved = Number(localStorage.getItem(storageKey));
+    if (saved) applyWidth(saved);
+  } catch (e) {}
+  handle.addEventListener('mousedown', e => {
+    const startX = e.clientX;
+    const startWidth = target.getBoundingClientRect().width;
+    handle.classList.add('active');
+    document.body.classList.add('column-resizing');
+    const move = ev => {
+      const parentLimit = Math.max(minWidth, (target.parentElement?.clientWidth || maxWidth) - 120);
+      applyWidth(Math.min(parentLimit, startWidth + (ev.clientX - startX) * direction));
+    };
+    const up = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      handle.classList.remove('active');
+      document.body.classList.remove('column-resizing');
+      try { localStorage.setItem(storageKey, String(Math.round(target.getBoundingClientRect().width))); } catch (e) {}
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+    e.preventDefault();
+  });
+}
+
+function mainSidebarCollapsed() {
+  try { return localStorage.getItem('pk-main-sidebar-collapsed') === '1'; } catch { return false; }
+}
+function renderEmptyDetail() {
+  const detail = document.getElementById('detail');
+  if (!detail) return;
+  const collapsedHint = mainSidebarCollapsed() ? `<div class="empty-select-hint">${esc(t('content.restoreSidebar'))}</div>` : '';
+  detail.innerHTML = `<div class="empty empty-select-item">${collapsedHint}<div>${esc(t('content.selectItem'))}</div></div>`;
+}
+function refreshEmptyDetailHint() {
+  if (document.querySelector('#detail > .empty-select-item')) renderEmptyDetail();
+}
+function applyMainSidebarState(collapsed = mainSidebarCollapsed()) {
+  const layout = document.getElementById('layout');
+  const toggle = document.getElementById('sidebar-toggle');
+  if (!layout || !toggle) return;
+  layout.classList.toggle('main-sidebar-collapsed', collapsed);
+  toggle.innerHTML = uiIcon(collapsed ? 'chevron-right' : 'chevron-left');
+  toggle.title = collapsed ? 'Restore category tree' : 'Minimize category tree';
+  toggle.setAttribute('aria-label', toggle.title);
+  toggle.setAttribute('aria-expanded', String(!collapsed));
+  refreshEmptyDetailHint();
+}
+function setMainSidebarCollapsed(collapsed, persist = true) {
+  if (persist) { try { localStorage.setItem('pk-main-sidebar-collapsed', collapsed ? '1' : '0'); } catch {} }
+  applyMainSidebarState(collapsed);
+}
+function toggleMainSidebar() {
+  const layout = document.getElementById('layout');
+  setMainSidebarCollapsed(!(layout && layout.classList.contains('main-sidebar-collapsed')));
+}
+applyMainSidebarState();
+
+initColumnResizer('layout-resizer', 'sidebar', 'pk-main-sidebar', 150, 600, 1, false);
+initColumnResizer('note-split-resizer', 'note-editor-pane', 'pk-note-editor', 140, 1000, 1, true);
+initColumnResizer('paper-split-resizer', 'pf-content', 'pk-paper-editor', 140, 1000, 1, true);

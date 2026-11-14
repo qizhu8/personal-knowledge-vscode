@@ -1,0 +1,41 @@
+{
+  "schema": "pkm.domain-capture/v1",
+  "transformation": "Original BrokerAcl and IP policy runtime bodies unchanged; local ESM import rewritten, CJS ipaddr namespace import changed to ESM default, and erased type assertion added for TypeScript 6 union-overload compatibility. AST-selected persisted record/priority declarations unchanged except export; gateway aclAllowed policy initializer captured unchanged inside typed pure function. Original ACL regression executable imports rewritten for isolated ESM.",
+  "files": [
+    {
+      "source": "src/subscriptions/subscription-acl.ts",
+      "captured": "src/domain/subscription-reads-acl.ts",
+      "sourceSha256": "7928b90379a22e8269dfa466066540322a95dfa4f4bb578620271672634083a1",
+      "capturedSha256": "7e0916e607ab3d0c2562dc312ca36d467aa4b6ea24b197ebda2543f336749493"
+    },
+    {
+      "source": "src/subscriptions/subscription-ip-policy.ts",
+      "captured": "src/domain/subscription-reads-ip-policy.ts",
+      "sourceSha256": "023822af26c3f773d25fa33db92745a7fb65cc6af447527280d494284c16be5d",
+      "capturedSha256": "0035bb687959ec0d07a7bb34c582091166c629441d6c27e6a7361f00790cd3d8"
+    },
+    {
+      "source": "src/subscriptions/subscriptions.ts",
+      "captured": "src/domain/subscription-reads-record.ts",
+      "sourceSha256": "17232c71fbd5ac884b1a9e5c657940845828316828db3089be62bc219b24da09",
+      "capturedSha256": "31fc242c86e5ddeaf0e8429b22f6cbc81d7cb3a01520d70b91437c7d6ea91044"
+    },
+    {
+      "source": "src/subscriptions/subscription-gateway-entry.ts",
+      "captured": "src/domain/subscription-reads-policy.ts",
+      "sourceSha256": "a65bd72a7e70fd4bc06096a384b14847f7ab77332915be74fb72efdf589ebb0c",
+      "capturedSha256": "ca9c94c4dce33c7b34bc166ee58d14d48e961b958f9adb5a518dafa9998e5d9f"
+    },
+    {
+      "source": "tests/test-subscription-acl.js",
+      "captured": "tests/subscription-reads-original.test.mjs",
+      "sourceSha256": "4807c1a2c48a0bda9211e53cbce5bc35ef6302e19e9f8e5aa76614cfc6c3aa16",
+      "capturedSha256": "ac3a7bb1c1921286c013e0952c8a9fa8a03e9cae64c280033ae4a4a5ec402547"
+    }
+  ],
+  "requiredDependencies": {
+    "casbin": "5.51.1",
+    "ipaddr.js": "2.5.0"
+  },
+  "qualification": "Local persisted metadata projection and pure policy evaluation only. No gateway, MQTT, remote proof verification, owner bypass, authorization grant, credentials, materialization or fork adapter. Original state belongs to extension globalStorage, not Knowledge Root; only explicit isolated fixture copies are supported."
+}

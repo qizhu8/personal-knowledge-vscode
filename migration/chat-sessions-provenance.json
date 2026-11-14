@@ -1,0 +1,60 @@
+{
+  "schema": "pkm.next.domain-capture/v1",
+  "notes": "Original ChatMessage/ApiConversation contracts captured as text; exact history paging reducer and segmented storage captured and exercised with two original regression bodies on synthetic records only. New SQLite runtime state intentionally bounds total history, never imports legacy Roots, and disarms streaming/running observations. No permission grants, queued execution, tools, providers or automatic replay are migrated.",
+  "files": [
+    {
+      "source": "src/chat/api-chat-store.ts",
+      "captured": "src/domain/chat-session-original.ts",
+      "sourceSha256": "0e9b9a0ddb502c0517c503b6a58634ecb27105bde9e2e6c160373a70f6063d86",
+      "capturedSha256": "f7eb3a87686080a46748ea6a1a7284d334a7d380e4a410181241a8dafe197b02"
+    },
+    {
+      "source": "src/chat/chat-history-storage.ts",
+      "captured": "src/domain/chat-session-original-history.ts",
+      "sourceSha256": "392fd2ea8a68a24d290606bfeabcbdd643ace7b3d9ab4bb66163d3bcd32e9478",
+      "capturedSha256": "5bfcc9c3d67ecde53f91f6f54b4022e0c4846c5f7f8fa38de0a363660cd17ddd"
+    },
+    {
+      "source": "tests/test-chat-history-storage.js",
+      "captured": "tests/chat-session-original-capture.mjs",
+      "sourceSha256": "fdd90452ef053cc2b6829f73933a49ee079e8c24e91f85cef2b73156f9433478",
+      "capturedSha256": "4d0890b11e5c350532bb53561437f007f8f1ed4359e3150b2908381e37eb9094"
+    },
+    {
+      "source": "src/chat/api-chat-store.ts",
+      "captured": "tests/chat-session-original-capture.mjs",
+      "sourceSha256": "0e9b9a0ddb502c0517c503b6a58634ecb27105bde9e2e6c160373a70f6063d86",
+      "capturedSha256": "4d0890b11e5c350532bb53561437f007f8f1ed4359e3150b2908381e37eb9094"
+    },
+    {
+      "source": "src/chat/api-chat-store.ts",
+      "captured": "src/chat-session-contracts.ts",
+      "sourceSha256": "0e9b9a0ddb502c0517c503b6a58634ecb27105bde9e2e6c160373a70f6063d86",
+      "capturedSha256": "85976cc9057afb12dad070f72326b3f05aee55de837b437325bc6bd1245cf9cd"
+    },
+    {
+      "source": "src/chat/api-chat-store.ts",
+      "captured": "src/chat-session-store.ts",
+      "sourceSha256": "0e9b9a0ddb502c0517c503b6a58634ecb27105bde9e2e6c160373a70f6063d86",
+      "capturedSha256": "2ec00423522fb0430d7f985581779b74fd22e078e9e16fb64d2c88c5f3155ee0"
+    },
+    {
+      "source": "tests/test-chat-history-storage.js",
+      "captured": "tests/chat-session.test.mjs",
+      "sourceSha256": "fdd90452ef053cc2b6829f73933a49ee079e8c24e91f85cef2b73156f9433478",
+      "capturedSha256": "ee67bbfcbf13f36b0eeb5cec7166479b95529a1acb61db15c01f2d6f7ec3cddc"
+    },
+    {
+      "source": "tests/test-chat-history-storage.js",
+      "captured": "tests/chat-session-original.test.mjs",
+      "sourceSha256": "fdd90452ef053cc2b6829f73933a49ee079e8c24e91f85cef2b73156f9433478",
+      "capturedSha256": "46b1560677dd8e278828e617d883ffaeeabaff5730ab920767c5210cdd45b371"
+    },
+    {
+      "source": "src/chat/api-chat-store.ts",
+      "captured": "tests/chat-session-fixtures.mjs",
+      "sourceSha256": "0e9b9a0ddb502c0517c503b6a58634ecb27105bde9e2e6c160373a70f6063d86",
+      "capturedSha256": "3f2db803bee24dcbe5a5ee3a943d091d77c42efc3dce7779a711508e4e98e531"
+    }
+  ]
+}

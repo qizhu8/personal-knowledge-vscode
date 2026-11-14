@@ -1,0 +1,31 @@
+{
+  "schema": "pkm.domain-capture/v1",
+  "files": [
+    {
+      "source": "resources/retrieval_solutions.py",
+      "captured": "src/domain/retrieval-learning-original.ts",
+      "sourceSha256": "3907ea5a1b22f333e81b8cfff49bccb8f59d13caf644416732232f97a9ce4b9b",
+      "capturedSha256": "324b38552aa5b30570d0780f73bbf11fc9ddeb0e75148a2fdfa33e630708b5b2",
+      "sourceExcerptSha256": "392ae19efffcd4c1b7162eeec984401364e89e8a5057dacfac09e907cb5fa390",
+      "purpose": "Original bounded ranker/calibrator, replay, feedback and acceptance formulas."
+    },
+    {
+      "source": "src/chat/chat-retrieval-learning.ts",
+      "captured": "src/domain/retrieval-learning-original.ts",
+      "sourceSha256": "f3df1089831c37c7fc490d29ee177ee6889b214529c76594a2f8e79424113496",
+      "capturedSha256": "324b38552aa5b30570d0780f73bbf11fc9ddeb0e75148a2fdfa33e630708b5b2",
+      "sourceExcerptSha256": "f3df1089831c37c7fc490d29ee177ee6889b214529c76594a2f8e79424113496",
+      "purpose": "Original retrieval candidate priority and user/model feedback-selection adapter."
+    },
+    {
+      "source": "tests/test-retrieval-learning.py",
+      "captured": "src/domain/retrieval-learning-original.ts",
+      "sourceSha256": "231a4f967c880644dc0f0fbddf03861fb21b4b5a34e9d4b435025a7ec6232738",
+      "capturedSha256": "324b38552aa5b30570d0780f73bbf11fc9ddeb0e75148a2fdfa33e630708b5b2",
+      "sourceExcerptSha256": "231a4f967c880644dc0f0fbddf03861fb21b4b5a34e9d4b435025a7ec6232738",
+      "purpose": "Original exact fixtures, ranking improvement, cutoff thresholds, privacy and precedence tests."
+    }
+  ],
+  "transformation": "Repeatably captures the original Python learner, TypeScript chat judgment adapter and Python behavior suite as exact UTF-8 string evidence. The deterministic TypeScript replay port retains the original hashed feature map, sigmoid calibrator, bounded gradient updates, query-level user precedence, EWMA threshold and safe-streak acceptance gate.",
+  "qualification": "Local deterministic embedding score reranking only. It accepts explicit source/index/model pins from the shared next-server RetrievalRuntime, never embeds or updates embeddings, never invokes a model/network, stores no raw query/source IDs/text, and requires injected native authorization before configuration or feedback training. Candidate/receipt/model replay and version history are bounded to 512; this is not a public HTTP handler."
+}

@@ -1,0 +1,83 @@
+{
+  "schema": "pkm.batch23-qualification/v1",
+  "batch": 23,
+  "status": "bounded-functional-and-current-full-verification-passed-readiness-blocked-no-cutover",
+  "scope": "Native-authorized import and restore of legacy subscription public identity and metadata, retaining a private Ed25519 key only through an injected external secret authority.",
+  "boundary": "Disposable native-owned fixtures and local verification only. No real Knowledge Root, production data, production authority, signing, grants, providers, external service calls, full original-suite parity, workstream acceptance, or cutover.",
+  "schemas": {
+    "workspace": 23,
+    "memoryEngine": 2,
+    "operationVersion": 1,
+    "databaseDdlChanged": false
+  },
+  "catalog": {
+    "registeredOperationCount": 217,
+    "addedPublicOperations": [
+      {
+        "id": "subscription.identity.get",
+        "version": 1,
+        "readOnly": true
+      }
+    ],
+    "classification": "native-composed-read-only-candidate",
+    "acceptedWorkstreamMapping": false,
+    "readinessContract": "readiness-contract.json",
+    "readinessContractSha256": "812f15f6f12b760364b80c6faafcbb2ad7ba62d2257ea09c165cdd1700215e99"
+  },
+  "identityImport": {
+    "privateKeyHandling": "Original key bytes are held only in the native host import path and passed to an explicitly injected durable secret authority. They are excluded from public plans, immutable import receipts, sanitized subscriptions.json, the identity sidecar, backups, logs, and HTTP/MCP results.",
+    "authorization": "Import requires the original gateway stopped plus exact source, destination, workspace/root, actor, owner epoch, plan and native authority approvals; public/private key consistency is checked.",
+    "unknownStoreOutcome": "Inspect and explicitly reconcile before proceeding; never automatically replay an uncertain secret-store effect.",
+    "restore": "A separate receipt-bound native identity sidecar and authority reference are checked during atomic fresh restore; authority existence and revocation are revalidated.",
+    "readSurface": "subscription.identity.get@1 returns public identity and metadata only, with signing, grants, broker and provider unavailable. Default Core/CLI and unapproved hosts do not enable the operation."
+  },
+  "qualification": {
+    "focusedCommand": "node --test next-server/tests/legacy-subscription-identity.test.mjs next-server/tests/legacy-state-import.test.mjs next-server/tests/host-composition-legacy-state.test.mjs next-server/tests/subscription-reads.test.mjs next-server/tests/workspace-backup.test.mjs next-server/tests/native-runtime-integration.test.mjs next-server/tests/legacy-import.test.mjs",
+    "focused": {
+      "selectors": 7,
+      "tests": 57,
+      "passed": 57,
+      "failed": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    "fullBaseline": {
+      "command": "npm test --prefix next-server",
+      "server": {
+        "tests": 1426,
+        "passed": 1426,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "client": {
+        "tests": 12,
+        "passed": 12,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "total": {
+        "tests": 1438,
+        "passed": 1438,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "implementationDigest": "ce9005f2c1410727d7bdfe1683048dbc741d25ab7d19120a2022b8e693107ecb",
+      "verificationArtifact": "verification.json",
+      "verificationArtifactSha256": "56b5b31e96cda0ccf662b2162ef22fe425d19504bd0ede4f42995bbe90c9d4d7",
+      "finishedAt": "2026-11-08T08:29:59.699Z",
+      "boundary": "Current implementation verification only; not original-suite parity, workstream acceptance, production authority, real-root qualification, or cutover."
+    },
+    "acceptedWorkstreams": 0,
+    "totalWorkstreams": 21,
+    "readyForCutoverReview": false,
+    "cutoverAuthorized": false
+  },
+  "limitations": [
+    "The full migration readiness evaluator remains at 0/21 accepted workstreams; catalog registration and a green foundation suite are not workstream acceptance.",
+    "This does not restore signing, provider, broker or grant behavior, or authorize a real Knowledge Root import.",
+    "The separate historical storage-I/O matrix covers Document, Upload, Resource and Project, not subscription secret storage or power-loss durability."
+  ]
+}

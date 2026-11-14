@@ -1,0 +1,97 @@
+{
+  "schema": "pkm.domain-capture/v1",
+  "files": [
+    {
+      "source": "src/subscriptions/subscriptions.ts",
+      "sourceSha256": "17232c71fbd5ac884b1a9e5c657940845828316828db3089be62bc219b24da09",
+      "functions": [
+        "hash",
+        "deriveSecretKeys",
+        "encryptSnapshot",
+        "nodeIdForPublicKey",
+        "withoutSignature",
+        "verifyShareSummary"
+      ]
+    },
+    {
+      "source": "src/subscriptions/subscription-materialize-worker.ts",
+      "sourceSha256": "41bd68533e1cac3769c101bfd95983acab6ec0ac4f18f874ea369b4ac0857c94",
+      "functions": [
+        "decryptTransfer",
+        "decryptSnapshot"
+      ]
+    },
+    {
+      "source": "src/subscriptions/subscription-fork.ts",
+      "sourceSha256": "f6700499cec43dc4183b2660fe0d6ca3a07041542862342c88725ee686cd4458",
+      "functions": [
+        "forkPackage",
+        "safeTarget",
+        "relativeDisplay"
+      ]
+    }
+  ],
+  "sourceReferences": [
+    {
+      "source": "src/subscriptions/subscription-gateway-entry.ts",
+      "sourceSha256": "a65bd72a7e70fd4bc06096a384b14847f7ab77332915be74fb72efdf589ebb0c"
+    },
+    {
+      "source": "src/sync/sync-server.ts",
+      "sourceSha256": "49525c1a7154053543b2a0adf38baf8f854f1a126be606827cf1f8b25aeae784"
+    },
+    {
+      "source": "src/knowledge/storage.ts",
+      "sourceSha256": "a1a6be3f373ce0d89f8ecbe7b51d30e7c773621fd0bccfc234a0b6ce6c27b55d"
+    }
+  ],
+  "captured": "src/domain/subscription-bundle-original.ts",
+  "capturedSha256": "46d92ae84803d0bcc2a349e70538fa3528af7fe8873173bd36dddd1a0f3f7b45",
+  "native": [
+    {
+      "file": "src/subscription-bundle.ts",
+      "sha256": "99a64aa911e0f6f076f34eda886fefcfc06516201c69c4f731eaa1eb490373a0"
+    },
+    {
+      "file": "src/domain/subscription-bundle-validation.ts",
+      "sha256": "c93782d8d39a05f51f0866bed576481fdd640cfa7d690a72d0bb15ae958883d0"
+    },
+    {
+      "file": "src/domain/subscription-bundle-staging.ts",
+      "sha256": "1bdd421f5552253cfa7063abb4d516d1f5c73d1692112b9cff3cb05d31dcf412"
+    },
+    {
+      "file": "src/subscription-bundle-apply.ts",
+      "sha256": "3802bba0e6e24b4a97178859446079aafb60a2c55c5b1e4be28edbfcb72b5230"
+    },
+    {
+      "file": "src/subscription-bundle-apply-files.ts",
+      "sha256": "063f9e951b985d930f8b1e805ed2b8bb3d94d1946411bcdd6cd4f6fa14dd0979"
+    },
+    {
+      "file": "src/subscription-bundle-apply-contracts.ts",
+      "sha256": "09e55bd64b9466d31ae01419bc93a1afa019d030d62310f8f2703116ec54a074"
+    },
+    {
+      "file": "tests/subscription-bundle-apply.test.mjs",
+      "sha256": "0211826558ff2a31fe0b31d7d490a3ed90d87db16876029bedb6aa8c4be65d29"
+    },
+    {
+      "file": "tests/subscription-bundle.test.mjs",
+      "sha256": "06cb4b55b177ba562e682e5e4df7d96f3343233fc140516c76c8f47eb8baa095"
+    },
+    {
+      "file": "scripts/capture-subscription-bundle.mjs",
+      "sha256": "b5f14b79cb85abd2a8605b560b880f2f94afd64eacfb3f8c7badd80e1cb65b06"
+    }
+  ],
+  "formats": {
+    "snapshot": "Original v:1 alg:A256GCM JSON with base64url iv(12), ciphertext, tag(16), AES-256-GCM.",
+    "transfer": "Original PKMENC1\\n + IV(12) + ciphertext + tag(16), AES-256-GCM.",
+    "keys": "Original scrypt(secret,base64url salt,32); HMAC-SHA256 pkm-share-auth:v1 / pkm-share-content:v1.",
+    "transferKey": "Original HMAC(authVerifier, pkm-transfer:v1:subscriberNodeId:shareId:revision:actualPort:ticket); native resolver owns tickets.",
+    "signature": "Original verify(null, JSON.stringify(summary without signature), publisher publicKey, base64url signature).",
+    "package": "Original version:'3' JSON package name/files path/content; UTF-8 files, not a compressed archive."
+  },
+  "qualification": "Runtime-generated synthetic keys only. No sockets/native secrets/broker. Native epoch and policy revision are host fences, NOT original wire fields. In-memory verified extraction plus ephemeral no-follow staging under exclusively host-owned non-group/world-writable root; concurrent same-user ancestor renames are outside the root contract (Node lacks openat). Open Markdown can use existing SubscriptionApplyHost; encrypted Markdown/assets/packages use SubscriptionBundleApplyHost with a separate authenticated ciphertext/plaintext/native grant binding, strict serialized GLOBAL journal intent and ordered recognized-before/after recovery. Original source collectionHash is NEVER replaced by plaintext. Integration must inject the shared GLOBAL workspace cross-process writer lock, unique opId transaction/intent CAS/receipt/identity/package reservations and native authenticated grant/ACL/secret-epoch policy lookup; no shared production DB/API was edited or fake private package journal installed. Versions other than original JSON v3, other nonempty content kinds and archives fail closed. Original package fork executed for byte/identity/provenance comparison, never a production write adapter. Source references are inspection only, not executable lineage."
+}

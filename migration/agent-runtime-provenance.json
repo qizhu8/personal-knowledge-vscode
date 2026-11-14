@@ -1,0 +1,197 @@
+{
+  "schema": "pkm.next.agent-runtime-provenance/v1",
+  "scope": "Synthetic native host only; never reads installed sessions, private roots, network or production data.",
+  "sourceRoot": "..",
+  "capturedRoot": ".",
+  "sources": [
+    {
+      "path": "src/agent-sessions/agent-session-lifecycle.ts",
+      "sha256": "0213d947184d24cadf6ac70a49d3efa7ca8beee8db64a1ee15291636df70e4b8",
+      "declarations": [
+        "SessionRecord",
+        "agentSessionGroup",
+        "projectedAgentSessionStatus",
+        "terminalAgentSessionStatus",
+        "pkmOwnedAgentSession",
+        "AgentSessionLiveness",
+        "agentSessionLiveness"
+      ]
+    },
+    {
+      "path": "src/chat/worker-scope.ts",
+      "sha256": "80952486d008c8b42e089e4ce543e6d6563638fb108d180fd258781c0c85c6ab",
+      "declarations": [
+        "WorkerScope"
+      ]
+    },
+    {
+      "path": "src/chat/worker-tree.ts",
+      "sha256": "59f8dc52f2007c48e7512a7d1c96814d2a97c8273022c3cba9d8551487969131",
+      "declarations": [
+        "WorkerSlot",
+        "WorkerLimits",
+        "workerIsDescendant",
+        "workerLimits"
+      ]
+    },
+    {
+      "path": "src/chatroom/peer-protocol.ts",
+      "sha256": "6bcca3b70164157811ab153371b0550246b45107ab5f51c684885820659fa130",
+      "declarations": [
+        "PortalEndpointIdentity",
+        "parsePortalEndpointIdentity"
+      ]
+    },
+    {
+      "path": "src/agent-sessions/agent-snapshots.ts",
+      "sha256": "f5a17cc8f6ea00b9708e0e5a2bfa0484885ac0948737b9dc9d4184bfe3be7fa2",
+      "declarations": [
+        "AgentSnapshotSummary",
+        "AgentSnapshotContents",
+        "AgentSnapshotRecovery",
+        "continuationTodo",
+        "agentSnapshotRecovery"
+      ]
+    },
+    {
+      "path": "tests/test-agent-session-lifecycle.js",
+      "sha256": "9ffe0cc811962769c419f7c5c4fd1da1b690453f234b01be81cae664ba490cf9",
+      "declarations": []
+    },
+    {
+      "path": "tests/test-chat-workers.js",
+      "sha256": "6b74f5b2407144449a294495281594d2ec4c8cb9b3d808230b3e4c493706da02",
+      "declarations": []
+    },
+    {
+      "path": "tests/test-agent-session-pkm-only.js",
+      "sha256": "0ccabef2bfcf6c64c85fcf213eabde24ae466e84bfc2a39d84ec7c37238cc1f6",
+      "declarations": []
+    },
+    {
+      "path": "tests/test-portal-duplex.js",
+      "sha256": "846fa3c10c549456622ff491a18e5a969d7e65be01ebbf7152b3d7fc12e96979",
+      "declarations": []
+    },
+    {
+      "path": "src/chatroom/peer-session.ts",
+      "sha256": "f63f93a01da9950b76c0288c2ce499389be59b0d22c779bf91e4bb5548c611cf",
+      "declarations": []
+    }
+  ],
+  "outputs": [
+    {
+      "path": "src/domain/agent-runtime-original.ts",
+      "sha256": "9da268f865e870572778542fa10b94ce203fad32037224ecfa36f8440d0174cb"
+    },
+    {
+      "path": "tests/agent-runtime-original-capture.mjs",
+      "sha256": "5d86d5213a29d92a7ce9116fc18e2beebc4edae9ea6ed7b5af2894be63fe0612"
+    },
+    {
+      "path": "src/agent-runtime-contracts.ts",
+      "sha256": "0ca96340b61afa3f46d354e436eef7c15d8b1c66016a9ea423479aa2028484e1"
+    },
+    {
+      "path": "src/domain/agent-runtime-policy.ts",
+      "sha256": "ca8a6f1b65787c7aae530f68c5337d8aa2a904b6cfb29f22d370b2341b196ab7"
+    },
+    {
+      "path": "src/agent-runtime-store.ts",
+      "sha256": "c4b3cdfdc943904144b1a67dafededd845e4a7035202ae455d62a3e21509116f"
+    },
+    {
+      "path": "src/agent-runtime.ts",
+      "sha256": "0f2f8f733095574d8f2d2c7a0dfb1306da44a6e495d295cb7764963943f16585"
+    },
+    {
+      "path": "tests/agent-runtime-fixtures.mjs",
+      "sha256": "0428d1360680a619160c435059cfd69b4b3ca341425576da6beb9b50c94ccdb5"
+    },
+    {
+      "path": "tests/agent-runtime.test.mjs",
+      "sha256": "71d8514d0b2e5295ca5c2cc8a7241e8a0926dd07996ea7f82ccec43dc9d7f718"
+    },
+    {
+      "path": "tests/agent-runtime-child.mjs",
+      "sha256": "6def07e10a6f5c854ceff3c035881cd6d8dcac695510488b372eb505676fc12a"
+    },
+    {
+      "path": "tests/agent-runtime-original.test.mjs",
+      "sha256": "2ea51aff9d5f023ba09d8deaddd9cf3f6f0dc1796ea341f5895a6545cfa9a32d"
+    },
+    {
+      "path": "scripts/capture-agent-runtime.mjs",
+      "sha256": "83b592a160e9ce54fdb2f2362ac6d0a3592757eefe9a14bee1c7e27854c8a8aa"
+    }
+  ],
+  "files": [
+    {
+      "source": "src/agent-sessions/agent-session-lifecycle.ts",
+      "captured": "src/domain/agent-runtime-original.ts",
+      "sourceSha256": "0213d947184d24cadf6ac70a49d3efa7ca8beee8db64a1ee15291636df70e4b8",
+      "capturedSha256": "9da268f865e870572778542fa10b94ce203fad32037224ecfa36f8440d0174cb"
+    },
+    {
+      "source": "src/chat/worker-scope.ts",
+      "captured": "src/domain/agent-runtime-original.ts",
+      "sourceSha256": "80952486d008c8b42e089e4ce543e6d6563638fb108d180fd258781c0c85c6ab",
+      "capturedSha256": "9da268f865e870572778542fa10b94ce203fad32037224ecfa36f8440d0174cb"
+    },
+    {
+      "source": "src/chat/worker-tree.ts",
+      "captured": "src/domain/agent-runtime-original.ts",
+      "sourceSha256": "59f8dc52f2007c48e7512a7d1c96814d2a97c8273022c3cba9d8551487969131",
+      "capturedSha256": "9da268f865e870572778542fa10b94ce203fad32037224ecfa36f8440d0174cb"
+    },
+    {
+      "source": "src/chatroom/peer-protocol.ts",
+      "captured": "src/domain/agent-runtime-original.ts",
+      "sourceSha256": "6bcca3b70164157811ab153371b0550246b45107ab5f51c684885820659fa130",
+      "capturedSha256": "9da268f865e870572778542fa10b94ce203fad32037224ecfa36f8440d0174cb"
+    },
+    {
+      "source": "src/agent-sessions/agent-snapshots.ts",
+      "captured": "src/domain/agent-runtime-original.ts",
+      "sourceSha256": "f5a17cc8f6ea00b9708e0e5a2bfa0484885ac0948737b9dc9d4184bfe3be7fa2",
+      "capturedSha256": "9da268f865e870572778542fa10b94ce203fad32037224ecfa36f8440d0174cb"
+    },
+    {
+      "source": "tests/test-agent-session-lifecycle.js",
+      "captured": "tests/agent-runtime-original-capture.mjs",
+      "sourceSha256": "9ffe0cc811962769c419f7c5c4fd1da1b690453f234b01be81cae664ba490cf9",
+      "capturedSha256": "5d86d5213a29d92a7ce9116fc18e2beebc4edae9ea6ed7b5af2894be63fe0612"
+    },
+    {
+      "source": "tests/test-chat-workers.js",
+      "captured": "tests/agent-runtime-original-capture.mjs",
+      "sourceSha256": "6b74f5b2407144449a294495281594d2ec4c8cb9b3d808230b3e4c493706da02",
+      "capturedSha256": "5d86d5213a29d92a7ce9116fc18e2beebc4edae9ea6ed7b5af2894be63fe0612"
+    },
+    {
+      "source": "tests/test-agent-session-pkm-only.js",
+      "captured": "tests/agent-runtime-original-capture.mjs",
+      "sourceSha256": "0ccabef2bfcf6c64c85fcf213eabde24ae466e84bfc2a39d84ec7c37238cc1f6",
+      "capturedSha256": "5d86d5213a29d92a7ce9116fc18e2beebc4edae9ea6ed7b5af2894be63fe0612"
+    },
+    {
+      "source": "tests/test-portal-duplex.js",
+      "captured": "tests/agent-runtime-original-capture.mjs",
+      "sourceSha256": "846fa3c10c549456622ff491a18e5a969d7e65be01ebbf7152b3d7fc12e96979",
+      "capturedSha256": "5d86d5213a29d92a7ce9116fc18e2beebc4edae9ea6ed7b5af2894be63fe0612"
+    }
+  ],
+  "api": {
+    "initialize": "initializeAgentRuntimeSchema(sharedDatabaseSync): parent migration transaction; does not own connection or PRAGMA.",
+    "store": "createAgentRuntimeStore(db,{tasks,snapshots?,now?}): execute(owner,spawn|cancel|restore|reconnect,args), claimSpawn(owner,id), observe(owner,id,expectedRevision,observation) require parent transaction. get/list/binding are native-only reads. Parent rolls back any failed transaction.",
+    "coordinator": "createAgentRuntime(db,{tasks,snapshots?,now?,host?}): get/list/spawn/cancel/reconnect/restore(token,args). Calls start outside transactions. Native resolveOwner validates opaque token identity. Trusted catalog keys only; no completion endpoint.",
+    "host": "resolveOwner(token); spawn({sessionId,intentId,owner,task}); inspect({sessionId,intentId,owner,handle?}); cancel(same). Host methods are outside SQLite transactions. inspect is lookup-only and cancel is idempotent intent, never implicit creation.",
+    "crash": "intent + opId receipt commit together. spawn-unknown claim commits BEFORE dispatch. Unknown claims may only inspect/cancel, never respawn. Unclaimed intents may dispatch once on explicit reconnect.",
+    "restore": "Only configured actor/nativeOwnerId-bound synthetic snapshot with exact digest and explicit snapshotId. Fresh identities, task-key policy validation, no imported prompts/results/grants, no Magic Code authority."
+  },
+  "differences": [
+    "Original pure projection/grouping, descendant checks, liveness, endpoint parsing and snapshot recovery preserved as exact declaration captures, exercised with original assertions on synthetic fixtures.",
+    "New runtime uses bounded native task catalog and monotone permission subsets, not external Portal grants or caller prompts. Legacy recovery is reference-only, never an executable restore adapter.",
+    "No shared registry, HTTP/MCP registration, VS Code spawning, automatic startup replay or original snapshot-reader changes."
+  ]
+}

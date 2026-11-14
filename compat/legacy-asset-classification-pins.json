@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "sources": {
+    "src/knowledge/asset-classification.ts": "862d3566db8a8bd45b670ba2e5ed3de2ce0570693f92f0730249add8d19e7523",
+    "src/knowledge/filestore.ts": "c5c3a9761562818529a00aedb96aef254bef34dc80a4ed31f31efd39bc7a97a5",
+    "src/knowledge/knowledge-contracts.ts": "0f4c453b726e70df7c3e8df3e4eb253114d89d4cb88eb8ce3e4f561bf336ab2f",
+    "src/knowledge/content-privacy.ts": "3f609926211c2a33344b090dc8877531ca26916431779d818df64b28a426a40b",
+    "src/sync/github-sync-script-identity.ts": "cb4a8fbe28d08ffc1dd018cd788bc3c61c61ae9bddf1919acc16348d36bf8fbb"
+  },
+  "captureSha256": "4ce64884545b1680f83641445eb4983e7c2889e691ea79b2aa0a32483769f736"
+}

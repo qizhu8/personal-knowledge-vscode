@@ -1,0 +1,103 @@
+{
+  "schema": "pkm.next.domain-capture/v1",
+  "algorithm": "dense-section",
+  "notes": [
+    "Original vendored ArchitectureRetriever _sections, normalized encoder output, dense max-pooling, _ordered ID ties and SearchHit reciprocal-rank scores. Original retrieval-worker public limit defaults to 5 (bound 100). Cosine evidence uses scale-safe normalization of explicitly injected vectors.",
+    "Exact original function/method texts are captured as inert data. Original _sections/_normalize/_dot/_scores/_dense/_ordered/search execute with synthetic data only, including Unicode whitespace section boundaries.",
+    "Only dense-section is supported. PCA, hierarchical candidate filters, BM25/RRF, cross-encoder, token late interaction, graph expansion, model download and old filesystem caches are not silently approximated.",
+    "Existing shared DatabaseSync only; explicit authoritative source reader and authorization callbacks. No database opened, network, host environment, private root scan, model fallback or learning update.",
+    "Bounded staged checkpoints persist vectors and digests, qualify and activate via shared DB transaction and active-pointer CAS. Query rechecks whole source membership/pins and actor admission after async embedding."
+  ],
+  "sourceEvidence": [
+    {
+      "sourceRoot": "/home/yuwang8/uone-knowledge/packages/personal-knowledge-vscode",
+      "source": "src/retrieval/retrieval-worker.ts",
+      "sourceSha256": "a7235794858fa5e49d8c69ade64b2fb617c1c17758acf0099fc7ef04103824bc"
+    },
+    {
+      "sourceRoot": "/home/yuwang8/uone-knowledge/packages/personal-knowledge-vscode",
+      "source": "src/retrieval/retrieval-provider.ts",
+      "sourceSha256": "b036efe895d866fb90e10b606574d9fd7b4178e47791d2b380027a1e1269e0c3"
+    },
+    {
+      "sourceRoot": "/home/yuwang8/uone-knowledge/packages/personal-knowledge-vscode",
+      "source": "resources/retrieval_worker.py",
+      "sourceSha256": "3c51c84d821e292dc42c5a0c328284d6289e5a0105a45539d38d99d928c1fe64"
+    },
+    {
+      "sourceRoot": "/home/yuwang8/uone-knowledge/packages/personal-knowledge-vscode",
+      "source": "resources/retrieval_serving.py",
+      "sourceSha256": "59d646e93206beba4a783ff786c15a444b1fe0833e8a8370adc2b64285c9683c"
+    },
+    {
+      "sourceRoot": "/home/yuwang8/uone-knowledge/packages/personal-knowledge-vscode",
+      "source": "resources/retrieval_solution_index.py",
+      "sourceSha256": "c290608d3279df0402dc8aea1c3f5c923579d333df4be49ae47c1dded5984cfa"
+    }
+  ],
+  "files": [
+    {
+      "source": "resources/vendor/adaptive_skill_retrieval-0.3.0.dev2026100504-py3-none-any.whl!/adaptive_skill_retrieval/architecture_retriever.py",
+      "sourceRoot": "/home/yuwang8/uone-knowledge/packages/personal-knowledge-vscode",
+      "capturedRoot": "/home/yuwang8/uone-knowledge/packages/personal-knowledge-vscode/next-server",
+      "captured": "src/domain/retrieval-runtime-original.ts",
+      "sourceSha256": "d4b281b4b29ad5b64be79263643f41f8a0c26a3fd15ead3b13637393cf4c8fb7",
+      "archiveSha256": "332e434272a3cc88410eb50c7e4bfc3e3f69c5bf1e13f7f9a799087c37124f89",
+      "capturedSha256": "4fe69392396b682681071e18b49a0ae50b8634c6e2f179e2cfd583a6e41657c8"
+    },
+    {
+      "source": "resources/vendor/adaptive_skill_retrieval-0.3.0.dev2026100504-py3-none-any.whl!/adaptive_skill_retrieval/architecture_retriever.py",
+      "sourceRoot": "/home/yuwang8/uone-knowledge/packages/personal-knowledge-vscode",
+      "capturedRoot": "/home/yuwang8/uone-knowledge/packages/personal-knowledge-vscode/next-server",
+      "captured": "src/domain/retrieval-runtime.ts",
+      "sourceSha256": "d4b281b4b29ad5b64be79263643f41f8a0c26a3fd15ead3b13637393cf4c8fb7",
+      "archiveSha256": "332e434272a3cc88410eb50c7e4bfc3e3f69c5bf1e13f7f9a799087c37124f89",
+      "capturedSha256": "db7e49e9bbb9d5b477f98b1e7518c1d112ba63462bd4fef7531a1f9c2c89aa6c"
+    },
+    {
+      "source": "resources/vendor/adaptive_skill_retrieval-0.3.0.dev2026100504-py3-none-any.whl!/adaptive_skill_retrieval/architecture_retriever.py",
+      "sourceRoot": "/home/yuwang8/uone-knowledge/packages/personal-knowledge-vscode",
+      "capturedRoot": "/home/yuwang8/uone-knowledge/packages/personal-knowledge-vscode/next-server",
+      "captured": "src/retrieval-runtime.ts",
+      "sourceSha256": "d4b281b4b29ad5b64be79263643f41f8a0c26a3fd15ead3b13637393cf4c8fb7",
+      "archiveSha256": "332e434272a3cc88410eb50c7e4bfc3e3f69c5bf1e13f7f9a799087c37124f89",
+      "capturedSha256": "ddaf0d6b215b15d52a121bae8ee4161961ad570c7fe21f7a71f6d551d2e73d07"
+    },
+    {
+      "source": "resources/vendor/adaptive_skill_retrieval-0.3.0.dev2026100504-py3-none-any.whl!/adaptive_skill_retrieval/architecture_retriever.py",
+      "sourceRoot": "/home/yuwang8/uone-knowledge/packages/personal-knowledge-vscode",
+      "capturedRoot": "/home/yuwang8/uone-knowledge/packages/personal-knowledge-vscode/next-server",
+      "captured": "src/retrieval-runtime-contracts.ts",
+      "sourceSha256": "d4b281b4b29ad5b64be79263643f41f8a0c26a3fd15ead3b13637393cf4c8fb7",
+      "archiveSha256": "332e434272a3cc88410eb50c7e4bfc3e3f69c5bf1e13f7f9a799087c37124f89",
+      "capturedSha256": "7461d095755b55f466761efb5ddb95ffcdadce625bd9bd0356c34096b4c172d2"
+    },
+    {
+      "source": "resources/vendor/adaptive_skill_retrieval-0.3.0.dev2026100504-py3-none-any.whl!/adaptive_skill_retrieval/architecture_retriever.py",
+      "sourceRoot": "/home/yuwang8/uone-knowledge/packages/personal-knowledge-vscode",
+      "capturedRoot": "/home/yuwang8/uone-knowledge/packages/personal-knowledge-vscode/next-server",
+      "captured": "tests/retrieval-runtime.test.mjs",
+      "sourceSha256": "d4b281b4b29ad5b64be79263643f41f8a0c26a3fd15ead3b13637393cf4c8fb7",
+      "archiveSha256": "332e434272a3cc88410eb50c7e4bfc3e3f69c5bf1e13f7f9a799087c37124f89",
+      "capturedSha256": "e96e4e7b499c51bb2f5c4b36fa3f80199b9a478a8c1cca6869f1edbd83fb47b4"
+    },
+    {
+      "source": "resources/vendor/adaptive_skill_retrieval-0.3.0.dev2026100504-py3-none-any.whl!/adaptive_skill_retrieval/architecture_retriever.py",
+      "sourceRoot": "/home/yuwang8/uone-knowledge/packages/personal-knowledge-vscode",
+      "capturedRoot": "/home/yuwang8/uone-knowledge/packages/personal-knowledge-vscode/next-server",
+      "captured": "tests/retrieval-runtime-original.test.mjs",
+      "sourceSha256": "d4b281b4b29ad5b64be79263643f41f8a0c26a3fd15ead3b13637393cf4c8fb7",
+      "archiveSha256": "332e434272a3cc88410eb50c7e4bfc3e3f69c5bf1e13f7f9a799087c37124f89",
+      "capturedSha256": "d97086ad7df362e8efe1faea8d0a3bb655388ff86eab0704d64fb130236ec38a"
+    },
+    {
+      "source": "resources/vendor/adaptive_skill_retrieval-0.3.0.dev2026100504-py3-none-any.whl!/adaptive_skill_retrieval/architecture_retriever.py",
+      "sourceRoot": "/home/yuwang8/uone-knowledge/packages/personal-knowledge-vscode",
+      "capturedRoot": "/home/yuwang8/uone-knowledge/packages/personal-knowledge-vscode/next-server",
+      "captured": "scripts/capture-retrieval-runtime.mjs",
+      "sourceSha256": "d4b281b4b29ad5b64be79263643f41f8a0c26a3fd15ead3b13637393cf4c8fb7",
+      "archiveSha256": "332e434272a3cc88410eb50c7e4bfc3e3f69c5bf1e13f7f9a799087c37124f89",
+      "capturedSha256": "7aa2cf12df21a7f048c497195f842b8aff3eb4ec5acd6dff0c1b5bc03095bb63"
+    }
+  ]
+}

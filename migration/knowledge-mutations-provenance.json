@@ -1,0 +1,139 @@
+{
+  "schema": "pkm.domain-capture/v1",
+  "sourceRoot": "../",
+  "captureRoot": "next-server",
+  "transformation": "TypeScript AST selects the named original Note, Skill and Paper upsert/projection, stable identity, citation and asset declarations as inert source text; focused original tests are embedded byte-for-byte. Captures are evidence only and execute no legacy store code.",
+  "capture": {
+    "path": "src/domain/knowledge-mutations-original.ts",
+    "sha256": "079f01256326a4dbb8d4031f0d7ae977cd735b7fa3c8b2fbec77c2a730448618"
+  },
+  "script": {
+    "path": "scripts/capture-knowledge-mutations.mjs",
+    "sha256": "c472d09cc249bd13d3f97b46a763e0b94f27fb0b0c76becd3bb0653ee0c9f436"
+  },
+  "files": [
+    {
+      "source": "src/knowledge/filestore.ts",
+      "sourceSha256": "c5c3a9761562818529a00aedb96aef254bef34dc80a4ed31f31efd39bc7a97a5",
+      "declarations": [
+        {
+          "name": "parseStoreFrontmatter",
+          "sha256": "f96bea3e86d5b6b578d7ec2995f91d873044ac7ae36a94650a00a5315f5b95bf"
+        },
+        {
+          "name": "serializeStoreFrontmatter",
+          "sha256": "3560e0d7447c4d81e19bfc71fb4312878cbaed282f090064ab5775c3afe71156"
+        },
+        {
+          "name": "safeName",
+          "sha256": "8ae964406ff6e4abf85f4ea26e083d7fa92569f726040462eae1b95f6d365fc4"
+        },
+        {
+          "name": "safeCategory",
+          "sha256": "43e65959ee6fa25c0e19112a8be7b8263b7264abeee63b05384d49ae6421989b"
+        },
+        {
+          "name": "writeKnowledgeMarkdown",
+          "sha256": "be0c18520d4e390106b663e5b23fa1675ff1ffc4041bcd25a6715d6de43f734a"
+        },
+        {
+          "name": "writeKnowledgeMarkdownUnlocked",
+          "sha256": "b816a4c35e6d6083d8b55b32836599b78a4647ee94097a6c39a832fbb7fb8573"
+        },
+        {
+          "name": "noteFromFile",
+          "sha256": "b1693bfe10f86ddd4b992df8e2eedb94b21c8b049c06980b6ee058153117089c"
+        },
+        {
+          "name": "noteUpsert",
+          "sha256": "8d444a516bcc56f4527fb6422f3dd072fc8e9448693a8728c48c2af8e92dcb48"
+        },
+        {
+          "name": "skillFromFile",
+          "sha256": "53730245641b39cb34197bdbb5f24d70e941335d5e137de71f9f79026e7df5fc"
+        },
+        {
+          "name": "skillUpsert",
+          "sha256": "da0be5a736545d878f1a540dad9af2b16f8ea44e0acc04ef1128443d03436b36"
+        },
+        {
+          "name": "normalizeCites",
+          "sha256": "bd50a657c81087963a9375c89f7c59f49d04b158c9db1d18b9bcb420e57761aa"
+        },
+        {
+          "name": "toYear",
+          "sha256": "f230e6c6542478a99218dc4f5c94041d280e2071551dd77e1fa01af9656c86f6"
+        },
+        {
+          "name": "paperFromFile",
+          "sha256": "b599b31f2af55e70a59e814e4892bb7bd9513a3846160e26522a795c73b7a4ff"
+        },
+        {
+          "name": "buildPaperResolver",
+          "sha256": "101cfcdeb83c62ee445cad6b08e4ab88b7cd3e5df46e85699144ee336808a5f1"
+        },
+        {
+          "name": "citationCounts",
+          "sha256": "7e62bf4e78ff9bc33ae02b738ca66e0698d2f849fa2554e84df21a42069108ba"
+        },
+        {
+          "name": "paperUpsert",
+          "sha256": "87791bf8a7301d835dca74f2684b6c2b0ea992973dc1a3dc81476142c612df8b"
+        }
+      ]
+    },
+    {
+      "source": "src/knowledge/knowledge-contracts.ts",
+      "sourceSha256": "0f4c453b726e70df7c3e8df3e4eb253114d89d4cb88eb8ce3e4f561bf336ab2f",
+      "declarations": [
+        {
+          "name": "legacyKnowledgeAlias",
+          "sha256": "ed7655939b5882cacfa6dbec90a71dca36d6de0861ebfb29b6b42b0cdf0c382d"
+        },
+        {
+          "name": "readKnowledgeIdentity",
+          "sha256": "d5e2e08850617f3949fd4ba9bfb53cccfa521e44713c2224bc974a2a94c76954"
+        },
+        {
+          "name": "nextKnowledgeIdentity",
+          "sha256": "8f829a91a6adde6488f0355aa7d778cb64c89c374631640e8924b0f6a4753990"
+        }
+      ]
+    },
+    {
+      "source": "src/knowledge/markdown-assets.ts",
+      "sourceSha256": "3efa04f06f6b5fd7e649874d031e0ddb8a6ff4f33182747135c6601658922741",
+      "declarations": [
+        {
+          "name": "markdownAssetDirectory",
+          "sha256": "1ce847c64a14eb3ac5d212b91241390d3fb34f28d1775e2c0c3079dc32cd4819"
+        },
+        {
+          "name": "saveMarkdownAsset",
+          "sha256": "1e4d1b4ff016fa90bd4ea98734ffa975f6d8b9aaba1837f03f7fca30dc59f5a5"
+        },
+        {
+          "name": "rebaseMarkdownAssets",
+          "sha256": "ba9fd252b026099ec2695cf52673adf6a7ee96c5277857b67a9cc33f6d4892ca"
+        }
+      ]
+    },
+    {
+      "source": "tests/test-markdown-owned-assets.js",
+      "sourceSha256": "64ec0aa046fbe000239216013563d7a3dba31df37a5524b124f054229603b4ef"
+    },
+    {
+      "source": "tests/test-todo-board.js",
+      "sourceSha256": "c8f9bbdcad4d9c375b5dc727a9581b433504b24076669104b05e93f7c371df17"
+    },
+    {
+      "source": "tests/test-knowledge-contracts.js",
+      "sourceSha256": "bf7f6631653c86882373cd94a19009573490410ccbd5c72f1bc2ac98fd4178a8"
+    },
+    {
+      "source": "tests/test-retrieval-snapshot.js",
+      "sourceSha256": "7871712ab506283fc428f12a84d4730f458a9d1a943dc6214c08ed64c2ff2cec"
+    }
+  ],
+  "qualification": "Original behaviors are evidence, not copied host integrations. The new adapter operates only on the isolated Markdown workspace, preserves unowned bytes, does not move/delete documents or assets, and requires the parent shared compound journal/receipt/index transaction. It does not claim migration of the legacy Knowledge Root."
+}

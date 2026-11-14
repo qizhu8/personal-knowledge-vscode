@@ -1,0 +1,1700 @@
+{
+  "schema": "pkm.cutover-readiness-contract/v1",
+  "inventoryRevision": "bcdc805947fde75ee30b7a952e8b499612ccd9c360c88da6819a9c00a48d265e",
+  "manifestSchema": "pkm.migration/v1",
+  "inventorySchema": "pkm.migration-inventory/v1",
+  "operationVersion": 1,
+  "goal": "Full migration qualified for a human cutover review, not permission to switch.",
+  "boundary": "Read-only evaluator. Isolated representative synthetic fixtures only. Never import a private Knowledge Root, stop services, send outbound requests or perform cutover.",
+  "evidencePolicy": {
+    "authorityEnrollment": "Verifier and human public keys must be enrolled independently by the native operator. Receipt-supplied keys, model reports and test-pass booleans grant no authority.",
+    "exactScope": "Each legacy declaration, command, configuration, canonical operation and client scenario needs its own exact-scope signed qualification receipt with checked artifact bytes and current fingerprints.",
+    "functionalParity": "Preserve all existing PKM capabilities and behavior. The explicitly approved removal of Notes/Board count and byte ceilings is an intentional relaxation, not a feature deletion or a requirement to reproduce those former ceilings.",
+    "notParity": [
+      "native implementation pins",
+      "module test totals",
+      "captured source hashes",
+      "mock SSE",
+      "self-reported completion",
+      "bounded SQLite text-artifact workers",
+      "static inventories"
+    ],
+    "requiredParityChecks": [
+      "fullBehavior",
+      "inputOutputContracts",
+      "identity",
+      "authorization",
+      "failureAndRecovery",
+      "legacyOracle"
+    ],
+    "requiredScenarioChecks": [
+      "actualExecution",
+      "isolatedFixture",
+      "exactAssertions",
+      "authorityBoundary",
+      "failureAndRecovery"
+    ],
+    "freshness": "Receipts are content-bound to the complete current implementation, inventory and readiness contract. No clock-based freshness shortcut."
+  },
+  "catalogProfiles": [
+    "legacy-mcp",
+    "legacy-native",
+    "next-http-owner",
+    "next-mcp-owner",
+    "next-http-read",
+    "next-mcp-read"
+  ],
+  "nativeCatalogMap": {
+    "databaseSchema": 23,
+    "memoryEngineSchema": 2,
+    "operationVersion": 1,
+    "composedCanonicalOperationCount": 228,
+    "batch13AddedPublicOperations": [
+      {
+        "id": "legacy.note.workitems.read",
+        "version": 1,
+        "readOnly": true
+      },
+      {
+        "id": "legacy.note.workitems.notes",
+        "version": 1,
+        "readOnly": true
+      },
+      {
+        "id": "legacy.note.workitems.command",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "legacy.note.workitems.upsert",
+        "version": 1,
+        "readOnly": false
+      }
+    ],
+    "batch14AddedPublicOperations": [
+      {
+        "id": "agent.snapshot.restore-paused",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "agent.snapshot.resume-native",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "agent.snapshot.cancel-native",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "agent.snapshot.restore-get",
+        "version": 1,
+        "readOnly": true
+      },
+      {
+        "id": "agent.snapshot.confirm-native",
+        "version": 1,
+        "readOnly": false
+      }
+    ],
+    "batch15AddedPublicOperations": [
+      {
+        "id": "legacy.skill.router.inject",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "legacy.skill.router.remove",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "knowledge.legacy-links.resolve",
+        "version": 1,
+        "readOnly": true
+      },
+      {
+        "id": "knowledge.asset.ownership.validate",
+        "version": 1,
+        "readOnly": true
+      }
+    ],
+    "batch16AddedPublicOperations": [
+      {
+        "id": "knowledge.classification.native-strict.command",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "memory.scope.forget.native",
+        "version": 1,
+        "readOnly": false
+      }
+    ],
+    "batch19AddedPublicOperations": [
+      {
+        "id": "knowledge.classification.original-compatible.command",
+        "version": 1,
+        "readOnly": false
+      }
+    ],
+    "batch20AddedPublicOperations": [
+      {
+        "id": "legacy.skill.source.install",
+        "version": 1,
+        "readOnly": false
+      }
+    ],
+    "batch21AddedPublicOperations": [
+      {
+        "id": "legacy.skill.source.remove",
+        "version": 1,
+        "readOnly": false
+      }
+    ],
+    "batch22AddedPublicOperations": [
+      {
+        "id": "legacy.skill.source.bridge",
+        "version": 1,
+        "readOnly": false
+      }
+    ],
+    "batch23AddedPublicOperations": [
+      {
+        "id": "subscription.identity.get",
+        "version": 1,
+        "readOnly": true
+      }
+    ],
+    "currentRegistryAdditions": [
+      {
+        "id": "knowledge.folder.lifecycle.promote-preview",
+        "version": 1,
+        "readOnly": true
+      },
+      {
+        "id": "knowledge.folder.promote-delete",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "knowledge.library.get",
+        "version": 1,
+        "readOnly": true
+      },
+      {
+        "id": "knowledge.library.list",
+        "version": 1,
+        "readOnly": true
+      },
+      {
+        "id": "knowledge.mutation.scan",
+        "version": 1,
+        "readOnly": true
+      },
+      {
+        "id": "plugin.runtime.disable",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "plugin.runtime.enable",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "plugin.runtime.invoke",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "subscription.broker.share-markers",
+        "version": 1,
+        "readOnly": true
+      }
+    ],
+    "batch21Limits": "This native-composed writer is explicitly mapped to the skills workstream only to require its own signed parity evidence; it remains an unaccepted candidate. Removal requires the native-owned disposable fixture, exact actor/workspace/package source and target bindings, owner/epoch and plan approvals, ordered source/projection history and durable anchors. It removes only an existing managed lineage; mixed source/projection history is denied. Unknown partial unlink, directory removal or post-commit anchor outcomes require exact native recovery and are never startup-applied. Unix no-follow bounded UTF-8 handling is covered only in bounded fixtures. Install and remove history remains separate from the older projection journal; unrelated storage/direct-native effects require composed authority. This does not qualify hostile external-writer exclusion, OS-level locking, production authority, power-loss durability, or cutover.",
+    "batch22Limits": "This native-composed bridge is explicitly mapped to the skills workstream only to require its own signed parity evidence; it remains an unaccepted candidate. It bridges only a strictly pinned, already-installed old Skill-source head into sequence-one native source history, retaining the immutable legacy genesis and old receipts. Independent approveBridge, verifyBridge and reconcileBridgeAnchor callbacks are required outside SQLite transactions. A removed legacy head must first be reinstalled by the old writer; direct removed-genesis bridging and broader legacy/all-target qualification are unsupported. Recognized bundled leaves remain rejected; custom-source preservation is bounded to the exercised case. Existing source/projection snapshots and database schema are unchanged. This does not qualify hostile external-writer exclusion, OS-level locking, production authority, power-loss durability, workstream acceptance, or cutover.",
+    "batch20Limits": "This native-composed writer is explicitly mapped to the skills workstream only to require its own signed parity evidence; it remains an unaccepted candidate. Exclusive native-owned disposable fixtures require independent exact actor/workspace/package source and target bindings, owner/epoch and plan approvals, source history and durable anchors. Actual original-writer Core HTTP/MCP install, coordinated backup and fresh atomic restore/adoption, old retry/new install, rebackup and rerestore are bounded fixture tests. Source and older projection journals cannot coexist; unrelated storage/direct-native effects require composed authority. This does not qualify a general installer, multiple targets, hostile external-writer exclusion, OS-level locking, production authority, power-loss durability or cutover.",
+    "batch19Limits": "Separate original-compatible preview/apply/rollback candidate, not a change to the strict classifier or acceptance of all assets. Actual original-writer result order, UUID journals, continued known-error prefixes and reverse rollback bytes are compared in exclusive native-owned disposable Unix fixtures. Native actor/epoch/genesis/history/pending callbacks are mandatory and independently checked before replay. Backup originalCompatible:true is a discriminator, not authority; independent source-manifest/root/destination-stage/history/epoch/policy/expiry adoption approval and native adoption anchors are required before staging and publication. Immutable original receipts/results/journals remain unchanged in separate adoption lineage. Mixed strict and original backup histories, unknown residue and unapproved lineage deny. No hostile external-writer lock, production authority, authority enrollment, signatures, workstream acceptance or cutover is granted. Workspace schema22 preserves prior 12–21 workspace/backup input bytes until explicit open; engine schema2 is unchanged.",
+    "batch16Limits": "Classification remains strict whole-selection and disposable-native-fixture only, not original partial-success parity. Memory forget is derived SQLite logical erasure only, not physical or cross-engine erasure. Batch17 classified restore is available only in disposable native fixtures with separate trusted adoption approval before staging and publication, bound to actor, workspace, source identity, manifest, source epoch, destination parent, stage pins and policy identity; the immutable adoption ledger preserves original opaque receipts and publication is no-replace. This does not qualify hostile external writers, production authority, authority self-enrollment or cutover. General erased-memory backup remains unqualified; Batch18 supports only an explicitly native-owned single-workspace fixture with restored engine inside its workspace, actual writer quiescence and independent durable engineStateAuthority content seals outside both restore targets. Startup, backup and restore share read-only engine byte/table/identity validation; live/unknown effect seals cannot authorize restart. No separate target/two-root restore or automatic reconciliation is supported. Missing markers do not identify unaffected old backups.",
+    "selectedProductionCoreReadGuards": [
+      {
+        "id": "knowledge.document.list",
+        "version": 1,
+        "readOnly": true
+      },
+      {
+        "id": "knowledge.document.get",
+        "version": 1,
+        "readOnly": true
+      },
+      {
+        "id": "knowledge.note.search",
+        "version": 1,
+        "readOnly": true
+      },
+      {
+        "id": "knowledge.note.list",
+        "version": 1,
+        "readOnly": true
+      },
+      {
+        "id": "knowledge.asset.list",
+        "version": 1,
+        "readOnly": true
+      },
+      {
+        "id": "knowledge.asset.get",
+        "version": 1,
+        "readOnly": true
+      }
+    ],
+    "existingProjectMutationRoute": {
+      "id": "project.legacy.command",
+      "version": 1,
+      "readOnly": false
+    },
+    "internalHelpersNotPublished": [
+      "legacy-project-envelope.*",
+      "legacy-read-race.*",
+      "legacy-snapshot-restore.*"
+    ]
+  },
+  "catalogChecks": [
+    "actualExecution",
+    "isolatedFixture",
+    "allPages",
+    "describeExactVersion",
+    "authorizationDenials",
+    "unavailableOperations"
+  ],
+  "scenarioChecks": {
+    "core.legacy-command-extension-original-store": [
+      "actualHttpAndMcpExecution",
+      "trustedNativeAdmission",
+      "globalAndProjectRecipeScope",
+      "originalStoreBytesVersionAndOrderedReceipts",
+      "sourceHashAndFingerprintOracle",
+      "restartPendingAndRollbackFences",
+      "unsupportedControlsFailClosed"
+    ],
+    "core.batch11-project-thread-source-parity": [
+      "actualHttpAndMcpExecution",
+      "projectLegacyCommandV1Mapped",
+      "explicitNativeCommandAdmission",
+      "originalProjectStoreIdentityAndSnapshotOracle",
+      "projectAndThreadCreateRenameMove",
+      "sharedJournalAndReplay",
+      "transportNoopReceiptsAndStaleCasDenial",
+      "recognizedBeforeAndMixedMoveRecovery",
+      "tamperFenceAndNoVersionEffect",
+      "backupRestoreLineage",
+      "sourceCaptureHashParity",
+      "unsupportedControlsFailClosed"
+    ],
+    "core.batch12-project-recipe-trash-command": [
+      "actualHttpAndMcpExecution",
+      "projectRecipeTrashCommandV1Mapped",
+      "defaultDenyAndStrictOpaqueCommandValidation",
+      "actorWorkspaceSourceControlAndDatabaseRootBinding",
+      "canonicalExportOnly",
+      "freshSingleOwnedImportStage",
+      "atomicNoReplacePublish",
+      "globalReceiptAndRolling256Replay",
+      "schema18IntentRecoveryAndBackupCompatibility",
+      "injectedIoRecoveryAndTamperDenials",
+      "noSyscallTransportReplays",
+      "unsupportedUnknownStateFailClosed"
+    ],
+    "core.batch13-native-note-board-project-envelope-read-fences": [
+      "actualHttpAndMcpExecution",
+      "legacyNoteReadNotesCommandUpsertV1Mapped",
+      "trustedActorAndAttachedBoardAdmission",
+      "completeWorkerEffectAndAuditParity",
+      "workspaceWidePendingIntentAndBackupFence",
+      "immutableFullSnapshotReceiptAndHistoricalReplay",
+      "recognizedRestartAndBackupRestore",
+      "inlineWriterHasSeparateNativePolicyAndBoardAdmission",
+      "rawProjectsJsonSchema1OpaqueBytesPreserved",
+      "normalImportFreshStageAtomicAdoption",
+      "existingProjectLegacyCommandV1ForNativeMutations",
+      "secondRestartCurrentReadsAndExactCommandRetry",
+      "tamperAndUnknownEnvelopeRejected",
+      "schema18AndBackupInputs12Through17",
+      "productionCoreSelectedHttpMcpReadGuards",
+      "externalChildWriteRenameDeleteExplicitConflicts",
+      "prePostDigestNotAtomicAndABAUnsupported",
+      "crossProcessOriginalBoardCASUnsupported"
+    ],
+    "core.batch14-native-paused-snapshot-and-inline-note-boundaries": [
+      "actualHttpAndMcpExecution",
+      "schema18DurableTablesAndAtomicGlobalReceipts",
+      "pausedSnapshotRestoreAndExactCiphertext",
+      "allElevenOriginalInlineActionsAndMcpUpsert",
+      "trustedActorHumanAcceptanceFocusAndRevocation",
+      "unknownInlineRetrySameActorAndExactRequest",
+      "snapshotUnknownGetCancelOrInspectOnly",
+      "safeStateValidatedBeforeBackupOrRecoveryEffects",
+      "priorSchema12Through17BackupInputs",
+      "nativeCallbacksUnavailableByDefault",
+      "unsupportedRuntimeFieldsFailClosed",
+      "noProductionKnowledgeRoot"
+    ],
+    "core.batch15-fixture-only-skill-lifecycle-and-legacy-assets": [
+      "actualHttpAndMcpExecution",
+      "fourStrictBatch15CatalogOperations",
+      "schema19SkillIntentReceiptAndHistoryDDL",
+      "originalSkillWriterDisposableFixtureOracle",
+      "sameRequestApprovedRecoveryAndGlobalReceipts",
+      "nativePolicyRevocationAndStartupNoReplay",
+      "pendingIntentFencesAndBackupRestore",
+      "originalAssetProviderAndProjectScriptSidecarOracle",
+      "actorFilteredRootPinnedInventoryAndRead",
+      "fullListRevisionCASAndOwnershipValidation",
+      "forgedStaleAndDuplicateOwnerDenials",
+      "callbacksUnavailableByDefault",
+      "externalParentReplacementNotExcludedBySQLiteLease",
+      "originalClassificationApplyRollbackNotRegistered",
+      "noProductionKnowledgeRoot"
+    ],
+    "knowledge.original-trash-import-history-restore": [
+      "actualHttpAndMcpExecution",
+      "canonicalListGetRestoreOriginalV1",
+      "existingKnowledgeTrashRestoreV1Receipt",
+      "originalWriterAndDeletionJournalOracle",
+      "freshSingleOwnedStage",
+      "parentInventoryAndRootIdentityPins",
+      "orderedOpaqueHistoryPreserved",
+      "authenticatedRestoreReceipt",
+      "restartRecoveryBackupRebinding",
+      "unsupportedLayoutsFailClosed"
+    ],
+    "collaboration.portal-native-lifecycle": [
+      "actualHttpAndMcpReadRoute",
+      "originalRequestOracle",
+      "existingChannelAclAuthority",
+      "humanAdmissionAndGenerationFence",
+      "revocationEvictsLiveConnection",
+      "restartNoImplicitReconnect",
+      "pendingAndReplayFences"
+    ],
+    "qualification.encrypted-snapshot-import-with-epoch-key": [
+      "sourceAndOuterReceiptVerified",
+      "exactCiphertextPreserved",
+      "epochBoundNativeKeyAuthority",
+      "plaintextProjectionMemoryOnly",
+      "secretBearingSubscriptionBlocked",
+      "noProductionKnowledgeRoot"
+    ],
+    "qualification.representative-quiescent-isolated-import": [
+      "representativeLayouts",
+      "quiescentSource",
+      "isolatedImportExecuted",
+      "noProductionRoot",
+      "unsupportedLayoutsRejected"
+    ],
+    "qualification.byte-identity-history-parity": [
+      "byteParity",
+      "identityParity",
+      "historyParity",
+      "assetOwnershipParity",
+      "unknownMetadataPreserved"
+    ],
+    "qualification.backup-restore-rollback-verified": [
+      "restoreExecuted",
+      "rollbackExecuted",
+      "independentBeforeAfterOracle",
+      "ownerQuiescent",
+      "unknownEffectsFenced"
+    ],
+    "qualification.workload-soak-resource-policy": [
+      "approvedMeasuredPolicy",
+      "largeWorkloadExecuted",
+      "completeTelemetry",
+      "independentTaskAcceptance"
+    ],
+    "qualification.power-loss-recovery-policy": [
+      "approvedStorageFaultModel",
+      "storageFaultsExercised",
+      "notSigkillOnly",
+      "independentRecoveryOracle"
+    ],
+    "agents.manager-real-code-artifact-oracle": [
+      "actualCodeWorkers",
+      "nativeArtifactBytesAndIdentity",
+      "notModelSelfReport",
+      "actualToolAuthority",
+      "taskAcceptanceOracle"
+    ],
+    "agents.manager-sustainable-lifecycle": [
+      "terminalWorkerDrain",
+      "boundedStateAndResources",
+      "restartNoReplay",
+      "independentTaskAcceptance",
+      "repairOwnerFrozen"
+    ],
+    "runtime.operational-host-start-drain-restart": [
+      "independentLaunch",
+      "configuredNativePolicy",
+      "leaseOwnerDrain",
+      "actualHostClientHandshake"
+    ],
+    "vscode.operational-isolated-host-client": [
+      "actualClientHandshake",
+      "nativeIdentity",
+      "isolatedActivation",
+      "noProductionSwitch"
+    ],
+    "browser.operational-rendered-knowledge-chat": [
+      "actualRenderedClient",
+      "configuredHostHandshake",
+      "nativeIdentity",
+      "notDomMockOnly"
+    ],
+    "chat.configured-provider-real-socket": [
+      "actualSocket",
+      "configuredNativePolicy",
+      "providerContractAssertions",
+      "notMockSseOnly"
+    ],
+    "environments.secret-endpoint-redirect-authorization": [
+      "secretReferences",
+      "endpointAuthority",
+      "redirectDenials",
+      "noCallerAttestation"
+    ],
+    "sync.actual-local-provider-publication": [
+      "actualTransport",
+      "providerContractAssertions",
+      "publicationExecuted",
+      "noProductionPublication"
+    ],
+    "sync.credentials-remote-authority": [
+      "nativeCredentialAuthority",
+      "targetAndSourcePins",
+      "scopeDenials",
+      "uncertainOutcomeFences"
+    ],
+    "subscriptions.actual-local-broker-authority": [
+      "actualTransport",
+      "brokerAuthorization",
+      "scopeDenials",
+      "notAclReadOnly"
+    ],
+    "subscriptions.revocation-expiry-provider-faults": [
+      "revocationExecuted",
+      "expiryExecuted",
+      "providerFaultsExercised",
+      "noAuthorityFromMagicCode"
+    ],
+    "mcp.dynamic-catalog-source-coverage": [
+      "legacyMcpCatalogObserved",
+      "legacyNativeCatalogObserved",
+      "nextActorCatalogsObserved",
+      "dynamicRegistrationsReconciled"
+    ]
+  },
+  "dynamicLegacyMappings": [],
+  "legacyDeclarations": [
+    {
+      "path": "resources/agent_session_runtime.py",
+      "kind": "mcp-declaration",
+      "workstream": "agents",
+      "names": [
+        "agent_session_capabilities",
+        "agent_session_snapshot_list",
+        "agent_session_snapshot_read"
+      ]
+    },
+    {
+      "path": "resources/api_chat_control.py",
+      "kind": "mcp-declaration",
+      "workstream": "chat",
+      "names": [
+        "api_chat_capabilities",
+        "api_chat_models",
+        "api_chat_list",
+        "api_chat_create",
+        "api_chat_send",
+        "api_chat_get",
+        "api_chat_cancel",
+        "api_chat_request_get"
+      ]
+    },
+    {
+      "path": "resources/api_chat_control.py",
+      "kind": "mcp-declaration",
+      "workstream": "collaboration",
+      "names": [
+        "portal_control"
+      ]
+    },
+    {
+      "path": "resources/asset_classification.py",
+      "kind": "mcp-declaration",
+      "workstream": "assets",
+      "names": [
+        "asset_classify_preview",
+        "asset_classify_apply",
+        "asset_classify_rollback"
+      ]
+    },
+    {
+      "path": "resources/capability_api.py",
+      "kind": "mcp-declaration",
+      "workstream": "mcp",
+      "names": [
+        "capabilities_inventory",
+        "capabilities_list",
+        "capabilities_search",
+        "capabilities_describe",
+        "capability_read",
+        "capability_call"
+      ]
+    },
+    {
+      "path": "resources/knowledge_mutations.py",
+      "kind": "mcp-declaration",
+      "workstream": "todo",
+      "names": [
+        "note_work_items",
+        "todo_board_create",
+        "note_work_item_notes",
+        "note_work_item_command",
+        "note_work_item_upsert"
+      ]
+    },
+    {
+      "path": "resources/knowledge_mutations.py",
+      "kind": "mcp-declaration",
+      "workstream": "knowledge",
+      "names": [
+        "knowledge_file_trash"
+      ]
+    },
+    {
+      "path": "resources/knowledge_recovery.py",
+      "kind": "mcp-declaration",
+      "workstream": "qualification",
+      "names": [
+        "knowledge_recovery_preview",
+        "knowledge_recovery_apply"
+      ]
+    },
+    {
+      "path": "resources/knowledge_snapshots.py",
+      "kind": "mcp-declaration",
+      "workstream": "qualification",
+      "names": [
+        "knowledge_snapshot_status",
+        "knowledge_snapshot_create",
+        "knowledge_snapshot_configure",
+        "knowledge_snapshot_restore_preview",
+        "knowledge_snapshot_restore_apply"
+      ]
+    },
+    {
+      "path": "resources/todo_api.py",
+      "kind": "mcp-declaration",
+      "workstream": "todo",
+      "names": [
+        "list_boards",
+        "get_board",
+        "list_workitems",
+        "get_workitem",
+        "list_userstories",
+        "get_userstory",
+        "list_agents",
+        "add_workitem",
+        "update_workitem",
+        "delete_workitem",
+        "restore_workitem",
+        "move_workitem",
+        "add_userstory",
+        "update_userstory",
+        "delete_userstory",
+        "restore_userstory",
+        "claim_workitem",
+        "assign_workitem",
+        "release_workitem",
+        "change_workitem_state",
+        "submit_workitem_result",
+        "accept_workitem",
+        "reopen_workitem",
+        "reopen_userstory",
+        "change_userstory_state",
+        "accept_userstory",
+        "add_workitem_comment",
+        "list_workitem_history",
+        "list_board_changes"
+      ]
+    },
+    {
+      "path": "src/chat/api-chat-mcp.ts",
+      "kind": "typescript-contract-candidate",
+      "workstream": "mcp",
+      "names": [
+        "find_vscode_tools",
+        "invoke_vscode_tool"
+      ]
+    },
+    {
+      "path": "src/chat/api-chat-tools.ts",
+      "kind": "typescript-contract-candidate",
+      "workstream": "runtime",
+      "names": [
+        "read_file",
+        "find_files",
+        "list_directory",
+        "search_text",
+        "session_info",
+        "diagnostic_logs",
+        "record_harness",
+        "replace_text",
+        "save_file",
+        "run_process",
+        "process_get",
+        "process_output",
+        "process_cancel"
+      ]
+    },
+    {
+      "path": "src/chat/api-chat-tools.ts",
+      "kind": "typescript-contract-candidate",
+      "workstream": "chat",
+      "names": [
+        "list_chats",
+        "ask_chat",
+        "ask_user"
+      ]
+    },
+    {
+      "path": "src/chat/api-chat-tools.ts",
+      "kind": "typescript-contract-candidate",
+      "workstream": "agents",
+      "names": [
+        "spawn_workers",
+        "ask_session"
+      ]
+    },
+    {
+      "path": "src/chat/api-chat-tools.ts",
+      "kind": "typescript-contract-candidate",
+      "workstream": "retrieval",
+      "names": [
+        "pkm_search",
+        "pkm_read"
+      ]
+    },
+    {
+      "path": "src/chat/api-chat-tools.ts",
+      "kind": "typescript-contract-candidate",
+      "workstream": "todo",
+      "names": [
+        "note_todo_read",
+        "note_todo_update",
+        "todo_board_create"
+      ]
+    },
+    {
+      "path": "src/chat/api-chat-tools.ts",
+      "kind": "typescript-contract-candidate",
+      "workstream": "memory",
+      "names": [
+        "memory_read"
+      ]
+    },
+    {
+      "path": "src/chat/api-chat-tools.ts",
+      "kind": "typescript-contract-candidate",
+      "workstream": "collaboration",
+      "names": [
+        "cross_machine_collaboration"
+      ]
+    },
+    {
+      "path": "src/chat/api-chat-tools.ts",
+      "kind": "typescript-contract-candidate",
+      "workstream": "actions",
+      "names": [
+        "find_actions",
+        "run_action"
+      ]
+    },
+    {
+      "path": "src/chat/api-chat-view.ts",
+      "kind": "typescript-contract-candidate",
+      "workstream": "agents",
+      "names": [
+        "spawn_workers",
+        "assign_workers",
+        "request_manager_input",
+        "stop_worker",
+        "respond_worker",
+        "resolve_worker",
+        "send_worker_message",
+        "list_workers",
+        "report_work",
+        "finish_debug",
+        "get_plan",
+        "submit_plan"
+      ]
+    },
+    {
+      "path": "src/chat/api-chat-view.ts",
+      "kind": "typescript-contract-candidate",
+      "workstream": "chat",
+      "names": [
+        "list_chats",
+        "read_chat_result",
+        "session_info"
+      ]
+    },
+    {
+      "path": "src/chat/api-chat-view.ts",
+      "kind": "typescript-contract-candidate",
+      "workstream": "memory",
+      "names": [
+        "memory_read"
+      ]
+    },
+    {
+      "path": "src/chat/capability-tools.ts",
+      "kind": "typescript-contract-candidate",
+      "workstream": "mcp",
+      "names": [
+        "capabilities_list",
+        "capabilities_search",
+        "capabilities_describe"
+      ]
+    },
+    {
+      "path": "src/chat/chat-actions.ts",
+      "kind": "typescript-contract-candidate",
+      "workstream": "actions",
+      "names": [
+        "find_actions",
+        "run_action"
+      ]
+    },
+    {
+      "path": "src/chat/chat-harness-records.ts",
+      "kind": "typescript-contract-candidate",
+      "workstream": "runtime",
+      "names": [
+        "record_harness"
+      ]
+    },
+    {
+      "path": "src/chat/note-todo-tools.ts",
+      "kind": "typescript-contract-candidate",
+      "workstream": "todo",
+      "names": [
+        "note_todo_read",
+        "note_todo_update",
+        "todo_board_create"
+      ]
+    },
+    {
+      "path": "src/mcp/mcp.ts",
+      "kind": "mcp-declaration",
+      "workstream": "runtime",
+      "names": [
+        "diagnostics_latest"
+      ]
+    },
+    {
+      "path": "src/mcp/mcp.ts",
+      "kind": "mcp-declaration",
+      "workstream": "mcp",
+      "names": [
+        "check_version",
+        "mcp_lifecycle_status",
+        "mcp_lifecycle_quiesce",
+        "check_chat_version"
+      ]
+    },
+    {
+      "path": "src/mcp/mcp.ts",
+      "kind": "mcp-declaration",
+      "workstream": "collaboration",
+      "names": [
+        "chat_join",
+        "chat_post",
+        "chat_read",
+        "chat_history",
+        "chat_standby",
+        "chat_members",
+        "chat_status",
+        "chat_leave"
+      ]
+    }
+  ],
+  "sourceDeclaredContracts": [
+    {
+      "path": "src/capabilities/memory-contract.ts",
+      "workstream": "memory",
+      "ids": [
+        "memory.record.propose",
+        "memory.record.get",
+        "memory.record.search",
+        "memory.record.confirm",
+        "memory.record.revise",
+        "memory.record.revoke",
+        "memory.record.audit"
+      ]
+    },
+    {
+      "path": "src/capabilities/registry.ts",
+      "workstream": "todo",
+      "ids": [
+        "todo.board.list",
+        "todo.board.get",
+        "todo.workitem.list",
+        "todo.workitem.get",
+        "todo.story.list",
+        "todo.story.get",
+        "todo.agent.list",
+        "todo.workitem.create",
+        "todo.workitem.update",
+        "todo.workitem.delete",
+        "todo.workitem.restore",
+        "todo.workitem.move",
+        "todo.story.create",
+        "todo.story.update",
+        "todo.story.delete",
+        "todo.story.restore",
+        "todo.workitem.claim",
+        "todo.workitem.assign",
+        "todo.workitem.release",
+        "todo.workitem.transition",
+        "todo.workitem.submit",
+        "todo.workitem.accept",
+        "todo.workitem.reopen",
+        "todo.story.reopen",
+        "todo.story.transition",
+        "todo.story.accept",
+        "todo.workitem.comment",
+        "todo.workitem.history",
+        "todo.board.changes"
+      ]
+    }
+  ],
+  "legacyCommands": {
+    "workstream": "vscode",
+    "ids": [
+      "personalKnowledge.duplicatePanel",
+      "personalKnowledge.classifyAssets",
+      "personalKnowledge.rollbackAssetClassification",
+      "personalKnowledge.peerCollaboration",
+      "personalKnowledge.portalDiagnostics",
+      "personalKnowledge.manageMarkdownAssets",
+      "personalKnowledge.openActions",
+      "personalKnowledge.openActionLibrary",
+      "personalKnowledge.openActionsInBrowser",
+      "personalKnowledge.configureActionWorkspace",
+      "personalKnowledge.hostStatus",
+      "personalKnowledge.reloadAllHosts",
+      "personalKnowledge.openApiChat",
+      "personalKnowledge.testApiChatE2E",
+      "personalKnowledge.openVisualizationWindow",
+      "personalKnowledge.exportMcpToolSets",
+      "personalKnowledge.open",
+      "personalKnowledge.goToPkmPath",
+      "personalKnowledge.addNote",
+      "personalKnowledge.saveSkill",
+      "personalKnowledge.setupMcp",
+      "personalKnowledge.startPkmMcp",
+      "personalKnowledge.configureNativeMcpDiscovery",
+      "personalKnowledge.registerCopilotMcp",
+      "personalKnowledge.removeLegacyAgentInjection",
+      "personalKnowledge.reconfigureKnowledgeRoot",
+      "personalKnowledge.reconfigureEnvironmentsRoot",
+      "personalKnowledge.reconfigureMcpRuntimePath",
+      "personalKnowledge.reconfigureMcpServerPath",
+      "personalKnowledge.openChatroom",
+      "personalKnowledge.openServers",
+      "personalKnowledge.openServerLink",
+      "personalKnowledge.openSubscriptions",
+      "personalKnowledge.openRecipe",
+      "personalKnowledge.startServerItem",
+      "personalKnowledge.stopServerItem",
+      "personalKnowledge.restartServerItem",
+      "personalKnowledge.moveServerToGroup",
+      "personalKnowledge.renameServerGroup",
+      "personalKnowledge.deleteServerGroup",
+      "personalKnowledge.createServerGroupFromNavigation",
+      "personalKnowledge.renameServerGroupFromNavigation",
+      "personalKnowledge.deleteServerGroupFromNavigation",
+      "personalKnowledge.openHostedRoomItem",
+      "personalKnowledge.renameHostedRoom",
+      "personalKnowledge.repairStoredRoom",
+      "personalKnowledge.forceCloseHostedRoom",
+      "personalKnowledge.closeHostedRoom",
+      "personalKnowledge.deleteHostedRoom",
+      "personalKnowledge.refreshTree",
+      "personalKnowledge.editMarkdownMetadata",
+      "personalKnowledge.editMarkdownContent",
+      "personalKnowledge.openSkill",
+      "personalKnowledge.openNote",
+      "personalKnowledge.openPrompt",
+      "personalKnowledge.openPackage",
+      "personalKnowledge.openScript",
+      "personalKnowledge.showLogs",
+      "personalKnowledge.setAiKey",
+      "personalKnowledge.addSkillHere",
+      "personalKnowledge.addRecipeHere",
+      "personalKnowledge.newRecipeSubfolder",
+      "personalKnowledge.deleteRecipeFolder",
+      "personalKnowledge.addNoteHere",
+      "personalKnowledge.addPaperHere",
+      "personalKnowledge.addIdeaHere",
+      "personalKnowledge.addPromptHere",
+      "personalKnowledge.addScriptHere",
+      "personalKnowledge.newSubgroup",
+      "personalKnowledge.renameSubgroup",
+      "personalKnowledge.deleteSubgroup",
+      "personalKnowledge.restoreSkillTrash",
+      "personalKnowledge.emptySkillTrash",
+      "personalKnowledge.deleteSkillTrashEntry",
+      "personalKnowledge.trashKnowledgeItem",
+      "personalKnowledge.restoreKnowledgeTrash",
+      "personalKnowledge.deleteKnowledgeTrashEntry",
+      "personalKnowledge.emptyKnowledgeTrash",
+      "personalKnowledge.copyNavigationPath",
+      "personalKnowledge.setFolderPrivate",
+      "personalKnowledge.setFolderPublic",
+      "personalKnowledge.editSkill",
+      "personalKnowledge.editNote",
+      "personalKnowledge.editPaper",
+      "personalKnowledge.editScript",
+      "personalKnowledge.deleteScript"
+    ]
+  },
+  "legacyConfigurations": {
+    "workstream": "environments",
+    "ids": [
+      "personalKnowledge.actions.toolchains",
+      "personalKnowledge.actions.workspaceRoots",
+      "personalKnowledge.agentSessionArchiveKeepLatestK",
+      "personalKnowledge.aiAzureApiVersion",
+      "personalKnowledge.aiBackend",
+      "personalKnowledge.aiEndpoint",
+      "personalKnowledge.aiModel",
+      "personalKnowledge.apiChatActivityCreditLimit",
+      "personalKnowledge.apiChatActivityReviewMinutes",
+      "personalKnowledge.apiChatAutomaticWorkers",
+      "personalKnowledge.apiChatCapabilityProfile",
+      "personalKnowledge.apiChatLoopExemptTools",
+      "personalKnowledge.apiChatLoopReviewMinutes",
+      "personalKnowledge.apiChatMaxToolRounds",
+      "personalKnowledge.apiChatMaximumWorkers",
+      "personalKnowledge.apiChatModelProfiles",
+      "personalKnowledge.apiChatModels",
+      "personalKnowledge.apiChatProvider",
+      "personalKnowledge.apiChatTimeoutSeconds",
+      "personalKnowledge.chatDisplayName",
+      "personalKnowledge.chatHistoryLimitMB",
+      "personalKnowledge.chatHubPort",
+      "personalKnowledge.chatHubUrl",
+      "personalKnowledge.chatInviteHost",
+      "personalKnowledge.chatMemoryCapacityMB",
+      "personalKnowledge.chatMemoryModel",
+      "personalKnowledge.chatMemoryThinkingBudget",
+      "personalKnowledge.chatRoom",
+      "personalKnowledge.chatSharedSecret",
+      "personalKnowledge.contentGatewayPort",
+      "personalKnowledge.environmentsPath",
+      "personalKnowledge.externalLinkHost",
+      "personalKnowledge.loadProfilingEnabled",
+      "personalKnowledge.logLevel",
+      "personalKnowledge.mcpEnabledFeatureDomains",
+      "personalKnowledge.mcpPythonPath",
+      "personalKnowledge.mcpRuntimePath",
+      "personalKnowledge.mcpServerPath",
+      "personalKnowledge.openOnStartup",
+      "personalKnowledge.serversProxyPort",
+      "personalKnowledge.skillRouterEnabledSolutions",
+      "personalKnowledge.skillRouterSourcePriority",
+      "personalKnowledge.storePath",
+      "personalKnowledge.uiLanguage"
+    ]
+  },
+  "workstreams": [
+    {
+      "id": "core",
+      "contracts": [
+        "knowledge.document.list",
+        "knowledge.document.get",
+        "knowledge.document.create",
+        "knowledge.document.update",
+        "knowledge.document.trash",
+        "knowledge.document.restore",
+        "project.legacy.command",
+        "project.recipe.trash.command"
+      ],
+      "scenarios": [
+        "core.shared-executor",
+        "core.http-mcp-authority",
+        "core.cross-process-cas",
+        "core.restart-no-replay",
+        "core.legacy-command-extension-original-store",
+        "core.batch11-project-thread-source-parity",
+        "core.batch12-project-recipe-trash-command",
+        "core.batch13-native-note-board-project-envelope-read-fences",
+        "core.batch14-native-paused-snapshot-and-inline-note-boundaries"
+      ],
+      "unresolved": [
+        "Foundation transport tests are not complete legacy result/error/retry parity. Imported historical opaque command IDs replay only the current snapshot; project.update remains a separate strict-CAS path. The single project.legacy.command@1 operation continues to admit its previously bounded Project/Recipe command set. Batch12 separately qualifies project.recipe.trash.command@1 for explicit default-deny native move/restore authorization, strict opaque command validation, actor/workspace/source-control/database-root binding, supported canonical exports, fresh owned staging, atomic no-replace publish, schema16 intent recovery and bounded global replay. Batch13 adds a conditional native Note/Board journal bridge and bounded raw schema-1 projects.json adoption; Batch14 separately qualifies an explicit native paused-Snapshot restore and the source-bound inline Note writer; only explicit source/command scopes are supported. Snapshot resume/cancel require native actor/owner/epoch/expiry checks and human approval; unknown snapshot intents are inspect/cancel/confirm-only, and inline unknown intent requires an exact same-actor retry. Safe-state validation runs before backup/recovery effects. Schema18 preserves prior workspace/backup inputs 12–17, which migrate only on explicit open. Six selected Core HTTP/MCP reads detect observed pre/post digest changes but do not form atomic snapshots or defeat ABA. Unknown/mixed state, unsupported runtime fields, external-writer/power-loss guarantees and complete Project/Recipe parity remain unsupported or unqualified. The 28-case injected I/O matrix is bounded evidence, not an approved SLO or physical power-loss/kernel-ENOSPC qualification. Other unsupported Core controls and complete client parity remain open."
+      ]
+    },
+    {
+      "id": "knowledge",
+      "contracts": [
+        "knowledge.metadata.get",
+        "knowledge.metadata.update",
+        "knowledge.document.lifecycle.preview",
+        "knowledge.document.move",
+        "knowledge.folder.lifecycle.preview",
+        "knowledge.folder.lifecycle.promote-preview",
+        "knowledge.folder.move",
+        "knowledge.folder.promote-delete",
+        "knowledge.library.get",
+        "knowledge.library.list",
+        "knowledge.mutation.scan",
+        "knowledge.note.create",
+        "knowledge.note.update",
+        "knowledge.research.create",
+        "knowledge.research.update",
+        "knowledge.trash.lifecycle.preview",
+        "knowledge.trash.move",
+        "knowledge.trash.restore",
+        "knowledge.trash.list",
+        "knowledge.trash.get",
+        "knowledge.trash.restore.original",
+        "knowledge.trash.delete.original",
+        "knowledge.trash.empty.original"
+      ],
+      "scenarios": [
+        "knowledge.unknown-frontmatter-identity-aliases",
+        "knowledge.folder-and-trash-lifecycle",
+        "knowledge.original-trash-import-history-restore",
+        "knowledge.external-editor-conflicts",
+        "knowledge.full-legacy-layouts"
+      ],
+      "unresolved": [
+        "Only explicitly authorized, quiescent original Notes/Skills/Papers trash with stable identities and exact paired assets/folder subtrees is qualified through a fresh caller-owned stage. Ordered opaque deletion history is preserved; restore uses the existing knowledge.trash.restore@1 runtime receipt. Adopted entries expose list/get/restore.original/delete.original/empty.original; permanent deletion uses exact durable selection, immutable global receipts and explicit actor-authorized recovery. Unknown buckets/journals, pending locks/temp state, symlinks, tamper, collisions, outside references, secrets, Board/Memory/System/path-derived identity, unsupported Prompts/Scripts, cross-area ownership, external writers and full client behavior remain unsupported or need approved redesign; no silent exclusions. Import/publication now shares Linux renameat2 or Windows no-replace MoveFileExW; native Windows import/restore and power-loss durability remain unqualified."
+      ]
+    },
+    {
+      "id": "assets",
+      "contracts": [
+        "knowledge.asset.list",
+        "knowledge.asset.get",
+        "knowledge.upload.begin",
+        "knowledge.upload.append",
+        "knowledge.upload.get",
+        "knowledge.upload.list",
+        "knowledge.upload.abort",
+        "knowledge.upload.commit",
+        "knowledge.asset.lifecycle.preview",
+        "knowledge.asset.rename",
+        "knowledge.asset.delete",
+        "knowledge.links.resolve",
+        "knowledge.legacy-links.resolve",
+        "knowledge.asset.ownership.validate",
+        "knowledge.classification.native-strict.command",
+        "knowledge.classification.original-compatible.command"
+      ],
+      "scenarios": [
+        "assets.byte-owner-rebase-parity",
+        "assets.classify-rollback",
+        "assets.reconnect-quota-expiry",
+        "assets.all-link-provider-areas"
+      ],
+      "unresolved": [
+        "Bounded Note/Skill/Paper links omit Script/Project/external providers. Batch17 strict native classification and fixture-only restore adoption do not reproduce the original ordered-skip API; source parity, rollback behavior, hostile external-writer protection, production native authority and erased-memory backup remain unqualified."
+      ]
+    },
+    {
+      "id": "todo",
+      "contracts": [
+        "todo.board.create",
+        "todo.board.list",
+        "todo.board.get",
+        "todo.workitem.list",
+        "todo.workitem.get",
+        "todo.story.list",
+        "todo.story.get",
+        "todo.agent.list",
+        "todo.workitem.create",
+        "todo.workitem.update",
+        "todo.workitem.delete",
+        "todo.workitem.restore",
+        "todo.workitem.move",
+        "todo.story.create",
+        "todo.story.update",
+        "todo.story.delete",
+        "todo.story.restore",
+        "todo.workitem.claim",
+        "todo.workitem.assign",
+        "todo.workitem.release",
+        "todo.workitem.transition",
+        "todo.workitem.submit",
+        "todo.workitem.accept",
+        "todo.workitem.reopen",
+        "todo.story.reopen",
+        "todo.story.transition",
+        "todo.story.accept",
+        "todo.workitem.comment",
+        "todo.workitem.history",
+        "todo.board.changes",
+        "legacy.note.workitems.read",
+        "legacy.note.workitems.notes",
+        "legacy.note.workitems.command",
+        "legacy.note.workitems.upsert"
+      ],
+      "scenarios": [
+        "todo.legacy-board-history-import",
+        "todo.live-chat-agent-directory",
+        "todo.human-story-acceptance",
+        "todo.legacy-client-e2e"
+      ],
+      "unresolved": [
+        "The conditional legacy.note.workitems.*@1 bridge is admitted only for proven attached-Board equivalence and exact native actor authority; inline Markdown writes, worker-token grants and non-equivalent effects remain unavailable. API module tests and bounded worker parity do not cover live Chat, all legacy layouts or every old UX."
+      ]
+    },
+    {
+      "id": "memory",
+      "contracts": [
+        "memory.record.propose",
+        "memory.record.get",
+        "memory.record.search",
+        "memory.record.audit",
+        "memory.record.confirm",
+        "memory.record.revise",
+        "memory.record.revoke",
+        "memory.scope.forget.native"
+      ],
+      "scenarios": [
+        "memory.exact-native-human-decisions",
+        "memory.chat-engine-forget-accounting",
+        "memory.scope-privacy-history",
+        "memory.old-layout-import"
+      ],
+      "unresolved": [
+        "Explicit-memory native decisions and Python foundations do not imply complete Chat-memory/accounting, forget or backup-erasure semantics."
+      ]
+    },
+    {
+      "id": "retrieval",
+      "contracts": [
+        "retrieval.runtime.search",
+        "retrieval.runtime.availability",
+        "retrieval.runtime.stage",
+        "retrieval.runtime.qualify",
+        "retrieval.runtime.activate",
+        "knowledge.note.search",
+        "knowledge.skill.search",
+        "knowledge.research.search"
+      ],
+      "scenarios": [
+        "retrieval.embedding-invalidation",
+        "retrieval.feedback-training-evaluation-serving",
+        "retrieval.closed-index-rebuild-swap",
+        "retrieval.legacy-search-contracts"
+      ],
+      "unresolved": [
+        "Literal search and rebuild foundations are not original embedding/regex/online-learning parity."
+      ]
+    },
+    {
+      "id": "chat",
+      "contracts": [
+        "chat.session.capabilities",
+        "chat.session.create",
+        "chat.session.list",
+        "chat.session.get",
+        "chat.session.messages",
+        "chat.session.append",
+        "chat.session.archive",
+        "chat.turn.start",
+        "chat.turn.get",
+        "chat.turn.events",
+        "chat.turn.cancel"
+      ],
+      "scenarios": [
+        "chat.configured-provider-real-socket",
+        "chat.tool-human-approval-chain",
+        "chat.reconnect-history-cancellation",
+        "chat.complete-legacy-native-client"
+      ],
+      "unresolved": [
+        "Mock SSE and transcript-only persistence do not qualify complete provider/tool/client behavior. Authorized local provider contract tests may qualify without contacting a third party."
+      ]
+    },
+    {
+      "id": "collaboration",
+      "contracts": [
+        "collaboration.state.list",
+        "collaboration.state.read",
+        "collaboration.state.leave",
+        "channel.runtime.accept",
+        "channel.runtime.reconnect",
+        "channel.runtime.read",
+        "channel.runtime.wait",
+        "channel.runtime.send",
+        "channel.runtime.assign",
+        "channel.runtime.update",
+        "channel.runtime.reply",
+        "channel.runtime.ack",
+        "portal.lifecycle.connections",
+        "portal.lifecycle.status",
+        "portal.lifecycle.read",
+        "portal.lifecycle.route"
+      ],
+      "scenarios": [
+        "collaboration.pairing-admission-permissions",
+        "collaboration.routing-meetings-transfer",
+        "collaboration.peer-fault-recovery",
+        "collaboration.portal-native-lifecycle"
+      ],
+      "unresolved": [
+        "Batch10 composes existing Channel/collaboration state for native Portal read and directed route with human-authorized admission, revocation/generation fences, and no restart reconnect. This bounded two-actor HTTP/MCP path does not qualify external transport, command execution, full Portal/Meeting lifecycle or legacy collaboration parity."
+      ]
+    },
+    {
+      "id": "agents",
+      "contracts": [
+        "agent.snapshot.list",
+        "agent.snapshot.get",
+        "agent.snapshot.read",
+        "agent.snapshot.restore-paused",
+        "agent.snapshot.resume-native",
+        "agent.snapshot.cancel-native",
+        "agent.snapshot.restore-get",
+        "agent.snapshot.confirm-native",
+        "agent.runtime.spawn",
+        "agent.runtime.cancel",
+        "agent.runtime.restore",
+        "agent.runtime.get",
+        "agent.runtime.list",
+        "agent.runtime.reconnect",
+        "manager.runtime.start",
+        "manager.runtime.get",
+        "manager.runtime.events",
+        "manager.runtime.feedback",
+        "manager.runtime.cancel",
+        "manager.progress.get",
+        "manager.progress.events",
+        "manager.progress.feedback",
+        "manager.chat.artifacts"
+      ],
+      "scenarios": [
+        "agents.snapshot-restore-identity",
+        "agents.task-tree-budget-attribution",
+        "agents.manager-feature-research-cleanup-serial",
+        "agents.manager-real-code-artifact-oracle",
+        "agents.manager-feedback-repair-cancel-restart",
+        "agents.manager-sustainable-lifecycle"
+      ],
+      "unresolved": [
+        "Twenty synthetic or SQLite text workers, pinned modules and model self-reports are not generic coding tools, real task acceptance or sustainable Manager lifecycle. Batch14 native paused restore/control operations are synthetic source-qualified only; they do not enable full Agent runtime behavior or acceptance."
+      ]
+    },
+    {
+      "id": "workflows",
+      "contracts": [
+        "project.list",
+        "project.get",
+        "project.recipe.list",
+        "project.recipe.get",
+        "project.recipe.bundle.get",
+        "project.create",
+        "project.update",
+        "project.archive",
+        "project.recipe.create",
+        "project.recipe.update",
+        "project.mutation.pin",
+        "workflow.compiler.capabilities",
+        "workflow.definition.validate",
+        "workflow.definition.compile",
+        "workflow.run.create",
+        "workflow.run.get",
+        "workflow.run.events",
+        "workflow.run.ready-nodes",
+        "workflow.run.cancel",
+        "workflow.executor.create",
+        "workflow.executor.get",
+        "workflow.executor.cancel"
+      ],
+      "scenarios": [
+        "workflows.full-project-recipe-lifecycle",
+        "workflows.scheduler-execution-artifact-oracle",
+        "workflows.restart-unknown-effects",
+        "workflows.old-client-results"
+      ],
+      "unresolved": [
+        "Compiler/noop/direct-child slices do not cover every original scheduler, provider or project lifecycle."
+      ]
+    },
+    {
+      "id": "actions",
+      "contracts": [
+        "action.compiler.capabilities",
+        "action.definition.check",
+        "action.definition.compile",
+        "action.moduleSet.project",
+        "action.graph.compile",
+        "action.runtime.create",
+        "action.runtime.get",
+        "action.runtime.events",
+        "action.runtime.cancel"
+      ],
+      "scenarios": [
+        "actions.authoring-modules-monitoring-parity",
+        "actions.trusted-process-tree-cancel",
+        "actions.receipts-rollback-provider-faults",
+        "actions.complete-client-lifecycle"
+      ],
+      "unresolved": [
+        "Direct-child-only/native callback policy does not establish generic process-tree, monitoring or external-module parity."
+      ]
+    },
+    {
+      "id": "subscriptions",
+      "contracts": [
+        "subscription.list",
+        "subscription.get",
+        "subscription.acl.evaluate",
+        "subscription.materialize.apply",
+        "remote.runtime.subscription.run",
+        "remote.runtime.subscription.mirror",
+        "remote.runtime.subscription.bundle.run",
+        "remote.runtime.subscription.bundle.recover",
+        "subscription.identity.get",
+        "subscription.broker.share-markers"
+      ],
+      "scenarios": [
+        "subscriptions.actual-local-broker-authority",
+        "subscriptions.lifecycle-fork-materialize",
+        "subscriptions.revocation-expiry-provider-faults"
+      ],
+      "unresolved": [
+        "The original encrypted bundle run/recover operations use explicitly injected fork-only authority and exact wire/file receipts with ACL/key-epoch fences. Local synthetic broker transport remains bounded; production authority, readonly bundle authority, every provider fault and full subscription lifecycle are not qualified."
+      ]
+    },
+    {
+      "id": "sync",
+      "contracts": [
+        "sync.plan",
+        "sync.plan.create",
+        "sync.plan.get",
+        "sync.plan.decide",
+        "sync.apply.preview",
+        "sync.apply",
+        "remote.runtime.pin",
+        "remote.runtime.plan",
+        "remote.runtime.decide",
+        "remote.runtime.apply",
+        "remote.runtime.publish",
+        "remote.runtime.status",
+        "remote.runtime.reconcile"
+      ],
+      "scenarios": [
+        "sync.actual-local-provider-publication",
+        "sync.credentials-remote-authority",
+        "sync.conflict-delete-restore-journal",
+        "sync.uncertain-remote-no-replay"
+      ],
+      "unresolved": [
+        "A configured native wrapper now exercises the local mock GitHub HTTP transport and rejects stale/uncontrolled ref writes. This is not GitHub-wide CAS, live credentials, real publication or full sync parity."
+      ]
+    },
+    {
+      "id": "skills",
+      "contracts": [
+        "knowledge.skill.list",
+        "knowledge.skill.get",
+        "knowledge.skill.create",
+        "knowledge.skill.update",
+        "knowledge.skill.routing.sources",
+        "knowledge.skill.routing.context",
+        "knowledge.skill.routing.select",
+        "knowledge.skill.routing.project",
+        "knowledge.skill.routing.prompt",
+        "knowledge.note.list",
+        "knowledge.note.get",
+        "knowledge.research.list",
+        "knowledge.research.facets",
+        "knowledge.research.groups",
+        "knowledge.research.graph",
+        "legacy.skill.router.inject",
+        "legacy.skill.router.remove",
+        "legacy.skill.source.install",
+        "legacy.skill.source.remove",
+        "legacy.skill.source.bridge"
+      ],
+      "scenarios": [
+        "skills.full-prompts-routing-projection",
+        "skills.install-activation-related-recipes",
+        "skills.mutation-search-client-parity"
+      ],
+      "unresolved": [
+        "Read projections and routing plus bounded native Skill-source install/remove/bridge candidates do not qualify complete legacy installation, subscription, activation or full prompt/model behavior. The candidates remain unaccepted and require exact independently signed parity evidence."
+      ]
+    },
+    {
+      "id": "environments",
+      "contracts": [
+        "model.config.catalog",
+        "model.config.resolve"
+      ],
+      "scenarios": [
+        "environments.model-python-lifecycle",
+        "environments.secret-endpoint-redirect-authorization",
+        "environments.legacy-settings-replacement"
+      ],
+      "unresolved": [
+        "Explicit local CLI model configuration is bounded; every old setting needs exact replacement/retirement reasoning and operator approval."
+      ]
+    },
+    {
+      "id": "runtime",
+      "contracts": [],
+      "scenarios": [
+        "runtime.operational-host-start-drain-restart",
+        "runtime.process-tree-lease-resource-control",
+        "runtime.diagnostics-redaction-telemetry",
+        "runtime.bounded-state-compaction"
+      ],
+      "unresolved": [
+        "Direct-child tests, bounded snapshot restore and SIGKILL fences are not complete service lifecycle, resource control or power-loss guarantees."
+      ]
+    },
+    {
+      "id": "mcp",
+      "contracts": [],
+      "scenarios": [
+        "mcp.complete-alias-schema-result-parity",
+        "mcp.lifecycle-quiesce-version-handshake",
+        "mcp.dynamic-catalog-source-coverage"
+      ],
+      "unresolved": [
+        "Static declarations contain candidates/aliases and omit dynamic registrations. Actual enabled catalogs and denied/unavailable contracts must be reconciled."
+      ]
+    },
+    {
+      "id": "vscode",
+      "contracts": [],
+      "scenarios": [
+        "vscode.operational-isolated-host-client",
+        "vscode.complete-navigation-editing-ux",
+        "vscode.chat-tools-approvals-reconnect",
+        "vscode.config-command-replacement-decisions"
+      ],
+      "unresolved": [
+        "Typed authenticated test adapter is not existing extension activation and full legacy UX. Qualification must not activate/switch the production extension."
+      ]
+    },
+    {
+      "id": "browser",
+      "contracts": [],
+      "scenarios": [
+        "browser.operational-rendered-knowledge-chat",
+        "browser.native-human-review-identity",
+        "browser.reconnect-active-results-feedback",
+        "browser.complete-client-authority-security"
+      ],
+      "unresolved": [
+        "Rendered bounded progress/human-review tests do not qualify complete knowledge/Chat UX, deployment identity or reconnect."
+      ]
+    },
+    {
+      "id": "plugins",
+      "contracts": [
+        "plugin.runtime.discover",
+        "plugin.runtime.status",
+        "plugin.runtime.disable",
+        "plugin.runtime.enable",
+        "plugin.runtime.invoke"
+      ],
+      "scenarios": [
+        "plugins.opt-in-permission-lifecycle",
+        "plugins.fault-isolation-no-automatic-send",
+        "plugins.optional-provider-operator-decision"
+      ],
+      "unresolved": [
+        "Discovery-only does not load/qualify plugins. Optional providers may be explicitly disabled by a human; outbound tests are not automatically mandatory."
+      ]
+    },
+    {
+      "id": "qualification",
+      "contracts": [],
+      "scenarios": [
+        "qualification.representative-quiescent-isolated-import",
+        "qualification.encrypted-snapshot-import-with-epoch-key",
+        "qualification.byte-identity-history-parity",
+        "qualification.backup-restore-rollback-verified"
+      ],
+      "unresolved": [
+        "Preflight or supported lowercase import fixtures are not full migration qualification. Batch10 verifies a bounded source-matched encrypted Snapshot import only with explicit epoch-bound native key authority; plaintext/key persistence, subscription private-key import, restore/spawn and production-root import remain unqualified."
+      ]
+    }
+  ],
+  "policies": [
+    {
+      "id": "stability.soak",
+      "workstream": "qualification",
+      "gate": "optional-operational",
+      "status": "proposed-unapproved",
+      "requiredMetrics": {
+        "durationHours": {
+          "operator": "gte",
+          "proposed": 24
+        },
+        "managerTransitions": {
+          "operator": "gte",
+          "proposed": 1000
+        },
+        "maxConcurrentWorkers": {
+          "operator": "gte",
+          "proposed": 20
+        },
+        "unreconciledEffects": {
+          "operator": "lte",
+          "proposed": 0
+        },
+        "lostAcceptedArtifacts": {
+          "operator": "lte",
+          "proposed": 0
+        }
+      },
+      "remaining": "Actual large isolated soak with independent artifact/identity oracle, resource trend and complete failure logs. Proposed values are not approved thresholds or measurements."
+    },
+    {
+      "id": "stability.resources",
+      "workstream": "runtime",
+      "gate": "optional-operational",
+      "status": "proposed-unapproved",
+      "requiredMetrics": {
+        "p95OperationMilliseconds": {
+          "operator": "lte",
+          "proposed": null
+        },
+        "maxRssMegabytes": {
+          "operator": "lte",
+          "proposed": null
+        },
+        "maxQueueDepth": {
+          "operator": "lte",
+          "proposed": null
+        },
+        "retainedStateMegabytes": {
+          "operator": "lte",
+          "proposed": null
+        }
+      },
+      "remaining": "Operator chooses justified workload, retention, latency/memory/queue budgets and measurement windows; no implicit SLO."
+    },
+    {
+      "id": "stability.power-loss",
+      "workstream": "qualification",
+      "gate": "optional-operational",
+      "status": "proposed-unapproved",
+      "requiredMetrics": {
+        "faultCycles": {
+          "operator": "gte",
+          "proposed": 20
+        },
+        "byteIdentityDivergences": {
+          "operator": "lte",
+          "proposed": 0
+        },
+        "unknownEffectsReplayed": {
+          "operator": "lte",
+          "proposed": 0
+        },
+        "rollbackFailures": {
+          "operator": "lte",
+          "proposed": 0
+        }
+      },
+      "remaining": "Actual isolated storage/power-loss fault qualification or explicitly scoped operator-approved equivalent fault model with limitations and independent recovery oracle; SIGKILL alone is not power-loss."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "operator.scope-layouts-and-legacy-replacements",
+      "workstream": "qualification",
+      "gate": "functional-scope",
+      "checks": [
+        "humanAuthority",
+        "fullMigrationScope",
+        "representativeLayouts",
+        "legacyReplacementsDocumented",
+        "noSilentExclusions"
+      ]
+    },
+    {
+      "id": "operator.host-client-model-sync-subscription-policy",
+      "workstream": "qualification",
+      "gate": "optional-operational",
+      "checks": [
+        "humanAuthority",
+        "identityAndAuthorization",
+        "operationalHostClient",
+        "providerPolicy",
+        "noImplicitOutbound"
+      ]
+    },
+    {
+      "id": "operator.rollback-and-operating-runbook",
+      "workstream": "qualification",
+      "gate": "optional-operational",
+      "checks": [
+        "humanAuthority",
+        "rollbackVerified",
+        "ownerDrainAndRestart",
+        "recoveryEscalation",
+        "privacyAndRetention"
+      ]
+    },
+    {
+      "id": "operator.cutover-review-authority",
+      "workstream": "qualification",
+      "gate": "separate-human-cutover",
+      "checks": [
+        "humanAuthority",
+        "reviewOnly",
+        "allCriteriaReviewed",
+        "finalSwitchSeparate"
+      ]
+    }
+  ],
+  "optionalOperationalGates": {
+    "description": "These proposed stability thresholds, fault campaigns and operating approvals are tracked separately and do not determine functional parity. They must not be reported as removed PKM functionality or silently treated as approved.",
+    "scenarios": [
+      "qualification.workload-soak-resource-policy",
+      "qualification.power-loss-recovery-policy",
+      "qualification.operator-runbook-decisions"
+    ],
+    "policies": [
+      "stability.soak",
+      "stability.resources",
+      "stability.power-loss"
+    ],
+    "decisions": [
+      "operator.host-client-model-sync-subscription-policy",
+      "operator.rollback-and-operating-runbook"
+    ]
+  },
+  "finalCutover": {
+    "status": "separate-human-gate",
+    "automaticSwitch": false,
+    "automaticStop": false,
+    "permissionGrantedByReadyStatus": false
+  }
+}

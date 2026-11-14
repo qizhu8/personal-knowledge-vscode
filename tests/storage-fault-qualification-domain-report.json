@@ -1,0 +1,69 @@
+{
+  "schema": "pkm.domain-recovery-qualification/v1",
+  "node": "v22.23.1",
+  "sources": {
+    "tests/todo.test.mjs": "56bf0108b1969660cb764a628a5baa5a3463a33b2d511efacb146499e13ceaf9",
+    "tests/trash-lifecycle.test.mjs": "aae7f05025960febdd1c600ae1624549a04706ef66e228d5a85471922dbf7282",
+    "tests/document-lifecycle.test.mjs": "76530daa20aa347402b4277444173b0583c5ef5e983875bf0a34711df1c3059a",
+    "tests/folder-lifecycle.test.mjs": "31ea6b17a9eeea949b2c67a4f1fc23d1baf66e9bf6af7cc42065ed724ba634bc",
+    "tests/sync-apply.test.mjs": "b0eb25776a32b207516e5d3902952d91ff7423304135374aede3b7c113af1398",
+    "tests/coding-worker.test.mjs": "a32bfb74c8a0aaffd2ff131a96a4225620561bbec69886de1319cb77972892da",
+    "tests/storage-fault-qualification-domain.mjs": "b957151dfa76eba4618617f70f9b0a1297a8ad9581211a12e9219d1866be019c",
+    "tests/trash-lifecycle-fixture.mjs": "a388f3d6df53dba66a8ac79b1bcbde0bc900af7b521872aa0976f708f1f94b44",
+    "tests/sync-apply-fixture.mjs": "28b9190b9175dcebeccb89458a01c4d14b65fe01b85f71c35fa89ee7eda428dc",
+    "tests/coding-worker-fixtures.mjs": "49faac2a32f60e7131ed287a8b30327328ddb5ff4444bff292f7923b6b090239",
+    "src/boards.ts": "6ed641b02e46d381e051e3b8b3fffa16f492a5be90d41503c64e3bc6f8596f8a",
+    "src/trash-lifecycle.ts": "4cbe07c07a9ac19efbec594ec3f2d8baae2c2ae739d74e3d562d34d800642ad7",
+    "src/document-lifecycle.ts": "24a00c2e839d5913a37cbac6dfe6385944080081702709dc63ccf495a34857af",
+    "src/folder-lifecycle.ts": "df91bce12bd309e07b9a39114d53d78d1ddc093f8243c48e666f5c535eb246e6",
+    "src/sync-apply.ts": "3d27f5a01532cd08250af874ffa69de0f908fd9566d9e7e01de6f14f3cb8d9fa",
+    "src/coding-worker.ts": "ecf420d947d3aec65844652100c11e296346879c4ee508ad74ce7d98ef2045f1",
+    "dist/boards.js": "85d4976496b45cc8f6d0fd3e99cf2170c9f1ab8b941bd5594a6edc177759365b",
+    "dist/trash-lifecycle.js": "d0882e74a2bc8e3ffc0a561441d68241f0197ffd89f572e0064f0230cbc1aabf",
+    "dist/document-lifecycle.js": "fa89379c928aa1fbd77937b778d7c876b9fb67f9ec1662208d69ddccd9a0279f",
+    "dist/folder-lifecycle.js": "ab31eee42af420fcb9d11e802b2581c9bc37302b7176bb6829f65158db7b4d20",
+    "dist/sync-apply.js": "216c03a896143927edbd4689faf4f794738f1c422c978f067fa0dd682ca372fa",
+    "dist/coding-worker.js": "0400cba8fad78b1a454ebac1a0fcd65fac7f1bccea584c2d8f66b8624972114a"
+  },
+  "results": [
+    {
+      "file": "tests/todo.test.mjs",
+      "pattern": "pending Todo journal recovers|Todo journal recognizes",
+      "expected": 2,
+      "passed": 2
+    },
+    {
+      "file": "tests/trash-lifecycle.test.mjs",
+      "pattern": "intent is persisted under host lock|paired partial interruption|unknown recovery tree",
+      "expected": 3,
+      "passed": 3
+    },
+    {
+      "file": "tests/document-lifecycle.test.mjs",
+      "pattern": "exact fully written staging can recover|recovery preflights every tree",
+      "expected": 2,
+      "passed": 2
+    },
+    {
+      "file": "tests/folder-lifecycle.test.mjs",
+      "pattern": "nested multi-document move pins|recovery starts from the exact untouched source phase|rejects destination replacement, unknown subtree bytes",
+      "expected": 3,
+      "passed": 3
+    },
+    {
+      "file": "tests/sync-apply.test.mjs",
+      "pattern": "durable recovery rolls forward|recovery refuses a newer decision revision",
+      "expected": 2,
+      "passed": 2
+    },
+    {
+      "file": "tests/coding-worker.test.mjs",
+      "pattern": "partially applied two-file Integrator crash|restart with a completed delivery",
+      "expected": 2,
+      "passed": 2
+    }
+  ],
+  "scope": "existing synthetic domain fixture tests, not production I/O injection or a combined cross-domain crash",
+  "powerLossClaim": false,
+  "readinessApproval": false
+}

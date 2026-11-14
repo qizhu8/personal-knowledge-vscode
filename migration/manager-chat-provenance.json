@@ -1,0 +1,88 @@
+{
+  "schema": "pkm.next.native-composition/v1",
+  "notes": "New operational composition. No legacy source literals or implementations were copied; captures is deliberately empty. Reuse is through actual existing module interfaces.",
+  "captures": [],
+  "implementation": [
+    {
+      "path": "src/manager-chat.ts",
+      "sha256": "afd698751d2b7c424dc2ee6781f0aac7a4cc95d9e2cfdf92cc7cc079dc6fb02d"
+    },
+    {
+      "path": "src/domain/manager-chat-contracts.ts",
+      "sha256": "8856e3987d9f7eab8f6b22bcc9ded736aa35e61266a06e71509d33c9fa1bed7c"
+    }
+  ],
+  "reuse": [
+    {
+      "path": "src/manager-plan.ts",
+      "sha256": "14a65d52050da30497e6c00a3900c03d9b1295bc406837c484c8c09473b6bf48"
+    },
+    {
+      "path": "src/domain/manager-plan-validation.ts",
+      "sha256": "97b15304bfe494dcb7de4be6448d34a538323f90538baeb3f90e2ff425b0ef30"
+    },
+    {
+      "path": "src/manager-runtime.ts",
+      "sha256": "f1fb84d411680628a95759c87403deed140ba3961679373d04ab3f846ae9611d"
+    },
+    {
+      "path": "src/manager-progress.ts",
+      "sha256": "88d0dc5ef4d8f6fe356b32445fe41d551b45f83aefdac915591f82287379216f"
+    },
+    {
+      "path": "src/domain/manager-progress.ts",
+      "sha256": "6728cabcf5cbe35e5049cedeb5b6b3c40c2e24b4d1ac52bc7bf9a3675b501d5c"
+    },
+    {
+      "path": "src/chat-turn.ts",
+      "sha256": "837f0eaa267273936a02834b9a59c75cdb8f4a90b1aca21b2e5714f1e9f11bc2"
+    },
+    {
+      "path": "src/chat-turn-store.ts",
+      "sha256": "a1d1aa622f2ae479d57478479267a5c31642437d3cb8fd4224bb5ae3a7197835"
+    },
+    {
+      "path": "src/chat-turn-adapters.ts",
+      "sha256": "2c33e43f2581c950a4c85276846d2e7be132e9e90ee0831cd3dc298309ad2de1"
+    },
+    {
+      "path": "src/model-provider.ts",
+      "sha256": "fa35ce2a4cc40c6d1567b146428f2cd340e3825e2aba45543b0e5b0a798b2511"
+    },
+    {
+      "path": "src/model-config.ts",
+      "sha256": "da472f68d0a38e3b03f2b93d38b5deeab93f33a5f4775f80d89c022fe176202b"
+    }
+  ],
+  "exports": [
+    "createManagerChatComposition",
+    "createManagerChatExactComposition",
+    "createManagerChatExactChecks",
+    "managerChatPlannerResponseSchema",
+    "managerChatDeliverySchema",
+    "managerChatIntegrationSchema",
+    "managerChatVerificationSchema",
+    "managerChatCanonicalPath",
+    "managerChatWithin"
+  ],
+  "fixtures": [
+    "tests/manager-chat-fixtures.mjs",
+    "tests/manager-chat.test.mjs"
+  ],
+  "supportedTaskTypes": [
+    "Native persisted bounded scoped exact-text-artifact generation and same-owner repairs"
+  ],
+  "unsupportedTaskTypes": [
+    "General code edits or migrations",
+    "Filesystem writes",
+    "Command execution",
+    "Arbitrary tool calls",
+    "Human approval routing (no tool catalog installed)",
+    "Automatic interrupted effect replay"
+  ],
+  "authority": "Fixed native CompletionContract and exact expected path/content map gate model calls in the safe default builder. Native check evidence binds actor, native owner, workspace, workspace version, run and exact input pin. Model claims/check counts are never certificates.",
+  "bounds": "Default k=4 active Chat turns, 128 conservatively reserved run turns, 65536 input and 8192 output token/byte upper bounds per turn, 120000ms turn deadline, one safe structured repair. Native Manager independently caps task/workers/attempt quotas.",
+  "integration": "Explicit standalone CLI manager-text configuration constructs the exact native composition on the shared workspace connection. The public actor-bound artifact read requires the frozen manifest pin. General coding and filesystem workers remain unsupported. Exclusive native startup owns recovery.",
+  "persistence": "Same SQLite connection persists Chat turns, effect-to-turn prompt pins, accepted evidence, immutable deliveries, whole freeze and integration pins. Existing effect pins only inspect existing handles. Reconciliation is always unknown, never positively authorizes replay.",
+  "validation": "npm run build; node --test tests/manager-chat.test.mjs tests/manager-plan.test.mjs tests/manager-runtime.test.mjs tests/manager-progress.test.mjs tests/chat-turn-chain.test.mjs"
+}

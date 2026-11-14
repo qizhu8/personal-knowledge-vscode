@@ -1,0 +1,10 @@
+"use strict";
+const { join } = require("node:path");
+const { ChatLibrary } = require(join(process.argv[2], "dist/chat/chat-library.js"));
+const library = new ChatLibrary(process.argv[3]);
+let count = 0;
+const write = () => library.createGroup(`Concurrent isolated group ${count++}`);
+write();
+process.send("ready");
+const interval = setInterval(write, 1);
+process.on("message", () => { clearInterval(interval); process.disconnect(); });

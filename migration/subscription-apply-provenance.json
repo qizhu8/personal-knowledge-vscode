@@ -1,0 +1,14 @@
+{
+  "schema": "pkm.domain-capture/v1",
+  "transformation": "TypeScript transpileModule ES2023/ES2022, type-only dependency removed; original filesystem fork and identity-preserving byte writes executed only against synthetic disposable fixtures.",
+  "files": [
+    {
+      "source": "src/subscriptions/subscription-fork.ts",
+      "captured": "src/domain/subscription-apply-original-fork.ts",
+      "sourceSha256": "f6700499cec43dc4183b2660fe0d6ca3a07041542862342c88725ee686cd4458",
+      "capturedSha256": "4c1578ef9ea397075e910e8c9bdddaecd8187d02145dc266545bb80338564c75"
+    }
+  ],
+  "requiredDependencies": {},
+  "qualification": "Supplied plaintext snapshot only: no Broker, download, outbound transport or private knowledge. File forks preserve original IDs/aliases/Markdown bytes. The next workspace does not create original .gitkeep markers because its Markdown scanner rejects hidden entries. Recipes/packages are not supported by this adapter."
+}

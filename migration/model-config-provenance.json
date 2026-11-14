@@ -1,0 +1,287 @@
+{
+  "schema": "pkm.model-config-provenance/v1",
+  "reviewedSourceHistory": [
+    {
+      "path": "package.json",
+      "previousSha256": "ce001d5c01699d5dfaeaf75498e677b55c670e9b9f2c917536a5578e2ce04540",
+      "currentSha256": "381e8b3b7313a6c37775fa05704d257379bd6aa68c287837bde9070045d58698",
+      "scope": "User-approved review and recapture: only the two exact test-script appends below; model configuration and dependencies unchanged.",
+      "scripts": [
+        {
+          "name": "test:chat-faults:run",
+          "before": "node --test --test-timeout=30000 tests/test-chat-fault-injection.js tests/test-host-health-startup.js tests/test-chat-managed-mcp.js tests/test-copilot-sdk-responsiveness.js tests/test-chat-history-storage.js tests/test-chat-view-lifecycle.js tests/test-chat-model-picker.js tests/test-diagnostic-log.js tests/test-sidebar-panel-opening.js && python -B tests/test-chat-list-rendering.py",
+          "after": "node --test --test-timeout=30000 tests/test-chat-fault-injection.js tests/test-host-health-startup.js tests/test-chat-managed-mcp.js tests/test-copilot-sdk-responsiveness.js tests/test-chat-history-storage.js tests/test-chat-view-lifecycle.js tests/test-chat-model-picker.js tests/test-diagnostic-log.js tests/test-sidebar-panel-opening.js && python -B tests/test-chat-list-rendering.py && python -B tests/test-api-chat-ui.py ChatUiTests.test_remote_link_loss_preserves_draft_and_recovers_without_replay"
+        },
+        {
+          "name": "test:pkm-chat:daily:run",
+          "before": "node --test tests/test-api-chat.js tests/test-chat-managed-mcp.js tests/test-chat-library-actions.js tests/test-host-health-startup.js tests/test-chat-fault-injection.js tests/test-copilot-sdk-responsiveness.js tests/test-chat-view-lifecycle.js tests/test-chat-model-picker.js tests/test-diagnostic-log.js tests/test-sidebar-panel-opening.js tests/test-chat-activity-browser.js tests/test-chat-history-storage.js tests/test-agent-session-tree-groups.js tests/test-agent-session-tree-browser.js tests/test-panel-instances-browser.js tests/test-portal-connections.js tests/test-portal-permissions.js tests/test-persona-profiles.js tests/test-persona-profile-ui.js tests/test-persona-profile-browser.js tests/test-chat-context-contracts.js tests/test-peer-collaboration.js tests/test-portal-profile-wiring.js tests/test-persona-installed-helper.js && python -B tests/test-chat-list-rendering.py",
+          "after": "node --test tests/test-api-chat.js tests/test-chat-managed-mcp.js tests/test-chat-library-actions.js tests/test-host-health-startup.js tests/test-chat-fault-injection.js tests/test-copilot-sdk-responsiveness.js tests/test-chat-view-lifecycle.js tests/test-chat-model-picker.js tests/test-diagnostic-log.js tests/test-sidebar-panel-opening.js tests/test-chat-activity-browser.js tests/test-chat-history-storage.js tests/test-agent-session-tree-groups.js tests/test-agent-session-tree-browser.js tests/test-panel-instances-browser.js tests/test-portal-connections.js tests/test-portal-permissions.js tests/test-persona-profiles.js tests/test-persona-profile-ui.js tests/test-persona-profile-browser.js tests/test-chat-context-contracts.js tests/test-peer-collaboration.js tests/test-portal-profile-wiring.js tests/test-persona-installed-helper.js && python -B tests/test-chat-list-rendering.py && python -B tests/test-api-chat-ui.py ChatUiTests.test_remote_link_loss_preserves_draft_and_recovers_without_replay"
+        }
+      ]
+    }
+  ],
+  "files": [
+    {
+      "source": "src/chat/api-chat-models.ts",
+      "sourceSha256": "68ce8a3809e16feccd02235e71bc7d5e8f5a9856482c6ea75bb659204555e9f3",
+      "captured": "src/domain/model-config.ts",
+      "capturedSha256": "619d407b1333a86a0702720a9b83f981ffc285c6a3ac21a5ea03fb1f988a15fd"
+    },
+    {
+      "source": "src/chat/api-chat-view.ts",
+      "sourceSha256": "71ddd872aaf2e1fdf1a70616ebc4d50f03e4552152a6670b0e44cfcfdc2397e6",
+      "captured": "src/model-config.ts",
+      "capturedSha256": "da472f68d0a38e3b03f2b93d38b5deeab93f33a5f4775f80d89c022fe176202b"
+    },
+    {
+      "source": "src/chat/api-chat-vscode.ts",
+      "sourceSha256": "73486fba62e2303c5dddedf4ac553dd742235236e52bda9e48ec77d700534295",
+      "captured": "src/model-config-contracts.ts",
+      "capturedSha256": "05d11c01b1ab1932ebd3b7ccb3200ab7baf0e31222323a8104ae9be0c3025819"
+    },
+    {
+      "source": "package.json",
+      "sourceSha256": "381e8b3b7313a6c37775fa05704d257379bd6aa68c287837bde9070045d58698",
+      "captured": "src/model-config-contracts.ts",
+      "capturedSha256": "05d11c01b1ab1932ebd3b7ccb3200ab7baf0e31222323a8104ae9be0c3025819"
+    },
+    {
+      "source": "tests/test-api-chat.js",
+      "sourceSha256": "5e137991a8923a60234f26f34c00aaa2969a847335909cbd6bc634b47e9baa12",
+      "captured": "tests/model-config.test.mjs",
+      "capturedSha256": "b500fbf506fc5e89966831956ca877171d642ec79761f7df8db973332cf2f663"
+    },
+    {
+      "source": "tests/test-chat-model-picker.js",
+      "sourceSha256": "6e822371cc37c8c27b766e41ac0d944b7eaa5d2e3f5a927637dd44a1e8a1f3d8",
+      "captured": "tests/model-config.test.mjs",
+      "capturedSha256": "b500fbf506fc5e89966831956ca877171d642ec79761f7df8db973332cf2f663"
+    }
+  ],
+  "sourceFiles": [
+    {
+      "path": "src/chat/api-chat-models.ts",
+      "sha256": "68ce8a3809e16feccd02235e71bc7d5e8f5a9856482c6ea75bb659204555e9f3"
+    },
+    {
+      "path": "src/chat/api-chat-view.ts",
+      "sha256": "71ddd872aaf2e1fdf1a70616ebc4d50f03e4552152a6670b0e44cfcfdc2397e6"
+    },
+    {
+      "path": "src/chat/api-chat-vscode.ts",
+      "sha256": "73486fba62e2303c5dddedf4ac553dd742235236e52bda9e48ec77d700534295"
+    },
+    {
+      "path": "package.json",
+      "sha256": "381e8b3b7313a6c37775fa05704d257379bd6aa68c287837bde9070045d58698"
+    },
+    {
+      "path": "tests/test-api-chat.js",
+      "sha256": "5e137991a8923a60234f26f34c00aaa2969a847335909cbd6bc634b47e9baa12"
+    },
+    {
+      "path": "tests/test-chat-model-picker.js",
+      "sha256": "6e822371cc37c8c27b766e41ac0d944b7eaa5d2e3f5a927637dd44a1e8a1f3d8"
+    }
+  ],
+  "capturedFiles": [
+    {
+      "path": "src/model-config-contracts.ts",
+      "sha256": "05d11c01b1ab1932ebd3b7ccb3200ab7baf0e31222323a8104ae9be0c3025819"
+    },
+    {
+      "path": "src/model-config.ts",
+      "sha256": "da472f68d0a38e3b03f2b93d38b5deeab93f33a5f4775f80d89c022fe176202b"
+    },
+    {
+      "path": "src/domain/model-config.ts",
+      "sha256": "619d407b1333a86a0702720a9b83f981ffc285c6a3ac21a5ea03fb1f988a15fd"
+    },
+    {
+      "path": "tests/model-config.test.mjs",
+      "sha256": "b500fbf506fc5e89966831956ca877171d642ec79761f7df8db973332cf2f663"
+    }
+  ],
+  "source": {
+    "declarations": [
+      {
+        "source": "src/chat/api-chat-models.ts",
+        "name": "modelProfiles",
+        "startLine": 93,
+        "endLine": 118,
+        "sha256": "64675ff16d933f8420a215252f8380e16d421f79cce493b16573624c1688b783",
+        "text": "export function modelProfiles(values: unknown, legacyIds: string[]): ChatModelProfile[] {\n  if (!Array.isArray(values)) throw new Error(\"API Chat model profiles must be an array.\");\n  const result: ChatModelProfile[] = values.map(value => {\n    if (!value || typeof value.id !== \"string\" || !value.id.trim() || ![\"active\", \"deprecated\"].includes(value.status)\n      || !Number.isSafeInteger(value.contextWindow) || value.contextWindow < 256\n      || (value.deprecatedAt !== undefined && !Number.isFinite(Date.parse(value.deprecatedAt)))) throw new Error(\"Invalid API Chat model profile.\");\n    for (const price of [value.inputPricePerMillion, value.outputPricePerMillion]) {\n      if (price !== undefined && (typeof price !== \"number\" || !Number.isFinite(price) || price < 0)) throw new Error(\"Model prices must be non-negative numbers.\");\n    }\n    const maxOutputTokens = value.maxOutputTokens ?? Math.min(4096, Math.floor(value.contextWindow / 4));\n    if (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1 || maxOutputTokens >= value.contextWindow) throw new Error(\"Invalid model output limit.\");\n    return {\n      id: value.id, model: value.model || value.id, label: value.label || value.id, status: value.status,\n      contextWindow: value.contextWindow, maxOutputTokens, deprecatedAt: value.deprecatedAt,\n      inputPricePerMillion: value.inputPricePerMillion, outputPricePerMillion: value.outputPricePerMillion,\n      currency: value.currency || \"USD\", includeUsage: value.includeUsage === true,\n      outputTokenParameter: value.outputTokenParameter === \"max_tokens\" ? \"max_tokens\" : \"max_completion_tokens\",\n    };\n  });\n  if (new Set(result.map(profile => profile.id)).size !== result.length) throw new Error(\"Model profile IDs must be unique.\");\n  for (const id of legacyIds) if (id && !result.some(profile => profile.id === id)) result.push({\n    id, model: id, label: id, status: \"unknown\", contextWindow: 4096, maxOutputTokens: 1024,\n    currency: \"USD\", includeUsage: false, outputTokenParameter: \"max_tokens\",\n  });\n  return result;\n}\n"
+      },
+      {
+        "source": "src/chat/api-chat-models.ts",
+        "name": "assertModelAvailable",
+        "startLine": 120,
+        "endLine": 124,
+        "sha256": "6deab660ba5799406d643cdad31d894ceff323fd93ab5826d2fa78cc865dd759",
+        "text": "export function assertModelAvailable(profile: ChatModelProfile, now = Date.now()): void {\n  if (profile.status === \"deprecated\" || (profile.deprecatedAt && Date.parse(profile.deprecatedAt) <= now)) {\n    throw new Error(\"This model is deprecated. Select an available model.\");\n  }\n}\n"
+      },
+      {
+        "source": "src/chat/api-chat-models.ts",
+        "name": "estimateInputTokens",
+        "startLine": 126,
+        "endLine": 128,
+        "sha256": "734dd04399d2f56b93cd22ebda451228aab7524a4064dde5736a18fffb38406f",
+        "text": "export function estimateInputTokens(messages: ApiChatMessage[]): number {\n  return messages.reduce((sum, message) => sum + Buffer.byteLength(message.content + (message.tool_calls ? JSON.stringify(message.tool_calls) : \"\"), \"utf8\") + 32, 32);\n}\n"
+      },
+      {
+        "source": "src/chat/api-chat-models.ts",
+        "name": "validateBudget",
+        "startLine": 130,
+        "endLine": 137,
+        "sha256": "59fb113114b961550f15caea8cfc0753605f5f023f154faff4d25aab5242910b",
+        "text": "export function validateBudget(profile: ChatModelProfile, contextWindow: number, outputTokens: number, messages: ApiChatMessage[]): number {\n  assertModelAvailable(profile);\n  if (!Number.isSafeInteger(contextWindow) || contextWindow < 256 || contextWindow > profile.contextWindow) throw new Error(\"Context budget exceeds the model's configured window.\");\n  if (!Number.isSafeInteger(outputTokens) || outputTokens < 1 || outputTokens > profile.maxOutputTokens || outputTokens >= contextWindow) throw new Error(\"Output budget exceeds the configured model limit.\");\n  const input = estimateInputTokens(messages);\n  if (input + outputTokens > contextWindow) throw new Error(`Context budget exceeded (~${input} input + ${outputTokens} output tokens). Reduce context/history or increase the budget.`);\n  return input;\n}\n"
+      },
+      {
+        "source": "src/chat/api-chat-models.ts",
+        "name": "estimateCost",
+        "startLine": 139,
+        "endLine": 142,
+        "sha256": "2f3c69006c123c5cd4636b28c6b221a7fd907620911fa9527f4c3b161294e81d",
+        "text": "export function estimateCost(profile: Pick<ChatModelProfile, \"inputPricePerMillion\" | \"outputPricePerMillion\">, inputTokens: number, outputTokens: number): number | undefined {\n  if (profile.inputPricePerMillion === undefined || profile.outputPricePerMillion === undefined) return undefined;\n  return (inputTokens * profile.inputPricePerMillion + outputTokens * profile.outputPricePerMillion) / 1_000_000;\n}\n"
+      },
+      {
+        "source": "src/chat/api-chat-view.ts",
+        "name": "defaultModel",
+        "startLine": 1085,
+        "endLine": 1091,
+        "sha256": "0533bb37f9881f303986552902028418f2c1f8287f8cbeab371566e719e588c3",
+        "text": "  private defaultModel(): { provider: \"vscode\" | \"openai-compatible\" | \"azure-openai\"; profile: ChatModelProfile } | undefined {\n    const saved = this.extension.globalState?.get<{ provider: \"vscode\" | \"openai-compatible\" | \"azure-openai\"; profile: ChatModelProfile }>(\"apiChat.defaultModel\");\n    if (!saved || ![\"vscode\", \"openai-compatible\", \"azure-openai\"].includes(saved.provider) || !saved.profile || typeof saved.profile.id !== \"string\" || typeof saved.profile.model !== \"string\"\n      || !Number.isSafeInteger(saved.profile.contextWindow) || saved.profile.contextWindow < 256 || !Number.isSafeInteger(saved.profile.maxOutputTokens) || saved.profile.maxOutputTokens < 1 || saved.profile.maxOutputTokens >= saved.profile.contextWindow) return undefined;\n    if (saved.provider === \"vscode\" && !saved.profile.id.startsWith(\"vscode:\")) return undefined;\n    return saved;\n  }\n"
+      },
+      {
+        "source": "src/chat/api-chat-view.ts",
+        "name": "createChat",
+        "startLine": 1099,
+        "endLine": 1109,
+        "sha256": "653d20861b8cac17dba5583596129687bdf763c73f21d9bf06de1055507060f7",
+        "text": "  private createChat(store = this.store!): ApiConversation {\n    const chat = store.create();\n    const saved = this.defaultModel();\n    if (saved) {\n      chat.modelProvider = saved.provider;\n      if (saved.provider === \"vscode\") { chat.vscodeModelId = saved.profile.id; chat.vscodeModelLabel = saved.profile.label; }\n      else chat.modelProfileId = saved.profile.id;\n      store.save(chat);\n    }\n    return chat;\n  }\n"
+      },
+      {
+        "source": "src/chat/api-chat-view.ts",
+        "name": "settings",
+        "startLine": 1340,
+        "endLine": 1375,
+        "sha256": "5f78a314b934eeffab7ea50749daa8e5eae9b45a3993ab140d27cbab62fb9a0b",
+        "text": "  private settings(chat = this.chat) {\n    const cfg = vscode.workspace.getConfiguration(\"personalKnowledge\");\n    const activityCreditLimitDefault = cfg.get<number>(\"apiChatActivityCreditLimit\", 200);\n    const activityCreditLimit = chat?.activityCreditLimit ?? activityCreditLimitDefault;\n    if (!validActivityCreditLimit(activityCreditLimitDefault) || !validActivityCreditLimit(activityCreditLimit)) {\n      throw new Error(\"Choose an activity credit limit from -1 to 1,000,000,000.\");\n    }\n    const activityReviewMinutes = cfg.get<number>(\"apiChatActivityReviewMinutes\", 20);\n    if (!Number.isSafeInteger(activityReviewMinutes) || activityReviewMinutes < 1 || activityReviewMinutes > 1440) {\n      throw new Error(\"Choose an activity review interval of 1-1440 minutes.\");\n    }\n    const provider = chat?.modelProvider || cfg.get<\"vscode\" | \"openai-compatible\" | \"azure-openai\">(\"apiChatProvider\", \"openai-compatible\");\n    const defaultModel = cfg.get<string>(\"aiModel\", \"gpt-4o-mini\");\n    const available = provider === \"vscode\" ? this.vscodeModels.map(vscodeModelProfile) : [];\n    const saved = this.defaultModel();\n    const remembered = saved?.provider === provider && saved.profile.id === (provider === \"vscode\" ? chat?.vscodeModelId : chat?.modelProfileId) ? saved.profile : undefined;\n    if (provider === \"vscode\" && remembered && !available.some(profile => profile.id === remembered.id)) available.push(remembered);\n    const selected = provider === \"vscode\" ? available.find(profile => profile.id === chat?.vscodeModelId) || (!chat?.vscodeModelId ? available[0] : undefined) : undefined;\n    const configured = cfg.get<unknown>(\"apiChatModelProfiles\", []);\n    const entries = Array.isArray(configured) ? configured : [];\n    const profiles = provider === \"vscode\" ? available : modelProfiles([...entries, ...(remembered && !entries.some(profile => profile?.id === remembered.id) ? [remembered] : [])], [defaultModel, ...cfg.get<string[]>(\"apiChatModels\", []), chat?.modelProfileId || \"\"]);\n    const selectedProfile = provider === \"vscode\" ? selected || { ...modelProfiles([], [\"__vscode_unavailable__\"])[0], label: chat?.vscodeModelLabel || \"Not connected\" } : profiles.find(profile => profile.id === (chat?.modelProfileId || defaultModel))!;\n    return {\n      provider, needsModelConnection: provider === \"vscode\" && !selected,\n      endpoint: provider === \"vscode\" ? \"\" : cfg.get<string>(\"aiEndpoint\", \"\"), model: selectedProfile.model,\n      profiles, selectedProfile,\n      contextWindow: chat?.contextWindow || selectedProfile.contextWindow,\n      maxOutputTokens: chat?.maxOutputTokens || selectedProfile.maxOutputTokens,\n      models: cfg.get<string[]>(\"apiChatModels\", []), apiVersion: cfg.get<string>(\"aiAzureApiVersion\", \"2024-06-01\"),\n      timeoutMs: Math.min(86400, Math.max(10, cfg.get<number>(\"apiChatTimeoutSeconds\", 1800))) * 1000,\n      loopReviewAfterMs: Math.min(1440, Math.max(1, cfg.get<number>(\"apiChatLoopReviewMinutes\", 30))) * 60_000,\n      activityCreditLimit, activityCreditLimitDefault, activityReviewMs: activityReviewMinutes * 60_000,\n      maxToolRounds: chatToolRoundLimit(cfg.get<number>(\"apiChatMaxToolRounds\", 30)),\n      loopExemptTools: cfg.get<string[]>(\"apiChatLoopExemptTools\", defaultLoopExemptTools),\n    };\n  }\n"
+      },
+      {
+        "source": "src/chat/api-chat-view.ts",
+        "name": "readApiKey",
+        "startLine": 1814,
+        "endLine": 1870,
+        "sha256": "7ebd2a4dcd1205ace92b84add393bcb2a09209b9e83d819a2c24e464d3a75d26",
+        "text": "  private readApiKey(signal: AbortSignal): Promise<string> {\n    return new Promise((resolve, reject) => {\n      const cancel = () => { signal.removeEventListener(\"abort\", cancel); reject(new Error(\"Request cancelled.\")); };\n      signal.addEventListener(\"abort\", cancel, { once: true });\n      if (signal.aborted) { cancel(); return; }\n      this.extension.secrets.get(\"personalKnowledge.aiApiKey\").then(key => {\n        signal.removeEventListener(\"abort\", cancel); resolve(key || \"\");\n      }, () => { signal.removeEventListener(\"abort\", cancel); reject(new Error(\"Cannot read the API key from SecretStorage.\")); });\n    });\n  }\n\n  visualizationLibrary(): { groups: Array<{ id: string; name: string }>; chats: Array<Record<string, unknown>> } {\n    if (this.disposed) throw new Error(\"The PKM Chat Host is closed.\");\n    const store = this.openStore();\n    const chats = store.list().map(item => {\n      const live = this.running.has(item.id) ? this.chats.get(item.id) : undefined;\n      return { id: item.id, title: live?.title || item.title, updatedAt: item.updatedAt, groupId: item.groupId,\n        status: live ? apiChatStatus(live, true, this.awaitingInput.has(item.id)) : item.status,\n        workerParentChatId: item.workerParentChatId, workerTreeId: item.workerTreeId,\n        workerManager: live ? live.messages.some(message => message.delegations?.length) : item.workerManager };\n    });\n    return { groups: store.library.read().groups.map(group => ({ id: group.id, name: group.name })), chats };\n  }\n\n  async readVisualization(chatId: string, method: string, params: Record<string, unknown>): Promise<unknown> {\n    if (this.disposed) throw new Error(\"The PKM Chat Host is closed.\");\n    if (typeof chatId !== \"string\" || !/^[a-f0-9-]{36}$/.test(chatId)) throw new Error(\"Choose a PKM Chat.\");\n    const store = this.openStore();\n    let chat = this.running.has(chatId) ? this.chats.get(chatId) : undefined;\n    if (!chat) {\n      try { chat = store.load(chatId, false); }\n      catch { throw new Error(\"This Chat is unavailable in the current Knowledge Root.\"); }\n    }\n    return this.visualizationRequest(chat, method, params);\n  }\n\n  /** Opens the inspected Chat, or a recorded retrieval source of it, from the Visualization window. */\n  async openVisualizationTarget(chatId: string, sourceUri?: string): Promise<void> {\n    if (this.disposed) throw new Error(\"The PKM Chat Host is closed.\");\n    if (!vscode.workspace.isTrusted) throw new Error(\"Trust this workspace before opening execution records.\");\n    if (typeof chatId !== \"string\" || !/^[a-f0-9-]{36}$/.test(chatId)) throw new Error(\"Choose a PKM Chat.\");\n    const chats = this.openStore().list();\n    const open = (id: string) => {\n      const item = chats.find(entry => entry.id === id);\n      if (!item) throw new Error(\"This Chat is unavailable in the current Knowledge Root or is in Trash.\");\n      return this.openPkmChat(chatPkmUrl(item.workspaceNamespace, item.id));\n    };\n    if (sourceUri === undefined) return open(chatId);\n    if (typeof sourceUri !== \"string\" || sourceUri.length > 2048) throw new Error(\"This source has no navigable PKM path.\");\n    const memory = /^pkm:\\/\\/chats\\/([a-f0-9-]{36})\\/memory\\//.exec(sourceUri);\n    if (memory) return open(memory[1]);\n    let parsed;\n    try { parsed = parsePkmLocator(sourceUri); }\n    catch { throw new Error(\"This source has no navigable PKM path.\"); }\n    if (parsed.kind === \"chat\") return this.openPkmChat(parsed.locator);\n    await vscode.commands.executeCommand(\"personalKnowledge.goToPkmPath\", parsed.locator);\n  }\n"
+      },
+      {
+        "source": "src/chat/api-chat-vscode.ts",
+        "name": "vscodeModelProfile",
+        "startLine": 54,
+        "endLine": 63,
+        "sha256": "ec173124b44b891e56eddd1e58c8b927eabd0d7b306a3ce94900be1b95eab61b",
+        "text": "export function vscodeModelProfile(model: VscodeChatModel): ChatModelProfile {\n  if (!Number.isSafeInteger(model.maxInputTokens) || model.maxInputTokens < 256) throw new VscodeChatError(\"This model does not report a usable input limit.\");\n  return {\n    id: `vscode:${encodeURIComponent(model.vendor)}:${encodeURIComponent(model.id)}`, model: model.id,\n    label: `${model.name} · ${model.vendor === \"copilot-sdk\" ? \"Copilot SDK\" : model.vendor}`, status: \"active\", contextWindow: model.maxInputTokens,\n    maxOutputTokens: Math.min(Number.isSafeInteger(model.maxOutputTokens) && model.maxOutputTokens! > 0 ? model.maxOutputTokens! : 4096, Math.floor(model.maxInputTokens / 4)),\n    currency: \"\", includeUsage: false, outputTokenParameter: \"max_tokens\",\n    imageInput: model.capabilities?.imageInput === true,\n  };\n}\n"
+      },
+      {
+        "source": "src/chat/api-chat-vscode.ts",
+        "name": "discoverVscodeModels",
+        "startLine": 65,
+        "endLine": 84,
+        "sha256": "447a6b0f0d717dae46a37cc513326295877ecdb96333d7e1d6b82e1e5613bdd7",
+        "text": "export async function discoverVscodeModels(host = vscode, signal?: AbortSignal, vendor?: \"copilot\" | \"copilot-sdk\"): Promise<VscodeChatModel[]> {\n  if (vendor !== \"copilot-sdk\" && !host.lm?.selectChatModels) throw new Error(\"This VS Code version does not provide the Language Model API. Use an API provider instead.\");\n  try {\n    if (signal?.aborted) throw new Error(\"Request cancelled.\");\n    // Neither provider's startup should wait for the other provider's catalog.\n    const pending = Promise.all([\n      Promise.resolve().then(() => vendor === \"copilot-sdk\" ? [] : vendor ? host.lm.selectChatModels({ vendor }) : host.lm.selectChatModels()),\n      vendor !== \"copilot\" && host.authentication ? discoverCopilotSdkModels(host, signal) : Promise.resolve([]),\n    ]);\n    const [nativeModels, sdkModels] = signal ? await abortable(pending, signal) : await pending;\n    const models = [...nativeModels.filter(model => model.vendor !== \"copilotcli\" && (!vendor || model.vendor === vendor)), ...sdkModels as unknown as VscodeChatModel[]];\n    if (signal?.aborted) throw new Error(\"Request cancelled.\");\n    if (!models.length) throw new Error(\"No VS Code models callable through the Language Model API are available. Copilot CLI catalog-only entries are excluded. Sign in to a request-capable provider or configure an API connection.\");\n    return models;\n  } catch (error) {\n    if (signal?.aborted) throw new Error(\"Request cancelled.\");\n    if (error instanceof Error && error.message.startsWith(\"No VS Code models\")) throw error;\n    throw new Error(\"Cannot access VS Code models. Check sign-in, extension permission and your organization policy.\");\n  }\n}\n"
+      },
+      {
+        "source": "tests/test-api-chat.js",
+        "name": "model-profile-and-token-budget-tests",
+        "startLine": 105,
+        "endLine": 119,
+        "sha256": "3fe12901b75bc48bdf607aaa259c306596c7194eec8f916909ae82175af00fb9",
+        "text": "const profiles = modelProfiles([\n    { id: \"active\", status: \"active\", contextWindow: 8192, maxOutputTokens: 2048, inputPricePerMillion: 2, outputPricePerMillion: 8 },\n    { id: \"retired\", status: \"deprecated\", contextWindow: 8192 },\n    { id: \"expired\", status: \"active\", contextWindow: 8192, deprecatedAt: \"2020-01-01\" },\n  ], [\"unknown\"]);\n  assert.strictEqual(profiles[3].status, \"unknown\");\n  assert.strictEqual(profiles[3].contextWindow, 4096);\n  assert.throws(() => assertModelAvailable(profiles[1]), /deprecated/);\n  assert.throws(() => assertModelAvailable(profiles[2]), /deprecated/);\n  assert.throws(() => validateBudget(profiles[0], 16384, 1024, base.messages), /window/);\n  assert.throws(() => validateBudget(profiles[0], 8192, 4096, base.messages), /output/i);\n  assert.throws(() => validateBudget(profiles[0], 256, 128, [{ role: \"user\", content: \"x\".repeat(200) }]), /exceeded/);\n  assert.strictEqual(estimateInputTokens([{ role: \"user\", content: \"\\u4f60\\u597d\" }]), 70);\n  assert.strictEqual(estimateCost(profiles[0], 1000, 500), 0.006);\n  assert.strictEqual(estimateCost(profiles[3], 1000, 500), undefined);\n"
+      }
+    ],
+    "settings": {
+      "personalKnowledge.apiChatProvider": {
+        "type": "string",
+        "enum": [
+          "vscode",
+          "openai-compatible",
+          "azure-openai"
+        ],
+        "default": "openai-compatible"
+      },
+      "personalKnowledge.apiChatModels": {
+        "type": "array",
+        "default": []
+      },
+      "personalKnowledge.apiChatModelProfiles": {
+        "type": "array",
+        "default": [],
+        "profileRequired": [
+          "id",
+          "status",
+          "contextWindow"
+        ],
+        "additionalProperties": false,
+        "profileProperties": [
+          "contextWindow",
+          "currency",
+          "deprecatedAt",
+          "id",
+          "includeUsage",
+          "inputPricePerMillion",
+          "label",
+          "maxOutputTokens",
+          "model",
+          "outputPricePerMillion",
+          "outputTokenParameter",
+          "status"
+        ]
+      },
+      "personalKnowledge.aiModel": {
+        "type": "string",
+        "default": "gpt-4o-mini"
+      },
+      "personalKnowledge.aiEndpoint": {
+        "type": "string",
+        "default": ""
+      },
+      "personalKnowledge.aiAzureApiVersion": {
+        "type": "string",
+        "default": "2024-06-01"
+      }
+    },
+    "configMerge": [
+      "Provider is the conversation provider when present; for a new conversation it inherits a valid saved apiChat.defaultModel provider first, otherwise personalKnowledge.apiChatProvider (default openai-compatible).",
+      "Configured profiles retain order; a remembered profile participates only when its saved provider and id match the conversation selection, and is appended only when its id is absent.",
+      "Legacy ids are considered in order: personalKnowledge.aiModel (default gpt-4o-mini), apiChatModels, then the conversation profile id; known configured profiles win by id.",
+      "Original selection guards reject a model if any configured alias sharing its model/deployment string is deprecated.",
+      "An unlisted HTTP model id becomes status unknown with a conservative 4096 context / 1024 output-token profile; this is not evidence that the remote model exists.",
+      "The HTTP API credential is read natively from SecretStorage key personalKnowledge.aiApiKey; the isolated adapter only consumes an injected opaque handle and never retrieves or returns a value.",
+      "Azure uses aiAzureApiVersion (default 2024-06-01); endpoints and API versions are never included in public output."
+    ],
+    "providerMetadata": {
+      "vscode": [
+        "Original profile id is vscode:<encoded vendor>:<encoded model id>; label is model name plus vendor.",
+        "Context window comes from maxInputTokens; output tokens are min(positive maxOutputTokens or 4096, floor(maxInputTokens / 4)).",
+        "Native imageInput is true only when the provider reports that capability.",
+        "The isolated server does not discover VS Code or Copilot SDK models; it reports discovery unsupported and returns no synthetic native model."
+      ],
+      "http": "Configured API profile metadata comes from apiChatModelProfiles; API model id/deployment entries not present there retain the legacy unknown 4096/1024 profile."
+    },
+    "tokenAccounting": {
+      "verifiedFormula": "API model estimate starts at 32; for each message add UTF-8 bytes of content plus JSON.stringify(tool_calls) when present, then add 32.",
+      "supportedBy": "src/chat/api-chat-models.ts#estimateInputTokens and tests/test-api-chat.js model-profile/token-budget assertions.",
+      "excluded": "VS Code model token counts use the native model tokenizer when available and are intentionally not emulated by this host-neutral adapter."
+    },
+    "integration": {
+      "constructor": "new ModelConfigService({ configuration, secretResolver, registryAvailability, now? })",
+      "configuration": "Explicit allowlisted personalKnowledge settings plus optional rememberedModel snapshot; no process.env or host configuration reads.",
+      "secretResolver": "resolveSecret('personalKnowledge.aiApiKey') returns an opaque object handle or undefined; raw strings are rejected as credentials.",
+      "registryAvailability": "Parent-injected provider registry booleans; false means provider-unavailable. VS Code model discovery remains unsupported regardless.",
+      "definitions": "Import modelConfigDefinitions from src/model-config.ts and register its two read-only model.config.catalog/model.config.resolve schemas.",
+      "transport": "No HTTP client, model transport, or network request is injected or invoked. Tests use metadata-only registry booleans and inert opaque-secret fixtures; real model/transport fixtures are intentionally excluded."
+    }
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "schema": "pkm.legacy-state-import-provenance/v1",
+  "ready": false,
+  "originalSources": [
+    {
+      "path": "src/agent-sessions/agent-snapshots.ts",
+      "sha256": "f5a17cc8f6ea00b9708e0e5a2bfa0484885ac0948737b9dc9d4184bfe3be7fa2"
+    },
+    {
+      "path": "src/subscriptions/subscriptions.ts",
+      "sha256": "17232c71fbd5ac884b1a9e5c657940845828316828db3089be62bc219b24da09"
+    },
+    {
+      "path": "src/extension.ts",
+      "sha256": "dca85b6b8b524656524d1178f0a80122ebb5d84aee813afc957d3edf3139240c"
+    }
+  ],
+  "nativeSeamPins": [
+    {
+      "path": "next-server/src/agent-snapshot-reads.ts",
+      "sha256": "ed52cb992ccd680279fc9c53a6397e1105655ceb2c39e9215f97785dbc860913"
+    },
+    {
+      "path": "next-server/src/subscription-reads.ts",
+      "sha256": "bfb53eb9abaf4d9a88e34e91715af9e9115971e4bd43fb932f7c5c5a3c0ca893"
+    },
+    {
+      "path": "next-server/src/legacy-import.ts",
+      "sha256": "8a6ea2fa8b88953a3290c77e73627c6760d66b2822b99c7796722d94b31b68b6"
+    },
+    {
+      "path": "next-server/src/legacy-state-import.ts",
+      "sha256": "a3dd0b5236ce7fd2caa0675c157dd2fad7e55b66f52640af3e629698ef3bb039"
+    },
+    {
+      "path": "next-server/src/host-composition-legacy-state.ts",
+      "sha256": "dbb0f3395a587b6631eb5b826953bca2e8baadf958ad7e36d542cfd66abd2aa3"
+    }
+  ],
+  "limitations": [
+    "Unwired candidate only: outer importer retains ownership of inventory, staging and atomic publication.",
+    "Original AES-GCM Snapshot envelopes can be verified and read by the host-only seam when an explicit epoch-bound native key authority is supplied; no key or decrypted payload is persisted.",
+    "The public native read operation remains unavailable for encrypted payloads until the integrator binds the host-authorized seam and trusted import receipt.",
+    "Original subscription state contains a plaintext private key and is blocked rather than copied or redacted; a separate native secret store and durable reference are required before original state can migrate.",
+    "Recovery Session history, cache and published snapshots require separate complete migration.",
+    "Validated plaintext snapshot bytes are preserved without claiming restore support."
+  ]
+}

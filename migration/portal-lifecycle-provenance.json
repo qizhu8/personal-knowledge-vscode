@@ -1,0 +1,117 @@
+{
+  "schema": 1,
+  "rootsRelativeTo": "provenance-file-directory",
+  "sourceRoot": "../..",
+  "captureRoot": "..",
+  "captures": [
+    {
+      "source": "resources/api_chat_control.py",
+      "destination": "domain/portal-lifecycle-original-api-chat-control.py",
+      "sourceSha256": "eb29ecb34b8378a3f6c8a58cd2af53171241bc7af6847daa1aa9049eca6af0da",
+      "captureSha256": "eb29ecb34b8378a3f6c8a58cd2af53171241bc7af6847daa1aa9049eca6af0da",
+      "transform": "none; exact bytes"
+    },
+    {
+      "source": "src/chatroom/peer-session.ts",
+      "destination": "domain/portal-lifecycle-original-peer-session.ts",
+      "sourceSha256": "f63f93a01da9950b76c0288c2ce499389be59b0d22c779bf91e4bb5548c611cf",
+      "captureSha256": "f63f93a01da9950b76c0288c2ce499389be59b0d22c779bf91e4bb5548c611cf",
+      "transform": "none; exact bytes"
+    },
+    {
+      "source": "src/chatroom/meeting-state.ts",
+      "destination": "domain/portal-lifecycle-original-meeting-state.ts",
+      "sourceSha256": "777ea01d26cd721e61b8cb6599b640086d5bb10e80e3f8753732c83983f9201a",
+      "captureSha256": "777ea01d26cd721e61b8cb6599b640086d5bb10e80e3f8753732c83983f9201a",
+      "transform": "none; exact bytes"
+    },
+    {
+      "source": "src/chatroom/chat-meeting-lifecycle.ts",
+      "destination": "domain/portal-lifecycle-original-chat-meeting-lifecycle.ts",
+      "sourceSha256": "fa9f4506dcc167cbba00ae4b1ef4886455781676fbeda51f73786458e60d09f8",
+      "captureSha256": "fa9f4506dcc167cbba00ae4b1ef4886455781676fbeda51f73786458e60d09f8",
+      "transform": "none; exact bytes"
+    }
+  ],
+  "evidence": [
+    {
+      "source": "src/chatroom/portal-endpoint-store.ts",
+      "sourceSha256": "414445bab1b7330b1ed897ff3c2b7935b6554d2d1f20c5391cde908c83e54fcd"
+    },
+    {
+      "source": "src/chatroom/peer-protocol.ts",
+      "sourceSha256": "6bcca3b70164157811ab153371b0550246b45107ab5f51c684885820659fa130"
+    },
+    {
+      "source": "src/chatroom/portal-connections.ts",
+      "sourceSha256": "1723ce543c520f36bd909e24b92513a9d1a0699d9fa181d0a591f71de58944c5"
+    },
+    {
+      "source": "src/chatroom/portal-routing.ts",
+      "sourceSha256": "c7585bc68cc9e1fe973efa7dc19b9110d8ab26c1e36343fa5c07686fb3a290e9"
+    }
+  ],
+  "nextServerEvidence": [
+    {
+      "source": "src/channel-runtime.ts",
+      "sha256": "f1219926c13e6c6aa164a95721f0c734278576089319637aa90576fd4b9a6c66"
+    },
+    {
+      "source": "src/domain/channel-runtime-model.ts",
+      "sha256": "a70d5caa6ecd15b04bd5a4a727c654969ffa2893832a52c6bf0bc51ad813811e"
+    },
+    {
+      "source": "src/collaboration-state.ts",
+      "sha256": "22d11c7e86214b4d5b2a3c021a4154f540b1a74253c5f16373d39ef9f8c1e16f"
+    }
+  ],
+  "native": [
+    {
+      "file": "src/portal-lifecycle-contracts.ts",
+      "sha256": "74c0b5a9fd3dd5f3abe5f794bdc5eb91c0633ae61e8a3f561528efd561377459"
+    },
+    {
+      "file": "src/portal-lifecycle.ts",
+      "sha256": "79355675de36a9e3ca612f4cf31f34ba4c6505f2c103926948c9916c3b9edfa6"
+    }
+  ],
+  "qualified": {
+    "portalControl": [
+      "open-existing",
+      "connections",
+      "status",
+      "directed-send",
+      "directed-route",
+      "pending-admission-cancel",
+      "leave/revoke",
+      "fresh-admission-transfer"
+    ],
+    "meeting": [
+      "start",
+      "adjourn"
+    ],
+    "authority": [
+      "opaque native actor resolution",
+      "injected human review",
+      "injected existing-room authority",
+      "existing Channel directed ACL"
+    ],
+    "persistence": [
+      "SQL schema and operation receipts",
+      "pair revision fences",
+      "pending/unknown recovery inspection",
+      "no implicit recovery or replay"
+    ]
+  },
+  "withheld": [
+    "This leaf is not exposed by standalone Core HTTP/MCP and is not end-to-end Portal or legacy Meeting parity.",
+    "The module binds to an existing native collaboration room and Channel; it creates no Room, endpoint, transport, process or Agent.",
+    "Channel-backed invite/admit/routing requires exact host-resolved actors, independent human authorization and a matching one-use Channel invitation token. Token plaintext is never persisted or replayed.",
+    "External MQTT/WebSocket/remote notifications are not ACL; no network, broker, model, credentials, MagicCode or private Knowledge Root is used.",
+    "Interrupted cross-slice operations remain pending/unknown and require explicit reconciliation; startup does not spawn, reconnect, complete or replay them.",
+    "Issued Channel invitations cannot be cancelled by this slice; cancellation is limited to not-yet-issued approval requests. Admitted participants must be explicitly revoked.",
+    "Commands, original remote task results/attempt history, file transfer, durable permission grants, saved endpoint management and seamless peer swapping are unsupported.",
+    "Meeting support is a native start/adjourn projection only. Topics, Markdown, scheduling, trash, restore, deletion and legacy room write-through are unsupported.",
+    "Channel and collaboration state remain their existing authority; this module does not create a replacement room or claim complete Portal/Meeting parity."
+  ]
+}

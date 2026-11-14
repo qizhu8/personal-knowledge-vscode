@@ -1,0 +1,43 @@
+{
+  "schema": "pkm.next.compute-provenance/v1",
+  "sourceCommit": "371fcf85b36b6b1cc9c8022bd10e3a6ae4dd8088",
+  "capture": "node next-server/scripts/capture-compute.mjs",
+  "verification": "node next-server/scripts/capture-compute.mjs --check",
+  "transformation": "Byte-identical package capture. worker.py supplies a separate restricted stdio entrypoint.",
+  "runtime": "Python >=3.10 standard library; persistent worker-owned SQLite schema 2. No extension runtime imports.",
+  "authority": "Runtime computation cache only; Markdown Chat/knowledge is authoritative. Explicit-memory APIs remain Node Markdown-only.",
+  "files": [
+    {
+      "source": "modules/pkm-memory-engine/src/pkm_memory_engine/__init__.py",
+      "captured": "compute/pkm_memory_engine/__init__.py",
+      "bytes": 136,
+      "sourceSha256": "843d17d14e5950b297f064de7bbfe23a6ed223c2cfefd6eeaa022a4a4e4faa9c",
+      "capturedSha256": "843d17d14e5950b297f064de7bbfe23a6ed223c2cfefd6eeaa022a4a4e4faa9c",
+      "sourceBlob": "8f47ea44db2cdf2babcad1cfffbe45e1d1180eb1"
+    },
+    {
+      "source": "modules/pkm-memory-engine/src/pkm_memory_engine/__main__.py",
+      "captured": "compute/pkm_memory_engine/__main__.py",
+      "bytes": 3247,
+      "sourceSha256": "ec089a3d4f0fd40bcbe318185583d1b6481f44a8125a49695215779b74c1b4ee",
+      "capturedSha256": "ec089a3d4f0fd40bcbe318185583d1b6481f44a8125a49695215779b74c1b4ee",
+      "sourceBlob": "766575f38622440e7f0e31215e3c444f55b493a9"
+    },
+    {
+      "source": "modules/pkm-memory-engine/src/pkm_memory_engine/engine.py",
+      "captured": "compute/pkm_memory_engine/engine.py",
+      "bytes": 47297,
+      "sourceSha256": "8d602fb5574a21632f880fefc00a4c219b40477cf33588fd0373aa462376c1a3",
+      "capturedSha256": "8d602fb5574a21632f880fefc00a4c219b40477cf33588fd0373aa462376c1a3",
+      "sourceBlob": "543d85338cef4bea1902bf02389b5005c41e50ae"
+    },
+    {
+      "source": "modules/pkm-memory-engine/src/pkm_memory_engine/memory.py",
+      "captured": "compute/pkm_memory_engine/memory.py",
+      "bytes": 34296,
+      "sourceSha256": "47c96b1c54b87a45c1ebbbfa88563b3b3a6c5e569b8b7ac16e84522d8c87964e",
+      "capturedSha256": "47c96b1c54b87a45c1ebbbfa88563b3b3a6c5e569b8b7ac16e84522d8c87964e",
+      "sourceBlob": "9dd4b6f97804d62e7292004dedc9476761211871"
+    }
+  ]
+}

@@ -1,0 +1,230 @@
+{
+  "schema": "pkm.batch20-qualification/v1",
+  "batch": 20,
+  "status": "bounded-fixture-qualified-full-baseline-passed-no-cutover",
+  "scope": "Canonical legacy Skill source create, recognized bundled-source upgrade, custom-source preservation, and managed projection installation through a native-only host composition.",
+  "boundary": "Bounded disposable-fixture functional, source report, readiness test, native qualification, separately scoped storage-I/O and full baseline results. No workstream acceptance, production authority, or cutover qualification is claimed.",
+  "schemas": {
+    "workspace": 23,
+    "memoryEngine": 2,
+    "memoryEngineChanged": false
+  },
+  "catalog": {
+    "actualRegisteredCount": 214,
+    "newOperation": "legacy.skill.source.install",
+    "operationVersion": 1,
+    "classification": "native-composed-writer",
+    "readOnly": false,
+    "independentNativeAuthorityRequired": true,
+    "acceptedWorkstream": false
+  },
+  "originalSourceReference": {
+    "pathFromRepositoryRoot": "src/skills/pkm-skill-projection.ts",
+    "sha256": "521b2bb9652a6187d1a0673e13549f7d1a8b6060b475a83fa13fa728d5071100",
+    "bundleSha256": "69ac2c2e1ce364e92cdbc0ae021e47973926d0e5e1068e596e4db4a0e1aa1e08",
+    "existingReferenceMetadata": "legacy-batch15-provenance.json",
+    "role": "Original Skill writer oracle; existing source reference and capture history remain unchanged."
+  },
+  "nativeImplementationPaths": [
+    "src/legacy-skill-source.ts",
+    "src/legacy-skill-source-native.ts",
+    "src/legacy-skill-source-backup.ts",
+    "src/host-composition-legacy-skill-source.ts",
+    "src/host-composition-legacy-skill-source-contracts.ts"
+  ],
+  "qualification": {
+    "finalFreezeDeclared": true,
+    "fullBaseline": {
+      "cwd": "repository root",
+      "command": "TMPDIR=\"$PWD/next-server/.batch20-final-tmp\" npm test --prefix next-server",
+      "server": {
+        "tests": 1379,
+        "passed": 1379,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "client": {
+        "tests": 9,
+        "passed": 9,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "total": {
+        "tests": 1388,
+        "passed": 1388,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "verificationArtifact": "migration/verification.json",
+      "implementationDigest": "77fc321cf4598702b323b979f0e97eeff012a9dbdab88beb043bf3cd810a20a1",
+      "finishedAt": "2026-11-08T04:20:06.527Z",
+      "log": "/home/yuwang8/.copilot/session-state/e2f4371d-5c23-4631-b0fe-a18ef337421f/files/batch20-full-verification.log",
+      "logSha256": "ceb9e17c4922f1fa93ce0ded247881f6cb3f1aea89d823cccbf662fbfe709e57",
+      "boundary": "Current implementation full baseline only; not workstream acceptance, independently enrolled authority, real-root qualification or cutover."
+    },
+    "fullVerification": "passed-current-implementation",
+    "acceptedWorkstreams": 0,
+    "totalWorkstreams": 21,
+    "readyForCutoverReview": false,
+    "cutoverAuthorized": false
+  },
+  "limitations": [
+    "The operation is available only through an embedding host that supplies trusted native callbacks; plain Core, CLI, HTTP/MCP arguments, and operation hashes do not create native authority.",
+    "The boundary is an explicitly native-owned disposable fixture with exact actor/workspace/package source and target bindings, pinned historical bundles, live owner/epoch checks, independently approved exact plans, and durable native intent/anchor handling.",
+    "Workspace schema 23 adds a separate Skill source intent, immutable history, and local receipt journal. Engine schema 2 is unchanged.",
+    "The source and older Skill projection journals remain explicitly excluded from coexisting because their independent journals do not establish a shared source-version order.",
+    "Source create/known-bundle upgrade/custom-source preservation and managed projection overwrite rules do not establish general installer parity, multi-target support, hostile external-writer exclusion, OS-level locking, or power-loss durability.",
+    "Coordinated source backup, fresh restore/adoption, Core HTTP/MCP old-request retry, new install, rebackup, and rerestore passed the bounded frozen functional run; unknown outcomes are never startup-applied.",
+    "No production/private Knowledge Root, real credentials, external model/network service, or self-accepted native authority is used or authorized."
+  ],
+  "functionalQualification": {
+    "cwd": "next-server",
+    "command": "npm run build && node --test --test-concurrency=4 tests/host-composition-legacy-skill-source-transport.test.mjs tests/host-composition-legacy-skill-source-backup.test.mjs tests/legacy-skill-source.test.mjs tests/legacy-skill-source-native.test.mjs tests/legacy-skill-lifecycle.test.mjs tests/legacy-skill-lifecycle-native.test.mjs tests/host-composition-legacy-batch15-transport.test.mjs tests/host-composition-legacy-batch15-backup.test.mjs tests/legacy-memory-engine-backup.test.mjs tests/legacy-memory-engine-backup-paired.test.mjs",
+    "counts": {
+      "tests": 76,
+      "pass": 76,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    "log": ".batch20-independent-functional.log",
+    "logSha256": "9da0ec84f9a0b6aee10e3539e8c04e57c82905677a764a0b629787a8276420a3",
+    "nativeDigest": {
+      "sha256": "6974d937339507e758b4633730b82b56a395a9bb6ba6cfb5ed967af1d2f4cfac",
+      "regularSourceAndDistFiles": 664,
+      "formula": "SHA256(JSON.stringify(all regular src/dist [relativePath,SHA256(bytes)] rows sorted by relativePath.localeCompare))"
+    },
+    "scope": "Frozen source/backup/old Skill and paired-memory regression; not additive to parent or historical test counts."
+  },
+  "sourceBoundFixedPoint": {
+    "command": "node scripts/qualify-legacy-regression-fixedpoint.mjs",
+    "fixedPoint": "stable",
+    "orderedGeneration": [
+      "tests/legacy-regression-oracle.test.mjs",
+      "tests/legacy-regression-batch12.test.mjs",
+      "tests/legacy-read-race.test.mjs"
+    ],
+    "concurrentInvocations": [
+      {
+        "command": "node --test --test-concurrency=4 tests/legacy-regression-oracle.test.mjs tests/legacy-regression-batch12.test.mjs tests/legacy-read-race.test.mjs",
+        "tests": 32,
+        "passed": 32,
+        "failed": 0
+      },
+      {
+        "command": "node --test --test-concurrency=4 tests/legacy-regression-oracle.test.mjs tests/legacy-regression-batch12.test.mjs tests/legacy-read-race.test.mjs",
+        "tests": 32,
+        "passed": 32,
+        "failed": 0
+      }
+    ],
+    "reports": [
+      {
+        "path": "tests/legacy-regression-oracle.report.json",
+        "sha256": "4d04ef3d51486aee58d34d31a9b095fba553cfe96f7003892a9d37defbb49c49"
+      },
+      {
+        "path": "tests/legacy-regression-batch12.report.json",
+        "sha256": "ee9ebadd21dcf5bd12ea821c3c0fc95d4cfaf7709fabfaf78f61c1fe4849ab98"
+      },
+      {
+        "path": "tests/legacy-read-race.report.json",
+        "sha256": "481df4796ed44f92d5eba651e5487d6aa6ab3a8736f99fb2200da57c9b7b355f"
+      }
+    ],
+    "sourceMaps": {
+      "originalOracle": {
+        "aggregateSha256": "c682bc98032ba0d22e4f76f2af83343de24eca7414817e69eb0aef9e903ec332",
+        "nativeSourceCount": 18,
+        "originalSourceCount": 5
+      },
+      "batch12": {
+        "aggregateSha256": "02a1c59ab05bf5b6d00aa1f280f41cd388f68ff026938937e90e412fec1e2122",
+        "nativeSourceCount": 32,
+        "originalSourceCount": 10
+      },
+      "readRace": {
+        "sourceMapCount": 26,
+        "oracleReportSha256": "4d04ef3d51486aee58d34d31a9b095fba553cfe96f7003892a9d37defbb49c49",
+        "batch12ReportSha256": "ee9ebadd21dcf5bd12ea821c3c0fc95d4cfaf7709fabfaf78f61c1fe4849ab98"
+      }
+    },
+    "log": ".batch20-fixedpoint-postio.json",
+    "logSha256": "0860a5bf3ba87b36eaaed883068936e8de453741087f4ff5e9e52e54c8f98957"
+  },
+  "generatorQualification": {
+    "checkScripts": 21,
+    "scope": "Every capture-*.mjs advertising --check; source, migration, scripts and tests regular-file bytes, mode and nanosecond mtime snapshots.",
+    "snapshotRegularFiles": 988,
+    "bytesModeMtimeNsPreserved": true,
+    "log": ".batch20-generators-postio.log",
+    "captureIssues": 0,
+    "sourceCapturePairs": 233,
+    "separateOriginalSourceReferences": 33,
+    "nativePinsChecked": 351,
+    "knowledgeIndexReferences": {
+      "original": 4,
+      "native": 4,
+      "sourceHistoryRetained": true,
+      "currentWorkerSeparatelyNativePinned": true
+    }
+  },
+  "readiness": {
+    "status": "blocked",
+    "blockers": 610,
+    "log": "/home/yuwang8/.copilot/session-state/e2f4371d-5c23-4631-b0fe-a18ef337421f/files/batch20-readiness.json",
+    "logSha256": "7169bec29c04da52d8d6e6951bfdfb95b3cb14864469f25ddf4dd27065b114a7",
+    "readinessTestFailureLog": ".batch20-readiness-initial.log",
+    "readinessTestFailureLogSha256": "7185ec89814544bc739f2b1d4f6129e183592300370cdd1da3a32512b4756e97",
+    "qualification": "No authority enrollment, self-acceptance, or cutover.",
+    "earlierFailedTestRun": {
+      "log": ".batch20-readiness-after-refresh.log",
+      "logSha256": "f9d863bc701282d976a0e90358bb798a2eb90ab0791049dd5dce5e2cd1689d26",
+      "tests": 11,
+      "passed": 10,
+      "failed": 1,
+      "reason": "Catalog test omitted unaccepted Batch20 operation; owner corrected the test after this run."
+    },
+    "finalTargetedTests": {
+      "cwd": "next-server",
+      "command": "node --test --test-concurrency=4 tests/migration.test.mjs tests/readiness.test.mjs tests/provenance-readonly.test.mjs",
+      "tests": 20,
+      "passed": 20,
+      "failed": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "log": ".batch20-readiness-postio.log",
+      "logSha256": "4a2813c4a2db98b6ed59953ff97b5eb0cb9636add2282394a4e5ac0748d2c1c6"
+    }
+  },
+  "storageIoQualification": {
+    "scope": "Document, Upload, Resource and Project only; not Skill, memory, classification or engine fault qualification.",
+    "sourceFingerprint": "1a7f24d9b04597a802be484f78fd7b19b32d6d04a79135f9f7497088f5fac202",
+    "coveredFiles": 957,
+    "saveRepeatCommand": "PKM_STORAGE_IO_FAULT_SAVE=1 PKM_STORAGE_IO_FAULT_REPEAT=1 node --test-concurrency=4 --test tests/storage-io-fault.test.mjs",
+    "plainCommand": "node --test-concurrency=4 --test tests/storage-io-fault.test.mjs",
+    "caseCount": 28,
+    "repeatRuns": 2,
+    "recognizedRecoveriesPerRun": 24,
+    "failClosedTamperDenialsPerRun": 4,
+    "blockedRecoveriesPerRun": 0,
+    "dualTransportZeroFilesystemReplaysPerRun": 48,
+    "normalizedReportsByteIdentical": true,
+    "plainRunCoveredInputsAndOutputsUnchanged": true,
+    "report": "tests/storage-io-fault-report.mjs",
+    "reportSha256": "899100775636f61affc4950a02f2958168ec39893b6469b018ade9dd27ed3a45",
+    "observations": "tests/storage-io-fault-observations.mjs",
+    "observationsSha256": "1eb592ea84262a988b345ddeb8a65692583c2aaf56cab591521affd30561009e",
+    "casesInputSha256": "5ab70502bdf546e60359a9c3392ad2400acfb2de84d4d80c0526e26c2635a4bf",
+    "baselineInputSha256": "d2dac33000abbb7c3132e12ce6bc1985b0617a717e284ced587dc15b5725cac1",
+    "functionalNativeSourceMatches": true,
+    "fullBaseline": null,
+    "approvedSlo": false,
+    "limitations": "Injected native-call boundaries on disposable fixtures, not physical power loss, real kernel ENOSPC, general durability proof, production acceptance or workstream authorization.",
+    "fullBaselineNote": "The I/O source-bound report retains its independently observed fullBaseline:null; the separate parent full verification is recorded under qualification.fullBaseline."
+  }
+}

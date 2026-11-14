@@ -8,5 +8,12 @@ __pycache__/
 .vscode-test/
 coverage/
 .vscode/mcp.json
+.migration-test-work/
 /next-step/
 /retrieval-solutions/
+*.tsbuildinfo
+.pytest_cache/
+/.migration-*-dist/
+/.root-reprobe-dist/
+/.readiness-cli-*/
+/.*.log

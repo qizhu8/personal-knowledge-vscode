@@ -1,0 +1,878 @@
+{
+  "schema": "pkm.next-server.legacy-regression-oracle/v1",
+  "qualification": "standalone-native-transport-adapter",
+  "execution": {
+    "testFile": "tests/legacy-regression-oracle.test.mjs",
+    "testSourceSha256": "a77daeb8afcfa012d13076c181506e0546ad262d99142982d168877250706bf8",
+    "command": "node --test --test-concurrency=4 tests/legacy-regression-oracle.test.mjs",
+    "workingDirectory": "next-server",
+    "node": "v22.23.1"
+  },
+  "build": {
+    "command": "npm --prefix next-server run build",
+    "result": "passed",
+    "reason": null
+  },
+  "result": "passed",
+  "nativeSourceSetSha256": "a8798a9b186dc8a4b4d4f2a8de6dca0877b8c0d55d06d419f27d3096419d41bc",
+  "nativeSources": {
+    "src/cli.ts": "f8345ee904c0bddb2fa7ac11ed3ef99002ca5dad4025feece2adabf3e1f7b2bc",
+    "src/contracts.ts": "243be35a870d277f9b9f50160a57605614868e06520a9f457c9d2f54969d0cff",
+    "src/core.ts": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943",
+    "src/http.ts": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109",
+    "src/mcp.ts": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6",
+    "src/storage.ts": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6",
+    "src/storage-worker.ts": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b",
+    "src/markdown.ts": "281d58af8a4d8c840f3f1e288516f1b51046f067b2bd9b5125ec8527f13a15fd",
+    "src/notes.ts": "298a624cd7ce602375405019d4a8b5e4741829f13c7d9ef5def238363f484256",
+    "src/note-contracts.ts": "6628055bd64a7e059d68832b45c672e91ef337b773085b9f718b16efe75f95bb",
+    "src/domain/todo-api.ts": "57a47a2581911b14e73c58246a785499258d2696e1c5b32803972270ec5488ad",
+    "src/domain/markdown-assets.ts": "5cdb18e97503a365b08024f532ffe8f34091fcbdffa2c8f77c5d473f530f9c5d",
+    "src/todo-definitions.ts": "27a3ac96f1f46a6c171fba0e29d851b776aefd777c505e2bdac24b95927d8e95",
+    "src/domain/todo-api-contract.ts": "e45d04227e38daa3a64537b2a772f7057430697a5dc73bbd57efcbf82a618263",
+    "src/domain/todo-identities.ts": "44e62b0baec88f7520c76673e481b9bd64354441ba598f47866bec6d715822bd",
+    "src/domain/todo-board.ts": "8e45dd4a83ee98e8c4dc6bb7a05217e802d7c9cc4f5b44f61d31b7bd6a8826c1",
+    "src/memory.ts": "0eee48b78669180c12c47215296b8c5bcca94052e33e68029da330a3890daa0c",
+    "src/memory-contracts.ts": "15541f78bf7376d02485edc7c279a245a7a8ffed078bb81764a59b15c827a6eb"
+  },
+  "originalSources": {
+    "tests/test-markdown-image-assets.js": "f703f578826d5f76336974f7f8f5f308d0160dae1bbe187054aacf708585906b",
+    "tests/test-todo-board.js": "c8f9bbdcad4d9c375b5dc727a9581b433504b24076669104b05e93f7c371df17",
+    "tests/test-capability-memory.js": "b7b7542c796b531ecaa02c6ecb0a79c23dc141f330e9b4cb2ad7c7538e84c2bb",
+    "tests/test-knowledge-contracts.js": "bf7f6631653c86882373cd94a19009573490410ccbd5c72f1bc2ac98fd4178a8",
+    "tests/test-markdown-owned-assets.js": "64ec0aa046fbe000239216013563d7a3dba31df37a5524b124f054229603b4ef"
+  },
+  "rows": [
+    {
+      "originalFile": "tests/test-markdown-image-assets.js",
+      "originalTestcase": "top-level referencedMarkdownAssets and owned-resource assertions",
+      "originalSourceSha256": "f703f578826d5f76336974f7f8f5f308d0160dae1bbe187054aacf708585906b",
+      "nativeOperations": [
+        "knowledge.document.create",
+        "knowledge.asset.list",
+        "knowledge.asset.get"
+      ],
+      "scenario": "HTTP-created Markdown fixture resolves parent/root shared resources; ignores code, fenced, remote, and unreferenced paths; digest-pinned reads return exact bytes without changing Markdown.",
+      "result": "passed",
+      "assertions": 8,
+      "evidence": [
+        "Listed the expected root and team shared-resource paths with sha256 digests; code-only ignored.bin was excluded.",
+        "Both pinned reads returned the fixture bytes exactly; document bytes were unchanged."
+      ],
+      "unsupportedReason": "The original sync-bundle, GitHub dependency, and VS Code webview URL assertions have no next-server transport equivalent and were not claimed as qualified.",
+      "nativeImplementationSources": [
+        {
+          "path": "src/contracts.ts",
+          "sha256": "243be35a870d277f9b9f50160a57605614868e06520a9f457c9d2f54969d0cff"
+        },
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/domain/markdown-assets.ts",
+          "sha256": "5cdb18e97503a365b08024f532ffe8f34091fcbdffa2c8f77c5d473f530f9c5d"
+        },
+        {
+          "path": "src/http.ts",
+          "sha256": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109"
+        },
+        {
+          "path": "src/mcp.ts",
+          "sha256": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/storage.ts",
+          "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-todo-board.js",
+      "originalTestcase": "dedicated Board is discoverable when empty; generic Markdown and assets cannot change authoritative tasks",
+      "originalSourceSha256": "c8f9bbdcad4d9c375b5dc727a9581b433504b24076669104b05e93f7c371df17",
+      "nativeOperations": [
+        "todo.board.create",
+        "todo.board.list",
+        "todo.board.get",
+        "todo.workitem.create",
+        "todo.workitem.list"
+      ],
+      "scenario": "HTTP creates and discovers an empty Board; after HTTP releases the single-writer lease, MCP reads the same digest, creates an item, rejects a stale-digest mutation, rejects corrupted authoritative backing, and serves recovered state; an HTTP restart reads the surviving item.",
+      "result": "passed",
+      "assertions": 13,
+      "evidence": [
+        "HTTP discovered the empty board; MCP read the same initial digest.",
+        "MCP create added one item; using the old digest returned CONFLICT.",
+        "Invalid backing JSON failed closed; restored fixture state remained readable after a restarted HTTP server."
+      ],
+      "unsupportedReason": "The original VS Code/legacy Note Markdown and reserved-asset writes do not map to next-server's isolated boards/ authority and were not represented as native operations.",
+      "nativeImplementationSources": [
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/domain/todo-api-contract.ts",
+          "sha256": "e45d04227e38daa3a64537b2a772f7057430697a5dc73bbd57efcbf82a618263"
+        },
+        {
+          "path": "src/domain/todo-api.ts",
+          "sha256": "57a47a2581911b14e73c58246a785499258d2696e1c5b32803972270ec5488ad"
+        },
+        {
+          "path": "src/domain/todo-board.ts",
+          "sha256": "8e45dd4a83ee98e8c4dc6bb7a05217e802d7c9cc4f5b44f61d31b7bd6a8826c1"
+        },
+        {
+          "path": "src/domain/todo-identities.ts",
+          "sha256": "44e62b0baec88f7520c76673e481b9bd64354441ba598f47866bec6d715822bd"
+        },
+        {
+          "path": "src/http.ts",
+          "sha256": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109"
+        },
+        {
+          "path": "src/mcp.ts",
+          "sha256": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/todo-definitions.ts",
+          "sha256": "27a3ac96f1f46a6c171fba0e29d851b776aefd777c505e2bdac24b95927d8e95"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-todo-board.js",
+      "originalTestcase": "competing Board commands across processes have exactly one CAS winner",
+      "originalSourceSha256": "c8f9bbdcad4d9c375b5dc727a9581b433504b24076669104b05e93f7c371df17",
+      "nativeOperations": [
+        "todo.workitem.create",
+        "todo.workitem.list"
+      ],
+      "scenario": "The native transport performs a stale-digest conflict check in a single writer process, but cannot execute the original simultaneous multi-process race.",
+      "result": "unsupported",
+      "assertions": 0,
+      "evidence": [
+        "Only sequential stale-digest behavior ran; simultaneous process race deliberately not claimed."
+      ],
+      "unsupportedReason": "The enforced single-writer lease prevents an HTTP and an MCP server from concurrently opening the same workspace; only sequential stale-CAS behavior was verified.",
+      "nativeImplementationSources": [
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/domain/todo-api-contract.ts",
+          "sha256": "e45d04227e38daa3a64537b2a772f7057430697a5dc73bbd57efcbf82a618263"
+        },
+        {
+          "path": "src/domain/todo-api.ts",
+          "sha256": "57a47a2581911b14e73c58246a785499258d2696e1c5b32803972270ec5488ad"
+        },
+        {
+          "path": "src/domain/todo-board.ts",
+          "sha256": "8e45dd4a83ee98e8c4dc6bb7a05217e802d7c9cc4f5b44f61d31b7bd6a8826c1"
+        },
+        {
+          "path": "src/domain/todo-identities.ts",
+          "sha256": "44e62b0baec88f7520c76673e481b9bd64354441ba598f47866bec6d715822bd"
+        },
+        {
+          "path": "src/http.ts",
+          "sha256": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109"
+        },
+        {
+          "path": "src/mcp.ts",
+          "sha256": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/todo-definitions.ts",
+          "sha256": "27a3ac96f1f46a6c171fba0e29d851b776aefd777c505e2bdac24b95927d8e95"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-capability-memory.js",
+      "originalTestcase": "native and external capability paths share durable scoped Memory, but only real Host decisions activate or revoke it",
+      "originalSourceSha256": "b7b7542c796b531ecaa02c6ecb0a79c23dc141f330e9b4cb2ad7c7538e84c2bb",
+      "nativeOperations": [
+        "memory.record.propose",
+        "memory.record.get",
+        "memory.record.search",
+        "memory.record.confirm",
+        "memory.record.audit"
+      ],
+      "scenario": "HTTP creates and idempotently retries a proposal; MCP reads the resulting record and audit; pending content is not searchable, caller-forged confirmation is rejected, and the same pending revision survives restart.",
+      "result": "passed",
+      "assertions": 10,
+      "evidence": [
+        "HTTP proposal and identical retry returned deep-equal pending records.",
+        "Pending search was empty; caller userConfirmed was INVALID_ARGUMENT; HTTP and MCP confirm were NOT_AVAILABLE.",
+        "MCP audit contained only proposed, and the same record survived HTTP restart."
+      ],
+      "unsupportedReason": "No native Host decision injector is configured by the isolated HTTP/MCP server; successful confirm/revise/revoke, foreign-owner scoping, and old ChatMemory accounting remain explicitly unqualified.",
+      "nativeImplementationSources": [
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/http.ts",
+          "sha256": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109"
+        },
+        {
+          "path": "src/mcp.ts",
+          "sha256": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6"
+        },
+        {
+          "path": "src/memory-contracts.ts",
+          "sha256": "15541f78bf7376d02485edc7c279a245a7a8ffed078bb81764a59b15c827a6eb"
+        },
+        {
+          "path": "src/memory.ts",
+          "sha256": "0eee48b78669180c12c47215296b8c5bcca94052e33e68029da330a3890daa0c"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/storage.ts",
+          "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-knowledge-contracts.js",
+      "originalTestcase": "top-level Note knowledge identity assertions; persisted Note ID, revision, aliases, and links",
+      "originalSourceSha256": "bf7f6631653c86882373cd94a19009573490410ccbd5c72f1bc2ac98fd4178a8",
+      "nativeOperations": [
+        "knowledge.document.create",
+        "knowledge.metadata.update",
+        "knowledge.note.list",
+        "knowledge.note.get"
+      ],
+      "scenario": "The HTTP-created Note receives legacy metadata through a revision-pinned metadata patch; body-free listing preserves that metadata and its generated canonical knowledgeId resolves to the same stable documentId and private body.",
+      "result": "passed",
+      "assertions": 9,
+      "evidence": [
+        "knowledge.note.list returned slug=Team/Legacy, type=decision, tags=[\"one\",\"one\"], pinned=true, created_at=Original date, with no content field.",
+        "knowledge.note.get(canonical knowledgeId from listed Note, snapshotRevision=list.snapshotRevision) returned documentId=note-contract and content=Private body."
+      ],
+      "unsupportedReason": "This qualifies persisted identity lookup and metadata only; the original legacy noteUpsert rename/revision/alias-rewrite path is unavailable to the native read-only Note API.",
+      "nativeImplementationSources": [
+        {
+          "path": "src/contracts.ts",
+          "sha256": "243be35a870d277f9b9f50160a57605614868e06520a9f457c9d2f54969d0cff"
+        },
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/http.ts",
+          "sha256": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109"
+        },
+        {
+          "path": "src/markdown.ts",
+          "sha256": "281d58af8a4d8c840f3f1e288516f1b51046f067b2bd9b5125ec8527f13a15fd"
+        },
+        {
+          "path": "src/mcp.ts",
+          "sha256": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6"
+        },
+        {
+          "path": "src/note-contracts.ts",
+          "sha256": "6628055bd64a7e059d68832b45c672e91ef337b773085b9f718b16efe75f95bb"
+        },
+        {
+          "path": "src/notes.ts",
+          "sha256": "298a624cd7ce602375405019d4a8b5e4741829f13c7d9ef5def238363f484256"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/storage.ts",
+          "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-knowledge-contracts.js",
+      "originalTestcase": "top-level unknown Note metadata preservation assertion",
+      "originalSourceSha256": "bf7f6631653c86882373cd94a19009573490410ccbd5c72f1bc2ac98fd4178a8",
+      "nativeOperations": [
+        "knowledge.document.create",
+        "knowledge.metadata.get",
+        "knowledge.metadata.update",
+        "knowledge.document.get"
+      ],
+      "scenario": "A metadata-only CAS update changes description while preserving an unknown nested custom field and the Note body.",
+      "result": "passed",
+      "assertions": 5,
+      "evidence": [
+        "Initial metadata.custom was {retained:true}; after metadata.update it remained byte-equivalent JSON and description changed.",
+        "knowledge.document.get returned the original Private body after metadata update."
+      ],
+      "unsupportedReason": null,
+      "nativeImplementationSources": [
+        {
+          "path": "src/contracts.ts",
+          "sha256": "243be35a870d277f9b9f50160a57605614868e06520a9f457c9d2f54969d0cff"
+        },
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/http.ts",
+          "sha256": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109"
+        },
+        {
+          "path": "src/mcp.ts",
+          "sha256": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/storage.ts",
+          "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-knowledge-contracts.js",
+      "originalTestcase": "top-level original knowledge identity/revision assertions",
+      "originalSourceSha256": "bf7f6631653c86882373cd94a19009573490410ccbd5c72f1bc2ac98fd4178a8",
+      "nativeOperations": [
+        "knowledge.note.list",
+        "knowledge.note.get"
+      ],
+      "scenario": "An external body edit invalidates the previously issued Note snapshot; conflicting id+path selectors and an escaping path fail with exact INVALID_ARGUMENT errors.",
+      "result": "passed",
+      "assertions": 3,
+      "evidence": [
+        "knowledge.note.list(snapshotRevision=pre-edit) returned CONFLICT after direct external body edit.",
+        "knowledge.note.get({id,path}) and knowledge.note.get({path:'../unsafe.md'}) each returned INVALID_ARGUMENT."
+      ],
+      "unsupportedReason": null,
+      "nativeImplementationSources": [
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/http.ts",
+          "sha256": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109"
+        },
+        {
+          "path": "src/markdown.ts",
+          "sha256": "281d58af8a4d8c840f3f1e288516f1b51046f067b2bd9b5125ec8527f13a15fd"
+        },
+        {
+          "path": "src/mcp.ts",
+          "sha256": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6"
+        },
+        {
+          "path": "src/note-contracts.ts",
+          "sha256": "6628055bd64a7e059d68832b45c672e91ef337b773085b9f718b16efe75f95bb"
+        },
+        {
+          "path": "src/notes.ts",
+          "sha256": "298a624cd7ce602375405019d4a8b5e4741829f13c7d9ef5def238363f484256"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-markdown-owned-assets.js",
+      "originalTestcase": "top-level resource ownership, unreferenced diagrams, and original asset-byte assertions",
+      "originalSourceSha256": "64ec0aa046fbe000239216013563d7a3dba31df37a5524b124f054229603b4ef",
+      "nativeOperations": [
+        "knowledge.document.create",
+        "knowledge.asset.list",
+        "knowledge.asset.get"
+      ],
+      "scenario": "The native owned-asset catalog includes the referenced binary and unreferenced diagram, pages the catalog, returns a 130,000-byte resource in bounded exact chunks, then rejects the stale digest after external replacement.",
+      "result": "passed",
+      "assertions": 8,
+      "evidence": [
+        "Asset catalog total=2, first page nextOffset=1; second page contains unreferenced Design.assets/unreferenced.mmd.",
+        "First read is 65,536 bytes with nextOffset=65,536; concatenated chunk bytes exactly equal the original 130,000-byte fixture.",
+        "The original expectedDigest/expectedDocumentSha256 read returned CONFLICT after the resource bytes changed externally."
+      ],
+      "unsupportedReason": "Copy/move/Trash materialization and sync deletion journal assertions from the legacy filestore do not have equivalent native operations.",
+      "nativeImplementationSources": [
+        {
+          "path": "src/contracts.ts",
+          "sha256": "243be35a870d277f9b9f50160a57605614868e06520a9f457c9d2f54969d0cff"
+        },
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/domain/markdown-assets.ts",
+          "sha256": "5cdb18e97503a365b08024f532ffe8f34091fcbdffa2c8f77c5d473f530f9c5d"
+        },
+        {
+          "path": "src/http.ts",
+          "sha256": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109"
+        },
+        {
+          "path": "src/mcp.ts",
+          "sha256": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/storage.ts",
+          "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-markdown-owned-assets.js",
+      "originalTestcase": "top-level invalid-resource names and symbolic-link rejection assertions",
+      "originalSourceSha256": "64ec0aa046fbe000239216013563d7a3dba31df37a5524b124f054229603b4ef",
+      "nativeOperations": [
+        "knowledge.asset.list",
+        "knowledge.asset.get"
+      ],
+      "scenario": "Native asset reads deny traversal/absolute/hidden/backslash paths, reserve the Todo backing file, and reject a symbolic link in the owned-resource tree.",
+      "result": "passed",
+      "assertions": 6,
+      "evidence": [
+        "Four unsafe resource names each returned INVALID_ARGUMENT.",
+        "pkm-todo-board.json returned ACCESS_DENIED.",
+        "A symlink under Design.assets caused knowledge.asset.list to return INVALID_DOCUMENT."
+      ],
+      "unsupportedReason": null,
+      "nativeImplementationSources": [
+        {
+          "path": "src/contracts.ts",
+          "sha256": "243be35a870d277f9b9f50160a57605614868e06520a9f457c9d2f54969d0cff"
+        },
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/domain/markdown-assets.ts",
+          "sha256": "5cdb18e97503a365b08024f532ffe8f34091fcbdffa2c8f77c5d473f530f9c5d"
+        },
+        {
+          "path": "src/http.ts",
+          "sha256": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109"
+        },
+        {
+          "path": "src/mcp.ts",
+          "sha256": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-todo-board.js",
+      "originalTestcase": "competing Board commands across processes have exactly one CAS winner",
+      "originalSourceSha256": "c8f9bbdcad4d9c375b5dc727a9581b433504b24076669104b05e93f7c371df17",
+      "nativeOperations": [
+        "todo.board.create",
+        "todo.workitem.create",
+        "todo.workitem.claim",
+        "todo.workitem.history",
+        "todo.board.changes",
+        "todo.workitem.comment"
+      ],
+      "scenario": "Two board claims race through the single native HTTP process and exactly one acquires workspace focus; history/change pages record the winning claim; an identical comment operation replays the exact receipt after HTTP restart and changed payload reuse fails.",
+      "result": "passed",
+      "assertions": 10,
+      "evidence": [
+        "Concurrent claim results were exactly one result and one WORKITEM_FOCUS_CONFLICT.",
+        "Winner history total=2; Board changes total=2; history includes the claim/WIP event.",
+        "Comment retry returned deep-equal result before and after server restart; same operationId with altered text returned an error rather than a different receipt."
+      ],
+      "unsupportedReason": "The legacy two-child-process race is not claimed: next-server's exclusive workspace lease prevents two independent server processes from opening the same workspace concurrently.",
+      "nativeImplementationSources": [
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/domain/todo-api-contract.ts",
+          "sha256": "e45d04227e38daa3a64537b2a772f7057430697a5dc73bbd57efcbf82a618263"
+        },
+        {
+          "path": "src/domain/todo-api.ts",
+          "sha256": "57a47a2581911b14e73c58246a785499258d2696e1c5b32803972270ec5488ad"
+        },
+        {
+          "path": "src/domain/todo-board.ts",
+          "sha256": "8e45dd4a83ee98e8c4dc6bb7a05217e802d7c9cc4f5b44f61d31b7bd6a8826c1"
+        },
+        {
+          "path": "src/domain/todo-identities.ts",
+          "sha256": "44e62b0baec88f7520c76673e481b9bd64354441ba598f47866bec6d715822bd"
+        },
+        {
+          "path": "src/http.ts",
+          "sha256": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109"
+        },
+        {
+          "path": "src/mcp.ts",
+          "sha256": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/todo-definitions.ts",
+          "sha256": "27a3ac96f1f46a6c171fba0e29d851b776aefd777c505e2bdac24b95927d8e95"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-capability-memory.js",
+      "originalTestcase": "native and external capability paths share durable scoped Memory, but only real Host decisions activate or revoke it",
+      "originalSourceSha256": "b7b7542c796b531ecaa02c6ecb0a79c23dc141f330e9b4cb2ad7c7538e84c2bb",
+      "nativeOperations": [
+        "memory.record.propose",
+        "memory.record.get",
+        "memory.record.revoke"
+      ],
+      "scenario": "The same operation ID proposed in two isolated workspace scopes creates distinct records; another scope cannot read the first record; same-scope changed-payload replay conflicts; caller-supplied confirmation/scope/authorization are invalid; forgetting via revoke fails closed without a Host decision.",
+      "result": "passed",
+      "assertions": 8,
+      "evidence": [
+        "Same operation ID yielded distinct ids and distinct repository-scope values in two isolated workspace roots.",
+        "Changed payload replay returned CONFLICT; confirmed, foreign scope, and host_authorization extras each returned INVALID_ARGUMENT.",
+        "Cross-workspace get and revoke without a Host decision each returned NOT_AVAILABLE."
+      ],
+      "unsupportedReason": "No successful forget/revoke is asserted: the native operation is human-authorized only and unavailable through HTTP/MCP.",
+      "nativeImplementationSources": [
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/http.ts",
+          "sha256": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109"
+        },
+        {
+          "path": "src/mcp.ts",
+          "sha256": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6"
+        },
+        {
+          "path": "src/memory-contracts.ts",
+          "sha256": "15541f78bf7376d02485edc7c279a245a7a8ffed078bb81764a59b15c827a6eb"
+        },
+        {
+          "path": "src/memory.ts",
+          "sha256": "0eee48b78669180c12c47215296b8c5bcca94052e33e68029da330a3890daa0c"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/storage.ts",
+          "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-capability-memory.js",
+      "originalTestcase": "native and external capability paths share durable scoped Memory, but only real Host decisions activate or revoke it",
+      "originalSourceSha256": "b7b7542c796b531ecaa02c6ecb0a79c23dc141f330e9b4cb2ad7c7538e84c2bb",
+      "nativeOperations": [
+        "memory.record.propose",
+        "memory.record.get"
+      ],
+      "scenario": "UTF-8 byte limit and aggregate source-reference limit reject oversized proposals; a valid stored proposal returns the exact source provenance.",
+      "result": "passed",
+      "assertions": 3,
+      "evidence": [
+        "2,000 three-byte CJK characters returned INVALID_ARGUMENT under the 4,096-byte content bound.",
+        "Three 1,500-byte source locators returned INVALID_ARGUMENT under the 4,096-byte aggregate source bound.",
+        "memory.record.get returned sources deep-equal to the original source identity/chat/revision/locator."
+      ],
+      "unsupportedReason": null,
+      "nativeImplementationSources": [
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/http.ts",
+          "sha256": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109"
+        },
+        {
+          "path": "src/mcp.ts",
+          "sha256": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6"
+        },
+        {
+          "path": "src/memory-contracts.ts",
+          "sha256": "15541f78bf7376d02485edc7c279a245a7a8ffed078bb81764a59b15c827a6eb"
+        },
+        {
+          "path": "src/memory.ts",
+          "sha256": "0eee48b78669180c12c47215296b8c5bcca94052e33e68029da330a3890daa0c"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/storage.ts",
+          "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-knowledge-contracts.js",
+      "originalTestcase": "top-level stable Knowledge ID/revision/alias assertions across Note updates",
+      "originalSourceSha256": "bf7f6631653c86882373cd94a19009573490410ccbd5c72f1bc2ac98fd4178a8",
+      "nativeOperations": [
+        "knowledge.document.create",
+        "knowledge.metadata.get",
+        "knowledge.document.get",
+        "knowledge.document.update"
+      ],
+      "scenario": "The original knowledge ID and aliases remain stable across a successful revision-pinned edit; an external byte change first defeats the stale update without overwriting the external Markdown.",
+      "result": "passed",
+      "assertions": 9,
+      "evidence": [
+        "Initial metadata had a schema-valid knowledgeId and aliases=[\"note:identity-cas\"].",
+        "Stale update returned CONFLICT and the exact external bytes remained unchanged.",
+        "Successful update advanced revision 1->2 and preserved knowledgeId/aliases; get returned Current body."
+      ],
+      "unsupportedReason": "Path move/rename and legacy noteUpsert alias rewriting remain unsupported by these document mutation operations.",
+      "nativeImplementationSources": [
+        {
+          "path": "src/contracts.ts",
+          "sha256": "243be35a870d277f9b9f50160a57605614868e06520a9f457c9d2f54969d0cff"
+        },
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/http.ts",
+          "sha256": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109"
+        },
+        {
+          "path": "src/mcp.ts",
+          "sha256": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/storage.ts",
+          "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-knowledge-contracts.js",
+      "originalTestcase": "top-level Knowledge links and immutable-identity validation assertions",
+      "originalSourceSha256": "bf7f6631653c86882373cd94a19009573490410ccbd5c72f1bc2ac98fd4178a8",
+      "nativeOperations": [
+        "knowledge.document.create",
+        "knowledge.metadata.update",
+        "knowledge.document.get"
+      ],
+      "scenario": "A relative floating link fails contract validation; a metadata patch cannot overwrite knowledgeId; both rejected writes leave the document revision and body unchanged.",
+      "result": "passed",
+      "assertions": 4,
+      "evidence": [
+        "Unsupported relative/path link returned INVALID_ARGUMENT.",
+        "Attempt to set knowledgeId returned ACCESS_DENIED.",
+        "After both failures, document revision remained 1 and content remained body."
+      ],
+      "unsupportedReason": null,
+      "nativeImplementationSources": [
+        {
+          "path": "src/contracts.ts",
+          "sha256": "243be35a870d277f9b9f50160a57605614868e06520a9f457c9d2f54969d0cff"
+        },
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/http.ts",
+          "sha256": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109"
+        },
+        {
+          "path": "src/mcp.ts",
+          "sha256": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/storage.ts",
+          "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-todo-board.js",
+      "originalTestcase": "Board authority follows rename, folders, Trash, restore and explicit export/import without sharing worker grants",
+      "originalSourceSha256": "c8f9bbdcad4d9c375b5dc727a9581b433504b24076669104b05e93f7c371df17",
+      "nativeOperations": [
+        "todo.board.create",
+        "todo.story.create",
+        "todo.story.delete",
+        "todo.story.restore",
+        "todo.workitem.create",
+        "todo.workitem.delete",
+        "todo.workitem.restore"
+      ],
+      "scenario": "Native Board task/story lifecycle rejects deleting a parent with a child and restoring a child before its parent; after parent-first restoration, original relation and acceptance are unchanged.",
+      "result": "passed",
+      "assertions": 6,
+      "evidence": [
+        "Child task was created with parentId=story and acceptance=[Exact acceptance].",
+        "Deleting a Story with a child returned an error; restoring the child before its deleted parent also returned an error.",
+        "After Story then child restore, parentId and acceptance exactly matched the original values."
+      ],
+      "unsupportedReason": "Board rename/folder move, Trash restore of the Board document, and legacy export/import remain unsupported at this native endpoint.",
+      "nativeImplementationSources": [
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/domain/todo-api-contract.ts",
+          "sha256": "e45d04227e38daa3a64537b2a772f7057430697a5dc73bbd57efcbf82a618263"
+        },
+        {
+          "path": "src/domain/todo-api.ts",
+          "sha256": "57a47a2581911b14e73c58246a785499258d2696e1c5b32803972270ec5488ad"
+        },
+        {
+          "path": "src/domain/todo-board.ts",
+          "sha256": "8e45dd4a83ee98e8c4dc6bb7a05217e802d7c9cc4f5b44f61d31b7bd6a8826c1"
+        },
+        {
+          "path": "src/domain/todo-identities.ts",
+          "sha256": "44e62b0baec88f7520c76673e481b9bd64354441ba598f47866bec6d715822bd"
+        },
+        {
+          "path": "src/http.ts",
+          "sha256": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109"
+        },
+        {
+          "path": "src/mcp.ts",
+          "sha256": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/todo-definitions.ts",
+          "sha256": "27a3ac96f1f46a6c171fba0e29d851b776aefd777c505e2bdac24b95927d8e95"
+        }
+      ]
+    },
+    {
+      "originalFile": "tests/test-knowledge-contracts.js",
+      "originalTestcase": "top-level plain Note defaults and content-preservation assertions",
+      "originalSourceSha256": "bf7f6631653c86882373cd94a19009573490410ccbd5c72f1bc2ac98fd4178a8",
+      "nativeOperations": [
+        "knowledge.document.create",
+        "knowledge.note.list",
+        "knowledge.note.get"
+      ],
+      "scenario": "A plain Markdown Note projects original title/general/empty-tags/markdown defaults without body leakage; an explicit get returns the body.",
+      "result": "passed",
+      "assertions": 7,
+      "evidence": [
+        "List returned title=Fallback, type=general, tags=[], documentKind=markdown, and omitted content.",
+        "Get by stable documentId returned Fallback body."
+      ],
+      "unsupportedReason": null,
+      "nativeImplementationSources": [
+        {
+          "path": "src/contracts.ts",
+          "sha256": "243be35a870d277f9b9f50160a57605614868e06520a9f457c9d2f54969d0cff"
+        },
+        {
+          "path": "src/core.ts",
+          "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+        },
+        {
+          "path": "src/http.ts",
+          "sha256": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109"
+        },
+        {
+          "path": "src/markdown.ts",
+          "sha256": "281d58af8a4d8c840f3f1e288516f1b51046f067b2bd9b5125ec8527f13a15fd"
+        },
+        {
+          "path": "src/mcp.ts",
+          "sha256": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6"
+        },
+        {
+          "path": "src/note-contracts.ts",
+          "sha256": "6628055bd64a7e059d68832b45c672e91ef337b773085b9f718b16efe75f95bb"
+        },
+        {
+          "path": "src/notes.ts",
+          "sha256": "298a624cd7ce602375405019d4a8b5e4741829f13c7d9ef5def238363f484256"
+        },
+        {
+          "path": "src/storage-worker.ts",
+          "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b"
+        },
+        {
+          "path": "src/storage.ts",
+          "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "verifiedRows": 15,
+    "unsupportedRows": 1,
+    "passedRows": 15,
+    "assertions": 109
+  },
+  "legacySuiteExecution": {
+    "status": "not-run",
+    "reason": "This report records only the inherited assertions exercised through next-server HTTP/MCP. The original VS Code test loader and full legacy suite were not run."
+  },
+  "explicitGaps": [
+    "The full original VS Code suite is not qualified by this tranche.",
+    "Markdown asset sync-bundle/GitHub/webview assertions and legacy shared-asset migration/materialization are unsupported at the tested next-server transport seam.",
+    "Todo legacy Note/Markdown and reserved-asset write paths are not represented by the isolated native boards/ authority.",
+    "Memory confirmation, revision, revocation, and legacy ChatMemory accounting are not qualified without an injected native Host decision or an implemented accounting surface."
+  ]
+}

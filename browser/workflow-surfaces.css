@@ -1,0 +1,121 @@
+.workflow-surfaces {
+  display: grid;
+  gap: 1rem;
+  margin-block: 1.5rem;
+}
+
+.workflow-surface {
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid var(--vscode-panel-border, #d0d7de);
+  border-radius: 6px;
+  background: var(--vscode-sideBar-background, #f6f8fa);
+  color: var(--vscode-foreground, #24292f);
+}
+
+.workflow-surface h2,
+.workflow-surface h3 {
+  margin-block: 0.25rem 0.75rem;
+}
+
+.surface-status {
+  min-height: 1.4em;
+  color: var(--vscode-descriptionForeground, #57606a);
+}
+
+.surface-status.error,
+.surface-conflict {
+  color: var(--vscode-errorForeground, #cf222e);
+}
+
+.surface-tools,
+.surface-list,
+.surface-details,
+.surface-editor,
+.surface-metadata,
+.surface-attachments {
+  display: grid;
+  gap: 0.6rem;
+  margin-block: 0.75rem;
+}
+
+.surface-list {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+}
+
+.surface-field {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.surface-field input,
+.surface-field textarea {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0.5rem;
+  color: var(--vscode-input-foreground, #24292f);
+  background: var(--vscode-input-background, #fff);
+  border: 1px solid var(--vscode-panel-border, #d0d7de);
+  border-radius: 3px;
+  font: inherit;
+}
+
+.surface-field textarea {
+  min-height: 4rem;
+  resize: vertical;
+  font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+}
+
+.workflow-surface button {
+  justify-self: start;
+  padding: 0.4rem 0.7rem;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--vscode-panel-border, #d0d7de);
+  border-radius: 3px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.workflow-surface button:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.workflow-surface button:focus-visible,
+.surface-field :focus-visible {
+  outline: 2px solid var(--vscode-focusBorder, #0969da);
+  outline-offset: 2px;
+}
+
+.workflow-surface button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.literal-content {
+  max-width: 100%;
+  overflow: auto;
+  padding: 0.75rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--vscode-foreground, #24292f);
+  background: var(--vscode-editor-background, #fff);
+  border: 1px solid var(--vscode-panel-border, #d0d7de);
+  font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+}
+
+.surface-diff {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
+  gap: 0.75rem;
+}
+
+.surface-conflict {
+  padding: 0.75rem;
+  border-inline-start: 3px solid currentColor;
+  background: var(--vscode-editor-background, #fff);
+}
+
+[hidden] {
+  display: none !important;
+}

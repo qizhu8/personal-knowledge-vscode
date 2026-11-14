@@ -1,0 +1,18 @@
+{
+  "schema": "pkm.domain-capture/v1",
+  "transformation": "AST capture of original GitHub sync managed-content and local-snapshot helpers, plus its exact guarded-pull byte-preservation assertion. Filesystem application and journaling are a separate offline implementation.",
+  "files": [
+    {
+      "source": "src/sync/github-sync.ts",
+      "captured": "src/domain/sync-apply-original.ts",
+      "sourceSha256": "d4982ae0b6dfecfe234155eaf6ee2df7062d15212a7847162a7e5e67802c35aa",
+      "capturedSha256": "abd6a3bb0e594cf6d091406c05af7914efe887622f2972830dc139d4dacbd88f"
+    },
+    {
+      "source": "tests/test-github-sync-newlines.js",
+      "captured": "tests/sync-apply-original.test.mjs",
+      "sourceSha256": "9bebf7442925094748acefee090065082070c9bd05666c74f5010ef55ef2742c",
+      "capturedSha256": "c79f11bc811a1b9c1203a32777a2bce4c65177b7607e2504fac8d5143eaae0bc"
+    }
+  ]
+}

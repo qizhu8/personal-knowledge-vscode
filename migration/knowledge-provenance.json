@@ -1,0 +1,20 @@
+{
+  "schema": "pkm.domain-capture/v1",
+  "transformation": "Knowledge contracts copied without business changes. Original pure top-level assertions wrapped in node:test with ESM imports; legacy filestore integration assertions explicitly excluded.",
+  "files": [
+    {
+      "source": "src/knowledge/knowledge-contracts.ts",
+      "sourceSha256": "0f4c453b726e70df7c3e8df3e4eb253114d89d4cb88eb8ce3e4f561bf336ab2f",
+      "captured": "src/domain/knowledge-contracts.ts",
+      "capturedSha256": "0f4c453b726e70df7c3e8df3e4eb253114d89d4cb88eb8ce3e4f561bf336ab2f"
+    },
+    {
+      "source": "tests/test-knowledge-contracts.js",
+      "sourceSha256": "bf7f6631653c86882373cd94a19009573490410ccbd5c72f1bc2ac98fd4178a8",
+      "captured": "tests/legacy-knowledge-contracts.test.mjs",
+      "capturedSha256": "520eed6e9806e2c0bf285a951d991a02a212c257620cc4c3480dbe720a9b803c",
+      "included": "Exact statements from first identity fixture through identity-set collision assertions.",
+      "excluded": "Legacy filestore Note/Skill/Paper mutation and move integration block; requires later adapter parity qualification."
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+export const todoIdentities: Record<string, string> = {
+  list_boards: "todo.board.list", get_board: "todo.board.get",
+  list_workitems: "todo.workitem.list", get_workitem: "todo.workitem.get",
+  list_userstories: "todo.story.list", get_userstory: "todo.story.get", list_agents: "todo.agent.list",
+  add_workitem: "todo.workitem.create", update_workitem: "todo.workitem.update",
+  delete_workitem: "todo.workitem.delete", restore_workitem: "todo.workitem.restore",
+  move_workitem: "todo.workitem.move", add_userstory: "todo.story.create",
+  update_userstory: "todo.story.update", delete_userstory: "todo.story.delete",
+  restore_userstory: "todo.story.restore", claim_workitem: "todo.workitem.claim",
+  assign_workitem: "todo.workitem.assign", release_workitem: "todo.workitem.release",
+  change_workitem_state: "todo.workitem.transition", submit_workitem_result: "todo.workitem.submit",
+  accept_workitem: "todo.workitem.accept", reopen_workitem: "todo.workitem.reopen",
+  reopen_userstory: "todo.story.reopen", change_userstory_state: "todo.story.transition",
+  accept_userstory: "todo.story.accept", list_board_changes: "todo.board.changes",
+  add_workitem_comment: "todo.workitem.comment", list_workitem_history: "todo.workitem.history",
+};

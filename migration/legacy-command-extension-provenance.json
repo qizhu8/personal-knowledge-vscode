@@ -1,0 +1,82 @@
+{
+  "schema": "pkm.next.native-composition/v1",
+  "scope": "Explicitly authorized Project archive/create, global/project Recipe create/update and bounded Project/Thread create/rename/move extensions through the single project.legacy.command@1 capability. Batch11 separately qualifies transport no-op receipts, stale-CAS denial, recognized pre-effect/mixed-move recovery, tamper fencing and backup lineage.",
+  "captures": [],
+  "originalSourceLineage": "No original source/capture pair or original-code reuse claim is introduced by this native extension record. Original-store behavior is exercised by isolated before/after, bytes/version/ordered-receipt oracles.",
+  "implementation": [
+    {
+      "path": "src/host-composition-legacy-commands.ts",
+      "sha256": "327bb4c53e061fa23f901e64ccb2232eb1a814190c670520e5c6ff683a2271bc"
+    },
+    {
+      "path": "src/host-composition-legacy-project-contracts.ts",
+      "sha256": "bfb97df161d694a7b666af723795b32a996bde66af521f5ac9078cbbd429fc56"
+    },
+    {
+      "path": "src/legacy-command-extension-journal.ts",
+      "sha256": "35d52c8207f2b547a060c0be468ab8fce6b0d16a0d0c486bdb84c9f3d224858c"
+    },
+    {
+      "path": "src/legacy-command-extension-recovery.ts",
+      "sha256": "a6bb71170f17b17e3035c47c5238e490e8a532d33b9b3e4effc2b841f855abe8"
+    },
+    {
+      "path": "src/legacy-command-extension-runtime.ts",
+      "sha256": "6de33b372b8ec82cee781cbf35aac839fb7c389305b7021c63732699cb40c432"
+    },
+    {
+      "path": "src/legacy-command-extension-seam.ts",
+      "sha256": "318604efefbf0a16feabcba884d0c00412147d4fa3775f897740b75833905aad"
+    },
+    {
+      "path": "src/legacy-project-command-contracts.ts",
+      "sha256": "9049df9ae49d611f049f8b0824318dfb39b7a0fd4ae3413ed1f4de8985807c74"
+    },
+    {
+      "path": "tests/batch10-native-commands.test.mjs",
+      "sha256": "2b0d705a430ee26cc952b9ddb180b5ca293603ee83c79476f06dd104128805b3"
+    },
+    {
+      "path": "tests/legacy-command-extension-journal.test.mjs",
+      "sha256": "32bc49fb610deb84cad44d4dc7d8d57874d0c0de2e2f69519de509b6894a68e9"
+    },
+    {
+      "path": "tests/legacy-command-extension-recovery.test.mjs",
+      "sha256": "e5249823a99a4297c1806e8625ec821713333b0315125ca978bb8bbd9bacce7c"
+    },
+    {
+      "path": "tests/server.test.mjs",
+      "sha256": "4c485629dfffed05e3b242e59f3945f28e9d8657784b56664a2dd7626782dff6"
+    }
+  ],
+  "reuse": [
+    {
+      "path": "src/contracts.ts",
+      "sha256": "243be35a870d277f9b9f50160a57605614868e06520a9f457c9d2f54969d0cff"
+    },
+    {
+      "path": "src/core.ts",
+      "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943"
+    },
+    {
+      "path": "src/http.ts",
+      "sha256": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109"
+    },
+    {
+      "path": "src/mcp.ts",
+      "sha256": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6"
+    },
+    {
+      "path": "src/storage.ts",
+      "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6"
+    }
+  ],
+  "limitations": [
+    "Admission requires explicit host-native actor/workspace authorization; caller-supplied actor, workspace, fingerprint, or global fingerprint is not accepted.",
+    "Project archive and Recipe create/update are bounded to the original store, strict ownership and host-computed fingerprint fences; filesystem effects stay outside SQL owner callbacks.",
+    "Recovery inspection runs before generic mixed-Recipe validation and retains pending/unknown bytes without guessing or replaying.",
+    "Historical opaque command IDs replay the original current snapshot; project.update remains a separate strict-CAS path. The Batch11 Project/Thread commands are admitted through this same capability's explicit native policy and shared journal, with authenticated Core HTTP/MCP source-oracle tests. No-op/mixed-move recovery is now qualified through public transports; other imported mutations remain fail-closed.",
+    "Batch11 trash import/restore uses the separate authenticated trash seam and existing knowledge.trash.restore v1 operation. The original 379-file regression suite remains not run; bounded tests do not establish full legacy operation or client parity.",
+    "This is not full original Project/Recipe command parity, production Knowledge Root access, or cutover qualification."
+  ]
+}

@@ -1,0 +1,346 @@
+{
+  "schema": "pkm.batch22-qualification/v1",
+  "batch": 22,
+  "status": "bounded-functional-and-storage-io-qualified-current-full-verification-passed-readiness-blocked-no-cutover",
+  "scope": "Native-composed bridge from one strictly pinned, already-installed old Skill-source head into sequence-one native source history, retaining immutable legacy genesis and old receipts.",
+  "boundary": "Disposable native-owned fixtures and bounded local tests only. No real Knowledge Root, production/real-root data, private fixtures, model/network/credential use, self-acceptance, all-target legacy qualification, or cutover.",
+  "schemas": {
+    "workspace": 23,
+    "memoryEngine": 2,
+    "operationVersion": 1,
+    "databaseDdlChanged": false,
+    "sourceSnapshotShape": [
+      "intents",
+      "receipts",
+      "history",
+      "adoptions"
+    ]
+  },
+  "catalog": {
+    "registeredOperationCount": 216,
+    "addedPublicOperations": [
+      {
+        "id": "legacy.skill.source.bridge",
+        "version": 1,
+        "readOnly": false
+      }
+    ],
+    "classification": "native-composed-writer-candidate",
+    "acceptedWorkstreamMapping": false,
+    "readinessContract": "readiness-contract.json",
+    "readinessContractSha256": "af87490c3b9e95250d75538ef916d639c75b906ea8682060d0058957c00f5cd9"
+  },
+  "nativeBridgeProtocol": {
+    "requestBinding": "Strict install input plus the SHA-256 of exact legacy history.",
+    "planBinding": "Bridge plan binds kind, human actor, roots, epoch, input, legacy rows/locals/globals, and the original LegacySkillSourceInstallPlan genesis.",
+    "history": "First native source history entry is sequence 1 and wraps the preserved old genesis; old receipts remain byte-for-byte immutable.",
+    "verification": "Native bridge verification checks the current old receipts, exact history digest and retained independent approval against the bound source version and target.",
+    "requiredCallbacks": [
+      "approveBridge(actor, plan, pins, recovery)",
+      "verifyBridge(plan, pins)",
+      "reconcileBridgeAnchor(snapshot, actor, { plan, pins, committed })"
+    ],
+    "callbackBoundary": "All three native callbacks are required and run outside SQLite owner transactions.",
+    "retryBehavior": "Old native Core HTTP/MCP retry remains a filesystem-free historical receipt replay under live authentication. A receipt can replay even when an unexpected target file exists after removal; it does not assert that the historical head is current.",
+    "backupPolicy": "Source backup requires bridge verification and historical bundle authority, plus generic restore approval.",
+    "supportedOldHead": "Only the strictly pinned INSTALLED old head and bound source version/target. A removed old head must first be reinstalled through the old writer; direct bridging from a removed genesis is unsupported.",
+    "bundleAndCustomSourceBoundary": "Recognized bundled leaves remain rejected. Custom-source preservation was exercised only for the bounded case with an independently pinned bundle version."
+  },
+  "qualification": {
+    "finalSourceAndTestFreezeConfirmed": true,
+    "fullBaseline": {
+      "command": "npm test --prefix next-server",
+      "execution": "Actual parent standard full verification retry after the authorized Python-only selected-document identity wait.",
+      "server": { "tests": 1395, "passed": 1395, "failed": 0, "cancelled": 0, "skipped": 0 },
+      "client": { "tests": 9, "passed": 9, "failed": 0, "cancelled": 0, "skipped": 0 },
+      "total": { "tests": 1404, "passed": 1404, "failed": 0, "cancelled": 0, "skipped": 0 },
+      "implementationDigest": "aac09888b6df0cd7aa6a59a3c811cf40840877c13ca4c70f335532bb8731e6ce",
+      "verificationArtifact": "migration/verification.json",
+      "verificationArtifactSha256": "f47a2ea16db1fd8695930de5feae4c689a1b12d70e51c6ffca6b8cfc88db14a4",
+      "finishedAt": "2026-11-08T05:56:03.110Z",
+      "log": "/home/yuwang8/.copilot/session-state/e2f4371d-5c23-4631-b0fe-a18ef337421f/files/batch22-full-verification-retry.log",
+      "logSha256": "dbe3450d519edd8405de5029efb8eebc0eafbf07534093692f74378ebc97c13b",
+      "boundary": "Current implementation verification only, not original-suite parity, workstream acceptance, production authority or cutover."
+    },
+    "fullBaselineReason": "The standard parent full retry passed all 1404 server/client tests at the current exact fingerprint. The initial red attempt and browser correction remain historical evidence, and Batch21's full baseline remains historical and stale.",
+    "failedFullAttempt": {
+      "serverTests": 1395,
+      "serverPassed": 1394,
+      "serverFailed": 1,
+      "clientTestsRun": false,
+      "successfulVerificationArtifactPresent": false,
+      "log": "/home/yuwang8/.copilot/session-state/e2f4371d-5c23-4631-b0fe-a18ef337421f/files/batch22-full-verification.log",
+      "logSha256": "da9f1214347d696c484aed0ae6c73ffd9a6b39cba5ae46f40b2a787a48c283a0",
+      "failure": "batch09-client-browser.py selected-detail assertion read the prior detail after edit('note', 'Pinned edit'); generic editor visibility did not establish the selected document identity."
+    },
+    "historicalBatch21FullBaseline": {
+      "report": "batch21-qualification.json",
+      "currentForBatch22": false,
+      "reason": "Stale after the Batch22 implementation change; retained only as historical evidence."
+    },
+    "acceptedWorkstreams": 0,
+    "totalWorkstreams": 21,
+    "readyForCutoverReview": false,
+    "cutoverAuthorized": false
+  },
+  "functionalQualification": {
+    "cwd": "repository root",
+    "command": "npm --prefix next-server run build && node --test next-server/tests/legacy-skill-lifecycle.test.mjs next-server/tests/legacy-skill-lifecycle-native.test.mjs next-server/tests/legacy-skill-source.test.mjs next-server/tests/legacy-skill-source-native.test.mjs next-server/tests/host-composition-legacy-skill-source-transport.test.mjs next-server/tests/host-composition-legacy-skill-source-backup.test.mjs next-server/tests/host-composition-legacy-batch15-transport.test.mjs next-server/tests/host-composition-legacy-batch15-backup.test.mjs",
+    "execution": "Independently executed in this qualification lane; TypeScript build succeeded and all selected tests passed.",
+    "counts": {
+      "selectors": 8,
+      "tests": 80,
+      "passed": 80,
+      "failed": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "build": "passed"
+    },
+    "corroboratingParentRunLog": "/home/yuwang8/.copilot/session-state/e2f4371d-5c23-4631-b0fe-a18ef337421f/files/batch22-functional.log",
+    "corroboratingParentRunLogSha256": "17fb519be0b848dd4b0f17ddc64f51d77156164571fca2527924c87b1d68f0e4",
+    "srcDistDigest": {
+      "sha256": "bb834f4b5b94a34479c44381072e20ceea192c996c2ed7245afb104ed261f980",
+      "regularFiles": 664,
+      "formula": "SHA256(JSON.stringify([relativePath,SHA256(bytes)] rows for regular src/dist files sorted by relativePath.localeCompare))"
+    },
+    "selectedTestScripts": {
+      "count": 8,
+      "sha256": "39f5aaca0d43686d2a75ec5d1a518c496bf7bcb75226a443d1cfad0f85977809",
+      "formula": "SHA256(JSON.stringify([path,SHA256(bytes)] rows in command order))",
+      "paths": [
+        "tests/legacy-skill-lifecycle.test.mjs",
+        "tests/legacy-skill-lifecycle-native.test.mjs",
+        "tests/legacy-skill-source.test.mjs",
+        "tests/legacy-skill-source-native.test.mjs",
+        "tests/host-composition-legacy-skill-source-transport.test.mjs",
+        "tests/host-composition-legacy-skill-source-backup.test.mjs",
+        "tests/host-composition-legacy-batch15-transport.test.mjs",
+        "tests/host-composition-legacy-batch15-backup.test.mjs"
+      ]
+    },
+    "scope": "Bounded old install -> bridge -> new source install/remove/reinstall, restart, two restores, old retry/new remove/rebackup and tamper/fault scenarios. Not broad legacy/all-target qualification or full acceptance."
+  },
+  "sourceBoundFixedPoint": {
+    "command": "node scripts/qualify-legacy-regression-fixedpoint.mjs",
+    "fixedPoint": "stable",
+    "orderedGeneration": [
+      "tests/legacy-regression-oracle.test.mjs",
+      "tests/legacy-regression-batch12.test.mjs",
+      "tests/legacy-read-race.test.mjs"
+    ],
+    "concurrentInvocations": [
+      {
+        "command": "node --test --test-concurrency=4 tests/legacy-regression-oracle.test.mjs tests/legacy-regression-batch12.test.mjs tests/legacy-read-race.test.mjs",
+        "tests": 32,
+        "passed": 32,
+        "failed": 0
+      },
+      {
+        "command": "node --test --test-concurrency=4 tests/legacy-regression-oracle.test.mjs tests/legacy-regression-batch12.test.mjs tests/legacy-read-race.test.mjs",
+        "tests": 32,
+        "passed": 32,
+        "failed": 0
+      }
+    ],
+    "reports": [
+      {
+        "path": "tests/legacy-regression-oracle.report.json",
+        "sha256": "b586326dc9c0fc09567aeb0ff6e465b0f32df364a51a049c0aff03a4d90d1260"
+      },
+      {
+        "path": "tests/legacy-regression-batch12.report.json",
+        "sha256": "6f0fb0c821a6e4629fb315015fbddcf9657928a7ea69217cce0271475d7e8f37"
+      },
+      {
+        "path": "tests/legacy-read-race.report.json",
+        "sha256": "05a1731a9f666bdf7682f5359a8f14a3d883f94de79496db0844ec1a442e0cee"
+      }
+    ],
+    "sourceMaps": {
+      "originalOracle": {
+        "aggregateSha256": "8e43481db2946569a1ffc07f4cf9b6e3016108ce9cb235e8a62112c154f74a92",
+        "nativeSourceCount": 18,
+        "originalSourceCount": 5
+      },
+      "batch12": {
+        "aggregateSha256": "7445143c26fb8a130d66053b9177805f73a62d9b8bdcdd0c612c9a36e7a3155e",
+        "nativeSourceCount": 32,
+        "originalSourceCount": 10
+      },
+      "readRace": {
+        "sourceMapCount": 26,
+        "oracleReportSha256": "b586326dc9c0fc09567aeb0ff6e465b0f32df364a51a049c0aff03a4d90d1260",
+        "batch12ReportSha256": "6f0fb0c821a6e4629fb315015fbddcf9657928a7ea69217cce0271475d7e8f37"
+      }
+    }
+  },
+  "provenanceQualification": {
+    "captureCheckCommand": "node <script> --check",
+    "captureCheckScripts": [
+      "scripts/capture-agent-runtime.mjs",
+      "scripts/capture-channel-runtime.mjs",
+      "scripts/capture-coding-worker.mjs",
+      "scripts/capture-collaboration-state.mjs",
+      "scripts/capture-compute.mjs",
+      "scripts/capture-document-lifecycle.mjs",
+      "scripts/capture-knowledge-index.mjs",
+      "scripts/capture-knowledge-mutations.mjs",
+      "scripts/capture-legacy-state-import-native.mjs",
+      "scripts/capture-manager-chat.mjs",
+      "scripts/capture-manager-runtime.mjs",
+      "scripts/capture-model-config.mjs",
+      "scripts/capture-native-qualification.mjs",
+      "scripts/capture-project-recipes.mjs",
+      "scripts/capture-retrieval-learning.mjs",
+      "scripts/capture-runtime-process.mjs",
+      "scripts/capture-sync-apply.mjs",
+      "scripts/capture-sync-plans.mjs",
+      "scripts/capture-sync-transport.mjs",
+      "scripts/capture-workflow-compiler.mjs",
+      "scripts/capture-workflow-executor.mjs"
+    ],
+    "captureCheckCount": 21,
+    "captureIssues": 0,
+    "regularFilesSnapshotted": 723,
+    "snapshotCountChange": "The failed parent standard full runner deleted migration/verification.json; the successful standard retry recreated current fingerprint-bound verification evidence.",
+    "snapshotScope": [
+      "src",
+      "migration",
+      "scripts",
+      "tests"
+    ],
+    "bytesModeMtimeNsPreserved": true,
+    "currentCaptureRecords": 233,
+    "currentOriginalSourceReferences": 33,
+    "currentNativeRecords": 351,
+    "nativeQualificationExactPins": 259,
+    "nativeQualificationSha256": "71c446f0ff6c13f745b6ede196f77c5c3b543e80801b844b31271e168cead076",
+    "readinessAndProvenanceTests": {
+      "command": "node --test --test-concurrency=4 tests/migration.test.mjs tests/readiness.test.mjs tests/provenance-readonly.test.mjs",
+      "tests": 20,
+      "passed": 20,
+      "failed": 0,
+      "extraActualCatalogTest": {
+        "command": "node --test tests/legacy-classification-command.test.mjs",
+        "tests": 27,
+        "passed": 27,
+        "failed": 0
+      }
+    },
+    "readinessContract": {
+      "catalogCount": 216,
+      "batch22Operation": {
+        "id": "legacy.skill.source.bridge",
+        "version": 1,
+        "readOnly": false
+      },
+      "status": "blocked",
+      "blockers": 610,
+      "acceptedWorkstreams": 0,
+      "totalWorkstreams": 21,
+      "readyForCutoverReview": false
+    }
+  },
+  "selectedDetailBrowserRecovery": {
+    "authorization": "Parent authorized exactly one Python test-helper identity wait and requalification of its native pin, with no product, TypeScript, JavaScript-module, capture script, I/O baseline or I/O report changes.",
+    "file": "tests/batch09-client-browser.py",
+    "oldSha256": "5dca8aa8f27e1c4a60a737464dbc53366f92e1b59219e2ad16e483cf6175c10b",
+    "newSha256": "7a973c70d3c1b67fd3de305f36fd70180055c90c734dfc8e5d3a53e0cf3bbcf1",
+    "change": "After clicking the entry, await expect(lifecycle.get_by_role('heading', name=title + ' ·', exact=False)).to_be_visible() before using the generic editor.",
+    "literalUnsafeContentAssertionPreserved": true,
+    "independentBrowserRun": {
+      "command": "node --test next-server/tests/batch09-client-browser.test.mjs",
+      "browser": "real Chromium",
+      "tests": 1,
+      "passed": 1,
+      "failed": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "durationMilliseconds": 11147.33744
+    },
+    "parentUnmodifiedReproductionLogs": [
+      {
+        "path": "/home/yuwang8/.copilot/session-state/e2f4371d-5c23-4631-b0fe-a18ef337421f/files/batch22-browser-failure-repro.log",
+        "sha256": "c4ebeb15c480f7a4d15006e271efeae7c148f1d2560046814ca63c804e6f7d69"
+      },
+      {
+        "path": "/home/yuwang8/.copilot/session-state/e2f4371d-5c23-4631-b0fe-a18ef337421f/files/batch22-browser-concurrent-repro.log",
+        "sha256": "25eea31e7709e6c09482a74b4ddda41c449f3c9f22bfbcd7aec198abee5bb68b"
+      }
+    ],
+    "parentCorrectedConcurrentBrowserLog": {
+      "path": "/home/yuwang8/.copilot/session-state/e2f4371d-5c23-4631-b0fe-a18ef337421f/files/batch22-browser-selected-detail.log",
+      "sha256": "898a09ac23ea1deff30631ddbc8da070c04d813438745bd4b58fdd105bef3551"
+    },
+    "ioFingerprintVerification": {
+      "formula": "Existing fingerprint() in storage-io-fault.test.mjs: sorted src/dist files, test .mjs excluding report/observations, script .mjs, package.json/package-lock.json/tsconfig.json; test Python files are not inputs.",
+      "inputs": 957,
+      "pythonIncluded": false,
+      "completeCurrentInputMapMatchesFrozenReport": true,
+      "sha256": "008e072b6d43e2faab8fecfb0743622ac77d099caed71c41eb7daaf3e8aa8f53",
+      "ioRebindPerformed": false,
+      "ioRebindRequiredByThisPythonOnlyEdit": false
+    },
+    "nativeSourceAndEightFunctionalSelectorsUnchanged": true,
+    "successfulFullBaselineStillPending": false
+  },
+  "storageIoQualification": {
+    "status": "current-bounded-domain-matrix-qualified",
+    "authorization": "Parent explicitly authorized the final I/O-owner freeze and current functional refresh; no files outside the approved functionalRegression metadata/report and generated storage-I/O evidence were changed by the I/O owner.",
+    "databaseSchema": 23,
+    "command": "cd next-server && PKM_STORAGE_IO_FAULT_SAVE=1 PKM_STORAGE_IO_FAULT_REPEAT=1 node --test-concurrency=4 --test tests/storage-io-fault.test.mjs",
+    "repeatRuns": 2,
+    "casesPerRun": 28,
+    "passedCasesPerRun": 28,
+    "recognizedRecoveriesPerRun": 24,
+    "tamperDenialsPerRun": 4,
+    "blockedRecoveriesPerRun": 0,
+    "zeroFilesystemReceiptRetriesPerRun": 48,
+    "repeatOutputsNormalizedByteIdentical": true,
+    "repeatDurationMilliseconds": 94510.607138,
+    "plainNoSaveCommand": "cd next-server && env -u PKM_STORAGE_IO_FAULT_SAVE -u PKM_STORAGE_IO_FAULT_REPEAT node --test-concurrency=4 --test tests/storage-io-fault.test.mjs",
+    "plainNoSaveCases": 28,
+    "plainNoSavePassed": 28,
+    "plainNoSaveDurationMilliseconds": 47381.684903,
+    "coveredInputFilesUnchanged": 957,
+    "reportAndObservationsAlsoUnchangedDuringNoSaveRun": true,
+    "totalFilesByteHashPreservedDuringNoSaveRun": 959,
+    "sourceFingerprint": "008e072b6d43e2faab8fecfb0743622ac77d099caed71c41eb7daaf3e8aa8f53",
+    "artifacts": {
+      "report": {
+        "path": "tests/storage-io-fault-report.mjs",
+        "sha256": "4a0b4cb0580d75c14422685984388117f650ad2c28a65bb0709ff4b71f5bc4a9"
+      },
+      "observations": {
+        "path": "tests/storage-io-fault-observations.mjs",
+        "sha256": "25f9db019fdec2f7956fd4c7c2384dd734d3a513d3308ffa785c9f12742179e3"
+      },
+      "baseline": {
+        "path": "tests/storage-io-fault-baseline.mjs",
+        "sha256": "7dbae1d67d0e0022642d5cf4cf9dbdc333c5c94c944b107edb371f6e664e294a"
+      },
+      "test": {
+        "path": "tests/storage-io-fault.test.mjs",
+        "sha256": "d5a0c9a1ed73f1584201c9c355ac3d7e43ab21c4b91232ea6239303706e188f8"
+      }
+    },
+    "measurements": {
+      "maxRequestMilliseconds": 39.784967,
+      "maxRecoveryOpenMilliseconds": 523.466961,
+      "maxCloseMilliseconds": 63.23208,
+      "maxPeakRssBytes": 250445824,
+      "maxActiveFileDescriptors": 45,
+      "maxFixtureBytes": 976283,
+      "maxFixtureFiles": 10,
+      "approvedSlo": false
+    },
+    "scope": "Document, Upload, Resource and Project only. No Skill, memory, engine, physical power-loss, production, native-authority, performance-SLO, workstream-acceptance, or cutover qualification."
+  },
+  "limitations": [
+    "Only one source version/target and the INSTALLED old head are supported; direct bridging from a removed genesis is unsupported.",
+    "The bridge is not a general installer or all-target legacy compatibility claim. Recognized bundled leaves remain rejected, and custom-source preservation is limited to the tested case.",
+    "No engine faults, Skill power-loss durability, hostile external-writer exclusion, OS-level locking, production authority, real-root usage, model/network/credential access, or cutover is qualified.",
+    "Current full verification passed 1404 tests; Batch21's 1393-test baseline remains stale and retained only in its historical report. Full verification does not grant original-suite parity or acceptance.",
+    "All 21 workstreams remain unaccepted; readiness remains blocked and cutover is unauthorized."
+  ]
+}

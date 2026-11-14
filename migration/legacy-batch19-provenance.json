@@ -1,0 +1,42 @@
+{
+  "schema": "pkm.original-source-references/v1",
+  "scope": "Batch19 actual original-writer disposable-fixture oracles for preview/apply/rollback, Markdown, Script import/identity, binary sidecars, privacy and ProjectStore fixture creation. Exact original source references only, not new captured-code copies or general parity. New original-compatible command, host and backup wrappers are separately native-pinned.",
+  "originalSources": [
+    {
+      "path": "src/knowledge/asset-classification.ts",
+      "sha256": "862d3566db8a8bd45b670ba2e5ed3de2ce0570693f92f0730249add8d19e7523",
+      "role": "Actual original previewAssetClassification/applyAssetClassification/rollbackAssetClassification oracle"
+    },
+    {
+      "path": "src/knowledge/filestore.ts",
+      "sha256": "c5c3a9761562818529a00aedb96aef254bef34dc80a4ed31f31efd39bc7a97a5",
+      "historicalSha256": "b0c369ae16a56772fe5ea7f704919f32dc58f3192ddac790ff59987b391ceeab",
+      "role": "Actual original writeKnowledgeMarkdown fixture writer"
+    },
+    {
+      "path": "src/knowledge/storage.ts",
+      "sha256": "a1a6be3f373ce0d89f8ecbe7b51d30e7c773621fd0bccfc234a0b6ce6c27b55d",
+      "role": "Actual original scriptImport/scriptGet fixture writer and reader"
+    },
+    {
+      "path": "src/knowledge/markdown-assets.ts",
+      "sha256": "3efa04f06f6b5fd7e649874d031e0ddb8a6ff4f33182747135c6601658922741",
+      "role": "Actual original saveMarkdownAsset binary sidecar fixture writer"
+    },
+    {
+      "path": "src/knowledge/content-privacy.ts",
+      "sha256": "3f609926211c2a33344b090dc8877531ca26916431779d818df64b28a426a40b",
+      "role": "Actual original setTopLevelPrivacy fixture writer"
+    },
+    {
+      "path": "src/workflows/project-store.ts",
+      "sha256": "a88568af85c6cbf714cc8c9efcfb641da12502df888b4c6dd9e4b7e24dacc010",
+      "role": "Actual original ProjectStore.createProject fixture writer and opaque history oracle"
+    },
+    {
+      "path": "src/sync/github-sync-script-identity.ts",
+      "sha256": "cb4a8fbe28d08ffc1dd018cd788bc3c61c61ae9bddf1919acc16348d36bf8fbb",
+      "role": "Original Script identity supporting source"
+    }
+  ]
+}

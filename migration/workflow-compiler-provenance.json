@@ -1,0 +1,72 @@
+{
+  "schema": "pkm.domain-capture/v1",
+  "transformation": "AST capture of original catalog descriptor/registry reads and Recipe binding normalization; original compiler regression with embedded original JSON fixtures and ESM import rewrites. Reuses project-recipes compiler/value captures unchanged. Host compiler artifact installer, execution, natural-language generation, publication and run lifecycle mutations are intentionally excluded.",
+  "files": [
+    {
+      "source": "src/workflows/catalog-model.ts",
+      "captured": "src/domain/workflow-compiler-catalog.ts",
+      "sourceSha256": "ae0d7594d07d4dc633fa025ea918124a3fd4de16103358a5fa93172641b19c5d",
+      "capturedSha256": "2d8591b1d62131fa8da9fdf9454fdb5ed900a015424363bc4d28f4d4300b644e"
+    },
+    {
+      "source": "src/workflows/project-model.ts",
+      "captured": "src/domain/workflow-compiler-bindings.ts",
+      "sourceSha256": "505f56e2351a9f173268007990eaf02f1014abe0dc4f722b12a8f6aa81c94195",
+      "capturedSha256": "f3e9430196bc2d9c7be15cab566c736aed0b6045c2b8cd419a43bcaafb3ecb16"
+    },
+    {
+      "source": "tests/test-workflow-contracts.js",
+      "captured": "tests/workflow-compiler-original.test.mjs",
+      "sourceSha256": "9d743fddab397bfe49054f2d194f985d35f4e3f3e1d1eb86c8b8719cd116f4fc",
+      "capturedSha256": "e503b33da880064b4737296410fc68e6de756db3e2ad70ec0d82df0e99b3173a"
+    },
+    {
+      "source": "resources/workflow-contracts/v1/definition.schema.json",
+      "captured": "tests/workflow-compiler-original.test.mjs",
+      "sourceSha256": "e9971b6c62ca591d66854deda1dc00ad8eb88a98afe5e6c69cffc06badcc9a1c",
+      "capturedSha256": "e503b33da880064b4737296410fc68e6de756db3e2ad70ec0d82df0e99b3173a"
+    },
+    {
+      "source": "resources/workflow-contracts/v1/canonical-order.json",
+      "captured": "tests/workflow-compiler-original.test.mjs",
+      "sourceSha256": "afa30234adabbe058afaa61f8711a54307b6b66b17a26fe1529c17dbe2a9973d",
+      "capturedSha256": "e503b33da880064b4737296410fc68e6de756db3e2ad70ec0d82df0e99b3173a"
+    },
+    {
+      "source": "resources/workflow-contracts/v1/diagnostics.json",
+      "captured": "tests/workflow-compiler-original.test.mjs",
+      "sourceSha256": "0e69b2c06dc623f530d4dda511f7590bb02b0af60679dd3bde0c5c91dcd1141f",
+      "capturedSha256": "e503b33da880064b4737296410fc68e6de756db3e2ad70ec0d82df0e99b3173a"
+    },
+    {
+      "source": "resources/workflow-contracts/v1/yaml-profile.json",
+      "captured": "tests/workflow-compiler-original.test.mjs",
+      "sourceSha256": "1cac589a828d0008161887ae10cb8041151c1a023ab0a36d117676219285b9a8",
+      "capturedSha256": "e503b33da880064b4737296410fc68e6de756db3e2ad70ec0d82df0e99b3173a"
+    },
+    {
+      "source": "resources/workflow-contracts/v1/fixtures/minimal-noop.json",
+      "captured": "tests/workflow-compiler-original.test.mjs",
+      "sourceSha256": "2b635f5b07246fb26ac23ce902919d03db21a0ba7fa133592c302b342dca8d05",
+      "capturedSha256": "e503b33da880064b4737296410fc68e6de756db3e2ad70ec0d82df0e99b3173a"
+    },
+    {
+      "source": "resources/workflow-contracts/v1/fixtures/rejected-duplicates.json",
+      "captured": "tests/workflow-compiler-original.test.mjs",
+      "sourceSha256": "fe39dfc0d9ac704274db165f54b8a1f75afc09e5fffe188e7af3330eeb7248de",
+      "capturedSha256": "e503b33da880064b4737296410fc68e6de756db3e2ad70ec0d82df0e99b3173a"
+    },
+    {
+      "source": "src/workflows/workflow-contracts.ts",
+      "captured": "src/domain/project-recipes-workflow-contracts.ts",
+      "sourceSha256": "35ea492ddd87ff604a581387afc6ea5b56c3e4fd3135d6d1dceb2c6af53dada8",
+      "capturedSha256": "2acb518a29a3bb64582b5f0fbbfee66f8285379d09c45126c45d6cb577de450a"
+    },
+    {
+      "source": "src/workflows/value-contracts.ts",
+      "captured": "src/domain/project-recipes-value-contracts.ts",
+      "sourceSha256": "e6d44457433b9e931878ca530168bd51322589733a601431852fcf7609cccd52",
+      "capturedSha256": "8ddf3816394b6e643dfcd335360ce7007c3cdc2c16d66e8c2f60bec56a9e1580"
+    }
+  ]
+}

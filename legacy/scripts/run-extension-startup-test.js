@@ -1,0 +1,268 @@
+#!/usr/bin/env node
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { execFileSync, spawn, spawnSync } = require("child_process");
+const { runTests } = require("@vscode/test-electron");
+const { stopFixtureServices } = require("./stop-fixture-services");
+
+async function main() {
+  const suiteStartedAt = Date.now();
+  let phase = "preparing startup fixtures";
+  const heartbeat = setInterval(() => {
+    console.log(`[extension-startup] running · ${phase} · ${Math.round((Date.now() - suiteStartedAt) / 1000)}s elapsed`);
+  }, 15_000);
+  heartbeat.unref();
+  console.log(`[extension-startup] phase=${phase}`);
+  const root = path.resolve(__dirname, "..");
+  const requestedScenario = String(process.env.PKM_STARTUP_ONLY || "").trim();
+  const scenarioBudgetMs = Number(process.env.PKM_STARTUP_SCENARIO_BUDGET_MS || 15_000);
+  const syntheticNoteCount = Number(process.env.PKM_STARTUP_NOTE_COUNT || 0);
+  if (!Number.isFinite(scenarioBudgetMs) || scenarioBudgetMs < 1) {
+    throw new Error("PKM_STARTUP_SCENARIO_BUDGET_MS must be a positive number");
+  }
+  if (!Number.isSafeInteger(syntheticNoteCount) || syntheticNoteCount < 0 || syntheticNoteCount > 20_000) {
+    throw new Error("PKM_STARTUP_NOTE_COUNT must be an integer between 0 and 20000");
+  }
+  const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-startup-"));
+  const userDataDir = path.join(testRoot, "user-data");
+  const workspaceDir = path.join(testRoot, "workspace");
+  const storeDir = path.join(testRoot, "knowledge");
+  const homeDir = path.join(testRoot, "home");
+  const settingsDir = path.join(userDataDir, "User");
+  const logPath = path.join(userDataDir, "User", "globalStorage", "uone.personal-knowledge", "diagnostics", "extension");
+
+  fs.mkdirSync(settingsDir, { recursive: true });
+  fs.mkdirSync(workspaceDir, { recursive: true });
+  fs.mkdirSync(storeDir, { recursive: true });
+  fs.mkdirSync(homeDir, { recursive: true });
+  const navigationNoteDir = path.join(storeDir, "notes", "Project", "AAGL_Improvement", "Module Optimizer", "LP Processor");
+  fs.mkdirSync(navigationNoteDir, { recursive: true });
+  fs.writeFileSync(path.join(navigationNoteDir, "progress.md.md"), [
+    "---",
+    'title: "LPFeatureProcessor v1.1 Optimization Progress"',
+    'type: "general"',
+    "---",
+    "fixture",
+  ].join("\n"));
+  const syntheticFolders = new Map();
+  const syntheticNoteTime = new Date("2020-01-01T00:00:00Z");
+  for (let index = 0; index < syntheticNoteCount; index++) {
+    const folder = `Synthetic/Group-${String(Math.floor(index / 100)).padStart(3, "0")}`;
+    let directory = syntheticFolders.get(folder);
+    if (!directory) {
+      directory = path.join(storeDir, "notes", folder);
+      fs.mkdirSync(directory, { recursive: true });
+      syntheticFolders.set(folder, directory);
+    }
+    const file = path.join(directory, `note-${String(index).padStart(6, "0")}.md`);
+    fs.writeFileSync(file, `---\ntitle: "Synthetic Note ${index}"\ntype: "general"\n---\nfixture ${index}\n`);
+    fs.utimesSync(file, syntheticNoteTime, syntheticNoteTime);
+  }
+  phase = "packaging extension fixture";
+  const packageStartedAt = Date.now();
+  const packagedExtensionPath = packageExtension(root, testRoot);
+  const packageDurationMs = Date.now() - packageStartedAt;
+  console.log(`[extension-startup] fixture packaged · ${packageDurationMs}ms`);
+  phase = "starting virtual display";
+  const virtualDisplay = await startVirtualDisplay(root);
+  const scenarioTimings = [];
+  try {
+    const scenarios = [
+      { name: "clean-install", openPanel: true },
+      { name: "persisted-upgrade", openPanel: false },
+      { name: "offline", openPanel: false, offline: true },
+      { name: "malformed-state", openPanel: false, malformed: true },
+      { name: "repeated-reload", openPanel: false },
+    ].filter(scenario => !requestedScenario || scenario.name === requestedScenario);
+    if (!scenarios.length) throw new Error(`Unknown PKM_STARTUP_ONLY scenario: ${requestedScenario}`);
+    for (const scenario of scenarios) {
+      phase = `scenario ${scenario.name}`;
+      const scenarioStartedAt = Date.now();
+      console.log(`[extension-startup] scenario=${scenario.name} started`);
+      const performanceRoot = path.join(userDataDir, "User", "globalStorage", "uone.personal-knowledge", "performance");
+      const settingsPath = path.join(settingsDir, "settings.json");
+      const settings = fs.existsSync(settingsPath) ? JSON.parse(fs.readFileSync(settingsPath, "utf8")) : {};
+      Object.assign(settings, {
+        "personalKnowledge.storePath": storeDir,
+        "personalKnowledge.openOnStartup": scenario.openPanel,
+        "personalKnowledge.logLevel": "debug",
+      });
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+      if (scenario.malformed) injectMalformedState(userDataDir);
+      const performanceSamplesBefore = scenario.malformed ? {} : readPerformanceSamples(performanceRoot);
+      fs.rmSync(logPath, { recursive: true, force: true });
+      const resultPath = path.join(testRoot, `startup-result-${scenario.name}.json`);
+      await runTests({
+        version: "1.90.0",
+        cachePath: require("../tests/dev-paths").vscodeTestCache,
+        extensionDevelopmentPath: packagedExtensionPath,
+        extensionTestsPath: path.join(root, "tests", "extension-startup"),
+        extensionTestsEnv: {
+          HOME: homeDir,
+          USERPROFILE: homeDir,
+          XDG_CONFIG_HOME: path.join(homeDir, ".config"),
+          XDG_DATA_HOME: path.join(homeDir, ".local", "share"),
+          DISPLAY: virtualDisplay?.display || process.env.DISPLAY,
+          PKM_STARTUP_STORE_PATH: storeDir,
+          PKM_STARTUP_LOG_PATH: logPath,
+          PKM_STARTUP_RESULT_PATH: resultPath,
+          PKM_STARTUP_SCENARIO: scenario.name,
+          PKM_STARTUP_EXPECT_PANEL: String(scenario.openPanel),
+          ...(scenario.offline ? {
+            HTTP_PROXY: "http://127.0.0.1:9",
+            HTTPS_PROXY: "http://127.0.0.1:9",
+            ALL_PROXY: "http://127.0.0.1:9",
+            NO_PROXY: "",
+          } : {}),
+        },
+        launchArgs: [
+          workspaceDir,
+          `--user-data-dir=${userDataDir}`,
+          `--extensions-dir=${path.join(testRoot, "extensions")}`,
+          "--disable-extensions",
+          "--disable-gpu",
+        ],
+      });
+      assertStartupResult(resultPath, scenario.name, performanceRoot, performanceSamplesBefore, scenario.openPanel);
+      const durationMs = Date.now() - scenarioStartedAt;
+      scenarioTimings.push({ name:scenario.name, durationMs });
+      console.log(`[extension-startup] scenario=${scenario.name} completed · ${durationMs}ms`);
+      if (durationMs > scenarioBudgetMs) {
+        throw new Error(`Startup scenario ${scenario.name} exceeded its ${scenarioBudgetMs}ms budget (${durationMs}ms)`);
+      }
+    }
+    console.log(`[extension-startup] summary ${scenarioTimings.map(timing => `${timing.name}=${timing.durationMs}ms`).join(" · ")}`);
+    console.log(`[extension-startup] summary-json=${JSON.stringify({
+      schema: "pkm.browser-suite-timing/v1",
+      suite: "extension-startup",
+      packageMs: packageDurationMs,
+      syntheticNoteCount,
+      scenarioBudgetMs,
+      scenarios: scenarioTimings,
+      durationMs: Date.now() - suiteStartedAt,
+    })}`);
+  } catch (error) {
+    if (fs.existsSync(logPath)) {
+      const lines = fs.readdirSync(logPath).filter(name => name.endsWith(".jsonl")).sort()
+        .flatMap(name => fs.readFileSync(path.join(logPath, name), "utf8").split(/\r?\n/));
+      console.error("[extension-startup] failure log:\n" + lines.slice(-80).join("\n"));
+    }
+    throw error;
+  } finally {
+    clearInterval(heartbeat);
+    try {
+      await stopFixtureServices({
+        fixtureRoot: testRoot, extensionRoot: packagedExtensionPath,
+        storage: path.join(userDataDir, "User", "globalStorage", "uone.personal-knowledge"),
+        knowledge: storeDir, home: homeDir,
+      });
+      await removeFixtureTree(testRoot);
+    } finally { virtualDisplay?.process.kill("SIGTERM"); }
+  }
+}
+
+async function removeFixtureTree(directory) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      fs.rmSync(directory, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (!["ENOTEMPTY", "EBUSY"].includes(error.code) || attempt === 4) throw error;
+      await new Promise(resolve => setTimeout(resolve, 100 * (attempt + 1)));
+    }
+  }
+}
+
+function injectMalformedState(userDataDir) {
+  const stateRoot = path.join(userDataDir, "User", "globalStorage", "uone.personal-knowledge");
+  for (const relative of ["performance/metrics.json", "inventory/manifest.json", "subscriptions/subscriptions.json"]) {
+    const target = path.join(stateRoot, relative);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, "{malformed-state");
+  }
+}
+
+function packageExtension(root, testRoot) {
+  const vsixPath = path.join(testRoot, "personal-knowledge.vsix");
+  execFileSync("npx", ["vsce", "package", "--out", vsixPath], { cwd: root, stdio: "pipe" });
+  execFileSync("unzip", ["-q", vsixPath, "-d", testRoot]);
+  const extensionPath = path.join(testRoot, "extension");
+  if (!fs.existsSync(path.join(extensionPath, "dist", "extension.js"))) {
+    throw new Error("Packaged extension is missing dist/extension.js");
+  }
+  if (fs.existsSync(path.join(extensionPath, "node_modules", "ipaddr.js"))) {
+    throw new Error("Startup test must not rely on a packaged ipaddr.js dependency");
+  }
+  return extensionPath;
+}
+
+async function startVirtualDisplay(root) {
+  if (process.env.DISPLAY) return null;
+  const bundled = path.join(require("../tests/dev-paths").vscodeTestCache, "tools", "xvfb", "usr", "bin", "Xvfb");
+  const system = spawnSync("which", ["Xvfb"], { encoding: "utf8" }).stdout.trim();
+  const executable = fs.existsSync(bundled) ? bundled : system;
+  if (!executable) throw new Error("Extension startup tests require DISPLAY or Xvfb. Install xvfb before running the release gate.");
+
+  const displayNumber = Array.from({ length: 20 }, (_, index) => 90 + index)
+    .find(number => !fs.existsSync(`/tmp/.X11-unix/X${number}`));
+  if (displayNumber === undefined) throw new Error("No free X display number is available for the startup test");
+  const display = `:${displayNumber}`;
+  const child = spawn(executable, [display, "-screen", "0", "1280x800x24", "-nolisten", "tcp"], { stdio: "pipe" });
+  let stderr = "";
+  child.stderr.on("data", chunk => { stderr += chunk.toString(); });
+  const socketPath = `/tmp/.X11-unix/X${displayNumber}`;
+  const deadline = Date.now() + 5000;
+  while (!fs.existsSync(socketPath)) {
+    if (child.exitCode !== null) {
+      throw new Error(`Xvfb exited before startup: ${stderr.trim()}`);
+    }
+    if (Date.now() >= deadline) {
+      child.kill("SIGTERM");
+      throw new Error("Timed out starting Xvfb for the extension startup test");
+    }
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  return { display, process: child };
+}
+
+function assertStartupResult(resultPath, scenario, performanceRoot, samplesBefore, panelExpected) {
+  if (!fs.existsSync(resultPath)) throw new Error("VS Code exited without running the startup assertions");
+  const result = JSON.parse(fs.readFileSync(resultPath, "utf8"));
+  const required = ["activated", "commandsRegistered", "panelExpectationMet", "deepNavigationNoteVisible"];
+  for (const key of required) {
+    if (result[key] !== true) throw new Error(`Startup assertion did not pass: ${key}`);
+  }
+  if (!Number.isFinite(result.activationDurationMs)) throw new Error("Startup assertion did not report activationDurationMs");
+  const metricsPath = path.join(performanceRoot, "metrics.json");
+  if (!fs.existsSync(metricsPath)) throw new Error("Startup assertion did not produce local performance metrics");
+  const metrics = JSON.parse(fs.readFileSync(metricsPath, "utf8"));
+  const latest = name => metrics[name]?.length > (samplesBefore[name] || 0) ? metrics[name].at(-1)?.value : undefined;
+  if (!Number.isFinite(latest("startup.activation_ms"))) throw new Error("Startup activation metric is missing");
+  if (panelExpected && !Number.isFinite(latest("startup.first_content_ms"))) {
+    throw new Error("Startup first-content metric is missing despite an open panel");
+  }
+  const timingNames = new Set(["startup.activation_ms", "startup.first_content_ms", "inventory.refresh_ms", "cattree.local_list_ms"]);
+  const phaseMetrics = Object.entries(metrics)
+    .filter(([name, samples]) => (name.startsWith("startup.phase.") || timingNames.has(name))
+      && samples.length > (samplesBefore[name] || 0))
+    .map(([name, samples]) => `${name.startsWith("startup.phase.") ? name.slice("startup.phase.".length, -3) : name}=${samples.at(-1).value}ms`)
+    .join(" · ");
+  const webview = result.webviewFirstPaintMs == null ? "" : `, panel HTML ${result.panelHtmlDurationMs}ms, script ${result.webviewScriptStartMs}ms, first paint ${result.webviewFirstPaintMs}ms`;
+  console.log(`Extension startup soak [${scenario}]: activation ${result.activationDurationMs}ms${webview}, phases ${phaseMetrics}, commands, state, and panel expectation OK`);
+}
+
+function readPerformanceSamples(performanceRoot) {
+  const metricsPath = path.join(performanceRoot, "metrics.json");
+  if (!fs.existsSync(metricsPath)) return {};
+  const metrics = JSON.parse(fs.readFileSync(metricsPath, "utf8"));
+  return Object.fromEntries(Object.entries(metrics).map(([name, samples]) => [name, samples.length]));
+}
+
+module.exports = { packageExtension, startVirtualDisplay };
+
+if (require.main === module) main().catch(error => {
+  console.error(`[extension-startup] failed after ${Math.round(process.uptime())}s`);
+  console.error("Extension startup test failed:", error);
+  process.exitCode = 1;
+});

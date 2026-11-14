@@ -1,0 +1,31 @@
+{
+  "schema": "pkm.domain-capture/v1",
+  "transformation": "The original graph's exact pinned/floating resolution rules and retrieval provider sourceRevision convention are adapted into a bounded next-server snapshot executor. Link definitions and snapshot construction are new adapter code; no legacy extension module is imported at runtime.",
+  "files": [
+    {
+      "source": "src/knowledge/link-graph.ts",
+      "captured": "src/domain/links.ts",
+      "sourceSha256": "03e24acfa97cb1eefa282e21d882ec3215e79c8520c1c2ed71ea55d73150619f",
+      "capturedSha256": "8b6a53a6430e0c206cdb1506c7496a433507699c1fe9cee47aab215871937c71"
+    },
+    {
+      "source": "src/retrieval/retrieval-snapshot.ts",
+      "captured": "src/links.ts",
+      "sourceSha256": "d0963b3f32c6c1e339035a66382bfb06d931ac128f0ccc2bfc3d57c7485b72f1",
+      "capturedSha256": "32ec06a7fc645426d34ee5b07e480acbd495fcf6dadc5de7df953ab755781b26"
+    },
+    {
+      "source": "tests/test-link-graph.js",
+      "captured": "tests/links.test.mjs",
+      "sourceSha256": "d743387c8e0ff3771d67719610545d1744e98e1214617671c3f5ad8a1c36b097",
+      "capturedSha256": "6e82bb1e931dca2e2b52faedfc072a25dd9bd5c68015f82b985a298eb6d3583c"
+    }
+  ],
+  "semantics": [
+    "Original sourceRevision selects the trimmed string form of metadata revision, otherwise SHA-256 of provider body; Paper provider body appends conclusions, implementation and assumptions with newlines.",
+    "The original retrieval index subsequently wraps that provider revision as <providerRevision>:<sha256(JSON.stringify(indexed document))>; this executor accepts the exact opaque provider token supplied by its Markdown adapter and does not fabricate the index-only suffix.",
+    "The original pure graph compares pinned targetRevision and node sourceRevision by exact string equality; floating links use the target in the current snapshot.",
+    "Snapshot collection pins are SHA-256 of JSON rows [documentId,path,whole-file SHA-256], sorted by UTF-8 path bytes. A new complete snapshot is required when any collection pin changes.",
+    "Notes, Skills, and Papers are the only indexed areas. Script, Project, external URL, alias, and title targets are intentionally unsupported."
+  ]
+}

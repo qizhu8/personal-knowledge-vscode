@@ -1,0 +1,31 @@
+{
+  "schema": "pkm.original-source-references/v1",
+  "scope": "Batch15 disposable-fixture source oracles reference the original Skill lifecycle writer, legacy Knowledge locator/storage readers, ProjectStore setup and Script identity resolver. These are hash-checked original-source references, not copied native implementation or full source/capture-pair claims. The separate asset-classification preview/apply/rollback helper ranges are not transport operations: original classification apply/rollback writing was unavailable and unregistered in Batch15; Batch16 strict native fixture behavior is distinct and not original parity.",
+  "originalSources": [
+    {
+      "path": "src/skills/pkm-skill-projection.ts",
+      "sha256": "521b2bb9652a6187d1a0673e13549f7d1a8b6060b475a83fa13fa728d5071100",
+      "role": "Original Skill inject/remove lifecycle writer exercised against disposable fixtures"
+    },
+    {
+      "path": "src/knowledge/knowledge-locator.ts",
+      "sha256": "3e31accb55ddc1ee35d8ac529d9dc9f0c9b50bbf1bbbbbc7765d7d7e757e6ec5",
+      "role": "Original legacy asset locator and root semantics"
+    },
+    {
+      "path": "src/knowledge/storage.ts",
+      "sha256": "a1a6be3f373ce0d89f8ecbe7b51d30e7c773621fd0bccfc234a0b6ce6c27b55d",
+      "role": "Original knowledge asset reader"
+    },
+    {
+      "path": "src/workflows/project-store.ts",
+      "sha256": "a88568af85c6cbf714cc8c9efcfb641da12502df888b4c6dd9e4b7e24dacc010",
+      "role": "Original ProjectStore writer used to create isolated project asset fixtures"
+    },
+    {
+      "path": "src/sync/github-sync-script-identity.ts",
+      "sha256": "cb4a8fbe28d08ffc1dd018cd788bc3c61c61ae9bddf1919acc16348d36bf8fbb",
+      "role": "Original Script identity resolver used by the source oracle"
+    }
+  ]
+}

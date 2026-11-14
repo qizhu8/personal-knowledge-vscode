@@ -1,0 +1,42 @@
+{
+  "schema": "pkm.domain-capture/v1",
+  "transformation": "AST capture of unchanged original folder rename/move/promote-delete/skill-trash/restore rules and the paired-resource reference rebase/shared-tree guards. Captured declarations are evidence only and are never executed.",
+  "files": [
+    {
+      "source": "src/knowledge/filestore.ts",
+      "captured": "src/domain/folder-lifecycle-original.ts",
+      "sourceSha256": "c5c3a9761562818529a00aedb96aef254bef34dc80a4ed31f31efd39bc7a97a5",
+      "capturedSha256": "7e7a1133822a5e8055233dce204acbe087db971e5d758fee173ac14148453084",
+      "declarations": [
+        "safeFolderOperationPath",
+        "folderRename",
+        "FolderDeleteOperations",
+        "FOLDER_DELETE_RETRY_DELAYS_MS",
+        "RETRYABLE_FOLDER_DELETE_ERRORS",
+        "folderDeletePromote",
+        "moveKnowledgePathUnlocked",
+        "repathFolderPins",
+        "knowledgeTrashPath",
+        "knowledgeMoveToTrashUnlocked",
+        "SkillTrashEntry",
+        "moveSkillPathToTrashUnlocked",
+        "skillFolderMoveToTrash",
+        "skillTrashRestoreUnlocked",
+        "skillTrashDelete",
+        "skillTrashEmpty"
+      ]
+    },
+    {
+      "source": "src/knowledge/markdown-assets.ts",
+      "captured": "src/domain/folder-lifecycle-original.ts",
+      "sourceSha256": "3efa04f06f6b5fd7e649874d031e0ddb8a6ff4f33182747135c6601658922741",
+      "capturedSha256": "7e7a1133822a5e8055233dce204acbe087db971e5d758fee173ac14148453084",
+      "declarations": [
+        "rebaseMarkdownAssets",
+        "assertMarkdownResourceTreeUnshared",
+        "markdownResourceReferrer"
+      ]
+    }
+  ],
+  "qualification": "Supports a bounded notes/skills/papers folder move only. Original container-delete promotion and recoverable skill Trash are captured but not exposed: a durable Trash/restore journal and its metadata/index lifecycle are not qualified. Permanent delete/empty-trash is intentionally absent. Legacy Notes pinned-folder sidecar entries are captured but are not changed because this isolated server has no authoritative folder-pin store; reconcile them through a dedicated state lifecycle before exposure. Parent must persist the exact serialized folder intent and hold the shared SQLite writer lock before apply/recovery, then atomically commit path/identity reindex, receipt and intent removal. External writers may still race source/reference checks; Linux RENAME_NOREPLACE prevents destination replacement."
+}

@@ -1,0 +1,48 @@
+{
+  "scope": "Current MCP bridge, filestore, reducers and tests; historicalSha256 preserves superseded source pins; no compatibility is inferred from names.",
+  "conditionalSupportSet": {
+    "authority": "Only policy-admitted byte-identical original-attached/native Board pairs. Pure pinned preflight does not grant authority or migrate inline Markdown.",
+    "commands": "Worker create, edit, claim, release, comment and transition only when original worker and native Board-agent pure preflight produce equivalent full Board effects and audit; native schemas, focus and CAS still apply.",
+    "upsert": "Fixed mcp:external create/edit only where the same preflight proves exact equivalence; reasonless edits and incompatible native creation shapes are unavailable.",
+    "results": "Full original {ok,digest,items} snapshots durably journaled under exact operation, actor and arguments; historical replay never rereads current state.",
+    "excluded": "Inline Markdown writes, worker tokens, acceptance, reopen, assign, delete, restore, legacy labels requiring user reconciliation, non-equivalent audit or metadata effects."
+  },
+  "sha256": {
+    "resources/knowledge_mutations.py": "a17e86d059b23132eaddcd3ab6222e7b909a4f4a1215c3e3ee6a8fbc0d2880f2",
+    "resources/knowledge_mutations.js": "3d087d458de580e30cc31b670ab657b00e938c2aead653766ded7c07a9124ba5",
+    "src/knowledge/filestore.ts": "c5c3a9761562818529a00aedb96aef254bef34dc80a4ed31f31efd39bc7a97a5",
+    "src/knowledge/note-work-items.ts": "64f39b26b1d115e92ed5fc1f31c81ef746baf325ea07689c2407449a66aab76e",
+    "src/knowledge/todo-board.ts": "8e90ec90b520d5d7fec2af92602660f9e5e0369e476a551095563623828f6558",
+    "src/knowledge/todo-api.ts": "721b02f042451418832d942bb98acc4360d17837e70a02542fd5fb70d947cb8b",
+    "src/knowledge/todo-api-contract.ts": "aa2b563f1c71c825f38a57b65cdacded3ae645dae3d6bad8a607779f833b63d9",
+    "tests/test-note-work-items.js": "25ad07cdf20931f54bceb65c9b6047466362ad71a8ba8ca591ea1867a015d780",
+    "tests/test-note-work-item-lifecycle.js": "ad3c9e359d7b958af35a4550b01c6a6019413a7052af380fedfa96f75fe32c08",
+    "tests/test-todo-api-mcp.py": "ca35fc4d71400a0e33b8e7679d8512281f79acdb0b307387549b7076cea88064"
+  },
+  "historicalSha256": {
+    "src/knowledge/filestore.ts": "b0c369ae16a56772fe5ea7f704919f32dc58f3192ddac790ff59987b391ceeab",
+    "src/knowledge/todo-api.ts": "61a737f270cb52838bd8171c40eaa9f096d4678d7a048a4414e17470f55a5a06",
+    "tests/test-note-work-item-lifecycle.js": "89f1de5274aef9d711df5e0c6e323b73a078bc7097269bf20d86504369765f11"
+  },
+  "implementationSha256": {
+    "src/legacy-note-workitems.ts": "00bfcd1f37e252675d1943560707654d767bc40427db2c10ea5cd0c2cc38c150",
+    "src/legacy-note-workitems-contracts.ts": "3d88a4ec942df4da526a320103061752307ddd4080e74c7190fcd391ec537877",
+    "src/legacy-note-workitems-journal.ts": "123fd8c2d919c7113211fe6c95e246a246f6c64db589e68ff30f509b79859768",
+    "src/legacy-note-workitems-admission.ts": "17c38035c5d8cb545abe3170373ee3352b1fac83560790adc231e3d401296f26",
+    "tests/legacy-note-workitems-bridge.test.mjs": "607a3f7354bb766fbe5bc3d95f3ab85a0ef08fcba29aca191351b418ed13f0f1",
+    "tests/legacy-note-workitems-journal.test.mjs": "ecde2b7fd76ddcb24e5b08db6ccf567cffc81f927a3d8a4e902a50d905bbc4fc"
+  },
+  "unsupported": {
+    "writes": "Only explicitly admitted byte-identical Board authority, a durable workspace-wide admission/recovery fence and a separately journaled full-snapshot receipt are supported. Inline Markdown, unadmitted Boards and non-equivalent effects remain unavailable; no implicit conversion.",
+    "workerTokens": "Native authenticated actor is not an original Board-scoped worker-token resolver.",
+    "discovery": "Canonical Note snapshot rejects some malformed documents globally rather than the original per-Note error row; such cases fail explicitly."
+  },
+  "requiredIntegrationSeams": [
+    "Register definitions and trusted native host in Core after binding host to the exact leased workspace.",
+    "Before serving any requests after restart, fence on legacy_note_workitems_intent; replay only its exact authenticated envelope through the canonical native operationId until its full-snapshot receipt is durable.",
+    "Bind original Note and native Board authority by reviewed pinned conversion and preserve original bytes/history; assert the binding during each fenced dispatch.",
+    "Route reads and discovery for admitted Boards to the journal's fenced current native Board snapshot, not the retained source backing; unadmitted Notes continue using the original read host.",
+    "Resolve original Board worker grants only through a trusted native authentication policy, never caller actor fields.",
+    "Use the existing native focus authority and durable recovery for every Board effect; do not silently migrate or claim unrelated work."
+  ]
+}

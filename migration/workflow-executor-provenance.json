@@ -1,0 +1,132 @@
+{
+  "schema": "pkm.domain-capture/v1",
+  "qualification": "bounded-native-injected-executor-not-full-scheduler-parity",
+  "transformation": "Original executor reducer and original regression suite with ESM import rewrite only. AST-selected original Action/Recipe reducers and real original regression methods are source evidence, not executed Python parity tests. Existing captured scheduler reducers govern offers, claims, leases, revocation and output authority. New SQLite executor uses explicit injected native adapters and exact host definition/source authorization; no public completion/result submission.",
+  "qualified": [
+    "dependency DAG",
+    "declared native branch verdicts",
+    "fixed repeat",
+    "bounded self-loop with native termination verdict",
+    "failure and cancellation closure",
+    "lease expiry fencing",
+    "committed start intent",
+    "no replay of interrupted running effects",
+    "exact adapter/output-contract pins",
+    "actor isolation",
+    "definition/source pins"
+  ],
+  "unavailable": [
+    "cron",
+    "multi-node loop bodies",
+    "dynamic repeats/cases",
+    "general expression evaluation",
+    "subflows",
+    "human gates",
+    "automatic process/tool/model adapters",
+    "run output mapping",
+    "distributed effect rollback",
+    "automatic effect retries",
+    "exact safe reconciliation",
+    "full original executor profile/attestation parity"
+  ],
+  "files": [
+    {
+      "source": "resources/action_run_store.py",
+      "captured": "src/domain/workflow-executor-action-source.ts",
+      "sourceSha256": "ae79232105b21940f0addc26f1fc28a125a158ec60af7558d374f3f16531c479",
+      "capturedSha256": "b5dea16a0d2c5849e318148f1d481c61b7ed9672029c8f3a10e9f69ebf9a6231"
+    },
+    {
+      "source": "resources/action_recovery.py",
+      "captured": "src/domain/workflow-executor-action-source.ts",
+      "sourceSha256": "7ff3d346e19964419001c4c1e8b642bfef5380596cd810f01a532c7d6573d5bc",
+      "capturedSha256": "b5dea16a0d2c5849e318148f1d481c61b7ed9672029c8f3a10e9f69ebf9a6231"
+    },
+    {
+      "source": "resources/recipe_runtime.py",
+      "captured": "src/domain/workflow-executor-action-source.ts",
+      "sourceSha256": "8fb3baf4e7f76a21cd953aa866fb402a8b5636e8d2afd8b3e009d9463645621c",
+      "capturedSha256": "b5dea16a0d2c5849e318148f1d481c61b7ed9672029c8f3a10e9f69ebf9a6231"
+    },
+    {
+      "source": "tests/test-action-durable-runs.py",
+      "captured": "src/domain/workflow-executor-action-source.ts",
+      "sourceSha256": "916ab840d38fe3c5a284f9b50ed5574707276568db0fa1dd38859c0edca6ed13",
+      "capturedSha256": "b5dea16a0d2c5849e318148f1d481c61b7ed9672029c8f3a10e9f69ebf9a6231"
+    },
+    {
+      "source": "tests/test-action-recovery-e2e.py",
+      "captured": "src/domain/workflow-executor-action-source.ts",
+      "sourceSha256": "b5ec03c48a760d185fb26c65628a10b1f7630dbce916effce83b2ae78c495db5",
+      "capturedSha256": "b5dea16a0d2c5849e318148f1d481c61b7ed9672029c8f3a10e9f69ebf9a6231"
+    },
+    {
+      "source": "src/workflows/executor-model.ts",
+      "captured": "src/domain/workflow-executor-original.ts",
+      "sourceSha256": "d65b001dc6d6a8427855d9870b68560e774e08daf082be6a2177b7f2bab61444",
+      "capturedSha256": "423018d1161cd57feb527c4f7ad34718e9bb86df3d40cbb15f3d28a6d01753e4"
+    },
+    {
+      "source": "tests/test-workflow-executor-model.js",
+      "captured": "tests/workflow-executor-original.test.mjs",
+      "sourceSha256": "4f88235d7d54ecea6f93e01bbd42c54d60ca19693a2c9b5db99c1db63f09a8b2",
+      "capturedSha256": "053997402fdaf3a00a48d7a4754764127d613eaf0f546ac0fe5cd22390d97314"
+    }
+  ],
+  "dependencies": [
+    {
+      "source": "src/workflows/scheduler-model.ts",
+      "sourceSha256": "ad5c786e3d23f5d51ff712117819da0a662eac7548c6e883dcab84daa39ac1d6"
+    },
+    {
+      "source": "src/workflows/control-model.ts",
+      "sourceSha256": "ac229ecc49c59d61dfc9e304f3d10953d0940d149460b115663b307d1bf7f884"
+    },
+    {
+      "source": "src/workflows/runtime-model.ts",
+      "sourceSha256": "d8a5b8decb449a3298ca0e3c4e874d1456e385232f6a6d5df86768aae00d77d6"
+    },
+    {
+      "source": "src/workflows/workflow-contracts.ts",
+      "sourceSha256": "35ea492ddd87ff604a581387afc6ea5b56c3e4fd3135d6d1dceb2c6af53dada8"
+    },
+    {
+      "source": "tests/test-workflow-scheduler-model.js",
+      "sourceSha256": "b4a14d5316deee9dbeb679116fe4038421e1b021e102f5e02b709c405f544f9a"
+    },
+    {
+      "source": "tests/test-workflow-control-model.js",
+      "sourceSha256": "da35923fcd013d212ffe58505e2dadcba81223e52738b2657d935ee21dc01915"
+    },
+    {
+      "source": "tests/test-workflow-runtime-model.js",
+      "sourceSha256": "06fc610838de48887442275ade75c061b6aa24373b17d5f96816421c10bb0e95"
+    }
+  ],
+  "native": [
+    {
+      "file": "src/workflow-executor.ts",
+      "sha256": "a578d2bf920169044b2c99477423dc38faf98d59239eec988bcd04111a16c498"
+    },
+    {
+      "file": "src/workflow-executor-contracts.ts",
+      "sha256": "30a60de0d2c37cf70904864b2871a98d061bd1aca6e774517206e43548e6ac59"
+    },
+    {
+      "file": "src/domain/workflow-executor-state.ts",
+      "sha256": "ddf9307f8ca58e7cffd43e57afa914ef2d5e51a54ac4cbc8f9e44d30993a1653"
+    },
+    {
+      "file": "tests/workflow-executor.test.mjs",
+      "sha256": "f574396aa1498760df3c0320dfd2b209f86d4e09d1b2acf22d7c5087879dc692"
+    },
+    {
+      "file": "tests/workflow-executor-fixtures.mjs",
+      "sha256": "a9fd5a62295f5c96cfbfb94f6fa67b41f4674661f715a534183407e591999dcd"
+    },
+    {
+      "file": "tests/workflow-executor-restart-child.mjs",
+      "sha256": "5bab94f6610690d7a56bc5cde666e1e54e9f7adca1ecb818f7bed54a316fe4e9"
+    }
+  ]
+}

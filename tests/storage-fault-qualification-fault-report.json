@@ -1,0 +1,61 @@
+{
+  "schema": "pkm.storage-fault-qualification/v1",
+  "node": "v22.23.1",
+  "sources": {
+    "src/storage.ts": "db7b1e04f6a960aa37cb7cb426da12a62d45b9defcfa204ceeee6a4872255c9d",
+    "src/storage-worker.ts": "1f5697cbf55bd31cf662ab860aaadb6d2e00099817d65905ca34f6473a2f77bc",
+    "src/markdown.ts": "f5fafffd6dbf10412651897554ad3688077a1dae28ef725befe97c8ca26011e0",
+    "src/workspace-backup.ts": "03cd9862d62a6274254212fac4d15a80a55bd5f11a1a137bc6e295293fcea42c",
+    "src/file-write.ts": "85a3b1430b476fa8cc2d5e567454603a4044bda7aa279a5b9f1c27a19f765d7d",
+    "dist/storage.js": "fd8ce8282755a45168178b96a3044de276a1001bded328e8fc31558ae40ccf23",
+    "dist/storage-worker.js": "e36a85b60e2bea8b6002c10067df9cf4745284f11404c6982dc5bbbc36cd39ad",
+    "dist/markdown.js": "48879727dc7a332fb3970263c6c89857bf1f6f3d7b9707edd06cb09272701f56",
+    "dist/workspace-backup.js": "4adadd712f34477053cb227933e38a4ff2940067b3601cca0c753a8dc0d0f5f4",
+    "dist/file-write.js": "6371af2bffbb321ed8a92b51804893626dd672853d7aca885d5b5d88c2bb523b",
+    "tests/storage-fault-qualification-child.mjs": "5469173ae12e8dd919daa41f5308200078abbc34883cfb94e7a3a87afb72fda3",
+    "tests/storage-fault-qualification.test.mjs": "9cdb4407c29d93cd60812fba325ffa094c69e0615ce03206f4a58b2568aac4a5"
+  },
+  "outcomes": [
+    {
+      "point": "dbcommit",
+      "outcome": "uncommitted-intent-absent"
+    },
+    {
+      "point": "write",
+      "outcome": "replayed-once",
+      "markdownSha256": "149fd84c237344d594880fc7a9aebb55c768ca063cd113c437db24a1487a1cac"
+    },
+    {
+      "point": "fsync",
+      "outcome": "replayed-once",
+      "markdownSha256": "41a78618001839ea144e7a605da1d4e307beaeee1b4683f8436d2a8fce3bab11"
+    },
+    {
+      "point": "rename",
+      "outcome": "replayed-once",
+      "markdownSha256": "d9c0fd5315037d89b10dc0e507de3831f51b0d25a4e6b07757795566eda11589"
+    },
+    {
+      "point": "receipt-close",
+      "outcome": "replayed-once",
+      "markdownSha256": "7f577a6b3417f996689fc35b7fb49c27265a19338c7cad1e737c2107ba48dfc1"
+    }
+  ],
+  "conflictPreservedSha256": "2ce9a80dae2aadede97e31067ea7ecb2a93319fdedeca4bb13b207016a6cc08b",
+  "backupRestore": "verified",
+  "assetSha256": "3d1f57c984978ef98a18378c8166c1cb8ede02c03eeb6aee7e2f121dfeee3e56",
+  "unknownPendingBackup": "refused-and-preserved",
+  "scope": "synthetic staged child boundaries and actual journal recovery; not production I/O hooks",
+  "exclusions": [
+    "physical power loss",
+    "production fsync/rename/commit fault injection",
+    "disk full",
+    "permissions",
+    "Todo",
+    "trash",
+    "folder move",
+    "Sync",
+    "coding worker pending effects"
+  ],
+  "readinessApproval": false
+}

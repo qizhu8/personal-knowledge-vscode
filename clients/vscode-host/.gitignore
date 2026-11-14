@@ -1,0 +1,4 @@
+dist/
+.electron-test-state-*/
+.live-electron-state-*/
+.e-*/

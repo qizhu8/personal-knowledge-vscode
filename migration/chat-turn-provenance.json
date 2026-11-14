@@ -1,0 +1,80 @@
+{
+  "schema": "pkm.next.domain-capture/v1",
+  "sourceRoot": "..",
+  "capturedRoot": ".",
+  "notes": "Two exact original pure round-budget reducers and one exact original testToolLoop assertion. New host-neutral orchestration reimplements the original bounded inference/tool-message loop with shared-SQLite intents and native ports; it does not claim capture of the original network/VSCode orchestration or entire tests. Synthetic records only; no legacy Roots, attachments, credentials, permission grants or automatic replay.",
+  "files": [
+    {
+      "source": "src/chat/api-chat-client.ts",
+      "captured": "src/domain/chat-turn-original.ts",
+      "sourceSha256": "e6cbf1482c4bdcead1232d17114af285e16be4ec1154b4f5f288e1084780e57a",
+      "capturedSha256": "42cc548c73f2fa505f5c999b3299f8782e25abea796c6fc6956cc555b2ec94a2"
+    },
+    {
+      "source": "tests/test-api-chat.js",
+      "captured": "tests/chat-turn-original-capture.mjs",
+      "sourceSha256": "5e137991a8923a60234f26f34c00aaa2969a847335909cbd6bc634b47e9baa12",
+      "capturedSha256": "ed822d49b87a0530c0d78ea5e6ee50f6028098ead535a2a22d2bc2f9b2427b0a"
+    },
+    {
+      "source": "src/chat/api-chat-client.ts",
+      "captured": "src/chat-turn-contracts.ts",
+      "sourceSha256": "e6cbf1482c4bdcead1232d17114af285e16be4ec1154b4f5f288e1084780e57a",
+      "capturedSha256": "f50ab6baa930facb47569d67a1147499b5d66c421b7c37f9f5bda4c42cb1c015"
+    },
+    {
+      "source": "src/chat/api-chat-client.ts",
+      "captured": "src/chat-turn-store.ts",
+      "sourceSha256": "e6cbf1482c4bdcead1232d17114af285e16be4ec1154b4f5f288e1084780e57a",
+      "capturedSha256": "a1d1aa622f2ae479d57478479267a5c31642437d3cb8fd4224bb5ae3a7197835"
+    },
+    {
+      "source": "src/chat/api-chat-client.ts",
+      "captured": "src/chat-turn.ts",
+      "sourceSha256": "e6cbf1482c4bdcead1232d17114af285e16be4ec1154b4f5f288e1084780e57a",
+      "capturedSha256": "837f0eaa267273936a02834b9a59c75cdb8f4a90b1aca21b2e5714f1e9f11bc2"
+    },
+    {
+      "source": "src/chat/api-chat-client.ts",
+      "captured": "src/chat-turn-adapters.ts",
+      "sourceSha256": "e6cbf1482c4bdcead1232d17114af285e16be4ec1154b4f5f288e1084780e57a",
+      "capturedSha256": "2c33e43f2581c950a4c85276846d2e7be132e9e90ee0831cd3dc298309ad2de1"
+    },
+    {
+      "source": "src/chat/api-chat-client.ts",
+      "captured": "tests/chat-turn.test.mjs",
+      "sourceSha256": "e6cbf1482c4bdcead1232d17114af285e16be4ec1154b4f5f288e1084780e57a",
+      "capturedSha256": "c3502ee55299d282e920c3ab5a2b8151723e3fbf771b30f77de1964de86134cc"
+    },
+    {
+      "source": "tests/test-api-chat.js",
+      "captured": "tests/chat-turn-original.test.mjs",
+      "sourceSha256": "5e137991a8923a60234f26f34c00aaa2969a847335909cbd6bc634b47e9baa12",
+      "capturedSha256": "266daf04a7f4e056dacc0fcc06810a9246f7c47c6b411c0d05aaa7f4d26b44d6"
+    },
+    {
+      "source": "src/chat/api-chat-client.ts",
+      "captured": "tests/chat-turn-fixtures.mjs",
+      "sourceSha256": "e6cbf1482c4bdcead1232d17114af285e16be4ec1154b4f5f288e1084780e57a",
+      "capturedSha256": "88a7fbbfebf26f8f2095f447fef2ded9b02a33513308b839d9c4b883e961d932"
+    },
+    {
+      "source": "src/chat/api-chat-client.ts",
+      "captured": "tests/chat-turn-chain.test.mjs",
+      "sourceSha256": "e6cbf1482c4bdcead1232d17114af285e16be4ec1154b4f5f288e1084780e57a",
+      "capturedSha256": "99e9e62908e2472a6de79d8dd2ebd6be4c0ee5e7357689b300cf5ca1dd49ca04"
+    },
+    {
+      "source": "src/chat/api-chat-client.ts",
+      "captured": "tests/chat-turn-memory.test.mjs",
+      "sourceSha256": "e6cbf1482c4bdcead1232d17114af285e16be4ec1154b4f5f288e1084780e57a",
+      "capturedSha256": "57a5c250e530d112fbf69df3003a87825d8a260c64dc5a878d06aafd3c9d6bb3"
+    },
+    {
+      "source": "src/chat/api-chat-client.ts",
+      "captured": "tests/chat-turn-native-fixtures.mjs",
+      "sourceSha256": "e6cbf1482c4bdcead1232d17114af285e16be4ec1154b4f5f288e1084780e57a",
+      "capturedSha256": "85c929844a5f1efbc57d77764576c1df594eedced4d591468ba2895e178d1396"
+    }
+  ]
+}

@@ -1,0 +1,108 @@
+{
+  "schema": "pkm.domain-capture/v1",
+  "transformation": "Exact AST declarations: original version ordering, process-table parsing/assessment, attribution types and service uncertainty/version/recovery errors. No process discovery, filesystem probes, credentials, legacy root, service boot/IPC, sync, chat, workflow, approvals or detached launch. New owned-job persistence and bounded event ring intentionally replace host discovery and diagnostic files, rather than claiming legacy execution equivalence.",
+  "nativeBoundary": "Only RuntimeProcessService.launch accepts an allowlisted adapter ID through injected trusted authorization; public runtimeProcessDefinitions has status/list/events/cancel only. Adapters are trusted direct-child programs and must not spawn descendants. No group signals, stale PID probes, automatic replay or remote listeners.",
+  "integration": {
+    "definitions": "runtime-process-contracts.ts: runtimeProcessDefinitions (schema-only)",
+    "moduleSchema": "runtime-process-contracts.ts: RUNTIME_PROCESS_MODULE_SCHEMA (pkm.runtime-process.module/v1)",
+    "service": "runtime-process.ts: RuntimeProcessService",
+    "repository": "runtime-process-store.ts: RuntimeProcessStore(DatabaseSync, ownerId, eventCapacity, previousOwnerId?)",
+    "ddl": "runtime-process-store.ts: RUNTIME_PROCESS_DDL (idempotent CREATE TABLE/INDEX; injected database remains caller-owned)",
+    "tables": [
+      "runtime_process_owner",
+      "runtime_process_jobs",
+      "runtime_process_events"
+    ],
+    "dispatch": "await service.request(authenticatedActorId, {operation,args}) outside SQLite transactions",
+    "errorAdapter": "RuntimeProcessError exposes code and effect (not-committed|unknown); parent may translate to CoreError without losing either field.",
+    "shutdown": "await service.close({drainMs}) before closing the injected shared database",
+    "restart": "Trusted exact-owner CAS previousOwnerId required for an unclosed repository. Old QUEUED/RUNNING -> INTERRUPTED; RUNNING effect unknown. No PID signal or replay.",
+    "takeoverPrecondition": "Trusted caller must fence/stop the old host before takeover; the module never probes host process liveness.",
+    "dependencies": "Existing node:sqlite, node:child_process, node:crypto, node:path and zod only. No manifest changes.",
+    "nativeApi": {
+      "constructor": "new RuntimeProcessService({repositoryFactory(ownerId,eventCapacity),adapters,authorizeLaunch({actorId,adapterId,input}):Promise<boolean>,limits?})",
+      "adapter": "{id,executable:absolutePath,cwd?:absolutePath,env?:Record<string,string>,arguments(jsonInput):readonly string[]}; shell:false,detached:false,stdio ignore/pipe/pipe; empty environment by default",
+      "launch": "launch({actorId,operationId:UUID,adapterId,input:JSON,deadlineMs?}):Promise<RuntimeProcessJob>; durable idempotency key (actorId,operationId) pins canonical input, adapter and deadline",
+      "status": "status(actorId,jobId):RuntimeProcessJob",
+      "wait": "wait(actorId,jobId):Promise<RuntimeProcessJob>; completion only after owned direct child close",
+      "cancel": "cancel(actorId,jobId):Promise<RuntimeProcessJob>; idempotent intent, use wait for terminal receipt",
+      "request": "request(actorId,{operation,args}):Promise<unknown>; schema-validated public status/list/events/cancel only",
+      "close": "close({drainMs?}={}):Promise<void>; bounded drain, TERM, grace, KILL, direct-child reaping; rejects on unreconciled persistence or reap failure"
+    },
+    "limits": "Hard ceilings: 4 concurrent,32 queued,4096 retained jobs,128 events/job,65536 bytes/stream,16384 input bytes,128 arguments/32768 argument bytes,300000ms deadline,2000ms TERM grace,30000ms shutdown drain. Config may lower only.",
+    "limitations": [
+      "Trusted adapters must not spawn descendants, detach or invoke a shell; no process-tree termination is claimed. Only currently live direct ChildProcess handles are signalled.",
+      "No credential inheritance or remote access is provided. Supplying configured executables/cwd/environment and authenticating the actor are trusted host responsibilities.",
+      "Output retains the first per-stream byte cap as base64 and counts all excess discarded bytes; event ring metadata has explicit cursor gaps.",
+      "Queue deadline starts at durable admission, not during the trusted authorization callback. In-flight authorization is bounded and cannot launch after close; arbitrary user callbacks cannot be forcibly interrupted.",
+      "Receipt history is bounded and fails closed at capacity; archival/removal is an explicit trusted host maintenance concern, never automatic receipt eviction or effect replay.",
+      "If persistence fails, new effects are blocked and direct children are reaped. close rejects so the host must reconcile unknown receipts via explicit restart recovery."
+    ],
+    "fixtures": [
+      "tests/runtime-process-fixtures.mjs",
+      "tests/runtime-process.test.mjs",
+      "tests/runtime-process-restart.test.mjs",
+      "tests/runtime-process-original.test.mjs"
+    ]
+  },
+  "files": [
+    {
+      "source": "src/runtime/version-order.ts",
+      "sourceSha256": "347c2770f89e86caf06ecd78ff587845292a4dff092d1bd87e3700e34756fcab",
+      "captured": "src/domain/runtime-process-original.ts",
+      "capturedSha256": "ac28d5c7c51d1a5fa8df0ef79fd1ff70a882485894fe6669e3de625313b33652"
+    },
+    {
+      "source": "src/mcp/mcp-attribution.ts",
+      "sourceSha256": "cb409ea8ba0cdd7bc9d8526d072b5199292fe17146bfaac11cb3bad84c7072db",
+      "captured": "src/domain/runtime-process-original.ts",
+      "capturedSha256": "ac28d5c7c51d1a5fa8df0ef79fd1ff70a882485894fe6669e3de625313b33652"
+    },
+    {
+      "source": "src/runtime/background-processes.ts",
+      "sourceSha256": "66bc6c6321089c7d73a0a81cbbd0d8e445f859c685b0cc1cbf41b5e9d638e1cf",
+      "captured": "src/domain/runtime-process-original.ts",
+      "capturedSha256": "ac28d5c7c51d1a5fa8df0ef79fd1ff70a882485894fe6669e3de625313b33652"
+    },
+    {
+      "source": "src/runtime/pkm-service.ts",
+      "sourceSha256": "663a189e39666ee1b32d95a0ab7c2a2188e0baec3d69f7310ce68d15a2459635",
+      "captured": "src/domain/runtime-process-original.ts",
+      "capturedSha256": "ac28d5c7c51d1a5fa8df0ef79fd1ff70a882485894fe6669e3de625313b33652"
+    }
+  ],
+  "native": [
+    {
+      "file": "src/runtime-process.ts",
+      "sha256": "875b32e698608aaa7f8c5761a8ed1753559632b3d93e778b61b6e85b46e895a6"
+    },
+    {
+      "file": "src/runtime-process-store.ts",
+      "sha256": "5ca8f4b94b735149c21744cd4451c3b2a437f2d0187168731d242fdcb5d4ee0b"
+    },
+    {
+      "file": "src/runtime-process-contracts.ts",
+      "sha256": "fc7bde0e38f9751f17ada10fe04fe70a3e45fe6ea3953f4231d192d0f5cb01b3"
+    },
+    {
+      "file": "src/process-bridge.ts",
+      "sha256": "baf8576b0f8c028f85b6faae1cb21682435be8197d408d9e8fc8a22cc90466a0"
+    },
+    {
+      "file": "tests/runtime-process-fixtures.mjs",
+      "sha256": "32f2a2dc911bbb8b7d9846e6c64d2069e3c60e38a79a7662b28b79833f73f385"
+    },
+    {
+      "file": "tests/runtime-process.test.mjs",
+      "sha256": "190639afcb1ed515040aadea9fcfee0fa7326b08caeb82bfceb6aee17dc8e709"
+    },
+    {
+      "file": "tests/runtime-process-restart.test.mjs",
+      "sha256": "1133d5f4f98254726bf44a8587f71f9942553d0d09a29187a66ec37631687dbb"
+    },
+    {
+      "file": "tests/process-bridge.test.mjs",
+      "sha256": "188c06e18d90dd7a732f6808e35aaecbb556e64ac9fdc57cd6d8cb5864bda9fb"
+    }
+  ]
+}

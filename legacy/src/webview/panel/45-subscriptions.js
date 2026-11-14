@@ -1,0 +1,415 @@
+// ── Shared Market subscriptions ────────────────────────────────────────────
+let subscriptionData = { enabled:false, gatewayStatus:'checking', gatewayError:'', port:19877, advertisedHost:'', displayName:'', shares:[], subscriptions:[], catalog:{}, networkAddresses:[], githubConnections:[] };
+let subscriptionEditingShare = '';
+let subscriptionEditorTab = 'general';
+let subscriptionExpandedId = '';
+let subscriptionSourceMode = 'broker';
+let subscriptionGitHubDraft = { repository:'', branch:'main', credentialTargetId:'', alias:'', result:null };
+let subscriptionGitHubMounted = null;
+let subscriptionGitHubProgress = null;
+const subscriptionSelectionDrafts = new Map();
+
+function renderSubscriptionLoading() {
+  renderSubscriptionPane();
+}
+
+function subscriptionOnState(data) {
+  if (subscriptionSelectionDrafts.has(subscriptionEditingShare)) subscriptionCaptureSelectionDraft();
+  subscriptionCaptureGitHubDraft();
+  subscriptionData = { ...subscriptionData, ...(data || {}) };
+  if (subscriptionEditingShare && subscriptionEditingShare !== 'new' && !(subscriptionData.shares || []).some(share => share.shareId === subscriptionEditingShare)) subscriptionEditingShare = '';
+  if (state.tab === 'subscriptions') {
+    renderSubscriptionPane();
+    if (subscriptionGitHubMounted?.id && (subscriptionData.subscriptions || []).some(item => item.id === subscriptionGitHubMounted.id)) {
+      requestAnimationFrame(() => {
+        const row = [...document.querySelectorAll('[data-subscription-id]')].find(item => item.dataset.subscriptionId === subscriptionGitHubMounted.id);
+        row?.scrollIntoView({ block:'nearest', behavior:'smooth' });
+      });
+    }
+  }
+}
+
+function subscriptionHostOptions() {
+  const current = subscriptionData.advertisedHost || '';
+  const options = subscriptionData.networkAddresses || [];
+  const values = new Set(options.map(item => item.address));
+  return `${current && !values.has(current) ? `<option value="${esc(current)}" selected>Unavailable · ${esc(current)}</option>` : ''}${options.map(item => `<option value="${esc(item.address)}" ${item.address === current ? 'selected' : ''}>${esc(item.kind === 'hostname' ? `Hostname · ${item.address}` : `${item.interface} · ${item.address}`)}</option>`).join('')}`;
+}
+
+function subscriptionShareRows() {
+  const shares = subscriptionData.shares || [];
+  const cards = shares.map(share => {
+    const counts = Object.entries(share.summary?.counts || {}).map(([type,count]) => `${count} ${type}`).join(' · ');
+    const abnormal = (share.subscribers || []).filter(item => (item.abnormal || []).length).length + (share.securityEvents || []).length;
+    const expanded = subscriptionEditingShare === share.shareId;
+    return `<article class="pk-card sub-broker-card ${expanded ? 'active' : ''}"><div class="sub-broker-row" role="button" tabindex="0" aria-expanded="${expanded}" onclick="subscriptionEditShare('${esc(share.shareId)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();subscriptionEditShare('${esc(share.shareId)}')}">
+      <span><span class="sub-broker-title"><strong>${esc(share.name)}</strong><span class="sub-broker-actions"><label class="sub-publish-toggle" onclick="event.stopPropagation()" title="${share.published === false ? 'Resume publishing this Broker' : 'Pause publishing without deleting this Broker'}"><input type="checkbox" ${share.published === false ? '' : 'checked'} onchange="subscriptionSetSharePublished('${esc(share.shareId)}',this.checked)"><span>Publish</span></label><button class="pk-button" onclick="event.stopPropagation();ask('subscriptionCopyLink',{shareId:'${esc(share.shareId)}'},this)" data-pending-label="Copying…" title="Copy Link">Copy Link</button><button class="pk-button danger" onclick="event.stopPropagation();subscriptionDeleteShare('${esc(share.shareId)}',this)" data-pending-label="Waiting for confirmation…" title="Delete Broker">Delete</button></span></span><small>${share.published === false ? 'Paused · ' : ''}${esc(counts || 'Empty')} · ${(share.subscribers || []).length} subscribers${abnormal ? ` · ${abnormal} alerts` : ''}</small></span>
+      <span class="sub-broker-meta"><b>${esc(share.revisionLabel || 'Unknown')}</b><small>${esc(share.visibility === 'public' ? 'Discoverable' : 'Unlisted')}</small><i>›</i></span>
+    </div>${expanded ? `<div class="sub-broker-expanded">${subscriptionShareEditor()}</div>` : ''}</article>`;
+  }).join('');
+  const createCard = subscriptionEditingShare === 'new' ? `<article class="pk-card sub-broker-card active sub-broker-new"><div class="sub-broker-expanded">${subscriptionShareEditor()}</div></article>` : '';
+  return cards + createCard || '<div class="sub-empty">No Share Brokers.</div>';
+}
+
+function subscriptionTreeCount(node) { return (node.items || node.files || []).length + Object.values(node.folders).reduce((total,child) => total + subscriptionTreeCount(child), 0); }
+function subscriptionRenderTree(type, node, path, picked, folders, openFolders) {
+  const folderRows = Object.entries(node.folders).sort(([a],[b]) => {
+    const aSynthetic = a === '(uncategorized)' || a === 'Ungrouped', bSynthetic = b === '(uncategorized)' || b === 'Ungrouped';
+    return aSynthetic === bSynthetic ? a.localeCompare(b) : aSynthetic ? 1 : -1;
+  }).map(([name,child]) => {
+    const fullPath = [...path,name].join('/');
+    const inherited = folders.has('') || [...folders].some(folder => folder && (fullPath === folder || fullPath.startsWith(folder + '/')));
+    const actualPaths = fileSelectorTreeItems(child).map(item => String(item.cat || ''));
+    const canShareFolder = actualPaths.length > 0 && actualPaths.every(actual => actual === fullPath || actual.startsWith(fullPath + '/'));
+    const checkbox = canShareFolder ? `<input type="checkbox" data-sub-folder="${type}" value="${esc(fullPath)}" ${inherited ? 'checked' : ''} onclick="event.stopPropagation()" onchange="subscriptionFolderToggle(this)" title="Include this folder and future files">` : '<span class="sub-tree-folder-spacer"></span>';
+    return `<details class="sub-tree-folder" data-sub-tree-type="${type}" data-sub-tree-path="${esc(fullPath)}" ${openFolders.has(fullPath) ? 'open' : ''}><summary>${checkbox}<span>${esc(name)}</span><small>${subscriptionTreeCount(child)}</small></summary><div>${subscriptionRenderTree(type,child,[...path,name],picked,folders,openFolders)}</div></details>`;
+  }).join('');
+  const leaves = node.items.sort((a,b) => a.label.localeCompare(b.label)).map(item => {
+    const itemFolder = String(item.cat || '');
+    const inherited = folders.has('') || [...folders].some(folder => folder && (itemFolder === folder || itemFolder.startsWith(folder + '/')));
+    return `<label class="sub-tree-leaf" title="${esc([item.cat,item.meta].filter(Boolean).join(' · '))}"><input type="checkbox" data-sub-item="${type}" data-sub-cat="${esc(itemFolder)}" value="${esc(item.id)}" ${(inherited || picked.has(item.id)) ? 'checked' : ''} onchange="subscriptionItemToggle(this)"><span>${esc(item.label)}</span><small>${esc(item.meta || '')}</small></label>`;
+  }).join('');
+  return folderRows + leaves;
+}
+function subscriptionContentPicker(share) {
+  const labels = { skills:'Skills', notes:'Notes', papers:'Papers', prompts:'Prompts', scripts:'Scripts', packages:'Packages', servers:'Servers', recipes:'Recipes' };
+  const draft = subscriptionSelectionDrafts.get(subscriptionEditingShare);
+  return Object.entries(labels).map(([type,label]) => {
+    const items = subscriptionData.catalog?.[type] || [];
+    const picked = new Set(draft?.selected?.[type] ?? share?.selected?.[type] ?? []);
+    const folders = new Set(draft?.folders?.[type] ?? share?.folders?.[type] ?? []);
+    const openFolders = new Set(draft?.openFolders?.[type] || []);
+    const tree = fileSelectorCategoryTree(items);
+    const selectedCount = items.filter(item => folders.has('') || picked.has(item.id) || [...folders].some(folder => folder && (item.cat === folder || item.cat.startsWith(folder + '/')))).length;
+    const publishedCount = Number(share?.summary?.counts?.[type]) || 0;
+    const countLabel = draft ? `${selectedCount} selected · draft` : `${publishedCount} selected`;
+    return `<details class="sub-picker" data-sub-picker="${type}" ${draft?.openTypes?.includes(type) ? 'open' : ''}>
+      <summary><strong>${label}</strong><span>${countLabel} · ${items.length} available</span></summary>
+      <div class="sub-picker-items"><label class="sub-folder-rule"><input type="checkbox" data-sub-folder="${type}" value="" ${folders.has('') ? 'checked' : ''} onchange="subscriptionFolderToggle(this)"> <span>Entire ${label}</span><small>include future items</small></label>
+      ${subscriptionRenderTree(type,tree,[],picked,folders,openFolders) || '<span class="sub-empty">No items</span>'}</div>
+    </details>`;
+  }).join('');
+}
+
+function subscriptionShareEditor() {
+  const share = (subscriptionData.shares || []).find(item => item.shareId === subscriptionEditingShare);
+  if (!subscriptionEditingShare && subscriptionEditingShare !== 'new') return '<div class="sub-broker-placeholder"><strong>Broker Settings</strong><span>Select a Broker to configure its audience and shared content tree.</span></div>';
+  return `<div class="sub-editor sub-broker-settings" data-sub-share-id="${esc(subscriptionEditingShare)}">
+    <div class="sub-editor-head"><div><strong>Broker Settings</strong><small>${share ? esc(share.shareId) : 'New Share Broker'}</small></div><button class="icon-btn" onclick="subscriptionCancelShare()" title="Close" aria-label="Close">${uiIcon('close')}</button></div>
+    <div class="sub-editor-tabs" role="tablist"><button class="${subscriptionEditorTab === 'general' ? 'active' : ''}" onclick="subscriptionSetEditorTab('general')">General</button><button class="${subscriptionEditorTab === 'acl' ? 'active' : ''}" onclick="subscriptionSetEditorTab('acl')">ACL</button><button class="${subscriptionEditorTab === 'content' ? 'active' : ''}" onclick="subscriptionSetEditorTab('content')">Shared Content</button><button class="${subscriptionEditorTab === 'subscribers' ? 'active' : ''}" onclick="subscriptionSetEditorTab('subscribers')">Subscribers</button></div>
+    <div class="sub-editor-pane ${subscriptionEditorTab === 'general' ? 'active' : ''}">
+    <div class="sub-form-line"><label>Broker name<input id="sub-share-name" value="${esc(share?.name || '')}" placeholder="AAGL Working Set"></label><label>Audience<select id="sub-share-visibility"><option value="public" ${share?.visibility !== 'unlisted' ? 'selected' : ''}>Discoverable · Gateway catalog</option><option value="unlisted" ${share?.visibility === 'unlisted' ? 'selected' : ''}>Unlisted · Magic Link only</option></select><small>Discovery requires Account policy Open. Network ACL, Account ACL, and Protection still control access.</small></label></div>
+    <div class="sub-form-line sub-protection-line"><label>Protection<select id="sub-share-protection" onchange="subscriptionProtectionChanged()"><option value="open" ${share?.protection !== 'secret-protected' ? 'selected' : ''}>Open Broker</option><option value="secret-protected" ${share?.protection === 'secret-protected' ? 'selected' : ''}>Secret Protected Broker</option></select></label><label class="sub-secret-control ${share?.protection === 'secret-protected' ? '' : 'hidden'}">Secret Control Port<input id="sub-share-control-port" type="number" min="1024" max="65535" value="${share?.protection === 'secret-protected' ? Number(share.controlPort)||'' : ''}" placeholder="19891"></label><label>Data Port<input id="sub-share-data-port" type="number" min="0" max="65535" value="${Number(share?.dataPort)||0}"><small>0 = random per Sync</small></label></div>
+    <div class="sub-secret-actions ${share?.protection === 'secret-protected' ? '' : 'hidden'}">${share ? `<button class="tbtn" onclick="ask('subscriptionRevealSecret',{shareId:'${esc(share.shareId)}'})">Reveal Secret</button><button class="tbtn" onclick="subscriptionRotateSecret('${esc(share.shareId)}')">Rotate Secret</button>` : '<label>Initial Broker Secret<input id="sub-share-secret" type="password" placeholder="Enter separate secret material"></label>'}<span>Magic Link never contains the protected Control Port or secret.</span></div></div>
+    <div class="sub-editor-pane ${subscriptionEditorTab === 'acl' ? 'active' : ''}">
+    <div class="sub-access-policy"><label>Network policy<select id="sub-share-access-mode"><option value="block-list" ${share?.accessMode !== 'white-list' ? 'selected' : ''}>Blocklist · allow by default</option><option value="white-list" ${share?.accessMode === 'white-list' ? 'selected' : ''}>Whitelist · deny by default</option></select></label><label>IP rules<textarea id="sub-share-ip-rules" rows="2" placeholder="10.20.*.*&#10;192.168.50.0/24">${esc((share?.ipRules || []).join('\n'))}</textarea><small>Exact IPv4/IPv6, CIDR, or IPv4 wildcard.</small></label></div>
+    <div class="sub-account-policy"><label>Account policy<select id="sub-share-account-mode"><option value="open" ${share?.accountMode === 'open' || !share?.accountMode ? 'selected' : ''}>Open · any signed account</option><option value="block-list" ${share?.accountMode === 'block-list' ? 'selected' : ''}>Account Blocklist</option><option value="white-list" ${share?.accountMode === 'white-list' ? 'selected' : ''}>Account Whitelist</option></select></label><small>Choose the affected accounts in the Subscribers tab.</small></div></div>
+    <div class="sub-editor-pane ${subscriptionEditorTab === 'content' ? 'active' : ''}">
+    <div class="sub-tree-heading"><strong>Shared Content</strong><span>Folder rules include future files; individual selections do not.</span></div>
+    <div class="sub-picker-grid">${subscriptionContentPicker(share)}</div>
+    </div>
+    <div class="sub-editor-pane ${subscriptionEditorTab === 'subscribers' ? 'active' : ''}">${subscriptionEditorTab === 'subscribers' ? subscriptionAudienceView(share) : ''}</div>
+    <div class="sub-editor-actions"><span class="sub-action-spacer"></span><button class="pk-button" onclick="subscriptionCancelShare()">Cancel</button><button class="pk-button primary" data-pending-label="${share ? 'Publishing…' : 'Creating…'}" onclick="subscriptionSaveShare('${esc(share?.shareId || '')}',this)">${share ? 'Publish Revision' : 'Create Broker'}</button></div>
+  </div>`;
+}
+
+function subscriptionAudienceView(share) {
+  if (!share) return '<div class="sub-empty">Subscribers appear after this Broker is created and accessed.</div>';
+  const subscribers = share.subscribers || [], events = share.securityEvents || [];
+  const automaticBlocks = share.automaticBlocks || [];
+  return `<div class="sub-audience"><div class="sub-tree-heading"><strong>Subscribers</strong><span>${subscribers.length} known nodes · signed identity</span></div>
+    <div class="sub-account-policy"><div><strong>Account access list</strong>${subscribers.map(account => `<label><input id="sub-account-${esc(account.nodeId)}" type="checkbox" data-sub-account="${esc(account.nodeId)}" ${(share.accountRules || []).includes(account.nodeId) ? 'checked' : ''}><span>${esc(account.name || account.nodeId)}</span><small>${esc(account.nodeId.slice(0,12))}</small></label>`).join('') || '<small>No authenticated Subscribers yet.</small>'}</div></div>
+    <div class="sub-audience-list">${subscribers.map(item => `<div class="sub-audience-row"><span><strong>${esc(item.name || item.nodeId)}</strong><small>${esc((item.names || []).join(' · '))}</small></span><span><b>${Number(item.syncCount)||0}</b> syncs<small>${esc(item.lastIp || '')} · ${item.lastSeenAt ? new Date(item.lastSeenAt).toLocaleString() : 'never'}</small></span>${(item.abnormal || []).length ? `<em>${esc(item.abnormal.join(', '))}</em>` : ''}</div>`).join('') || '<div class="sub-empty">No authenticated subscribers yet.</div>'}</div>
+    ${automaticBlocks.length ? `<div class="sub-auto-blocks"><strong>Automatic blocks</strong>${automaticBlocks.map(block => `<div><code>${esc(block.ip)}</code><span>${esc(block.reason)} · ${Number(block.failedAttempts)||3} failures · ${new Date(block.blockedAt).toLocaleString()}</span><button class="tbtn" onclick="ask('subscriptionUnblockIp',{shareId:'${esc(share.shareId)}',ip:'${esc(block.ip)}'})">Unblock</button></div>`).join('')}</div>` : ''}
+    ${events.length ? `<details class="sub-security-events"><summary>${events.length} recent access alerts</summary>${events.slice(0,20).map(event => `<div><time>${new Date(event.at).toLocaleString()}</time><code>${esc(event.ip)}</code><span>${esc(event.reason)}</span></div>`).join('')}</details>` : ''}
+  </div>`;
+}
+
+function subscriptionRows() {
+  const rows = subscriptionData.subscriptions || [];
+  if (!rows.length) return '<div class="sub-empty">No subscriptions.</div>';
+  return rows.map(item => {
+    const name = item.alias || item.brokerName || item.shareId;
+    const counts = Object.entries(item.counts || {}).map(([type,count]) => `${count} ${type}`).join(' · ');
+    const taxonomy = [...(item.topics || []), ...(item.tags || []).map(tag => `#${tag}`)].slice(0,12);
+    const expanded = subscriptionExpandedId === item.id;
+    const menuPayload = subscriptionMenuPayload({ id:item.id, alias:item.alias || '', name, nodeId:item.nodeId, shareId:item.shareId });
+    const github = item.source?.type === 'github';
+    return `<article class="pk-card sub-subscriber-card ${expanded ? 'active' : ''}" data-subscription-id="${esc(item.id)}" oncontextmenu="subscriptionBrokerMenu(event,'${menuPayload}')"><div class="sub-row" role="button" tabindex="0" aria-expanded="${expanded}" onclick="subscriptionToggleDetail('${esc(item.id)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();subscriptionToggleDetail('${esc(item.id)}')}">
+      <div class="sub-status ${esc(item.status)}" title="${esc(item.error || item.status)}"></div>
+      <div class="sub-row-main"><strong>${esc(name)}</strong><span>${github ? 'GitHub branch' : esc(item.status || 'unknown') + ' · revision ' + (Number(item.revision)||0)}</span><small>${github ? `${esc(item.source.branch)} · ${esc((item.source.commit || '').slice(0,10))}` : `Last synced ${item.lastUpdated ? new Date(item.lastUpdated).toLocaleString() : 'never'}`}</small></div><i class="sub-card-arrow">›</i>
+    </div>${expanded ? `<div class="sub-subscriber-detail"><div class="sub-subscriber-facts"><span>${github ? 'Source · GitHub' : `Host · ${esc(item.publisher || 'Unknown')}`}</span><span>${esc(item.endpoint || '')}</span><span>${Number(item.itemCount)||0} cached items</span></div>${counts ? `<div class="sub-content-counts">${esc(counts)}</div>` : ''}${taxonomy.length ? `<div class="sub-taxonomy">${taxonomy.map(value => `<span>${esc(value)}</span>`).join('')}</div>` : ''}${item.error ? problemGuidanceHtml(item.error, helpText('Review this source’s endpoint, branch or access settings before explicitly refreshing it. Removing a subscription is not a repair; preserve the cached copy until the source is understood.', '明确刷新前，检查此来源的地址、分支或访问配置。移除订阅不是修复；确认来源前保留缓存。'), '', 'sharing') : ''}<label class="sub-priority">Retrieval priority<select aria-label="Retrieval priority for ${esc(name)}" onchange="ask('subscriptionSetPriority',{id:'${esc(item.id)}',priority:this.value},this)"><option value="normal" ${(item.priority || 'normal') === 'normal' ? 'selected' : ''}>Normal</option><option value="high" ${item.priority === 'high' ? 'selected' : ''}>High</option><option value="highest" ${item.priority === 'highest' ? 'selected' : ''}>Highest</option></select><small>Applied after relevance checks to all content from this source.</small></label><div class="sub-row-actions"><button class="tbtn" onclick="subscriptionRename('${esc(item.id)}','${esc(item.alias || '')}')">Rename</button><button class="tbtn" data-pending-label="Refreshing…" onclick="ask('subscriptionRefresh',{id:'${esc(item.id)}',force:true},this)">${github ? 'Refresh branch' : 'Refresh'}</button><button class="tbtn danger" onclick="subscriptionRemove('${esc(item.id)}','${esc(name)}')">Remove</button></div></div>` : ''}</article>`;
+  }).join('');
+}
+
+function subscriptionToggleDetail(id) { subscriptionExpandedId = subscriptionExpandedId === id ? '' : id; renderSubscriptionPane(); }
+function subscriptionMenuPayload(value) { return btoa(unescape(encodeURIComponent(JSON.stringify(value)))); }
+function subscriptionBrokerMenu(ev, payload) {
+  ev.preventDefault(); ev.stopPropagation();
+  let item;
+  try { item = JSON.parse(decodeURIComponent(escape(atob(payload)))); } catch { return; }
+  showPaperMenu(ev.clientX, ev.clientY, [
+    { label:item.name, header:true },
+    copyPathMenu(`pkm://subscriptions/${encodeURIComponent(item.nodeId)}/${encodeURIComponent(item.shareId)}`),
+    { sep: true },
+    { label:'Refresh from Broker', onClick:() => ask('subscriptionRefresh',{id:item.id,force:true}) },
+    { label:'Rename local display name…', onClick:() => subscriptionRename(item.id, item.alias) },
+  ]);
+}
+
+function renderSubscriptionPane() {
+  const d = subscriptionData;
+  const detail = document.getElementById('detail');
+  const view = captureRefreshView(detail, ['.sub-picker-items','.sub-github-tree']);
+  const drafts = captureRefreshInputs(detail, '#sub-display-name,#sub-host,#sub-port,#sub-alias,#sub-magic-link,#sub-broker-secret', true);
+  const shareDrafts = detail.querySelector?.('[data-sub-share-id]')?.dataset.subShareId === subscriptionEditingShare
+    ? captureRefreshInputs(detail, '.sub-editor input[id],.sub-editor textarea[id],.sub-editor select[id]', true) : [];
+  document.getElementById('detail').innerHTML = `<div class="sub-dashboard" data-settings-owner="sharing">
+    <header class="sub-head"><div><h2>Subscription</h2><p>PKM Shared Market · ${esc(d.displayName || 'This machine')}</p></div><span class="sub-node-state ${d.gatewayStatus === 'error' ? 'error' : d.gatewayStatus === 'running' ? 'running' : d.gatewayStatus === 'starting' ? 'starting' : 'stopped'}" title="${esc(d.gatewayStatus === 'error' ? d.gatewayError || '' : '')}"><i></i>${d.gatewayStatus === 'error' ? 'Gateway unavailable' : d.gatewayStatus === 'running' ? 'Broker online' : d.gatewayStatus === 'starting' ? 'Broker starting' : 'Broker stopped'}</span></header>
+    ${d.gatewayStatus === 'error' ? problemGuidanceHtml(`Common Communication Port ${Number(d.port)||19877} is unavailable · ${d.gatewayError || 'Check the port and network listener.'}`,
+      helpText('Check the configured port and network listener. Do not stop another service merely because it occupies the port. Apply changes only after reviewing them.', '检查配置的端口和网络监听者。不要仅因端口被占用就停止其他服务；审查后再应用修改。'),
+      `<button class="tbtn" onclick="document.getElementById('sub-port').scrollIntoView({block:'center'});document.getElementById('sub-port').focus()">${esc(helpText('Review gateway port','查看 Gateway 端口'))}</button>`, 'sharing') : ''}
+    ${settingsTabBar('sharing',[['direct','Direct sharing'],['subscribing','Subscribing']])}
+    <section class="sub-band sub-direct-sync"><div class="sub-band-title"><div><h3>Direct Sync</h3><span>One-time encrypted sharing between invited devices</span></div><button class="pk-button primary" onclick="openSyncModal()">Open Direct Sync</button></div>
+      <p class="sub-control-note">Use Direct Sync for a temporary host-and-join transfer. Use Share Brokers below for persistent, refreshable collections.</p>
+    </section>
+    <section class="sub-band"><div class="sub-band-title"><div><h3>Node Gateway</h3><code>${esc((d.nodeId || '').slice(0,20))}</code></div><div class="sub-gateway-actions"><button class="pk-button" data-pending-label="Applying…" onclick="subscriptionSaveGateway(this)">Apply Settings</button>${d.enabled ? '<button class="pk-button danger" data-pending-label="Stopping…" onclick="subscriptionSetOnline(false,this)">Go Offline</button>' : '<button class="pk-button primary" data-pending-label="Starting…" onclick="subscriptionSetOnline(true,this)">Go Online</button>'}</div></div>
+      <p class="sub-control-note">Online runs a detached machine daemon that survives VS Code and SSH disconnects. The Common Port carries discovery and metadata only; authorized Sync uses a separate Data Broker port.</p>
+      <div class="sub-gateway-grid"><label>Service status<strong class="sub-service-status ${d.enabled ? 'online' : 'offline'}">${d.enabled ? 'Online · persistent daemon' : 'Offline'}</strong></label><label>Node label<input id="sub-display-name" value="${esc(d.displayName || '')}"></label><label>Invite interface<select id="sub-host">${subscriptionHostOptions()}</select></label><label>Port<input id="sub-port" type="number" min="1024" max="65535" value="${Number(d.port)||19877}"></label></div>
+    </section>
+    <section class="sub-band"><div class="sub-band-title"><div><h3>My Share Brokers</h3><span>${(d.shares || []).length} audiences</span></div><button class="tbtn" onclick="subscriptionNewShare()">${uiIcon('add', 'Broker')}</button></div><div class="pk-list sub-broker-list">${subscriptionShareRows()}</div></section>
+    <section class="sub-band"><div class="sub-band-title"><div><h3>Subscribed Brokers</h3><span>${(d.subscriptions || []).length} mounted collections</span></div><div class="sub-source-switch" role="tablist" aria-label="Subscription source"><button class="${subscriptionSourceMode === 'broker' ? 'active' : ''}" role="tab" aria-selected="${subscriptionSourceMode === 'broker'}" onclick="subscriptionSetSourceMode('broker')">Broker</button><button class="${subscriptionSourceMode === 'github' ? 'active' : ''}" role="tab" aria-selected="${subscriptionSourceMode === 'github'}" onclick="subscriptionSetSourceMode('github')">GitHub Branch</button></div></div>
+      ${d.nativeRecovery ? `<div class="sub-control-note" data-sub-recovery><strong>Refresh outcome pending</strong> · No request is replayed automatically.
+        <button class="tbtn" onclick="ask('subscriptionReviewRecovery',{},this)">Inspect pending refresh</button>
+        ${d.nativeRecovery.inspection ? `<p>${d.nativeRecovery.inspection.canRetry ? 'Cache matched the admitted baseline at the last check; retry remains explicit and will recheck.' : 'Cache or staging needs review. Preserve all files before making changes.'}</p>
+          <p>Pending ${esc(d.nativeRecovery.inspection.action)} · ${esc(d.nativeRecovery.inspection.operationId)} · ${esc(d.nativeRecovery.inspection.nodeId)} / ${esc(d.nativeRecovery.inspection.shareId)}${d.nativeRecovery.inspection.commit ? ` · ${esc(d.nativeRecovery.inspection.repository)} · ${esc(d.nativeRecovery.inspection.branch)} @ ${esc(d.nativeRecovery.inspection.commit)}` : ''}</p>
+          <p>Retained entries: ${esc((d.nativeRecovery.inspection.entries || []).join(', ') || 'none found')}</p>
+          <button class="tbtn" onclick="ask('subscriptionOpenRecoveryFolder',{},this)">Open recovery folder</button>
+          <button class="tbtn" onclick="ask('subscriptionRecheckRecovery',{},this)">Recheck after preservation</button>` : ''}</div>` : ''}
+      ${subscriptionSourceMode === 'github' ? subscriptionGitHubMountEditor() : `<div class="sub-add"><input id="sub-alias" placeholder="Alias (optional)"><textarea id="sub-magic-link" rows="2" placeholder="Paste pkmshare:v1 Magic Link"></textarea><input id="sub-broker-secret" type="password" placeholder="Broker Secret (protected only)"><button class="pk-button primary" data-pending-label="Subscribing…" onclick="subscriptionAdd(this)">Subscribe</button></div>`}
+      ${subscriptionGitHubMounted ? `<div class="sub-control-note sub-github-mounted"><strong>Subscribed to ${esc(subscriptionGitHubMounted.name)}</strong> · ${Number(subscriptionGitHubMounted.itemCount) || 0} cached items. The mounted collection is expanded below.</div>` : ''}
+      <div class="pk-list sub-list">${subscriptionRows()}</div>
+    </section>
+  </div>`;
+  const pane = document.querySelector('[data-settings-owner="sharing"]');
+  if (d.gatewayStatus === 'checking') {
+    const status = pane.querySelector('.sub-node-state');
+    status.textContent = 'Checking gateway status';
+    pane.querySelector('.sub-service-status').textContent = 'Not yet checked';
+  }
+  pane.querySelector('.sub-direct-sync').dataset.settingsPanel = 'direct';
+  pane.querySelector('.sub-gateway-grid').closest('section').dataset.settingsPanel = 'direct';
+  pane.querySelector('.sub-broker-list').closest('section').dataset.settingsPanel = 'direct';
+  pane.querySelector('.sub-list').closest('section').dataset.settingsPanel = 'subscribing';
+  applySettingsSubtab('sharing');
+  subscriptionSyncFolderStates();
+  restoreRefreshInputs(detail, drafts);
+  restoreRefreshInputs(detail, shareDrafts);
+  if (document.getElementById('sub-share-protection')) subscriptionProtectionChanged();
+  restoreRefreshView(detail, view);
+}
+
+function subscriptionGitHubMountEditor() {
+  const connections = subscriptionData.githubConnections || [];
+  const methodLabel = method => method === 'ssh' ? 'SSH key' : method === 'vscode' ? 'VS Code GitHub' : method === 'https' ? 'HTTPS / GCM' : 'Default Git credentials';
+  const options = connections.map(item => `<option value="${esc(item.id)}" ${item.id === subscriptionGitHubDraft.credentialTargetId ? 'selected' : ''}>${esc(item.name)} · ${esc(methodLabel(item.method))}${item.account ? ` · ${esc(item.account)}` : ''}</option>`).join('');
+  const result = subscriptionGitHubDraft.result;
+  const validation = result?.validation || {};
+  const authentication = result?.authentication || {};
+  const authenticationText = result ? `${methodLabel(authentication.method)}${authentication.profileName ? ` · ${authentication.profileName}` : ''}${authentication.account ? ` · ${authentication.account}` : ''}` : '';
+  const validationText = result ? `${Number(validation.importableFiles || result.files.length).toLocaleString()} importable · ${subscriptionFormatBytes(validation.importableBytes)}${Number(validation.invalidFiles) ? ` · ${Number(validation.invalidFiles).toLocaleString()} invalid path(s) skipped` : ''}${Number(validation.ignoredFiles) ? ` · ${Number(validation.ignoredFiles).toLocaleString()} ignored outside the subscription specification` : ''}` : '';
+  const largeFileText = Number(validation.filesOverPreviewLimit) ? `${Number(validation.filesOverPreviewLimit).toLocaleString()} valid file(s) exceed the 1 MiB preview limit; Subscribe caches their full content.` : '';
+  const validationTitle = Number(validation.invalidFiles) ? 'Partially compatible' : 'Valid for subscription';
+  return `<div class="sub-github-subscribe"><div class="sub-github-fields"><label>Repository<input id="sub-github-repository" spellcheck="false" value="${esc(subscriptionGitHubDraft.repository)}" placeholder="https://github.com/owner/repository.git"></label><label>Branch<input id="sub-github-branch" value="${esc(subscriptionGitHubDraft.branch || 'main')}" placeholder="main"></label><label>Credential profile<select id="sub-github-credential"><option value="">Default Git credentials / public</option>${options}</select></label><label>Local alias<input id="sub-github-alias" value="${esc(subscriptionGitHubDraft.alias)}" placeholder="Optional"></label><button id="sub-github-test" class="pk-button" data-pending-label="Testing…" onclick="subscriptionTestGitHub(this)">${uiIcon('check','Test')}</button></div>
+    ${subscriptionGitHubProgressHtml()}${result ? `<div class="sub-github-result"><div class="sub-github-result-head"><span><strong>${esc(result.name || 'GitHub repository')}</strong><small>${esc(result.repository)} · ${esc(result.branch)}</small></span><code title="${esc(result.commit)}">${esc(result.commit.slice(0,12))}</code></div><div class="sub-github-auth"><strong>Connected with</strong><span>${esc(authenticationText)}</span><small>Test fetched this exact commit. Subscribe Selected reads the local tested checkout and does not reconnect to GitHub.</small></div><div class="sub-github-validation ${Number(validation.invalidFiles) ? 'partial' : ''}"><strong>${validationTitle}</strong><span>${esc(validationText)}</span>${largeFileText ? `<small>${esc(largeFileText)}</small>` : ''}</div>${Number(validation.invalidFiles) ? `<div class="sub-control-note sub-github-invalid">Skipped paths are not portable to Windows. Example: <code>${esc(validation.invalidExamples?.[0] || '')}</code></div>` : ''}<div class="sub-tree-heading"><strong>Content found</strong><span>${result.files.length} files · folder selection includes future files</span></div><div class="sub-github-tree">${subscriptionGitHubTree(result.files)}</div><div class="sub-github-actions"><span>Read-only cache · exact tested commit</span><button class="pk-button primary" data-pending-label="Subscribing…" onclick="subscriptionMountGitHub(this)">Subscribe Selected</button></div></div>` : '<div class="sub-control-note">Private access uses the selected GitHub Sync profile. Without one, Git may use the machine credential helper; Test shows the method and account that were requested.</div>'}</div>`;
+}
+
+function subscriptionFormatBytes(value) {
+  const bytes = Math.max(0, Number(value) || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+}
+function subscriptionGitHubProgressHtml() {
+  const progress = subscriptionGitHubProgress;
+  const hidden = progress ? '' : ' hidden';
+  const current = Number(progress?.current) || 0, total = Number(progress?.total) || 0;
+  const cachedBytes = Number(progress?.cachedBytes) || 0, totalBytes = Number(progress?.totalBytes) || 0;
+  const percent = totalBytes ? Math.max(0, Math.min(100, cachedBytes * 100 / totalBytes)) : total ? Math.max(0, Math.min(100, current * 100 / total)) : 0;
+  const labels = { credentials:'Resolving the credential profile', cloning:'Creating the private local checkout', fetching:'Fetching the selected branch', inventory:'Reading the repository inventory', validating:'Validating subscribable content', reading:'Reading from the tested commit', caching:'Writing the read-only cache', finalizing:'Finalizing the subscription', indexing:'Updating the content catalog' };
+  const elapsedSeconds = Math.max(0, Math.floor((Number(progress?.elapsedMs) || 0) / 1000));
+  const detail = progress?.path ? `${current.toLocaleString()} / ${total.toLocaleString()} · ${progress.path}${Number(progress.currentFileBytes) ? ` · ${subscriptionFormatBytes(progress.currentFileBytes)}` : ''}` : total ? `${current.toLocaleString()} / ${total.toLocaleString()} files` : 'Working…';
+  const byteDetail = totalBytes ? `${subscriptionFormatBytes(cachedBytes)} / ${subscriptionFormatBytes(totalBytes)}` : progress?.operation === 'test' ? 'Network access occurs during Test only' : '';
+  const progressValue = totalBytes || total ? ` value="${percent}"` : '';
+  return `<div id="sub-github-progress" class="sub-github-progress${hidden}" role="status"><div><strong>${esc(labels[progress?.stage] || 'Preparing subscription')}</strong><span>${esc(detail)}</span></div><progress max="100"${progressValue}></progress><small>${esc(byteDetail)}${elapsedSeconds ? ` · ${elapsedSeconds.toLocaleString()}s elapsed` : ''}</small></div>`;
+}
+function subscriptionGitHubProgressUpdate(progress) {
+  subscriptionGitHubProgress = progress || null;
+  const current = document.getElementById('sub-github-progress');
+  if (!current || state.tab !== 'subscriptions') return;
+  const replacement = document.createElement('div');
+  replacement.innerHTML = subscriptionGitHubProgressHtml();
+  current.replaceWith(replacement.firstElementChild);
+}
+
+function subscriptionSetSourceMode(mode) { subscriptionCaptureGitHubDraft(); subscriptionSourceMode = mode === 'github' ? 'github' : 'broker'; renderSubscriptionPane(); }
+function subscriptionCaptureGitHubDraft() {
+  const repository = document.getElementById('sub-github-repository');
+  if (!repository) return;
+  subscriptionGitHubDraft.repository = repository.value.trim();
+  subscriptionGitHubDraft.branch = document.getElementById('sub-github-branch')?.value.trim() || 'main';
+  subscriptionGitHubDraft.credentialTargetId = document.getElementById('sub-github-credential')?.value || '';
+  subscriptionGitHubDraft.alias = document.getElementById('sub-github-alias')?.value.trim() || '';
+}
+function subscriptionGitHubTestResult(data) {
+  subscriptionGitHubDraft = { ...subscriptionGitHubDraft, repository:data.repository || '', branch:data.branch || 'main', credentialTargetId:data.credentialTargetId || '', result:{ ...data, selectedFolders:new Set([...new Set((data.files || []).map(file => String(file.path).split('/')[0]))]), selectedPaths:new Set() } };
+  subscriptionGitHubProgress = null;
+  subscriptionSourceMode = 'github';
+  if (state.tab === 'subscriptions') renderSubscriptionPane();
+}
+function subscriptionGitHubTree(files) {
+  const root = { folders:{}, files:[] };
+  for (const file of files || []) {
+    const parts = String(file.path || '').split('/'); let node = root;
+    parts.slice(0,-1).forEach(part => { node = node.folders[part] ||= { folders:{}, files:[] }; });
+    node.files.push({ ...file, name:parts.at(-1) });
+  }
+  const selectedFolders = subscriptionGitHubDraft.result?.selectedFolders || new Set();
+  const selectedPaths = subscriptionGitHubDraft.result?.selectedPaths || new Set();
+  const render = (node, parent) => Object.entries(node.folders).sort(([a],[b]) => a.localeCompare(b)).map(([name,child]) => {
+    const folder = [parent,name].filter(Boolean).join('/');
+    const checked = selectedFolders.has(folder) || [...selectedFolders].some(rule => folder.startsWith(rule + '/'));
+    return `<details class="sub-tree-folder"><summary><input type="checkbox" data-gh-folder value="${esc(folder)}" ${checked ? 'checked' : ''} onclick="event.stopPropagation()" onchange="subscriptionGitHubFolderToggle(this)"><span>${esc(name)}</span><small>${subscriptionTreeCount(child)}</small></summary><div>${render(child,folder)}</div></details>`;
+  }).join('') + node.files.sort((a,b) => a.name.localeCompare(b.name)).map(file => {
+    const inherited = [...selectedFolders].some(folder => file.path.startsWith(folder + '/'));
+    return `<label class="sub-tree-leaf"><input type="checkbox" data-gh-file value="${esc(file.path)}" ${(inherited || selectedPaths.has(file.path)) ? 'checked' : ''} onchange="subscriptionGitHubFileToggle(this)"><span>${esc(file.name)}</span><small>${esc(file.type || '')}</small></label>`;
+  }).join('');
+  return render(root,'');
+}
+function subscriptionGitHubFolderToggle(input) {
+  const folder = input.value; const result = subscriptionGitHubDraft.result; if (!result) return;
+  if (input.checked) result.selectedFolders.add(folder); else result.selectedFolders.delete(folder);
+  input.closest('details')?.querySelectorAll('input[data-gh-folder],input[data-gh-file]').forEach(child => { if (child !== input) { child.checked = input.checked; result.selectedFolders.delete(child.dataset.ghFolder || ''); result.selectedPaths.delete(child.dataset.ghFile || ''); } });
+}
+function subscriptionGitHubFileToggle(input) {
+  const result = subscriptionGitHubDraft.result; if (!result) return;
+  if (input.checked) result.selectedPaths.add(input.value); else result.selectedPaths.delete(input.value);
+  if (!input.checked) {
+    let folder = input.closest('.sub-tree-folder');
+    while (folder) {
+      const checkbox = folder.querySelector(':scope > summary input[data-gh-folder]');
+      if (checkbox) { checkbox.checked = false; result.selectedFolders.delete(checkbox.value); }
+      folder = folder.parentElement?.closest('.sub-tree-folder');
+    }
+  }
+}
+function subscriptionTestGitHub(button) { subscriptionCaptureGitHubDraft(); subscriptionGitHubDraft.result = null; subscriptionGitHubMounted = null; subscriptionGitHubProgress = { operation:'test', stage:'credentials', current:0, total:0, cachedBytes:0, totalBytes:0, elapsedMs:0 }; renderSubscriptionPane(); ask('subscriptionTestGitHubBranch', { repository:subscriptionGitHubDraft.repository, branch:subscriptionGitHubDraft.branch, credentialTargetId:subscriptionGitHubDraft.credentialTargetId }, document.getElementById('sub-github-test') || button); }
+function subscriptionMountGitHub(button) {
+  subscriptionCaptureGitHubDraft(); const result = subscriptionGitHubDraft.result; if (!result) return;
+  const selectedPaths = [...document.querySelectorAll('input[data-gh-file]:checked')].map(input => input.value);
+  const selectedFolders = [...document.querySelectorAll('input[data-gh-folder]:checked')].map(input => input.value);
+  subscriptionGitHubProgressUpdate({ operation:'subscribe', stage:'validating', current:0, total:result.files.length, cachedBytes:0, totalBytes:Number(result.validation?.importableBytes) || 0, elapsedMs:0 });
+  ask('subscriptionMountGitHub', { repository:subscriptionGitHubDraft.repository, branch:subscriptionGitHubDraft.branch, credentialTargetId:subscriptionGitHubDraft.credentialTargetId, alias:subscriptionGitHubDraft.alias, expectedCommit:result.commit, selectedPaths, selectedFolders }, button);
+}
+
+function subscriptionSaveGateway(button) {
+  ask('subscriptionConfigure', { enabled: subscriptionData.enabled, displayName: document.getElementById('sub-display-name').value, advertisedHost: document.getElementById('sub-host').value, port: Number(document.getElementById('sub-port').value) }, button);
+}
+function subscriptionSetOnline(online, button) { ask('subscriptionSetOnline', { online }, button); }
+function subscriptionNewShare() { subscriptionCaptureSelectionDraft(); subscriptionEditingShare = 'new'; subscriptionEditorTab = 'general'; subscriptionSelectionDrafts.set('new',{selected:{},folders:{}}); renderSubscriptionPane(); }
+function subscriptionOpen(shareId) {
+  subscriptionCaptureSelectionDraft();
+  subscriptionEditingShare = shareId;
+  const tab = document.querySelector('.tab[data-tab="subscriptions"]');
+  if (tab && state.tab !== 'subscriptions') tab.dispatchEvent(new MouseEvent('click'));
+  else { renderSubscriptionPane(); ask('subscriptionState', {}); }
+}
+function subscriptionEditShare(id) { subscriptionCaptureSelectionDraft(); subscriptionEditingShare = subscriptionEditingShare === id ? '' : id; subscriptionEditorTab = 'general'; renderSubscriptionPane(); }
+function subscriptionCancelShare() { subscriptionSelectionDrafts.delete(subscriptionEditingShare); subscriptionEditingShare = ''; renderSubscriptionPane(); }
+function subscriptionSetEditorTab(tab) { subscriptionCaptureSelectionDraft(); subscriptionEditorTab = tab; renderSubscriptionPane(); }
+function subscriptionProtectionChanged() {
+  const protectedBroker = document.getElementById('sub-share-protection').value === 'secret-protected';
+  document.querySelector('.sub-secret-control')?.classList.toggle('hidden', !protectedBroker);
+  document.querySelector('.sub-secret-actions')?.classList.toggle('hidden', !protectedBroker);
+}
+function subscriptionShowSecret(secret) {
+  if (!secret) return;
+  pkModal({ title:'Secret Protected Broker', message:'Share this separately from the Magic Link. It contains the private Control Port and secret material.\n\n' + secret, okLabel:'Copy Secret', onOk:()=>navigator.clipboard.writeText(secret) });
+}
+function subscriptionRotateSecret(shareId) {
+  const current = Number(document.getElementById('sub-share-control-port')?.value)||0;
+  pkModal({ title:'Rotate Broker Secret', message:'The old secret stops authorizing new Sync transfers immediately. Existing caches remain readable.', input:true, defaultValue:String(current), okLabel:'Rotate', danger:true, onOk:value=>ask('subscriptionRotateSecret',{shareId,controlPort:Number(value)||current}) });
+}
+function subscriptionSyncFolderStates(type) {
+  const pickers = type ? document.querySelectorAll(`.sub-picker[data-sub-picker="${type}"]`) : document.querySelectorAll('.sub-picker');
+  pickers.forEach(picker => {
+    const items = [...picker.querySelectorAll('input[data-sub-item]')];
+    picker.querySelectorAll('input[data-sub-folder]').forEach(folder => {
+      const path = folder.value;
+      const descendants = items.filter(item => path === '' || item.dataset.subCat === path || item.dataset.subCat?.startsWith(path + '/'));
+      folder.indeterminate = !folder.checked && descendants.some(item => item.checked);
+      folder.setAttribute('aria-checked', folder.indeterminate ? 'mixed' : folder.checked ? 'true' : 'false');
+    });
+  });
+}
+function subscriptionFolderToggle(input) {
+  const details=input.closest('details'), type=input.dataset.subFolder, folder=input.value;
+  if (!input.checked) subscriptionUncheckCoveringFolders(type, folder, input);
+  const targets = folder === '' ? details.querySelectorAll(`input[data-sub-item="${type}"],input[data-sub-folder="${type}"]`) : [...details.querySelectorAll(`input[data-sub-item="${type}"],input[data-sub-folder="${type}"]`)].filter(item => item === input || item.dataset.subCat === folder || item.dataset.subCat?.startsWith(folder + '/') || item.dataset.subFolder === type && (item.value === folder || item.value.startsWith(folder + '/')));
+  targets.forEach(item => item.checked=input.checked);
+  subscriptionSyncFolderStates(type);
+  subscriptionCaptureSelectionDraft();
+  subscriptionUpdateSelectedCount(type);
+}
+function subscriptionItemToggle(input) {
+  if (!input.checked) subscriptionUncheckCoveringFolders(input.dataset.subItem, input.dataset.subCat || '');
+  subscriptionSyncFolderStates(input.dataset.subItem);
+  subscriptionCaptureSelectionDraft(); subscriptionUpdateSelectedCount(input.dataset.subItem);
+}
+function subscriptionUncheckCoveringFolders(type, itemPath, except) {
+  document.querySelectorAll(`input[data-sub-folder="${type}"]:checked`).forEach(folder => {
+    if (folder !== except && (folder.value === '' || itemPath === folder.value || itemPath.startsWith(folder.value + '/'))) folder.checked = false;
+  });
+}
+function subscriptionCaptureSelectionDraft() {
+  if (!subscriptionEditingShare || !document.querySelector('.sub-broker-settings')) return;
+  const selected = {}, folders = {}, openFolders = {};
+  for (const type of ['skills','notes','papers','prompts','scripts','packages','servers','recipes']) {
+    selected[type] = [...document.querySelectorAll(`input[data-sub-item="${type}"]:checked`)].map(input => input.value);
+    folders[type] = [...document.querySelectorAll(`input[data-sub-folder="${type}"]:checked`)].map(input => input.value);
+    openFolders[type] = [...document.querySelectorAll(`.sub-tree-folder[open][data-sub-tree-type="${type}"]`)].map(folder => folder.dataset.subTreePath);
+  }
+  const openTypes = [...document.querySelectorAll('.sub-picker[open]')].map(picker => picker.dataset.subPicker);
+  subscriptionSelectionDrafts.set(subscriptionEditingShare,{selected,folders,openFolders,openTypes});
+}
+function subscriptionUpdateSelectedCount(type) {
+  const picker = document.querySelector(`input[data-sub-folder="${type}"]`)?.closest('.sub-picker');
+  if (!picker) return;
+  const selected = picker.querySelectorAll(`input[data-sub-item="${type}"]:checked`).length;
+  const total = picker.querySelectorAll(`input[data-sub-item="${type}"]`).length;
+  const summary = picker.querySelector(':scope>summary span');
+  if (summary) summary.textContent = `${selected} selected · ${total} total`;
+}
+function subscriptionSaveShare(shareId, button) {
+  const selected = {}, folders = {}, contentTypes = [];
+  for (const type of ['skills','notes','papers','prompts','scripts','packages','servers','recipes']) {
+    folders[type] = [...document.querySelectorAll(`input[data-sub-folder="${type}"]:checked`)].map(input => input.value);
+    const covers = folder => folders[type].includes('') || folders[type].includes(folder);
+    selected[type] = [...document.querySelectorAll(`input[data-sub-item="${type}"]:checked`)].filter(input => !covers(input.dataset.subCat || '')).map(input => input.value);
+    if (folders[type].length || selected[type].length) contentTypes.push(type);
+  }
+  const ipRules = document.getElementById('sub-share-ip-rules').value.split(/[\n,]+/).map(value => value.trim()).filter(Boolean);
+  const share = (subscriptionData.shares || []).find(item => item.shareId === shareId);
+  const accountInputs = [...document.querySelectorAll('input[data-sub-account]')];
+  const accountRules = accountInputs.length ? accountInputs.filter(input => input.checked).map(input => input.dataset.subAccount) : [...(share?.accountRules || [])];
+  ask('subscriptionUpsertShare', { shareId, name: document.getElementById('sub-share-name').value, visibility: document.getElementById('sub-share-visibility').value, contentTypes, selected, folders, accessMode:document.getElementById('sub-share-access-mode').value, ipRules, accountMode:document.getElementById('sub-share-account-mode').value, accountRules, protection:document.getElementById('sub-share-protection').value, secret:document.getElementById('sub-share-secret')?.value||'', controlPort:Number(document.getElementById('sub-share-control-port').value)||0, dataPort:Number(document.getElementById('sub-share-data-port').value)||0 }, button);
+}
+function subscriptionSetSharePublished(shareId, published) { ask('subscriptionSetSharePublished', { shareId, published }); }
+function subscriptionDeleteShare(shareId, button) { ask('subscriptionDeleteShare', { shareId }, button); }
+function subscriptionAdd(button) { ask('subscriptionAdd', { magicLink: document.getElementById('sub-magic-link').value.trim(), alias: document.getElementById('sub-alias').value.trim(), secret:document.getElementById('sub-broker-secret').value.trim() }, button); }
+function subscriptionRename(id, alias) {
+  pkModal({ title:'Rename subscribed Broker', message:'This display name is local to this Subscriber. Leave it blank to use the published Broker name.', input:true, defaultValue:alias || '', okLabel:'Rename', onOk:value=>ask('subscriptionRename',{id,alias:value.trim()}) });
+}
+function subscriptionRemove(id, name) {
+  pkModal({ title:`Remove subscription "${name}"?`, message:'Stops future updates and deletes the local subscription cache. The remote Broker is not changed.', okLabel:'Remove', danger:true, onOk:()=>ask('subscriptionRemove',{id}) });
+}

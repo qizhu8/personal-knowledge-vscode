@@ -1,0 +1,69 @@
+{
+  "schema": "pkm.next.knowledge-index-provenance/v1",
+  "capture": "node next-server/scripts/capture-knowledge-index.mjs",
+  "verification": "node next-server/scripts/capture-knowledge-index.mjs --check",
+  "transformation": "Reviewed TypeScript bridge, not byte-identical extraction. Original Chat ingestion supplies scoped immutable source references, 16000-code-point observation chunks and append/CAS/typed-edge semantics. Markdown Note/Skill/Paper adapters did not exist in Chat ingestion: these are generic pieces with explicit native-kind/body/all-metadata projection. Only explicit supported Knowledge links become edges. knowledgeSnapshot and the existing link-revision compiler are reused. Compute source pins strengthen metadata-only revisions with raw/body/projected-field SHA-256. The native ChatMemoryWorker is pinned separately and is not represented as an original source capture.",
+  "boundary": "Host library only, trusted factory for a new worker in a new staging directory. Existing worker/Python read-only. No model, network, public RPC, live DB replacement, source mutation, incremental replay or production activation.",
+  "qualification": "Original create/append/link operation receipts are idempotent, but source body replacement/removal/reconciliation has no safe API. This capture qualifies rebuild-only, not durable incremental updates.",
+  "tests": "npm --prefix next-server run build && node --test next-server/tests/compute-knowledge-index.test.mjs",
+  "files": [
+    {
+      "source": "modules/pkm-memory-engine/src/pkm_memory_engine/engine.py",
+      "captured": "src/domain/knowledge-index.ts",
+      "sourceSha256": "8d602fb5574a21632f880fefc00a4c219b40477cf33588fd0373aa462376c1a3",
+      "capturedSha256": "b583b87d7633a6a310340403a6cd09b56cc72d53be9e9abbb1a23683c5158314"
+    },
+    {
+      "source": "modules/pkm-memory-engine/src/pkm_memory_engine/memory.py",
+      "captured": "src/domain/knowledge-index.ts",
+      "sourceSha256": "47c96b1c54b87a45c1ebbbfa88563b3b3a6c5e569b8b7ac16e84522d8c87964e",
+      "capturedSha256": "b583b87d7633a6a310340403a6cd09b56cc72d53be9e9abbb1a23683c5158314"
+    },
+    {
+      "source": "src/memory/chat-memory-service.ts",
+      "captured": "src/domain/knowledge-index.ts",
+      "sourceSha256": "73aca4125e88d5fa9c4f4f40ad74e9a17a7ed1521ee47f64c69ffd3e61e55673",
+      "capturedSha256": "b583b87d7633a6a310340403a6cd09b56cc72d53be9e9abbb1a23683c5158314"
+    },
+    {
+      "source": "src/retrieval/retrieval-snapshot.ts",
+      "captured": "src/domain/knowledge-index.ts",
+      "sourceSha256": "d0963b3f32c6c1e339035a66382bfb06d931ac128f0ccc2bfc3d57c7485b72f1",
+      "capturedSha256": "b583b87d7633a6a310340403a6cd09b56cc72d53be9e9abbb1a23683c5158314"
+    },
+    {
+      "source": "next-server/src/domain/knowledge-contracts.ts",
+      "captured": "src/domain/knowledge-index.ts",
+      "sourceSha256": "0f4c453b726e70df7c3e8df3e4eb253114d89d4cb88eb8ce3e4f561bf336ab2f",
+      "capturedSha256": "b583b87d7633a6a310340403a6cd09b56cc72d53be9e9abbb1a23683c5158314"
+    },
+    {
+      "source": "next-server/src/knowledge-snapshot.ts",
+      "captured": "src/compute/knowledge-index.ts",
+      "sourceSha256": "b9f7c55bd1181d378c754a792e8abb3f835169f1c18fe827cbfc2752266f5df4",
+      "capturedSha256": "081e431a6b1d8d5cc7f8dff315e620e2f4aba88f37d7d2f28799ad42974a65b2"
+    },
+    {
+      "source": "next-server/src/links.ts",
+      "captured": "src/compute/knowledge-index.ts",
+      "sourceSha256": "32ec06a7fc645426d34ee5b07e480acbd495fcf6dadc5de7df953ab755781b26",
+      "capturedSha256": "081e431a6b1d8d5cc7f8dff315e620e2f4aba88f37d7d2f28799ad42974a65b2"
+    },
+    {
+      "source": "next-server/src/compute/contracts.ts",
+      "captured": "src/compute/knowledge-index.ts",
+      "sourceSha256": "fc844905e4a9035100454391704c8f665d254cc1d766d7f2d00be7e527af11f2",
+      "capturedSha256": "081e431a6b1d8d5cc7f8dff315e620e2f4aba88f37d7d2f28799ad42974a65b2"
+    }
+  ],
+  "sourceHistory": [
+    {
+      "source": "next-server/src/compute/chat-memory-worker.ts",
+      "previousSourceSha256": "1c9023df5d900ad2d7af149c4116cfa7d942bb65439f38f41dc14e4684db9fbf",
+      "captured": "src/compute/knowledge-index.ts",
+      "capturedSha256": "5d124574f9923b66ea3f7816f86f4f1fc15dbce97114de51bc8dae878c930e3b",
+      "supersededIn": "Batch18",
+      "reason": "This native worker was extended for paired engine backup and restore; the captured hash is an archival Batch18 value, not a claim about the current file. Current bytes are recorded by the active capture and separately pinned as native implementation."
+    }
+  ]
+}

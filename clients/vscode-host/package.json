@@ -1,0 +1,56 @@
+{
+  "name": "pkm-next-nonproduction-host",
+  "displayName": "PKM Next Nonproduction Host",
+  "description": "Isolated experimental host for an externally started next-server.",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "pkm-nonproduction",
+  "engines": { "vscode": "^1.96.0" },
+  "main": "./dist/extension.cjs",
+  "files": ["dist/**", "README.md", "LICENSE"],
+  "activationEvents": [
+    "onCommand:pkm.next.connect",
+    "onCommand:pkm.next.disconnect",
+    "onCommand:pkm.nextHost.open",
+    "onCommand:pkm.nextHost.setToken",
+    "onCommand:pkm.nextHost.importPreview",
+    "onCommand:pkm.nextHost.importConfirm",
+    "onCommand:pkm.nextHost.migrationConnect",
+    "onCommand:pkm.nextHost.migrationDisconnect",
+    "onCommand:pkm.nextHost.migrationState",
+    "onCommand:pkm.nextHost.migrationInvoke"
+  ],
+  "contributes": {
+    "commands": [
+      { "command": "pkm.next.connect", "title": "PKM Next (Experimental): Connect" },
+      { "command": "pkm.next.disconnect", "title": "PKM Next (Experimental): Disconnect" },
+      { "command": "pkm.nextHost.open", "title": "PKM Next (Experimental): Open" },
+      { "command": "pkm.nextHost.setToken", "title": "PKM Next (Experimental): Store Token" },
+      { "command": "pkm.nextHost.importPreview", "title": "PKM Next (Experimental): Preview First-Run Import" },
+      { "command": "pkm.nextHost.importConfirm", "title": "PKM Next (Experimental): Confirm Inspected Import" },
+      { "command": "pkm.nextHost.migrationConnect", "title": "PKM Next (Experimental): Connect Isolated Managed MCP" },
+      { "command": "pkm.nextHost.migrationDisconnect", "title": "PKM Next (Experimental): Drain Isolated Managed MCP" },
+      { "command": "pkm.nextHost.migrationState", "title": "PKM Next (Experimental): Isolated Managed MCP State" },
+      { "command": "pkm.nextHost.migrationInvoke", "title": "PKM Next (Experimental): Invoke Isolated Managed MCP" }
+    ],
+    "configuration": {
+      "title": "PKM Next Experimental Host",
+      "properties": {
+        "pkm.nextHost.managedRoot": { "type": "string", "scope": "machine", "description": "Absolute isolated experimental generation root, provisioned with experimental/managed-migration.mjs. Never use the production PKM managed root." },
+        "pkm.nextHost.origin": { "type": "string", "scope": "machine", "description": "Externally provisioned HTTP origin, http://127.0.0.1:PORT." },
+        "pkm.nextHost.workspaceId": { "type": "string", "scope": "machine", "description": "Independently provisioned expected server workspace ID." },
+        "pkm.nextHost.actorId": { "type": "string", "scope": "machine", "description": "Independently provisioned expected authenticated actor ID." }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "package:vsix": "npm run build && node package-host.mjs",
+    "test:installed": "npm run build && node installed-test.mjs",
+    "test": "npm run build && node --test host.test.mjs",
+    "test:live-runtime": "node --test live-runtime.test.mjs",
+    "test:electron": "npm run build && node electron-test.mjs",
+    "test:electron:live": "npm run build && node live-electron-test.mjs",
+    "test:electron:migration": "npm run build && node migration-electron-test.mjs"
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "schema": "pkm.next.domain-capture/v1",
+  "sourceRoot": "..",
+  "capturedRoot": ".",
+  "notes": "Only the native Manager instruction literal is captured exactly. Worker identity, handoff and session sources are inspected provenance, not copied or claimed as runnable legacy behavior. The durable scheduler and host adapters are new.",
+  "files": [
+    {
+      "source": "src/chat/api-chat-view.ts",
+      "sourceSha256": "71ddd872aaf2e1fdf1a70616ebc4d50f03e4552152a6670b0e44cfcfdc2397e6",
+      "symbols": [
+        "native Manager instruction"
+      ],
+      "captured": "src/domain/manager-runtime-original.ts",
+      "capturedSha256": "574143b2dcb5bfa265fdfb36ea48b7a9c11baa98007eaed0fd64db7d7081634c"
+    }
+  ],
+  "inspected": [
+    {
+      "source": "src/chat/worker-tree.ts",
+      "sourceSha256": "59f8dc52f2007c48e7512a7d1c96814d2a97c8273022c3cba9d8551487969131"
+    },
+    {
+      "source": "src/chat/worker-result-versions.ts",
+      "sourceSha256": "9d16af875d5a5327bbe3dce614217ed496a955373f2ec3772b4aab60a2f14e7d"
+    },
+    {
+      "source": "src/agent-sessions/agent-session-lifecycle.ts",
+      "sourceSha256": "0213d947184d24cadf6ac70a49d3efa7ca8beee8db64a1ee15291636df70e4b8"
+    }
+  ]
+}

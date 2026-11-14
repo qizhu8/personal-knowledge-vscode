@@ -1,0 +1,67 @@
+{
+  "schema": "pkm.domain-capture/v1",
+  "files": [
+    {
+      "source": "src/skills/skill-router-config.ts",
+      "captured": "src/domain/skill-routing-sources.ts",
+      "sourceSha256": "1cbf37b7f5c2c11bf234ca71f9facd589979d8c5c23cbc9fed407b25fd996abd",
+      "capturedSha256": "1cbf37b7f5c2c11bf234ca71f9facd589979d8c5c23cbc9fed407b25fd996abd"
+    },
+    {
+      "source": "src/skills/pkm-skill-projection.ts",
+      "captured": "src/domain/skill-routing-projection.ts",
+      "sourceSha256": "521b2bb9652a6187d1a0673e13549f7d1a8b6060b475a83fa13fa728d5071100",
+      "capturedSha256": "9d6eb62f522f82c11e7324a51cf80bbc0b881e595f6751a661124e8ab7fc9fda"
+    },
+    {
+      "source": "src/chat/chat-memory.ts",
+      "captured": "src/domain/skill-routing-terms.ts",
+      "sourceSha256": "84b779aee0fcbf48b22cfab781fe8838fcf44d176897b39ea5d06866db42f2d4",
+      "capturedSha256": "2eb87bc8ff2e7d620bbe1784813fd18976d4eedbb49e27df977262e9dc4a35ce"
+    },
+    {
+      "source": "src/chat/knowledge-reader.ts",
+      "captured": "src/domain/skill-routing-selection.ts",
+      "sourceSha256": "914cd549ea97d39d16bd434efc171fa24e90ed49027536610cea1afba5a187b9",
+      "capturedSha256": "83a72f49c9a0815af605091dbd717c07160d706b066772ce965c52793d3125a0"
+    },
+    {
+      "source": "src/chat/chat-retrieval-learning.ts",
+      "captured": "src/domain/skill-routing-prompt.ts",
+      "sourceSha256": "f3df1089831c37c7fc490d29ee177ee6889b214529c76594a2f8e79424113496",
+      "capturedSha256": "89ebc8cc6b9bcecda488c920c1ea6bb70b583c05d3252508c3549a2cdccff466"
+    },
+    {
+      "source": "src/mcp/mcp.ts",
+      "captured": "src/domain/skill-routing-original.ts",
+      "sourceSha256": "2a5f623b20b71e3d3ce12283db1fbcb01fb5fa4b43ebbf29d2fd9a28a992f948",
+      "capturedSha256": "7f2f5fc661e15562b1af63e60455339ce4149a197b9d146ae22e840e4163d35c"
+    },
+    {
+      "source": "src/mcp/mcp.ts",
+      "captured": "src/domain/skill-routing-casefold.ts",
+      "sourceSha256": "2a5f623b20b71e3d3ce12283db1fbcb01fb5fa4b43ebbf29d2fd9a28a992f948",
+      "capturedSha256": "bd3672cf11f13172c6ad862c6929a0babf1b7207632ae3d3eba3e206298f9d6d"
+    },
+    {
+      "source": "src/mcp/mcp.ts",
+      "captured": "src/domain/skill-routing-context.ts",
+      "sourceSha256": "2a5f623b20b71e3d3ce12283db1fbcb01fb5fa4b43ebbf29d2fd9a28a992f948",
+      "capturedSha256": "6f17d00241edcbacae0d42e2dede48239523ecd7cec516e532114da4b94e20e3"
+    },
+    {
+      "source": "tests/test-skill-router-config.js",
+      "captured": "tests/skill-routing-legacy.test.mjs",
+      "sourceSha256": "26e3b670fe329c7ab151dc250bc6e5e75eb7807c6b0ac0fe58c08a68753aa06f",
+      "capturedSha256": "7f65db2c00eebdd2a7694132b60c520b98a963cd497fd2d6941048a501fae130"
+    },
+    {
+      "source": "tests/test-chat-online-learning.js",
+      "captured": "tests/skill-routing-prompt-legacy.test.mjs",
+      "sourceSha256": "05e396fb5c9832678b0bfb24bd89e89dc717dd13fb44010642b653579cce909a",
+      "capturedSha256": "b3bf44f0db1492aaca3981b39caafa75170110b12546e97fb83d3f53562d5340"
+    }
+  ],
+  "transformation": "AST captures original source-priority normalization, raw router source parsing/rendering, automaticChatSkills, term scoring, ranked evidence priorities and pre-answer prompt/selection parsing. Only filesystem/host seams are replaced by bounded supplied values. The generated Python MCP metadata-threshold routing is retained as non-executable source evidence for the explicit TypeScript fallback port.",
+  "qualification": "Pure read-only projection/routing only. MCP fallback consumes validated legacy TS Skill projection fields, but normalizes raw priority as the original MCP does; no arbitrary YAML-type coercion is claimed. Casefold table is frozen from the capture Python Unicode version. No VS Code target discovery/injection, globalState/config writes, subscription cache, related_recipes state, retrieval worker/boundary generation, online learning, model or Skill execution parity is claimed. Related Recipe discovery is explicitly unavailable, not an assertion of no matches."
+}

@@ -1,0 +1,57 @@
+{
+  "schema": "pkm.next.domain-capture/v1",
+  "transformation": "AST-selected original capability schema binding, discovery, native classification, context validation and batch scheduler/execution bodies are unchanged. Only ApiChatRequest and ChatToolLoopGuard dependency types are narrowed to the exact used members. New native gateway adds fixed authenticated actor/context, Core receipt identifiers, exact approval verifier, bounded steps/deadlines, redaction and unknown outcomes; it does not migrate filesystem/process executors or permit dynamic discovery authority.",
+  "files": [
+    {
+      "source": "src/chat/api-chat-client.ts",
+      "captured": "src/domain/tool-gateway-original.ts",
+      "declarations": [
+        "ChatImage",
+        "ApiChatMessage",
+        "ApiChatTool",
+        "ApiChatToolEvent"
+      ],
+      "sourceSha256": "e6cbf1482c4bdcead1232d17114af285e16be4ec1154b4f5f288e1084780e57a",
+      "capturedSha256": "58a29727335a117713f2677bb54779cdaf4b17c3340d86953bb34557b5b1b1d4"
+    },
+    {
+      "source": "src/capabilities/registry.ts",
+      "captured": "src/domain/tool-gateway-original.ts",
+      "declarations": [
+        "Capability",
+        "CapabilityError",
+        "validateCapabilityInput",
+        "CapabilityRegistry"
+      ],
+      "sourceSha256": "4ad17aa21a16a77789664a0524d1ee06bd63758e0b5384e240d83ae19cf4923c",
+      "capturedSha256": "58a29727335a117713f2677bb54779cdaf4b17c3340d86953bb34557b5b1b1d4"
+    },
+    {
+      "source": "src/chat/capability-tools.ts",
+      "captured": "src/domain/tool-gateway-original.ts",
+      "declarations": [
+        "coreTools",
+        "nativeReads",
+        "nativeToolCapabilities",
+        "projectNativeCapabilityEvent",
+        "capabilityTools"
+      ],
+      "sourceSha256": "fdb9a96bc0f72c7dc3383c789e6ed35c10f93077dd934f92719138f52494eeac",
+      "capturedSha256": "58a29727335a117713f2677bb54779cdaf4b17c3340d86953bb34557b5b1b1d4"
+    },
+    {
+      "source": "src/chat/chat-tool-execution.ts",
+      "captured": "src/domain/tool-gateway-original.ts",
+      "declarations": [
+        "boundedToolContext",
+        "chatToolResultContext",
+        "chatToolBatchContext",
+        "ChatToolScheduler",
+        "executeChatToolBatch",
+        "cancellable"
+      ],
+      "sourceSha256": "7b4aadb7609c2865c4cdbc869a496fee433b2505cba621330a4854dfe3d867e2",
+      "capturedSha256": "58a29727335a117713f2677bb54779cdaf4b17c3340d86953bb34557b5b1b1d4"
+    }
+  ]
+}

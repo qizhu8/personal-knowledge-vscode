@@ -1,0 +1,139 @@
+{
+  "schema": "pkm.knowledge-search-provenance/v1",
+  "files": [
+    {
+      "source": "src/knowledge/filestore.ts",
+      "captured": "src/search-contracts.ts",
+      "sourceSha256": "c5c3a9761562818529a00aedb96aef254bef34dc80a4ed31f31efd39bc7a97a5",
+      "capturedSha256": "31ae3e33bf23447ca434edd26c868f38decf4104aaa02553c2d9ea8e547cb9a4"
+    },
+    {
+      "source": "src/knowledge/filestore.ts",
+      "captured": "src/search.ts",
+      "sourceSha256": "c5c3a9761562818529a00aedb96aef254bef34dc80a4ed31f31efd39bc7a97a5",
+      "capturedSha256": "f4ac57bc2a924c00fe78e238139121f1cd5dc64d3ee5daf4b2837e7f1e166b80"
+    },
+    {
+      "source": "src/knowledge/filestore.ts",
+      "captured": "src/domain/search.ts",
+      "sourceSha256": "c5c3a9761562818529a00aedb96aef254bef34dc80a4ed31f31efd39bc7a97a5",
+      "capturedSha256": "16dd67a7247bed03380d7464e7e0afe90c3e9e8779addf2dcabc2695070780fb"
+    },
+    {
+      "source": "src/knowledge/filestore.ts",
+      "captured": "tests/search.test.mjs",
+      "sourceSha256": "c5c3a9761562818529a00aedb96aef254bef34dc80a4ed31f31efd39bc7a97a5",
+      "capturedSha256": "7a645679d673c25d1b4b58f11b2ead58be7d4bedf59dec164678e8a20e99f155"
+    }
+  ],
+  "source": {
+    "path": "src/knowledge/filestore.ts",
+    "sha256": "c5c3a9761562818529a00aedb96aef254bef34dc80a4ed31f31efd39bc7a97a5",
+    "declarations": [
+      {
+        "name": "SearchOptions",
+        "startLine": 31,
+        "endLine": 31,
+        "sha256": "41d3b2f71b462dd5b08afd945019496995fcb6ee9f3a6b8c75eb7c1b330825d8",
+        "text": "export interface SearchOptions { regex?: boolean; caseSensitive?: boolean; }\n"
+      },
+      {
+        "name": "searchMatches",
+        "startLine": 32,
+        "endLine": 38,
+        "sha256": "c4a1c7ee64e7ee2396015a5a0767484395d5bbf26c2ccaadc579af1b143ff64f",
+        "text": "function searchMatches(query: string, options: SearchOptions, values: unknown[]): boolean {\n  const source = options.regex ? query : query.replace(/[.*+?^${}()|[\\]\\\\]/g, \"\\\\$&\");\n  try {\n    const pattern = new RegExp(source, options.caseSensitive ? \"\" : \"i\");\n    return values.some(value => pattern.test(String(value || \"\")));\n  } catch { return false; }\n}\n"
+      },
+      {
+        "name": "noteSearch",
+        "startLine": 496,
+        "endLine": 505,
+        "sha256": "489ab699334234deaa8ff2ee41e143da174d5e2132bd8933463afce3a8d516b9",
+        "text": "export function noteSearch(q: string, options: SearchOptions = {}): any[] {\n  return allNoteFiles().map(file => ({ file, note: noteFromFile(file) }))\n    .filter(({ file, note }) => searchMatches(q, options, [\n      note.title, note.description, note.content, note.slug, note.category, note.type,\n      file.rel, join(\"notes\", file.rel), file.full, ...JSON.parse(note.tags || \"[]\"),\n    ]))\n    .sort((a, b) => (b.note.updated_at || \"\").localeCompare(a.note.updated_at || \"\"))\n    .slice(0, 100)\n    .map(({ note: { content, ...meta } }) => meta);\n}\n"
+      },
+      {
+        "name": "skillSearch",
+        "startLine": 1315,
+        "endLine": 1322,
+        "sha256": "d5fa23a8105c0cb2ad123baf6f90e20d7b969e3c62307ef8878c4db8be53bcb6",
+        "text": "export function skillSearch(q: string, options: SearchOptions = {}): any[] {\n  return allSkillFiles().map(skillFromFile)\n    .filter(r => searchMatches(q, options, [r.name, r._key, r.description, r.content, r.category, r.source_project, ...JSON.parse(r.tags || \"[]\")]))\n    .slice(0, 100)\n    .map(({ content, _key, ...meta }) => meta);\n}\n\n/** Find a skill's file by its (unique) name. */\n"
+      },
+      {
+        "name": "paperSearch",
+        "startLine": 1546,
+        "endLine": 1554,
+        "sha256": "2b2d4d8360765305e98042bfc28f71549d6797485f4c3fae4d5bbff24dede744",
+        "text": "export function paperSearch(q: string, options: SearchOptions = {}): any[] {\n  const matches = allPaperFiles().map(paperFromFile).filter(p => searchMatches(q, options,\n    [p.slug, p.title, p.description, p.content, p.topic, p.publisher, p.category, p.group,\n    p.url, p.file, p.year, ...p.authors, ...p.tags, ...p.conclusions, ...p.implementation, ...p.assumptions,\n    ...p.cites.flatMap((cite: Cite) => [cite.paper, cite.note])]));\n  const counts = citationCounts(allPaperFiles().map(paperFromFile));\n  return matches.map(({ content, ...paper }) => ({ ...paper, citationCount: counts.get(paper.slug) || 0 }))\n    .sort((a, b) => (b.citationCount - a.citationCount) || ((b.year || 0) - (a.year || 0)) || a.title.localeCompare(b.title));\n}\n"
+      }
+    ]
+  },
+  "capturedFiles": [
+    {
+      "path": "src/search-contracts.ts",
+      "sha256": "31ae3e33bf23447ca434edd26c868f38decf4104aaa02553c2d9ea8e547cb9a4"
+    },
+    {
+      "path": "src/search.ts",
+      "sha256": "f4ac57bc2a924c00fe78e238139121f1cd5dc64d3ee5daf4b2837e7f1e166b80"
+    },
+    {
+      "path": "src/domain/search.ts",
+      "sha256": "16dd67a7247bed03380d7464e7e0afe90c3e9e8779addf2dcabc2695070780fb"
+    },
+    {
+      "path": "tests/search.test.mjs",
+      "sha256": "7a645679d673c25d1b4b58f11b2ead58be7d4bedf59dec164678e8a20e99f155"
+    }
+  ],
+  "searchableFields": {
+    "notes": [
+      "title",
+      "description",
+      "content",
+      "slug",
+      "category",
+      "type",
+      "relative Markdown path",
+      "portable notes/<relative Markdown path>",
+      "tags"
+    ],
+    "skills": [
+      "name",
+      "_key",
+      "description",
+      "content",
+      "category",
+      "source_project",
+      "tags"
+    ],
+    "papers": [
+      "slug",
+      "title",
+      "description",
+      "content",
+      "topic",
+      "publisher",
+      "category",
+      "group",
+      "url",
+      "file",
+      "year",
+      "authors",
+      "tags",
+      "conclusions",
+      "implementation",
+      "assumptions",
+      "cites[].paper",
+      "cites[].note"
+    ]
+  },
+  "ordering": {
+    "notes": "updated_at descending; stable ties retain the depth-first path order from knowledgeSnapshot",
+    "skills": "depth-first path order from knowledgeSnapshot",
+    "papers": "citationCount descending, year descending, title ascending"
+  },
+  "portability": {
+    "noteAbsolutePath": "Omitted because legacy file.full is host-specific; relative paths remain searchable.",
+    "regex": "Explicitly rejected; literal query is escaped before matching."
+  }
+}

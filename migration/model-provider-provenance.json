@@ -1,0 +1,137 @@
+{
+  "schema": "pkm.model-provider-provenance/v1",
+  "roots": {
+    "original": ".. (relative to next-server)",
+    "captured": ". (next-server)"
+  },
+  "sourceFiles": [
+    {
+      "path": "src/chat/api-chat-client.ts",
+      "sha256": "e6cbf1482c4bdcead1232d17114af285e16be4ec1154b4f5f288e1084780e57a"
+    },
+    {
+      "path": "src/chat/api-chat-models.ts",
+      "sha256": "68ce8a3809e16feccd02235e71bc7d5e8f5a9856482c6ea75bb659204555e9f3"
+    },
+    {
+      "path": "src/chat/api-chat-vscode.ts",
+      "sha256": "73486fba62e2303c5dddedf4ac553dd742235236e52bda9e48ec77d700534295"
+    },
+    {
+      "path": "tests/test-api-chat.js",
+      "sha256": "5e137991a8923a60234f26f34c00aaa2969a847335909cbd6bc634b47e9baa12"
+    }
+  ],
+  "capturedFiles": [
+    {
+      "path": "src/model-provider-contracts.ts",
+      "sha256": "2a30c03b328cbddf30fa8a435ad102ab2f50d4aae983f4d68c5dd6ba5565d94d"
+    },
+    {
+      "path": "src/model-provider.ts",
+      "sha256": "fa35ce2a4cc40c6d1567b146428f2cd340e3825e2aba45543b0e5b0a798b2511"
+    },
+    {
+      "path": "src/domain/model-provider.ts",
+      "sha256": "dab26beb35d3d516e4ae0082e62745898fea96feac3834d66e3d691b5df099a9"
+    },
+    {
+      "path": "tests/model-provider.test.mjs",
+      "sha256": "e0f279bbd4499dd4dbc17dcf1c1eaad7176cfa391e6a9f38a2306613aee9a875"
+    },
+    {
+      "path": "tests/model-provider-original.test.mjs",
+      "sha256": "a3cd766a76766f2bc375ec35a55278ff948c18d5010696f95606c454d1ae1541"
+    },
+    {
+      "path": "tests/model-provider-original-fixtures.mjs",
+      "sha256": "d7fde6f4bc647297d1f10240e07f97b84371339e951be8d4b3ec0e61dcdf6933"
+    },
+    {
+      "path": "scripts/capture-model-provider.mjs",
+      "sha256": "bd0575f2e97a5f3dfbccc3846dcb621f222e9c2745fa9059f149f83592b0ad29"
+    }
+  ],
+  "files": [
+    {
+      "source": "src/chat/api-chat-client.ts",
+      "sourceSha256": "e6cbf1482c4bdcead1232d17114af285e16be4ec1154b4f5f288e1084780e57a",
+      "captured": "src/model-provider.ts",
+      "capturedSha256": "fa35ce2a4cc40c6d1567b146428f2cd340e3825e2aba45543b0e5b0a798b2511"
+    },
+    {
+      "source": "src/chat/api-chat-models.ts",
+      "sourceSha256": "68ce8a3809e16feccd02235e71bc7d5e8f5a9856482c6ea75bb659204555e9f3",
+      "captured": "src/domain/model-provider.ts",
+      "capturedSha256": "dab26beb35d3d516e4ae0082e62745898fea96feac3834d66e3d691b5df099a9"
+    },
+    {
+      "source": "src/chat/api-chat-vscode.ts",
+      "sourceSha256": "73486fba62e2303c5dddedf4ac553dd742235236e52bda9e48ec77d700534295",
+      "captured": "src/model-provider-contracts.ts",
+      "capturedSha256": "2a30c03b328cbddf30fa8a435ad102ab2f50d4aae983f4d68c5dd6ba5565d94d"
+    },
+    {
+      "source": "tests/test-api-chat.js",
+      "sourceSha256": "5e137991a8923a60234f26f34c00aaa2969a847335909cbd6bc634b47e9baa12",
+      "captured": "tests/model-provider-original-fixtures.mjs",
+      "capturedSha256": "d7fde6f4bc647297d1f10240e07f97b84371339e951be8d4b3ec0e61dcdf6933"
+    }
+  ],
+  "captures": [
+    {
+      "source": "src/chat/api-chat-client.ts",
+      "name": "streamApiChat",
+      "startLine": 327,
+      "endLine": 500,
+      "sha256": "64afd230e15b9de99bc0b05623f52422a657bdead26593a17f76022e4cc2da5d"
+    },
+    {
+      "source": "src/chat/api-chat-client.ts",
+      "name": "chatTransportReceipt",
+      "startLine": 78,
+      "endLine": 84,
+      "sha256": "0ce286c2b97b3233d8e1fe7f4ca46792f5c7d5addf0f2e4e5c24b6917674757f"
+    },
+    {
+      "source": "src/chat/api-chat-models.ts",
+      "name": "model-functions",
+      "startLine": 3,
+      "endLine": 142,
+      "sha256": "12bc362bdcb203f1e8c592cb8af4616e843f507952044fd833f521d000c4bff8"
+    },
+    {
+      "source": "tests/test-api-chat.js",
+      "name": "delta-and-done-fixtures",
+      "startLine": 45,
+      "endLine": 46,
+      "sha256": "d9030cadcb147059274990e84aa1b2619e7a150d0d482ec1c7b9f5b88746fcbe"
+    },
+    {
+      "source": "tests/test-api-chat.js",
+      "name": "http-fragmentation-and-usage-fixtures",
+      "startLine": 527,
+      "endLine": 552,
+      "sha256": "8f41fea2aa5c880a8afade4e2fe0fcb0249e0da4fa78158bf3d5568d7c3c40ef"
+    }
+  ],
+  "behavior": {
+    "original": [
+      "OpenAI chat/completions with stream=true; Azure deployment path and 2024-06-01 default version.",
+      "Original explicitly disables SDK retries (maxRetries:0).",
+      "Original maps tool messages with tool_call_id, assistant tool_calls, public content/refusal/reasoning_summary, never hidden reasoning_content.",
+      "Original limits 16 streamed tool calls, 32000 argument characters and 100000 inference output bytes.",
+      "Original output budget counts all reported completion tokens absent an explicit thinking allowance."
+    ],
+    "intentionalBoundaries": [
+      "One inference only; no tool execution, tool loop, approval, durable turn orchestration, images, SDK, VS Code or native model discovery.",
+      "Length is surfaced as a terminal partial-output event without tool proposals; other invalid completions throw sanitized classifications.",
+      "No thinkingBudget parameter: hidden reasoning always counts against maxOutputTokens.",
+      "Host-only injected config, transport, secret handle resolver and authorization; no default provider or ambient fetch.",
+      "Exact endpoint allowlist, redirect:error, bounded SSE events/chunks/wire bytes/count/lifetime, strict UTF8 and explicit DONE required.",
+      "Tool schema supports only documented bounded subset; unsupported keywords fail closed. No remote schema references.",
+      "Transport errors are uncertain after open is invoked; retryability is advisory only and never permits automatic replay.",
+      "Catalog configuration readiness is not proof of remote model availability. HTTP fetch behavior is tested in memory only."
+    ]
+  }
+}

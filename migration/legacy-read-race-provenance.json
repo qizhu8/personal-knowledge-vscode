@@ -1,0 +1,7 @@
+{
+  "schema": "pkm.original-source-references/v1",
+  "scope": "Read-only reference to the original competing Board command test. The original cross-process CAS case remains unsupported under the single native workspace owner; the seven-row deterministic helper report and production-Core read guard tests are new native evidence, not captured original code.",
+  "originalSources": [
+    { "path": "tests/test-todo-board.js", "sha256": "c8f9bbdcad4d9c375b5dc727a9581b433504b24076669104b05e93f7c371df17" }
+  ]
+}

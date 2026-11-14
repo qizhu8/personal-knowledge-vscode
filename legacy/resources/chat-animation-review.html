@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-Hans">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PKM Chat · 动画总览</title>
+<link rel="stylesheet" href="../src/webview/api-chat.css">
+<style>
+  :root { color-scheme:dark; --vscode-foreground:#ddd; --vscode-editor-background:#18191b; }
+  body { display:block; height:auto; overflow:auto; margin:0; padding:24px; background:#18191b; color:#dedee3; font-family:system-ui,sans-serif; }
+  main { max-width:1120px; margin:auto; }
+  header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; margin-bottom:20px; }
+  h1 { font-size:22px; margin:0 0 6px; font-weight:600; }
+  p { margin:0; color:#a4a5ad; font-size:13px; line-height:1.6; }
+  .controls { display:flex; gap:8px; flex-wrap:wrap; }
+  button { padding:7px 12px; border:1px solid #4b4d56; border-radius:5px; color:inherit; background:#25262b; }
+  button:hover { background:#34353c; }
+  .grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+  .card { padding:16px; border:1px solid #34353c; border-radius:8px; background:#202125; }
+  h2 { font-size:14px; font-weight:600; margin:0; }
+  .state-code { font:11px monospace; color:#92939e; margin-top:4px; }
+  .examples { display:flex; align-items:center; justify-content:space-around; margin:14px 0; min-height:90px; background:#18191b; border-radius:5px; }
+  .sample { display:flex; align-items:center; gap:8px; font-size:13px; }
+  .large { width:84px; height:84px; display:flex; align-items:center; justify-content:center; }
+  .large > .chat-status-indicator { transform:scale(3); }
+  .caption { font-size:11px; color:#92939e; margin-bottom:8px; }
+  .variants { margin-top:22px; }
+  .roles { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; margin-top:12px; }
+  .role { padding:14px; border:1px solid #34353c; border-radius:6px; }
+  .role-icons { display:flex; flex-wrap:wrap; align-items:center; gap:14px; margin:12px 0; }
+  footer { margin-top:20px; padding-top:12px; border-top:1px solid #34353c; color:#92939e; font-size:12px; line-height:1.8; }
+  .review-paused * { animation-play-state:paused!important; }
+  @media(max-width:800px) { .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .roles { grid-template-columns:repeat(3,minmax(0,1fr)); } }
+  @media(max-width:480px) { body { padding:14px; } .grid { grid-template-columns:1fr; } .roles { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+</style>
+<main>
+  <header>
+    <div><h1>PKM Chat · 动画总览</h1><p>左侧是实际 28px 图标，右侧放大 3 倍。直接复用当前源码，不是重新绘制的示意图。</p></div>
+    <div class="controls"><button id="replay">重播失败开场</button><button id="pause" aria-pressed="false">暂停动画</button></div>
+  </header>
+  <section class="grid" id="states" aria-label="全部 Chat 状态"></section>
+  <section class="variants"><h2>全部角色 × 全部状态</h2><p>每列按上方九种状态顺序排列。Controller / Controlled 在所有状态下保留蓝色传送门；它标记角色，不代表当前有远端执行。</p><div class="roles" id="roles"></div></section>
+  <footer>Idle 和 Completed 使用同一款趴桌睡觉动画，但状态灯和语义不同。<br>失败只爆炸一次，之后持续眨眼；“减少动态效果”系统设置仍会关闭动画。此页面仅展示 UI，不启动 Chat 或模型。</footer>
+</main>
+<script src="../src/webview/api-chat-library.js"></script>
+<script>
+  const states = [
+    ["running","运行中","搅拌药锅，持续工作。"],
+    ["idle","空闲","趴桌睡觉 · 空心灰色状态灯。"],
+    ["awaiting-input","等待输入","挥手提醒 + 实心黄点，等待你回应。"],
+    ["awaiting-result","等待协作结果","沙漏周期性翻转 180°，沙粒始终向下落；不代表模型正在运行。"],
+    ["completed","完成","趴桌睡觉 · 绿色状态灯。"],
+    ["new-result","完成，有未读结果","同款睡觉，叠加未读信封。"],
+    ["paused","暂停","喝茶休息 · 黄色状态灯。"],
+    ["stopped","已停止","喝茶休息 · 灰色状态灯。"],
+    ["failed","失败","搅拌 → 爆炸一次 → 烟熏脸持续眨眼。"]
+  ];
+  function renderStates() {
+    const root = document.getElementById("states"); root.replaceChildren();
+    for (const [state,title,description] of states) {
+      const card = document.createElement("article"); card.className = "card"; card.dataset.previewState = state;
+      const heading = document.createElement("h2"); heading.textContent = title;
+      const code = document.createElement("div"); code.className = "state-code"; code.textContent = state;
+      const examples = document.createElement("div"); examples.className = "examples";
+      const sample = document.createElement("div"); sample.className = "sample";
+      sample.append(PkmChatStatusIndicator(state), document.createTextNode("PKM Chat"));
+      const large = document.createElement("div"); large.className = "large"; large.append(PkmChatStatusIndicator(state));
+      examples.append(sample,large);
+      const caption = document.createElement("div"); caption.className = "caption"; caption.textContent = "实际尺寸 28px                         放大细节 ×3";
+      const text = document.createElement("p"); text.textContent = description;
+      card.append(heading,code,examples,caption,text); root.append(card);
+    }
+  }
+  renderStates();
+  for (const [role,label] of [[undefined,"普通 Chat"],["manager","Manager"],["worker","Worker"],["controller","Controller"],["controlled","Controlled"]]) {
+    const card = document.createElement("article"); card.className = "role";
+    const title = document.createElement("h2"); title.textContent = label;
+    const icons = document.createElement("div"); icons.className = "role-icons";
+    for (const [state] of states) {
+      const icon = PkmChatStatusIndicator(state,role); icon.dataset.previewState = state; icons.append(icon);
+    }
+    card.append(title,icons); document.getElementById("roles").append(card);
+  }
+  document.getElementById("replay").onclick = () => {
+    for (const node of document.querySelectorAll('.chat-status-indicator[data-state="failed"]')) {
+      const next = PkmChatStatusIndicator("failed",node.dataset.chatRole); next.dataset.previewState = "failed"; node.replaceWith(next);
+    }
+  };
+  document.getElementById("pause").onclick = event => {
+    const paused = document.body.classList.toggle("review-paused");
+    event.currentTarget.textContent = paused ? "继续动画" : "暂停动画";
+    event.currentTarget.setAttribute("aria-pressed",String(paused));
+  };
+</script>
+</html>

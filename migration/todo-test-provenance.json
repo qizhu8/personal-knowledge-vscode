@@ -1,0 +1,43 @@
+{
+  "schema": "pkm.regression-capture/v1",
+  "transformation": "TypeScript AST selects unchanged top-level pure test bodies and their fixture constants/lifecycle helper. Host/filesystem/VM/bridge tests explicitly excluded; replacement persistence tests live in todo.test.mjs.",
+  "files": [
+    {
+      "source": "tests/test-note-work-items.js",
+      "sourceSha256": "25ad07cdf20931f54bceb65c9b6047466362ad71a8ba8ca591ea1867a015d780",
+      "captured": "tests/legacy-note-work-items.test.mjs",
+      "capturedSha256": "34b2f4e73cc647f308235906098860a232dc65d4c1ec8a7f315b47390ec346e1",
+      "included": [
+        "Work Items round-trip without rewriting surrounding Markdown, including CRLF and fenced examples",
+        "Malformed or ambiguous Work Items fail instead of disappearing or guessing completion",
+        "Only explicit body blocks are updated and all terminal outcomes remain distinct"
+      ],
+      "excluded": [
+        "Note bridge serializes concurrent writers, rejects stale manual edits and preserves lifecycle/resources"
+      ]
+    },
+    {
+      "source": "tests/test-note-work-item-lifecycle.js",
+      "sourceSha256": "ad3c9e359d7b958af35a4550b01c6a6019413a7052af380fedfa96f75fe32c08",
+      "captured": "tests/legacy-note-work-item-lifecycle.test.mjs",
+      "capturedSha256": "8e329740db28642f3c56bd807f67891e7802c526921b68edf20b31c48f24bd8d",
+      "included": [
+        "claim, protected edits, evidence, explicit reviewer acceptance and reopen are audited",
+        "release, Blocked reason and worker creation rules",
+        "collaboration and monitoring contracts validate bounded metadata without granting owner or reviewer powers",
+        "user accepts only Done with evidence and explicit reason, never inferred from Success",
+        "user edits can revise the contract and report Done without accepting it",
+        "user draft audit fields never replace authoritative history or forge acceptance",
+        "verification absence and empty reports never default to passed",
+        "invalid verification rejects canonical and lifecycle writes without changing the Note",
+        "strict extended validation and dependency graph reject invalid writes atomically",
+        "state x actor transition matrix follows documented owner and terminal/outcome rules",
+        "legacy blocks keep no inferred history and unrelated raw Markdown stays byte-identical"
+      ],
+      "excluded": [
+        "attempt display splits only explicit reopen and keeps prior outcome, verification and acceptance audit",
+        "shared lock gives exactly one competing claim; MCP cannot escalate and discovery preserves explicit pagination"
+      ]
+    }
+  ]
+}

@@ -2,10 +2,11 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Run Extension",
-      "type": "extensionHost",
+      "name": "Initialize Isolated PKM Workspace",
+      "type": "node",
       "request": "launch",
-      "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
+      "program": "${workspaceFolder}/dist/cli.js",
+      "args": ["init", "--data", "${workspaceFolder}/.migration-test-work/debug-workspace"],
       "preLaunchTask": "build"
     }
   ]
