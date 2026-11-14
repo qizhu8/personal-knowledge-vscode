@@ -10,7 +10,7 @@ import { pathToFileURL } from "node:url";
 import test from "node:test";
 
 const require = createRequire(import.meta.url), legacy = require("../legacy/dist/sync/github-sync.js");
-const dist = resolve(process.env.PKM_TEST_NEXT_DIST || "next-server/dist");
+const dist = resolve(process.env.PKM_TEST_NEXT_DIST || "dist");
 const load = name => import(pathToFileURL(join(dist, `${name}.js`)));
 const { SyncNativeGitProvider } = await load("sync-native-git-provider");
 const { adoptLegacyRootInPlaceExperimental, legacyRootAdoptionLockDirectory } = await load("legacy-root-adoption");
@@ -145,7 +145,7 @@ esac
     process.env.GIT_CONFIG_NOSYSTEM = "1";
     process.env.GIT_ALLOW_PROTOCOL = "file:ssh:https";
     git(dir, ["--git-dir", bare, "config", "http.receivepack", "true"]);
-    server = spawn(process.execPath, [resolve("next-server/tests/legacy-github-sync-https-server.mjs")], {
+    server = spawn(process.execPath, [resolve("tests/legacy-github-sync-https-server.mjs")], {
       env: { ...process.env, PKM_PRIVATE_SYNC_UI_FIXTURE: dir }, stdio: ["ignore", "pipe", "ignore"],
     });
     let output = "";
@@ -283,7 +283,7 @@ esac
       const configFile = join(dir, "crash-worker.json");
       await writeFile(configFile, JSON.stringify({ root, profile, cache, bin, home, target, policy,
         fault: process.env.PKM_TEST_TRASH_CRASH_POINT }), { mode: 0o600 });
-      const child = spawnSync(process.execPath, [resolve("next-server/tests/legacy-github-sync-trash-worker.mjs"), configFile],
+      const child = spawnSync(process.execPath, [resolve("tests/legacy-github-sync-trash-worker.mjs"), configFile],
         { env: { ...env, GIT_ALLOW_PROTOCOL: "file:ssh", TMPDIR: process.env.TMPDIR }, encoding: "utf8", timeout: 60000 });
       assert.equal(child.signal, "SIGKILL", `${child.stdout}\n${child.stderr}`);
       const journalDirectory = join(profile, "github-sync/experimental-next");

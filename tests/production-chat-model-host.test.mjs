@@ -13,7 +13,7 @@ import { startManagedClientSnapshotChat } from "../dist/managed-client-snapshot-
 import { createProductionChatModel } from "../dist/production-chat-model.js";
 
 const require = createRequire(import.meta.url);
-const originalExtension = process.env.PKM_TEST_LEGACY_CHAT_EXTENSION ?? resolve("..");
+const originalExtension = process.env.PKM_TEST_LEGACY_CHAT_EXTENSION ?? resolve("legacy");
 
 test("selected managed Chat uses its HTTP model and reports provider failure without fallback", { timeout: 30000 }, async t => {
   const dir = resolve("tests", `.production-model-host-${randomUUID()}`);

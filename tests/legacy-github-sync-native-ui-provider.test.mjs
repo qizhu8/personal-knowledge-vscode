@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 
-const dist = resolve(process.env.PKM_TEST_NEXT_DIST || "next-server/dist");
+const dist = resolve(process.env.PKM_TEST_NEXT_DIST || "dist");
 const { privateNativeGitUiProvider } = await import(pathToFileURL(join(dist, "legacy-github-sync-native-ui-provider.js")));
 
 test("private Git fixture refuses symlinked legacy target sources before reading them", async t => {

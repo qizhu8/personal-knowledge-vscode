@@ -12,7 +12,7 @@ import test from "node:test";
 
 const require = createRequire(import.meta.url);
 const original = require("../legacy/dist/sync/github-sync.js");
-const nextDist = resolve(process.env.PKM_TEST_NEXT_DIST || "next-server/dist");
+const nextDist = resolve(process.env.PKM_TEST_NEXT_DIST || "dist");
 const { LegacyGitLease } = await import(pathToFileURL(join(nextDist, "legacy-github-git-lease.js")));
 const { SyncTransportStore, initializeSyncTransportStore } = await import(pathToFileURL(join(nextDist, "sync-transport-store.js")));
 const { syncPlanHash } = await import(pathToFileURL(join(nextDist, "sync-plan.js")));

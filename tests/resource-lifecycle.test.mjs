@@ -20,21 +20,21 @@ test("schema-only definitions and executor exports work in either direct ESM imp
   for (const first of ["resource-lifecycle", "resource-lifecycle-contracts", "contracts"]) {
     const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
       import assert from "node:assert/strict";
-      await import("./next-server/dist/${first}.js");
-      const executor = await import("./next-server/dist/resource-lifecycle.js");
-      const schema = await import("./next-server/dist/resource-lifecycle-contracts.js");
-      const registry = await import("./next-server/dist/contracts.js");
+      await import("./dist/${first}.js");
+      const executor = await import("./dist/resource-lifecycle.js");
+      const schema = await import("./dist/resource-lifecycle-contracts.js");
+      const registry = await import("./dist/contracts.js");
       assert.equal(executor.resourceLifecycleDefinitions, schema.resourceLifecycleDefinitions);
       for (const definition of schema.resourceLifecycleDefinitions) {
         assert(registry.definitions.some(item => item.id === definition.id));
       }
-    `], { cwd: resolve(packageRoot, ".."), encoding: "utf8" });
+    `], { cwd: packageRoot, encoding: "utf8" });
     assert.equal(child.status, 0, child.stderr || child.stdout);
   }
 });
 
 async function fixture(t, area = "notes", body = "No references", path = "Team/Doc.md", content = Buffer.from([0, 255, 1])) {
-  const root = resolve("next-server/tests", `.resource-lifecycle-${randomUUID()}`);
+  const root = resolve("tests", `.resource-lifecycle-${randomUUID()}`);
   await mkdir(root, { recursive: true });
   t.after(() => rm(root, { recursive: true, force: true }));
   const documents = [];
@@ -77,7 +77,7 @@ const errorCode = (code, effect) => error => {
 };
 
 test("asset destination publication cannot replace a target created during its final race window", async t => {
-  const root = resolve("next-server/tests", `.resource-publication-race-${randomUUID()}`);
+  const root = resolve("tests", `.resource-publication-race-${randomUUID()}`);
   await mkdir(root, { recursive: true });
   t.after(() => rm(root, { recursive: true, force: true }));
   const destination = join(root, "destination.bin"), competing = Buffer.from("external target");

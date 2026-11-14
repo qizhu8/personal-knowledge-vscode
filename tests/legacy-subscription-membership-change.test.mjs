@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 
-const dist = resolve(process.env.PKM_TEST_NEXT_DIST || "next-server/dist");
+const dist = resolve(process.env.PKM_TEST_NEXT_DIST || "dist");
 const { validateMembershipChange, validatePendingMembershipRetry, membershipRequestSha256 } =
   await import(pathToFileURL(resolve(dist, "legacy-subscription-membership-change.js")));
 const hash = value => createHash("sha256").update(value).digest("hex");

@@ -32,7 +32,7 @@ test("private child uses requested credential, reconciles lost push and retains 
   fs.renameSync(data.bare, bare); fs.chmodSync(bare, 0o700);
   const alpha = path.join(root, "skills/InstallAlpha.md");
   const run = action => new Promise((resolve, reject) => {
-    const session = randomUUID(), child = fork(path.resolve("next-server/dist/legacy-github-sync-vscode-child.js"), [], {
+    const session = randomUUID(), child = fork(path.resolve("dist/legacy-github-sync-vscode-child.js"), [], {
       env: { PATH: process.env.PATH, HOME: fixture, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null",
         GIT_ALLOW_PROTOCOL: "file", GIT_TERMINAL_PROMPT: "0" }, stdio: ["ignore", "ignore", "pipe", "ipc"],
     });

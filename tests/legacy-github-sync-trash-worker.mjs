@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 const config = JSON.parse(readFileSync(process.argv[2], "utf8"));
 const require = createRequire(import.meta.url);
 const original = require("../legacy/dist/sync/github-sync.js");
-const load = name => import(pathToFileURL(resolve("next-server/dist", `${name}.js`)));
+const load = name => import(pathToFileURL(resolve("dist", `${name}.js`)));
 const { Storage } = await load("storage");
 const { SyncNativeGitProvider } = await load("sync-native-git-provider");
 const { openExperimentalLegacySyncHost } = await load("legacy-github-sync-experimental-host");

@@ -4,7 +4,7 @@ import { resolve, join } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 
-const dist = resolve(process.env.PKM_TEST_NEXT_DIST || "next-server/dist");
+const dist = resolve(process.env.PKM_TEST_NEXT_DIST || "dist");
 const { validateNativePriorityChange, validateNativeRefreshRetry, nativeSubscriptionChangeSha256 } =
   await import(pathToFileURL(join(dist, "native-subscription-priority.js")));
 const hash = value => createHash("sha256").update(value).digest("hex");

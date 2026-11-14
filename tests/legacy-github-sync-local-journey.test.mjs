@@ -123,13 +123,13 @@ test("adopted original root uses native Sync with real private bare Git push and
   await runtime.close(); runtime = undefined;
   await storage.close(); storage = undefined;
   const crash = spawnSync(process.execPath, [
-    resolve("next-server/tests/legacy-github-sync-publish-crash-child.mjs"), root, directory, bare,
+    resolve("tests/legacy-github-sync-publish-crash-child.mjs"), root, directory, bare,
     JSON.stringify(provider.host.policy), actor, interruptedId, pull.sessionId, pullReceipt.applyId,
   ], { encoding: "utf8", timeout: 60000, env: process.env });
   assert.equal(crash.status, 77, crash.stderr);
   const remoteCommit = git(directory, ["--git-dir", bare, "rev-parse", "refs/heads/main"]);
   const child = spawnSync(process.execPath, [
-    resolve("next-server/tests/legacy-github-sync-reconcile-child.mjs"), root, directory, bare,
+    resolve("tests/legacy-github-sync-reconcile-child.mjs"), root, directory, bare,
     JSON.stringify(provider.host.policy), actor, interruptedId,
   ], { encoding: "utf8", timeout: 60000, env: process.env });
   assert.equal(child.status, 0, child.stderr);

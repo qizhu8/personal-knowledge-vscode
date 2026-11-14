@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const repo = resolve(root, "..");
+const repo = resolve(root, "legacy");
 const source = "src/sync/github-sync.ts";
 const test = "tests/test-github-sync-model.js";
 const partialTest = "tests/test-github-sync-partial.js";

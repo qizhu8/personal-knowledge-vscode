@@ -202,7 +202,7 @@ exit "$result"
     rmSync(join(fixture, "driver-ready"), { force: true }); rmSync(join(fixture, "driver-done"), { force: true });
     code = spawn(editor, [join(fixture, "workspace"), "--no-sandbox", "--new-window",
       `--user-data-dir=${join(fixture, "u")}`, `--extensions-dir=${join(fixture, "x")}`,
-      `--extensionDevelopmentPath=${join(fixture, "driver")}`, `--extensionTestsPath=${resolve("next-server/tests/legacy-github-sync-ui-secret.cjs")}`,
+      `--extensionDevelopmentPath=${join(fixture, "driver")}`, `--extensionTestsPath=${resolve("tests/legacy-github-sync-ui-secret.cjs")}`,
       "--disable-gpu", "--disable-dev-shm-usage", "--disable-site-isolation-trials", "--disable-telemetry",
       "--disable-updates", "--skip-welcome", "--skip-release-notes", "--password-store=basic",
       "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=9337"], { env, stdio: ["ignore", "pipe", "pipe"] });
@@ -216,7 +216,7 @@ exit "$result"
     throw new Error(`Private Code did not start: ${errors}`);
   };
   const ui = stage => {
-    const run = spawnSync("python3", ["-B", resolve("next-server/tests/legacy-github-sync-ui.py"), stage],
+    const run = spawnSync("python3", ["-B", resolve("tests/legacy-github-sync-ui.py"), stage],
       { env, encoding: "utf8", timeout: 90000 });
     assert.equal(run.status, 0, `${stage}: ${run.stderr}`);
   };
@@ -257,7 +257,7 @@ exit "$result"
       assert.equal(mountHosts.status, 0, "Private hosts mount failed."); hostsMounted = true;
       const mountCa = spawnSync("mount", ["--bind", join(fixture, "tls-cert.pem"), "/etc/ssl/certs/ca-certificates.crt"], { env, encoding: "utf8" });
       assert.equal(mountCa.status, 0, "Private CA mount failed."); caMounted = true;
-      httpsServer = spawn(process.execPath, [resolve("next-server/tests/legacy-github-sync-https-server.mjs")],
+      httpsServer = spawn(process.execPath, [resolve("tests/legacy-github-sync-https-server.mjs")],
         { env, stdio: ["ignore", "pipe", "pipe"] });
       let output = "";
       httpsServer.stdout.on("data", data => { output += data; });

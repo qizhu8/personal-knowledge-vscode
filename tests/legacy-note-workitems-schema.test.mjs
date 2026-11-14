@@ -35,7 +35,7 @@ function oldSchema(database) {
 }
 
 async function fixture(t) {
-  const parent = resolve("next-server/tests", `.note-old-schema-${randomUUID()}`);
+  const parent = resolve("tests", `.note-old-schema-${randomUUID()}`);
   const root = join(parent, "workspace");
   await mkdir(parent);
   await initialize(root);

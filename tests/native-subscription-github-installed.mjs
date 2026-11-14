@@ -65,7 +65,7 @@ export async function runInstalledGitHubUi(fixture, vsix, runtime, commit, enabl
       await wait(50);
     }
     code = spawn(editor, [...common, `--extensionDevelopmentPath=${seed}`,
-      `--extensionTestsPath=${resolve("next-server/tests/native-subscription-github-secret.cjs")}`,
+      `--extensionTestsPath=${resolve("tests/native-subscription-github-secret.cjs")}`,
       "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=9335"], { env, stdio: ["ignore", "pipe", "pipe"] });
     let diagnostics = "";
     for (const stream of [code.stdout, code.stderr]) stream.on("data", chunk => {
@@ -79,7 +79,7 @@ export async function runInstalledGitHubUi(fixture, vsix, runtime, commit, enabl
     }
     for (const alias of ["Old Skills", "Public Skills"]) {
       if (alias === "Public Skills") enablePublic();
-      const run = spawn("python3", ["-B", resolve("next-server/tests/native-subscription-github-ui.py")],
+      const run = spawn("python3", ["-B", resolve("tests/native-subscription-github-ui.py")],
         { env: { ...env, PKM_TEST_GITHUB_ALIAS: alias }, stdio: ["ignore", "pipe", "pipe"] });
       let output = "";
       run.stdout.resume();

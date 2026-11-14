@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 
 const require = createRequire(import.meta.url), esbuild = require("esbuild");
-const dist = resolve(process.env.PKM_TEST_NEXT_DIST || "next-server/dist");
+const dist = resolve(process.env.PKM_TEST_NEXT_DIST || "dist");
 const candidateVsix = process.env.PKM_TEST_SUBSCRIPTION_VSIX;
 const { prepareLegacyRootAdoptionExperimental, resumeLegacyRootAdoptionExperimental } =
   await import(pathToFileURL(join(dist, "legacy-root-adoption.js")));
@@ -28,8 +28,8 @@ test("private UI coordinator uses the real Next CLI and never replays unknown me
   writeFileSync(join(publisherRoot, "notes", "Shared.md"), "# Synthetic remote\n", { mode: 0o600 });
   cpSync(dist, join(server, "dist"), { recursive: true });
   for (const name of ["compat", "browser"])
-    cpSync(candidateVsix ? resolve(dist, "..", name) : resolve("next-server", name), join(server, name), { recursive: true });
-  symlinkSync(candidateVsix ? resolve(dist, "..", "node_modules") : resolve("next-server/node_modules"),
+    cpSync(candidateVsix ? resolve(dist, "..", name) : resolve(".", name), join(server, name), { recursive: true });
+  symlinkSync(candidateVsix ? resolve(dist, "..", "node_modules") : resolve("node_modules"),
     join(server, "node_modules"), "dir");
   const build = (contents, output) => esbuild.buildSync({ stdin: { contents, resolveDir: resolve("."), loader: "js" },
     bundle: true, platform: "node", format: "cjs", packages: "external", outfile: output });
@@ -165,7 +165,7 @@ test("private UI coordinator uses the real Next CLI and never replays unknown me
     const driver = join(fixture, "driver");
     writeFileSync(join(driver, "package.json"), JSON.stringify({ name: "native-subscription-ui-driver", publisher: "fixture",
       version: "0.0.1", engines: { vscode: "^1.90.0" }, activationEvents: ["*"], main: "./extension.cjs" }), { mode: 0o600 });
-    cpSync(resolve("next-server/tests/native-subscription-ui-driver.cjs"), join(driver, "extension.cjs"));
+    cpSync(resolve("tests/native-subscription-ui-driver.cjs"), join(driver, "extension.cjs"));
   };
   const runUi = async (stage, invitation) => {
     rmSync(join(fixture, "driver-ready"), { force: true });
@@ -188,7 +188,7 @@ test("private UI coordinator uses the real Next CLI and never replays unknown me
         if (attempt === 299) throw new Error(`Private VS Code UI did not become ready: ${diagnostics}`);
         await wait(100);
       }
-      const result = spawnSync("python3", ["-B", resolve("next-server/tests/native-subscription-ui-playwright.py"), stage], {
+      const result = spawnSync("python3", ["-B", resolve("tests/native-subscription-ui-playwright.py"), stage], {
         env: uiEnvironment(), input: invitation ? `${JSON.stringify(invitation)}\n` : "", encoding: "utf8", timeout: 120000 });
       if (result.status !== 0) {
         const detail = invitation?.secret ? result.stderr.split(invitation.secret).join("[redacted]") : result.stderr;

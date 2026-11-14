@@ -213,7 +213,7 @@ test("isolated host binds legacy target, secret and recovery, preserving non-Ski
   await host.close(); host = undefined; await storage.close(); storage = undefined;
 
   await writeFile(join(root, "skills/One.md"), skill("crash change"));
-  const crash = spawnSync(process.execPath, [resolve("next-server/tests/legacy-github-sync-experimental-child.mjs"),
+  const crash = spawnSync(process.execPath, [resolve("tests/legacy-github-sync-experimental-child.mjs"),
     root, globalStorage, dir, bare, JSON.stringify(provider.host.policy)], { encoding: "utf8", timeout: 60000, env: process.env });
   assert.equal(crash.status, 77, crash.stderr);
   const afterCrash = git(dir, ["--git-dir", bare, "rev-parse", "refs/heads/main"]);

@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { runInstalledGitHubUi } from "./native-subscription-github-installed.mjs";
 
 const require = createRequire(import.meta.url), esbuild = require("esbuild"), Module = require("node:module");
-const dist = resolve(process.env.PKM_TEST_NEXT_DIST || "next-server/dist");
+const dist = resolve(process.env.PKM_TEST_NEXT_DIST || "dist");
 const { prepareLegacyRootAdoptionExperimental, resumeLegacyRootAdoptionExperimental } =
   await import(pathToFileURL(join(dist, "legacy-root-adoption.js")));
 const load = path => {

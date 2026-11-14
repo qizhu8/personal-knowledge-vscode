@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
-const dist = resolve(process.env.PKM_TEST_NEXT_DIST || "next-server/dist");
+const dist = resolve(process.env.PKM_TEST_NEXT_DIST || "dist");
 const { prepareMembershipIntent, finishMembershipIntent, readMembershipIntent, readMembershipOutcome } =
   await import(pathToFileURL(resolve(dist, "legacy-subscription-membership-intent.js")));
 const { Storage, initialize } = await import(pathToFileURL(resolve(dist, "storage.js")));
@@ -51,7 +51,7 @@ test("pending intent blocks another action until explicitly resolved", () => {
 });
 
 test("pending and committed outcomes survive an actual SQLite reopen without replaying host actions", () => {
-  const dir = resolve("next-server/.migration-test-work", `membership-${randomUUID()}`);
+  const dir = resolve(".migration-test-work", `membership-${randomUUID()}`);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const file = resolve(dir, "core.sqlite"), first = intent();
   let db = database(file);
@@ -105,7 +105,7 @@ test("stale heads, forged data, and missing receipt anchors fail closed", () => 
 });
 
 test("pending membership fences workspace requests across restart until explicit unchanged cancellation", async () => {
-  const dir = resolve("next-server/.migration-test-work", `membership-workspace-${randomUUID()}`);
+  const dir = resolve(".migration-test-work", `membership-workspace-${randomUUID()}`);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   let storage;
   try {

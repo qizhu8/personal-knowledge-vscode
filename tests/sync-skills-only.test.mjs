@@ -81,7 +81,7 @@ test("native staged Skills publication retains unselected remote blobs and leave
   const note = makeFile("notes", "note", "remote note");
   const prompt = makeFile("prompts", "prompt", "remote prompt");
   const f = await fixture({ manifest: manifest([skill, note, prompt]) });
-  const directory = resolve("next-server", "tests", `.skills-sync-${randomUUID()}`);
+  const directory = resolve(".", "tests", `.skills-sync-${randomUUID()}`);
   try {
     mkdirSync(resolve(directory, "skills"), { recursive: true });
     mkdirSync(resolve(directory, "notes"));

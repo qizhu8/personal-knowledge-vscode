@@ -33,6 +33,11 @@ source pin, symlink diagnostic and owner-lease recovery); the relocated slice
 reproduces those failures. A successful build or smoke run does not establish
 full migration acceptance. Frozen packages, logs and original test data remain
 in the original worktree; they are not copied into this codebase.
+The additional resource/subscription slice passes 28 functional cases, while
+its original-source hash check remains stale. The experimental Sync host test
+is blocked by active or uninspectable hosts on the shared machine. Both
+remaining failures were reproduced in the original layout; no process was
+stopped to bypass that gate.
 
 ## Historical implementation and qualification notes
 

@@ -178,7 +178,7 @@ test("protected legacy state enters the importer without writing keys, and survi
   assert(!projected.includes(secret) && !projected.includes("PRIVATE KEY") && !projected.includes("authVerifier"));
   assert(!JSON.stringify(plan).includes(secret) && !JSON.stringify(plan).includes("PRIVATE KEY") && !JSON.stringify(plan).includes(share.authVerifier));
   assert.deepEqual(await fs.readFile(statePath), sourcePlaceholder);
-  const child = fork(resolve("next-server/tests/legacy-protected-state-import-child.mjs"), [], {
+  const child = fork(resolve("tests/legacy-protected-state-import-child.mjs"), [], {
     execArgv: ["--experimental-test-module-mocks"], stdio: ["ignore", "ignore", "ignore", "ipc"],
   });
   const reopened = await new Promise((resolveResult, reject) => {

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { resolve, relative, dirname } from "node:path";
 
 const server = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const repo = resolve(server, "..");
+const repo = resolve(server, "legacy");
 const hash = text => createHash("sha256").update(text).digest("hex");
 const captures = [
   ["src/chatroom/collaboration-model.ts", "src/domain/collaboration-state-model.ts"],

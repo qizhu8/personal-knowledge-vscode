@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
-const dist = path.resolve(process.env.PKM_TEST_RECIPE_DIST || "next-server/dist");
+const dist = path.resolve(process.env.PKM_TEST_RECIPE_DIST || "dist");
 const { NativeRecipeLibrary } = await import(pathToFileURL(path.join(dist, "native-recipe-library.js")));
 const { compileWorkflowDefinitionV1 } = await import(pathToFileURL(path.join(dist, "domain/project-recipes-workflow-contracts.js")));
 const definition = { schema: "pkm.workflow.definition/v1", spec: { inputs: {}, outputs: {},
