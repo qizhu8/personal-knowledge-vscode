@@ -7,11 +7,14 @@
     "node": ">=22.18.0"
   },
   "scripts": {
+    "test": "node tests/framework/run.cjs",
+    "test:list": "node tests/framework/run.cjs --list",
+    "test:framework": "node tests/framework/run.cjs --suite framework",
     "build": "tsc -p tsconfig.json",
     "build:compat": "npm --prefix legacy run build",
     "typecheck:client": "tsc -p clients/vscode/tsconfig.json",
     "test:smoke": "node --experimental-transform-types --test --test-concurrency=2 tests/markdown.test.mjs tests/linux-root-writer-fence.test.mjs tests/client-manager-workflow.test.mjs",
-    "test": "node scripts/verify.mjs",
+    "test:qualification": "node scripts/verify.mjs",
     "progress": "node scripts/migration.mjs progress",
     "migration:inventory": "node scripts/migration.mjs inventory"
   },

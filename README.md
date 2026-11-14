@@ -11,6 +11,12 @@ npm run build
 npm run typecheck:client
 ```
 
+The normalized test entrypoint is `npm test` (bounded unit regressions).
+See [tests/README.md](tests/README.md) for suite groups, selected Node/Python
+files and repository-external automatic fixture cleanup. The previous default
+verifier is preserved as `npm run test:qualification`; its historical capture
+and provenance gates are unchanged and it is not part of the fixture runner.
+
 Compatibility workflows and original-source test oracles use the frozen
 `legacy/` snapshot. Restore its dependencies and build it explicitly:
 
@@ -31,8 +37,9 @@ layout. They retain their original paths and hashes. The original implementation
 already fails five cases in the server/library slice (writer-fence marker,
 source pin, symlink diagnostic and owner-lease recovery); the relocated slice
 reproduces those failures. A successful build or smoke run does not establish
-full migration acceptance. Frozen packages, logs and original test data remain
-in the original worktree; they are not copied into this codebase.
+full migration acceptance. Old frozen test packages, logs and isolated data
+copies were intentionally retired; retained summaries are not recoverable
+test environments and do not requalify the historical captures.
 The additional resource/subscription slice passes 28 functional cases, while
 its original-source hash check remains stale. The experimental Sync host test
 is blocked by active or uninspectable hosts on the shared machine. Both
@@ -1251,7 +1258,7 @@ acceptance target or authorize a production cutover.
 
 Run `npm run progress` to refresh it. `npm run migration:inventory` explicitly
 refreshes the legacy source snapshot. Source counts are not completion percentages.
-`npm test` writes fingerprinted test evidence only after a successful run; changed
+`npm run test:qualification` writes fingerprinted test evidence only after a successful run; changed
 implementation files invalidate that evidence in the progress report.
 Original-source and captured-file hashes are also checked directly for every
 curated capture. Refreshing the source inventory cannot turn a stale capture into
@@ -1634,7 +1641,7 @@ run the real same-origin client, not a DOM-only mock.
 ```sh
 cd next-server
 npm ci
-npm test
+npm run test:qualification
 
 # The target directory must NOT already exist. Its parent must exist.
 node dist/cli.js init --data /absolute/path/to/new-pkm-next-data
@@ -2309,7 +2316,7 @@ waits the actual 30-second ownership lease and marks interrupted inference
 unknown with zero automatic replay. Immediate restart is deliberately refused.
 The existing bounded soak (~1.18 seconds, ~82.6 MB RSS) is a measurement, not
 complete stability, a production SLO or a power-loss claim. Fingerprinted full
-`npm test` evidence is refreshed separately only after all source/test/pin lanes
+`npm run test:qualification` evidence is refreshed separately only after all source/test/pin lanes
 freeze; targeted passes alone are not full-suite acceptance.
 
 ### Batch 08 configured coding, Channel and remote wrappers
@@ -2358,7 +2365,7 @@ Scope confirmation remains required to prevent silent exclusions, and final
 cutover remains a separate human authorization. Unknown catalog operations are
 not auto-mapped. Do not enroll a test key or use a test total to mark the
 migration ready. `--require-ready` exits 1 while independent evidence is
-missing. Only the final fingerprinted `npm test` after all source/pin lanes
+missing. Only the final fingerprinted `npm run test:qualification` after all source/pin lanes
 freeze can refresh full-suite evidence.
 
 ### Operator-supplied readiness evidence (read-only)
@@ -2626,7 +2633,7 @@ receipts and cancellation/drain.
 
 These are synthetic integration qualifications, **not** real-root cutover,
 production-provider acceptance, completed migration workstreams or full legacy
-client parity. Only the final fingerprinted `npm test` establishes evidence for
+client parity. Only the final fingerprinted `npm run test:qualification` establishes evidence for
 the then-current frozen implementation; targeted commands do not create it.
 
 The programmatic host entrypoint is `createNativeRuntime` from
@@ -4287,7 +4294,7 @@ authority remains unchanged. This library is not yet a Core service or public
 HTTP/MCP operation. Authorization, model execution, Markdown ingestion/rebuild
 and production lifecycle integration remain.
 
-`npm test` builds only this package and tests fresh temporary workspaces, real HTTP,
+`npm run test:qualification` builds only this package and tests fresh temporary workspaces, real HTTP,
 real SDK MCP child processes, cross-process CAS, durable replay after restart,
 trash/restore, permissions, strict input/output shapes, bounded queue draining,
 event-loop responsiveness during a write lock, pagination conflicts, invalid
