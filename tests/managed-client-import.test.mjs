@@ -7,8 +7,9 @@ import { createRequire } from "node:module";
 import test from "node:test";
 
 const root = resolve(import.meta.dirname, "..");
-const project = resolve(root, "..");
+const project = resolve(root, "legacy");
 const require = createRequire(import.meta.url);
+const legacyRequire = createRequire(join(project, "package.json"));
 const python = execFileSync("python3", ["-c", "import os,sys; print(os.path.realpath(sys.executable))"], { encoding: "utf8" }).trim();
 const hash = value => createHash("sha256").update(value).digest("hex");
 async function setup(t) {
@@ -16,8 +17,7 @@ async function setup(t) {
   await mkdir(parent, { mode: 0o700 });
   t.after(() => rm(parent, { recursive: true, force: true }));
   const dist = join(parent, "dist");
-  execFileSync(process.execPath, [resolve(root, "node_modules/typescript/bin/tsc"), "-p", join(root, "tsconfig.json"), "--outDir", dist],
-    { timeout: 120000, stdio: "pipe" });
+  await cp(join(root, "dist"), dist, { recursive: true });
   await writeFile(join(parent, "package.json"), '{"type":"module"}');
   await cp(join(root, "compat"), join(parent, "compat"), { recursive: true });
   const source = join(parent, "source"), destination = join(parent, "destination"), legacy = join(parent, "legacy");
@@ -75,7 +75,10 @@ async function waitForFile(path) {
 
 test("isolated managed Room uses the workspace owner and inherited Host authority", { timeout: 180000 }, async t => {
   const f = await setup(t), c = client(f.dist), fixture = require("../legacy/tests/next-trial-electron/chatroom-live-fixture.cjs");
-  t.after(() => { if (c.child.connected) c.send({ type: "close" }); });
+  t.after(async () => {
+    if (c.child.exitCode === null && c.child.signalCode === null) c.child.kill("SIGKILL");
+    await c.exit;
+  });
   const ts = require("typescript"), esbuild = require("esbuild");
   const legacyDirectory = join(f.parent, "legacy-files"), legacy = join(legacyDirectory, "legacy-source");
   await mkdir(join(legacy, "dist"), { recursive: true });
@@ -141,7 +144,7 @@ test("isolated managed Room uses the workspace owner and inherited Host authorit
   for (let count = 0; count < 200 && !host.isConnected; count++) await new Promise(done => setTimeout(done, 25));
   assert.equal(host.isConnected, true);
   assert.equal(host.participantId, "historic-human");
-  const historicSocket = new (require("ws"))(opened.result.url);
+  const historicSocket = new (legacyRequire("ws"))(opened.result.url);
   t.after(() => historicSocket.terminate());
   await new Promise((resolve, reject) => { historicSocket.once("open", resolve); historicSocket.once("error", reject); });
   const historicRejected = new Promise((resolve, reject) => {
@@ -167,10 +170,10 @@ test("isolated managed Room uses the workspace owner and inherited Host authorit
   await mkdir(packagedExtension, { mode: 0o700 });
   await mkdir(second, { mode: 0o700 });
   await cp(join(project, "package.json"), join(packagedExtension, "package.json"));
-  require("../legacy/scripts/next-rehearsal-runtime.js").stage(join(packagedExtension, "next-runtime"), { production: true });
+  require("../scripts/stage-runtime.cjs").stage(join(packagedExtension, "next-runtime"), { production: true });
   const parentBundle = join(f.parent, "actual-managed-client.cjs");
   esbuild.buildSync({ entryPoints: [join(project, "src/runtime/next-managed-client.ts")], bundle: true,
-    platform: "node", format: "cjs", outfile: parentBundle, logLevel: "silent" });
+    platform: "node", format: "cjs", external: ["vscode"], outfile: parentBundle, logLevel: "silent" });
   const { NextManagedClient } = require(parentBundle);
   const actual = new NextManagedClient();
   t.after(() => actual.isStopped() ? undefined : actual.close());
@@ -215,7 +218,7 @@ test("isolated managed Room uses the workspace owner and inherited Host authorit
   assert.notEqual(oldReconnect.participantId, firstPeer);
   assert.notEqual(oldReconnect.participantId, "historic-agent");
   oldReconnect.disconnect();
-  const socket = new (require("ws"))(rehosted.url);
+  const socket = new (legacyRequire("ws"))(rehosted.url);
   t.after(() => socket.terminate());
   await new Promise((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject); });
   const rejected = new Promise((resolve, reject) => {
@@ -237,7 +240,10 @@ test("isolated managed Room uses the workspace owner and inherited Host authorit
 
 test("private child plans, imports, reconciles and reads using a side-effect-free reader", { timeout: 180000 }, async t => {
   const f = await setup(t), c = client(f.dist);
-  t.after(() => { if (c.child.connected) c.send({ type: "close" }); });
+  t.after(async () => {
+    if (c.child.exitCode === null && c.child.signalCode === null) c.child.kill("SIGKILL");
+    await c.exit;
+  });
   c.send({ type: "start-import", source: f.source, parent: f.destination, legacyRoot: f.legacy, python, acknowledge: true });
   const plan = await c.receive(message => message.type === "import-plan");
   assert.equal(plan.ready, true, JSON.stringify(plan.blockers));
@@ -275,7 +281,10 @@ test("private child plans, imports, reconciles and reads using a side-effect-fre
 
 test("published status cannot bypass file audit when imported resources are missing or changed", { timeout: 180000 }, async t => {
   const f = await setup(t), c = client(f.dist);
-  t.after(() => { if (c.child.connected) c.send({ type: "close" }); });
+  t.after(async () => {
+    if (c.child.exitCode === null && c.child.signalCode === null) c.child.kill("SIGKILL");
+    await c.exit;
+  });
   await mkdir(join(f.source, "notes/Fixture.assets"));
   const asset = Buffer.from([0, 255, 17, 128]);
   await writeFile(join(f.source, "notes/Fixture.assets/image.bin"), asset);
@@ -350,7 +359,11 @@ test("published status cannot bypass file audit when imported resources are miss
 test("isolated experiment requires approval and persistent capability; writes survive restart and reject CAS/tamper/crash", { timeout: 180000 }, async t => {
   const f = await setup(t), c = client(f.dist);
   const children = [c];
-  t.after(() => { for (const value of children) if (value.child.connected) value.send({ type: "close" }); });
+  t.after(async () => {
+    for (const value of children)
+      if (value.child.exitCode === null && value.child.signalCode === null) value.child.kill("SIGKILL");
+    await Promise.all(children.map(value => value.exit));
+  });
   c.send({ type: "start-import", source: f.source, parent: f.destination, legacyRoot: f.legacy, python, acknowledge: true });
   const plan = await c.receive(message => message.type === "import-plan");
   assert.equal((await c.request("confirm-import", { planSha256: plan.planSha256 })).result.outcome.status, "published");
@@ -382,7 +395,7 @@ test("isolated experiment requires approval and persistent capability; writes su
   const conflict = await c.request("invoke", { operation: "update", args: { ...updateArgs, operationId: randomUUID() } });
   assert.equal(conflict.result.error.code, "CONFLICT");
   const { Storage } = await import(join(f.dist, "storage.js"));
-  await assert.rejects(Storage.open(plan.target), /Another process currently owns/);
+  await assert.rejects(Storage.open(plan.target), { code: "BUSY" });
   c.send({ type: "close" });
   await c.receive(message => message.type === "closed");
   assert.equal((await c.exit).code, 0);
@@ -458,7 +471,9 @@ test("isolated experiment requires approval and persistent capability; writes su
       assert.equal(denied.result, undefined);
       assert.equal((await crash.request("invoke", { operation: "get", args: { id: original.id } })).error, "OUTCOME_UNKNOWN");
       crash.send({ type: "close" });
-      await crash.receive(message => message.type === "close-error");
+      await crash.receive(message => message.type === "close-retryable-error");
+      assert.equal(crash.child.exitCode, null, "Unknown effects must not cause automatic termination.");
+      crash.child.kill("SIGKILL");
     } else crash.child.kill("SIGKILL");
     await crash.exit;
     const afterCrash = client(f.dist); children.push(afterCrash);

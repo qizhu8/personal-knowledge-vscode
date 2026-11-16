@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
 import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,11 +15,10 @@ import { createNativeRuntime } from "../dist/native-runtime.js";
 import { CoreError } from "../dist/contracts.js";
 import { startHttp } from "../dist/http.js";
 import { startMcp } from "../dist/mcp.js";
-import { at, hash, payloadFixture, sourceOracle } from "./legacy-snapshot-restore-captures.mjs";
+import { at, hash, payloadFixture, sourceOracle, snapshotOriginalSource } from "./legacy-snapshot-restore-captures.mjs";
 import { originalCapture, actor, human, item, markdown, at as inlineAt } from "./legacy-inline-note-captures.mjs";
 export { at, hash, sourceOracle, originalCapture, actor, human, item, markdown };
 
-const repo = fileURLToPath(new URL("../legacy/", import.meta.url));
 export const call = (core, operation, args, who = human) => core.dispatch(
   operation === "agent.snapshot.restore-get" || operation === "legacy.note.workitems.read" ? "capability_read" : "capability_call",
   { operation, version: 1, arguments: args }, who,
@@ -34,10 +32,10 @@ export function fixturePublisher(parent) {
     await rename(stage, target);
   };
 }
-function originalSnapshotWriter() {
+export function originalSnapshotWriter() {
   sourceOracle();
   const require = createRequire(import.meta.url), module = { exports: {} };
-  let source = readFileSync(join(repo, "src/agent-sessions/agent-snapshots.ts"), "utf8");
+  let source = snapshotOriginalSource("src/agent-sessions/agent-snapshots.ts");
   const marker = 'createHash("sha256").update("uone", "utf8").digest()';
   assert.equal(source.split(marker).length, 2);
   source = source.replace(marker, "Buffer.alloc(32, 7)");
@@ -49,7 +47,13 @@ function originalSnapshotWriter() {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText, {
     module, exports: module.exports, Buffer, Date: PinnedDate,
-    require: id => id === "../chat/chat-history-storage" ? {} : require(id),
+    require: id => {
+      if (id === "../chat/chat-history-storage") return {
+        ChatHistoryStorage: class { constructor() { throw new Error("Packed Chat history is outside this synthetic snapshot fixture."); } },
+      };
+      assert.ok(["crypto", "fs", "path"].includes(id), `Unexpected original snapshot dependency: ${id}`);
+      return require(id);
+    },
   });
   return module.exports;
 }

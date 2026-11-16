@@ -1,0 +1,257 @@
+{
+  "schema": "pkm.original-authentication-archive/v1",
+  "qualification": "Historical Project/Thread, raw-envelope and Note Work Item fixture authentication only; not production, installation or native-upgrade qualification. Existing pins, captures and manifests are unchanged. Git is read-only provisioning only, bounded to at most 40 commits per requested path; ordinary validation reads only repository-contained authenticated bytes. The exact JS bridge executes against transpiled authenticated original TypeScript, never legacy compiled JavaScript. Historical implementation/test records authenticate historical bytes, not current implementation equality or producer self-verification. No producer script metadata is reused as migrated-driver authentication.",
+  "archive": "migration/evidence/project-authentication-originals.zip",
+  "archiveSha256": "b15d0846c8b82862498418d4997a3aa7e93410462e603fd845d0e5dbae109f92",
+  "memberNamespace": "project-authentication-original/source/",
+  "fixtureCallsiteChanges": [
+    "ProjectStore and its complete runtime import graph execute authenticated original TypeScript without source replacements.",
+    "Captured Project/Thread declarations, including the separately captured createProject/deriveSystemId oracle, are checked against exact original source bytes.",
+    "The original Note bridge retains exact historical read and worker-claim results. Historical discovery rows and truncation match exactly; the native contract's additional next_offset is asserted explicitly for complete and truncated discovery.",
+    "A raw relocated native workspace copy still fails RECOVERY_REQUIRED. Relocation uses native quiescence, createWorkspaceBackup and restoreWorkspaceBackup with explicit disposable-fixture owner authority."
+  ],
+  "changedFiles": [
+    "tests/legacy-project-thread-parity.test.mjs",
+    "tests/legacy-project-envelope.test.mjs",
+    "tests/legacy-note-workitems-bridge.test.mjs",
+    "tests/legacy-project-original-captures.mjs",
+    "migration/evidence/project-authentication-originals.zip",
+    "migration/evidence/project-authentication-originals.json"
+  ],
+  "validation": {
+    "command": "node --test tests/legacy-project-thread-parity.test.mjs tests/legacy-project-envelope.test.mjs tests/legacy-note-workitems-bridge.test.mjs",
+    "baseline": { "cases": 17, "passed": 13, "failed": 4 },
+    "authenticatedHistoricalOracleBeforeExplicitNativeCursorAssertion": { "cases": 18, "passed": 17, "failed": 1 },
+    "directAcceptance": { "files": 3, "cases": 18, "passed": 18, "failed": 0, "skipped": 0 },
+    "additionalChecks": [
+      "All four changed test/helper modules pass node --check; target git diff --check passes.",
+      "Whole archive SHA256, exactly 30 unique members, closed namespaced member paths and all member SHA256 values pass.",
+      "Unknown path, incorrect role, incorrect requested pin, missing archive and tampered whole archive fail closed.",
+      "Raw relocated native root remains RECOVERY_REQUIRED; authorized native backup relocation retains exact Board result and policy denial."
+    ],
+    "scope": "Direct isolated fixtures only. No global CI, build, package, installation, network, system changes or default-profile changes. Ordinary regression validation needs no Git or session files. Parent owns integrated acceptance after workers stop."
+  },
+  "protectedBeforeAfter": {
+    "aggregateAlgorithm": "Node SHA256(JSON.stringify(rows)); rows are [relative POSIX file path, file SHA256], depth-first within each directory sorted with name.localeCompare. Only regular files are included. Original evidence is the explicit six-file baseline, excluding concurrently added worker evidence.",
+    "src": {
+      "files": 523,
+      "beforeSha256": "7c421e74c790264f4fb0dff6b9e1fa6b712420d1f121cc2bbb5b2e9d4887f6bf",
+      "afterSha256": "7c421e74c790264f4fb0dff6b9e1fa6b712420d1f121cc2bbb5b2e9d4887f6bf"
+    },
+    "legacy": {
+      "files": 26314,
+      "beforeSha256": "efc67d6263b03db9a7971dce6c7ba4a04b597ad225acf46950c940dbfaa51164",
+      "afterSha256": "efc67d6263b03db9a7971dce6c7ba4a04b597ad225acf46950c940dbfaa51164"
+    },
+    "existingEvidence": {
+      "files": [
+        "migration/evidence/action-authentication-originals.zip",
+        "migration/evidence/compute-chat-memory-worker-78118937.ts.txt",
+        "migration/evidence/knowledge-authentication-originals.json",
+        "migration/evidence/knowledge-authentication-originals.zip",
+        "migration/evidence/snapshot-authentication-originals.json",
+        "migration/evidence/snapshot-authentication-originals.zip"
+      ],
+      "beforeSha256": "12388c870cb6a4689782506615b07e2a6ba81ca3e68ad9e7c2a32b6fca8c2cbc",
+      "afterSha256": "12388c870cb6a4689782506615b07e2a6ba81ca3e68ad9e7c2a32b6fca8c2cbc"
+    },
+    "README.md": {
+      "beforeSha256": "95fcbb2e889a8579f2ba6a7a0f9a0c1de45a1f18759b79b393887969c9bd10ed",
+      "afterSha256": "95fcbb2e889a8579f2ba6a7a0f9a0c1de45a1f18759b79b393887969c9bd10ed"
+    },
+    "package.json": {
+      "beforeSha256": "0f26acd2160073d54a996f0cf90a219b79648e0cf60852772d0544d813c17ba5",
+      "afterSha256": "0f26acd2160073d54a996f0cf90a219b79648e0cf60852772d0544d813c17ba5"
+    },
+    "package-lock.json": {
+      "beforeSha256": "89d86414a685debae58a00212f274c73d71f0d8dee6457e53427bec445c40cae",
+      "afterSha256": "89d86414a685debae58a00212f274c73d71f0d8dee6457e53427bec445c40cae"
+    },
+    "migration/readiness-contract.json": {
+      "beforeSha256": "99ee7a9c088285594867e6c17d0a952902fba890b4690e3fef8703ef7592c0b4",
+      "afterSha256": "99ee7a9c088285594867e6c17d0a952902fba890b4690e3fef8703ef7592c0b4"
+    }
+  },
+  "members": [
+    {
+      "path": "next-server/src/legacy-note-workitems-admission.ts",
+      "sha256": "17c38035c5d8cb545abe3170373ee3352b1fac83560790adc231e3d401296f26",
+      "provisioning": "retained src/legacy-note-workitems-admission.ts",
+      "member": "project-authentication-original/source/next-server/src/legacy-note-workitems-admission.ts"
+    },
+    {
+      "path": "next-server/src/legacy-note-workitems-contracts.ts",
+      "sha256": "3d88a4ec942df4da526a320103061752307ddd4080e74c7190fcd391ec537877",
+      "provisioning": "git 6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043:next-server/src/legacy-note-workitems-contracts.ts",
+      "member": "project-authentication-original/source/next-server/src/legacy-note-workitems-contracts.ts"
+    },
+    {
+      "path": "next-server/src/legacy-note-workitems-journal.ts",
+      "sha256": "123fd8c2d919c7113211fe6c95e246a246f6c64db589e68ff30f509b79859768",
+      "provisioning": "retained src/legacy-note-workitems-journal.ts",
+      "member": "project-authentication-original/source/next-server/src/legacy-note-workitems-journal.ts"
+    },
+    {
+      "path": "next-server/src/legacy-note-workitems.ts",
+      "sha256": "00bfcd1f37e252675d1943560707654d767bc40427db2c10ea5cd0c2cc38c150",
+      "provisioning": "git 6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043:next-server/src/legacy-note-workitems.ts",
+      "member": "project-authentication-original/source/next-server/src/legacy-note-workitems.ts"
+    },
+    {
+      "path": "next-server/tests/legacy-note-workitems-bridge.test.mjs",
+      "sha256": "607a3f7354bb766fbe5bc3d95f3ab85a0ef08fcba29aca191351b418ed13f0f1",
+      "provisioning": "git 6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043:next-server/tests/legacy-note-workitems-bridge.test.mjs",
+      "member": "project-authentication-original/source/next-server/tests/legacy-note-workitems-bridge.test.mjs"
+    },
+    {
+      "path": "next-server/tests/legacy-note-workitems-journal.test.mjs",
+      "sha256": "ecde2b7fd76ddcb24e5b08db6ccf567cffc81f927a3d8a4e902a50d905bbc4fc",
+      "provisioning": "git 6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043:next-server/tests/legacy-note-workitems-journal.test.mjs",
+      "member": "project-authentication-original/source/next-server/tests/legacy-note-workitems-journal.test.mjs"
+    },
+    {
+      "path": "resources/knowledge_mutations.js",
+      "sha256": "3d087d458de580e30cc31b670ab657b00e938c2aead653766ded7c07a9124ba5",
+      "provisioning": "retained legacy/resources/knowledge_mutations.js",
+      "member": "project-authentication-original/source/resources/knowledge_mutations.js"
+    },
+    {
+      "path": "resources/knowledge_mutations.py",
+      "sha256": "a17e86d059b23132eaddcd3ab6222e7b909a4f4a1215c3e3ee6a8fbc0d2880f2",
+      "provisioning": "git ec92febf240991770172f144fc0138b298491fb0:resources/knowledge_mutations.py",
+      "member": "project-authentication-original/source/resources/knowledge_mutations.py"
+    },
+    {
+      "path": "src/chatroom/collaboration-model.ts",
+      "sha256": "56a7e33e2e89056f0b2f4c217c3969d1fae84425da5c6951c4d40faec34805d4",
+      "provisioning": "retained legacy/src/chatroom/collaboration-model.ts",
+      "member": "project-authentication-original/source/src/chatroom/collaboration-model.ts"
+    },
+    {
+      "path": "src/knowledge/filestore.ts",
+      "sha256": "c5c3a9761562818529a00aedb96aef254bef34dc80a4ed31f31efd39bc7a97a5",
+      "provisioning": "git 9f4a3a5cd6981675c4348641f5e2e7ad5aa61e99:src/knowledge/filestore.ts",
+      "member": "project-authentication-original/source/src/knowledge/filestore.ts"
+    },
+    {
+      "path": "src/knowledge/knowledge-contracts.ts",
+      "sha256": "0f4c453b726e70df7c3e8df3e4eb253114d89d4cb88eb8ce3e4f561bf336ab2f",
+      "provisioning": "retained legacy/src/knowledge/knowledge-contracts.ts",
+      "member": "project-authentication-original/source/src/knowledge/knowledge-contracts.ts"
+    },
+    {
+      "path": "src/knowledge/knowledge-deletion-journal.ts",
+      "sha256": "3944f565fba8bb3875f8a9fb9ea39b9e779fb2a013705405f68cc60845c99e49",
+      "provisioning": "retained legacy/src/knowledge/knowledge-deletion-journal.ts",
+      "member": "project-authentication-original/source/src/knowledge/knowledge-deletion-journal.ts"
+    },
+    {
+      "path": "src/knowledge/markdown-assets.ts",
+      "sha256": "3efa04f06f6b5fd7e649874d031e0ddb8a6ff4f33182747135c6601658922741",
+      "provisioning": "git 9f4a3a5cd6981675c4348641f5e2e7ad5aa61e99:src/knowledge/markdown-assets.ts",
+      "member": "project-authentication-original/source/src/knowledge/markdown-assets.ts"
+    },
+    {
+      "path": "src/knowledge/note-work-items.ts",
+      "sha256": "64f39b26b1d115e92ed5fc1f31c81ef746baf325ea07689c2407449a66aab76e",
+      "provisioning": "retained legacy/src/knowledge/note-work-items.ts",
+      "member": "project-authentication-original/source/src/knowledge/note-work-items.ts"
+    },
+    {
+      "path": "src/knowledge/todo-api-contract.ts",
+      "sha256": "aa2b563f1c71c825f38a57b65cdacded3ae645dae3d6bad8a607779f833b63d9",
+      "provisioning": "retained legacy/src/knowledge/todo-api-contract.ts",
+      "member": "project-authentication-original/source/src/knowledge/todo-api-contract.ts"
+    },
+    {
+      "path": "src/knowledge/todo-api.ts",
+      "sha256": "721b02f042451418832d942bb98acc4360d17837e70a02542fd5fb70d947cb8b",
+      "provisioning": "retained legacy/src/knowledge/todo-api.ts",
+      "member": "project-authentication-original/source/src/knowledge/todo-api.ts"
+    },
+    {
+      "path": "src/knowledge/todo-board.ts",
+      "sha256": "8e90ec90b520d5d7fec2af92602660f9e5e0369e476a551095563623828f6558",
+      "provisioning": "retained legacy/src/knowledge/todo-board.ts",
+      "member": "project-authentication-original/source/src/knowledge/todo-board.ts"
+    },
+    {
+      "path": "src/runtime/cross-process-lock.ts",
+      "sha256": "21735130fc0e0a4ecd950439bf65dc05522d9554726a0f55b5ea32ebf71f1270",
+      "provisioning": "git a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6:src/runtime/cross-process-lock.ts",
+      "member": "project-authentication-original/source/src/runtime/cross-process-lock.ts"
+    },
+    {
+      "path": "src/runtime/pkm-projection.ts",
+      "sha256": "334c69b219e9b152144dfe985ac674ed3c8934d34d0d821f12adf32b4b27b136",
+      "provisioning": "retained legacy/src/runtime/pkm-projection.ts",
+      "member": "project-authentication-original/source/src/runtime/pkm-projection.ts"
+    },
+    {
+      "path": "src/workflows/methodology-model.ts",
+      "sha256": "7e64b5f7e910291efa92241bd8e0f36f38a5afc1b404dc54c0f07269d346fbba",
+      "provisioning": "retained legacy/src/workflows/methodology-model.ts",
+      "member": "project-authentication-original/source/src/workflows/methodology-model.ts"
+    },
+    {
+      "path": "src/workflows/project-cockpit.ts",
+      "sha256": "1952d5b2f4c7969fbd8f27beef3a955b9f36d3af7dc608c5776a26c0c499d617",
+      "provisioning": "retained legacy/src/workflows/project-cockpit.ts",
+      "member": "project-authentication-original/source/src/workflows/project-cockpit.ts"
+    },
+    {
+      "path": "src/workflows/project-filesystem-store.ts",
+      "sha256": "20c0f58161b3f82181e48049e3ad95f0091ec41e1a1fba61413514c97502e0f8",
+      "provisioning": "retained legacy/src/workflows/project-filesystem-store.ts",
+      "member": "project-authentication-original/source/src/workflows/project-filesystem-store.ts"
+    },
+    {
+      "path": "src/workflows/project-model.ts",
+      "sha256": "505f56e2351a9f173268007990eaf02f1014abe0dc4f722b12a8f6aa81c94195",
+      "provisioning": "git a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6:src/workflows/project-model.ts",
+      "member": "project-authentication-original/source/src/workflows/project-model.ts"
+    },
+    {
+      "path": "src/workflows/project-store.ts",
+      "sha256": "a88568af85c6cbf714cc8c9efcfb641da12502df888b4c6dd9e4b7e24dacc010",
+      "provisioning": "git a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6:src/workflows/project-store.ts",
+      "member": "project-authentication-original/source/src/workflows/project-store.ts"
+    },
+    {
+      "path": "src/workflows/recipe-filesystem-store.ts",
+      "sha256": "3ecfb22753d16455ff7427993fd4d017dc00c1d2ffd65be9414157e31421b6f5",
+      "provisioning": "retained legacy/src/workflows/recipe-filesystem-store.ts",
+      "member": "project-authentication-original/source/src/workflows/recipe-filesystem-store.ts"
+    },
+    {
+      "path": "src/workflows/value-contracts.ts",
+      "sha256": "e6d44457433b9e931878ca530168bd51322589733a601431852fcf7609cccd52",
+      "provisioning": "retained legacy/src/workflows/value-contracts.ts",
+      "member": "project-authentication-original/source/src/workflows/value-contracts.ts"
+    },
+    {
+      "path": "src/workflows/workflow-contracts.ts",
+      "sha256": "35ea492ddd87ff604a581387afc6ea5b56c3e4fd3135d6d1dceb2c6af53dada8",
+      "provisioning": "retained legacy/src/workflows/workflow-contracts.ts",
+      "member": "project-authentication-original/source/src/workflows/workflow-contracts.ts"
+    },
+    {
+      "path": "tests/test-note-work-item-lifecycle.js",
+      "sha256": "ad3c9e359d7b958af35a4550b01c6a6019413a7052af380fedfa96f75fe32c08",
+      "provisioning": "git 9f4a3a5cd6981675c4348641f5e2e7ad5aa61e99:tests/test-note-work-item-lifecycle.js",
+      "member": "project-authentication-original/source/tests/test-note-work-item-lifecycle.js"
+    },
+    {
+      "path": "tests/test-note-work-items.js",
+      "sha256": "25ad07cdf20931f54bceb65c9b6047466362ad71a8ba8ca591ea1867a015d780",
+      "provisioning": "retained legacy/tests/test-note-work-items.js",
+      "member": "project-authentication-original/source/tests/test-note-work-items.js"
+    },
+    {
+      "path": "tests/test-todo-api-mcp.py",
+      "sha256": "ca35fc4d71400a0e33b8e7679d8512281f79acdb0b307387549b7076cea88064",
+      "provisioning": "retained legacy/tests/test-todo-api-mcp.py",
+      "member": "project-authentication-original/source/tests/test-todo-api-mcp.py"
+    }
+  ]
+}

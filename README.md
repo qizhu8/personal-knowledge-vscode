@@ -5,17 +5,36 @@ former `next-server/` sources now live directly in `src/`, `tests/`, `clients/`,
 `compat/` and `compute/`. No production Knowledge Root or service is switched
 by this source migration.
 
+The temporary test package, VSIX display name and MCP identity are `pkm-v5`;
+the test extension ID is `pkm-nonproduction.pkm-v5`. Existing `pkm` remains
+separate for side-by-side testing. Internal schemas, ownership markers and
+`pkm.next*` command/settings IDs are not renamed. Parallel installation does
+not authorize two writers on one Knowledge Root. Renaming to `pkm` later is
+not itself credential migration, extension replacement or production cutover.
+
 ```sh
 npm ci --ignore-scripts
+npm run typecheck
 npm run build
-npm run typecheck:client
 ```
 
-The normalized test entrypoint is `npm test` (bounded unit regressions).
-See [tests/README.md](tests/README.md) for suite groups, selected Node/Python
-files and repository-external automatic fixture cleanup. The previous default
-verifier is preserved as `npm run test:qualification`; its historical capture
-and provenance gates are unchanged and it is not part of the fixture runner.
+`typecheck` checks Core, the standalone VS Code client and the VS Code
+extension host without emitting build files. CI runs the same command.
+Their module-resolution settings remain distinct: the Core/client use Node
+modules, while the extension-host surface uses bundler resolution.
+
+The normalized test entrypoint is `npm test` (complete isolated CI regressions);
+`npm run test:quick` provides the short developer loop. See
+[tests/README.md](tests/README.md) for source discovery, automatic Core/client/
+compatibility preparation, profiles and repository-external fixture cleanup.
+The previous default verifier remains `npm run test:qualification`, also
+available through `npm test -- --profile qualification --admit-qualification`;
+its historical capture/provenance gates and original workload are unchanged.
+
+Canonical test builds live in disposable prepared overlays, not checkout
+`dist/`. `--no-build` uses checkout artifacts; it does not reuse a previous
+test run's build. After runtime source changes, use fresh canonical preparation
+or explicitly rebuild the checkout before choosing `--no-build`.
 
 Compatibility workflows and original-source test oracles use the frozen
 `legacy/` snapshot. Restore its dependencies and build it explicitly:
@@ -32,19 +51,888 @@ the root sources. Test fixtures and original-source provenance still require
 these files, and selected runtime compatibility adapters require their compiled
 modules.
 
-Historical migration manifests and evidence have not been requalified for this
-layout. They retain their original paths and hashes. The original implementation
-already fails five cases in the server/library slice (writer-fence marker,
-source pin, symlink diagnostic and owner-lease recovery); the relocated slice
-reproduces those failures. A successful build or smoke run does not establish
-full migration acceptance. Old frozen test packages, logs and isolated data
-copies were intentionally retired; retained summaries are not recoverable
-test environments and do not requalify the historical captures.
-The additional resource/subscription slice passes 28 functional cases, while
-its original-source hash check remains stale. The experimental Sync host test
-is blocked by active or uninspectable hosts on the shared machine. Both
-remaining failures were reproduced in the original layout; no process was
-stopped to bypass that gate.
+Experimental isolated generations now stage Core from this repository root and
+compatibility resources from `legacy/resources/`. The packaged
+`runtime/next-server/` name is retained for launcher compatibility; inside that
+package, adapters resolve `legacy/resources/` just as they do in this checkout.
+Generation staging does not publish an active generation or authorize cutover.
+The retained managed-client payload can be staged after `npm run build` with
+`node scripts/stage-runtime.cjs stage --payload`; it refuses an existing output directory
+and uses the locked Core dependency tree, not the frozen extension's old
+`next-server/` staging script. The default output is `next-runtime/`; omitting
+`--payload` produces a rehearsal manifest rather than a managed-client payload.
+
+## Migration delivery status
+
+Status date: 2026-11-16. **Not ready for production switching.** A passing
+build, fixture or test profile is not migration completion. Work is organized
+by the deliverables below, not by the number of compatibility tests repaired.
+The manager's final acceptance requires all three outcomes: **migration
+complete, testing complete, installation complete**. None can substitute for
+another, and production switching still requires separate authority.
+
+**Confirmed final scope: isolated Linux `pkm-v5` candidate.** This delivery
+requires applicable migration regressions, explicit current-version input
+qualification and an independently verified isolated installation. Production
+old-profile takeover, Windows and genuine historical installed/private-profile
+acceptance are separately unsupported; the production obligations below are
+not being silently declared complete.
+
+**Production resource gate:** per-instance MCP diagnostic history is
+migration-only, not a permanent production service. Production must not
+silently collect or persist that history, periodically rewrite diagnostic
+heartbeat files, or scan accumulated instance records behind a hidden UI.
+Migration tracing must require explicit opt-in and stop when that work ends.
+Only minimal current operational state needed for safe start/stop, in-flight
+calls and write fencing may remain; it must not become an unbounded history.
+The active compatibility runtime now keeps lifecycle state in memory: it
+does not create, scan, read or write the persistent instance registry, schedule
+diagnostic heartbeat publication, or retain terminated-instance history.
+The complete current-runtime regression passed **372/372 files**, and the
+focused Python suite verified zero registry access with 1390 preexisting
+synthetic records. Independent kernel tracing of the actually installed new
+artifact verified zero registry access attempts, scans or managed-root
+mutations in both empty-registry and 1390-record scenarios, across startup,
+idle, three real reads, status, quiesce and shutdown. Existing records remained
+byte- and metadata-identical. The old tracking panel is absent from the new
+host package, not merely hidden.
+Minimal generation/fence control checks still read current generation pointers
+every 250 ms and at request admission; these are correctness checks, not
+instance tracking or a claim of zero filesystem I/O. Diagnostic event logging
+requires explicit process-local `--diagnostics-directory` authorization, with
+history access separately granted by `--diagnostics-history`; neither is
+forwarded by the managed launcher. Existing production records are untouched.
+The changed runtime has its own complete run and actual same-artifact native
+installation/resource acceptance; no earlier artifact's result is transferred.
+
+The explicit `linux-candidate` test profile retains every controlled regression,
+browser and native test, including migration/provenance checks and the
+original-driven Room simulation. It discloses exactly five excluded original
+installed/private-profile suites and their missing requirements. The original
+`ci`, historical hashes, report documents and generation-432 unqualified marker
+remain unchanged. See [candidate validation](tests/README.md#linux-candidate-validation).
+
+### Accepted Linux candidate
+
+| Acceptance condition | Result |
+| --- | --- |
+| Applicable migration | Accepted within the confirmed isolated Linux candidate scope; 35 formerly failing applicable suites recovered, zero regressions. |
+| Testing | Fresh complete current-runtime `linux-candidate` run: **372/372 files passed**, 2625 cases passed, eight gated cases skipped, zero opaque tasks, failures, timeouts or cleanup errors. Core and both VS Code surfaces typecheck. |
+| Resource behavior | Default persistent MCP instance tracking removed; kernel-audited zero registry operations with zero and 1390 preexisting synthetic records. Minimal in-memory control state and necessary generation/fence control reads remain. |
+| Installation | [Current no-tracking VSIX](artifacts/pkm-v5-0.1.0-no-tracking.vsix) independently passed actual isolated installation, published Note/Core read, native Start/nine tools/Stop, separate same-artifact safety and kernel resource auditing. Owned profiles and children were cleaned up. |
+
+This closes the **Linux candidate**, not the production roadmap below.
+The [closing acceptance receipt](artifacts/pkm-v5-no-tracking-acceptance.json)
+binds the complete run, independent native audit, source correlation and cleanup.
+The [previous candidate receipt](artifacts/pkm-v5-linux-candidate-acceptance.json)
+is retained unchanged as historical evidence, not relabelled for the new runtime.
+No production switching, Windows or live installed-old takeover is accepted.
+
+### Measured old/new MCP performance
+
+The [side-by-side performance report](artifacts/mcp-performance-report.md)
+compares the original 4.0.22 VSIX with the accepted no-tracking VSIX using real
+managed stdio servers, identical logical read results, 100/1000 Notes,
+zero/1390 stale instance records, six alternating pairs per scenario and
+7200 timed calls. It does **not** show an overall speed or memory improvement:
+the new runtime has higher startup, single-Note/search latency and process-tree
+memory; 1000-Note full-list latency improves about 25%. Observed idle storage
+writes decrease, but CPU is not consistently lower. Functional acceptance and
+zero instance-registry tracking are not performance acceptance.
+The report includes raw data, paired dispersion, observation limits and the
+standalone [benchmark command](scripts/benchmark-mcp.mjs). No application runtime
+or accepted VSIX bytes were changed for this measurement.
+
+| Deliverable | State | Exit criteria and remaining work |
+| --- | --- | --- |
+| Lean active codebase | In progress | One maintained Core/client implementation; explicit, bounded compatibility adapters. Identify runtime dependencies before retiring adapters. Frozen historical oracles are not a second maintained product. |
+| Configuration and delivery | In progress | Consistent validated CLI/configuration, complete typechecking, reproducible payloads and documented supported entrypoints. Strict CLI validation and unified three-surface typechecking are verified; runtime/package configuration still needs end-to-end consolidation. |
+| Functional migration | In progress | Preserve workflows, stable identities, authorization and approved behavior differences. Action v1 historical identities, release-bound behavior and the four repaired historical authentication checks pass in a fresh 11-file/76-case joint run. Original-producer Room simulation passes without private data. The new Action-v1 artifact independently passes bounded Linux installation checks. Regenerated compiler generation 432 remains unqualified; Action v2 is fixture-only. Historical/installed parity and additional native coverage remain unresolved. |
+| Recovery and installed takeover | In progress; live takeover unavailable | Identity-pinned rollback, durable cancellation and SIGKILL recovery are implemented. Native cohosting checks reject the known old extension/build and revoke changed authority, but cannot prove a cold host. Active same-process adoption is therefore hard-disabled; Transition rejects before consent, drain, intent or root effects while read-only Preview remains available. Genuine legacy-workload integration and Windows fencing/profile inventory remain unfinished. |
+| Installation | Current no-tracking Linux build installed and independently verified | New `c8486a6e` VSIX passed actual native import/read/lifecycle, separate same-artifact safety and independent kernel resource auditing. The exact 4988-entry closure includes only two runtime differences from the previous candidate: the active compatibility entrypoint and new in-memory lifecycle helper. Default profiles and production roots remain untouched. Windows, installed-old parity and genuine takeover remain open. |
+| Release acceptance | Blocked | Resolve current source/inventory/capture drift and obtain independent exact-scope evidence and explicit human cutover authority. The evaluator accepts 0/21 workstreams; 634 required receipt rows remain blocked. Rows are verification obligations, not 634 separate development projects. |
+
+### Current parallel delivery batch
+
+| Owner | Implementation scope | Handoff and acceptance |
+| --- | --- | --- |
+| Payload agent | Runtime staging and dependency/configuration closure | Shared Core authority and 17 retained CommonJS modules preserve single module/brand identity; relocated payload regression passes. Caller-CWD reproducibility is now fixed: root and host-directory staging match all 4974 qualified runtime hashes, complete manifest bytes and build ID. No active-generation publication. |
+| Installed-transition agent | Installed-client migration orchestration and durable adoption | Cohosting/preflight guards, actual private-worker shutdown and exact Note discovery cursor restored. Parent correlation passes 163/163 across 22 files. No live legacy takeover acceptance; native adoption/read/rollback remains unavailable until authentic cold-boundary integration. |
+| Sync-recovery agent | Authentic original pushed-receipt recovery and local HTTPS coverage | Genuine original producer now publishes nonempty fixture outbox independently of checkout ignores; malformed metadata rejected. All five Sync files pass, including actual isolated TLS/auth checks. No historical producer or product Git ignore policy changed. |
+| VSIX-installation agent | Host packaging, isolated installation and activation | New `action-v1` artifact passed both actual same-artifact native batches. Parent independently verified receipt/root/read, bounded bootstrap, strict guards, lifecycle, all 4976 payload hashes, exact 4987-entry runtime/host closure, 1179 primary plus 1471 supplemental inputs and 51 historical artifact/report hashes. Fresh source paths match exactly; no documentation exceptions during this window. Owned profiles/children were cleaned up. Windows and installed-profile takeover remain open. |
+| Compute-source agent | Compute source bindings and versioned native qualification | Accepted within fixture scope: separate current worker/accounting pins, real-worker accounting/restart tests, exact immutable historical archive and verification without checkpoint Git objects. Original evidence unchanged. |
+| Paired-restore agent | Authorized restored-root ownership admission | Accepted in the manager's 14-file regression: live source marker validated/excluded, restored target bound under real flock, final callback rechecks authority/leases. Copy/tamper, second/third-approval revocation and pending-publication cases pass. Custom-publisher crash recovery remains unqualified. |
+| Generic-restore agent | Final publication authority validation | Accepted in the same joint run: reuse existing source/stage/authority checks after async fence/marker work, immediately before publication. Real-marker revocation negative control and cleanup/unchanged-backup checks pass. Separate historical classification-command failure remains open. |
+| Naming agent | Side-by-side `pkm-v5` package, client and MCP identity | URI-cache and default-metadata compatibility corrected; actual native discovery, Start/9 tools/explicit Stop and same-artifact safety accepted. Advisory notifications no longer block Preview completion; real decision/consent awaits remain intact. Existing `pkm` registration/data untouched. |
+| Manager | Failure triage, shared interfaces, integrated regression and acceptance | Current no-tracking delivery complete within the confirmed Linux scope: fresh 372/372 files passed at 22:22:29Z, 2625 passing cases, eight gated skips, zero opaque/failing/timed-out/cleanup-error tasks. Parent verified all 2678 frozen paths/hashes, 3892 original files and 67 prior artifacts unchanged. New `c8486a6e` VSIX independently passed actual isolated installation, native Start/nine tools/Stop, data guards and separate safety. Parent parsed both complete kernel traces: zero registry operations with zero/1390 stale records. The resource requirement is implemented and accepted, not deferred to documentation or a later release. |
+
+These are parallel owners, not completion claims. Missing historical input,
+unfinished product behavior, test-harness defects and native evidence gaps are
+tracked separately. Compact complete-CI reports omit logs; the earlier full
+failure census preserves diagnostics for all remaining failure identities.
+Omitted logs are not proof that failures are external.
+
+### Verified baseline and evidence boundaries
+
+- Current complete no-tracking Linux delivery, `2026-11-16T22:22:29.041Z`:
+  **372/372 files passed**, 2625 passing cases, eight gated skips, zero opaque
+  tasks, failures, blocked/cancelled tasks, timeouts or cleanup errors; no retained
+  framework workspace. Duration 40m21s; fresh build passed in 69.8s.
+  Catalog fingerprint:
+  `0e32868fa466a52573aa17ef257efb4ce06e65de7b9a701d9e81f67636bc720a`.
+  Independent after-run verification preserved all 2678 source paths/hashes
+  at source fingerprint
+  `ab2a1cad572219c77225696a91f8d5d88a8877084c64b2ec872a16cc17923f61`,
+  all 3892 original input files, the original VSIX and 67 previous artifacts.
+  Closing documentation changes occur after this verified window.
+  The new [no-tracking VSIX](artifacts/pkm-v5-0.1.0-no-tracking.vsix), SHA256
+  `c8486a6eac170d88b1dea0ac09433de1589424aca3bd5007f532780453a57df8`,
+  independently passed actual same-artifact import/publication/Core Note read,
+  native workbench Start/nine tools/explicit Stop and separate fail-closed safety.
+  The manager checked all 4988 ZIP entries, 4977 payload files, 4349 vendors,
+  55 raw capture hashes and 44 absent owned native PID generations.
+  The [resource audit](artifacts/pkm-v5-no-tracking-resource-audit.json)
+  records 64231 and 64302 kernel trace lines, independently parsed by the manager:
+  **zero instance-registry operations**, zero managed-root scans or mutations
+  with zero and 1390 stale synthetic records. Control reads remain explicitly
+  permitted and observed; operational workspace/database I/O is not called zero.
+  All old records remained unchanged; no real user registry was accessed.
+  [Native provenance](artifacts/pkm-v5-no-tracking-provenance.json) and the
+  [closing receipt](artifacts/pkm-v5-no-tracking-acceptance.json) preserve
+  commands, hashes, actual results and the unchanged candidate-scope boundaries.
+- Previous complete explicit Linux candidate, `2026-11-16T20:34:02.992Z`:
+  **372/372 files passed**, 2623 passing cases, eight gated skips, zero opaque
+  tasks, failures, blocked/cancelled tasks, timeouts or cleanup errors, and no
+  retained framework workspace. Duration 40m47s; fresh build passed in 68.5s.
+  Fingerprint:
+  `1911c20036171f130d524fdc2bca1b0c71abf7309a42086fb57725153050b66f`.
+  Independent after-run verification preserved all 2677 source paths/hashes
+  at source fingerprint
+  `2a70e86ebfabf601c3ebc6800d1e5ed78c1fc3f870a6016c128de9715c45d1a2`,
+  all 3892 original extracted files, the original VSIX and all 66 existing
+  artifacts. Exact comparison with the historical default CI: **35 previously
+  failing applicable suites recovered, zero regressions**, five explicitly
+  excluded genuine installed/private-profile suites and 12 added passing
+  suites. This is a new complete run, not 371 plus a focused result.
+  The only source differences from the independently installed candidate
+  are this closing documentation and the nonpackaged C test fixture; all
+  2675 other input files, including every packaged application source, remain
+  byte-identical. Closing documentation is updated after the verified window,
+  never as an exception during it.
+- Previous complete explicit Linux candidate, `2026-11-16T19:35:12.850Z`:
+  **371/372 files passed, one failed**, 2620 passing cases, eight skipped
+  and one opaque task. Zero blocked, cancelled, timed-out or cleanup-error
+  tasks; no retained framework workspace. Duration 40m20s; fresh build passed.
+  Fingerprint:
+  `024afd5fce0ce28ae922d92ad393efbeff668d10ef73cdcb702d816faeb50b19`.
+  Independent after-run verification preserved all 2677 source paths/hashes,
+  3892 original input files, the original VSIX and 59 prior artifacts.
+  Against the prior default CI, all 35 previously failing applicable suites
+  recovered; five genuine installed/private-profile suites were explicitly
+  outside the confirmed candidate scope, and 12 additional suites were run.
+  The one passing-to-failing regression was
+  [trusted Action build CLI](tests/trusted-action-build-cli.test.mjs).
+  Controlled scheduling reproduced its fixture's early stdin close as
+  EPIPE, cancellation and an unknown effect. The native C fixture now
+  consumes stdin before exiting; production behavior and assertions were
+  not weakened. The manager's fresh three-CLI/seven-case acceptance passed
+  at `2026-11-16T19:51:30.648Z`, zero skips or opaque tasks.
+  The subsequent complete green run above closes that regression; the failed
+  run's receipt remains unchanged.
+- New [Linux candidate VSIX](artifacts/pkm-v5-0.1.0-linux-candidate.vsix),
+  SHA256 `9ff0016777e0cd56a99b0275a01ed4837e8f16283b924202c6a9822b9eec77b4`,
+  independently passed actual owned isolated installation and separate
+  same-artifact safety. The manager checked all 4987 ZIP entries, 4976 payload
+  files, 4349 vendors, actual Core workspace/Note title/body, the ten-path
+  allowed initial bootstrap and subsequent strict knowledge/publication
+  equality. Native workbench Start, nine-tool discovery and explicit Stop
+  passed while the editor/host remained alive. Three profiles were removed
+  and 51 owned PID generations were absent. An initial observer zombie-reaping
+  failure is preserved and not accepted; only the external observer was
+  corrected before the same-artifact retry. The only payload difference from
+  Action-v1 is 27 verified esbuild diagnostic module labels in one retained
+  bundle, caused by the external checkout's dependency symlinks; physical-path
+  bit-reproducibility is not claimed.
+  [Installation provenance](artifacts/pkm-v5-linux-candidate-provenance.json)
+  records the raw evidence and limits. Production, Windows and live old-profile
+  takeover remain unsupported. The subsequent CLI fixture fix changes no
+  packaged runtime source and does not transfer acceptance to a different VSIX.
+- Latest complete default-v1 CI: **325/365 files passed, 40 failed, zero timed
+  out**, zero cleanup errors, no retained workspace; 2258 passed cases,
+  17 skipped and 36 opaque tasks. Completed `2026-11-16T09:22:38.497Z`
+  in 37m25s, including a successful 68.3s fresh build. Fingerprint:
+  `e1433efea6729a880296b2a3881f41c39436cd04baa7784cb78ab7e05f3e7163`.
+  Exact comparison with 295/363 finds **29 recoveries, one passing-to-failing
+  regression**, two added passing files and no removed identities. The
+  regression was [Recipe ported reports](tests/legacy-recipe-ported-reports.test.mjs);
+  it remains a failure in this complete-run receipt even after the subsequent
+  focused repair, rather than rewriting the full-run result.
+  All 2654 source paths/hashes, 3892 extracted original input files and
+  51 historical installation files were independently reverified unchanged.
+  Actual archive and extracted-extension inputs were supplied; historical
+  private/installed-profile flags were explicitly unset. This is measured
+  progress, not migration completion or a passing full suite.
+- Subsequent Recipe/snapshot integrated acceptance: **8/8 files and 32/32 cases
+  passed**, zero skipped, opaque, timed-out or cleanup-error tasks and no
+  retained workspace. Completed `2026-11-16T09:31:26.347Z` on one fresh
+  canonical build; fingerprint
+  `60300a47ebb9374dcdb38f921a5744b5526351185aa646281280958f1be3914d`.
+  The ported-report regression was reproduced as a missing retired-layout
+  Python oracle, then fixed at all five coupled Recipe call sites by resolving
+  the retained helpers relative to the test modules. Three snapshot suites
+  now authenticate ten exact historical originals through the existing shared
+  reader and a separate immutable
+  [snapshot archive](migration/evidence/snapshot-authentication-originals.zip)
+  ([provenance](migration/evidence/snapshot-authentication-originals.json)).
+  The manager independently checked the archive digest and exact ten-file
+  authorized delta against the previous 2654-file source snapshot; all
+  523 runtime files and existing migration evidence remain unchanged.
+  These eight suites all failed in the complete run; their focused recovery
+  does **not** substitute for another complete CI or expand installed/native
+  acceptance.
+- Previous complete default-v1 CI: **295/363 files passed, 68 failed, zero timed
+  out**, zero cleanup errors, no retained workspace; 1991 passed cases,
+  46 skipped and 55 opaque tasks. Completed `2026-11-16T07:16:19.485Z`
+  in 34m44s, including a successful 68.4s fresh build. Fingerprint:
+  `f98815567771f6bd8b28ae7494659f85a17cc0c78d46289f3dd43f8e553c70d6`.
+  Exact comparison with the previous 288/363 run preserves all 363 identities,
+  recovers seven failures and has **no passing-to-failing regressions**.
+  Recoveries are the three backup/fencing fixtures, original snapshot loader,
+  protected import, retrieval-history import and migration audit. This is not
+  a migration completion percentage or a passing full suite.
+- Subsequent parent crash-recovery regression completed
+  `2026-11-16T07:19:10.420Z`: **3/3 files, 60/60 cases**, zero skips,
+  opaque tasks, timeouts, cleanup errors or retained workspace, using the
+  existing build. The imported-note crash fixture had intercepted
+  `fs.renameSync`, but native moves use the atomic no-replace subprocess.
+  It now interrupts that exact boundary **after the real asset move**, keeping
+  the original pending-intent/no-receipt, restart, alias/revision, relocated
+  backup, byte and unchanged-source assertions. No runtime/configuration
+  changed. This selected result does not revise the complete-CI count.
+- Original 4.0.22 VSIX input is now authenticated against immutable SHA256
+  `1804071cb3b9fc86edc5933d5001db6ea1a8d7a9adf30d6d2b3166fcd6048f27`.
+  It was not supplied to the `07:16` CI process; the subsequent `09:22` full
+  run includes it. Six artifact-only full
+  suites subsequently pass **6/6 files, 45/45 cases** with `PKM_LEGACY_VSIX`.
+  The separate private-admission attempt did not successfully filter its
+  historical case: **13 synthetic cases passed and one historical case failed**
+  at the required `PKM_PRIVATE_ROOM_BASELINE_FIXTURE` gate. This is a failed
+  14-case attempt, not filtered-only qualification. No private destination was
+  accessed. The negative pattern matched Node's synthetic root, whose ancestor
+  matching admitted every child; this was not a framework forwarding defect.
+  Both runs had no timeout,
+  cleanup error, retained runner workspace or surviving owned children.
+  These results do not authorize a private fixture or prove installed-old
+  functional parity.
+- Corrected private-case selection subsequently completed
+  `2026-11-16T07:34:03.786Z`: actual preserved TAP verifies **13 synthetic cases
+  passed, zero failed or skipped**. The historical case was omitted, not marked
+  SKIP, and did not execute; its required fixture environment was explicitly
+  unset. The corrected pattern rejects both the synthetic root and the exact
+  historical title. No build, retained workspace, surviving owned process or
+  private-data access occurred. Original VSIX bytes remain unchanged; owned
+  temporary caches were removed and reports preserved. This separate filtered
+  result does not qualify the historical case or replace the failed attempt.
+- Action provenance investigation distinguishes authentic historical capture
+  `3d9241d...` from current `432371f8...`. Compiler/validator strings and portable
+  definition bodies match, but runtime-source/component-engine hashes and all
+  nine builtin implementation/content hashes differ. Default `compiler-capture-v1`
+  previously consumed the latter while runtime provenance required the former. Candidate
+  identities, dependency pins and persisted runs need independent comparison;
+  updating historical pins or automatically translating old runs is not an
+  acceptable repair. A compact independently authenticated v1 projection now
+  restores the historical identities, with a historical checksum guarding the
+  reused compiler/validator strings, schemas and portable definition bodies.
+  Protected captures and pins remain unchanged.
+- Parent fresh Action joint validation completed `2026-11-16T07:30:21.012Z`:
+  **1/8 files passed, 7 failed**, no timeout, cleanup error or retained workspace.
+  Raw per-file TAP totals are 60 cases, 44 passed and 16 failed; the compact
+  framework summary instead exposes five cases and seven opaque files.
+  Historical native goldens, default-v1 identity and foreign-generation
+  pin/receipt/persisted-run rejection checks pass. The three historical
+  authentication failures remain explicit; four legacy Action compatibility
+  files also fail. Compared with preserved diagnostics, legacy MCP now has
+  eight failing cases instead of seven. Diagnosis establishes that this added
+  failure sends an authentic historical graph pin into a frozen foreign-generation
+  Python oracle, not that native v1 rejected its historical contract. Three
+  generations are involved: authentic release/capture, regenerated unqualified
+  capture and frozen fixture-v2 sources. Default-v1 oracle fixtures are now
+  being bound to the authenticated 4.0.22 VSIX resource closure; metadata/source
+  authentication remains separately gated. Actual comparison must pass before
+  acceptance. At that point, no new installation qualification was claimed
+  for this runtime; the subsequent Action-v1 installation is recorded below.
+- Subsequent fresh Action/original-producer Room joint run completed
+  `2026-11-16T07:58:25.591Z`: **5/9 files passed, 4 failed**, zero timeouts,
+  cleanup errors or retained workspace, after a 16.3s fresh build. Raw TAP
+  totals are **57 passed cases and four failed historical authentication
+  checks**; the compact summary exposes 18 passed cases and four opaque files.
+  Catalog:
+  `c4a51d53a9e528a0e6d154530f89dce0b6a59793f1278d3e2b2975e579bc841a`.
+  Native source-identity, catalog, get and retrieval now compare successfully
+  with authenticated original-release oracles. All eight MCP behavioral
+  cases pass; its ninth case and the three older source/capture checks remain
+  explicit authentication failures. The pending-response comparison verifies
+  both exact original and native guidance, identical pending/noncallable
+  authority state and every other field strictly. Only the already-documented
+  conditional trusted-host/effect-consent wording intentionally differs.
+- Subsequent fresh integrated authentication/behavior validation completed
+  `2026-11-16T08:24:44.656Z`: **11/11 files and 76/76 cases passed**, zero
+  skips, opaque tasks, timeouts, cleanup errors or retained workspace.
+  The fresh build passed in 16.5s. Catalog:
+  `a3861b87606b44213ed1fea30ef26b677f4d320322cb30c146d232485637a303`.
+  This includes the reader's negative controls, compiler, runtime, approval,
+  source identities, all four legacy Action suites, Knowledge MCP and the
+  original-producer Room simulation. The four earlier authentication failures
+  are resolved by five exact original blobs in a generation-namespaced
+  [immutable fixture](migration/evidence/action-authentication-originals.zip),
+  SHA256 `42aa101cdd1601caeda9e5213a1b0995abdbdec76d6997908f31d2879c295552`.
+  Shared source/capture reading verifies dataset, role, path, archive and member
+  hashes without Session, Git or network lookup during validation.
+  Independent manager verification found exactly the authorized script/test
+  and status-document changes; all 523 runtime source files, old captures,
+  manifests, pins and 51 historical installation files remain unchanged.
+  Compiler generation 432 remains explicitly **UNQUALIFIED**. Authentication
+  is not native implementation qualification, and this focused pass does not
+  replace the latest complete CI or extend installed-host acceptance.
+- The next shared-source batch uses seven exact historical originals,
+  including the original capture producer, in a separate
+  [knowledge fixture](migration/evidence/knowledge-authentication-originals.zip),
+  SHA256 `700e32a19db9fa4dec300d0e8e0ea218b0a67856dee37baebce27f608af36d74`.
+  Existing source/capture/producer pins are unchanged; current driver identity
+  is not substituted for the historical producer. Parent independently
+  verified every member and the complete authorized source delta.
+  At `2026-11-16T08:39:36.943Z`, the fresh combined run passed **24/25 files,
+  230 cases**, including all nine knowledge suites and all four original
+  Recipe/Chat suites. The only failure rejected the manager-created report
+  directory's nonprivate mode before Room simulation began. Without any code
+  change, Room passed separately at `2026-11-16T08:41:55.065Z` under a private
+  owned report directory, **1/1 case**, with the exact same catalog
+  `03ece1675381a47f4e7804d1e8a6c4b1d9921e9c79d3da18a6569eb930b9f19d`.
+  This is correlated evidence, not a claimed single 25-file all-pass run.
+  Recipe/Chat inputs are byte-verified extracted 4.0.22 files, not installed
+  UI profiles; the HTTP fixture now uses that explicit input and creates
+  private Chat data with a scoped private umask. All 523 runtime source files
+  and 51 historical installation files remain unchanged.
+- The [nonprivate Room simulation](tests/next-room-private-admission-simulation.test.mjs)
+  passes in that same fresh run. Nine unchanged producer files from the exact
+  4.0.22 VSIX generate the Room database, Meeting canonical state and Note,
+  using Map-backed synthetic credentials and disjoint owned homes/roots.
+  Incomplete copying is rejected; actual private admission creates its own
+  receipts and preserves the exact generated Note including manual text.
+  Recovery, private permissions, empty public Notes and unchanged originals
+  are checked. External run evidence explicitly labels source-function
+  simulation: it is not historical customer data, installed-host/UI parity
+  or real keychain evidence. No historical gate or capture was replaced.
+- Previous complete default-v1 CI: **288/363 files passed, 75 failed, zero timed
+  out**, zero cleanup errors, no retained workspace; 1938 passed cases and
+  46 skipped, with 62 opaque tasks. Completed `2026-11-16T06:00:48.551Z`
+  in 34m42s; fresh build passed in 68.7s. Fingerprint:
+  `b2e6fce60fdc9f1da3cc32f508a678d5a6b411e805bbba8119c282307c02a9ad`.
+  This is a regression baseline, not a migration completion percentage.
+- Exact task-reference comparison with the previous **286/362** baseline keeps
+  all 362 identities and adds the passing public-identity file. Four files
+  recover: collaboration state, Compute knowledge index, Compute and paired
+  Memory backup. Three previously passing files now fail:
+  [native services](tests/batch07-native-services.test.mjs),
+  [native bundles](tests/batch09-native-bundles.test.mjs) and
+  [host backup fencing](tests/host-composition-legacy-batch16-backup-fence.test.mjs).
+  Their bounded repair is verified separately below; no adjusted complete-CI
+  count is inferred from focused checks.
+- Subsequent parent regression acceptance completed
+  `2026-11-16T06:09:22.574Z`: **3/3 files, 24/24 cases**, zero skips,
+  opaque tasks, timeouts, cleanup errors or retained workspace, after fresh
+  preparation. The three fixtures still expected two authority callbacks;
+  intentional restore fencing now requires four on Linux and three elsewhere.
+  Only those assertions changed; actual denial/revocation, restored bytes,
+  redaction and receipt checks remain. No product/runtime or qualified VSIX
+  bytes changed. Catalog:
+  `8381fe89d8a6e711762ce2724127673453d3e7d0050bc3fefb18b0a54ae9c9e6`.
+  These selected results did not change that baseline; the later complete run
+  above verifies all three recoveries.
+- A subsequent diagnostic census covered all **72 remaining baseline failure
+  identities** in nine serial batches, retaining all 72 raw diagnostic records
+  with no cleanup error or retained workspace. All failed in these selected
+  runs. Literal observations were 39 provenance/hash/capture diagnostics,
+  13 all-skipped gates and 20 other/untraced diagnostics, not causal categories
+  or a new complete-CI result. Inspection confirms actual engineering defects
+  as well as required original-VSIX inputs; these failures are not all external.
+- Current import/tooling integration completed `2026-11-16T06:27:00.487Z`:
+  **8/8 files, 74/74 cases**, zero skips, opaque tasks, timeouts, cleanup errors
+  or retained workspace, after fresh preparation. An unchanged-schema contracts
+  leaf removes a real retrieval-history ESM initialization cycle while preserving
+  public exports. Selective Node module-mock activation and source-anchored
+  historical loaders restore the actual protected-import/snapshot tests.
+  Consistent-delivery audit validates but does not copy Linux root-bound fence
+  identity, retaining its source inventory and rejecting a forged marker.
+  The ordinary import workflow and all three framework files pass in this run.
+- A **separate** current host/packaging/public-identity/staging run completed
+  `2026-11-16T06:29:58.854Z`: **4/4 files, 34/34 cases**, again zero skips,
+  opaque tasks, timeouts, cleanup errors or retained workspace. Both runs use
+  catalog `f98815567771f6bd8b28ae7494659f85a17cc0c78d46289f3dd43f8e553c70d6`.
+  Neither is a new complete CI or native installation pass. The changed Core
+  runtime subsequently passed the separately recorded new-artifact native
+  batches below. The later complete CI above also verifies these repairs,
+  while retaining 68 other failed files as unresolved.
+- The previous **286/362** complete run, compared with its 277/362 predecessor,
+  kept all 362 identities, recovered nine nonpassing files and had no
+  passing-to-failing regressions. Those recovered files cover Chat process,
+  Environment session binding, local Git HTTPS, authentic Sync recovery,
+  Knowledge snapshots (previously timed out), native read MCP, Note MCP,
+  subscription cache and the private RAM subscription profile fixture.
+  That earlier result did not establish the causes of the subsequent 75 failures;
+  its compact successor report omitted 67 logs. The later census retained all
+  72 then-unrepaired failure identities' diagnostics.
+- Subsequent focused results are separate: coding-worker 22/22 cases; the
+  28-case filesystem-adapter fault matrix executed twice with restart, replay,
+  tamper rejection and byte-repeatability checks; explicit Action v2
+  integration 26/26 cases. These do not replace the complete default-v1 CI.
+- The current configuration slice passes 13/13 cases across CLI, coding CLI
+  and host configuration. All three TypeScript surfaces typecheck. The
+  earlier browser verification passes 5/5 files and 6/6 cases at fingerprint
+  `076b7232d495c9e06525750957c53153e7c8d44786b953a4b72cfe2dde66e6d2`;
+  it was not rerun with the latest complete-CI fingerprint.
+- Earlier integrated delivery: 12/12 files passed, **77 cases passed and one
+  historical-VSIX case skipped**, no timeout, cleanup error or retained workspace.
+  This includes payload relocation/reproducibility, actual Memory hosts, native
+  child lock contention, adoption rollback, CLI and all three host regressions.
+  The three host regression files were previously missing from discovery;
+  they now run in ordinary isolated CI without native admission. Framework
+  regressions pass 24/24. Catalog fingerprint:
+  `076b7232d495c9e06525750957c53153e7c8d44786b953a4b72cfe2dde66e6d2`.
+- Subsequent snapshot-fixture repair uses real supported schema-1 privacy and
+  immediate Linux native-lock recovery instead of an obsolete SQL-lease sleep.
+  A two-job focused run against freshly built coordinator-batch artifacts passes
+  all 39 cases across snapshots, Chat process and subscription cache; the
+  snapshot file completes in 50.6s under its unchanged 120s deadline. All three
+  TypeScript surfaces also pass. This is not a new complete CI pass.
+- Last 22-file integrated delivery regression: **22/22 files, 163/163 cases**,
+  zero skips/timeouts/cleanup errors, no retained workspace. Completed
+  `2026-11-16T02:03:20.137Z` in 338.3s, with fresh automatic Core/compat/host
+  preparation (59.7s). This includes all host/framework files, adoption/payload,
+  snapshots/Chat/cache, Environment session binding, eleven private RAM
+  subscription cases, five Sync files, real Note MCP transports and managed/
+  standalone owners. Three-surface typecheck and whitespace checks pass.
+  Catalog: `71228edc625f957b37077b6cd550ff9e3c354fe735ce19b2fa107a7c12b8836a`.
+  This does not replace the complete-CI baseline.
+- Latest Core/restore integration completed `2026-11-16T03:30:45.425Z`:
+  **14/14 files, 187/187 cases**, zero skips/opaque tasks/timeouts/cleanup errors,
+  no retained workspace. Fresh preparation took 31.2s of the 160.0s total.
+  This includes all three Compute files, paired and generic backup/restore,
+  Linux root fencing, collaboration, classification, Skill-source backup,
+  subscription identity, in-place Trash, root adoption and Knowledge snapshots.
+  Catalog: `2c9788d65be7ad9fae19b764c937f292a5d06cfa2a19a1471bfaf9bb16f7bfb5`.
+  This focused result does not revise the complete-CI count of 286/362.
+- Pre-fix public-identity/host integration completed
+  `2026-11-16T03:37:40.038Z`: **9/9 files, 78/78 cases**, no skips, opaque
+  tasks, timeouts, cleanup errors or retained workspace, with fresh three-surface
+  preparation. Catalog:
+  `3a5c1f69e59e5b695475a5bc98628c3be59ff131b0e116c2e421764253fffb6e`.
+  The subsequent real native Start Server failure demonstrates that these
+  fixture checks did not establish workbench compatibility. The 363-file CI
+  attempt was deliberately interrupted at `2026-11-16T03:46:07.822Z`
+  (53 passed, 12 failed, 298 cancelled; zero cleanup errors, no retained
+  workspace); it is not a new complete baseline.
+- Advisory-liveness host/packaging integration completed
+  `2026-11-16T05:07:59.477Z`: **2/2 files, 25/25 cases**, zero skips,
+  opaque tasks, timeouts, cleanup errors or retained workspace, with fresh
+  preparation. Deferred actionless notifications no longer block command
+  completion or the busy guard; delayed consent, denial without writes and
+  explicit notification-rejection logging remain tested. Catalog:
+  `ad6f8741b8df51e818fafb8dcbab52cc1ef3c96b4ca92b65eac42217146d1fee`.
+  This focused pass does not replace the complete-CI baseline.
+- The new [Compute v5 native record](migration/compute-native-v5-qualification.json)
+  separately pins the maintained worker and accounting dependency. Real Python
+  worker tests verify exact reported credits, partial/missing reporting,
+  failure/cancellation and persistence across restart. The exact historical
+  worker is checked against a byte-exact test-only archive, not substituted with
+  v5 behavior. The 20,562-byte archive matches the original Git blob and pinned
+  SHA-256; `-text` prevents checkout conversion and verification no longer needs
+  ephemeral checkpoint objects. All four historical manifests were independently
+  verified unchanged. The new record passes its bounded fixture regression;
+  it makes no independent or production acceptance claim.
+- Historical source binding now verifies four byte-identical Python files,
+  eight knowledge-index source/capture pairs, and five collaboration captures
+  plus five source-evidence entries. All nine unique collaboration original
+  source pins match revision `371fcf85b36b6b1cc9c8022bd10e3a6ae4dd8088`,
+  preserved on the original source branch rather than only a session checkpoint;
+  the later frozen runtime is not misrepresented as this historical revision.
+- Side-by-side old-server baseline was obtained through read-only metadata:
+  registered name `pkm`, extension `4.0.22`, MCP `2.19.0`, 151 enabled MCP tools.
+  This count is not interchangeable with 244 canonical readiness operations.
+  No production knowledge content, mutations or lifecycle control calls were
+  used. The renamed package now passes owned Linux installation/native checks,
+  and old metadata still reports the same accepting instance/build afterward.
+  This is not same-extension-host cohosting or installed-old functional parity.
+- Harness repairs prevent stale host output reuse, distinguish Python environment
+  inputs from outputs, provide selected synthetic-key fixtures a private tmpfs,
+  and publish the network marker only after real network isolation succeeds.
+  Actual netns identity, tmpfs type, private mode and cleanup are tested; no
+  host mount or network configuration is changed.
+- Native cohosting checks revoke invalid authority, but cannot prove a cold host.
+  Transition therefore rejects before consent/drain/intent/root effects while
+  Preview remains usable. Genuine cold installed takeover is **unimplemented**,
+  not merely blocked by the shared-machine inventory.
+- Actual persistent-worker admission/EOF/child-close barriers and error reporting
+  are fixed; no fictional legacy-resource registry was added. Fresh **unfiltered**
+  retrieval validation still fails: 15/16 cases pass, but the original retrieval
+  capture check differs at `src/legacy-retrieval-snapshot-captured.ts`.
+  The four focused worker cases passing does not close this full-file gate.
+- The additional rollback-focused program has a separate unresolved historical
+  fixture: a deliberately unfenced legacy writer is required, but the supplied
+  modern writer correctly rejects the attempted write. An explicitly filtered
+  run is not an unfiltered pass and does not close the rollback release gate.
+- Failures include engineering gaps, immutable historical-source drift and
+  missing authorized inputs; they must not all be labeled external blockers.
+  Original VSIX/private historical inputs are currently unavailable. Do not
+  recreate retired test environments or substitute production data.
+- Historical manifests and source hashes remain unchanged. The user authorized
+  separate versioned v5 native qualification, beginning with the Compute worker
+  and accounting dependency. Its reviewed behavior and current-source tests must
+  be distinguished from exact historical-source verification. This does not
+  authorize blanket pin refreshes or claim qualification for other components.
+  Independent evidence and production switching remain separate gates; no
+  production switch has been performed.
+
+### Configuration contract
+
+The CLI validates supplied options before creating or opening a workspace.
+Missing/blank values, unknown options, duplicate singleton options and options
+for the wrong command fail explicitly. Repeated `--allow-*` policies and
+`--secret-ref` mappings remain supported; a secret reference cannot be mapped
+twice. `--name=value` and `--name value` syntax are both supported.
+
+- `init`: `--data` only; no silently ignored host configuration.
+- `backup`: `--data` and `--destination` only.
+- `http`: optional `--port`; configured model use still requires independent
+  provider/endpoint/model/tool policy, explicit secret references and human review.
+- `mcp`: no HTTP port; compatibility and trusted-runtime options retain their
+  existing explicit opt-in and authorization restrictions.
+
+Model JSON is data, not authority. CLI policy cannot be replaced with fields
+inside that JSON. Secret references resolve only through explicitly supplied
+environment-variable mappings; do not put credential values in arguments.
+
+### Next delivery order
+
+1. Verify the gated active-v5 coordinator in the actual installed package, then
+   close the same-process legacy absence/drain and existing-profile transition
+   gaps. An empty newly created registry is not evidence that old work drained.
+   Keep historical oracles frozen and require real same-process authority.
+   Configuration stays disabled by default; derive installed profile/build
+   identity from verified native context, not user-maintained duplicate values.
+   A nonproduction first-run host is not an automatic production upgrade.
+2. Resolve remaining native functional/recovery and historical-fixture gaps,
+   including Windows fencing/profile inventory, and run fresh complete CI.
+3. Verify installed-host takeover and post-write rollback on both supported
+   platforms, then complete independent release acceptance.
+
+### Latest accepted named installation evidence (bounded Linux pass)
+
+The [Action-v1 VSIX](./artifacts/pkm-v5-0.1.0-action-v1.vsix) includes the
+corrected historical default-v1 identities. Its **same new bytes** passed
+both actual owned Linux installations, followed by independent manager QA:
+
+- Published-data/native acceptance completed `2026-11-16T08:06:15.303Z`.
+  The genuine one-document, 82-byte receipt binds the served destination
+  and actual Core workspace ID `fd6703c6-ee47-4ff0-bdaa-0888ce621af5`.
+  The actual `Example` Note read returns the expected title and body.
+  The manager independently derived all ten bootstrap mutations against the
+  fixed directory/operational-file whitelist; subsequent full knowledge,
+  original-source and publication snapshots are strictly unchanged.
+  Actual native Start/Running/9 tools/explicit Stop passed with editor and
+  extension host alive, followed by owned child exit.
+- Separate safety completed `2026-11-16T08:06:56.335Z`: exact
+  `LEGACY_WRITER_INVENTORY_UNAVAILABLE` cold-host-unproven rejection,
+  unchanged Root/profile snapshots, no consent dialogs, usable second
+  Preview and completed disconnect. This does not qualify adoption,
+  rollback or live takeover.
+- Independent QA verified all **4976 payload hashes**, **4349 vendored
+  files** and exact **4987-entry runtime/host archive closure**, including
+  packaged host byte equality and extension identity. The runtime differs
+  from the previous import-runtime archive only in the two corrected Action
+  modules and the new historical identity projection.
+- All **1179 primary inputs**, **1471 supplemental inputs including docs**
+  and **51 historical artifact/report files** remain hash-identical across
+  this window. A fresh 2650-file source inventory has no additions/removals;
+  both source fingerprints match. There were **no documentation exceptions**.
+  Both owned profiles are removed and nine owned PIDs are absent. Each
+  native batch ran once; no previous artifact's pass was transferred.
+
+SHA256: `a615fa48753c8893881b8973ef2d362ea835d21b1d3e788f6ac9aba91f52f224`.
+Payload build ID:
+`f6468c400d72d2415fc7d8c2954cb8a6eb5a1ea75333fa10186d8e4e605d920d`.
+Evidence: [native published-data pass](./artifacts/pkm-v5-action-v1-installed.json),
+[separate safety pass](./artifacts/pkm-v5-action-v1-preflight-installed.json),
+[original build](./artifacts/pkm-v5-action-v1-build.json) and
+[final provenance](./artifacts/pkm-v5-action-v1-provenance.json).
+
+The final audit explicitly keeps overall repository qualification false,
+including the four historical authentication failures. This status update
+and subsequent authentication work occur **after** the accepted frozen
+window; the original audit and older evidence are not rewritten. There is
+no persistent default-profile installation or production cutover. Windows,
+same-profile cohosting, installed-old functional parity, genuine cold
+takeover and independent acceptance remain open.
+
+### Previous import-runtime installation evidence (bounded Linux pass)
+
+The [import-runtime VSIX](./artifacts/pkm-v5-0.1.0-import-runtime.vsix) includes
+the corrected retrieval-history schema dependency graph. Its **same new bytes**
+passed both actual owned Linux installations:
+
+- Published-data/native acceptance completed `2026-11-16T06:32:59.419Z`:
+  genuine nonempty FirstRun receipt, exact served Root/Core workspace ID, real
+  expected Note read, explicitly bounded bootstrap and unchanged strict
+  knowledge/source/publication snapshots. Native Start/Running/9 tools/explicit
+  Stop completed with editor and extension host alive; owned children exited.
+- Independent safety completed `2026-11-16T06:33:29.590Z`: genuine context,
+  forgery/caller-proof rejection, exact cold-host-unproven rejection before
+  effects, no dialogs, second Preview and disconnect. No drain/adoption/
+  rollback/live-takeover acceptance is claimed.
+- Parent independently verified all 4975 payload hashes and exact 4986-entry
+  archive closure, 4349 vendored files, 1178 build inputs, 41 historical
+  artifact/report hashes, both removed profiles and nine absent owned PIDs.
+  Each native batch ran once; no old artifact's pass was transferred.
+- The final audit explicitly records one authorized manager status-document
+  change among 1469 supplemental files: 1468 unchanged, root README changed.
+  That README is not a build input or packaged file; actual archive README
+  bytes match the unchanged host README. The audit does **not** claim all
+  supplemental sources were unchanged. Original build and blocked-QA evidence
+  remain preserved.
+
+SHA256: `ea697c8f52bac4093f801238bd4d1a440bded496e92984f49defe2e5a72bbef1`.
+Payload build ID:
+`f3b545be79f42ada657ce28e6030b3e86de55cee65d8995618f3da11809f5cd0`.
+Evidence: [native published-data pass](./artifacts/pkm-v5-import-runtime-installed.json),
+[separate safety pass](./artifacts/pkm-v5-import-runtime-preflight-installed.json),
+[original build](./artifacts/pkm-v5-import-runtime-build.json) and
+[final provenance](./artifacts/pkm-v5-import-runtime-provenance.json).
+
+Both owned profiles were uninstalled/removed; there is no persistent default
+profile installation or production cutover. Windows, installed-old functional
+parity, genuine cold takeover and independent acceptance remain open.
+
+### Earlier preview-liveness installation evidence (bounded Linux pass)
+
+The [preview-liveness VSIX](./artifacts/pkm-v5-0.1.0-preview-liveness.vsix)
+passed both real native batches using the **same new artifact**:
+
+- Published-data/native acceptance completed `2026-11-16T05:11:09.467Z`.
+  A genuine nonempty FirstRun receipt is bound to the exact served Root and
+  Core workspace ID; real MCP reads the expected `Example` Note. Native
+  Start/Running/9 tools/explicit Stop passed with editor and extension host
+  alive, owned children exited, and strict post-bootstrap knowledge, original
+  source and publication snapshots unchanged.
+- Separate coordinator safety completed `2026-11-16T05:11:53.939Z`.
+  Real native-context/forgery/caller-proof checks and command completion passed.
+  Transition rejected exactly `LEGACY_WRITER_INVENTORY_UNAVAILABLE` because
+  the cold-host boundary remains unproven: no consent dialogs or Root/profile
+  effects, second Preview usable, disconnect completed. This is negative-path
+  acceptance, **not** legacy drain, adoption, rollback or takeover.
+- Parent independently verified artifact/report/build/audit hashes, every one
+  of the 4974 actual payload hashes and exact ZIP closure, all 1177 captured
+  source hashes at acceptance, 29 unchanged historical files, removed owned
+  profiles and nine absent owned PIDs. Both original build provenance and
+  earlier attempts remain immutable. No earlier artifact's pass was reused.
+- The product fix removes an unnecessary await on six actionless terminal
+  advisories and explicitly logs detached notification failures. Actual
+  decision/consent and business-operation awaits are preserved.
+
+SHA256: `2f6ecbf2c38d3d1782c65a2b781bd009dad209941d7a63af5bb749ba2230135f`.
+Payload build ID:
+`f486b43791eb4544766a9d7d0d9e90f75fa4a96ab7253c22669c5b2d1c4ba903`.
+Evidence: [native published-data pass](./artifacts/pkm-v5-preview-liveness-installed.json),
+[separate safety pass](./artifacts/pkm-v5-preview-liveness-preflight-installed.json),
+[original build](./artifacts/pkm-v5-preview-liveness-build.json) and
+[final provenance](./artifacts/pkm-v5-preview-liveness-provenance.json).
+
+Both owned test installations were uninstalled/removed, not installed into the
+user's current default profile. Existing `pkm`, its production data and lifecycle
+remain untouched. Windows, same-host cohosting, installed-old functional parity,
+genuine cold takeover and independent release acceptance remain unqualified.
+
+The retained chatroom bundle differs from the preceding artifact only in
+46 generated source-comment/CommonJS debug-label lines. Actual esbuild replay
+reproduced both archive hashes by changing caller CWD; there is no statement or
+dependency-graph change. The [build-only followup](./artifacts/pkm-v5-stage-cwd-reproducibility-followup.json)
+pins esbuild's working directory to the repository root. Its new caller-CWD
+regression failed before the fix and passes afterward: **1/1 file, 3/3 cases**,
+zero skips, opaque tasks, timeouts, cleanup errors or retained workspace.
+Root and host-directory staging each match all 4974 qualified runtime hashes,
+the complete manifest bytes and the build ID exactly. Parent verified all
+37 preserved artifact/evidence hashes and the actual Core/standalone-client/
+extension-host typecheck entrypoint.
+
+The staging script and test are absent from the qualified VSIX. At that
+build-only followup, source accounting was 1176 original inputs unchanged, one
+build-configuration input changed, plus the test outside that inventory.
+No runtime bytes changed in that followup, no artifact was repackaged, and no
+original build/provenance was overwritten. Subsequent product-runtime repairs
+require new package qualification; the accepted package above is not a pass
+transferred to those newer sources.
+
+### Earlier named installation attempts (historical)
+
+The exact `native-sdk-fix` VSIX passed real installed published-data/native
+acceptance at `2026-11-16T04:31:02.895Z`:
+
+- The genuine FirstRun receipt contains one `notes/Example.md`; the actual
+  managed MCP child serves that exact published destination and workspace ID,
+  not a separate empty test workspace. Real `capability_read` of
+  `mcp.tool.get_note` returned the expected ID, title and content.
+- Existing lifecycle bootstrap is explicitly authorized and recorded:
+  standard empty area/trash directories and SQLite/associated directory
+  metadata only; existing Markdown bytes/inode/mtime and publication remain
+  unchanged. `--read-only` restricts actor operations, not lifecycle filesystem
+  initialization. Subsequent strict snapshots include all knowledge areas,
+  original source, import outcome, workspace marker and generation pointers.
+- Actual native UI Start, Running, 9 tools and explicit Stop passed while both
+  editor and extension host remained alive; owned MCP children exited.
+  The owned profile was uninstalled/removed.
+- Parent independently verified the receipt/root/read evidence, exact snapshot
+  equality, raw native channel order, three authorized harness hashes, all
+  1,174 other source hashes and 23 earlier artifact/evidence hashes.
+
+Evidence: [published-data/native pass](./artifacts/pkm-v5-native-published-fixture-installed.json)
+and [exact-artifact replay provenance](./artifacts/pkm-v5-native-published-fixture-provenance.json).
+SHA256: `df05272075c02cf6d6db9a0af9600209e1453f941736c2471d02e5c69ba90fdd`.
+
+That artifact's separate coordinator safety batch failed at a FirstRun source
+folder picker, before any coordinator command. Its historical accepted path
+was not captured, so the precise cause is unproven. Deterministic source-picker
+stabilization later exposed the product advisory-await problem. No safety pass
+is claimed for this artifact; the new artifact above was tested independently.
+[Preserved safety failure](./artifacts/pkm-v5-native-published-fixture-preflight-failed.json).
+
+The preceding `native-sdk-fix` attempt genuinely reached **Starting `pkm-v5`**
+at `04:09:57.705`, **Running** at `04:09:57.717` and **Discovered 9 tools**
+at `04:10:00.888`, verified in the owned native MCP channel log.
+The runner missed Monaco's nonbreaking spaces and timed out; explicit UI Stop
+was not reached. Automatic Stopped after extension-host exit is not acceptance.
+The owned profile was removed. Runner-only correction/replay used this
+byte-identical VSIX, with no product rebuild or edits.
+
+Evidence: [native start and runner failure](./artifacts/pkm-v5-native-sdk-fix-installed-failed.json)
+and [build provenance](./artifacts/pkm-v5-native-sdk-fix-build.json).
+SHA256: `df05272075c02cf6d6db9a0af9600209e1453f941736c2471d02e5c69ba90fdd`.
+The original source map includes harness files; replay must record their
+authorized before/after hashes separately without overwriting build provenance
+or claiming all 1,177 sources remain unchanged after harness edits.
+
+The preceding `native-uri-fix` candidate failed native discovery:
+`Unsupported isolated MCP definition fields.` The specific fields were not
+observed in that run. Start/tools/Stop were not reached and the separate
+coordinator preflight was not run. First-run and direct verified stdio
+initialization passed, but the new field allowlist introduced a compatibility
+regression despite the focused 2-file, 25-case pass. The fix was reopened
+to exercise the complete real SDK constructor, not just its URI/converter.
+Parent independently verified all 1,177 source hashes and candidate SHA256.
+The owned profile was uninstalled/removed.
+Subsequent full-constructor replay identified the sole rejected native field:
+`metadata: undefined`, which the SDK constructor creates even when omitted.
+The authorized correction accepts only its absent/default form, not material
+metadata or other unknown transport fields; complete SDK replay and fresh native
+installation subsequently passed in later candidates.
+
+Evidence: [latest failed attempt](./artifacts/pkm-v5-native-uri-fix-installed-failed.json)
+and [build provenance](./artifacts/pkm-v5-native-uri-fix-build.json).
+SHA256: `fed2f07756ca68d5733783f23f3fde4d21c37ae52b6d36dad6299fd06d96b3f6`.
+
+The preceding named candidate failed genuine Linux VS Code 1.143.0 **Start Server**:
+`Isolated MCP definition is stale or changed.` No native MCP child started.
+First-run, native empty-to-configured discovery, separate verified stdio
+initialization as `pkm-v5` and independent safety-negative preflight passed;
+none substitutes for the failed workbench startup.
+
+An isolated replay using the installed SDK reproduced URI `fsPath` cache
+mutation changing the JSON fingerprint without changing the Root or definition
+reference. This is a reproduced cause, not per-predicate instrumentation from
+the original failed installation. A focused correction and new native run followed.
+Both owned profiles were uninstalled/removed. The existing `pkm`
+metadata was rechecked: same running instance/build, still accepting calls.
+No old knowledge content, production configuration or lifecycle was changed.
+
+Preserved evidence: [failed native attempt](./artifacts/pkm-v5-side-by-side-installed-failed.json),
+[separate safety preflight](./artifacts/pkm-v5-side-by-side-preflight-installed.json)
+and [build provenance](./artifacts/pkm-v5-side-by-side-build.json).
+Failed candidate SHA256:
+`ad6e003b19d3f5befce66f105a469997f2bf17f04815c837e217be6004b43301`.
+This is not old-extension cohosting, adoption, rollback or cutover qualification.
+
+### Earlier isolated installation evidence
+
+An earlier preflight-batch VSIX passed two separately owned real Linux VS Code
+1.143.0 installations using the **same artifact**:
+
+- Default-disabled first-run import passed at `2026-11-16T02:01:29.855Z`.
+- Explicit **preflight safety/negative-path only** passed at
+  `2026-11-16T02:01:42.607Z`: genuine installed-context forgery rejection,
+  read-only Preview, exact unsupported rejection before consent, zero observed
+  dialogs, unchanged root/profile bytes and identities, second Preview,
+  disconnect, exit zero and profile removal.
+- Legacy-resource drain, adoption, managed reads, rollback and live takeover
+  are explicitly **not verified**. No production cutover occurred.
+
+Artifact: [preflight VSIX](./artifacts/pkm-v5-host-0.1.0-preflight.vsix).
+SHA256: `bcd42bfe8cdfc84941b996159e569f6695f7f537d89debd0b458c70b85d081f6`.
+Evidence: [first-run pass](./artifacts/pkm-v5-host-preflight-default-installed.json),
+[preflight safety](./artifacts/pkm-v5-host-preflight-safety-installed.json) and
+[build provenance](./artifacts/pkm-v5-host-preflight-build.json).
+Payload build: `5c128f01551752c6c4993b634bddcb68b10ee3062e42bc50ab07b5e0a7dbf904`.
+The manager independently verified all 1068 recorded source hashes, artifact
+hashes, matching native build IDs, unchanged before/after snapshots, 19 real
+dialog-observation samples with no visible dialog, and absence of both owned
+profile directories. Earlier artifacts remain unchanged.
+
+#### Earlier coordinator-batch rehearsal
+
+The coordinator-batch nonproduction VSIX was installed in real VS Code 1.143.0
+on Linux using two separate owned profiles:
+
+- Default-disabled first-run flow **passed** at `2026-11-16T00:57:36.951Z`,
+  including activation, native import, disconnect, exit zero and cleanup.
+- Coordinator-enabled flow **did not pass** at `2026-11-16T00:57:52.854Z`.
+  Real installed activation rejected forged context and reached preview,
+  snapshot-status consent and separate exact-plan migration consent.
+  Unchanged process inventory found 247 unverified-process/extension-host
+  blockers on this shared machine and refused before adoption. No unrelated
+  process was stopped or exempted. Adoption, unified-owner reads, disconnect
+  after adoption and post-write rollback were **not reached**.
+- Scope was a clean synthetic legacy-shaped root. No preexisting legacy work
+  was enrolled or proven drained. This is not existing-live installed takeover.
+
+Artifact: [coordinator-batch VSIX](./artifacts/pkm-v5-host-0.1.0-coordinator.vsix).
+SHA256: `8213c096c356f229deeb9df39df923f74517122c1a166da237116792af0de3a4`.
+Evidence: [first-run pass](./artifacts/pkm-v5-host-coordinator-default-installed.json)
+and [coordinator blocked](./artifacts/pkm-v5-host-coordinator-active-installed.json).
+The manager independently checked the artifact hash, uninstall/cleanup metadata
+and absence of both owned profile directories. Production/default profiles
+and production roots were not changed.
+
+This artifact is a frozen experimental snapshot, not release acceptance.
+The subsequent cohosted-legacy fail-closed fix is not included in it; any later package
+must carry distinct evidence rather than reuse this artifact's results.
+
+#### Earlier first-run installation
+
+The earlier integrated nonproduction VSIX was compiled, packaged and installed
+into an owned disposable profile in real VS Code 1.143.0 on Linux. Verification
+finished at `2026-11-15T23:48:57.259Z` and covered activation, cancel/deny without
+writes, exact-plan import, unchanged source, disconnect and application exit
+code zero. The extension was then uninstalled and the disposable profile removed.
+
+- Generated artifact: [final VSIX](./artifacts/pkm-v5-host-0.1.0-final.vsix).
+- SHA256: `45d3f2273d4832e45505a874ccbcc1f3b07c8592555a831f4be7217a1217fa6c`.
+- Generated evidence: [installed-host evidence](./artifacts/pkm-v5-host-installed-final.json).
+
+These are local generated deliverables, not checked-in or independently signed
+production acceptance. The manager verified the actual artifact hash against the
+evidence and checked that the isolated profile was removed.
+This artifact predates the newly approved active-coordinator implementation
+batch and cannot serve as its installation acceptance.
+
+The historical ledger in [MIGRATION.md](./MIGRATION.md) remains useful for scope
+and prior decisions, but its old paths and results are not current v5 acceptance.
 
 ## Historical implementation and qualification notes
 
@@ -3373,6 +4261,11 @@ Next's SQLite state beside the original Markdown, then supports a Note
 read/write and ordinary reopen. The supplied quiescence callback is not a
 cross-version writer fence and is not production authorization; when adoption
 returns Storage, the supplied resource remains held until `Storage.close()`.
+Resume is recovery-only: it requires the existing validated durable journal and
+never prepares a fresh adoption when that intent is missing. Its optional
+`expectedPrepared` pin binds the prepared `sourceRoot`, `workspaceId`,
+`sourceFingerprint` and `planSha256` before any workspace marker is recreated.
+This recovery pin is not writer-drain evidence or installed-user cutover authority.
 The bounded `.pkm` slice accepts only a valid schema-1
 `.pkm/content-privacy.json`, supported original API Chat archives, the
 validated managed-writer-session preservation receipt, and optional empty
@@ -4155,9 +5048,12 @@ own admitted work, holds its quiescence/workspace lease, rejects pending
 journals and unsupported state, uses `VACUUM INTO` for `core.sqlite`, checks
 SQLite integrity, pins and rechecks file bytes and verifies the backup before
 no-replace publication. The audit additionally checks the full workspace
-inventory before and after the host backup, compares all non-database file
-bytes against the result, records the baseline diff and backup receipt, and
-requires all listed entries to be present. Its verifier hashes the complete
+inventory before and after the host backup, compares non-database file bytes
+against the result, and records the baseline diff and backup receipt. On Linux,
+the exact root-bound `.pkm-next-writer-fenced.json` marker is validated and
+retained in the source inventory but is not copied into the backup: its root,
+device and inode cannot authorize a different directory. All other listed
+non-database entries must be present. Its verifier hashes the complete
 backup and runs Python's SQLite `integrity_check` in immutable read-only mode.
 It does not re-run the host's private backup verifier or authenticate the
 receipt. The external digest must be independently trusted.

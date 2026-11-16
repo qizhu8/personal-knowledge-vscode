@@ -13,7 +13,7 @@ import {
 import { readActionCompiler } from "../dist/action-compiler.js";
 import { legacyManagedFixture, closeLegacyManagedFixture } from "./legacy-managed-fixture.mjs";
 
-const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "..");
+const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "legacy");
 const actor = { id: "mcp:external", canWrite: false };
 const request = { tool: "action_capabilities", arguments: {} };
 

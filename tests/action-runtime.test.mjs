@@ -101,11 +101,12 @@ test("Action compiler source executes through native direct-child bridge with du
   assert.equal(JSON.stringify(events).includes("hello"), false);
 });
 
-test("Action component provenance checks source and capture from their declared roots", async () => {
+test("historical Action runtime authenticates its original 3d compiler capture and declared component source", async () => {
   const issues = await checkCaptureRecords(
     ACTION_RUNTIME_ORIGINAL_PROVENANCE.records,
     resolve(nextServerRoot, ACTION_RUNTIME_ORIGINAL_PROVENANCE.sourceRoot),
     resolve(nextServerRoot, ACTION_RUNTIME_ORIGINAL_PROVENANCE.capturedRoot),
+    { dataset: "runtime-historical-3d" },
   );
   assert.deepEqual(issues, []);
 });

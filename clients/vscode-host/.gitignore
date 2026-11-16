@@ -1,4 +1,5 @@
 dist/
+next-runtime/
 .electron-test-state-*/
 .live-electron-state-*/
 .e-*/

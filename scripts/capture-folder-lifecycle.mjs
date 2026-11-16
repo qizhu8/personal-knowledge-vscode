@@ -1,7 +1,17 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import ts from "typescript";
-import { packageRoot, hash } from "./migration.mjs";
+import { packageRoot, hash, readOriginalSource } from "./migration.mjs";
+
+const args = process.argv.slice(2);
+if (args.length && (args.length !== 1 || args[0] !== "--check")) throw new Error("Usage: node scripts/capture-folder-lifecycle.mjs [--check]");
+const originalMetadata = JSON.parse(await readFile(resolve(packageRoot, "migration/folder-lifecycle-provenance.json"), "utf8"));
+async function emit(path, content) {
+  const full = resolve(packageRoot, path);
+  if (args[0] === "--check") {
+    if (await readFile(full, "utf8") !== content) throw new Error(`Folder lifecycle capture is stale: ${path}`);
+  } else await writeFile(full, content);
+}
 
 const sources = [
   ["src/knowledge/filestore.ts", [
@@ -18,7 +28,10 @@ const sources = [
 const captures = {};
 const records = [];
 for (const [source, names] of sources) {
-  const raw = await readFile(resolve(packageRoot, "..", source), "utf8");
+  const raw = (await readOriginalSource(source, {
+    sha256: originalMetadata.files.find(record => record.source === source)?.sourceSha256,
+    dataset: "knowledge-folder-lifecycle-historical",
+  })).toString("utf8");
   const ast = ts.createSourceFile(source, raw, ts.ScriptTarget.Latest, true);
   const declarations = {};
   for (const name of names) {
@@ -35,8 +48,8 @@ for (const [source, names] of sources) {
 
 const captured = "src/domain/folder-lifecycle-original.ts";
 const content = `// Evidence only: original folder move/delete/trash semantics; mutating legacy functions are never imported or executed.\nexport const folderLifecycleOriginalRules = ${JSON.stringify(captures, null, 2)} as const;\n`;
-await writeFile(resolve(packageRoot, captured), content);
-await writeFile(resolve(packageRoot, "migration/folder-lifecycle-provenance.json"), JSON.stringify({
+await emit(captured, content);
+await emit("migration/folder-lifecycle-provenance.json", JSON.stringify({
   schema: "pkm.domain-capture/v1",
   transformation: "AST capture of unchanged original folder rename/move/promote-delete/skill-trash/restore rules and the paired-resource reference rebase/shared-tree guards. Captured declarations are evidence only and are never executed.",
   files: records.map(record => ({

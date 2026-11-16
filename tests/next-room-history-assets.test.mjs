@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { createRequire } from "node:module";
 import { createHash, createHmac, randomUUID, randomBytes } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
@@ -8,16 +8,19 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 
-const project = path.resolve(new URL("../legacy", import.meta.url).pathname);
+const project = path.resolve(new URL("..", import.meta.url).pathname);
+const directories = [];
+after(() => { for (const directory of directories) fs.rmSync(directory, { recursive: true, force: true }); });
 const require = createRequire(import.meta.url), hash = value => createHash("sha256").update(value).digest("hex");
 test("full Room checkpoint atomically preserves canonical Meeting, manual Note and binary file bytes", async t => {
   const directory = path.join(project, ".migration-test-work", `room-full-assets-${randomUUID()}`);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  directories.push(directory);
   fs.writeFileSync(path.join(directory, "package.json"), '{"type":"module"}');
-  fs.symlinkSync(path.join(project, "../node_modules"), path.join(directory, "node_modules"), "dir");
+  fs.symlinkSync(path.join(project, "node_modules"), path.join(directory, "node_modules"), "dir");
   require("esbuild").buildSync({ stdin: { contents: `
-    export {NextRoomHistorySync} from "./next-server/src/next-room-history-sync";
-    export {NextRoomHistoryAssets} from "./next-server/src/next-room-history-assets";`, resolveDir: project },
+    export {NextRoomHistorySync} from "./src/next-room-history-sync";
+    export {NextRoomHistoryAssets} from "./src/next-room-history-assets";`, resolveDir: project },
     bundle: true, platform: "node", format: "esm", packages: "external",
     outfile: path.join(directory, "assets.mjs"), logLevel: "silent" });
   const { NextRoomHistorySync, NextRoomHistoryAssets } = await import(pathToFileURL(path.join(directory, "assets.mjs")));

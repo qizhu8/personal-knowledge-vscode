@@ -138,13 +138,7 @@ test("frozen isolated generations handshake, update, explicitly reconnect, rollb
   await rm(join(f.managedRoot, ".migration-publication-lock"));
   assert.equal(await readFile(join(f.managedRoot, "latest-generation.json"), "utf8"), pointer);
   assert.equal(sha(await readFile(source)), original);
-  const instances = await readdir(join(f.managedRoot, "instances"));
-  for (const name of instances.filter(name => name.endsWith(".json"))) {
-    const record = JSON.parse(await readFile(join(f.managedRoot, "instances", name), "utf8"));
-    assert.equal(record.acceptingNewCalls, false);
-    assert.equal(record.inFlight, 0);
-    assert.equal(record.uncertainCalls, 0);
-  }
+  await assert.rejects(readdir(join(f.managedRoot, "instances")), { code: "ENOENT" });
 });
 
 test("an uncertain actual Note write completes once after cancellation and is never replayed on reconnect", { timeout: 90_000 }, async t => {
@@ -201,7 +195,7 @@ test("actual Note subprocess cancellation retains uncertain admitted work until 
   t.after(() => rm(gate, { force: true }));
   // Only the copied fixture adapter is instrumented; the real Note read and all
   // lifecycle/admission/transport code remain the actual shipped implementations.
-  const name = "runtime/resources/note_inventory.py", filename = join(directory, name);
+  const name = "runtime/next-server/legacy/resources/note_inventory.py", filename = join(directory, name);
   await writeFile(filename, `${await readFile(filename, "utf8")}
 _fixture_original_inventory = note_inventory_page
 def note_inventory_page(*args, **kwargs):
@@ -227,19 +221,18 @@ def note_inventory_page(*args, **kwargs):
   controller.abort();
   await rejection;
   await waitFor(async () => (await invoke(connection, "mcp_lifecycle_status")).uncertainCalls === 1, "uncertain cancellation boundary");
-  await assert.rejects(connection.close(), /action-required|uncertain/i);
-  const records = async () => Promise.all((await readdir(join(f.managedRoot, "instances")))
-    .filter(name => name.endsWith(".json")).map(async name => JSON.parse(await readFile(join(f.managedRoot, "instances", name), "utf8"))));
-  const blocked = (await records()).find(record => record.generation === generation.generation);
+  const blocked = await invoke(connection, "mcp_lifecycle_status");
   assert.equal(blocked.inFlight, 1);
   assert.equal(blocked.uncertainCalls, 1);
-  assert.equal(blocked.acceptingNewCalls, false);
   assert.equal(blocked.automaticReplay, false);
   assert.equal(blocked.automaticTermination, false);
+  await assert.rejects(connection.close(), /action-required|uncertain/i);
   process.kill(blocked.pid, 0);
+  await assert.rejects(readdir(join(f.managedRoot, "instances")), { code: "ENOENT" });
   await rm(gate);
-  await waitFor(async () => (await records()).some(record => record.generation === generation.generation
-    && record.inFlight === 0 && record.uncertainCalls === 0), "actual Note completion");
-  await connection.close();
+  await waitFor(async () => {
+    try { await connection.close(); return true; } catch { return false; }
+  }, "actual Note completion and verified owned-process drain");
   assert.equal(await readFile(entered, "utf8"), "entered");
+  await assert.rejects(readdir(join(f.managedRoot, "instances")), { code: "ENOENT" });
 });

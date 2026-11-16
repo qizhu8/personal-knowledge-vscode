@@ -4,7 +4,7 @@ import { ACTION_RUNTIME_ORIGINAL_PROVENANCE as provenance } from "../dist/domain
 
 const sourceRoot = resolve(packageRoot, provenance.sourceRoot);
 const capturedRoot = resolve(packageRoot, provenance.capturedRoot);
-const issues = await checkCaptureRecords(provenance.records, sourceRoot, capturedRoot);
+const issues = await checkCaptureRecords(provenance.records, sourceRoot, capturedRoot, { dataset: "runtime-historical-3d" });
 if (issues.length) throw new Error(`Action runtime source capture is stale: ${JSON.stringify(issues)}`);
 console.log(JSON.stringify({
   schema: provenance.schema,

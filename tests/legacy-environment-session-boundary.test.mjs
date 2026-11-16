@@ -3,12 +3,9 @@ import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { inspectLegacyManagedWriterSession } from "../dist/legacy-managed-writer-session.js";
 
 test("Next rejects even a completed Environment refresh record without an adoption protocol", async t => {
-  const dist = process.env.PKM_TEST_NEXT_DIST;
-  assert.ok(dist, "PKM_TEST_NEXT_DIST must select an isolated Next build");
-  const { inspectLegacyManagedWriterSession } = await import(pathToFileURL(join(dist, "legacy-managed-writer-session.js")));
   const root = resolve(".migration-test-work", `next-environment-session-${randomUUID()}`);
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const old = randomUUID(), current = randomUUID(), operation = randomUUID();

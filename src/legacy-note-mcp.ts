@@ -1,4 +1,5 @@
 import { lstatSync, opendirSync, readdirSync } from "node:fs";
+import { publicName } from "./public-identity.js";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -89,7 +90,7 @@ export async function startLegacyNoteMcp(storage: Storage, transport: Transport 
     invoke<T>(name: string, work: () => T | Promise<T>): Promise<T>;
     trackWorkerClose(close: Promise<void>): void;
   }) {
-  const server = new McpServer({ name: "pkm-legacy-note-experiment", version: "0.1.0" });
+  const server = new McpServer({ name: publicName, version: "0.1.0" });
   if (control) {
     const registerTool = server.registerTool.bind(server);
     server.registerTool = ((name: string, config: unknown, callback: (...args: any[]) => unknown) => {
@@ -293,10 +294,16 @@ export async function startLegacyNoteMcp(storage: Storage, transport: Transport 
     }
     indexedWorker = new LegacyMcpPythonWorker(fileURLToPath(new URL("../compat/legacy-knowledge-mcp.py", import.meta.url)));
     const ownedWorker = indexedWorker;
+    const closeServer = server.close.bind(server);
+    server.close = async () => {
+      try { await closeServer(); }
+      finally { await ownedWorker.close(); }
+    };
     server.server.onclose = () => {
       assetClassificationSession.close();
       const closing = ownedWorker.close();
-      if (control) control.trackWorkerClose(closing); else void closing;
+      if (control) control.trackWorkerClose(closing);
+      else void closing.catch(error => server.server.onerror?.(error));
     };
     const recoveryRead = legacyKnowledgeRecoveryRequest.options[0], recoveryWrite = legacyKnowledgeRecoveryRequest.options[1];
     server.registerTool("legacy_knowledge_recovery_preview", {

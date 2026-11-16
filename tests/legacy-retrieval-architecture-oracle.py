@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import sys
 
-root = Path(__file__).resolve().parents[2]
+root = Path(__file__).resolve().parents[1] / "legacy"
 wheel = root / "resources/vendor/adaptive_skill_retrieval-0.3.0.dev2026100504-py3-none-any.whl"
 assert hashlib.sha256(wheel.read_bytes()).hexdigest() == "332e434272a3cc88410eb50c7e4bfc3e3f69c5bf1e13f7f9a799087c37124f89"
 sys.path.insert(0, str(wheel))

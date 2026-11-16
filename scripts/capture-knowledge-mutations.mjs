@@ -3,10 +3,21 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import ts from "typescript";
 import { fileURLToPath } from "node:url";
+import { readOriginalSource } from "./migration.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const serverRoot = resolve(dirname(scriptPath), "..");
 const sourceRoot = resolve(serverRoot, "legacy");
+const originalMetadata = JSON.parse(await readFile(resolve(serverRoot, "migration/knowledge-mutations-provenance.json"), "utf8"));
+const historicalProducer = await readOriginalSource(originalMetadata.script.path, {
+  sha256: originalMetadata.script.sha256,
+  dataset: "knowledge-mutations-producer-historical",
+});
+const originalText = async source => (await readOriginalSource(source, {
+  root: sourceRoot,
+  sha256: originalMetadata.files.find(record => record.source === source)?.sourceSha256,
+  dataset: "knowledge-knowledge-mutations-historical",
+})).toString("utf8");
 const args = process.argv.slice(2);
 if (args.some(arg => arg !== "--check")) throw new Error("Usage: node scripts/capture-knowledge-mutations.mjs [--check]");
 const check = args.includes("--check");
@@ -47,7 +58,7 @@ function findDeclaration(text, path, name) {
 const captured = {};
 const sourceRecords = [];
 for (const [key, file] of Object.entries(sourceFiles)) {
-  const text = await readFile(resolve(sourceRoot, file.path), "utf8");
+  const text = await originalText(file.path);
   const declarations = Object.fromEntries(file.declarations.map(name => [name, findDeclaration(text, file.path, name)]));
   captured[key] = declarations;
   sourceRecords.push({
@@ -56,7 +67,7 @@ for (const [key, file] of Object.entries(sourceFiles)) {
   });
 }
 const originalTests = Object.fromEntries(await Promise.all(testPaths.map(async path => [
-  path, await readFile(resolve(sourceRoot, path), "utf8"),
+  path, await originalText(path),
 ])));
 for (const [source, text] of Object.entries(originalTests)) sourceRecords.push({ source, sourceSha256: hash(text) });
 
@@ -74,7 +85,8 @@ const provenance = {
   captureRoot: "next-server",
   transformation: "TypeScript AST selects the named original Note, Skill and Paper upsert/projection, stable identity, citation and asset declarations as inert source text; focused original tests are embedded byte-for-byte. Captures are evidence only and execute no legacy store code.",
   capture: { path: capturePath, sha256: hash(captureModule) },
-  script: { path: "scripts/capture-knowledge-mutations.mjs", sha256: hash(await readFile(scriptPath)) },
+  // This identifies the historical producer, not this migrated verification driver.
+  script: { path: originalMetadata.script.path, sha256: hash(historicalProducer) },
   files: sourceRecords,
   qualification: "Original behaviors are evidence, not copied host integrations. The new adapter operates only on the isolated Markdown workspace, preserves unowned bytes, does not move/delete documents or assets, and requires the parent shared compound journal/receipt/index transaction. It does not claim migration of the legacy Knowledge Root.",
 };

@@ -3,13 +3,23 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import ts from "typescript";
+import { readOriginalSource } from "./migration.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const mode = process.argv[2];
 if (process.argv.length !== 3 || !["--check", "--capture"].includes(mode))
   throw new Error("Use --check or --capture.");
+async function sourceBytes(path, manifest, field = "files") {
+  if (mode === "--capture") return readFile(resolve(root, "legacy", path), "utf8");
+  const metadata = JSON.parse(await readFile(resolve(root, "migration", manifest), "utf8"));
+  const pin = metadata[field].find(row => row.source === path);
+  if (!pin) throw new Error(`Missing immutable original source pin: ${path}`);
+  return (await readOriginalSource(path, {
+    sha256: pin.sourceSha256, dataset: "linux-candidate-originals",
+  })).toString("utf8");
+}
 const source = ts.createSourceFile("retrieval-snapshot.ts",
-  await readFile(resolve(root, "legacy/src/retrieval/retrieval-snapshot.ts"), "utf8"), ts.ScriptTarget.Latest, true);
+  await sourceBytes("src/retrieval/retrieval-snapshot.ts", "links-provenance.json"), ts.ScriptTarget.Latest, true);
 const names = new Set(["RetrievalDocument", "RetrievalSnapshot", "RetrievalSnapshotSources", "tags", "uriPath",
   "documentHash", "sourceRevision", "sourceLinks", "canonicalRecipeBody", "researchRetrievalBody", "createRetrievalSnapshot",
   "indexedRetrievalDocument"]);
@@ -23,9 +33,9 @@ type CachedSubscriptionGroup = any;
 type SharedContentType = string;
 ${nodes.map(node => node.getText(source)).join("\n\n")}
 `;
-const workerSource = await readFile(resolve(root, "legacy/resources/retrieval_worker.py"), "utf8");
+const workerSource = await sourceBytes("resources/retrieval_worker.py", "retrieval-runtime-provenance.json", "sourceEvidence");
 const filestore = ts.createSourceFile("filestore.ts",
-  await readFile(resolve(root, "legacy/src/knowledge/filestore.ts"), "utf8"), ts.ScriptTarget.Latest, true);
+  await sourceBytes("src/knowledge/filestore.ts", "knowledge-mutations-provenance.json"), ts.ScriptTarget.Latest, true);
 const projections = new Set(["asArray", "skillPriority", "normalizeCites", "toYear"]);
 const projectionNodes = filestore.statements.filter(node => node.name && projections.has(node.name.text));
 if (projectionNodes.length !== projections.size) throw new Error("Original source normalizers changed.");

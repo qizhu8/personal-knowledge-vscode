@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { chmod, lstat, mkdir, readFile, readdir, rm, rmdir, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, readdir, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
@@ -11,12 +11,18 @@ import { createRequire } from "node:module";
 import { Storage } from "../dist/storage.js";
 import { createNativeRuntime } from "../dist/native-runtime.js";
 import { legacyKnowledgeWrite } from "../dist/legacy-knowledge-write.js";
+import { acquireLinuxRootWriterFence } from "../dist/linux-root-writer-fence.js";
 import { planLegacyImport, importLegacyWorkspace } from "../dist/legacy-import.js";
+import { bindLinuxActiveVscodeMigrationHost } from "../dist/linux-legacy-writer-quiescence.js";
+import { activateActiveVscodeMigrationHost, assertActiveVscodeMigrationGrant } from "../dist/active-vscode-migration-host.js";
 import {
   legacyRootAdoptionLockDirectory,
+  adoptLegacyRootInPlaceExperimental,
   prepareLegacyRootAdoptionExperimental,
   resumeLegacyRootAdoptionExperimental,
   rollbackPreparedLegacyRootAdoptionExperimental,
+  rollbackCommittedLegacyRootAdoptionExperimental,
+  inspectLegacyRootAdoptionRecoveryExperimental,
 } from "../dist/legacy-root-adoption.js";
 
 const testsRoot = fileURLToPath(new URL(".", import.meta.url));
@@ -119,6 +125,229 @@ async function fixture(t, { pkm = false, legacySurfaces = false, chatroom = fals
   });
   return root;
 }
+
+test("adoption resume without durable intent fails closed without preparing a new workspace", async t => {
+  const root = await fixture(t);
+  const before = await snapshot(root);
+  await assert.rejects(resumeLegacyRootAdoptionExperimental(root, {}), { code: "RECOVERY_REQUIRED" });
+  assert.deepEqual(await snapshot(root), before);
+});
+
+test("boot-closed recovery inspection is read-only and binds an independently retained plan and prepared identity", { timeout: 60000 }, async t => {
+  const root = await fixture(t);
+  assert.equal(await inspectLegacyRootAdoptionRecoveryExperimental(root, { planSha256: "0".repeat(64) }), undefined);
+  const prepared = await prepareLegacyRootAdoptionExperimental(root, {});
+  const before = await snapshot(root);
+  const inspected = await inspectLegacyRootAdoptionRecoveryExperimental(root, { planSha256: prepared.planSha256 });
+  assert.equal(inspected.prepared.workspaceId, prepared.workspaceId);
+  assert.equal(inspected.prepared.sourceFingerprint, prepared.sourceFingerprint);
+  await assert.rejects(inspectLegacyRootAdoptionRecoveryExperimental(root, { planSha256: "0".repeat(64) }), { code: "RECOVERY_REQUIRED" });
+  await assert.rejects(inspectLegacyRootAdoptionRecoveryExperimental(root, {
+    planSha256: prepared.planSha256, prepared: { ...prepared, workspaceId: randomUUID() },
+  }), { code: "RECOVERY_REQUIRED" });
+  assert.deepEqual(await snapshot(root), before);
+});
+
+test("synthetic active hosts and cloned permits cannot authorize adoption or cancellation", { timeout: 60000 }, async t => {
+  const root = await fixture(t);
+  const host = { root, signal: new AbortController().signal, assertCurrent() {}, drain: async () => {} };
+  const grant = { kind: "pkm.active-vscode-migration-grant/v1" };
+  assert.throws(() => assertActiveVscodeMigrationGrant(host, grant, root), { code: "ACTIVE_MIGRATION_AUTHORITY_REQUIRED" });
+  assert.throws(() => bindLinuxActiveVscodeMigrationHost({ host, grant }), { code: "ACTIVE_MIGRATION_AUTHORITY_REQUIRED" });
+  const forged = {
+    activeVscodeMigration: { host, grant },
+    experimentalManagedSnapshotHost: { kind: "pkm.linux-managed-snapshot-host/v1" },
+  };
+  const original = await snapshot(root);
+  await assert.rejects(prepareLegacyRootAdoptionExperimental(root, forged), { code: "LEGACY_WRITER_INVENTORY_UNAVAILABLE" });
+  assert.deepEqual(await snapshot(root), original);
+  const prepared = await prepareLegacyRootAdoptionExperimental(root, {});
+  const pending = await snapshot(root);
+  await assert.rejects(resumeLegacyRootAdoptionExperimental(root, { ...forged, expectedPrepared: prepared }),
+    { code: "LEGACY_WRITER_INVENTORY_UNAVAILABLE" });
+  await assert.rejects(rollbackPreparedLegacyRootAdoptionExperimental(root, { ...forged, expectedPrepared: prepared }),
+    { code: "LEGACY_WRITER_INVENTORY_UNAVAILABLE" });
+  assert.deepEqual(await snapshot(root), pending);
+});
+
+test("a caller-supplied fake VS Code module and self-asserted exports cannot manufacture a live host", async t => {
+  const root = await fixture(t);
+  const before = await snapshot(root);
+  let called = false;
+  const context = {
+    extensionPath: root, extension: { id: "forged" }, globalStorageUri: { fsPath: root }, subscriptions: [],
+    vscode: { extensions: { getExtension: () => { called = true; return {
+      isActive: true, extensionPath: root, exports: { assertActiveMigrationContext() {} },
+    }; } } },
+  };
+  assert.throws(() => activateActiveVscodeMigrationHost(context), { code: "ACTIVE_MIGRATION_AUTHORITY_REQUIRED" });
+  assert.equal(called, false, "The factory must resolve the native module itself, not consume an injected object.");
+  assert.deepEqual(await snapshot(root), before);
+});
+
+test("adoption resume binds the prepared root, workspace and source plan before publishing state", { timeout: 60000 }, async t => {
+  const root = await fixture(t);
+  const prepared = await prepareLegacyRootAdoptionExperimental(root, {});
+  await rm(join(root, ".pkm-next-workspace"));
+  const before = await snapshot(root);
+  for (const [key, value] of [
+    ["sourceRoot", `${root}-other-profile`],
+    ["workspaceId", randomUUID()],
+    ["sourceFingerprint", "0".repeat(64)],
+    ["planSha256", "0".repeat(64)],
+  ]) {
+    await assert.rejects(resumeLegacyRootAdoptionExperimental(root, {
+      expectedPrepared: { ...prepared, [key]: value },
+    }), { code: "RECOVERY_REQUIRED" });
+    assert.deepEqual(await snapshot(root), before, `Mismatched ${key} must not recreate even the workspace marker.`);
+  }
+  const adopted = await resumeLegacyRootAdoptionExperimental(root, { expectedPrepared: prepared });
+  try {
+    assert.equal(adopted.workspaceId, prepared.workspaceId);
+    assert.equal(adopted.sourceFingerprint, prepared.sourceFingerprint);
+    assert.equal(adopted.recoveredPendingPlan, true);
+    assert.equal(await adopted.storage.workspaceId(), prepared.workspaceId);
+  } finally { await adopted.storage.close(); }
+});
+
+test("prepared rollback binds the host-pinned identity before deleting any adoption state", { timeout: 60000 }, async t => {
+  const root = await fixture(t);
+  const prepared = await prepareLegacyRootAdoptionExperimental(root, {});
+  const before = await snapshot(root);
+  for (const [key, value] of [
+    ["sourceRoot", `${root}-other-profile`],
+    ["workspaceId", randomUUID()],
+    ["sourceFingerprint", "0".repeat(64)],
+    ["planSha256", "0".repeat(64)],
+  ]) {
+    await assert.rejects(rollbackPreparedLegacyRootAdoptionExperimental(root, {
+      expectedPrepared: { ...prepared, [key]: value },
+    }), { code: "RECOVERY_REQUIRED" });
+    assert.deepEqual(await snapshot(root), before, `Mismatched ${key} must not cancel another host's intent.`);
+  }
+  const result = await rollbackPreparedLegacyRootAdoptionExperimental(root, { expectedPrepared: prepared });
+  assert.equal(result.workspaceId, prepared.workspaceId);
+  assert.deepEqual((await readdir(root)).sort(), ["notes"]);
+});
+
+test("host-pinned rollback refuses an older unbound intent without downgrading authority", { timeout: 60000 }, async t => {
+  const root = await fixture(t);
+  const prepared = await prepareLegacyRootAdoptionExperimental(root, {});
+  await rename(join(root, ".pkm-next-workspace"), join(root, ".pkm-next-root-adoption-rollback.json"));
+  const before = await snapshot(root);
+  await assert.rejects(rollbackPreparedLegacyRootAdoptionExperimental(root, {
+    expectedPrepared: prepared,
+  }), { code: "RECOVERY_REQUIRED" });
+  assert.deepEqual(await snapshot(root), before);
+  const result = await rollbackPreparedLegacyRootAdoptionExperimental(root);
+  assert.equal(result.workspaceId, prepared.workspaceId);
+  assert.deepEqual((await readdir(root)).sort(), ["notes"]);
+});
+
+for (const point of ["intent-durable", "journal-removed"]) {
+  test(`prepared rollback retains its full authority binding after interruption at ${point}`, { timeout: 60000 }, async t => {
+    const root = await fixture(t);
+    const prepared = await prepareLegacyRootAdoptionExperimental(root, {});
+    assert.throws(() => execFileSync(process.execPath, ["--input-type=module", "-e", `
+      const { rollbackPreparedLegacyRootAdoptionExperimental } = await import(process.argv[1]);
+      await rollbackPreparedLegacyRootAdoptionExperimental(process.argv[2], {
+        expectedPrepared: JSON.parse(process.argv[3]),
+        experimentalRollbackCheckpoint: actual => { if (actual === process.argv[4]) process.kill(process.pid, "SIGKILL"); },
+      });
+    `, new URL("../dist/legacy-root-adoption.js", import.meta.url).href, root, JSON.stringify(prepared), point],
+    { encoding: "utf8", timeout: 30000 }), error => error.signal === "SIGKILL");
+    const intent = JSON.parse(await readFile(join(root, ".pkm-next-root-adoption-rollback.json"), "utf8"));
+    assert.equal(intent.journal.sourceFingerprint, prepared.sourceFingerprint);
+    assert.equal(intent.journal.planSha256, prepared.planSha256);
+    const before = await snapshot(root);
+    await assert.rejects(rollbackPreparedLegacyRootAdoptionExperimental(root, {
+      expectedPrepared: { ...prepared, planSha256: "0".repeat(64) },
+    }), { code: "RECOVERY_REQUIRED" });
+    assert.deepEqual(await snapshot(root), before);
+    const result = await rollbackPreparedLegacyRootAdoptionExperimental(root, { expectedPrepared: prepared });
+    assert.equal(result.workspaceId, prepared.workspaceId);
+    assert.deepEqual((await readdir(root)).sort(), ["notes"]);
+  });
+}
+
+test("prepared rollback preserves original changes made after its journal was removed", { timeout: 60000 }, async t => {
+  const root = await fixture(t);
+  const prepared = await prepareLegacyRootAdoptionExperimental(root, {});
+  await assert.rejects(rollbackPreparedLegacyRootAdoptionExperimental(root, {
+    expectedPrepared: prepared,
+    experimentalRollbackCheckpoint: point => { if (point === "journal-removed") throw new Error("interrupted"); },
+  }), /interrupted/);
+  const note = join(root, "notes", "Existing.md");
+  await writeFile(note, "Independent legacy change; preserve it.\n");
+  const before = await snapshot(root);
+  await assert.rejects(rollbackPreparedLegacyRootAdoptionExperimental(root, {
+    expectedPrepared: prepared,
+  }), { code: "SOURCE_CHANGED" });
+  assert.deepEqual(await snapshot(root), before);
+});
+
+test("prepared rollback preserves a changed workspace marker after publishing durable intent", { timeout: 60000 }, async t => {
+  const root = await fixture(t);
+  const prepared = await prepareLegacyRootAdoptionExperimental(root, {});
+  const marker = join(root, ".pkm-next-workspace");
+  const changed = JSON.stringify({ schema: "pkm.next-workspace/v2", id: randomUUID() });
+  await assert.rejects(rollbackPreparedLegacyRootAdoptionExperimental(root, {
+    expectedPrepared: prepared,
+    experimentalRollbackCheckpoint: point => {
+      if (point === "intent-durable") writeFileSync(marker, changed, { mode: 0o600 });
+    },
+  }), { code: "SOURCE_CHANGED" });
+  assert.equal(await readFile(marker, "utf8"), changed);
+  await lstat(join(root, ".pkm-next-root-adoption.json"));
+  await lstat(join(root, ".pkm-next-root-adoption-rollback.json"));
+});
+
+test("prepared rollback rejects a duplicate workspace marker after completed marker removal", { timeout: 60000 }, async t => {
+  const root = await fixture(t);
+  const prepared = await prepareLegacyRootAdoptionExperimental(root, {});
+  await assert.rejects(rollbackPreparedLegacyRootAdoptionExperimental(root, {
+    expectedPrepared: prepared,
+    experimentalRollbackCheckpoint: point => { if (point === "intent-published") throw new Error("interrupted"); },
+  }), /interrupted/);
+  const marker = join(root, ".pkm-next-workspace");
+  await writeFile(marker, JSON.stringify({ schema: "pkm.next-workspace/v2", id: prepared.workspaceId }), { mode: 0o600 });
+  const before = await snapshot(root);
+  await assert.rejects(rollbackPreparedLegacyRootAdoptionExperimental(root, {
+    expectedPrepared: prepared,
+  }), { code: "RECOVERY_REQUIRED" });
+  assert.deepEqual(await snapshot(root), before);
+});
+
+test("committed rollback checks the complete prepared pin before archiving Next state", { timeout: 60000 }, async t => {
+  const root = await fixture(t);
+  const adopted = await adoptLegacyRootInPlaceExperimental(root, { experimentalPostCommitRollbackBaseline: true });
+  await adopted.storage.close();
+  const before = await snapshot(root);
+  for (const [key, value] of [
+    ["sourceRoot", `${root}-other-profile`],
+    ["workspaceId", randomUUID()],
+    ["sourceFingerprint", "0".repeat(64)],
+    ["planSha256", "0".repeat(64)],
+  ]) {
+    await assert.rejects(rollbackCommittedLegacyRootAdoptionExperimental(root, {
+      workspaceId: adopted.workspaceId, expectedPrepared: { ...adopted, [key]: value },
+    }), { code: "RECOVERY_REQUIRED" });
+    assert.deepEqual(await snapshot(root), before);
+  }
+  const result = await rollbackCommittedLegacyRootAdoptionExperimental(root, {
+    workspaceId: adopted.workspaceId, expectedPrepared: adopted,
+  });
+  assert.equal(result.workspaceId, adopted.workspaceId);
+  assert.equal(await readFile(join(root, "notes", "Existing.md"), "utf8"),
+    "---\ntitle: Existing\ndocumentId: synthetic-note\nrevision: 1\n---\nOriginal synthetic content.\n");
+  await lstat(join(result.archive, "core.sqlite"));
+  const archived = await snapshot(root);
+  const recovery = await inspectLegacyRootAdoptionRecoveryExperimental(root, {
+    planSha256: adopted.planSha256, prepared: adopted,
+  });
+  assert.equal(recovery.prepared.workspaceId, adopted.workspaceId);
+  assert.deepEqual(await snapshot(root), archived);
+});
 
 test("experimental adoption resumes in a child process, writes the original Note, and reopens normally", { timeout: 60000 }, async t => {
   const root = await fixture(t);
@@ -489,7 +718,7 @@ test("quiescence loss during source recheck fails closed before publishing adopt
   await assert.rejects(lstat(join(root, "core.sqlite")), { code: "ENOENT" });
 });
 
-test("concurrent adoption transaction is rejected while another synthetic root lock is held", { timeout: 30000 }, async t => {
+test("concurrent adoption waits for the held root fence and recovers the same durable intent", { timeout: 30000 }, async t => {
   const root = await fixture(t);
   let notifyAcquired;
   let resumeFirst;
@@ -502,12 +731,36 @@ test("concurrent adoption transaction is rejected while another synthetic root l
       return quiescence;
     },
   });
-  await acquired;
-  await assert.rejects(
-    prepareLegacyRootAdoptionExperimental(root, { acquireWriterQuiescence: async () => quiescence }),
-    { code: "BUSY" },
-  );
-  resumeFirst();
+  let second;
+  let secondEntered = false;
+  try {
+    await Promise.race([acquired, first.then(() => { throw new Error("The holder completed before its fixture was released."); })]);
+    const before = await snapshot(root);
+    second = prepareLegacyRootAdoptionExperimental(root, { acquireWriterQuiescence: async () => {
+      secondEntered = true;
+      return quiescence;
+    } });
+    // Adoption waits up to 30 seconds; exercise contention without making the fixture wait for its own deadline.
+    await assert.rejects(async () => {
+      const unexpectedFence = await acquireLinuxRootWriterFence(root, 150);
+      await unexpectedFence.release();
+    }, { code: "BUSY" });
+    assert.equal(secondEntered, false, "The contender must not enter host quiescence while the root fence is held.");
+    assert.deepEqual(await snapshot(root), before);
+  } finally {
+    resumeFirst();
+    await Promise.allSettled([first, ...(second ? [second] : [])]);
+  }
   const prepared = await first;
   assert.equal(prepared.recoveredPendingPlan, false);
+  const recovered = await second;
+  assert.equal(secondEntered, true);
+  assert.equal(recovered.recoveredPendingPlan, true);
+  assert.equal(recovered.workspaceId, prepared.workspaceId);
+  assert.equal(recovered.sourceFingerprint, prepared.sourceFingerprint);
+  assert.equal(recovered.planSha256, prepared.planSha256);
+  await assert.rejects(Storage.open(root), { code: "RECOVERY_REQUIRED" });
+  const adopted = await resumeLegacyRootAdoptionExperimental(root, { expectedPrepared: prepared });
+  try { assert.equal(await adopted.storage.workspaceId(), prepared.workspaceId); }
+  finally { await adopted.storage.close(); }
 });

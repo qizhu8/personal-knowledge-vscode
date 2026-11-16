@@ -60,6 +60,8 @@ import { legacyRetrievalSources } from "./legacy-retrieval-index.js";
 import { legacyRetrievalSubscriptions } from "./legacy-retrieval-subscriptions.js";
 import { inspectLegacyRootPkmPrivacyState } from "./legacy-root-pkm-state.js";
 import { inspectLegacyRootInertInventory } from "./legacy-root-inert-state.js";
+import { acquireLinuxRootWriterFence } from "./linux-root-writer-fence.js";
+import { CoreError } from "./contracts.js";
 
 const compare = (left: string, right: string) => left < right ? -1 : left > right ? 1 : 0;
 const sha256 = (value: Uint8Array | string) => createHash("sha256").update(value).digest("hex");
@@ -1166,14 +1168,14 @@ async function parentStageAuthority(
   };
 }
 
-function publishNoReplace(stage: string, target: string, pythonExecutable: string): void {
+function publishNoReplace(stage: string, target: string, pythonExecutable: string, keepAlive?: number): void {
   const unsupported = legacyImportNoReplacePlatformError(process.platform);
   if (unsupported) throw new LegacyImportError("NO_REPLACE_UNAVAILABLE", unsupported);
   if (!isAbsolute(pythonExecutable)) {
     throw new LegacyImportError("PYTHON_PATH_REQUIRED", "Provide an explicit absolute path to the Python executable for atomic no-replace publication.");
   }
   try {
-    renameNoReplaceSync(stage, target, pythonExecutable);
+    renameNoReplaceSync(stage, target, pythonExecutable, keepAlive);
   } catch (error) {
     if (!(error instanceof RenameNoReplaceError)) throw error;
     if (error.cause instanceof Error && "code" in error.cause && error.cause.code === "ENOENT") {
@@ -1723,7 +1725,18 @@ export async function importLegacyWorkspace(
       plan.retrievalHistoryPlan.stateRoot, plan.retrievalHistoryPlan.actorId)) !== JSON.stringify(plan.retrievalHistoryPlan)) {
       throw new LegacyImportError("SOURCE_CHANGED", "Original retrieval state changed before no-replace publication.");
     }
-    if (options.nativePublishNoReplace) await options.nativePublishNoReplace(stage, target);
+    if (process.platform === "linux") {
+      const fence = await acquireLinuxRootWriterFence(stage);
+      try {
+        await fence.publishRootNoReplace(target, keepAlive => options.nativePublishNoReplace
+          ? options.nativePublishNoReplace(stage, target)
+          : publishNoReplace(stage, target, options.pythonExecutable!, keepAlive));
+      } catch (error) {
+        if (error instanceof CoreError && error.code === "CONFLICT")
+          throw new LegacyImportError("DESTINATION_EXISTS", error.message);
+        throw error;
+      } finally { await fence.release(); }
+    } else if (options.nativePublishNoReplace) await options.nativePublishNoReplace(stage, target);
     else publishNoReplace(stage, target, options.pythonExecutable!);
     published = true;
     await syncDirectory(parent);

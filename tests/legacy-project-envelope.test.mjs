@@ -1,13 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { createRequire } from "node:module";
 import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import vm from "node:vm";
 import test from "node:test";
 import { nativeRestoreAuthority } from "./host-composition-legacy-batch16-restore-fixture.mjs";
-import ts from "typescript";
+import { originalProjectModules, projectOriginalSource } from "./legacy-project-original-captures.mjs";
 import {
   applyProjectMutation, planProjectMutation, readProjectMutationPin,
 } from "../dist/project-mutations.js";
@@ -28,10 +26,6 @@ import { createWorkspaceBackup, restoreWorkspaceBackup } from "../dist/workspace
 import { pythonExecutable } from "./batch09-original-control-fixtures.mjs";
 
 const testsRoot = dirname(fileURLToPath(import.meta.url));
-const packageRoot = resolve(testsRoot, "../legacy");
-const repositoryRoot = packageRoot;
-const require = createRequire(import.meta.url);
-const modules = new Map();
 const hash = value => createHash("sha256").update(value).digest("hex");
 const request = (operation, args) => ({ operation, args, actorId: "legacy-project-envelope-test" });
 const transaction = (database, action) => {
@@ -40,30 +34,9 @@ const transaction = (database, action) => {
   catch (error) { database.exec("ROLLBACK"); throw error; }
 };
 
-function original(path) {
-  if (modules.has(path)) return modules.get(path).exports;
-  const module = { exports: {} };
-  modules.set(path, module);
-  const code = ts.transpileModule((awaitRead(path)), {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-  }).outputText;
-  const localRequire = name => {
-    if (!name.startsWith(".")) return require(name);
-    const candidate = resolve(dirname(path), name);
-    const file = `${candidate}.ts`;
-    return original(file);
-  };
-  vm.runInThisContext(`(function(require,module,exports,__filename,__dirname){${code}\n})`, { filename: path })
-    (localRequire, module, module.exports, path, dirname(path));
-  return module.exports;
-}
-
-function awaitRead(path) {
-  return require("node:fs").readFileSync(path, "utf8");
-}
-
-const { ProjectStore } = original(join(repositoryRoot, "src/workflows/project-store.ts"));
-const { canonicalJson: originalCanonicalJson } = original(join(repositoryRoot, "src/workflows/workflow-contracts.ts"));
+const original = originalProjectModules();
+const { ProjectStore } = original("src/workflows/project-store.ts");
+const { canonicalJson: originalCanonicalJson } = original("src/workflows/workflow-contracts.ts");
 async function newFixture(t) {
   const parent = join(testsRoot, `.legacy-project-envelope-${randomUUID()}`);
   const source = join(parent, "source");
@@ -145,7 +118,7 @@ test("live original ProjectStore writer produces a byte-pinned, complete staged 
   assert.equal(raw.payload.receipts.length, 4);
 
   for (const source of legacyProjectEnvelopeOriginalSources) {
-    assert.equal(hash(await readFile(join(repositoryRoot, source.path))), source.sha256, source.path);
+    assert.equal(hash(projectOriginalSource(source.path, source.sha256)), source.sha256, source.path);
   }
   const plan = await planLegacyProjectEnvelope(fixture.source);
   assert.equal(plan.sourceSha256, hash(sourceBytes));

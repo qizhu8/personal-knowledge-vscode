@@ -15,7 +15,7 @@ import { startManagedClientSnapshotChat } from "../dist/managed-client-snapshot-
 import { managedClientSelectedChatIpc } from "../dist/managed-client-selected-chat-ipc.js";
 
 const require = createRequire(import.meta.url);
-const legacyExtension = process.env.PKM_TEST_LEGACY_CHAT_EXTENSION ?? resolve("..");
+const legacyExtension = process.env.PKM_TEST_LEGACY_CHAT_EXTENSION ?? resolve(import.meta.dirname, "../legacy");
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 function selectedUiAdapter(options = {}) {
   const ts = require("typescript");
@@ -26,7 +26,7 @@ function selectedUiAdapter(options = {}) {
     async showSaveDialog() { return options.destination; },
   }, commands: { registerCommand() { return { dispose() {} }; }, executeCommand() {} } };
   const load = (file, imports) => {
-    const source = readFileSync(resolve("..", file), "utf8");
+    const source = readFileSync(resolve(legacyExtension, file), "utf8");
     const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
     const module = { exports: {} };
     new Function("require", "module", "exports", js)(imports, module, module.exports);
@@ -37,7 +37,7 @@ function selectedUiAdapter(options = {}) {
     if (name === "./api-chat-shell") return { renderApiChat() {}, renderApiChatFailure(_view, error) { throw error; } };
     if (name === "../knowledge/filestore") return { getStorePath() { return options.originalRoot; } };
     if (name === "./api-chat-client") {
-      const source = readFileSync(resolve("..", "src/chat/api-chat-client.ts"), "utf8");
+      const source = readFileSync(resolve(legacyExtension, "src/chat/api-chat-client.ts"), "utf8");
       const start = source.indexOf("export function decodeChatImage("), end = source.indexOf("export interface ApiChatMessage", start);
       const js = ts.transpileModule(`import { imageSize } from "image-size"; type ChatImage = any;\n${source.slice(start, end)}`,
         { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;

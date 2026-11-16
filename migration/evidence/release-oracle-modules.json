@@ -1,0 +1,119 @@
+{
+  "schema": "pkm.compiled-release-oracle/v1",
+  "qualification": "Authentic compiled release JavaScript for synthetic original-writer fixtures only; not TypeScript source pins or installed/native qualification.",
+  "archive": "migration/evidence/release-oracle-modules.zip",
+  "archiveSha256": "dcfa152b1de604627a44eb743495195cae64df2c4b6da3d5209236697f442398",
+  "originalVsixSha256": "1804071cb3b9fc86edc5933d5001db6ea1a8d7a9adf30d6d2b3166fcd6048f27",
+  "members": [
+    {
+      "path": "dist/chatroom/collaboration-model.js",
+      "member": "release-4.0.22/dist/chatroom/collaboration-model.js",
+      "sha256": "4e2665b6cb5eb2e02d00dc43f88a9b7c69b54bb6eec85fc50cb7ed29b5e35567"
+    },
+    {
+      "path": "dist/knowledge/asset-classification.js",
+      "member": "release-4.0.22/dist/knowledge/asset-classification.js",
+      "sha256": "8dc0486c2c44e75790b30be47c629ae282e8303c184abdc24f7ac699df49b5b1"
+    },
+    {
+      "path": "dist/knowledge/content-privacy.js",
+      "member": "release-4.0.22/dist/knowledge/content-privacy.js",
+      "sha256": "8cba7b0798e0ebd551ca9de1b76c557f2a40b1238367945ad0ac515c13ce7e22"
+    },
+    {
+      "path": "dist/knowledge/filestore.js",
+      "member": "release-4.0.22/dist/knowledge/filestore.js",
+      "sha256": "68773d1fd728c232be667006242040f22322637959456ebae23ec3ce518678ce"
+    },
+    {
+      "path": "dist/knowledge/knowledge-contracts.js",
+      "member": "release-4.0.22/dist/knowledge/knowledge-contracts.js",
+      "sha256": "fe82e46727fa1dda67712a915c2faa65c249d4545db30132f752beb79ce382c6"
+    },
+    {
+      "path": "dist/knowledge/knowledge-deletion-journal.js",
+      "member": "release-4.0.22/dist/knowledge/knowledge-deletion-journal.js",
+      "sha256": "5c2558d934707d1bdf030941d361582db5fd69a23d158350a9ceb4d13b2a0237"
+    },
+    {
+      "path": "dist/knowledge/knowledge-locator.js",
+      "member": "release-4.0.22/dist/knowledge/knowledge-locator.js",
+      "sha256": "6cad8334696c8ee261ade7e986144b1c3f1c95c9a405d7ec31f3db090d4ebf4c"
+    },
+    {
+      "path": "dist/knowledge/markdown-assets.js",
+      "member": "release-4.0.22/dist/knowledge/markdown-assets.js",
+      "sha256": "7cff8a02668fb5030ef626cd258bf44daf35ccca73ad71fc3802525075a30642"
+    },
+    {
+      "path": "dist/knowledge/note-work-items.js",
+      "member": "release-4.0.22/dist/knowledge/note-work-items.js",
+      "sha256": "72c64bbcea66f296b65c5ea03e817dc7f4e6e0a7214fde6b2ff51c73dd8bb250"
+    },
+    {
+      "path": "dist/knowledge/storage.js",
+      "member": "release-4.0.22/dist/knowledge/storage.js",
+      "sha256": "8bacae4762d6c6de60b38074ed39cf845746f8b1a374a0cd09cc413adb3dc31d"
+    },
+    {
+      "path": "dist/knowledge/todo-board.js",
+      "member": "release-4.0.22/dist/knowledge/todo-board.js",
+      "sha256": "1f870b1310a0d77ada57ef659539cc246c040a498117691489bd6daa364413e0"
+    },
+    {
+      "path": "dist/runtime/cross-process-lock.js",
+      "member": "release-4.0.22/dist/runtime/cross-process-lock.js",
+      "sha256": "5ee0fcf7d8b04b1152779fdbc488b09b1077b4c8e954c036824d0b873d6b5ab5"
+    },
+    {
+      "path": "dist/runtime/pkm-projection.js",
+      "member": "release-4.0.22/dist/runtime/pkm-projection.js",
+      "sha256": "36e868203feddc74c299daf23dd1af7846280b8f1bccc734c67f4eb9e0947ec4"
+    },
+    {
+      "path": "dist/sync/github-sync-script-identity.js",
+      "member": "release-4.0.22/dist/sync/github-sync-script-identity.js",
+      "sha256": "7e12fff650c2e0eba33997255e350a32cdc54ad6d6bb08ee62cac1c2af26ddc6"
+    },
+    {
+      "path": "dist/workflows/methodology-model.js",
+      "member": "release-4.0.22/dist/workflows/methodology-model.js",
+      "sha256": "82c2cc306804829dbebbda171da75f1c9009f483228e5df0dbd2004e1e304fe1"
+    },
+    {
+      "path": "dist/workflows/project-cockpit.js",
+      "member": "release-4.0.22/dist/workflows/project-cockpit.js",
+      "sha256": "0b14243d41d0240cb1bbf53d5611359be54122ead8679cf566b930bf0299ca5e"
+    },
+    {
+      "path": "dist/workflows/project-filesystem-store.js",
+      "member": "release-4.0.22/dist/workflows/project-filesystem-store.js",
+      "sha256": "27da55d767e0ccde3fdaa142882cb87e0504faad07094c3ad3344c463b45866d"
+    },
+    {
+      "path": "dist/workflows/project-model.js",
+      "member": "release-4.0.22/dist/workflows/project-model.js",
+      "sha256": "685fd3e8962b2174c7bffef880386433916972bcd38691925f52d7b994105df4"
+    },
+    {
+      "path": "dist/workflows/project-store.js",
+      "member": "release-4.0.22/dist/workflows/project-store.js",
+      "sha256": "2adbc69f006ff23c780d149acf1a5ec378712ba7e118a8d732a2e90387dfb19f"
+    },
+    {
+      "path": "dist/workflows/recipe-filesystem-store.js",
+      "member": "release-4.0.22/dist/workflows/recipe-filesystem-store.js",
+      "sha256": "62095124a9a126c9fe88474c1f6821318dc9d6f1aa0ac55ac52c4e2c11281e1d"
+    },
+    {
+      "path": "dist/workflows/value-contracts.js",
+      "member": "release-4.0.22/dist/workflows/value-contracts.js",
+      "sha256": "a4b2f51493fb3f39b3ee73764acaf2ed06d40c405db1641271dc6d26c16133c4"
+    },
+    {
+      "path": "dist/workflows/workflow-contracts.js",
+      "member": "release-4.0.22/dist/workflows/workflow-contracts.js",
+      "sha256": "6ecdafa6b376842956488d14c85e3f598320c2cb27a99e6721f78a3025ca0b13"
+    }
+  ]
+}

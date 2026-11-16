@@ -449,14 +449,16 @@ test("public preview and operation result satisfy frozen strict transport schema
 test("captured original rules have verified roots/hashes and repeated captures are deterministic", async () => {
   const provenancePath = join(packageRoot, "migration/trash-lifecycle-provenance.json");
   const provenance = JSON.parse(readFileSync(provenancePath, "utf8"));
-  assert.deepEqual(await checkCaptureRecords(provenance.files), []);
+  assert.deepEqual(await checkCaptureRecords(provenance.files, undefined, undefined, {
+    dataset: "knowledge-trash-lifecycle-historical",
+  }), []);
   assert.match(trashLifecycleOriginalRules["src/knowledge/filestore.ts"].moveMarkdownPair, /assetsSource/);
   assert.match(trashLifecycleOriginalRules["src/knowledge/knowledge-deletion-journal.ts"].withKnowledgeDeletionJournal, /write\(root, change\(before\)\)/);
   const before = sha256(readFileSync(provenancePath));
   const capture = join(packageRoot, "src/domain/trash-lifecycle-original.ts");
   const originalHash = sha256(readFileSync(capture));
   for (let i = 0; i < 2; i++) {
-    const result = spawnSync(process.execPath, ["scripts/capture-trash-lifecycle.mjs"], { cwd: packageRoot, encoding: "utf8" });
+    const result = spawnSync(process.execPath, ["scripts/capture-trash-lifecycle.mjs", "--check"], { cwd: packageRoot, encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(sha256(readFileSync(provenancePath)), before);
     assert.equal(sha256(readFileSync(capture)), originalHash);

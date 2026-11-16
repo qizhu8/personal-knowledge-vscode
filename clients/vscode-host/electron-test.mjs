@@ -5,7 +5,6 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
-const { runTests } = require("@vscode/test-electron");
 const hostDirectory = fileURLToPath(new URL(".", import.meta.url));
 
 function executable(pathname) {
@@ -51,6 +50,7 @@ function compareVersions(left, right) {
 }
 
 export async function runElectronAcceptance({ runner = "electron-test-runner.cjs", environment = {}, workspace, vscodeExecutablePath = cachedVSCode() } = {}) {
+  const { runTests } = require("@vscode/test-electron");
   if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
     throw new Error("A usable DISPLAY or WAYLAND_DISPLAY is required for the Linux Electron Extension Development Host");
   }

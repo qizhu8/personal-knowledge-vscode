@@ -1,0 +1,438 @@
+{
+  "schema": "pkm.historical-report-inputs/v1",
+  "qualification": "Authenticates the original report generation only. No current implementation qualification is transferred; current external-writer scenarios execute separately.",
+  "archive": "migration/evidence/read-race-historical-inputs.zip",
+  "archiveSha256": "bdaf357e574a3dee4bef80018ba4c426b3941e9b82ac61a48286954527e1f928",
+  "members": [
+    {
+      "kind": "source",
+      "path": "tests/test-markdown-image-assets.js",
+      "sha256": "f703f578826d5f76336974f7f8f5f308d0160dae1bbe187054aacf708585906b",
+      "member": "f703f578826d5f76336974f7f8f5f308d0160dae1bbe187054aacf708585906b/source/tests/test-markdown-image-assets.js",
+      "provisioning": {
+        "revision": "f092ddacb51d1a157d40372776c76144c2a3d27d",
+        "path": "tests/test-markdown-image-assets.js"
+      }
+    },
+    {
+      "kind": "source",
+      "path": "tests/test-todo-board.js",
+      "sha256": "c8f9bbdcad4d9c375b5dc727a9581b433504b24076669104b05e93f7c371df17",
+      "member": "c8f9bbdcad4d9c375b5dc727a9581b433504b24076669104b05e93f7c371df17/source/tests/test-todo-board.js",
+      "provisioning": {
+        "revision": "f092ddacb51d1a157d40372776c76144c2a3d27d",
+        "path": "tests/test-todo-board.js"
+      }
+    },
+    {
+      "kind": "source",
+      "path": "tests/test-capability-memory.js",
+      "sha256": "b7b7542c796b531ecaa02c6ecb0a79c23dc141f330e9b4cb2ad7c7538e84c2bb",
+      "member": "b7b7542c796b531ecaa02c6ecb0a79c23dc141f330e9b4cb2ad7c7538e84c2bb/source/tests/test-capability-memory.js",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "tests/test-capability-memory.js"
+      }
+    },
+    {
+      "kind": "source",
+      "path": "tests/test-knowledge-contracts.js",
+      "sha256": "bf7f6631653c86882373cd94a19009573490410ccbd5c72f1bc2ac98fd4178a8",
+      "member": "bf7f6631653c86882373cd94a19009573490410ccbd5c72f1bc2ac98fd4178a8/source/tests/test-knowledge-contracts.js",
+      "provisioning": {
+        "revision": "f092ddacb51d1a157d40372776c76144c2a3d27d",
+        "path": "tests/test-knowledge-contracts.js"
+      }
+    },
+    {
+      "kind": "source",
+      "path": "tests/test-markdown-owned-assets.js",
+      "sha256": "64ec0aa046fbe000239216013563d7a3dba31df37a5524b124f054229603b4ef",
+      "member": "64ec0aa046fbe000239216013563d7a3dba31df37a5524b124f054229603b4ef/source/tests/test-markdown-owned-assets.js",
+      "provisioning": {
+        "revision": "a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6",
+        "path": "tests/test-markdown-owned-assets.js"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/cli.ts",
+      "sha256": "f8345ee904c0bddb2fa7ac11ed3ef99002ca5dad4025feece2adabf3e1f7b2bc",
+      "member": "f8345ee904c0bddb2fa7ac11ed3ef99002ca5dad4025feece2adabf3e1f7b2bc/captured/src/cli.ts",
+      "provisioning": {
+        "revision": "519e514349ac6a095bfde8025d026c8fd0a52cb4",
+        "path": "next-server/src/cli.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/contracts.ts",
+      "sha256": "243be35a870d277f9b9f50160a57605614868e06520a9f457c9d2f54969d0cff",
+      "member": "243be35a870d277f9b9f50160a57605614868e06520a9f457c9d2f54969d0cff/captured/src/contracts.ts",
+      "provisioning": {
+        "revision": "fa20eeb3c675fa936a7c80c70807b2a29dc62146",
+        "path": "next-server/src/contracts.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/core.ts",
+      "sha256": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943",
+      "member": "07d06c3a6bafccf9aabb06d219437148f944d57503d385fc35a0a2b7da0f8943/captured/src/core.ts",
+      "provisioning": {
+        "revision": "5a9d724d72e43e2c7ab9d1aa852207bcfec6edae",
+        "path": "next-server/src/core.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/http.ts",
+      "sha256": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109",
+      "member": "a26402cb5f24c9f2912f163c09dad391e64cb4c2497d1caf8c05a6d831525109/captured/src/http.ts",
+      "provisioning": {
+        "revision": "fa20eeb3c675fa936a7c80c70807b2a29dc62146",
+        "path": "next-server/src/http.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/mcp.ts",
+      "sha256": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6",
+      "member": "b90b1db37b11173ef79f631e538aa1d51908012a1cb2542be12abef5c87a3ea6/captured/src/mcp.ts",
+      "provisioning": {
+        "revision": "709b71263c4d31f6aae6523525c8bc12b2c16535",
+        "path": "next-server/src/mcp.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/storage.ts",
+      "sha256": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6",
+      "member": "347557cf65fe757f6a115afb07e04c6b633088517eb6aba4bf66e6ae34e05cf6/captured/src/storage.ts",
+      "provisioning": {
+        "revision": "519e514349ac6a095bfde8025d026c8fd0a52cb4",
+        "path": "next-server/src/storage.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/storage-worker.ts",
+      "sha256": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b",
+      "member": "857a604680f70b62e945297be4865c6f72b19dc5633118375cd03fef14ed687b/captured/src/storage-worker.ts",
+      "provisioning": {
+        "revision": "519e514349ac6a095bfde8025d026c8fd0a52cb4",
+        "path": "next-server/src/storage-worker.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/markdown.ts",
+      "sha256": "281d58af8a4d8c840f3f1e288516f1b51046f067b2bd9b5125ec8527f13a15fd",
+      "member": "281d58af8a4d8c840f3f1e288516f1b51046f067b2bd9b5125ec8527f13a15fd/captured/src/markdown.ts",
+      "provisioning": {
+        "revision": "8b0e78786ba2f9d2c74f4b662b05e601dfa7a6f3",
+        "path": "next-server/src/markdown.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/notes.ts",
+      "sha256": "298a624cd7ce602375405019d4a8b5e4741829f13c7d9ef5def238363f484256",
+      "member": "298a624cd7ce602375405019d4a8b5e4741829f13c7d9ef5def238363f484256/captured/src/notes.ts",
+      "provisioning": {
+        "revision": "fa20eeb3c675fa936a7c80c70807b2a29dc62146",
+        "path": "next-server/src/notes.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/note-contracts.ts",
+      "sha256": "6628055bd64a7e059d68832b45c672e91ef337b773085b9f718b16efe75f95bb",
+      "member": "6628055bd64a7e059d68832b45c672e91ef337b773085b9f718b16efe75f95bb/captured/src/note-contracts.ts",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "next-server/src/note-contracts.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/domain/todo-api.ts",
+      "sha256": "57a47a2581911b14e73c58246a785499258d2696e1c5b32803972270ec5488ad",
+      "member": "57a47a2581911b14e73c58246a785499258d2696e1c5b32803972270ec5488ad/captured/src/domain/todo-api.ts",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "next-server/src/domain/todo-api.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/domain/markdown-assets.ts",
+      "sha256": "5cdb18e97503a365b08024f532ffe8f34091fcbdffa2c8f77c5d473f530f9c5d",
+      "member": "5cdb18e97503a365b08024f532ffe8f34091fcbdffa2c8f77c5d473f530f9c5d/captured/src/domain/markdown-assets.ts",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "next-server/src/domain/markdown-assets.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/todo-definitions.ts",
+      "sha256": "27a3ac96f1f46a6c171fba0e29d851b776aefd777c505e2bdac24b95927d8e95",
+      "member": "27a3ac96f1f46a6c171fba0e29d851b776aefd777c505e2bdac24b95927d8e95/captured/src/todo-definitions.ts",
+      "provisioning": {
+        "revision": "8d2966ca511b3873cd729cf72aa18e7a1e09b9c8",
+        "path": "next-server/src/todo-definitions.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/domain/todo-api-contract.ts",
+      "sha256": "e45d04227e38daa3a64537b2a772f7057430697a5dc73bbd57efcbf82a618263",
+      "member": "e45d04227e38daa3a64537b2a772f7057430697a5dc73bbd57efcbf82a618263/captured/src/domain/todo-api-contract.ts",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "next-server/src/domain/todo-api-contract.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/domain/todo-identities.ts",
+      "sha256": "44e62b0baec88f7520c76673e481b9bd64354441ba598f47866bec6d715822bd",
+      "member": "44e62b0baec88f7520c76673e481b9bd64354441ba598f47866bec6d715822bd/captured/src/domain/todo-identities.ts",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "next-server/src/domain/todo-identities.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/domain/todo-board.ts",
+      "sha256": "8e45dd4a83ee98e8c4dc6bb7a05217e802d7c9cc4f5b44f61d31b7bd6a8826c1",
+      "member": "8e45dd4a83ee98e8c4dc6bb7a05217e802d7c9cc4f5b44f61d31b7bd6a8826c1/captured/src/domain/todo-board.ts",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "next-server/src/domain/todo-board.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/memory.ts",
+      "sha256": "0eee48b78669180c12c47215296b8c5bcca94052e33e68029da330a3890daa0c",
+      "member": "0eee48b78669180c12c47215296b8c5bcca94052e33e68029da330a3890daa0c/captured/src/memory.ts",
+      "provisioning": {
+        "revision": "fa20eeb3c675fa936a7c80c70807b2a29dc62146",
+        "path": "next-server/src/memory.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/memory-contracts.ts",
+      "sha256": "15541f78bf7376d02485edc7c279a245a7a8ffed078bb81764a59b15c827a6eb",
+      "member": "15541f78bf7376d02485edc7c279a245a7a8ffed078bb81764a59b15c827a6eb/captured/src/memory-contracts.ts",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "next-server/src/memory-contracts.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "tests/legacy-regression-oracle.test.mjs",
+      "sha256": "a77daeb8afcfa012d13076c181506e0546ad262d99142982d168877250706bf8",
+      "member": "a77daeb8afcfa012d13076c181506e0546ad262d99142982d168877250706bf8/captured/tests/legacy-regression-oracle.test.mjs",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "next-server/tests/legacy-regression-oracle.test.mjs"
+      }
+    },
+    {
+      "kind": "source",
+      "path": "tests/test-browser-library.js",
+      "sha256": "0a3b34a66b1b49ca310bae5d0f0191776d4a1bbf65f40d5db1ff5b7caa8f4e8e",
+      "member": "0a3b34a66b1b49ca310bae5d0f0191776d4a1bbf65f40d5db1ff5b7caa8f4e8e/source/tests/test-browser-library.js",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "tests/test-browser-library.js"
+      }
+    },
+    {
+      "kind": "source",
+      "path": "tests/test-dual-path-search.js",
+      "sha256": "da2a713925c3eb2cec4ba47da1ed4e13de35ba425e9db039fcea48c20ca56bd0",
+      "member": "da2a713925c3eb2cec4ba47da1ed4e13de35ba425e9db039fcea48c20ca56bd0/source/tests/test-dual-path-search.js",
+      "provisioning": {
+        "revision": "f092ddacb51d1a157d40372776c76144c2a3d27d",
+        "path": "tests/test-dual-path-search.js"
+      }
+    },
+    {
+      "kind": "source",
+      "path": "tests/test-knowledge-search-browser.js",
+      "sha256": "35f6499f628390290142614c415e8d755d2b83e6c2c8342c0b4236ce04b896a0",
+      "member": "35f6499f628390290142614c415e8d755d2b83e6c2c8342c0b4236ce04b896a0/source/tests/test-knowledge-search-browser.js",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "tests/test-knowledge-search-browser.js"
+      }
+    },
+    {
+      "kind": "source",
+      "path": "tests/test-knowledge-source-ranges.js",
+      "sha256": "39198b907cc541d192464eeeb41e395476694bb01442f603727290589f7c1d94",
+      "member": "39198b907cc541d192464eeeb41e395476694bb01442f603727290589f7c1d94/source/tests/test-knowledge-source-ranges.js",
+      "provisioning": {
+        "revision": "f092ddacb51d1a157d40372776c76144c2a3d27d",
+        "path": "tests/test-knowledge-source-ranges.js"
+      }
+    },
+    {
+      "kind": "source",
+      "path": "tests/test-note-work-items.js",
+      "sha256": "25ad07cdf20931f54bceb65c9b6047466362ad71a8ba8ca591ea1867a015d780",
+      "member": "25ad07cdf20931f54bceb65c9b6047466362ad71a8ba8ca591ea1867a015d780/source/tests/test-note-work-items.js",
+      "provisioning": {
+        "revision": "f092ddacb51d1a157d40372776c76144c2a3d27d",
+        "path": "tests/test-note-work-items.js"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/assets.ts",
+      "sha256": "7d705cae6a8bc92935319c968cb23f20db8d62d14ded955d1fb13d5a44b727f4",
+      "member": "7d705cae6a8bc92935319c968cb23f20db8d62d14ded955d1fb13d5a44b727f4/captured/src/assets.ts",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "next-server/src/assets.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/boards.ts",
+      "sha256": "821fb841a3fc6441994a75d658770189d22357a9fc823c6227388c429931a88b",
+      "member": "821fb841a3fc6441994a75d658770189d22357a9fc823c6227388c429931a88b/captured/src/boards.ts",
+      "provisioning": {
+        "revision": "519e514349ac6a095bfde8025d026c8fd0a52cb4",
+        "path": "next-server/src/boards.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/domain/knowledge-contracts.ts",
+      "sha256": "0f4c453b726e70df7c3e8df3e4eb253114d89d4cb88eb8ce3e4f561bf336ab2f",
+      "member": "0f4c453b726e70df7c3e8df3e4eb253114d89d4cb88eb8ce3e4f561bf336ab2f/captured/src/domain/knowledge-contracts.ts",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "next-server/src/domain/knowledge-contracts.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/domain/research.ts",
+      "sha256": "a5eeb110549c7552f2ea8a2c30b7a84db9938d7d0233a347404a9fc1ac444d60",
+      "member": "a5eeb110549c7552f2ea8a2c30b7a84db9938d7d0233a347404a9fc1ac444d60/captured/src/domain/research.ts",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "next-server/src/domain/research.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/domain/skills.ts",
+      "sha256": "6965b8f1a4afba6342a0fdafd0d1560edbafc611a17144bc9657f568b453d96d",
+      "member": "6965b8f1a4afba6342a0fdafd0d1560edbafc611a17144bc9657f568b453d96d/captured/src/domain/skills.ts",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "next-server/src/domain/skills.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/file-write.ts",
+      "sha256": "85a3b1430b476fa8cc2d5e567454603a4044bda7aa279a5b9f1c27a19f765d7d",
+      "member": "85a3b1430b476fa8cc2d5e567454603a4044bda7aa279a5b9f1c27a19f765d7d/captured/src/file-write.ts",
+      "provisioning": {
+        "revision": "8d2966ca511b3873cd729cf72aa18e7a1e09b9c8",
+        "path": "next-server/src/file-write.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/knowledge-mutations-contracts.ts",
+      "sha256": "4390dabc9ec6dd53be282653eb710243ed6b80d1534333adba88e6788356c606",
+      "member": "4390dabc9ec6dd53be282653eb710243ed6b80d1534333adba88e6788356c606/captured/src/knowledge-mutations-contracts.ts",
+      "provisioning": {
+        "revision": "519e514349ac6a095bfde8025d026c8fd0a52cb4",
+        "path": "next-server/src/knowledge-mutations-contracts.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/knowledge-mutations.ts",
+      "sha256": "eafcb7cf7174b3a6e6189c56ca3c50ace05aa6d6e6e979c2ca41dcb1d9d566f9",
+      "member": "eafcb7cf7174b3a6e6189c56ca3c50ace05aa6d6e6e979c2ca41dcb1d9d566f9/captured/src/knowledge-mutations.ts",
+      "provisioning": {
+        "revision": "519e514349ac6a095bfde8025d026c8fd0a52cb4",
+        "path": "next-server/src/knowledge-mutations.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/knowledge-snapshot.ts",
+      "sha256": "b9f7c55bd1181d378c754a792e8abb3f835169f1c18fe827cbfc2752266f5df4",
+      "member": "b9f7c55bd1181d378c754a792e8abb3f835169f1c18fe827cbfc2752266f5df4/captured/src/knowledge-snapshot.ts",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "next-server/src/knowledge-snapshot.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/research-contracts.ts",
+      "sha256": "58c86dec09860752a03c87366926dddee91509542baebc9d4b081af856b1865b",
+      "member": "58c86dec09860752a03c87366926dddee91509542baebc9d4b081af856b1865b/captured/src/research-contracts.ts",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "next-server/src/research-contracts.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/research.ts",
+      "sha256": "029d6c409513f233800243a6fd024b8e732b7947171f57982851862e97111f93",
+      "member": "029d6c409513f233800243a6fd024b8e732b7947171f57982851862e97111f93/captured/src/research.ts",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "next-server/src/research.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/skill-contracts.ts",
+      "sha256": "574a8835fb0684d2b41db74bfc0d6208b70228da465a9b4a3062fc82b6eb5735",
+      "member": "574a8835fb0684d2b41db74bfc0d6208b70228da465a9b4a3062fc82b6eb5735/captured/src/skill-contracts.ts",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "next-server/src/skill-contracts.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "src/skills.ts",
+      "sha256": "26de2a87cc51747e489eb9d42380690c9b4e02c7bdd1ada6d1077426cd68c04c",
+      "member": "26de2a87cc51747e489eb9d42380690c9b4e02c7bdd1ada6d1077426cd68c04c/captured/src/skills.ts",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "next-server/src/skills.ts"
+      }
+    },
+    {
+      "kind": "captured",
+      "path": "tests/legacy-regression-batch12.test.mjs",
+      "sha256": "6d6d90f85ecd830d96f2da0f754a1f3b3884c9500b6e3bc6b3c2a11a4ecdd435",
+      "member": "6d6d90f85ecd830d96f2da0f754a1f3b3884c9500b6e3bc6b3c2a11a4ecdd435/captured/tests/legacy-regression-batch12.test.mjs",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "next-server/tests/legacy-regression-batch12.test.mjs"
+      }
+    }
+  ]
+}

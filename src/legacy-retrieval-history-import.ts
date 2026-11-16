@@ -10,6 +10,14 @@ import { legacyLearningStateSchema, validateLegacyRetrievalLearningSnapshot, typ
 import { resourcePath } from "./document-path.js";
 import { runLegacyMcpPython } from "./legacy-mcp-python.js";
 import { upgradeLegacyRetrievalLearningSnapshot, type legacyRetrievalLearningUpgradeSchema } from "./legacy-retrieval-learning-upgrade.js";
+import {
+  legacyRetrievalHistorySourceSchema, legacyRetrievalHistoryPlanSchema,
+  type LegacyRetrievalHistorySource, type LegacyRetrievalHistoryPlan,
+} from "./domain/legacy-retrieval-history-import-contracts.js";
+export {
+  legacyRetrievalHistorySourceSchema, legacyRetrievalHistoryPlanSchema,
+  type LegacyRetrievalHistorySource, type LegacyRetrievalHistoryPlan,
+} from "./domain/legacy-retrieval-history-import-contracts.js";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const columns = {
@@ -32,35 +40,6 @@ const columnDefaults: Record<string, Record<string, string>> = {
   models: { weights: "'[]'", revision: "0", model_labels: "0", user_labels: "0", prequential: "'{}'" },
   calls: { version: "0", query_features: "'[]'" },
 };
-export const legacyRetrievalHistorySourceSchema = z.strictObject({
-  schema: z.literal("pkm.legacy-retrieval-history-source/v1"),
-  sourceDatabase: z.string(),
-  size: z.number().int().nonnegative().safe(),
-  sha256: z.string().regex(/^[a-f0-9]{64}$/),
-  stateSha256: z.string().regex(/^[a-f0-9]{64}$/),
-  rawStateSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
-  schemaProfile: z.strictObject({
-    settings: z.array(z.string()), models: z.array(z.string()), calls: z.array(z.string()), query_judgments: z.array(z.string()),
-  }).optional(),
-  device: z.string(), inode: z.string(), mtimeNs: z.string(), ctimeNs: z.string(),
-  counts: z.strictObject({ settings: z.number().int().nonnegative(), models: z.number().int().nonnegative(),
-    calls: z.number().int().nonnegative(), query_judgments: z.number().int().nonnegative() }),
-});
-export type LegacyRetrievalHistorySource = z.infer<typeof legacyRetrievalHistorySourceSchema>;
-export const legacyRetrievalHistoryPlanSchema = z.strictObject({
-  schema: z.literal("pkm.legacy-retrieval-history-import/v1"), stateRoot: z.string(), actorId: z.string().min(1),
-  source: legacyRetrievalHistorySourceSchema,
-  selectedPackageId: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
-  frozenRelease: z.strictObject({
-    sha256: z.string().regex(/^[a-f0-9]{64}$/), releaseId: z.string().regex(/^[a-f0-9]{64}$/),
-    packageId: z.string().regex(/^[a-f0-9]{64}$/), originalModelPath: z.string(),
-  }).optional(),
-  files: z.array(z.strictObject({ path: resourcePath, size: z.number().int().nonnegative().safe(),
-    sha256: z.string().regex(/^[a-f0-9]{64}$/) })),
-  directories: z.array(resourcePath),
-  planSha256: z.string().regex(/^[a-f0-9]{64}$/),
-});
-export type LegacyRetrievalHistoryPlan = z.infer<typeof legacyRetrievalHistoryPlanSchema>;
 export interface LegacyRetrievalHistoryApprovalRequest {
   actorId: string; workspaceId: string; sourceSha256: string; historyPlanSha256: string;
   selectedPackageId: string | null; currentCorpusSha256: string;

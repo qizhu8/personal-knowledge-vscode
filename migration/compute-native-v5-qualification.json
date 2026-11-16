@@ -1,0 +1,72 @@
+{
+  "schema": "pkm.compute-native-qualification/v5",
+  "scope": "bounded-compute-accounting-fixture-regression-only",
+  "status": "bounded-fixture-regression-passed",
+  "originalSourceReuse": "No new original-source capture claimed. Native turnReceipt enriches the persisted original worker receipt with independently computed accounting.",
+  "historicalNative": {
+    "qualification": "migration/native-qualification.json",
+    "commit": "709b71263c4d31f6aae6523525c8bc12b2c16535",
+    "path": "next-server/src/compute/chat-memory-worker.ts",
+    "blob": "eba61f0d14cd54c0b0514cb0db0196765219bd69",
+    "archive": "migration/evidence/compute-chat-memory-worker-78118937.ts.txt",
+    "bytes": 20562,
+    "sha256": "78118937bc28fc2f9e5eb088dd266bcad19903522e6d591b4bf18fa2414468b2"
+  },
+  "native": [
+    {
+      "file": "src/compute/chat-memory-worker.ts",
+      "sha256": "4ada23ec6afc83a0bec9a3a2baf9781dd726d70ee07274597a132c90e4b50962"
+    },
+    {
+      "file": "src/compute/memory-accounting.ts",
+      "sha256": "ee7ade5cbda10fd0da57992306b3d5acaceb3c21f3e12f4d32f810a05d2d051c"
+    }
+  ],
+  "verification": {
+    "command": "node tests/framework/run.cjs --file tests/compute.test.mjs --file tests/compute-knowledge-index.test.mjs --file tests/compute-memory-accounting.test.mjs --file tests/legacy-memory-engine-backup-paired.test.mjs",
+    "previousRuns": [{
+      "completedAt": "2026-11-16T02:50:15.217Z",
+      "build": "passed",
+      "filesPassed": 3,
+      "filesFailed": 1,
+      "casesPassed": 51,
+      "casesFailed": 4,
+      "casesSkipped": 0,
+      "timedOut": 0,
+      "countEvidence": "Runner parsed 45 passing cases and one opaque task because paired-backup TAP exceeded bounded output. The retained paired-backup TAP footer reports 10 tests, 6 passed, 4 failed, 0 skipped.",
+      "remainingFailure": {
+        "file": "tests/legacy-memory-engine-backup-paired.test.mjs",
+        "caseNumbers": [1, 8, 9, 10],
+        "code": "RECOVERY_REQUIRED",
+        "message": "The durable writer-fence marker does not match this Knowledge Root.",
+        "boundary": "Storage.open validates restored-root admission through assertLinuxRootOwnerMarker before the intended postrestore assertions. No writer-fence bypass, assertion weakening or unrelated product fix is included."
+      }
+    }],
+    "observedRun": {
+      "completedAt": "2026-11-16T03:12:01.394Z",
+      "catalogFingerprint": "eefc7caf4b76c18d8aa9df33cd28bf24faf0aecafe5b98d0561f9164f2e5e975",
+      "build": "passed",
+      "filesPassed": 4,
+      "filesFailed": 0,
+      "casesPassed": 60,
+      "casesFailed": 0,
+      "casesSkipped": 0,
+      "timedOut": 0,
+      "countEvidence": "Fresh canonical combined selection: all four files passed; runner parsed all 60 passing cases with zero opaque tasks, skips, timeouts or cleanup errors.",
+      "scope": "Isolated fixture regression only; not production, native-upgrade, independent or signed acceptance."
+    },
+    "coverage": [
+      "Real Python worker receipts: pending and partially reported calls, exact reported usage and credits, persisted raw observations and recomputed accounting across close/reopen, failed and cancelled unreported calls.",
+      "Accounting unit cases: independent totals, missing reporting, malformed observations and numeric precision overflow.",
+      "Exact historical native worker archive SHA-256 and Git blob identity, including verification with an unavailable Git object directory; separate current native implementation pins, unchanged transformed source/history provenance and byte-identical Python capture.",
+      "Existing paired workspace/engine backup, restore, immutable retry, authority revocation and tamper-fencing fixture regressions."
+    ]
+  },
+  "limitations": [
+    "Synthetic disposable fixtures only. No whole-v5, production, native-install, independent or signed qualification or acceptance.",
+    "No real provider/model calls, provider billing verification, production data or physical power-loss qualification.",
+    "Historical qualification runs, original manifests/pins, captured bytes and frozen legacy sources remain unchanged; this record does not reclassify historical evidence as current implementation.",
+    "The test-only UTF-8 archive preserves exact authenticated existing historical Git blob bytes, including terminal LF. Its original commit/path/blob remain provenance, not a requirement for checkpoint objects in an ordinary clone. The -text Git attribute prevents checkout newline conversion. No reconstruction or fallback to maintained source is authorized; the archive is not compiled or used at runtime.",
+    "Qualification applies only to these exact native hashes and the stated bounded tests; this record does not establish transitive whole-system readiness."
+  ]
+}

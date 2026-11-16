@@ -10,7 +10,7 @@ import { initialize, Storage } from "../dist/storage.js";
 import { admitLegacyKnowledgeSnapshots, inspectLegacyKnowledgeSnapshotSchedulerEnrollment } from "../dist/legacy-knowledge-snapshots.js";
 import { legacyManagedFixture, closeLegacyManagedFixture } from "./legacy-managed-fixture.mjs";
 
-const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "..");
+const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "legacy");
 const actor = { id: "mcp:external", canWrite: true };
 const allowedTools = ["knowledge_snapshot_status", "knowledge_snapshot_create", "knowledge_snapshot_configure",
   "knowledge_snapshot_restore_preview", "knowledge_snapshot_restore_apply"];

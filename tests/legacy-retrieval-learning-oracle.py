@@ -12,7 +12,7 @@ import threading
 from types import SimpleNamespace
 
 request = json.load(sys.stdin)
-source = Path(__file__).resolve().parents[2] / "resources/retrieval_solutions.py"
+source = Path(__file__).resolve().parents[1] / "legacy/resources/retrieval_solutions.py"
 node, = [node for node in ast.parse(source.read_text(encoding="utf-8")).body
          if isinstance(node, ast.ClassDef) and node.name == "RetrievalLearning"]
 namespace = dict(globals(), os=SimpleNamespace(chmod=lambda *_args: None))

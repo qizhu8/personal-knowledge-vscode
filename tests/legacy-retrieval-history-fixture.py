@@ -11,7 +11,7 @@ import sqlite3
 import sys
 import threading
 
-root = Path(__file__).resolve().parents[2]
+root = Path(__file__).resolve().parents[1] / "legacy"
 node, = [node for node in ast.parse((root / "resources/retrieval_solutions.py").read_text()).body
          if isinstance(node, ast.ClassDef) and node.name == "RetrievalLearning"]
 exec(compile(ast.Module(body=[node], type_ignores=[]), "<actual-original-owned-history-fixture>", "exec"))

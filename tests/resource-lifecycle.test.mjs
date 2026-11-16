@@ -361,7 +361,9 @@ test("resource reference scan accepts more than 2048 documents and retains direc
 
 test("original capture records are fresh and all outputs omit host paths", async t => {
   const provenance = JSON.parse(await readFile(join(packageRoot, "migration/resource-lifecycle-provenance.json"), "utf8"));
-  assert.deepEqual(await checkCaptureRecords(provenance.files), []);
+  assert.deepEqual(await checkCaptureRecords(provenance.files, undefined, undefined, {
+    dataset: "knowledge-resource-lifecycle-historical",
+  }), []);
   const f = await fixture(t);
   const serialized = serializeResourceLifecyclePlan(f.plan());
   assert(!serialized.includes(f.root));

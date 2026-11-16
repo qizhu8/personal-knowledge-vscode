@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 
-const project = path.resolve(new URL("../legacy", import.meta.url).pathname);
+const project = path.resolve(new URL("..", import.meta.url).pathname);
 const require = createRequire(import.meta.url);
 const roomId = "original-room-123";
 const notePath = "Chatroom Meetings/Original Room/timestamp.md";
@@ -16,15 +16,15 @@ const markdown = `---\nschema: "pkm.knowledge/v1"\nknowledgeId: "knowledge_01234
 async function fixture(t) {
   const directory = path.join(project, ".migration-test-work", `meeting-note-alias-${randomUUID()}`);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  fs.symlinkSync(path.join(project, "../node_modules"), path.join(directory, "node_modules"), "dir");
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  fs.symlinkSync(path.join(project, "node_modules"), path.join(directory, "node_modules"), "dir");
   require("esbuild").buildSync({
     stdin: { contents: `export {inspectRetainedMeetingSource} from ${JSON.stringify(
-      process.env.PKM_ROOM_MEETING_SOURCE || "./next-server/src/next-room-meeting-source",
+      process.env.PKM_ROOM_MEETING_SOURCE || "./src/next-room-meeting-source",
     )};`, resolveDir: project },
     bundle: true, platform: "node", format: "esm", packages: "external",
     outfile: path.join(directory, "source.mjs"), logLevel: "silent",
   });
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const root = path.join(directory, "root");
   const canonical = path.join(root, "chatrooms", roomId, "meetings/canonical.json");
   fs.mkdirSync(path.dirname(canonical), { recursive: true });

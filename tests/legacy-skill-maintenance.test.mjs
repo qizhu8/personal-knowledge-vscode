@@ -12,7 +12,7 @@ import { initialize, Storage } from "../dist/storage.js";
 import { legacySkillMaintenance, verifyLegacySkillMaintenance, validateLegacySkillMaintenanceArtifact } from "../dist/legacy-skill-maintenance.js";
 import { originalSkillMaintenance } from "./legacy-skill-maintenance-oracle.mjs";
 
-const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "..");
+const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "legacy");
 const actor = { id: "mcp:external", canWrite: true };
 const skill = "---\nschema: pkm.knowledge/v1\nknowledgeId: knowledge_000000000000000000000099\nrevision: 1\nname: Evidence Skill\ndescription: Reusable evidence\n---\nNever overwrite this formal Skill.\n";
 async function fixture(t) {

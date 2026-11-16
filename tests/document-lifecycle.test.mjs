@@ -367,7 +367,9 @@ test("provenance is repeatable and verified by shared migration checker; evidenc
   assert.equal(child.status, 0, child.stderr);
   assert.equal(await readFile(path, "utf8"), before);
   const metadata = JSON.parse(before);
-  assert.deepEqual(await checkCaptureRecords(metadata.files), []);
+  assert.deepEqual(await checkCaptureRecords(metadata.files, undefined, undefined, {
+    dataset: "knowledge-document-lifecycle-historical",
+  }), []);
   assert.match(documentLifecycleAssetRules.rebaseMarkdownAssets, /rewriteMarkdownAssetReferences/);
   assert.match(documentLifecycleAssetRules.markdownResourceReferrer, /Resource|reference|target/);
   assert.match(documentLifecycleFilestoreRules.writeKnowledgeMarkdownUnlocked, /assertMarkdownAssetsUnshared/);

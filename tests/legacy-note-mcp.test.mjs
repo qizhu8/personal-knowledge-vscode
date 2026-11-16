@@ -20,6 +20,30 @@ import ts from "typescript";
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = resolve(packageRoot, "legacy");
 
+test("actual compact compatibility MCP initializes as pkm-v5 in a disposable separate workspace", { timeout: 30_000 }, async t => {
+  const directory = resolve("tests", `.compact-identity-${randomUUID()}`);
+  await initialize(directory);
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const client = new Client({ name: "compact-identity-test", version: "1.0.0" });
+  const transport = new StdioClientTransport({
+    command: process.env.PKM_TEST_PYTHON || "python3",
+    args: ["-B", resolve("compat/legacy-compact-mcp.py"), "--data", directory, "--node", process.execPath],
+    env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1", PKM_CAPABILITY_PROFILE: "compact" },
+    stderr: "pipe",
+  });
+  let diagnostics = "";
+  transport.stderr?.on("data", chunk => { diagnostics += chunk; });
+  try {
+    await client.connect(transport);
+    assert.equal(client.getServerVersion().name, "pkm-v5");
+    const tools = (await client.listTools()).tools.map(tool => tool.name);
+    assert(tools.includes("capabilities_search"));
+    assert(!tools.includes("add_note"));
+  } catch (error) {
+    throw new Error(`Compact identity failed: ${diagnostics}`, { cause: error });
+  } finally { await client.close(); }
+});
+
 test("legacy MCP catalog captures still match their original source", () => {
   execFileSync(process.execPath, [join(packageRoot, "scripts/capture-legacy-mcp-contracts.mjs"), "--check"]);
 });
@@ -49,15 +73,17 @@ test("isolated read-only stdio Note inventory matches the generated legacy execu
   t.after(() => rm(parent, { recursive: true, force: true }));
   const root = join(parent, "workspace");
   await initialize(root);
-  for (const flags of [
-    ["mcp", "--data", root, "--experimental-legacy-note-mcp"],
-    ["http", "--data", root, "--read-only", "--experimental-legacy-note-mcp"],
-    ["init", "--data", join(parent, "unexpected"), "--read-only", "--experimental-legacy-note-mcp"],
+  for (const [flags, error] of [
+    [["mcp", "--data", root, "--experimental-legacy-note-mcp"], /requires mcp --read-only/],
+    [["http", "--data", root, "--read-only", "--experimental-legacy-note-mcp"], /requires mcp --read-only/],
+    [["init", "--data", join(parent, "unexpected"), "--read-only", "--experimental-legacy-note-mcp"],
+      /Option --read-only is not supported by init\./],
   ]) {
     const denied = spawnSync(process.execPath, [join(packageRoot, "dist/cli.js"), ...flags], { encoding: "utf8" });
     assert.notEqual(denied.status, 0);
-    assert.match(denied.stderr, /requires mcp --read-only/);
+    assert.match(denied.stderr, error);
   }
+  assert.equal(existsSync(join(parent, "unexpected")), false);
   for (let index = 0; index < 251; index++) {
     const directory = join(root, "notes", index % 2 ? "Team/Sub" : "Team");
     await mkdir(directory, { recursive: true });
@@ -78,6 +104,7 @@ test("isolated read-only stdio Note inventory matches the generated legacy execu
   transport.stderr?.on("data", chunk => { diagnostics += chunk.toString(); });
   try { await client.connect(transport); }
   catch (error) { throw new Error(`MCP startup failed: ${diagnostics}`, { cause: error }); }
+  assert.equal(client.getServerVersion().name, "pkm-v5");
   t.after(() => client.close());
   for (const [index, directory] of [[0, "Team"], [1, "Team/Sub"]]) {
     await writeFile(join(root, "notes", directory, `Note ${String(index).padStart(3, "0")}.md`),

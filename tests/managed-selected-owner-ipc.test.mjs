@@ -55,10 +55,10 @@ test("selected revoke waits for child drain and failed drain remains retryable",
 
 test("real managed child selects and revokes an owner without releasing live Storage", { timeout: 30000 }, async t => {
   if (process.platform !== "linux") return t.skip("Requires the Linux writer fence.");
-  const directory = resolve("..", ".migration-test-work", `managed-selection-${uuid()}`);
-  mkdirSync(directory, { mode: 0o700 });
+  const directory = resolve(".migration-test-work", `managed-selection-${uuid()}`);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
   const child = fork(resolve("dist/managed-client-child.js"), [], {
-    execArgv: ["--require", resolve("../tests/fixtures/managed-selected-owner-drain.cjs")],
+    execArgv: ["--require", resolve(import.meta.dirname, "../legacy/tests/fixtures/managed-selected-owner-drain.cjs")],
     stdio: ["ignore", "ignore", "inherit", "ipc"],
   });
   t.after(() => {

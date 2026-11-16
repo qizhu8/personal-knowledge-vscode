@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 
 const require = createRequire(import.meta.url), esbuild = require("esbuild");
 const dist = resolve(process.env.PKM_TEST_NEXT_DIST || "dist");
+const legacyRoot = resolve(import.meta.dirname, "../legacy");
 const candidateVsix = process.env.PKM_TEST_SUBSCRIPTION_VSIX;
 const { prepareLegacyRootAdoptionExperimental, resumeLegacyRootAdoptionExperimental } =
   await import(pathToFileURL(join(dist, "legacy-root-adoption.js")));
@@ -24,6 +25,8 @@ test("private UI coordinator uses the real Next CLI and never replays unknown me
   const grant = join(extensionProfile, "native-subscription-ui.json");
   for (const dir of [join(root, "notes"), join(publisherRoot, "notes"), profile, publisherProfile,
     join(host, "subscriptions"), extensionProfile]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(host, "package.json"), '{"type":"commonjs"}\n', { mode: 0o600 });
+  symlinkSync(join(legacyRoot, "node_modules"), join(host, "node_modules"), "dir");
   writeFileSync(join(root, "notes", "Local.md"), "# Synthetic local\n", { mode: 0o600 });
   writeFileSync(join(publisherRoot, "notes", "Shared.md"), "# Synthetic remote\n", { mode: 0o600 });
   cpSync(dist, join(server, "dist"), { recursive: true });
@@ -34,17 +37,17 @@ test("private UI coordinator uses the real Next CLI and never replays unknown me
   const build = (contents, output) => esbuild.buildSync({ stdin: { contents, resolveDir: resolve("."), loader: "js" },
     bundle: true, platform: "node", format: "cjs", packages: "external", outfile: output });
   build(`module.exports = {
-    ...require(${JSON.stringify(resolve("src/subscriptions/subscriptions.ts"))}),
-    ...require(${JSON.stringify(resolve("src/subscriptions/native-remote-transport.ts"))}),
-    setRoot(p) { require(${JSON.stringify(resolve("src/knowledge/filestore.ts"))}).setStorePath(p);
-      require(${JSON.stringify(resolve("src/knowledge/storage.ts"))}).setStorePath(p); }
+    ...require(${JSON.stringify(resolve(legacyRoot, "src/subscriptions/subscriptions.ts"))}),
+    ...require(${JSON.stringify(resolve(legacyRoot, "src/subscriptions/native-remote-transport.ts"))}),
+    setRoot(p) { require(${JSON.stringify(resolve(legacyRoot, "src/knowledge/filestore.ts"))}).setStorePath(p);
+      require(${JSON.stringify(resolve(legacyRoot, "src/knowledge/storage.ts"))}).setStorePath(p); }
   };`, join(host, "subscriptions", "legacy.js"));
-  build(`require(${JSON.stringify(resolve("src/subscriptions/native-membership-coordinator.ts"))})
+  build(`require(${JSON.stringify(resolve(legacyRoot, "src/subscriptions/native-membership-coordinator.ts"))})
     .runNativeSubscriptionCoordinator(JSON.parse(process.env.TEST_BINDING))
     .catch(error => { console.error(error.message); process.exitCode = 1; });`, join(host, "subscriptions", "controller.js"));
   for (const [source, output] of [["src/subscriptions/subscription-gateway-entry.ts", "subscription-gateway.js"],
     ["src/subscriptions/subscription-materialize-worker.ts", "subscription-materialize-worker.js"]])
-    esbuild.buildSync({ entryPoints: [resolve(source)], bundle: true, platform: "node", format: "cjs",
+    esbuild.buildSync({ entryPoints: [resolve(legacyRoot, source)], bundle: true, platform: "node", format: "cjs",
       packages: "external", outfile: join(host, output) });
   const legacy = require(join(host, "subscriptions", "legacy.js"));
   const memory = () => { const map = new Map(); return { async get(key) { return map.get(key); },
@@ -153,9 +156,9 @@ test("private UI coordinator uses the real Next CLI and never replays unknown me
         "--outDir", join(extension, "dist"), "--sourceMap", "false"], { cwd: resolve("."), env: uiEnvironment(), encoding: "utf8", timeout: 120000 });
       if (compiler.status !== 0) throw new Error(`Synthetic extension compile failed: ${compiler.stderr || compiler.stdout}`);
       cpSync(resolve("dist/webview"), join(extension, "dist", "webview"), { recursive: true });
-      cpSync(resolve("src/webview"), join(extension, "dist", "webview"), { recursive: true });
+      cpSync(resolve(legacyRoot, "src/webview"), join(extension, "dist", "webview"), { recursive: true });
       mkdirSync(join(extension, "src"), { recursive: true, mode: 0o700 });
-      cpSync(resolve("src/webview"), join(extension, "src", "webview"), { recursive: true });
+      cpSync(resolve(legacyRoot, "src/webview"), join(extension, "src", "webview"), { recursive: true });
       mkdirSync(join(extension, "scripts"), { mode: 0o700 });
       cpSync(resolve("scripts/build-panel.js"), join(extension, "scripts", "build-panel.js"));
       const panel = spawnSync(process.execPath, [join(extension, "scripts", "build-panel.js")],

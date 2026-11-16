@@ -369,7 +369,7 @@ test("reusable source files and exact result fields cover actual transport fixtu
 test("capture provenance uses repository source root and next-server captured root with exact hashes", async () => {
   const provenance = JSON.parse(await readFile(join(packageRoot, "migration", "subscription-reads-provenance.json"), "utf8"));
   assert.ok(provenance.files.length >= 4);
-  assert.deepEqual(await checkCaptureRecords(provenance.files, resolve(packageRoot, ".."), packageRoot), []);
+  assert.deepEqual(await checkCaptureRecords(provenance.files, resolve(packageRoot, "legacy"), packageRoot), []);
   for (const item of provenance.files) {
     assert.equal(item.source.startsWith("next-server/"), false);
     assert.equal(item.captured.startsWith("next-server/"), false);

@@ -23,7 +23,7 @@ exports.run = async () => {
   const fixture = JSON.parse(process.env.PKM_LIVE_ACCEPTANCE);
   delete process.env.PKM_LIVE_ACCEPTANCE;
   assert.match(fixture.origin, /^http:\/\/127\.0\.0\.1:\d+$/);
-  const extension = vscode.extensions.getExtension("pkm-nonproduction.pkm-next-nonproduction-host");
+  const extension = vscode.extensions.getExtension("pkm-nonproduction.pkm-v5");
   assert.ok(extension, "Nonproduction extension not loaded");
   const requests = [], panels = [], errors = [], restore = [];
   const originalFetch = globalThis.fetch;

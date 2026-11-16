@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createCipheriv, randomBytes, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,12 +26,20 @@ async function fixture(t) {
   return root;
 }
 
-async function originalModule(path, overrides = {}) {
-  const source = await readFile(join(repository, path), "utf8");
+function originalModule(path, overrides = {}, modules = new Map()) {
+  const filename = resolve(repository, path);
+  if (modules.has(filename)) return modules.get(filename).exports;
+  const source = readFileSync(filename, "utf8");
   const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
-  const module = { exports: {} }, require = createRequire(import.meta.url);
-  runInThisContext(`(function(require,module,exports){${code}\n})`)(
-    name => name in overrides ? overrides[name] : require(name), module, module.exports);
+  const module = { exports: {} }, require = createRequire(filename);
+  modules.set(filename, module);
+  const localRequire = name => {
+    if (Object.hasOwn(overrides, name)) return overrides[name];
+    if (name.startsWith(".")) return originalModule(require.resolve(`${name}.ts`), overrides, modules);
+    return require(name);
+  };
+  runInThisContext(`(function(require,module,exports,__filename,__dirname){${code}\n})`, { filename })(
+    localRequire, module, module.exports, filename, dirname(filename));
   return module.exports;
 }
 

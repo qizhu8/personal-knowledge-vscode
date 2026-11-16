@@ -39,7 +39,7 @@ test("original Notes/Skills/Research become editable only in an authorized exper
     execFileSync(process.execPath, [require.resolve("typescript/bin/tsc"), "-p", project, "--outDir", join(extension, "dist"), "--sourceMap", "false"],
       { stdio: "pipe", timeout: 120000 });
   } catch (error) { throw new Error(`${error.message}\n${error.stdout || ""}\n${error.stderr || ""}`); }
-  require(join(project, "scripts/next-rehearsal-runtime.js")).stage(join(extension, "next-runtime"), { production: true });
+  require("../scripts/stage-runtime.cjs").stage(join(extension, "next-runtime"), { production: true });
   const { NextManagedClient } = require(join(extension, "dist/runtime/next-managed-client.js"));
   const dist = join(extension, "next-runtime/server/dist");
   await t.test("nonempty executable package/catalog roots are planned only as inert archive bytes", async () => {
@@ -81,10 +81,10 @@ test("original Notes/Skills/Research become editable only in an authorized exper
   });
   const original = require(join(extension, "dist/knowledge/filestore.js"));
   original.setStorePath(source);
-  original.noteUpsert({ slug: "", title: "Original Note", type: "journal", tags: ["legacy"], category: "Team", content: "Note original\r\n" });
+  original.noteUpsert({ slug: "Team/Original Note", title: "Original Note", type: "journal", tags: ["legacy"], category: "Team", content: "Note original\r\n" });
   original.skillUpsert({ name: "Original Skill", category: "Team", content: "Skill original\r\n", description: "Preserved skill",
     tags: ["legacy"], source_project: "original-project", recipe_required: true, recipe_hint: "Keep original", related_skills: ["Other"], priority: "highest" });
-  original.paperUpsert({ slug: "", title: "Original Research", category: "Team", content: "Research original\r\n",
+  original.paperUpsert({ slug: "Team/Original Research", title: "Original Research", category: "Team", content: "Research original\r\n",
     authors: ["Original Author"], year: 2020, topic: "Migration", conclusions: ["Keep complete"], assumptions: ["No production root"] });
   const paths = { notes: "Team/Original Note.md", skills: "Team/Original Skill.md", papers: "Team/Original Research.md" };
   // Resolve writer-safe file names rather than assuming display titles are paths.

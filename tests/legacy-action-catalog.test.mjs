@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile, link, lstat } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Storage, initialize } from "../dist/storage.js";
 import {
   LEGACY_ACTION_RUNTIME_UNAVAILABLE, admitLegacyActionPackage, legacyActionCatalog,
@@ -15,8 +15,9 @@ import { createNativeRuntime } from "../dist/native-runtime.js";
 import { createWorkspaceBackup, restoreWorkspaceBackup } from "../dist/workspace-backup.js";
 import { nativeRestoreAuthority } from "./host-composition-legacy-batch16-restore-fixture.mjs";
 import { originalActionCompilerFixtures as original } from "./action-compiler-original-fixtures.mjs";
+import { originalActionFixture } from "./legacy-action-original-fixture.mjs";
 
-const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "..");
+const root = resolve(import.meta.dirname, "..");
 const actor = { id: "mcp:external", canWrite: true };
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
 const definitionFile = JSON.stringify({ dependencies: {}, casts: {}, examples: [],
@@ -41,22 +42,22 @@ sys.stdout.buffer.write(result.getvalue())
     [`definitions/${original.example.action_id}.json`]: definitionFile,
   }, options }), env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
 }
-const originalCall = (directory, sourceRoot, operation, args = {}) => JSON.parse(execFileSync("python3", ["-c", `
+const originalCall = (directory, sourceRoot, operation, args = {}) => originalActionFixture(dirname(directory)).json(`
 import json,sys
 sys.path.insert(0,sys.argv[1])
 from action_modules import ModuleRuntime
 runtime=ModuleRuntime(sys.argv[2],proposal_mode=True)
 runtime.configure_workspace(sys.argv[3])
 request=json.load(sys.stdin)
+if request["operation"] not in {"module_set_import","module_set_list","module_set_load","module_set_remove","definition","definition_check","register"}:
+ raise ValueError("Operation outside original Action fixture scope")
 print(json.dumps(getattr(runtime,request["operation"])(**request["arguments"])))
-`, join(repository, "resources"), directory, sourceRoot], {
-  input: JSON.stringify({ operation, arguments: args }), encoding: "utf8",
-  env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
-}));
+`, [directory, sourceRoot], JSON.stringify({ operation, arguments: args }));
 async function fixture(t) {
   const parent = join(root, "tests", `.legacy-action-catalog-${randomUUID()}`);
   const sourceRoot = join(parent, "explicit-source"), sourcePath = join(sourceRoot, "reviewed.zip");
   await mkdir(sourceRoot, { recursive: true });
+  await mkdir(join(parent, "original"));
   const data = await initialize(join(parent, "workspace")), bytes = archive();
   await writeFile(sourcePath, bytes);
   t.after(() => rm(parent, { recursive: true, force: true }));

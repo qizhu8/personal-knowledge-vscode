@@ -179,7 +179,7 @@ test("capture provenance points at actual reproducible files", () => {
   const manifest = JSON.parse(readFileSync(new URL("../migration/workflow-runtime-provenance.json", import.meta.url)));
   for (const file of manifest.files) {
     const hash = data => createHash("sha256").update(data).digest("hex");
-    assert.equal(hash(readFileSync(new URL(`../../${file.source}`, import.meta.url))), file.sourceSha256);
+    assert.equal(hash(readFileSync(new URL(`../legacy/${file.source}`, import.meta.url))), file.sourceSha256);
     assert.equal(hash(readFileSync(new URL(`../${file.captured}`, import.meta.url))), file.capturedSha256);
   }
 });

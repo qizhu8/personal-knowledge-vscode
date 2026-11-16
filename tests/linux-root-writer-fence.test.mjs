@@ -8,6 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { Storage, initialize } from "../dist/storage.js";
 import { acquireLinuxRootWriterFence, markLinuxRootNextOwned } from "../dist/linux-root-writer-fence.js";
+import { renameNoReplaceSync } from "../dist/rename-no-replace.js";
 
 const testsRoot = dirname(fileURLToPath(import.meta.url));
 const child = join(testsRoot, "linux-root-writer-fence-child.mjs");
@@ -98,6 +99,68 @@ test("a fence stops authorizing work as soon as release begins", {
   assert.throws(() => fence.assertHeld(), /fence was lost/i);
   await release;
   assert.throws(() => fence.assertHeld(), /fence was lost/i);
+});
+
+test("root publication rebinds its marker while retaining the same kernel lock", {
+  skip: process.platform !== "linux", timeout: 10000,
+}, async t => {
+  const root = resolve(testsRoot, `.linux-root-fence-publish-${randomUUID()}`);
+  const target = `${root}-published`;
+  await initialize(root);
+  const storage = await Storage.open(root);
+  await storage.close();
+  t.after(async () => { await cleanupRoot(root); await cleanupRoot(target); });
+  const fence = await acquireLinuxRootWriterFence(root);
+  try {
+    await fence.publishRootNoReplace(target, keepAlive =>
+      renameNoReplaceSync(root, target, process.env.PYTHON || "python3", keepAlive));
+    const marker = JSON.parse(await readFile(join(target, ".pkm-next-writer-fenced.json"), "utf8"));
+    assert.equal(marker.root, target);
+    await assert.rejects(acquireLinuxRootWriterFence(target, 100), /Timed out|acquire.*fence/i);
+  } finally { await fence.release(); }
+  const reopened = await Storage.open(target);
+  await reopened.close();
+});
+
+test("releasing a root fence does not keep its owner alive until the shutdown grace expires", {
+  skip: process.platform !== "linux", timeout: 5000,
+}, async t => {
+  const root = resolve(testsRoot, `.linux-root-fence-exit-${randomUUID()}`);
+  await mkdir(root, { mode: 0o700 });
+  t.after(() => cleanupRoot(root));
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    import { acquireLinuxRootWriterFence } from ${JSON.stringify(new URL("../dist/linux-root-writer-fence.js", import.meta.url).href)};
+    const fence = await acquireLinuxRootWriterFence(${JSON.stringify(root)});
+    await fence.release();
+    console.log("released");
+  `], { encoding: "utf8", timeout: 2500 });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), "released");
+});
+
+test("root publication refuses collisions and fails closed before an interrupted rename", {
+  skip: process.platform !== "linux", timeout: 10000,
+}, async t => {
+  const root = resolve(testsRoot, `.linux-root-fence-publish-failed-${randomUUID()}`);
+  const target = `${root}-collision`;
+  await initialize(root);
+  const storage = await Storage.open(root);
+  await storage.close();
+  await mkdir(target);
+  t.after(async () => { await cleanupRoot(root); await cleanupRoot(target); });
+  const markerPath = join(root, ".pkm-next-writer-fenced.json");
+  const before = await readFile(markerPath, "utf8");
+  const fence = await acquireLinuxRootWriterFence(root);
+  try {
+    await assert.rejects(fence.publishRootNoReplace(target, () => assert.fail("Must not publish")), /already exists/);
+    assert.equal(await readFile(markerPath, "utf8"), before);
+    await rmdir(target);
+    await assert.rejects(fence.publishRootNoReplace(target, () => { throw new Error("Interrupted publication"); }),
+      /Interrupted publication/);
+    await assert.rejects(access(target), { code: "ENOENT" });
+  } finally { await fence.release(); }
+  await assert.rejects(Storage.open(root), /writer-fence marker does not match/);
 });
 
 test("synchronous legacy fence release ends authorization and frees the lock", {

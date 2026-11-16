@@ -1,7 +1,17 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import ts from "typescript";
-import { packageRoot, hash } from "./migration.mjs";
+import { packageRoot, hash, readOriginalSource } from "./migration.mjs";
+
+const args = process.argv.slice(2);
+if (args.length && (args.length !== 1 || args[0] !== "--check")) throw new Error("Usage: node scripts/capture-trash-lifecycle.mjs [--check]");
+const originalMetadata = JSON.parse(await readFile(resolve(packageRoot, "migration/trash-lifecycle-provenance.json"), "utf8"));
+async function emit(path, content) {
+  const full = resolve(packageRoot, path);
+  if (args[0] === "--check") {
+    if (await readFile(full, "utf8") !== content) throw new Error(`Trash lifecycle capture is stale: ${path}`);
+  } else await writeFile(full, content);
+}
 
 const sources = [
   ["src/knowledge/filestore.ts", [
@@ -16,7 +26,10 @@ const sources = [
 ];
 const captures = {}, records = [];
 for (const [source, names] of sources) {
-  const raw = await readFile(resolve(packageRoot, "..", source), "utf8");
+  const raw = (await readOriginalSource(source, {
+    sha256: originalMetadata.files.find(record => record.source === source)?.sourceSha256,
+    dataset: "knowledge-trash-lifecycle-historical",
+  })).toString("utf8");
   const ast = ts.createSourceFile(source, raw, ts.ScriptTarget.Latest, true);
   const declarations = {};
   for (const name of names) {
@@ -30,8 +43,8 @@ for (const [source, names] of sources) {
 }
 const captured = "src/domain/trash-lifecycle-original.ts";
 const content = `// Evidence only. Original mutating lifecycle declarations are never executed.\nexport const trashLifecycleOriginalRules = ${JSON.stringify(captures, null, 2)} as const;\n`;
-await writeFile(resolve(packageRoot, captured), content);
-await writeFile(resolve(packageRoot, "migration/trash-lifecycle-provenance.json"), JSON.stringify({
+await emit(captured, content);
+await emit("migration/trash-lifecycle-provenance.json", JSON.stringify({
   schema: "pkm.domain-capture/v1",
   transformation: "Unmodified AST declaration evidence for original paired document/folder/skill trash, original-location restore, outside resource guards and knowledge sync deletion records.",
   files: records.map(r => ({ ...r, captured, capturedSha256: hash(content) })),

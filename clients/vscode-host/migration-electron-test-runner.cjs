@@ -9,7 +9,7 @@ exports.run = async () => {
   const fixture = JSON.parse(process.env.PKM_MANAGED_MIGRATION_FIXTURE);
   delete process.env.PKM_MANAGED_MIGRATION_FIXTURE;
   const { publishIsolatedManagedGeneration } = await import(pathToFileURL(fixture.module).href);
-  const extension = vscode.extensions.getExtension("pkm-nonproduction.pkm-next-nonproduction-host");
+  const extension = vscode.extensions.getExtension("pkm-nonproduction.pkm-v5");
   assert(extension, "Nonproduction extension must be loaded");
   const config = vscode.workspace.getConfiguration("pkm.nextHost");
   const before = config.inspect("managedRoot")?.globalValue;

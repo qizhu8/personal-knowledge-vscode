@@ -13,7 +13,7 @@ import { subscriptionPriority } from "../dist/domain/subscription-reads-record.j
 import { createWorkspaceBackup, restoreWorkspaceBackup } from "../dist/workspace-backup.js";
 import { nativeRestoreAuthority } from "./host-composition-legacy-batch16-restore-fixture.mjs";
 
-const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "..");
+const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "legacy");
 const source = await readFile(join(repository, "src/subscriptions/subscriptions.ts"), "utf8");
 const ast = ts.createSourceFile("subscriptions.ts", source, ts.ScriptTarget.Latest, true);
 const methods = [];

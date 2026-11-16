@@ -286,8 +286,12 @@ test("repeatable captured originals pass actual migration hash checker", async (
   assert.equal(await readFile(metadataPath, "utf8"), before);
   const metadata = JSON.parse(before);
   assert(metadata.files.length >= 10);
-  assert.deepEqual(await checkCaptureRecords(metadata.files), []);
+  assert.deepEqual(await checkCaptureRecords(metadata.files, undefined, undefined, {
+    dataset: "runtime-workflow-compiler-historical",
+  }), []);
   const changed = structuredClone(metadata.files);
   changed[0].capturedSha256 = "0".repeat(64);
-  assert.equal((await checkCaptureRecords(changed))[0].kind, "captured");
+  assert.equal((await checkCaptureRecords(changed, undefined, undefined, {
+    dataset: "runtime-workflow-compiler-historical",
+  }))[0].kind, "captured");
 });

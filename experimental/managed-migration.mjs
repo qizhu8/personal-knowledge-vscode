@@ -55,14 +55,14 @@ async function inventory(root, directory = root) {
 }
 
 export async function planIsolatedPythonDependencies({
-  repositoryRoot = resolve(experimentalRoot(), "../.."), python = "python3", modelDependencies = false,
+  repositoryRoot = resolve(experimentalRoot(), ".."), python = "python3", modelDependencies = false,
   maxPythonDependencyBytes = 512 * 1024 * 1024,
 } = {}) {
   isolatedPath(repositoryRoot);
   if (typeof modelDependencies !== "boolean" || !Number.isSafeInteger(maxPythonDependencyBytes) || maxPythonDependencyBytes < 1)
     throw new Error("Explicit model dependency profile and positive safe byte budget required");
   const args = ["-I", "-B", join(experimentalRoot(), "python-dependencies.py"),
-    ...(modelDependencies ? ["--model-requirements", join(repositoryRoot, "resources", "retrieval-model-requirements.txt")] : [])];
+    ...(modelDependencies ? ["--model-requirements", join(repositoryRoot, "legacy", "resources", "retrieval-model-requirements.txt")] : [])];
   const { stdout } = await execute(python, args, { maxBuffer: 64 * 1024 * 1024, timeout: 120_000 });
   const plan = JSON.parse(stdout);
   if (plan.totalBytes > maxPythonDependencyBytes)
@@ -124,7 +124,7 @@ async function assertOwnedRoot(root, create = false) {
 
 /** Snapshot all JavaScript, Python and adapter dependencies; never publish partial staging. */
 export async function stageIsolatedManagedGeneration({
-  managedRoot, data, repositoryRoot = resolve(experimentalRoot(), "../.."), python = "python3", node = process.execPath, allowWrites = false,
+  managedRoot, data, repositoryRoot = resolve(experimentalRoot(), ".."), python = "python3", node = process.execPath, allowWrites = false,
   modelDependencies = false, maxPythonDependencyBytes = 512 * 1024 * 1024,
   snapshotScheduler,
 }) {
@@ -149,7 +149,7 @@ export async function stageIsolatedManagedGeneration({
       throw new Error("Snapshot scheduler requires an exact existing workspace enrollment and explicit write authority");
     snapshotScheduler = Object.freeze({ ...snapshotScheduler });
     const { inspectLegacyKnowledgeSnapshotSchedulerEnrollment } = await import(pathToFileURL(
-      join(repositoryRoot, "next-server", "dist", "legacy-knowledge-snapshots.js")).href);
+      join(repositoryRoot, "dist", "legacy-knowledge-snapshots.js")).href);
     const database = new DatabaseSync(join(data, "core.sqlite"), { readOnly: true });
     try {
       const current = inspectLegacyKnowledgeSnapshotSchedulerEnrollment(database, data, snapshotScheduler.admissionSha256);
@@ -167,7 +167,7 @@ export async function stageIsolatedManagedGeneration({
   const generation = randomUUID(), target = join(managedRoot, "generations", generation);
   await fs.mkdir(target, { recursive: true });
   try {
-    const packageRoot = join(repositoryRoot, "next-server");
+    const packageRoot = repositoryRoot;
     const captured = new Map();
     const externalCaptured = new Map();
     for (const name of ["dist", "compat", "compute", "domain", "browser", "node_modules"])
@@ -175,7 +175,8 @@ export async function stageIsolatedManagedGeneration({
     const packageManifest = join(packageRoot, "package.json"), packageBytes = await fs.readFile(packageManifest);
     await fs.writeFile(join(target, "runtime", "next-server", "package.json"), packageBytes, { flag: "wx" });
     externalCaptured.set(packageManifest, hash(packageBytes));
-    await copyTree(join(repositoryRoot, "resources"), join(target, "runtime", "resources"), captured);
+    await copyTree(join(repositoryRoot, "legacy", "resources"),
+      join(target, "runtime", "next-server", "legacy", "resources"), captured);
     for (const [name, source] of Object.entries(dependencies.files)) {
       const destination = join(target, "runtime", "site-packages", name);
       if (name.includes("\\") || !contains(join(target, "runtime", "site-packages"), destination))
@@ -226,7 +227,7 @@ export async function stageIsolatedManagedGeneration({
         throw new Error("Existing isolated launcher differs; explicit migration required");
     }
     await verifyIsolatedManagedGeneration(managedRoot, generation);
-    let verified = await verifySourceTree(join(repositoryRoot, "resources"), captured);
+    let verified = await verifySourceTree(join(repositoryRoot, "legacy", "resources"), captured);
     for (const name of ["dist", "compat", "compute", "domain", "browser", "node_modules"])
       verified += await verifySourceTree(join(packageRoot, name), captured);
     if (verified !== captured.size) throw new Error("Runtime source entries changed while staging; rebuild and stage again");

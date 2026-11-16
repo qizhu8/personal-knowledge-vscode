@@ -384,16 +384,19 @@ test("unsupported controls and oversized outputs fail closed, deadline prevents 
 });
 
 test("source capture records real original source and regression roots, exact hashes and limited qualification", async () => {
-  const server = resolve(import.meta.dirname, ".."), root = resolve(server, "..");
+  const { checkNativeRecords, readOriginalSource } = await import("../scripts/migration.mjs");
+  const server = resolve(import.meta.dirname, ".."), root = resolve(server, "legacy");
   const provenance = JSON.parse(await readFile(resolve(server, "migration/workflow-executor-provenance.json"), "utf8"));
   const hash = value => createHash("sha256").update(value).digest("hex");
   assert.equal(provenance.qualification, "bounded-native-injected-executor-not-full-scheduler-parity");
   for (const file of provenance.files) {
-    assert.equal(hash(await readFile(resolve(root, file.source))), file.sourceSha256);
+    assert.equal(hash(await readOriginalSource(file.source, {
+      sha256: file.sourceSha256, dataset: "runtime-workflow-executor-historical",
+    })), file.sourceSha256);
     assert.equal(hash(await readFile(resolve(server, file.captured))), file.capturedSha256);
   }
   for (const file of provenance.dependencies) assert.equal(hash(await readFile(resolve(root, file.source))), file.sourceSha256);
-  for (const file of provenance.native) assert.equal(hash(await readFile(resolve(server, file.file))), file.sha256);
+  assert.deepEqual(await checkNativeRecords(provenance.native), []);
   const capture = spawnSync(process.execPath, ["scripts/capture-workflow-executor.mjs", "--check"], {
     cwd: server, encoding: "utf8",
   });

@@ -70,7 +70,7 @@ def verify(root, generation):
             if actual.get("runtime/site-packages/" + name) != expected:
                 fail("Python distribution content mismatch")
     if dependencies["profile"] == "local-model" and dependencies["requirementsSha256"] != file_digest(
-            directory / "runtime" / "resources" / "retrieval-model-requirements.txt"):
+            directory / "runtime" / "next-server" / "legacy" / "resources" / "retrieval-model-requirements.txt"):
         fail("Declared model requirements mismatch")
     if hashlib.sha256((root / "launch.py").read_bytes()).hexdigest() != manifest["launcherSha256"]:
         fail("launcher integrity mismatch")

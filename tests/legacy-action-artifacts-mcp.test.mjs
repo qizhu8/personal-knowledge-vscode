@@ -10,7 +10,7 @@ import { initialize, Storage } from "../dist/storage.js";
 import { admitLegacyActionArtifactPath } from "../dist/legacy-action-artifacts.js";
 import { legacyManagedFixture, closeLegacyManagedFixture } from "./legacy-managed-fixture.mjs";
 
-const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "..");
+const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "legacy");
 const actor = { id: "mcp:external", canWrite: true };
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
 function contracts() {

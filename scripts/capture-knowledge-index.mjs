@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const root = fileURLToPath(new URL("../legacy/", import.meta.url));
+const root = fileURLToPath(new URL("../", import.meta.url));
 const args = process.argv.slice(2);
 if (args.length && (args.length !== 1 || args[0] !== "--check")) {
   throw new Error("Usage: node next-server/scripts/capture-knowledge-index.mjs [--check]");
@@ -29,10 +30,25 @@ const sourceHistory = [{
   supersededIn: "Batch18",
   reason: "This native worker was extended for paired engine backup and restore; the captured hash is an archival Batch18 value, not a claim about the current file. Current bytes are recorded by the active capture and separately pinned as native implementation.",
 }];
+const { sourceCommit } = JSON.parse(await readFile(join(root, "migration/compute-provenance.json"), "utf8"));
+async function sourceBytes(source) {
+  // The frozen runtime snapshot contains a later retrieval implementation.
+  // This bridge used the original revision still preserved with the compute capture.
+  if (source === "src/retrieval/retrieval-snapshot.ts") {
+    try {
+      return execFileSync("git", ["show", `${sourceCommit}:${source}`], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+    } catch (cause) {
+      throw new Error(`Required original knowledge-index source unavailable: ${sourceCommit}:${source}; SHA-256 d0963b3f32c6c1e339035a66382bfb06d931ac128f0ccc2bfc3d57c7485b72f1`, { cause });
+    }
+  }
+  return readFile(source.startsWith("next-server/")
+    ? join(root, source.slice("next-server/".length))
+    : join(root, "legacy", source));
+}
 const files = await Promise.all(mappings.map(async ([source, captured]) => ({
   source, captured,
-  sourceSha256: hash(await readFile(join(root, source))),
-  capturedSha256: hash(await readFile(join(root, "next-server", captured))),
+  sourceSha256: hash(await sourceBytes(source)),
+  capturedSha256: hash(await readFile(join(root, captured))),
 })));
 const manifest = {
   schema: "pkm.next.knowledge-index-provenance/v1",
@@ -46,7 +62,7 @@ const manifest = {
   sourceHistory,
 };
 const text = `${JSON.stringify(manifest, null, 2)}\n`;
-const path = join(root, "next-server/migration/knowledge-index-provenance.json");
+const path = join(root, "migration/knowledge-index-provenance.json");
 if (args[0] === "--check") {
   if (await readFile(path, "utf8") !== text) throw new Error("Knowledge index provenance drift; review and deliberately recapture.");
 } else {

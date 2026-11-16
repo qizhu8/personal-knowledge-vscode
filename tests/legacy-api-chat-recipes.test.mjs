@@ -58,7 +58,11 @@ test("strict HTTP Recipe routes bind actual native execution to the exact projec
     } finally { fs.rmSync(prepared.base, { recursive: true, force: true }); }
   });
   const fixture = require("../legacy/tests/next-trial-electron/api-chat-fixture.cjs");
-  const descriptor = fixture.create({ extension: path.resolve("."), root: prepared.root });
+  const mask = process.umask(0o077);
+  let descriptor;
+  try {
+    descriptor = fixture.create({ extension: process.env.PKM_TEST_LEGACY_RECIPE_EXTENSION, root: prepared.root });
+  } finally { process.umask(mask); }
   fs.mkdirSync(path.join(prepared.root, "notes"), { mode: 0o700 });
   fs.writeFileSync(path.join(prepared.root, "notes/Existing.md"), "---\ntitle: Existing\nrevision: 1\n---\nPrivate projected HTTP fixture.\n", { mode: 0o600 });
   // This current-format projection deliberately does not claim original ProjectStore same-root adoption.

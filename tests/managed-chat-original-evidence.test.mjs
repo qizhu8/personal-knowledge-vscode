@@ -13,7 +13,7 @@ import { createLegacyManagedChatLocalModel } from "../dist/legacy-api-chat-manag
 import { startManagedClientSnapshotChat } from "../dist/managed-client-snapshot-chat.js";
 
 const require = createRequire(import.meta.url);
-const originalExtension = process.env.PKM_TEST_LEGACY_CHAT_EXTENSION ?? resolve("..");
+const originalExtension = process.env.PKM_TEST_LEGACY_CHAT_EXTENSION ?? resolve(import.meta.dirname, "../legacy");
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(read) {
   for (let n = 0; n < 300; n++) {

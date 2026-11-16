@@ -35,6 +35,11 @@ export function registerFirstRunImport(context: vscode.ExtensionContext, output:
   let busy = false;
   let disposed = false;
   const helper = join(context.extensionPath, "dist", "migration", "src", "import-helper.js");
+  const advisory = (notification: Thenable<unknown>) => {
+    void notification.then(undefined, error => {
+      console.error("pkm-v5 first-run advisory notification failed:", error);
+    });
+  };
   const pick = async (title: string, folders: boolean) => {
     const values = await vscode.window.showOpenDialog({
       title, canSelectFiles: !folders, canSelectFolders: folders, canSelectMany: false,
@@ -46,7 +51,7 @@ export function registerFirstRunImport(context: vscode.ExtensionContext, output:
   };
   const guarded = (operation: () => Promise<void>) => async () => {
     if (disposed) return;
-    if (busy) { await vscode.window.showWarningMessage("A migration operation is already running."); return; }
+    if (busy) { advisory(vscode.window.showWarningMessage("A migration operation is already running.")); return; }
     busy = true;
     try { await operation(); }
     catch (error) {
@@ -54,7 +59,7 @@ export function registerFirstRunImport(context: vscode.ExtensionContext, output:
       const message = error instanceof Error ? error.message : "Migration failed";
       output.appendLine(message);
       output.show();
-      await vscode.window.showErrorMessage(`PKM Next import: ${message}`);
+      advisory(vscode.window.showErrorMessage(`pkm-v5 import: ${message}`));
     } finally { busy = false; }
   };
   return [
@@ -84,16 +89,16 @@ export function registerFirstRunImport(context: vscode.ExtensionContext, output:
       output.appendLine(JSON.stringify(inspection, null, 2));
       output.show();
       if (!inspection.plan.ready || inspection.blockers.length) {
-        await vscode.window.showWarningMessage("Import blocked. Review exact diagnostics in PKM Next Experimental output. Preserve the copy, resolve blockers with the appropriate native authority, then preview again. No approval was retained.");
+        advisory(vscode.window.showWarningMessage("Import blocked. Review exact diagnostics in pkm-v5 Experimental output. Preserve the copy, resolve blockers with the appropriate native authority, then preview again. No approval was retained."));
         return;
       }
       pending = { node, inspection };
-      await vscode.window.showInformationMessage("Review the read-only plan in PKM Next Experimental output, then run “PKM Next (Experimental): Confirm Inspected Import”. Nothing has been imported.");
+      advisory(vscode.window.showInformationMessage("Review the read-only plan in pkm-v5 Experimental output, then run “pkm-v5 (Experimental): Confirm Inspected Import”. Nothing has been imported."));
     })),
     vscode.commands.registerCommand("pkm.nextHost.importConfirm", guarded(async () => {
       const approved = pending;
       pending = undefined;
-      if (!approved) { await vscode.window.showWarningMessage("No ready inspected plan. Run Preview First-Run Import first."); return; }
+      if (!approved) { advisory(vscode.window.showWarningMessage("No ready inspected plan. Run Preview First-Run Import first.")); return; }
       const { inspection, node } = approved;
       const confirm = "Import exact inspected plan";
       if (await vscode.window.showWarningMessage(
@@ -102,7 +107,7 @@ export function registerFirstRunImport(context: vscode.ExtensionContext, output:
       const result = await runHelper(node, helper, { action: "import", inspection });
       output.appendLine(JSON.stringify(result, null, 2));
       output.show();
-      await vscode.window.showInformationMessage("Isolated import published. No service was connected or switched. This is not full migration or cutover qualification.");
+      advisory(vscode.window.showInformationMessage("Isolated import published. No service was connected or switched. This is not full migration or cutover qualification."));
     })),
     { dispose() { disposed = true; pending = undefined; } },
   ];

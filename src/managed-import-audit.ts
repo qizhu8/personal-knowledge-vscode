@@ -9,6 +9,7 @@ import { verifyImportedProjectEnvelope, type LegacyProjectEnvelopePlan } from ".
 import { DatabaseSync } from "node:sqlite";
 import { readLegacyMemoryImportReceipt } from "./memory-import.js";
 import { openMemoryContinuitySnapshot, readMemoryScopeContinuity } from "./memory-scope-continuity.js";
+import { assertLinuxRootOwnerMarker } from "./linux-root-writer-fence.js";
 
 type Entry = { kind: "file" | "directory"; identity: string; mode: number; size?: number; sha256?: string; mtimeNs: string };
 type Inventory = { rootPin: string; entries: Map<string, Entry> };
@@ -185,6 +186,10 @@ export async function auditImportedWorkspace(root: string, approvedPlan: LegacyI
     }
   }
   const generated = new Set([".pkm-next-workspace", "core.sqlite", "core.sqlite-wal", "core.sqlite-shm"]);
+  if (process.platform === "linux" && initial.entries.has(".pkm-next-writer-fenced.json")) {
+    await assertLinuxRootOwnerMarker(root);
+    generated.add(".pkm-next-writer-fenced.json");
+  }
   for (const [path, entry] of initial.entries) {
     if (entry.kind === "directory" && /^(prompts|scripts|legacy-code-archive)(\/|$)/.test(path)
       && !mappedLibraryDirectories.has(path))

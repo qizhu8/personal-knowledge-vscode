@@ -14,9 +14,11 @@ import { LegacyChatroomRuntime, createLegacyChatroomClient } from "../dist/legac
 import { consumeLegacyChatroomHostGrant, createLegacyChatroomHostAuthority } from "../dist/legacy-chatroom-host-authority.js";
 import { inspectLegacyChatroomArchive, inspectLegacyChatroomParticipants } from "../dist/legacy-chatroom-continuation.js";
 import { adoptLegacyRootInPlaceExperimental } from "../dist/legacy-root-adoption.js";
+import { stageRetainedChatRuntime } from "./legacy-api-chat-upgrade-fixtures.mjs";
 const require = createRequire(import.meta.url);
 const fixture = require("../legacy/tests/next-trial-electron/chatroom-live-fixture.cjs");
 const project = resolve(new URL("../legacy", import.meta.url).pathname);
+const retainedRequire = createRequire(join(project, "package.json"));
 const sha = file => createHash("sha256").update(readFileSync(file)).digest("hex");
 async function until(check, label) {
   const deadline = Date.now() + 10_000;
@@ -166,7 +168,7 @@ test("legacy credential and actor authority preserve host identity and fence cli
   await until(() => received.has(transfer.file.fileId), "legacy-sized file transfer");
   assert.deepEqual(received.get(transfer.file.fileId), file);
   const spoof = async (alias, includeRoomId, cid = "fixture-host-id", expected = "host-proof-required", resumeCredential) => {
-    const ws = new (require("ws"))(opened.url);
+    const ws = new (retainedRequire("ws"))(opened.url);
     await once(ws, "open");
     const reply = new Promise((resolve, reject) => {
       ws.on("message", data => {
@@ -309,7 +311,7 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
   }
   const host = await connect("Native Host"), peer = await connect("Native Peer", "agent");
   async function rejectHostImpersonation(alias) {
-    const ws = new (require("ws"))(opened.url);
+    const ws = new (retainedRequire("ws"))(opened.url);
     await once(ws, "open");
     const rejected = new Promise((resolve, reject) => {
       ws.on("message", data => {
@@ -439,8 +441,9 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
   assert.equal(sha(db), original);
   assert.deepEqual(surfacesOf(), surfaces);
   let shared = await server(false, false);
+  const journeyRuntime = stageRetainedChatRuntime(directory);
   const result = await require("../legacy/tests/next-trial-electron/chatroom-live-journey.cjs").run({
-    fixture: directory, root, extension: project, runtime: join(project, "../"), identitySuffix: "-journey",
+    fixture: directory, root, ...journeyRuntime, identitySuffix: "-journey",
     call: async (name, args) => {
       const response = await shared.client.callTool({ name, arguments: args });
       assert(!response.isError, JSON.stringify(response));

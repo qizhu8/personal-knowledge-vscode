@@ -1,6 +1,6 @@
 export const ACTION_RUNTIME_ORIGINAL_PROVENANCE = Object.freeze({
   schema: "pkm.action-runtime.original-provenance/v1",
-  sourceRoot: "..",
+  sourceRoot: "legacy",
   capturedRoot: ".",
   records: [
     {

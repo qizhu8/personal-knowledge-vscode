@@ -1,5 +1,5 @@
 {
-  "name": "@pkm/next-server",
+  "name": "pkm-v5",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -12,11 +12,19 @@
     "test:framework": "node tests/framework/run.cjs --suite framework",
     "build": "tsc -p tsconfig.json",
     "build:compat": "npm --prefix legacy run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit && npm run typecheck:client && npm run typecheck:host",
     "typecheck:client": "tsc -p clients/vscode/tsconfig.json",
+    "typecheck:host": "tsc -p clients/vscode-host/tsconfig.json",
     "test:smoke": "node --experimental-transform-types --test --test-concurrency=2 tests/markdown.test.mjs tests/linux-root-writer-fence.test.mjs tests/client-manager-workflow.test.mjs",
     "test:qualification": "node scripts/verify.mjs",
     "progress": "node scripts/migration.mjs progress",
-    "migration:inventory": "node scripts/migration.mjs inventory"
+    "migration:inventory": "node scripts/migration.mjs inventory",
+    "test:inventory": "node tests/framework/run.cjs --inventory --json",
+    "test:check": "node tests/framework/run.cjs --profile audit",
+    "test:quick": "node tests/framework/run.cjs --profile quick",
+    "test:ci": "node tests/framework/run.cjs --profile ci",
+    "test:all": "node tests/framework/run.cjs --profile regression",
+    "test:browser": "node tests/framework/run.cjs --profile browser"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",

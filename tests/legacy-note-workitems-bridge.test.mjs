@@ -1,17 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { initialize, Storage } from "../dist/storage.js";
 import { Core } from "../dist/core.js";
 import { createNativeLegacyNoteWorkItemsHost, legacyNoteWorkItemsDefinitions, legacyNoteWorkItemsSupport } from "../dist/legacy-note-workitems.js";
 import { serializeTodoBoard } from "../dist/domain/todo-board.js";
 import { todoDefinitions } from "../dist/todo-definitions.js";
+import { createNativeRuntime } from "../dist/native-runtime.js";
+import { createWorkspaceBackup, restoreWorkspaceBackup } from "../dist/workspace-backup.js";
+import { nativeRestoreAuthority } from "./host-composition-legacy-batch16-restore-fixture.mjs";
+import { originalKnowledgeBridge, projectOriginalSource } from "./legacy-project-original-captures.mjs";
 
-const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../legacy");
 const actor = { id: "mcp:external", canWrite: true, collaborationKind: "agent" };
 const item = { id: "a", title: "Verify", goal: "Observe", scope: "API", acceptance: ["Checked"], state: "Planning", evidence: [] };
 const md = `---\r\ntitle: Source Note\r\nunknown:\r\n  keep: "yes"\r\n---\r\n# Original\r\n\r\n~~~pkm-work-item\r\n${JSON.stringify(item)}\r\n~~~\r\n`;
@@ -34,20 +36,17 @@ async function setup(t) {
     return { storage, core, host: createNativeLegacyNoteWorkItemsHost(storage, policy) };
   }
   function original(operation, path, extra = {}, source = root) {
-    const result = spawnSync(process.execPath, [join(repo, "resources/knowledge_mutations.js"), repo, source],
-      { input: JSON.stringify({ operation, area: "notes", path, ...extra }), encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
-    assert.equal(result.status, 0, result.stderr);
-    return JSON.parse(result.stdout);
+    return originalKnowledgeBridge(source, { operation, area: "notes", path, ...extra });
   }
   return { root, parent, open, original };
 }
 test("frozen original bridge sources and strict catalog", async () => {
   const provenance = JSON.parse(await readFile(new URL("../src/domain/legacy-note-workitems-provenance.json", import.meta.url), "utf8"));
   for (const [path, hash] of Object.entries(provenance.sha256)) {
-    assert.equal(createHash("sha256").update(await readFile(join(repo, path))).digest("hex"), hash, path);
+    assert.equal(createHash("sha256").update(projectOriginalSource(path, hash)).digest("hex"), hash, path);
   }
   for (const [path, hash] of Object.entries(provenance.implementationSha256)) {
-    assert.equal(createHash("sha256").update(await readFile(join(repo, "next-server", path))).digest("hex"), hash, path);
+    assert.equal(createHash("sha256").update(projectOriginalSource(`next-server/${path}`, hash)).digest("hex"), hash, path);
   }
   assert.equal(legacyNoteWorkItemsDefinitions.length, 4);
   assert.match(legacyNoteWorkItemsSupport.command, /conditional/);
@@ -64,8 +63,14 @@ test("original JS bridge and native host agree on actual Markdown and attached B
   }
   assert.equal(await readFile(join(root, "notes", "Note.md"), "utf8"), md);
   assert.equal(await readFile(join(root, "notes", "Board.assets", "pkm-todo-board.json"), "utf8"), board);
-  const expected = original("work-item-notes", "_discovery.md", { query: "", limit: 20 });
-  assert.deepEqual(await host.dispatch(names.notes, {}, actor), expected);
+  for (const args of [{}, { limit: 1 }]) {
+    const limit = args.limit ?? 20;
+    const expected = original("work-item-notes", "_discovery.md", { query: "", limit });
+    // Historical discovery has no cursor; the native contract adds this field.
+    assert.deepEqual(await host.dispatch(names.notes, args, actor), {
+      ...expected, next_offset: expected.truncated ? limit : null,
+    });
+  }
 });
 test("original and native readers accept Note Markdown and Board files beyond former byte ceilings", async t => {
   const { open, original, root } = await setup(t);
@@ -127,16 +132,23 @@ test("original worker claim and native Board authority diverge; unsupported writ
   assert.equal((await native("add_workitem", addArgs, { ...actor, id: "external:other:other" })).error.code, "CONFLICT");
   assert.deepEqual(await host.dispatch(names.read, { slug: "Board" }, actor), before, "native Board with same slug is not original attached-Board authority");
 });
-test("policy denial, restart and copied isolated workspace preserve exact read results", async t => {
+test("policy denial, restart, copied-root rejection and authorized relocated backup preserve exact read results", async t => {
   const { open, root, parent } = await setup(t);
   const first = await open();
   const expected = await first.host.dispatch(names.read, { slug: "Board" }, actor);
   await first.storage.close();
   const restarted = await open();
   assert.deepEqual(await restarted.host.dispatch(names.read, { slug: "Board" }, actor), expected);
-  await restarted.storage.close();
-  const backup = join(parent, "backup"); await cp(root, backup, { recursive: true });
-  const copied = await open(backup, { authorize: who => who.id === actor.id });
+  const backup = join(parent, "backup");
+  const runtime = await createNativeRuntime({ storage: restarted.storage });
+  try { await createWorkspaceBackup(restarted.storage, backup, { acquireQuiescence: runtime.acquireWorkspaceQuiescence }); }
+  finally { await runtime.close(); await restarted.storage.close(); }
+  const rawCopy = join(parent, "raw-copy");
+  await cp(root, rawCopy, { recursive: true });
+  await assert.rejects(Storage.open(rawCopy), { code: "RECOVERY_REQUIRED" });
+  const restored = join(parent, "restored");
+  await restoreWorkspaceBackup(backup, restored, { nativeRestoreAuthority });
+  const copied = await open(restored, { authorize: who => who.id === actor.id });
   assert.deepEqual(await copied.host.dispatch(names.read, { slug: "Board" }, actor), expected);
   await assert.rejects(copied.host.dispatch(names.read, { slug: "Board" }, { ...actor, id: "external:other:denied" }), { code: "ACCESS_DENIED" });
 });

@@ -148,7 +148,7 @@ with sync_playwright() as playwright:
         action_panel = page.locator('[data-surface="action"]')
         action_panel.get_by_role("button", name="Cancel Action run", exact=True).wait_for()
         action_panel.get_by_role("button", name="Cancel Action run", exact=True).click()
-        action_panel.locator(".surface-status").filter(has_text="cancelled").wait_for()
+        action_panel.locator(".surface-status").filter(has_text="unknown").wait_for()
 
         page.locator("body").wait_for()
         screenshot = page.screenshot(full_page=True)

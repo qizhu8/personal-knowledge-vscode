@@ -49,7 +49,7 @@ function projection(response) {
   scrub(result); return result;
 }
 test("actual original Universal Unknown Task report workflow matches real SDK MCP/HTTP, results/errors/usage/receipt replay; external caller performs its own real work", { skip, timeout: 90000 }, async t => {
-  const fixture = setup(t), oracle = spawnSync("python3", ["-B", "tests/next-trial-electron/legacy-external-report-oracle.py",
+  const fixture = setup(t), oracle = spawnSync("python3", ["-B", path.resolve(import.meta.dirname, "../legacy/tests/next-trial-electron/legacy-external-report-oracle.py"),
     process.env.PKM_TEST_LEGACY_RECIPE_EXTENSION, fixture.prepared.fixture], { encoding: "utf8", timeout: 30000 });
   assert.equal(oracle.status, 0, oracle.stderr + oracle.stdout);
   const old = JSON.parse(oracle.stdout), env = await fixture.open();

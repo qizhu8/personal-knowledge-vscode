@@ -13,12 +13,12 @@ import { deriveSystemId, safeProjectDirectoryName } from "../dist/domain/project
 import { projectSystemEntityIssue } from "../dist/domain/project-recipes.js";
 import { readProjectRecipes } from "../dist/project-recipes.js";
 import { capturedDeclarations as modelDeclarations } from "../dist/domain/project-mutations-original-project-model.js";
+import { projectOriginalSource, readProjectOriginal } from "./legacy-project-original-captures.mjs";
 
 const ROOT = join(import.meta.dirname, ".legacy-project-thread-parity");
 const rootId = "root_project_thread_parity";
 const workspaceId = "12345678-1234-4234-8234-123456789012";
 const operationId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
-const sourceRoot = join(import.meta.dirname, "../legacy/src/workflows");
 let fixtureCounter = 0;
 const sha256 = value => createHash("sha256").update(value).digest("hex");
 afterEach(() => rmSync(ROOT, { recursive: true, force: true }));
@@ -182,13 +182,17 @@ function plan(root, operation, args, runOracle, controlValue = control()) {
 
 test("captured Project/Thread declarations and source pins match authoritative source files", () => {
   for (const source of Object.values(capturedSources)) {
-    const file = readFileSync(join(sourceRoot, source.path.split("/").at(-1)));
+    const file = projectOriginalSource(source.path, source.sha256);
     assert.equal(sha256(file), source.sha256, `${source.path} source hash`);
   }
-  const modelSource = readFileSync(join(sourceRoot, "project-model.ts"), "utf8");
-  const storeSource = readFileSync(join(sourceRoot, "project-store.ts"), "utf8");
-  const filesystemSource = readFileSync(join(sourceRoot, "project-filesystem-store.ts"), "utf8");
-  const workflowSource = readFileSync(join(sourceRoot, "workflow-contracts.ts"), "utf8");
+  const modelSource = projectOriginalSource("src/workflows/project-model.ts");
+  const storeSource = projectOriginalSource("src/workflows/project-store.ts");
+  const filesystemSource = projectOriginalSource("src/workflows/project-filesystem-store.ts");
+  const workflowSource = projectOriginalSource("src/workflows/workflow-contracts.ts");
+  for (const name of ["deriveSystemId", "createProject"]) {
+    const declaration = modelDeclarations.find(item => item.startsWith(`export function ${name}(`));
+    assert.ok(declaration && modelSource.includes(declaration), `model capture ${name}`);
+  }
   for (const key of [
     "threadMovePlan", "createThread", "renameThread", "moveThread",
     "validateThreadChatrooms", "validateGanttTasks",
@@ -203,6 +207,21 @@ test("captured Project/Thread declarations and source pins match authoritative s
   }
   assert.ok(filesystemSource.includes(capturedDeclarations.canonicalSerialization));
   assert.ok(workflowSource.includes("export function canonicalJson(value: unknown): string"));
+});
+
+test("historical originals reject unknown paths, roles, pins, missing evidence and archive tampering", async () => {
+  const path = "src/workflows/project-model.ts";
+  await assert.rejects(readProjectOriginal("../src/workflows/project-model.ts"), /path\/role\/digest binding/);
+  await assert.rejects(readProjectOriginal(path, { kind: "captured" }), /path\/role\/digest binding/);
+  await assert.rejects(readProjectOriginal(path, { sha256: "0".repeat(64) }), /path\/role\/digest binding/);
+  const root = join(ROOT, "authentication");
+  mkdirSync(join(root, "migration/evidence"), { recursive: true });
+  await assert.rejects(readProjectOriginal(path, { root }), { code: "ENOENT" });
+  const archive = "migration/evidence/project-authentication-originals.zip";
+  const bytes = readFileSync(join(import.meta.dirname, "..", archive));
+  bytes[bytes.length - 1] ^= 1;
+  writeFileSync(join(root, archive), bytes);
+  await assert.rejects(readProjectOriginal(path, { root }), { evidenceReason: "archive-hash-changed" });
 });
 
 test("original ProjectStore createProject records exact IDs, compact bytes, store version, and recovers after restart", () => {

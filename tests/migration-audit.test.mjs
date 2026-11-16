@@ -92,6 +92,12 @@ test("isolated import reconciliation detects missing and changed data; post-writ
   assert(consistentResult.changes >= 3);
   assert.equal(JSON.parse((await run(audit, "verify-consistent", "--destination", consistent,
     "--manifest-sha256", consistentResult.manifestSha256, "--python", python, ack)).stdout).status, "verified");
+  if (process.platform === "linux") {
+    const manifest = JSON.parse(await readFile(join(consistent, "manifest.json"), "utf8"));
+    const marker = manifest.source.entries.find(entry => entry.path === ".pkm-next-writer-fenced.json");
+    assert.equal(marker.sha256, hash(await readFile(join(target, marker.path))));
+    await assert.rejects(readFile(join(consistent, "backup", marker.path)), { code: "ENOENT" });
+  }
   assert.deepEqual(await readFile(join(consistent, "backup/notes/Team/_assets/1111111111111111.png")), newAsset);
   assert.match(await readFile(join(consistent, "backup/notes/Team/Design.md"), "utf8"), /New write after baseline/);
   const count = execFileSync(python, ["-c",
@@ -158,6 +164,16 @@ test("isolated import reconciliation detects missing and changed data; post-writ
     assert.equal(report.sourceMatchesReceipt, false);
     return true;
   });
+  if (process.platform === "linux") {
+    const markerPath = join(target, ".pkm-next-writer-fenced.json"), markerBytes = await readFile(markerPath);
+    const invalidDelivery = join(parent, "invalid-fence-delivery");
+    await writeFile(markerPath, JSON.stringify({ ...JSON.parse(markerBytes.toString("utf8")), root: source }));
+    try {
+      await assert.rejects(run(audit, "deliver-consistent", "--root", target, "--baseline", baseline,
+        "--destination", invalidDelivery, "--python", python, ack), /writer-fence marker.*match/i);
+      await assert.rejects(readFile(join(invalidDelivery, "manifest.json")), { code: "ENOENT" });
+    } finally { await writeFile(markerPath, markerBytes); }
+  }
   await symlink(join(source, "notes"), join(target, "unsafe-link"));
   await assert.rejects(run(audit, "snapshot", "--root", target, ack), /symlink/i);
 });

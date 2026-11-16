@@ -47,9 +47,14 @@ async function fakeInterpreter(f, body) {
 const READY = `ready={"type":"ready","protocol":1,"adapter":"pkm-next-chat-compute/1","module":"pkm-memory-engine","policy":"pkm-memory-policy/1","schema":2,"identity":identity,"storage":"worker-owned-runtime-sqlite","explicit_memory":"node-markdown","capabilities":{"module":"pkm-memory-engine","policy":"pkm-memory-policy/1","protocol":1,"schema":2,"identity":identity}}
 print(json.dumps(ready),flush=True)`;
 
-test("captured Python package/provenance are byte-identical and reproducible", () => {
-  const result = execFileSync(process.execPath, [join(root, "scripts/capture-compute.mjs"), "--check"], { encoding: "utf8" });
+test("captured Python package/provenance are byte-identical and reproducible after relocation", async () => {
+  const manifest = join(root, "migration/compute-provenance.json");
+  const before = await readFile(manifest);
+  const result = execFileSync(process.execPath, [join(root, "scripts/capture-compute.mjs"), "--check"], {
+    encoding: "utf8", cwd: join(root, "tests"),
+  });
   assert.match(result, /4 byte-identical files/);
+  assert.deepEqual(await readFile(manifest), before);
 });
 
 test("persistent ready handshake, mutation, reads, bounded domain API and SQLite ownership", async t => {
@@ -111,17 +116,68 @@ test("policy model steps and turn receipts persist across process restart withou
   const receipt = await client.turnReceipt({ turn: "turn-1" });
   assert.equal(receipt.turn, "turn-1");
   assert.equal(receipt.calls.length, 1);
+  assert.partialDeepStrictEqual(receipt.accounting, {
+    schema: "pkm.memory.turn-accounting/v1", calls: 1, reportedCalls: 0, unreportedCalls: 1,
+    timedCalls: 0, untimedCalls: 1, pendingCalls: 1, failedCalls: 0, cancelledCalls: 0,
+    credits: { status: "not-reported", reportedCalls: 0, totalCalls: 1 },
+  });
+  assert.equal(receipt.accounting.reportedUsage, undefined);
+  assert.equal(receipt.accounting.observedDurationMs, undefined);
+  const usage = { inputTokens: 10, outputTokens: 5, reasoningTokens: 2, cachedInputTokens: 3, copilotNanoAiu: 123_456_789 };
+  const accounting = { schema: "pkm.memory.model-accounting/v1", modelId: "http:fixture-memory",
+    provider: "http", durationMs: 12, timeoutMs: 1000, maxOutputTokens: 400, thinkingBudget: 2048 };
   const continued = await client.continueTurn({ turn: "turn-1",
     output: JSON.stringify({ focus: ["new:1"], related: [],
-      new: [{ key: "new:1", label: "SQLite", parent: null }], reason: "Discuss SQLite" }) });
+      new: [{ key: "new:1", label: "SQLite", parent: null }], reason: "Discuss SQLite" }), usage, accounting });
   assert.equal(continued.status, "ready");
   const committed = await client.commitTurn({ turn: "turn-1",
     user: { id: "user-1", text: "Discuss SQLite" }, assistant: { id: "assistant-1", text: "Acknowledged" } });
   assert.equal(committed.status, "model");
   assert.equal(committed.request.purpose, "extract");
+  const pending = await client.turnReceipt({ turn: "turn-1" });
+  assert.equal(pending.accounting.pendingCalls, 1);
+  assert.deepEqual(pending.calls[0].usage, usage);
+  assert.deepEqual(pending.calls[0].accounting, accounting);
+  await client.close();
+  await client.reopen();
+  assert.deepEqual(await client.turnReceipt({ turn: "turn-1" }), pending);
   const extracted = await client.continueTurn({ turn: "turn-1", output: '{"statements":[]}' });
   assert.equal(extracted.status, "done");
-  assert.equal((await client.turnReceipt({ turn: "turn-1" })).phase, "done");
+  const done = await client.turnReceipt({ turn: "turn-1" });
+  assert.equal(done.phase, "done");
+  assert.partialDeepStrictEqual(done.accounting, {
+    schema: "pkm.memory.turn-accounting/v1", calls: 2, reportedCalls: 1, unreportedCalls: 1,
+    timedCalls: 1, untimedCalls: 1, pendingCalls: 0, failedCalls: 0, cancelledCalls: 0,
+    reportedUsage: { inputTokens: 10, outputTokens: 5, reasoningTokens: 2, cachedInputTokens: 3 },
+    observedDurationMs: 12,
+    credits: { source: "provider.copilot_usage.total_nano_aiu", status: "partial",
+      reportedCalls: 1, totalCalls: 2, totalNanoAiu: "123456789", credits: "0.123456789" },
+  });
+  await client.close();
+  await client.reopen();
+  assert.deepEqual(await client.turnReceipt({ turn: "turn-1" }), done);
+});
+
+test("real worker preserves failed and cancelled unreported accounting across restart", async t => {
+  const f = await fixture(t), client = await f.open();
+  for (const status of ["failed", "cancelled"]) {
+    const turn = `turn-${status}`;
+    await client.beginTurn({ scope: `${piece.scope}/${status}`, turn, input: { id: `user-${status}`, text: "Discuss SQLite" } });
+    if (status === "failed") await client.continueTurn({ turn, error: "Synthetic provider failure" });
+    else await client.abortTurn({ turn, error: "Synthetic cancellation" });
+    const receipt = await client.turnReceipt({ turn });
+    assert.equal(receipt.calls[0].status, status);
+    assert.partialDeepStrictEqual(receipt.accounting, {
+      calls: 1, reportedCalls: 0, unreportedCalls: 1, timedCalls: 0, untimedCalls: 1, pendingCalls: 0,
+      failedCalls: status === "failed" ? 1 : 0, cancelledCalls: status === "cancelled" ? 1 : 0,
+      credits: { status: "not-reported", reportedCalls: 0, totalCalls: 1 },
+    });
+    assert.equal(receipt.accounting.reportedUsage, undefined);
+    assert.equal(receipt.accounting.observedDurationMs, undefined);
+    await client.close();
+    await client.reopen();
+    assert.deepEqual(await client.turnReceipt({ turn }), receipt);
+  }
 });
 
 test("worker rejects wrong identities/schema without replacing SQLite and reports bounded stderr", async t => {

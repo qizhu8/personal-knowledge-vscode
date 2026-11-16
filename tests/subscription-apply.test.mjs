@@ -234,7 +234,7 @@ test("revocation at staging and before commit cannot publish or commit additiona
 });
 
 test("capture hashes pin the actual original root and are repeatable", () => {
-  const nextRoot = resolve(here, ".."), originalRoot = resolve(nextRoot, "..");
+  const nextRoot = resolve(here, ".."), originalRoot = resolve(nextRoot, "legacy");
   const provenance = JSON.parse(readFileSync(join(nextRoot, "migration", "subscription-apply-provenance.json"), "utf8"));
   for (const record of provenance.files) {
     assert.equal(hash(readFileSync(join(originalRoot, record.source))), record.sourceSha256);

@@ -20,7 +20,7 @@ _cached_worker = None
 
 def engine(snapshot, persistent=False, model=None):
     global _cached_worker
-    wheel = Path(__file__).resolve().parents[2] / "resources" / "vendor" / WHEEL
+    wheel = Path(__file__).resolve().parents[1] / "legacy" / "resources" / "vendor" / WHEEL
     if hashlib.sha256(wheel.read_bytes()).hexdigest() != WHEEL_SHA256:
         raise ValueError("NOT_AVAILABLE: Original lexical engine wheel changed.")
     sys.path.insert(0, str(wheel))
@@ -86,7 +86,7 @@ def initialize(worker, snapshot, persistent, model, ContentType, RetrievalEngine
         def read_text(self, encoding):
             return json.dumps(worker._native_snapshot, ensure_ascii=False)
 
-    resources = Path(__file__).resolve().parents[2] / "resources"
+    resources = Path(__file__).resolve().parents[1] / "legacy" / "resources"
     sys.path.insert(0, str(resources))
     from retrieval_solutions import SolutionManager
     import adaptive_skill_retrieval

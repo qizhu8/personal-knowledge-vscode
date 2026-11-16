@@ -11,7 +11,8 @@ import {
   PortalLifecycleError, PORTAL_LIFECYCLE_SUPPORT,
 } from "../dist/portal-lifecycle.js";
 import { portalLifecycleDefinitions } from "../dist/portal-lifecycle-contracts.js";
-import { checkCaptureRecords, checkNativeRecords } from "../scripts/migration.mjs";
+import { checkNativeRecords, readOriginalSource } from "../scripts/migration.mjs";
+import { authenticateContextSources } from "./context-original-source-captures.mjs";
 
 const serverRoot = resolve(import.meta.dirname, "..");
 const repoRoot = resolve(serverRoot, "legacy");
@@ -66,6 +67,11 @@ function lifecycleFixture(options = {}) {
   };
 }
 
+test("Portal lifecycle provenance authenticates the exact historical original sources", async () => {
+  const provenance = JSON.parse(readFileSync(resolve(serverRoot, "migration/portal-lifecycle-provenance.json"), "utf8"));
+  await authenticateContextSources(provenance.captures);
+});
+
 test("original Portal request oracle maps only the exact captured operation vocabulary", async () => {
   const source = readFileSync(resolve(serverRoot, "domain/portal-lifecycle-original-api-chat-control.py"), "utf8");
   const provenance = JSON.parse(readFileSync(resolve(serverRoot, "migration/portal-lifecycle-provenance.json"), "utf8"));
@@ -78,10 +84,14 @@ test("original Portal request oracle maps only the exact captured operation voca
   const captures = provenance.captures.map(({ source, destination, sourceSha256, captureSha256 }) => ({
     source, captured: destination, sourceSha256, capturedSha256: captureSha256,
   }));
-  assert.deepEqual(await checkCaptureRecords(captures), []);
+  for (const record of captures) {
+    await readOriginalSource(record.captured, { root: serverRoot, kind: "captured", sha256: record.capturedSha256 });
+  }
   assert.deepEqual(await checkNativeRecords(provenance.native), []);
   const hashFile = (root, path) => createHash("sha256").update(readFileSync(resolve(root, path))).digest("hex");
-  for (const reference of provenance.nextServerEvidence) assert.equal(hashFile(serverRoot, reference.source), reference.sha256);
+  assert.deepEqual(await checkNativeRecords(provenance.nextServerEvidence.map(reference => ({
+    file: reference.source, sha256: reference.sha256,
+  }))), []);
   for (const reference of provenance.evidence) assert.equal(hashFile(repoRoot, reference.source), reference.sourceSha256);
 });
 

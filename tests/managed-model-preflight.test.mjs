@@ -8,7 +8,7 @@ import { managedVscodeModelIpc } from "../dist/managed-vscode-model-ipc.js";
 
 const require = createRequire(import.meta.url), ts = require("typescript");
 function load(file, imports) {
-  const source = readFileSync(resolve("..", file), "utf8");
+  const source = readFileSync(resolve(import.meta.dirname, "../legacy", file), "utf8");
   const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const module = { exports: {} };
   new Function("require", "module", "exports", js)(imports, module, module.exports);

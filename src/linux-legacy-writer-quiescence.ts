@@ -4,6 +4,10 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { CoreError } from "./contracts.js";
+import {
+  assertActiveVscodeMigrationGrant, assertActiveVscodeSnapshotAdmission, assertActiveVscodeMigrationWriterBoundary,
+  type ActiveVscodeMigrationHost, type ActiveVscodeMigrationGrant,
+} from "./active-vscode-migration-host.js";
 
 const procRoot = "/proc";
 const maximumProcesses = 16_384;
@@ -12,8 +16,37 @@ const openAccessModeMask = 3;
 
 export interface LinuxManagedSnapshotHostPermit { readonly kind: "pkm.linux-managed-snapshot-host/v1"; }
 const permits = new WeakMap<LinuxManagedSnapshotHostPermit, {
-  root: string; authority: { authorityId: string; authorize: unknown; allowedTools: readonly string[] }; check(): void;
+  root: string; authority?: { authorityId: string; authorize: unknown; allowedTools: readonly string[] };
+  active?: { host: ActiveVscodeMigrationHost; grant: ActiveVscodeMigrationGrant }; check(): void;
 }>();
+
+export function bindLinuxActiveVscodeMigrationHost(options: {
+  host: ActiveVscodeMigrationHost; grant: ActiveVscodeMigrationGrant;
+  snapshotAdmission?: { authorityId: string; authorize: unknown; allowedTools: readonly string[] };
+}): LinuxManagedSnapshotHostPermit {
+  const { host, grant, snapshotAdmission } = options;
+  const check = () => {
+    assertActiveVscodeMigrationGrant(host, grant, host.root);
+    assertActiveVscodeSnapshotAdmission(host, snapshotAdmission);
+    assertActiveVscodeMigrationWriterBoundary(host);
+  };
+  check();
+  const permit = Object.freeze({ kind: "pkm.linux-managed-snapshot-host/v1" as const });
+  permits.set(permit, { root: host.root, authority: snapshotAdmission, active: { host, grant }, check });
+  return permit;
+}
+
+export function assertLinuxActiveVscodeMigrationBinding(
+  root: string, permit: LinuxManagedSnapshotHostPermit | undefined,
+  active: { host: ActiveVscodeMigrationHost; grant: ActiveVscodeMigrationGrant } | undefined,
+): void {
+  const binding = permit && permits.get(permit);
+  if (!binding?.active && !active) return;
+  if (!binding?.active || !active || binding.root !== root
+    || binding.active.host !== active.host || binding.active.grant !== active.grant)
+    throw new CoreError("LEGACY_WRITER_INVENTORY_UNAVAILABLE", "Active host inventory and exact-plan approval must belong to the same activation.");
+  binding.check();
+}
 
 /**
  * Same-process only: require the actual installed extension's own module
@@ -53,7 +86,12 @@ export function assertLinuxManagedSnapshotHostPermit(
   admission: { authorityId: string; authorize: unknown; allowedTools: readonly string[] } | undefined,
 ): void {
   const binding = permits.get(permit);
-  if (!binding || binding.root !== root || !admission || admission.authorityId !== binding.authority.authorityId
+  if (binding?.active && binding.root === root) {
+    assertActiveVscodeSnapshotAdmission(binding.active.host, admission);
+    binding.check();
+    return;
+  }
+  if (!binding?.authority || binding.root !== root || !admission || admission.authorityId !== binding.authority.authorityId
     || admission.authorize !== binding.authority.authorize
     || JSON.stringify(admission.allowedTools) !== JSON.stringify(binding.authority.allowedTools))
     throw new CoreError("LEGACY_WRITER_INVENTORY_UNAVAILABLE", "Managed snapshot host permit is not bound to this admission.");

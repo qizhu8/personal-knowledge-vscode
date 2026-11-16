@@ -162,10 +162,9 @@ test("bounded asset/document counts, expiry, changed retry intent and CAS failur
 });
 
 test("frozen canonical captures distinguish executable source lineage, read-only references and native implementation", async () => {
-  const nextRoot = resolve(dirname(fileURLToPath(import.meta.url)), ".."), originalRoot = resolve(nextRoot, "..");
+  const nextRoot = resolve(dirname(fileURLToPath(import.meta.url)), ".."), originalRoot = resolve(nextRoot, "legacy");
   const provenance = JSON.parse(readFileSync(join(nextRoot, "migration/subscription-transport-provenance.json"), "utf8"));
-  assert.equal(provenance.originalRoot, originalRoot);
-  assert.equal(provenance.nextRoot, nextRoot);
+  assert.equal(provenance.nextRoot, resolve(provenance.originalRoot, "next-server"));
   assert.equal(provenance.files.length, 1);
   assert.equal(provenance.files[0].source, "src/subscriptions/subscriptions.ts");
   assert.equal(provenance.files[0].captured, provenance.capture.path);

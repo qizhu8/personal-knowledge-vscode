@@ -1,0 +1,52 @@
+{
+  "schema": "pkm.original-authentication-archive/v1",
+  "qualification": "Historical original bytes only, not current native implementation qualification. Git and the user-provided VSIX are provisioning inputs only; validation uses repository-contained evidence and existing protected metadata.",
+  "archive": "migration/evidence/knowledge-authentication-originals.zip",
+  "archiveSha256": "700e32a19db9fa4dec300d0e8e0ea218b0a67856dee37baebce27f608af36d74",
+  "members": [
+    {
+      "path": "src/knowledge/filestore.ts",
+      "member": "knowledge-historical-c5c3a9/source/src/knowledge/filestore.ts",
+      "sha256": "c5c3a9761562818529a00aedb96aef254bef34dc80a4ed31f31efd39bc7a97a5",
+      "provisioning": "git 9f4a3a5cd6981675c4348641f5e2e7ad5aa61e99:src/knowledge/filestore.ts"
+    },
+    {
+      "path": "src/knowledge/markdown-assets.ts",
+      "member": "knowledge-historical-c5c3a9/source/src/knowledge/markdown-assets.ts",
+      "sha256": "3efa04f06f6b5fd7e649874d031e0ddb8a6ff4f33182747135c6601658922741",
+      "provisioning": "git a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6:src/knowledge/markdown-assets.ts"
+    },
+    {
+      "path": "tests/test-note-work-item-lifecycle.js",
+      "member": "knowledge-historical-c5c3a9/source/tests/test-note-work-item-lifecycle.js",
+      "sha256": "ad3c9e359d7b958af35a4550b01c6a6019413a7052af380fedfa96f75fe32c08",
+      "provisioning": "git 9f4a3a5cd6981675c4348641f5e2e7ad5aa61e99:tests/test-note-work-item-lifecycle.js"
+    },
+    {
+      "path": "next-server/src/domain/note-work-items.ts",
+      "member": "knowledge-historical-c5c3a9/source/next-server/src/domain/note-work-items.ts",
+      "sha256": "64f39b26b1d115e92ed5fc1f31c81ef746baf325ea07689c2407449a66aab76e",
+      "provisioning": "retained src/domain/note-work-items.ts; identical to legacy/src/knowledge/note-work-items.ts"
+    },
+    {
+      "path": "resources/knowledge_mutations.py",
+      "member": "knowledge-historical-c5c3a9/source/resources/knowledge_mutations.py",
+      "sha256": "a17e86d059b23132eaddcd3ab6222e7b909a4f4a1215c3e3ee6a8fbc0d2880f2",
+      "provisioning": "user-provided personal-knowledge-4.0.22.vsix!/extension/resources/knowledge_mutations.py",
+      "provisioningArchiveSha256": "1804071cb3b9fc86edc5933d5001db6ea1a8d7a9adf30d6d2b3166fcd6048f27"
+    },
+    {
+      "path": "tests/test-markdown-owned-assets.js",
+      "member": "knowledge-historical-c5c3a9/source/tests/test-markdown-owned-assets.js",
+      "sha256": "64ec0aa046fbe000239216013563d7a3dba31df37a5524b124f054229603b4ef",
+      "provisioning": "retained inert src/domain/knowledge-mutations-original.ts:capturedOriginalTests"
+    },
+    {
+      "path": "scripts/capture-knowledge-mutations.mjs",
+      "member": "knowledge-producer-c472d0/source/scripts/capture-knowledge-mutations.mjs",
+      "sha256": "c472d09cc249bd13d3f97b46a763e0b94f27fb0b0c76becd3bb0653ee0c9f436",
+      "provisioning": "git 6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043:next-server/scripts/capture-knowledge-mutations.mjs",
+      "qualification": "Authenticates the protected historical producer descriptor, not the current migrated verification driver."
+    }
+  ]
+}

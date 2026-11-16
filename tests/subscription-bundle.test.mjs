@@ -9,6 +9,7 @@ import { deriveSecretKeys, encryptSnapshot, decryptSnapshot, decryptTransfer, fo
 import { SubscriptionApplyHost } from "../dist/subscription-apply.js";
 import { subscriptionReadSourceFiles } from "./subscription-reads-fixtures.mjs";
 import { scanMarkdown } from "../dist/markdown.js";
+import { authenticateContextSources, readContextOriginal } from "./context-original-source-captures.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const originalContent = "---\r\ndocumentId: source-original\r\naliases: [note:historical]\r\n---\r\n# Original\r\n";
@@ -336,13 +337,20 @@ test("actual existing apply adapter accepts open Markdown without replacing sour
   }
   assert.equal(receipts.size, 1);
 });
-test("capture source SHA and executable crypto generation repeatability have no secret fixtures", () => {
-  const root = resolve(here, ".."), original = resolve(root, "..");
+test("subscription bundle authenticates historical sources and the producer's actual original script bytes", async () => {
+  const root = resolve(here, "..");
   const provenance = JSON.parse(readFileSync(join(root, "migration/subscription-bundle-provenance.json"), "utf8"));
-  for (const file of [...provenance.files, ...provenance.sourceReferences]) {
-    assert.equal(hash(readFileSync(join(original, file.source))).slice(7), file.sourceSha256);
-  }
+  await authenticateContextSources([...provenance.files, ...provenance.sourceReferences]);
+  const producer = provenance.native.find(file => file.file === "scripts/capture-subscription-bundle.mjs");
+  assert(producer, "Original producer pin is required");
+  const bytes = await readContextOriginal(producer.file, { sha256: producer.sha256 });
+  assert.equal(hash(bytes).slice(7), producer.sha256);
+});
+test("capture and native SHA comparisons remain exact and have no secret fixtures", async () => {
+  const { checkNativeRecords } = await import("../scripts/migration.mjs");
+  const root = resolve(here, "..");
+  const provenance = JSON.parse(readFileSync(join(root, "migration/subscription-bundle-provenance.json"), "utf8"));
   assert.equal(hash(readFileSync(join(root, provenance.captured))).slice(7), provenance.capturedSha256);
-  for (const file of provenance.native) assert.equal(hash(readFileSync(join(root, file.file))).slice(7), file.sha256);
+  assert.deepEqual(await checkNativeRecords(provenance.native), []);
   assert(!existsSync(join(root, "tests/subscription-bundle-private-key.pem")));
 });

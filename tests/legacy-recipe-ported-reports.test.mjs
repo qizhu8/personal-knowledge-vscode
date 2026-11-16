@@ -277,7 +277,7 @@ test("actual original Recipe ports keep raw reports, legacy inputs, branch selec
       extension: originalExtension, fixture: prepared.fixture, root: prepared.originalRoot,
     });
     prepared.additionalRecipes = [evidence.recipe, command.recipe];
-    const oracle = spawnSync("python3", ["-B", "tests/next-trial-electron/legacy-ported-branch-oracle.py",
+    const oracle = spawnSync("python3", ["-B", resolve(import.meta.dirname, "../legacy/tests/next-trial-electron/legacy-ported-branch-oracle.py"),
       originalExtension, prepared.fixture], { encoding: "utf8", timeout: 30000 });
     assert.equal(oracle.status, 0, oracle.stderr + oracle.stdout);
     const old = JSON.parse(oracle.stdout);

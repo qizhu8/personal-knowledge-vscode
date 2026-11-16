@@ -67,6 +67,13 @@ test("explicit independent original router config is receipt-bound byte-preserve
   ], { encoding: "utf8" })).plan;
   assert.equal(cliPlan.planSha256, plan.planSha256);
   const receipt = await importLegacyWorkspace(plan, f.destination, importOptions);
+  if (process.platform === "linux") {
+    const marker = JSON.parse(await readFile(join(f.destination, ".pkm-next-writer-fenced.json"), "utf8"));
+    const identity = await lstat(f.destination, { bigint: true });
+    assert.equal(marker.root, f.destination);
+    assert.equal(marker.device, identity.dev.toString());
+    assert.equal(marker.inode, identity.ino.toString());
+  }
   assert.deepEqual(receipt.routerConfigPlan, plan.routerConfigPlan);
   assert.equal(receipt.assets.find(entry => entry.path === routerConfigDestination).sha256, digest(raw));
   const backup = `${f.destination}-backup`, restored = `${f.destination}-restored`;

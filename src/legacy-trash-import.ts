@@ -14,6 +14,7 @@ import {
   type LegacyTrashImportPlan, type LegacyTrashInventory, type LegacyTrashImportEntry, type LegacyTrashSnapshotScope,
 } from "./domain/legacy-trash-import-contracts.js";
 import { deserializeTrashLifecyclePlan, serializeTrashLifecyclePlan, type TrashLifecyclePlan } from "./trash-lifecycle.js";
+import { assertLinuxRootOwnerMarker } from "./linux-root-writer-fence.js";
 
 export { legacyTrashImportSharedSeams } from "./domain/legacy-trash-import-contracts.js";
 export type { LegacyTrashImportPlan } from "./domain/legacy-trash-import-contracts.js";
@@ -123,6 +124,10 @@ export async function snapshotLegacyTrashTree(root: string, native = false, auth
   async function walk(path: string, depth: number): Promise<void> {
     if (depth > 32 || inventory.length >= 8192) trashImportFail("LIMIT", "Trash import tree exceeds its bounded inventory.");
     const name = basename(path);
+    if (native && process.platform === "linux" && depth === 1 && name === ".pkm-next-writer-fenced.json") {
+      await assertLinuxRootOwnerMarker(root);
+      return;
+    }
     if (depth === 1 && scope?.excludedRootNames.includes(name)
       || path.startsWith(".pkm/state/") && path.split("/").length === 3 && scope?.excludedStateNames.includes(name)) return;
     if (native && path === "legacy-import-evidence") {

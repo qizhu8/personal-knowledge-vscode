@@ -7,6 +7,7 @@ import { assertPairedMemoryWorkspaceIdle, type WorkspaceQuiescenceLease } from "
 import { LegacyMemoryErasureOwnedWorker, type LegacyMemoryOwnedFixturePolicy } from "./legacy-memory-erasure-worker.js";
 import { normalizeEngineSnapshot, verifyEngineDatabase } from "./legacy-memory-engine-backup.js";
 import { validateLegacyMemoryErasureLedger } from "./legacy-memory-erasure.js";
+import { acquireLinuxRootWriterFence, assertLinuxRootOwnerMarker } from "./linux-root-writer-fence.js";
 import type { Storage } from "./storage.js";
 
 const manifestName = ".pkm-paired-memory-backup.json";
@@ -168,6 +169,11 @@ async function inventory(root: string, live: boolean, nativeScratch?: string): P
     if (depth > 32) throw new PairedMemoryBackupError("QUOTA_EXCEEDED", "Fixture inventory depth exceeded.");
     for (const name of (await readdir(path)).sort()) {
       const relative = prefix ? `${prefix}/${name}` : name;
+      if (live && process.platform === "linux" && relative === ".pkm-next-writer-fenced.json") {
+        // Ownership binds this live inode/path, not portable backup bytes; restore binds its own stage under flock.
+        await assertLinuxRootOwnerMarker(root);
+        continue;
+      }
       if (relative === manifestName || relative === adoptionName || relative === publicationName
         || live && ["core.sqlite", "core.sqlite-wal", "core.sqlite-shm", engineRelative,
           `${engineRelative}-wal`, `${engineRelative}-shm`].includes(relative)) continue;
@@ -442,9 +448,28 @@ export async function restorePairedMemoryWorkspaceBackup(source: string, destina
     await write(join(stage, publicationName), Buffer.from(JSON.stringify({ state: "pending", manifestSha256: backup.sha256 })));
     check(policy, { ...request, phase: "publish" }); lease.assertHeld(); engineLease.assertHeld();
     await syncTree(stage, backup.manifest.directories);
-    unknown = true;
-    try { await policy.publishNoReplace(stage, destination); }
-    catch { throw new PairedMemoryBackupError("RECOVERY_REQUIRED", "Native paired restore publication outcome is unknown; writers remain fenced."); }
+    try {
+      if (process.platform === "linux") {
+        const stagePublishPath = stage;
+        const publicationEngineLease = engineLease;
+        const fence = await acquireLinuxRootWriterFence(stagePublishPath);
+        try {
+          check(policy, { ...request, phase: "publish" }); lease.assertHeld(); engineLease.assertHeld();
+          await fence.publishRootNoReplace(destination, () => {
+            check(policy, { ...request, phase: "publish" }); lease.assertHeld(); publicationEngineLease.assertHeld();
+            unknown = true;
+            return policy.publishNoReplace(stagePublishPath, destination);
+          });
+        } finally { await fence.release(); }
+      } else {
+        unknown = true;
+        await policy.publishNoReplace(stage, destination);
+      }
+    }
+    catch (error) {
+      if (unknown) throw new PairedMemoryBackupError("RECOVERY_REQUIRED", "Native paired restore publication outcome is unknown; writers remain fenced.");
+      throw error;
+    }
     if (!equal(await pin(destination, true), adoption.rootPin))
       throw new PairedMemoryBackupError("RECOVERY_REQUIRED", "Native publication did not adopt the exact paired stage inode.");
     stage = undefined; await sync(target.parent);

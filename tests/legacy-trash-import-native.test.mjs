@@ -23,25 +23,15 @@ import { captureLegacyTrashBackup, restoreLegacyTrashBackup } from "../dist/lega
 import { legacyTrashImportOriginal } from "../dist/domain/legacy-trash-import-original.js";
 import { scanMarkdown, sha256 } from "../dist/markdown.js";
 import { planTrashRestore, serializeTrashLifecyclePlan } from "../dist/trash-lifecycle.js";
+import { acquireLinuxRootWriterFence, markLinuxRootNextOwned } from "../dist/linux-root-writer-fence.js";
+import { readOriginalSource } from "../scripts/migration.mjs";
+import { originalReleaseModules } from "./legacy-release-modules.mjs";
 
-const require = createRequire(import.meta.url), modules = new Map();
+const require = createRequire(import.meta.url);
 const repo = resolve(import.meta.dirname, "../legacy");
-function original(path) {
-  if (modules.has(path)) return modules.get(path).exports;
-  const mod = { exports: {} }; modules.set(path, mod);
-  const code = ts.transpileModule(readFileSync(path, "utf8"), {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-  }).outputText;
-  runInThisContext(`(function(require,module,exports,__filename,__dirname){${code}\n})`, { filename: path })(
-    name => {
-      if (!name.startsWith(".")) return require(name);
-      const next = resolve(dirname(path), name);
-      return original(existsSync(`${next}.ts`) ? `${next}.ts` : join(next, "index.ts"));
-    }, mod, mod.exports, path, dirname(path));
-  return mod.exports;
-}
-const writer = original(join(repo, "src/knowledge/filestore.ts"));
-const deletionWriter = original(join(repo, "src/knowledge/knowledge-deletion-journal.ts"));
+const releaseModules = originalReleaseModules();
+const writer = releaseModules("src/knowledge/filestore.ts");
+const deletionWriter = releaseModules("src/knowledge/knowledge-deletion-journal.ts");
 const actor = "batch11:isolated-original-trash-oracle";
 const code = expected => error => { assert.equal(error.code, expected, error.message); return true; };
 const receiptsDDL = `CREATE TABLE receipts(operation_id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,
@@ -159,6 +149,23 @@ async function fixture(t, area = "notes", kind = "document", extras = false, mis
   return { parent, source, destination, stage, oracle, path, area, kind, bytes, one, two, before, entry,
     historyBytes, metadataBytes, sourceHashes, plan, authority, workspaceId, put, hostFactory, adopt };
 }
+
+test("native trash inventory validates generated root markers without accepting them as original source or excluding forged bindings",
+  { skip: process.platform !== "linux" }, async t => {
+    const root = resolve(import.meta.dirname, `.trash-marker-${randomUUID()}`);
+    await mkdir(root, { mode: 0o700 });
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const fence = await acquireLinuxRootWriterFence(root);
+    try { await markLinuxRootNextOwned(root, fence); }
+    finally { await fence.release(); }
+    assert.deepEqual((await snapshotLegacyTrashTree(root, true)).inventory, []);
+    await assert.rejects(snapshotLegacyTrashTree(root), code("UNKNOWN_LAYOUT"));
+    const markerPath = join(root, ".pkm-next-writer-fenced.json");
+    const marker = JSON.parse(await readFile(markerPath, "utf8"));
+    await writeFile(markerPath, JSON.stringify({ ...marker, root: dirname(root) }));
+    for (const scope of [undefined, { excludedRootNames: [".pkm-next-writer-fenced.json"], excludedStateNames: [] }])
+      await assert.rejects(snapshotLegacyTrashTree(root, true, scope), code("RECOVERY_REQUIRED"));
+  });
 
 for (const area of ["notes", "skills", "papers"]) {
   test(`ORIGINAL ${area} restore with absent parents imports without provisioning and matches original bytes/history`, async t => {
@@ -300,9 +307,11 @@ test("partial permanent deletion recovers only matching remaining bytes; unknown
   access.close();
 });
 
-test("genuine original AST captures and state schema provenance remain source-grounded", () => {
+test("genuine original AST captures and state schema provenance remain source-grounded", async () => {
   for (const [file, capture] of Object.entries(legacyTrashImportOriginal)) {
-    const raw = readFileSync(join(repo, file), "utf8");
+    const raw = (await readOriginalSource(file, {
+      sha256: capture.sha256, dataset: "linux-candidate-originals",
+    })).toString("utf8");
     assert.equal(hash(raw), capture.sha256, file);
     const ast = ts.createSourceFile(file, raw, ts.ScriptTarget.Latest, true);
     for (const [name, text] of Object.entries(capture).filter(([name]) => name !== "sha256")) {

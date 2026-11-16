@@ -15,12 +15,13 @@ import { originalDigest } from "../dist/domain/action-compiler-validation.js";
 import { originalActionCompilerFixtures as original } from "./action-compiler-original-fixtures.mjs";
 import { portableActionManifest } from "./legacy-action-catalog-fixture.mjs";
 import { legacyManagedFixture, closeLegacyManagedFixture } from "./legacy-managed-fixture.mjs";
+import { originalActionFixture } from "./legacy-action-original-fixture.mjs";
 
-const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "..");
+const root = resolve(import.meta.dirname, "..");
 const actor = { id: "mcp:external", canWrite: false };
 
-function originalContract() {
-  return JSON.parse(execFileSync("python3", ["-c", `
+function originalContract(parent) {
+  return originalActionFixture(parent).json(`
 import ast,asyncio,json,sys
 from pathlib import Path
 from fastmcp import FastMCP
@@ -36,18 +37,17 @@ async def main():
  tool,=await mcp.list_tools()
  print(json.dumps(tool.to_mcp_tool().model_dump(mode="json")))
 asyncio.run(main())
-`, join(repository, "resources")], {
-    encoding: "utf8", env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
-  }));
+`);
 }
 
 function originalResults(cases, parent, sourcePackage = null) {
-  return JSON.parse(execFileSync("python3", ["-c", `
+  return originalActionFixture(parent).json(`
 import json,sys
 sys.path.insert(0,sys.argv[1])
 from action_runtime import ActionRuntime
 request=json.load(sys.stdin)
 runtime=ActionRuntime(sys.argv[2])
+runtime.modules.proposal_mode=True
 if request["sourcePackage"]:
  package=request["sourcePackage"]
  runtime.modules.configure_workspace(package["root"])
@@ -62,15 +62,12 @@ for arguments in request["cases"]:
  try: results.append({"value":runtime.retrieve(**arguments)})
  except ValueError as error: results.append({"error":str(error)})
 print(json.dumps(results))
-`, join(repository, "resources"), join(parent, "original")], {
-    encoding: "utf8", input: JSON.stringify({ cases, sourcePackage, reason: LEGACY_ACTION_RUNTIME_UNAVAILABLE }),
-    env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
-  }));
+`, [join(parent, "original")], JSON.stringify({ cases, sourcePackage, reason: LEGACY_ACTION_RUNTIME_UNAVAILABLE }));
 }
 
 test("Action retrieval matches the original algorithm and candidate results without runtime authority", async t => {
   const parent = join(root, "tests", `.legacy-action-retrieve-parity-${randomUUID()}`);
-  await mkdir(parent);
+  await mkdir(join(parent, "original"), { recursive: true });
   t.after(() => rm(parent, { recursive: true, force: true }));
   const data = await initialize(join(parent, "workspace")), storage = await Storage.open(data);
   t.after(() => storage.close());
@@ -96,7 +93,7 @@ test("Action retrieval matches the original algorithm and candidate results with
 
 test("Action retrieval uses only selected admitted ModuleSets and original punctuation tie ordering", async t => {
   const parent = join(root, "tests", `.legacy-action-retrieve-package-${randomUUID()}`);
-  await mkdir(parent);
+  await mkdir(join(parent, "original"), { recursive: true });
   t.after(() => rm(parent, { recursive: true, force: true }));
   const data = await initialize(join(parent, "workspace")), storage = await Storage.open(data);
   t.after(() => storage.close());
@@ -207,7 +204,7 @@ for (const profile of ["compact", "legacy"]) test(`Action retrieve is read-only 
       args: [join(root, "compat/legacy-compact-mcp.py"), "--data", data, "--node", process.execPath,
         "--managed-generation", managed],
       env: { ...process.env, PKM_CAPABILITY_PROFILE: profile, PYTHONDONTWRITEBYTECODE: "1" }, stderr: "pipe" }));
-    const original = originalContract();
+    const original = originalContract(parent);
     const described = await client.callTool({ name: "capabilities_describe", arguments: {
       operation: "mcp.tool.action_retrieve",
     } });

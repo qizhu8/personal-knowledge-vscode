@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +10,7 @@ import ts from "typescript";
 import { legacyInlineNoteSourcePins } from "../dist/legacy-inline-note-contracts.js";
 import { LEGACY_INLINE_NOTE_JOURNAL_DDL } from "../dist/legacy-inline-note-journal.js";
 import { createNativeLegacyInlineNoteHost } from "../dist/legacy-inline-note-native.js";
+import { readOriginalSource } from "../scripts/migration.mjs";
 
 export const packageRoot = fileURLToPath(new URL("../legacy/", import.meta.url));
 export const at = "2026-11-07T16:30:34.625Z";
@@ -20,10 +20,14 @@ export const item = { id: "one", title: "Exact original inline task", goal: "Kee
   scope: "Inline Markdown only", acceptance: ["Full snapshot and byte parity"], state: "Planning", evidence: [] };
 export const markdown = "\uFEFF---\r\ntitle: \"Original\"\r\nknowledgeId: original-note-stable-id\r\nunknown:\r\n  preserve: [opaque, 3]\r\ndescription: |\r\n  ~~~pkm-work-item\r\n  YAML scalar is not a block\r\n  ~~~\r\n---\r\n# Original body\r\n\r\n````markdown\r\n~~~pkm-work-item\r\nnot JSON\r\n~~~\r\n````\r\n\r\nKeep [evidence](Original.assets/evidence.txt).\r\n";
 export const hash = value => createHash("sha256").update(value).digest("hex");
+const authenticatedSources = new Map(await Promise.all(Object.entries(legacyInlineNoteSourcePins)
+  .map(async ([relative, sha256]) => [relative, await readOriginalSource(relative, {
+    root: packageRoot, sha256, dataset: "knowledge-inline-note-historical",
+  })])));
 
 export function originalCapture() {
   for (const [relative, digest] of Object.entries(legacyInlineNoteSourcePins))
-    assert.equal(hash(readFileSync(join(packageRoot, relative))), digest, `source pin: ${relative}`);
+    assert.equal(hash(authenticatedSources.get(relative)), digest, `source pin: ${relative}`);
   class CaptureDate extends Date {
     constructor(...args) { super(...(args.length ? args : [at])); }
     static now() { return Date.parse(at); }
@@ -32,7 +36,7 @@ export function originalCapture() {
     const filename = join(packageRoot, relative);
     const require = createRequire(join(packageRoot, "dist/knowledge/filestore.js"));
     const module = { exports: {} };
-    const javascript = ts.transpileModule(readFileSync(filename, "utf8"), {
+    const javascript = ts.transpileModule(authenticatedSources.get(relative).toString("utf8"), {
       compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
     }).outputText;
     runInNewContext(javascript, {

@@ -9,7 +9,8 @@ import { LEGACY_CLASSIFICATION_COMMAND_DDL, executeLegacyClassificationCommand a
   verifyLegacyClassificationCommandHistory as verify } from "../dist/legacy-classification-command.js";
 import { LEGACY_CLASSIFICATION_COMMAND_CONTRACT as contract, LEGACY_CLASSIFICATION_COMMAND_ID as operation } from "../dist/legacy-classification-command-contracts.js";
 import { scanNativeClassification } from "../dist/legacy-classification-native.js";
-import { originalLoader, transports, fixturePublisher } from "./host-composition-legacy-batch15-captures.mjs";
+import { transports, fixturePublisher } from "./host-composition-legacy-batch15-captures.mjs";
+import { originalReleaseModules as originalLoader } from "./legacy-release-modules.mjs";
 import { initialize, Storage } from "../dist/storage.js";
 import { createNativeRuntime } from "../dist/native-runtime.js";
 import { createWorkspaceBackup, restoreWorkspaceBackup } from "../dist/workspace-backup.js";
@@ -609,20 +610,20 @@ test("schema-only leaf-first canonical registry is JSON exportable with one Core
   for (const leaf of ["legacy-classification-command-contracts", "legacy-classification-command", "legacy-classification-command-host", "legacy-classification-command-backup"]) {
     const code = `
       import assert from 'node:assert/strict';
-      import { z } from './next-server/node_modules/zod/index.js';
-      await import('./next-server/dist/${leaf}.js');
-      const {definitions,CoreError}=await import('./next-server/dist/contracts.js');
-      const {CoreError:leafError}=await import('./next-server/dist/host-composition-legacy-batch15-errors.js');
+      import { z } from 'zod';
+      await import('./dist/${leaf}.js');
+      const {definitions,CoreError}=await import('./dist/contracts.js');
+      const {CoreError:leafError}=await import('./dist/host-composition-legacy-batch15-errors.js');
       assert.equal(CoreError,leafError);
-      assert.equal(definitions.length,228);
-      assert.equal(new Set(definitions.map(d=>d.id)).size,228);
+      assert.equal(definitions.length,244);
+      assert.equal(new Set(definitions.map(d=>d.id)).size,244);
       const command=definitions.find(d=>d.id==='${operation}');
       assert.equal(command.readOnly,false);
       const exported=definitions.map(d=>({id:d.id,version:1,input:z.toJSONSchema(d.input,{unrepresentable:'any'}),output:z.toJSONSchema(d.output,{unrepresentable:'any'})}));
       assert.equal(JSON.parse(JSON.stringify(exported)).filter(d=>d.id==='${operation}')[0].version,1);
       assert.equal(command.input.safeParse({contract:'${contract}',action:'preview',bearer:'not-authority'}).success,false);
     `;
-    execFileSync(process.execPath, ["--input-type=module", "-e", code], { cwd: fileURLToPath(new URL("../legacy/", import.meta.url)), stdio: ["ignore", "pipe", "pipe"] });
+    execFileSync(process.execPath, ["--input-type=module", "-e", code], { cwd: fileURLToPath(new URL("../", import.meta.url)), stdio: ["ignore", "pipe", "pipe"] });
   }
 });
 

@@ -135,6 +135,8 @@ test("HTTP and sequential MCP share contracts and persisted state across restart
   const http = await httpProcess(t, directory);
   const serverInfo = await http.call("server_info", {});
   assert.equal(serverInfo.status, 200);
+  assert.equal(serverInfo.body.result.name, "pkm-v5");
+  assert.equal(serverInfo.body.result.serverId, "pkm-v5");
   assert.deepEqual(serverInfo.body.result.limits, { storageQueue: 32 });
   assert.equal((await http.call("server_info", {}, { authorization: "Bearer wrong" })).status, 401);
   assert.equal((await http.call("server_info", {}, { origin: "https://untrusted.example" })).status, 403);
@@ -344,6 +346,7 @@ test("HTTP and sequential MCP share contracts and persisted state across restart
   const client = new Client({ name: "next-server-sequential-mcp-test", version: "1.0.0" });
   cleanups.get(t).push(() => client.close());
   await client.connect(transport);
+  assert.equal(client.getServerVersion().name, "pkm-v5");
   assert.deepEqual((await client.listTools()).tools.map(tool => tool.name).sort(), [
     "api_chat_capabilities", "api_chat_get", "api_chat_list", "api_chat_models", "api_chat_request_get",
     "capabilities_describe", "capabilities_search", "capability_call", "capability_read", "recipe_capabilities",
@@ -894,7 +897,7 @@ test("bounded worker queue drains on shutdown and the Core event loop remains re
       id: "a", operationId: randomUUID(), expectedRevision: 1, expectedSha256: created.result.sha256, title: "A", content: "updated",
     }), owner);
     await new Promise(resolve => setTimeout(resolve, 50));
-    assert.equal((await core.dispatch("server_info", {}, owner)).result.name, "pkm-next");
+    assert.equal((await core.dispatch("server_info", {}, owner)).result.name, "pkm-v5");
     db.exec("COMMIT");
     assert.equal((await update).result.revision, 2);
   } catch (error) {
@@ -984,7 +987,7 @@ test("read-only MCP exposes only read tools and rejects write attempts", async t
   assert(result.structuredContent.result.items.every(item => item.readOnly));
 });
 
-test("committed writes recover after abrupt exit only after the single-owner lease expires", async t => {
+test("committed writes recover after abrupt exit under a new exclusive owner and monotonic fence", async t => {
   const { directory } = await fixture(t);
   const first = await httpProcess(t, directory);
   const create = invoke("knowledge.document.create", {
@@ -992,13 +995,25 @@ test("committed writes recover after abrupt exit only after the single-owner lea
   });
   const committed = await first.call("capability_call", create);
   assert.equal(committed.status, 200);
+  const before = new DatabaseSync(join(directory, "core.sqlite"), { readOnly: true });
+  let priorOwner;
+  try { priorOwner = before.prepare("SELECT owner_id,fence FROM native_runtime_owner WHERE singleton=1").get(); }
+  finally { before.close(); }
   first.child.kill("SIGKILL");
   assert.equal((await once(first.child, "exit"))[1], "SIGKILL");
-  await assert.rejects(httpProcess(t, directory), /Another process currently owns this workspace/);
-  const lease = new DatabaseSync(join(directory, "core.sqlite"));
-  try { lease.prepare("UPDATE native_runtime_owner SET lease_until=0 WHERE singleton=1").run(); }
-  finally { lease.close(); }
+  if (process.platform !== "linux") {
+    await assert.rejects(httpProcess(t, directory), /Another process currently owns this workspace/);
+    const lease = new DatabaseSync(join(directory, "core.sqlite"));
+    try { lease.prepare("UPDATE native_runtime_owner SET lease_until=0 WHERE singleton=1").run(); }
+    finally { lease.close(); }
+  }
   const restarted = await httpProcess(t, directory);
+  const after = new DatabaseSync(join(directory, "core.sqlite"), { readOnly: true });
+  try {
+    const currentOwner = after.prepare("SELECT owner_id,fence FROM native_runtime_owner WHERE singleton=1").get();
+    assert.notEqual(currentOwner.owner_id, priorOwner.owner_id);
+    assert(currentOwner.fence > priorOwner.fence);
+  } finally { after.close(); }
   assert.deepEqual((await restarted.call("capability_read", invoke("knowledge.document.get", { id: "crash-recovery" }))).body.result, committed.body.result);
   assert.deepEqual((await restarted.call("capability_call", create)).body.result, committed.body.result);
   await restarted.close();

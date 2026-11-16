@@ -2,9 +2,9 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { checkCaptureRecords } from "./migration.mjs";
+import { checkCaptureRecords, checkNativeRecords } from "./migration.mjs";
 
-const server = resolve(import.meta.dirname, ".."), root = resolve(server, "..");
+const server = resolve(import.meta.dirname, ".."), root = resolve(server, "legacy");
 const args = process.argv.slice(2);
 if (args.length && (args.length !== 1 || !["--check", "--refresh-native"].includes(args[0]))) {
   throw new Error("Usage: node scripts/capture-workflow-executor.mjs [--check|--refresh-native]");
@@ -14,7 +14,20 @@ const nativeFiles = [
   "tests/workflow-executor.test.mjs", "tests/workflow-executor-fixtures.mjs",
   "tests/workflow-executor-restart-child.mjs",
 ];
-if (args[0] === "--refresh-native") {
+if (args[0] === "--check") {
+  const record = JSON.parse(await readFile(resolve(server, "migration/workflow-executor-provenance.json"), "utf8"));
+  const issues = await checkCaptureRecords(record.files, undefined, undefined, {
+    dataset: "runtime-workflow-executor-historical",
+  });
+  for (const dependency of record.dependencies) {
+    if (createHash("sha256").update(await readFile(resolve(root, dependency.source))).digest("hex") !== dependency.sourceSha256) {
+      issues.push({ kind: "dependency", path: dependency.source, reason: "hash-changed" });
+    }
+  }
+  issues.push(...await checkNativeRecords(record.native));
+  if (issues.length) throw new Error(JSON.stringify(issues));
+  console.log(`workflow-executor: ${record.files.length} historical captures and ${record.native.length} selected native pins verified`);
+} else if (args[0] === "--refresh-native") {
   const path = resolve(server, "migration/workflow-executor-provenance.json");
   const record = JSON.parse(await readFile(path, "utf8"));
   const issues = await checkCaptureRecords(record.files);

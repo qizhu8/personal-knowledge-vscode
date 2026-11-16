@@ -1118,7 +1118,7 @@ test("original writer Trash is recorded in place with exact Sync binding and ato
             fs.writeFileSync(process.argv[4], "done");
           }).catch(() => { process.exitCode = 1; });
         `;
-        contender = spawn(process.execPath, ["-e", code, resolve("dist/runtime/cross-process-lock.js"),
+        contender = spawn(process.execPath, ["-e", code, resolve("legacy/dist/runtime/cross-process-lock.js"),
           join(profile, "github-sync/targets-state.lock"), attempt, done, syncJournal], { stdio: "ignore" });
         const limit = Date.now() + 5000;
         while (!existsSync(attempt) && Date.now() < limit) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);

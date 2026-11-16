@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
@@ -10,9 +10,13 @@ import { pathToFileURL } from "node:url";
 
 const require = createRequire(import.meta.url);
 const project = path.resolve(new URL("../legacy", import.meta.url).pathname);
+const core = path.resolve(new URL("..", import.meta.url).pathname);
+const directories = [];
+after(() => { for (const directory of directories) fs.rmSync(directory, { recursive: true, force: true }); });
 async function setup() {
-  const directory = path.join(project, ".migration-test-work", `room-private-admission-${randomUUID()}`);
+  const directory = path.join(core, ".migration-test-work", `room-private-admission-${randomUUID()}`);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  directories.push(directory);
   fs.writeFileSync(path.join(directory, "package.json"), '{"type":"module"}');
   fs.symlinkSync(path.join(project, "../node_modules"), path.join(directory, "node_modules"), "dir");
   const esbuild = require("esbuild");
@@ -20,11 +24,11 @@ async function setup() {
     bundle: true, platform: "node", format: "esm", packages: "external",
     outfile: path.join(directory, "storage-worker.js"), logLevel: "silent" });
   esbuild.buildSync({ stdin: { contents: `
-    export {initialize,Storage} from "./next-server/src/storage";
-    export {inspectRetainedMeetingSource} from "./next-server/src/next-room-meeting-source";
-    export {admitPrivateRoom,openPrivateRoomAdmissions,assertPrivateRoomAdmissions} from "./next-server/src/next-room-private-admission";
-    export {createNextRoomMeetings} from "./next-server/src/next-room-meetings";
-    export {copyPrivateRoomArchive} from "./next-server/src/legacy-chatroom-private-copy";`, resolveDir: project },
+    export {initialize,Storage} from "./src/storage";
+    export {inspectRetainedMeetingSource} from "./src/next-room-meeting-source";
+    export {admitPrivateRoom,openPrivateRoomAdmissions,assertPrivateRoomAdmissions} from "./src/next-room-private-admission";
+    export {createNextRoomMeetings} from "./src/next-room-meetings";
+    export {copyPrivateRoomArchive} from "./src/legacy-chatroom-private-copy";`, resolveDir: core },
     bundle: true, platform: "node", format: "esm", packages: "external",
     outfile: path.join(directory, "native.mjs"), logLevel: "silent" });
   return { directory, native: await import(pathToFileURL(path.join(directory, "native.mjs"))) };
@@ -32,8 +36,9 @@ async function setup() {
 
 test("real installed original archive reproduces missing exact journal and missing private Note admission", async () => {
   const { directory, native } = await setup();
-  const fixture = process.env.PKM_PRIVATE_ROOM_BASELINE_FIXTURE
-    || path.join(project, ".migration-test-work/meeting-installed-c7b43da1-5905-4452-b807-228d22b7c483");
+  const fixture = process.env.PKM_PRIVATE_ROOM_BASELINE_FIXTURE;
+  assert(fixture && fs.existsSync(path.join(fixture, "meeting-state.json")),
+    "Set PKM_PRIVATE_ROOM_BASELINE_FIXTURE to an authorized historical installed Room capture containing meeting-state.json, old-root and host-home; retired scratch is not a fixture.");
   const state = JSON.parse(fs.readFileSync(path.join(fixture, "meeting-state.json"), "utf8"));
   const source = path.join(fixture, "old-root"), root = path.join(directory, "next-root");
   await native.initialize(root);
@@ -55,6 +60,7 @@ test("real installed original archive reproduces missing exact journal and missi
 async function original() {
   const setupResult = await setup(), { directory, native } = setupResult;
   const baseline = process.env.PKM_LEGACY_VSIX || path.join(project, "personal-knowledge-4.0.22.vsix");
+  assert(fs.existsSync(baseline), "Set PKM_LEGACY_VSIX to the authorized original 4.0.22 VSIX (SHA-256 1804071cb3b9fc86edc5933d5001db6ea1a8d7a9adf30d6d2b3166fcd6048f27).");
   assert.equal(createHash("sha256").update(fs.readFileSync(baseline)).digest("hex"),
     "1804071cb3b9fc86edc5933d5001db6ea1a8d7a9adf30d6d2b3166fcd6048f27");
   const extension = path.join(directory, "original-extension"), sourceRoot = path.join(directory, "original-root");

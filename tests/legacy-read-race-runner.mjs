@@ -14,9 +14,11 @@ import { scanMarkdown } from "../dist/markdown.js";
 import { startMcp } from "../dist/mcp.js";
 import { Storage, initialize } from "../dist/storage.js";
 import { createLegacyReadSnapshot, withLegacyReadPreflight } from "../dist/legacy-read-race.js";
+import { readOriginalSource } from "../scripts/migration.mjs";
 
 const packageRoot = resolve(import.meta.dirname, "..");
-const reportPath = join(packageRoot, "tests", "legacy-read-race.report.json");
+const reportPath = process.env.PKM_TEST_REPORTS
+  ? join(process.env.PKM_TEST_REPORTS, "legacy-read-race-candidate.json") : undefined;
 const writerPath = join(packageRoot, "tests", "legacy-read-race-writer.mjs");
 const actor = { id: "batch13-reader", canWrite: true };
 const token = "batch13-isolated-read-token-000000000000000000000000";
@@ -24,6 +26,15 @@ const hash = value => createHash("sha256").update(value).digest("hex");
 const sourceDigestPattern = /^[a-f0-9]{64}$/;
 const invoke = (operation, arguments_) => ({ operation, version: 1, arguments: arguments_ });
 const rows = [];
+async function reportInput(path, sha256, kind) {
+  if (process.env.PKM_TEST_QUALIFICATION !== "linux-candidate") {
+    return readFile(resolve(packageRoot, kind === "source" ? "legacy" : ".", path));
+  }
+  return readOriginalSource(`migration/evidence/read-race-historical-inputs.zip!/${sha256}/${kind}/${path}`, {
+    root: packageRoot, kind, sha256,
+    archiveSha256: "bdaf357e574a3dee4bef80018ba4c426b3941e9b82ac61a48286954527e1f928",
+  });
+}
 
 async function captureSources(root) {
   const pins = scanMarkdown(root).map(({ record }) => ({
@@ -396,11 +407,11 @@ async function validateReportSources(report, label, base, aggregateFormula) {
   assert(nativeEntries.length > 0, `${label} native source map must not be empty`);
   for (const [path, expected] of nativeEntries) {
     assert(sourceDigestPattern.test(expected), `${label} has an invalid native digest for ${path}`);
-    assert.equal(hash(await readFile(join(base, path))), expected, `${label} native source changed: ${path}`);
+    assert.equal(hash(await reportInput(path, expected, "captured")), expected, `${label} historical native source changed: ${path}`);
   }
   for (const [path, expected] of Object.entries(report.originalSources)) {
     assert(sourceDigestPattern.test(expected), `${label} has an invalid original digest for ${path}`);
-    assert.equal(hash(await readFile(resolve(packageRoot, "..", path))), expected,
+    assert.equal(hash(await reportInput(path, expected, "source")), expected,
       `${label} original source changed: ${path}`);
   }
   assert.equal(report.nativeSourceSetSha256, aggregateFormula(nativeEntries, sortedNativeEntries),
@@ -418,6 +429,7 @@ async function validateReportSources(report, label, base, aggregateFormula) {
 async function pinOriginalOracle() {
   const oraclePath = join(packageRoot, "tests", "legacy-regression-oracle.report.json");
   const oracleBytes = await readFile(oraclePath);
+  assert.equal(hash(oracleBytes), "c098416b7c8af9de40039d783724241d53509abb4683c232c3a10b229e4876bb");
   const oracle = JSON.parse(oracleBytes.toString("utf8"));
   assert.equal(oracle.schema, "pkm.next-server.legacy-regression-oracle/v1");
   assert.equal(oracle.result, "passed");
@@ -427,7 +439,7 @@ async function pinOriginalOracle() {
   assert.equal(oracle.execution?.workingDirectory, "next-server");
   assert.equal(oracle.execution?.testFile, "tests/legacy-regression-oracle.test.mjs");
   assert(sourceDigestPattern.test(oracle.execution?.testSourceSha256));
-  assert.equal(hash(await readFile(join(packageRoot, oracle.execution.testFile))), oracle.execution.testSourceSha256,
+  assert.equal(hash(await reportInput(oracle.execution.testFile, oracle.execution.testSourceSha256, "captured")), oracle.execution.testSourceSha256,
     "Original oracle qualification test changed after report generation.");
   await validateReportSources(
     oracle,
@@ -461,6 +473,7 @@ async function pinOriginalOracle() {
   ]);
   assert.equal(readRow.unsupportedReason, null);
   const batch12Bytes = await readFile(join(packageRoot, "tests", "legacy-regression-batch12.report.json"));
+  assert.equal(hash(batch12Bytes), "063cde84f1101b952cf60a63982839cc59a8e913b72b1ee0deccfe76b270b5e3");
   const batch12 = JSON.parse(batch12Bytes.toString("utf8"));
   assert.equal(batch12.schema, "pkm.next-server.legacy-regression-batch12/v1");
   assert.equal(batch12.result, "passed");
@@ -479,7 +492,7 @@ async function pinOriginalOracle() {
     },
   );
   assert.equal(batch12.nativeSources[batch12.execution.testFile], hash(
-    await readFile(join(packageRoot, batch12.execution.testFile)),
+    await reportInput(batch12.execution.testFile, batch12.nativeSources[batch12.execution.testFile], "captured"),
   ), "Batch12 report's native source map does not pin its qualification test.");
   assert.deepEqual(batch12.totals, { newCases: 17, verifiedRows: 16, unsupportedRows: 1, mismatchedRows: 0, assertions: 68 });
   assert(batch12.scopeDifferences.includes(
@@ -536,10 +549,16 @@ async function sourceHashes() {
 
 async function main() {
   const originalOracle = await pinOriginalOracle();
-  for (const scenario of scenarios) await qualifyScenario(scenario);
+  console.log("Historical report generation authenticated; running current external-writer scenarios.");
+  for (const scenario of scenarios) {
+    console.log(`START ${scenario.id}`);
+    await qualifyScenario(scenario);
+    console.log(`PASS ${scenario.id}`);
+  }
   await rejectMixedAggregate();
   const report = {
     schema: "pkm.legacy-read-race-qualification/v1",
+    qualificationScope: "Current controlled external-writer scenarios; authenticated historical reports retain their original scope, not transferred current-native qualification.",
     sourceHashes: await sourceHashes(),
     originalOracle,
     readConsistency: {
@@ -567,7 +586,7 @@ async function main() {
     },
     cases: rows,
   };
-  await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+  if (reportPath) await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, { flag: "wx" });
 }
 
 main().catch(error => {

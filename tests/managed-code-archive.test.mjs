@@ -56,7 +56,7 @@ test("inert code libraries preserve all bytes and ordinary modes without loading
     execFileSync(process.execPath, [require.resolve("typescript/bin/tsc"), "-p", project, "--outDir", join(extension, "dist"), "--sourceMap", "false"],
       { stdio: "pipe", timeout: 120000 });
   } catch (error) { throw new Error(`${error.message}\n${error.stdout || ""}\n${error.stderr || ""}`); }
-  require(join(project, "scripts/next-rehearsal-runtime.js")).stage(join(extension, "next-runtime"), { production: true });
+  require("../scripts/stage-runtime.cjs").stage(join(extension, "next-runtime"), { production: true });
   const dist = join(extension, "next-runtime/server/dist");
   const { NextManagedClient } = require(join(extension, "dist/runtime/next-managed-client.js"));
   const { planLegacyImport, importLegacyWorkspace, recoverLegacyImportOutcome, cleanupInterruptedLegacyImportStages } = await import(join(dist, "legacy-import.js"));
@@ -369,7 +369,10 @@ test("inert code libraries preserve all bytes and ordinary modes without loading
       "--acknowledge-quiescent-disposable-copy"], { stdio: "pipe", timeout: 30000 }), error => error.signal === "SIGKILL");
     const stages = (await readdir(root)).filter(name => /^\.crash-target\.pkm-legacy-import-[a-f0-9-]{36}$/.test(name));
     assert.equal(stages.length, 1);
-    const stage = join(root, stages[0]); await auditImportedWorkspace(stage, frozenPlan);
+    const stage = join(root, stages[0]);
+    await assert.rejects(auditImportedWorkspace(stage, frozenPlan), /writer-fence marker does not match/);
+    for (const entry of frozenPlan.entries.filter(entry => entry.destination && entry.kind !== "directory"))
+      assert.equal(hash(await readFile(join(stage, entry.destination))), entry.sha256);
     assert.equal((await lstat(join(stage, "legacy-code-archive/actions/Example"))).mode & 0o777, 0o555);
     const outcomeFile = join(root, ".crash-target.pkm-legacy-import.outcome.json"), outcome = await readFile(outcomeFile);
     assert.notEqual((await recoverLegacyImportOutcome(destination)).status, "published");

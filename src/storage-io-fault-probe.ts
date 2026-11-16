@@ -3,10 +3,12 @@
  * an explicit --import and a disposable test fixture. SQLite's C I/O is not patched.
  */
 import fs from "node:fs";
+import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainThread, workerData } from "node:worker_threads";
+import { renameNoReplaceProgram } from "./rename-no-replace.js";
 
 type Rule = {
   enabled: boolean; syscall: "open" | "write" | "fsync" | "rename";
@@ -21,10 +23,14 @@ if (fixture) {
     throw new Error("I/O qualification requires a direct disposable tests fixture.");
   }
   const root = resolve(parent, "workspace"), control = resolve(parent, "control.json"), trace = resolve(parent, "trace.jsonl");
+  const configuration: unknown = workerData;
+  const storageWorker = !isMainThread && (configuration === root
+    || configuration !== null && typeof configuration === "object" && "root" in configuration && configuration.root === root);
   const native = {
     open: fs.openSync.bind(fs), write: fs.writeFileSync.bind(fs), sync: fs.fsyncSync.bind(fs),
     rename: fs.renameSync.bind(fs), close: fs.closeSync.bind(fs), read: fs.readFileSync.bind(fs),
     append: fs.appendFileSync.bind(fs), stat: fs.lstatSync.bind(fs), writeSync: fs.writeSync.bind(fs),
+    execute: childProcess.execFileSync.bind(childProcess),
   };
   for (const path of [parent, root]) {
     const stat = native.stat(path);
@@ -64,7 +70,7 @@ if (fixture) {
     native.append(trace, JSON.stringify({
       syscall, code: rule.code, phase: rule.phase, path: relative(root, path).split(sep).join("/"),
       ordinal: rule.ordinal, matches: rule.matches, hits: rule.hits, partialBytes,
-      storageWorker: !isMainThread && workerData === root,
+      storageWorker,
     }) + "\n");
     throw Object.assign(new Error(`Injected filesystem ${rule.code} at ${syscall} boundary`), {
       code: rule.code, syscall, path, errno: { ENOSPC: -28, EIO: -5, EACCES: -13 }[rule.code],
@@ -90,5 +96,12 @@ if (fixture) {
     const source = scoped(from), destination = scoped(to);
     boundary("rename", source && destination ? source : undefined, () => native.rename(from, to));
   };
+  childProcess.execFileSync = ((...args: Parameters<typeof childProcess.execFileSync>) => {
+    const [, program] = args;
+    if (program?.length !== 4 || program[0] !== "-c" || program[1] !== renameNoReplaceProgram)
+      return native.execute(...args);
+    const source = scoped(program[2]), destination = scoped(program[3]);
+    return boundary("rename", source && destination ? source : undefined, () => native.execute(...args));
+  }) as typeof childProcess.execFileSync;
   syncBuiltinESMExports();
 }

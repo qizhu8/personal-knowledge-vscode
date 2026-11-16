@@ -131,6 +131,10 @@ export const actionCompilerDefinitions = [
       definitionSchema: z.literal("pkm.action.definition/v1"),
       moduleSetSchema: z.literal("pkm.action.module-set/v1"),
       runtimeStatus: z.literal("not-runnable-here"),
+      sourceIdentity: z.strictObject({
+        id: z.enum(["compiler-capture-v1", "frozen-original-v2"]),
+        evidence: z.enum(["historical", "fixture-only"]),
+      }),
       limits: z.strictObject(Object.fromEntries(
         Object.entries(ACTION_COMPILER_LIMITS).map(([key, value]) => [key, z.literal(value)]),
       ) as { [K in keyof typeof ACTION_COMPILER_LIMITS]: z.ZodLiteral<number> }),

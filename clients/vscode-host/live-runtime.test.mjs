@@ -29,7 +29,7 @@ test("actual CLI creates a fresh synthetic identity, authenticates read-only HTT
     const authenticated = await request(runtime.token);
     assert.equal(authenticated.status, 200);
     const info = await authenticated.json();
-    assert.equal(info.result.serverId, "pkm-next");
+    assert.equal(info.result.serverId, "pkm-v5");
     assert.equal(info.result.workspaceId, identity.id);
     assert.equal(info.result.actorId, "local:reader");
     const denied = await request("synthetic-denied-token".padEnd(64, "x"));

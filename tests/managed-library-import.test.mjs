@@ -39,7 +39,7 @@ test("original Prompt history and moved Script identity remain preserved, audite
     execFileSync(process.execPath, [require.resolve("typescript/bin/tsc"), "-p", project, "--outDir", join(extension, "dist"), "--sourceMap", "false"],
       { stdio: "pipe", timeout: 120000 });
   } catch (error) { throw new Error(`${error.message}\n${error.stdout || ""}\n${error.stderr || ""}`); }
-  require(join(project, "scripts/next-rehearsal-runtime.js")).stage(join(extension, "next-runtime"), { production: true });
+  require("../scripts/stage-runtime.cjs").stage(join(extension, "next-runtime"), { production: true });
   const dist = join(extension, "next-runtime/server/dist");
   const original = require(join(extension, "dist/knowledge/storage.js"));
   const fixture = await createOriginalLibraryFixture(source, original);
@@ -224,7 +224,10 @@ test("original Prompt history and moved Script identity remain preserved, audite
       "--acknowledge-quiescent-disposable-copy"], { stdio: "pipe", timeout: 30000 }), error => error.signal === "SIGKILL");
     const names = (await readdir(root)).filter(name => /^\.crash-target\.pkm-legacy-import-[a-f0-9-]{36}$/.test(name));
     assert.equal(names.length, 1);
-    const stage = join(root, names[0]); await auditImportedWorkspace(stage, approvedPlan);
+    const stage = join(root, names[0]);
+    await assert.rejects(auditImportedWorkspace(stage, approvedPlan), /writer-fence marker does not match/);
+    for (const entry of approvedPlan.entries.filter(entry => entry.destination && entry.kind !== "directory"))
+      assert.equal(hash(await readFile(join(stage, entry.destination))), entry.sha256);
     const outcomePath = join(root, ".crash-target.pkm-legacy-import.outcome.json"), outcome = await readFile(outcomePath);
     assert.notEqual((await recoverLegacyImportOutcome(destination)).status, "published");
     assert.deepEqual(await cleanupInterruptedLegacyImportStages(destination), { removed: [stage], retained: [] });

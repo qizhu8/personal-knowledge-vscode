@@ -3,10 +3,13 @@ import { createHash } from "node:crypto";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
+import { checkCaptureRecords, readOriginalSource } from "./migration.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repository = resolve(root, "legacy");
 const check = process.argv.includes("--check");
+const originalMetadata = check
+  ? JSON.parse(await readFile(resolve(root, "migration/agent-runtime-provenance.json"), "utf8")) : undefined;
 const sources = [
   ["src/agent-sessions/agent-session-lifecycle.ts", [
     "SessionRecord", "agentSessionGroup", "projectedAgentSessionStatus", "terminalAgentSessionStatus",
@@ -21,7 +24,12 @@ const sources = [
 ];
 const texts = new Map();
 async function source(path) {
-  if (!texts.has(path)) texts.set(path, await readFile(resolve(repository, path), "utf8"));
+  if (!texts.has(path)) {
+    const pin = originalMetadata?.sources.find(pin => pin.path === path);
+    texts.set(path, pin ? (await readOriginalSource(path, {
+      sha256: pin.sha256, dataset: "linux-candidate-originals",
+    })).toString("utf8") : await readFile(resolve(repository, path), "utf8"));
+  }
   return texts.get(path);
 }
 const hash = text => createHash("sha256").update(text).digest("hex");
@@ -139,6 +147,9 @@ const manifest = {
 const manifestPath = resolve(root, "migration/agent-runtime-provenance.json");
 const encoded = JSON.stringify(manifest, null, 2) + "\n";
 if (check) {
-  if (await readFile(manifestPath, "utf8") !== encoded) throw new Error("Agent runtime provenance differs; regenerate capture.");
+  if (process.env.PKM_TEST_QUALIFICATION === "linux-candidate") {
+    const issues = await checkCaptureRecords(originalMetadata.files);
+    if (issues.length) throw new Error(JSON.stringify(issues));
+  } else if (await readFile(manifestPath, "utf8") !== encoded) throw new Error("Agent runtime provenance differs; regenerate capture.");
 } else await writeFile(manifestPath, encoded);
 console.log(check ? "Agent runtime capture and all hashes verified." : "Agent runtime pure source, original regressions and provenance captured.");

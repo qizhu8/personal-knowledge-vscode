@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomUUID, createHash } from "node:crypto";
-import { chmod, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { initialize, Storage } from "../dist/storage.js";
@@ -12,7 +12,8 @@ import { createPairedMemoryWorkspaceBackup, restorePairedMemoryWorkspaceBackup,
   openPairedMemoryWorkspaceWorker } from "../dist/workspace-backup.js";
 import { transports } from "./host-composition-legacy-shared-captures.mjs";
 import { DatabaseSync } from "node:sqlite";
-import { closeSync, fsyncSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, fsyncSync, openSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { acquireLinuxRootWriterFence } from "../dist/linux-root-writer-fence.js";
 
 const hash = value => createHash("sha256").update(value).digest("hex");
 const actor = { id: "paired-native-fixture-human", canWrite: true, collaborationKind: "human" };
@@ -147,7 +148,22 @@ test("paired actual HTTP/MCP forget, atomic workspace+engine restore, immutable 
     },
   });
   const target = join(f.parent, "restored");
-  await restorePairedMemoryWorkspaceBackup(backup.backupPath, target, f.policy);
+  let publications = 0;
+  await restorePairedMemoryWorkspaceBackup(backup.backupPath, target, {
+    ...f.policy, async publishNoReplace(stage, destination) {
+      publications++;
+      if (process.platform === "linux") {
+        const marker = JSON.parse(await readFile(join(stage, ".pkm-next-writer-fenced.json"), "utf8"));
+        const stat = await lstat(stage, { bigint: true });
+        assert.equal(marker.root, destination);
+        assert.equal(marker.device, String(stat.dev));
+        assert.equal(marker.inode, String(stat.ino));
+        await assert.rejects(acquireLinuxRootWriterFence(stage, 50), { code: "BUSY" });
+      }
+      await noReplace(stage, destination);
+    },
+  });
+  assert.equal(publications, 1);
   assert.deepEqual(await readFile(join(target, "notes", "history.md")), history);
   const oldDb = f.storage.connectNative();
   let originalReceipt;
@@ -182,6 +198,102 @@ test("paired actual HTTP/MCP forget, atomic workspace+engine restore, immutable 
   assert.deepEqual(await f.worker.dispatch("usage", { scope: "fixture/two" }), { bytes: 0, pieces: 0 });
   assert.deepEqual(await readFile(join(targetTwo, "notes", "history.md")), history);
   assert.deepEqual(await readFile(join(targetTwo, "notes", ".pkm-memory-snapshot-original-history.md")), history);
+});
+
+test("paired snapshots validate live writer ownership and copied restored roots still fail admission", {
+  skip: process.platform !== "linux",
+}, async t => {
+  const f = await fixture(t);
+  await forget(f, "fixture/root-owner");
+  const markerName = ".pkm-next-writer-fenced.json";
+  const sourceMarkerPath = join(f.root, markerName);
+  const original = await readFile(sourceMarkerPath);
+  await writeFile(sourceMarkerPath, JSON.stringify({ ...JSON.parse(original), inode: "0" }));
+  await assert.rejects(createPairedMemoryWorkspaceBackup(f.storage, f.worker, join(f.parent, "invalid-owner"), f.policy),
+    { code: "RECOVERY_REQUIRED" });
+  await writeFile(sourceMarkerPath, original);
+  const backup = await createPairedMemoryWorkspaceBackup(f.storage, f.worker, join(f.parent, "backup"), f.policy);
+  assert(!(await readdir(backup.backupPath)).includes(markerName));
+  const target = join(f.parent, "restored");
+  await restorePairedMemoryWorkspaceBackup(backup.backupPath, target, f.policy);
+  const copy = join(f.parent, "arbitrary-copy");
+  await cp(target, copy, { recursive: true, preserveTimestamps: true });
+  await assert.rejects(Storage.open(copy, { deferRecovery: true }), { code: "RECOVERY_REQUIRED" });
+  await assert.rejects(openPairedMemoryWorkspaceWorker(copy, f.policy, f.workerPolicy), { code: "ADOPTION_MISMATCH" });
+  await assert.rejects(restorePairedMemoryWorkspaceBackup(backup.backupPath, target, f.policy), { code: "DESTINATION_EXISTS" });
+});
+
+test("paired restore never launders a copied owner marker in an authorized stage", {
+  skip: process.platform !== "linux",
+}, async t => {
+  const f = await fixture(t);
+  await forget(f, "fixture/stage-owner-tamper");
+  const backup = await createPairedMemoryWorkspaceBackup(f.storage, f.worker, join(f.parent, "backup"), f.policy);
+  const destination = join(f.parent, "never-published");
+  const sourceMarker = await readFile(join(f.root, ".pkm-next-writer-fenced.json"));
+  await assert.rejects(restorePairedMemoryWorkspaceBackup(backup.backupPath, destination, {
+    ...f.policy,
+    authorize(request) {
+      if (request.phase === "publish") {
+        const stage = readdirSync(f.parent).find(name => name.startsWith(".pkm-paired.") && name.endsWith(".stage"));
+        writeFileSync(join(f.parent, stage, ".pkm-next-writer-fenced.json"), sourceMarker, { mode: 0o600 });
+      }
+      return f.policy.authorize(request);
+    },
+    async publishNoReplace() { assert.fail("A foreign root owner must never reach publication"); },
+  }), { code: "RECOVERY_REQUIRED" });
+  assert(!(await readdir(f.parent)).some(name => name === "never-published" || name.startsWith(".pkm-paired.")));
+  assert.deepEqual(await readFile(join(f.root, ".pkm-next-writer-fenced.json")), sourceMarker);
+  assert.deepEqual(await f.worker.dispatch("usage", { scope: "fixture/stage-owner-tamper" }), { bytes: 0, pieces: 0 });
+});
+
+test("paired restore rechecks revoked authority after acquiring its publication fence", {
+  skip: process.platform !== "linux",
+}, async t => {
+  const f = await fixture(t);
+  await forget(f, "fixture/publication-authority");
+  const backup = await createPairedMemoryWorkspaceBackup(f.storage, f.worker, join(f.parent, "backup"), f.policy);
+  let approvals = 0;
+  const destination = join(f.parent, "revoked-restored");
+  await assert.rejects(restorePairedMemoryWorkspaceBackup(backup.backupPath, destination, {
+    ...f.policy,
+    authorize(request) {
+      if (request.phase === "publish" && ++approvals === 2) return null;
+      return f.policy.authorize(request);
+    },
+    async publishNoReplace() { assert.fail("Revoked authority must never reach publication"); },
+  }), { code: "AUTHORITY_REQUIRED" });
+  assert(!(await readdir(f.parent)).some(name => name === "revoked-restored" || name.startsWith(".pkm-paired.")));
+  assert.deepEqual(await f.worker.dispatch("usage", { scope: "fixture/publication-authority" }), { bytes: 0, pieces: 0 });
+});
+
+test("paired restore rechecks authority after target-marker binding before calling the native publisher", {
+  skip: process.platform !== "linux",
+}, async t => {
+  const f = await fixture(t);
+  await forget(f, "fixture/final-publication-authority");
+  const backup = await createPairedMemoryWorkspaceBackup(f.storage, f.worker, join(f.parent, "backup"), f.policy);
+  let approvals = 0, publications = 0;
+  const destination = join(f.parent, "final-revoked-restored");
+  await assert.rejects(restorePairedMemoryWorkspaceBackup(backup.backupPath, destination, {
+    ...f.policy,
+    authorize(request) {
+      if (request.phase === "publish" && ++approvals === 3) {
+        const stage = readdirSync(f.parent).find(name => name.startsWith(".pkm-paired.") && name.endsWith(".stage"));
+        const marker = JSON.parse(readFileSync(join(f.parent, stage, ".pkm-next-writer-fenced.json"), "utf8"));
+        assert.equal(marker.root, destination, "final authority must run after target-marker binding");
+        return null;
+      }
+      return f.policy.authorize(request);
+    },
+    async publishNoReplace() { publications++; assert.fail("Final revoked authority must never publish"); },
+  }), { code: "AUTHORITY_REQUIRED" });
+  assert.equal(approvals, 3);
+  assert.equal(publications, 0);
+  assert(!(await readdir(f.parent)).some(name => name === "final-revoked-restored" || name.startsWith(".pkm-paired.")));
+  assert.deepEqual(await f.worker.dispatch("usage", { scope: "fixture/final-publication-authority" }), { bytes: 0, pieces: 0 });
+  const next = await forget(f, "fixture/after-final-revocation");
+  assert.equal(next.receipt.erasureEpoch, 2);
 });
 
 test("paired publication failure retains pending native adoption and blocks restart rather than silently succeeding", async t => {

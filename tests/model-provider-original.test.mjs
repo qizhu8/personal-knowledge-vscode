@@ -9,6 +9,7 @@ import fixture from "./model-provider-original-fixtures.mjs";
 import { ModelConfigService } from "../dist/model-config.js";
 import { ModelProviderService } from "../dist/model-provider.js";
 import { normalizeModelUsage } from "../dist/domain/model-provider.js";
+import { checkNativeRecords, packageRoot, readOriginalSource } from "../scripts/migration.mjs";
 
 const declaration = name => fixture.declarations.find(entry => entry.name === name).text;
 function compile(source, globals = {}) {
@@ -77,15 +78,23 @@ test("exact source and target hashes match real files under proper roots", async
   const root = new URL("../", import.meta.url);
   const manifest = JSON.parse(await readFile(new URL("migration/model-provider-provenance.json", root), "utf8"));
   const hash = value => createHash("sha256").update(value).digest("hex");
-  for (const entry of manifest.sourceFiles) assert.equal(hash(await readFile(new URL("../" + entry.path, root))), entry.sha256, entry.path);
-  for (const entry of manifest.capturedFiles) assert.equal(hash(await readFile(new URL(entry.path, root))), entry.sha256, entry.path);
+  for (const entry of manifest.sourceFiles) assert.equal(hash(await readOriginalSource(entry.path, {
+    sha256: entry.sha256, dataset: "runtime-model-provider-historical",
+  })), entry.sha256, entry.path);
+  assert.deepEqual(await checkNativeRecords(manifest.capturedFiles.map(entry => ({
+    file: entry.path, sha256: entry.sha256,
+  }))), []);
   for (const entry of fixture.declarations) {
     assert.equal(hash(entry.text), entry.sha256);
-    const source = await readFile(new URL("../" + entry.source, root), "utf8");
+    const record = manifest.sourceFiles.find(record => record.path === entry.source);
+    assert.ok(record, `Missing original source pin: ${entry.source}`);
+    const source = (await readOriginalSource(entry.source, {
+      sha256: record.sha256, dataset: "runtime-model-provider-historical",
+    })).toString("utf8");
     assert.ok(source.includes(entry.text), `${entry.source}#${entry.name}`);
     assert.equal(source.split("\n").slice(entry.startLine - 1, entry.endLine).join("\n") + (entry.text.endsWith("\n") ? "\n" : ""), entry.text);
   }
-  assert.ok(fileURLToPath(root).endsWith("/next-server/"));
+  assert.equal(fileURLToPath(root), `${packageRoot}/`);
 });
 
 test("captured original fragmentation fixture values stay exact", () => {

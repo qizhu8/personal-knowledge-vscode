@@ -152,6 +152,7 @@ with sync_playwright() as playwright:
         expect(notice).to_contain_text("Renamed Folder/Paired browser.assets/mutable.bin")
         assets.get_by_role("button", name="Load owned/referenced assets", exact=True).click()
         renamed = assets.locator("article").filter(has_text="renamed.bin")
+        expect(renamed.get_by_label("New asset name for Folder/Paired browser.assets/renamed.bin", exact=True)).to_be_visible()
         renamed.get_by_role("button", name="Preview asset delete", exact=True).click()
         expect(notice).to_contain_text("delete preview is pinned")
         renamed.get_by_role("button", name="Delete pinned asset", exact=True).click()

@@ -1,0 +1,62 @@
+name: PKM v5 Tests
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pkm-v5-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    name: Isolated v5 ${{ matrix.profile }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [ci, browser]
+    env:
+      PKM_TEST_REPORTS: ${{ runner.temp }}/pkm-v5-test-reports
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: '3.11'
+      - run: npm ci --ignore-scripts
+      - run: npm --prefix legacy ci --ignore-scripts
+      - run: python -m pip install -r tests/requirements.txt
+      - name: Check Core and both VS Code surfaces
+        run: npm run typecheck
+      - name: Install browser runtime before isolation
+        if: matrix.profile == 'browser'
+        run: python -m playwright install --with-deps chromium
+      - name: Validate source catalog and lifecycle
+        env:
+          PKM_TEST_PYTHON: ${{ steps.python.outputs.python-path }}
+        run: |
+          npm run test:check
+          npm run test:framework
+      - name: Run selected v5 regression profile
+        env:
+          PKM_TEST_PYTHON: ${{ steps.python.outputs.python-path }}
+        run: npm test -- --profile ${{ matrix.profile }} --jobs 2
+      - name: Upload bounded failure report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pkm-v5-${{ matrix.profile }}-failure
+          path: ${{ runner.temp }}/pkm-v5-test-reports/last-failure.json
+          if-no-files-found: warn
+          retention-days: 7

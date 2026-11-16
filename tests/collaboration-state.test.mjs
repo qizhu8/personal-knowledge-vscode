@@ -4,19 +4,24 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { readCollaborationCaptureSource } from "../scripts/lib/collaboration-capture-source.mjs";
 import {
   actors, mutation, taskInput, loadCollaborationModules, loadOriginalPure,
   createCollaborationFixture, serverRoot,
 } from "./collaboration-state-fixtures.mjs";
 
-test("source captures and repeatable provenance hashes match actual roots", () => {
-  execFileSync(process.execPath, ["scripts/capture-collaboration-state.mjs", "--check"], { cwd: serverRoot });
-  const provenance = JSON.parse(readFileSync(resolve(serverRoot, "migration/collaboration-state-provenance.json"), "utf8"));
-  const sourceRoot = resolve(serverRoot, "migration", provenance.sourceRoot);
+test("historical source identities and relocated captures remain repeatable", () => {
+  const manifest = resolve(serverRoot, "migration/collaboration-state-provenance.json");
+  const before = readFileSync(manifest);
+  execFileSync(process.execPath, [resolve(serverRoot, "scripts/capture-collaboration-state.mjs"), "--check"], {
+    cwd: resolve(serverRoot, "tests"),
+  });
+  assert.deepEqual(readFileSync(manifest), before);
+  const provenance = JSON.parse(before.toString("utf8"));
   const captureRoot = resolve(serverRoot, "migration", provenance.captureRoot);
   const digest = path => createHash("sha256").update(readFileSync(path)).digest("hex");
   for (const entry of provenance.captures) {
-    assert.equal(digest(resolve(sourceRoot, entry.source)), entry.sourceSha256);
+    assert.equal(createHash("sha256").update(readCollaborationCaptureSource(entry.source)).digest("hex"), entry.sourceSha256);
     assert.equal(digest(resolve(captureRoot, entry.destination)), entry.captureSha256);
   }
 });

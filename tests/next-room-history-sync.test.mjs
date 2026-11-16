@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
@@ -8,7 +8,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 
-const require = createRequire(import.meta.url), project = path.resolve(new URL("../legacy", import.meta.url).pathname);
+const require = createRequire(import.meta.url), project = path.resolve(new URL("..", import.meta.url).pathname);
+const directories = [];
+after(() => { for (const directory of directories) fs.rmSync(directory, { recursive: true, force: true }); });
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check) {
   for (let count = 0; count < 320; count++) { if (await check()) return; await wait(25); }
@@ -17,22 +19,24 @@ async function until(check) {
 test("live Host-authorized cross-root transcript resumes a broken network transfer and fetches the new head", async t => {
   const directory = path.join(project, ".migration-test-work", `room-live-history-${randomUUID()}`);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  directories.push(directory);
   fs.writeFileSync(path.join(directory, "package.json"), '{"type":"module"}');
-  fs.symlinkSync(path.join(project, "../node_modules"), path.join(directory, "node_modules"), "dir");
+  fs.symlinkSync(path.join(project, "legacy/node_modules"), path.join(directory, "node_modules"), "dir");
   const build = (file, contents) => require("esbuild").buildSync({ stdin: { contents, resolveDir: project },
     bundle: true, platform: "node", format: file.endsWith(".cjs") ? "cjs" : "esm", packages: "external",
     outfile: path.join(directory, file), logLevel: "silent" });
   build("native.mjs", `
-    export {initialize,Storage} from "./next-server/src/storage";
-    export {inspectNativeRoom,createNativeRoom} from "./next-server/src/native-chatroom-identity";
-    export {createNextRoomUiHub} from "./next-server/src/next-room-ui-hub";
-    export {inspectLegacyChatroomArchive} from "./next-server/src/legacy-chatroom-continuation";
-    export {admitPrivateRoom} from "./next-server/src/next-room-private-admission";
-    export {historyPurpose,roomHistoryLineage} from "./next-server/src/next-room-history-sync";`);
-  build("storage-worker.js", 'import "./next-server/src/storage-worker";');
-  build("retained.cjs", `export {ChatHub} from "./src/chatroom/chatroom-hub";
-    export {ChatJoinApprovalManager} from "./src/chatroom/chat-join-approval"; export {WebSocketServer} from "ws";`);
-  const archive = path.join(project, "personal-knowledge-4.0.22.vsix");
+    export {initialize,Storage} from "./src/storage";
+    export {inspectNativeRoom,createNativeRoom} from "./src/native-chatroom-identity";
+    export {createNextRoomUiHub} from "./src/next-room-ui-hub";
+    export {inspectLegacyChatroomArchive} from "./src/legacy-chatroom-continuation";
+    export {admitPrivateRoom} from "./src/next-room-private-admission";
+    export {historyPurpose,roomHistoryLineage} from "./src/next-room-history-sync";`);
+  build("storage-worker.js", 'import "./src/storage-worker";');
+  build("retained.cjs", `export {ChatHub} from "./legacy/src/chatroom/chatroom-hub";
+    export {ChatJoinApprovalManager} from "./legacy/src/chatroom/chat-join-approval"; export {WebSocketServer} from "ws";`);
+  const archive = process.env.PKM_LEGACY_VSIX || path.join(project, "legacy/personal-knowledge-4.0.22.vsix");
+  assert(fs.existsSync(archive), "Set PKM_LEGACY_VSIX to the authorized original 4.0.22 VSIX (SHA-256 1804071cb3b9fc86edc5933d5001db6ea1a8d7a9adf30d6d2b3166fcd6048f27).");
   assert.equal(createHash("sha256").update(fs.readFileSync(archive)).digest("hex"),
     "1804071cb3b9fc86edc5933d5001db6ea1a8d7a9adf30d6d2b3166fcd6048f27");
   const original = path.join(directory, "original"); fs.mkdirSync(original);

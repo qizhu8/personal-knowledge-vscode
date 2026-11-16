@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { watch } from "node:fs";
 import { cp, lstat, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -58,6 +59,8 @@ test("quiescent backup and absent-destination restore preserve Markdown, assets,
   await mkdir(assets);
   await writeFile(join(assets, "attachment.bin"), Buffer.from([0, 1, 2, 255]));
   const identity = await f.storage.workspaceId();
+  const writerMarker = ".pkm-next-writer-fenced.json";
+  const sourceWriterMarker = process.platform === "linux" ? await readFile(join(f.source, writerMarker)) : null;
   const backupPath = join(f.parent, "backup");
   const acquired = host();
   const start = Date.now();
@@ -66,6 +69,8 @@ test("quiescent backup and absent-destination restore preserve Markdown, assets,
   assert.equal(backup.workspaceId, identity);
   assert.equal(backup.fileCount, 5);
   const manifest = JSON.parse(await readFile(join(backupPath, ".pkm-workspace-backup.json"), "utf8"));
+  assert(!manifest.files.some(file => file.path === writerMarker));
+  if (sourceWriterMarker) assert.deepEqual(await readFile(join(f.source, writerMarker)), sourceWriterMarker);
   if (process.platform !== "win32") {
     for (const path of [".pkm-workspace-backup.json", ...manifest.files.map(file => file.path)])
       assert.equal((await lstat(join(backupPath, path))).mode & 0o777, 0o600, `Archive bytes stay private: ${path}`);
@@ -79,6 +84,9 @@ test("quiescent backup and absent-destination restore preserve Markdown, assets,
   const restore = await restoreWorkspaceBackup(backupPath, restored, { nativeRestoreAuthority });
   assert.equal(restore.workspaceId, identity);
   assert.equal(restore.fileCount, backup.fileCount);
+  if (sourceWriterMarker)
+    assert.equal(JSON.parse(await readFile(join(restored, writerMarker), "utf8")).root, restored,
+      "restore publication must bind its generated marker before the first destination open");
   assert.equal(await readFile(join(restored, "notes", "synthetic-note.md"), "utf8"), await readFile(join(f.source, "notes", "synthetic-note.md"), "utf8"));
   assert.deepEqual(await readFile(join(restored, "notes", "synthetic-note.assets", "attachment.bin")), Buffer.from([0, 1, 2, 255]));
   const reopened = await Storage.open(restored);
@@ -88,6 +96,14 @@ test("quiescent backup and absent-destination restore preserve Markdown, assets,
     assert.equal(read.id, "synthetic-note");
     assert.deepEqual(await reopened.request(createRequest), receipt, "committed receipt survives the standalone SQLite snapshot");
   } finally { await reopened.close(); }
+  if (sourceWriterMarker) {
+    const restoredMarker = JSON.parse(await readFile(join(restored, writerMarker), "utf8"));
+    const restoredIdentity = await lstat(restored, { bigint: true });
+    assert.equal(restoredMarker.root, restored);
+    assert.equal(restoredMarker.device, String(restoredIdentity.dev));
+    assert.equal(restoredMarker.inode, String(restoredIdentity.ino));
+    assert.notDeepEqual(await readFile(join(restored, writerMarker)), sourceWriterMarker);
+  }
   await assert.rejects(restoreWorkspaceBackup(backupPath, restored), { code: "DESTINATION_EXISTS" });
   console.log(`WORKSPACE_BACKUP_RESULTS ${JSON.stringify({ backupMs, files: backup.fileCount, bytes: backup.totalBytes, restoreVerified: true })}`);
 });
@@ -110,6 +126,73 @@ test("restore accepts older manifests without Markdown times and rejects malform
   await writeFile(manifestPath, JSON.stringify(manifest));
   await restoreWorkspaceBackup(backupPath, join(f.parent, "old-restored"), { nativeRestoreAuthority });
   assert.equal(await readFile(join(f.parent, "old-restored", note.path), "utf8"), await readFile(join(f.source, note.path), "utf8"));
+});
+
+test("restore rejects native authority revoked by real fence marker binding before publication", {
+  skip: process.platform !== "linux", timeout: 20_000,
+}, async t => {
+  const f = await workspace(t);
+  const backupPath = join(f.parent, "backup"), destination = join(f.parent, "revoked-restored");
+  await createWorkspaceBackup(f.storage, backupPath, host());
+  const manifestBefore = await readFile(join(backupPath, ".pkm-workspace-backup.json"));
+  const databaseBefore = await readFile(join(backupPath, "core.sqlite"));
+  let watcher, stage, revoked = false, boundMarker, publicationCalls = 0;
+  let signalRevocation;
+  const revocation = new Promise(resolve => { signalRevocation = resolve; });
+  t.after(() => watcher?.close());
+  const authority = {
+    actorId: nativeRestoreAuthority.actorId,
+    async authorize(request) {
+      assert.equal(Object.isFrozen(request), true);
+      if (!stage) {
+        const name = (await readdir(f.parent)).find(name => name.startsWith(".pkm-restore.") && name.endsWith(".stage"));
+        if (name) {
+          stage = join(f.parent, name);
+          watcher = watch(stage, (_event, filename) => {
+            if (filename === ".pkm-next-writer-fenced.json") {
+              revoked = true;
+              signalRevocation();
+            }
+          });
+        }
+      }
+      if (stage) {
+        try {
+          boundMarker = JSON.parse(await readFile(join(stage, ".pkm-next-writer-fenced.json"), "utf8"));
+          await revocation;
+        } catch (error) {
+          if (error.code !== "ENOENT") throw error;
+        }
+      }
+      return revoked ? null : nativeRestoreAuthority.authorize(request);
+    },
+  };
+  await expectBackupError(restoreWorkspaceBackup(backupPath, destination, {
+    nativeRestoreAuthority: authority,
+    async nativePublishNoReplace() {
+      publicationCalls++;
+      await revocation;
+      assert.fail("Revoked native authority must be rejected before the publisher runs.");
+    },
+  }), "AUTHORITY_REQUIRED");
+  assert.equal(revoked, true, "The real fence binding must revoke the independent authority.");
+  assert.equal(boundMarker.root, destination);
+  assert.equal(publicationCalls, 0);
+  await assert.rejects(lstat(destination), { code: "ENOENT" });
+  assert.equal((await readdir(f.parent)).some(name => name.startsWith(".pkm-restore.")), false);
+  assert.deepEqual(await readFile(join(backupPath, ".pkm-workspace-backup.json")), manifestBefore);
+  assert.deepEqual(await readFile(join(backupPath, "core.sqlite")), databaseBefore);
+});
+
+test("backup rejects a mismatched writer marker without publishing a destination", { skip: process.platform !== "linux" }, async t => {
+  const f = await workspace(t);
+  const marker = join(f.source, ".pkm-next-writer-fenced.json");
+  const original = await readFile(marker);
+  const forged = { ...JSON.parse(original), root: join(f.parent, "foreign") };
+  await writeFile(marker, JSON.stringify(forged));
+  const destination = join(f.parent, "must-not-publish");
+  await expectBackupError(createWorkspaceBackup(f.storage, destination, host()), "INVALID_WORKSPACE");
+  await assert.rejects(readdir(destination), { code: "ENOENT" });
 });
 
 test("backup refuses unknown pending journals, source symlinks, quota excess and uncoordinated hosts", { timeout: 20_000 }, async t => {

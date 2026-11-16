@@ -1,0 +1,318 @@
+{
+  "schema": "pkm.original-source-archive/v1",
+  "qualification": "Historical source authentication only; not a current-native or installed qualification.",
+  "archive": "migration/evidence/linux-candidate-source-originals.zip",
+  "archiveSha256": "2215bb438c49defba69ff65b16d9075fb7a1d67425b6fb9493b5c89823a498dd",
+  "members": [
+    {
+      "path": "resources/action_modules.py",
+      "sha256": "05dc0cdda14163eb41fb713cf69e2069dd99e681df1e721d49f3dbdda3014697",
+      "kind": "source",
+      "member": "05dc0cdda14163eb41fb713cf69e2069dd99e681df1e721d49f3dbdda3014697/source/resources/action_modules.py",
+      "provisioning": {
+        "revision": "b38528bc6fe09b14251db5c692eb0cc391a506c4",
+        "path": "resources/action_modules.py"
+      }
+    },
+    {
+      "path": "src/agent-sessions/agent-snapshots.ts",
+      "sha256": "f5a17cc8f6ea00b9708e0e5a2bfa0484885ac0948737b9dc9d4184bfe3be7fa2",
+      "kind": "source",
+      "member": "f5a17cc8f6ea00b9708e0e5a2bfa0484885ac0948737b9dc9d4184bfe3be7fa2/source/src/agent-sessions/agent-snapshots.ts",
+      "provisioning": {
+        "revision": "a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6",
+        "path": "src/agent-sessions/agent-snapshots.ts"
+      }
+    },
+    {
+      "path": "src/chat/api-chat-view.ts",
+      "sha256": "71ddd872aaf2e1fdf1a70616ebc4d50f03e4552152a6670b0e44cfcfdc2397e6",
+      "kind": "source",
+      "member": "71ddd872aaf2e1fdf1a70616ebc4d50f03e4552152a6670b0e44cfcfdc2397e6/source/src/chat/api-chat-view.ts",
+      "provisioning": {
+        "revision": "8d2966ca511b3873cd729cf72aa18e7a1e09b9c8",
+        "path": "src/chat/api-chat-view.ts"
+      }
+    },
+    {
+      "path": "src/knowledge/markdown-assets.ts",
+      "sha256": "3efa04f06f6b5fd7e649874d031e0ddb8a6ff4f33182747135c6601658922741",
+      "kind": "source",
+      "member": "3efa04f06f6b5fd7e649874d031e0ddb8a6ff4f33182747135c6601658922741/source/src/knowledge/markdown-assets.ts",
+      "provisioning": {
+        "revision": "a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6",
+        "path": "src/knowledge/markdown-assets.ts"
+      }
+    },
+    {
+      "path": "tests/test-api-chat.js",
+      "sha256": "5e137991a8923a60234f26f34c00aaa2969a847335909cbd6bc634b47e9baa12",
+      "kind": "source",
+      "member": "5e137991a8923a60234f26f34c00aaa2969a847335909cbd6bc634b47e9baa12/source/tests/test-api-chat.js",
+      "provisioning": {
+        "revision": "ec92febf240991770172f144fc0138b298491fb0",
+        "path": "tests/test-api-chat.js"
+      }
+    },
+    {
+      "path": "src/chatroom/chatroom-hub.ts",
+      "sha256": "983d6403369f514f0bf62d73b9a61dd96040c593e044d4ff839243a0914ff4c5",
+      "kind": "source",
+      "member": "983d6403369f514f0bf62d73b9a61dd96040c593e044d4ff839243a0914ff4c5/source/src/chatroom/chatroom-hub.ts",
+      "provisioning": {
+        "revision": "a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6",
+        "path": "src/chatroom/chatroom-hub.ts"
+      }
+    },
+    {
+      "path": "src/knowledge/filestore.ts",
+      "sha256": "c5c3a9761562818529a00aedb96aef254bef34dc80a4ed31f31efd39bc7a97a5",
+      "kind": "source",
+      "member": "c5c3a9761562818529a00aedb96aef254bef34dc80a4ed31f31efd39bc7a97a5/source/src/knowledge/filestore.ts",
+      "provisioning": {
+        "revision": "9f4a3a5cd6981675c4348641f5e2e7ad5aa61e99",
+        "path": "src/knowledge/filestore.ts"
+      }
+    },
+    {
+      "path": "src/retrieval/retrieval-snapshot.ts",
+      "sha256": "d0963b3f32c6c1e339035a66382bfb06d931ac128f0ccc2bfc3d57c7485b72f1",
+      "kind": "source",
+      "member": "d0963b3f32c6c1e339035a66382bfb06d931ac128f0ccc2bfc3d57c7485b72f1/source/src/retrieval/retrieval-snapshot.ts",
+      "provisioning": {
+        "revision": "a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6",
+        "path": "src/retrieval/retrieval-snapshot.ts"
+      }
+    },
+    {
+      "path": "next-server/src/domain/knowledge-contracts.ts",
+      "sha256": "0f4c453b726e70df7c3e8df3e4eb253114d89d4cb88eb8ce3e4f561bf336ab2f",
+      "kind": "source",
+      "member": "0f4c453b726e70df7c3e8df3e4eb253114d89d4cb88eb8ce3e4f561bf336ab2f/source/next-server/src/domain/knowledge-contracts.ts",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "next-server/src/domain/knowledge-contracts.ts"
+      }
+    },
+    {
+      "path": "next-server/src/knowledge-snapshot.ts",
+      "sha256": "b9f7c55bd1181d378c754a792e8abb3f835169f1c18fe827cbfc2752266f5df4",
+      "kind": "source",
+      "member": "b9f7c55bd1181d378c754a792e8abb3f835169f1c18fe827cbfc2752266f5df4/source/next-server/src/knowledge-snapshot.ts",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "next-server/src/knowledge-snapshot.ts"
+      }
+    },
+    {
+      "path": "next-server/src/links.ts",
+      "sha256": "32ec06a7fc645426d34ee5b07e480acbd495fcf6dadc5de7df953ab755781b26",
+      "kind": "source",
+      "member": "32ec06a7fc645426d34ee5b07e480acbd495fcf6dadc5de7df953ab755781b26/source/next-server/src/links.ts",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "next-server/src/links.ts"
+      }
+    },
+    {
+      "path": "next-server/src/compute/contracts.ts",
+      "sha256": "fc844905e4a9035100454391704c8f665d254cc1d766d7f2d00be7e527af11f2",
+      "kind": "source",
+      "member": "fc844905e4a9035100454391704c8f665d254cc1d766d7f2d00be7e527af11f2/source/next-server/src/compute/contracts.ts",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "next-server/src/compute/contracts.ts"
+      }
+    },
+    {
+      "path": "tests/test-markdown-owned-assets.js",
+      "sha256": "64ec0aa046fbe000239216013563d7a3dba31df37a5524b124f054229603b4ef",
+      "kind": "source",
+      "member": "64ec0aa046fbe000239216013563d7a3dba31df37a5524b124f054229603b4ef/source/tests/test-markdown-owned-assets.js",
+      "provisioning": {
+        "revision": "a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6",
+        "path": "tests/test-markdown-owned-assets.js"
+      }
+    },
+    {
+      "path": "src/knowledge/storage.ts",
+      "sha256": "a1a6be3f373ce0d89f8ecbe7b51d30e7c773621fd0bccfc234a0b6ce6c27b55d",
+      "kind": "source",
+      "member": "a1a6be3f373ce0d89f8ecbe7b51d30e7c773621fd0bccfc234a0b6ce6c27b55d/source/src/knowledge/storage.ts",
+      "provisioning": {
+        "revision": "a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6",
+        "path": "src/knowledge/storage.ts"
+      }
+    },
+    {
+      "path": "src/workflows/project-store.ts",
+      "sha256": "a88568af85c6cbf714cc8c9efcfb641da12502df888b4c6dd9e4b7e24dacc010",
+      "kind": "source",
+      "member": "a88568af85c6cbf714cc8c9efcfb641da12502df888b4c6dd9e4b7e24dacc010/source/src/workflows/project-store.ts",
+      "provisioning": {
+        "revision": "a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6",
+        "path": "src/workflows/project-store.ts"
+      }
+    },
+    {
+      "path": "src/knowledge/asset-classification.ts",
+      "sha256": "862d3566db8a8bd45b670ba2e5ed3de2ce0570693f92f0730249add8d19e7523",
+      "kind": "source",
+      "member": "862d3566db8a8bd45b670ba2e5ed3de2ce0570693f92f0730249add8d19e7523/source/src/knowledge/asset-classification.ts",
+      "provisioning": {
+        "revision": "a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6",
+        "path": "src/knowledge/asset-classification.ts"
+      }
+    },
+    {
+      "path": "src/knowledge/content-privacy.ts",
+      "sha256": "3f609926211c2a33344b090dc8877531ca26916431779d818df64b28a426a40b",
+      "kind": "source",
+      "member": "3f609926211c2a33344b090dc8877531ca26916431779d818df64b28a426a40b/source/src/knowledge/content-privacy.ts",
+      "provisioning": {
+        "revision": "a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6",
+        "path": "src/knowledge/content-privacy.ts"
+      }
+    },
+    {
+      "path": "resources/knowledge_mutations.py",
+      "sha256": "a17e86d059b23132eaddcd3ab6222e7b909a4f4a1215c3e3ee6a8fbc0d2880f2",
+      "kind": "source",
+      "member": "a17e86d059b23132eaddcd3ab6222e7b909a4f4a1215c3e3ee6a8fbc0d2880f2/source/resources/knowledge_mutations.py",
+      "provisioning": {
+        "revision": "ec92febf240991770172f144fc0138b298491fb0",
+        "path": "resources/knowledge_mutations.py"
+      }
+    },
+    {
+      "path": "tests/test-note-work-item-lifecycle.js",
+      "sha256": "ad3c9e359d7b958af35a4550b01c6a6019413a7052af380fedfa96f75fe32c08",
+      "kind": "source",
+      "member": "ad3c9e359d7b958af35a4550b01c6a6019413a7052af380fedfa96f75fe32c08/source/tests/test-note-work-item-lifecycle.js",
+      "provisioning": {
+        "revision": "9f4a3a5cd6981675c4348641f5e2e7ad5aa61e99",
+        "path": "tests/test-note-work-item-lifecycle.js"
+      }
+    },
+    {
+      "path": "src/workflows/project-model.ts",
+      "sha256": "505f56e2351a9f173268007990eaf02f1014abe0dc4f722b12a8f6aa81c94195",
+      "kind": "source",
+      "member": "505f56e2351a9f173268007990eaf02f1014abe0dc4f722b12a8f6aa81c94195/source/src/workflows/project-model.ts",
+      "provisioning": {
+        "revision": "a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6",
+        "path": "src/workflows/project-model.ts"
+      }
+    },
+    {
+      "path": "src/runtime/cross-process-lock.ts",
+      "sha256": "21735130fc0e0a4ecd950439bf65dc05522d9554726a0f55b5ea32ebf71f1270",
+      "kind": "source",
+      "member": "21735130fc0e0a4ecd950439bf65dc05522d9554726a0f55b5ea32ebf71f1270/source/src/runtime/cross-process-lock.ts",
+      "provisioning": {
+        "revision": "a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6",
+        "path": "src/runtime/cross-process-lock.ts"
+      }
+    },
+    {
+      "path": "src/extension.ts",
+      "sha256": "dca85b6b8b524656524d1178f0a80122ebb5d84aee813afc957d3edf3139240c",
+      "kind": "source",
+      "member": "dca85b6b8b524656524d1178f0a80122ebb5d84aee813afc957d3edf3139240c/source/src/extension.ts",
+      "provisioning": {
+        "revision": "fa20eeb3c675fa936a7c80c70807b2a29dc62146",
+        "path": "src/extension.ts"
+      }
+    },
+    {
+      "path": "package.json",
+      "sha256": "381e8b3b7313a6c37775fa05704d257379bd6aa68c287837bde9070045d58698",
+      "kind": "source",
+      "member": "381e8b3b7313a6c37775fa05704d257379bd6aa68c287837bde9070045d58698/source/package.json",
+      "provisioning": {
+        "revision": "709b71263c4d31f6aae6523525c8bc12b2c16535",
+        "path": "package.json"
+      }
+    },
+    {
+      "path": "src/chatroom/meeting-state.ts",
+      "sha256": "777ea01d26cd721e61b8cb6599b640086d5bb10e80e3f8753732c83983f9201a",
+      "kind": "source",
+      "member": "777ea01d26cd721e61b8cb6599b640086d5bb10e80e3f8753732c83983f9201a/source/src/chatroom/meeting-state.ts",
+      "provisioning": {
+        "revision": "a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6",
+        "path": "src/chatroom/meeting-state.ts"
+      }
+    },
+    {
+      "path": "src/chatroom/chat-meeting-lifecycle.ts",
+      "sha256": "fa9f4506dcc167cbba00ae4b1ef4886455781676fbeda51f73786458e60d09f8",
+      "kind": "source",
+      "member": "fa9f4506dcc167cbba00ae4b1ef4886455781676fbeda51f73786458e60d09f8/source/src/chatroom/chat-meeting-lifecycle.ts",
+      "provisioning": {
+        "revision": "a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6",
+        "path": "src/chatroom/chat-meeting-lifecycle.ts"
+      }
+    },
+    {
+      "path": "src/retrieval/retrieval-worker.ts",
+      "sha256": "a7235794858fa5e49d8c69ade64b2fb617c1c17758acf0099fc7ef04103824bc",
+      "kind": "source",
+      "member": "a7235794858fa5e49d8c69ade64b2fb617c1c17758acf0099fc7ef04103824bc/source/src/retrieval/retrieval-worker.ts",
+      "provisioning": {
+        "revision": "a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6",
+        "path": "src/retrieval/retrieval-worker.ts"
+      }
+    },
+    {
+      "path": "resources/retrieval_worker.py",
+      "sha256": "3c51c84d821e292dc42c5a0c328284d6289e5a0105a45539d38d99d928c1fe64",
+      "kind": "source",
+      "member": "3c51c84d821e292dc42c5a0c328284d6289e5a0105a45539d38d99d928c1fe64/source/resources/retrieval_worker.py",
+      "provisioning": {
+        "revision": "a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6",
+        "path": "resources/retrieval_worker.py"
+      }
+    },
+    {
+      "path": "src/runtime/pkm-service.ts",
+      "sha256": "663a189e39666ee1b32d95a0ab7c2a2188e0baec3d69f7310ce68d15a2459635",
+      "kind": "source",
+      "member": "663a189e39666ee1b32d95a0ab7c2a2188e0baec3d69f7310ce68d15a2459635/source/src/runtime/pkm-service.ts",
+      "provisioning": {
+        "revision": "4b68869e33251b714e671a551b54db05659af647",
+        "path": "src/runtime/pkm-service.ts"
+      }
+    },
+    {
+      "path": "src/mcp/mcp.ts",
+      "sha256": "2a5f623b20b71e3d3ce12283db1fbcb01fb5fa4b43ebbf29d2fd9a28a992f948",
+      "kind": "source",
+      "member": "2a5f623b20b71e3d3ce12283db1fbcb01fb5fa4b43ebbf29d2fd9a28a992f948/source/src/mcp/mcp.ts",
+      "provisioning": {
+        "revision": "ec92febf240991770172f144fc0138b298491fb0",
+        "path": "src/mcp/mcp.ts"
+      }
+    },
+    {
+      "path": "src/sync/github-sync.ts",
+      "sha256": "d4982ae0b6dfecfe234155eaf6ee2df7062d15212a7847162a7e5e67802c35aa",
+      "kind": "source",
+      "member": "d4982ae0b6dfecfe234155eaf6ee2df7062d15212a7847162a7e5e67802c35aa/source/src/sync/github-sync.ts",
+      "provisioning": {
+        "revision": "a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6",
+        "path": "src/sync/github-sync.ts"
+      }
+    },
+    {
+      "path": "resources/recipe_runtime.py",
+      "sha256": "8fb3baf4e7f76a21cd953aa866fb402a8b5636e8d2afd8b3e009d9463645621c",
+      "kind": "source",
+      "member": "8fb3baf4e7f76a21cd953aa866fb402a8b5636e8d2afd8b3e009d9463645621c/source/resources/recipe_runtime.py",
+      "provisioning": {
+        "revision": "a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6",
+        "path": "resources/recipe_runtime.py"
+      }
+    }
+  ]
+}

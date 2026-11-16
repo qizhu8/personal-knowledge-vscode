@@ -196,7 +196,8 @@ test("production Action build requires consent and runs only fresh compiled priv
   const gcc = resolveActionExecutable("gcc");
   if (gcc) {
     const cSource = resolve(sourceDirectory, "native.c");
-    writeFileSync(cSource, '#include <stdio.h>\nint main(void) { puts("{\\"value\\":\\"native-built\\"}"); return 0; }\n', { mode: 0o600 });
+    // Consume the invocation before exiting so stdin delivery cannot race the native process.
+    writeFileSync(cSource, '#include <stdio.h>\nint main(void) { while (getchar() != EOF) {} puts("{\\"value\\":\\"native-built\\"}"); return 0; }\n', { mode: 0o600 });
     const native = structuredClone(definition);
     native.action_id = "example.private.nativebuild";
     native.implementations[0].program = "${build_dir}/native";

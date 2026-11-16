@@ -1,12 +1,30 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { createAgentRuntime } from "../dist/agent-runtime.js";
 import { initializeAgentRuntimeSchema } from "../dist/agent-runtime-store.js";
 import { initializeLegacySnapshotRestoreSchema, validateLegacySnapshotRestoreStaging } from "../dist/legacy-snapshot-restore.js";
 import { legacySnapshotRestoreDefinitions, LEGACY_SNAPSHOT_RESTORE_TABLES } from "../dist/legacy-snapshot-restore-contracts.js";
-import { at, code, fixture, hash, payloadFixture, sourceOracle } from "./legacy-snapshot-restore-captures.mjs";
+import { at, code, fixture, hash, payloadFixture, sourceOracle, readSnapshotOriginal } from "./legacy-snapshot-restore-captures.mjs";
+
+test("snapshot originals bind the complete historical generation, source role and authenticated archive without path fallback", async t => {
+  const path = "src/agent-sessions/agent-snapshots.ts";
+  await assert.rejects(readSnapshotOriginal("src/chat/chat-history-storage.ts"), /path\/role\/digest binding/);
+  await assert.rejects(readSnapshotOriginal(path, { kind: "captured" }), /path\/role\/digest binding/);
+  await assert.rejects(readSnapshotOriginal(path, { sha256: "4f3f6c628ae8be43f71e60202349bbfa3302542290e38ec67898ad43d79a258b" }),
+    /path\/role\/digest binding/);
+  const root = fileURLToPath(new URL(`.snapshot-auth-${randomUUID()}/`, import.meta.url));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const relative = "migration/evidence/snapshot-authentication-originals.zip";
+  await mkdir(join(root, "migration/evidence"), { recursive: true });
+  const bytes = await readFile(new URL(`../${relative}`, import.meta.url));
+  await writeFile(join(root, relative), Buffer.concat([bytes, Buffer.from("tampered")]));
+  await assert.rejects(readSnapshotOriginal(path, { root }), error => error.evidenceReason === "archive-hash-changed");
+});
 
 test("original restore oracle: exact quiescent task/tree/checkpoint/Recipe and normalized Chat; original identity and bytes immutable", async t => {
   const oracle = sourceOracle();

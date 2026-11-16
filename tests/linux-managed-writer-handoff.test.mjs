@@ -44,6 +44,8 @@ test("two profile launchers enroll before serving, fence new starts, and report 
     const directory = join(managed, "generations", generation), runtime = join(directory, "runtime", "dist", "runtime");
     await mkdir(runtime, { recursive: true });
     await cp(join(dist, "runtime"), runtime, { recursive: true });
+    await mkdir(join(runtime, "../servers"));
+    await copyFile(join(dist, "servers/pyenvs.js"), join(runtime, "../servers/pyenvs.js"));
     await copyFile(join(project, "package.json"), join(directory, "runtime", "package.json"));
     await copyFile(join(project, "resources", "root_writer_fence.py"), join(directory, "root_writer_fence.py"));
     await writeFile(join(directory, "server.py"), `
@@ -60,7 +62,7 @@ sys.stdin.read()
 (root / (profile + "-finished")).write_text("finished")
 `);
     const files = {};
-    for (const name of ["server.py", "root_writer_fence.py", "runtime/package.json"]) {
+    for (const name of ["server.py", "root_writer_fence.py", "runtime/package.json", "runtime/dist/servers/pyenvs.js"]) {
       files[name] = createHash("sha256").update(await readFile(join(directory, name))).digest("hex");
     }
     for (const name of await readdir(runtime)) {
@@ -437,7 +439,9 @@ test("unregistered PKM Sync service holds its fence until a real drain completes
   const root = join(scratch, "knowledge"), storage = join(scratch, "storage");
   await mkdir(root, { recursive: true, mode: 0o700 });
   await mkdir(storage, { mode: 0o700 });
-  const env = { ...process.env, HOME: project, TMPDIR: scratch };
+  await mkdir(join(scratch, "home"), { mode: 0o700 });
+  const home = await open(join(scratch, "home"), "r");
+  const env = { ...process.env, HOME: `/proc/${process.pid}/fd/${home.fd}`, TMPDIR: scratch };
   delete env.PKM_MANAGED_WRITER_SESSION;
   const child = spawn(process.execPath, ["-e", `
     const [modulePath, root, storage] = process.argv.slice(1);
@@ -471,6 +475,7 @@ test("unregistered PKM Sync service holds its fence until a real drain completes
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
     await exited;
+    await home.close();
     await rm(scratch, { recursive: true, force: true });
   }
 });

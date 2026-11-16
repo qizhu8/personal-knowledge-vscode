@@ -8,7 +8,7 @@ import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const require = createRequire(import.meta.url);
-const project = path.resolve(new URL("../legacy", import.meta.url).pathname);
+const project = path.resolve(new URL("..", import.meta.url).pathname);
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check) {
   const end = Date.now() + 4000;
@@ -19,20 +19,26 @@ async function until(check) {
 test("Portal owner shutdown covers admitted remote commands without a local Hub", async t => {
   const directory = path.join(project, ".migration-test-work", `portal-close-${randomUUID()}`);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   fs.writeFileSync(path.join(directory, "package.json"), '{"type":"module"}');
-  fs.symlinkSync(path.join(project, "../node_modules"), path.join(directory, "node_modules"), "dir");
+  fs.symlinkSync(path.join(project, "legacy/node_modules"), path.join(directory, "node_modules"), "dir");
   const bundle = path.join(directory, "native.mjs");
   require("esbuild").buildSync({ stdin: { contents: `
-    export {createNextRoomUiHub} from "./next-server/src/next-room-ui-hub";`, resolveDir: project },
+    export {createNextRoomUiHub} from "./src/next-room-ui-hub";`, resolveDir: project },
     bundle: true, platform: "node", format: "esm", packages: "external", outfile: bundle, logLevel: "silent" });
   const native = await import(pathToFileURL(bundle));
-  const original = path.join(project, "personal-knowledge-4.0.22.vsix");
-  assert.equal(createHash("sha256").update(fs.readFileSync(original)).digest("hex"),
-    "1804071cb3b9fc86edc5933d5001db6ea1a8d7a9adf30d6d2b3166fcd6048f27");
-  const unpack = path.join(directory, "original");
-  execFileSync("unzip", ["-q", original, "extension/dist/*", "-d", unpack]);
-  fs.writeFileSync(path.join(unpack, "package.json"), '{"type":"commonjs"}');
-  const commandModule = require(path.join(unpack, "extension/dist/chatroom/portal-command.js"));
+  let originalCommands;
+  const loadOriginalCommands = () => {
+    if (originalCommands) return originalCommands;
+    const original = process.env.PKM_LEGACY_VSIX || path.join(project, "legacy/personal-knowledge-4.0.22.vsix");
+    assert(fs.existsSync(original), "Set PKM_LEGACY_VSIX to the authorized original 4.0.22 VSIX (SHA-256 1804071cb3b9fc86edc5933d5001db6ea1a8d7a9adf30d6d2b3166fcd6048f27).");
+    assert.equal(createHash("sha256").update(fs.readFileSync(original)).digest("hex"),
+      "1804071cb3b9fc86edc5933d5001db6ea1a8d7a9adf30d6d2b3166fcd6048f27");
+    const unpack = path.join(directory, "original");
+    execFileSync("unzip", ["-q", original, "extension/dist/*", "-d", unpack]);
+    fs.writeFileSync(path.join(unpack, "package.json"), '{"type":"commonjs"}');
+    return originalCommands = require(path.join(unpack, "extension/dist/chatroom/portal-command.js"));
+  };
   const workspaceId = randomUUID();
   const storage = { workspaceRoot: () => directory, async workspaceId() { return workspaceId; }, assertWorkspaceLease() {} };
   const hub = (assertAuthority, executors) => native.createNextRoomUiHub({
@@ -46,6 +52,7 @@ test("Portal owner shutdown covers admitted remote commands without a local Hub"
   };
   for (const cause of ["owner-revoked", "owner-stop"]) {
     await t.test(`${cause} aborts the original supervised process and retains its receipt`, async () => {
+      const commandModule = loadOriginalCommands();
       let live = true, executionSignal, processResult;
       const started = path.join(directory, `${cause}.started`), effect = path.join(directory, `${cause}.late-effect`);
       const current = hub(() => { if (!live) throw new Error("Owner revoked."); }, {

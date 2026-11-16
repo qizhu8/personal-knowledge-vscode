@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
@@ -8,7 +8,9 @@ import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const require = createRequire(import.meta.url);
-const project = path.resolve(new URL("../legacy", import.meta.url).pathname);
+const project = path.resolve(new URL("..", import.meta.url).pathname);
+const directories = [];
+after(() => { for (const directory of directories) fs.rmSync(directory, { recursive: true, force: true }); });
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check) {
   const end = Date.now() + 8000;
@@ -18,22 +20,24 @@ async function until(check) {
 test("original Host proof closes only a credentialed admitted Room on the selected remote owner", async t => {
   const directory = path.join(project, ".migration-test-work", `room-remote-close-${randomUUID()}`);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  directories.push(directory);
   fs.writeFileSync(path.join(directory, "package.json"), '{"type":"module"}');
-  fs.symlinkSync(path.join(project, "../node_modules"), path.join(directory, "node_modules"), "dir");
+  fs.symlinkSync(path.join(project, "legacy/node_modules"), path.join(directory, "node_modules"), "dir");
   const esbuild = require("esbuild");
   const build = (name, text) => esbuild.buildSync({ stdin: { contents: text, resolveDir: project },
     bundle: true, platform: "node", format: name.endsWith(".cjs") ? "cjs" : "esm",
     packages: "external", outfile: path.join(directory, name), logLevel: "silent" });
   build("native.mjs", `
-    export {initialize,Storage} from "./next-server/src/storage";
-    export {createNativeRoom,inspectNativeRoom} from "./next-server/src/native-chatroom-identity";
-    export {createNextRoomUiHub} from "./next-server/src/next-room-ui-hub";`);
-  build("storage-worker.js", 'import "./next-server/src/storage-worker";');
+    export {initialize,Storage} from "./src/storage";
+    export {createNativeRoom,inspectNativeRoom} from "./src/native-chatroom-identity";
+    export {createNextRoomUiHub} from "./src/next-room-ui-hub";`);
+  build("storage-worker.js", 'import "./src/storage-worker";');
   build("retained.cjs", `
-    export {ChatHub} from "./src/chatroom/chatroom-hub";
-    export {ChatJoinApprovalManager} from "./src/chatroom/chat-join-approval";
+    export {ChatHub} from "./legacy/src/chatroom/chatroom-hub";
+    export {ChatJoinApprovalManager} from "./legacy/src/chatroom/chat-join-approval";
     export {WebSocketServer} from "ws";`);
-  const archive = path.join(project, "personal-knowledge-4.0.22.vsix");
+  const archive = process.env.PKM_LEGACY_VSIX || path.join(project, "legacy/personal-knowledge-4.0.22.vsix");
+  assert(fs.existsSync(archive), "Set PKM_LEGACY_VSIX to the authorized original 4.0.22 VSIX (SHA-256 1804071cb3b9fc86edc5933d5001db6ea1a8d7a9adf30d6d2b3166fcd6048f27).");
   assert.equal(createHash("sha256").update(fs.readFileSync(archive)).digest("hex"),
     "1804071cb3b9fc86edc5933d5001db6ea1a8d7a9adf30d6d2b3166fcd6048f27");
   const original = path.join(directory, "original");

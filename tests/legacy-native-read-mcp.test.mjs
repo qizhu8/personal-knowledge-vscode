@@ -7,7 +7,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { initialize } from "../dist/storage.js";
+import { initialize, Storage } from "../dist/storage.js";
+import { createNativeRuntime } from "../dist/native-runtime.js";
 import { serializeTodoBoard } from "../dist/domain/todo-board.js";
 import { legacyManagedFixture, closeLegacyManagedFixture } from "./legacy-managed-fixture.mjs";
 
@@ -29,6 +30,7 @@ for (const profile of ["compact", "legacy"]) test(`original Note item read/disco
     const original = (operation, path, extra = {}) => JSON.parse(execFileSync(process.execPath, [
       join(repository, "resources/knowledge_mutations.js"), repository, data,
     ], { input: JSON.stringify({ operation, area: "notes", path, ...extra }), encoding: "utf8" }));
+    const discoveryCases = [{}, { limit: 1 }, { query: "Inline", limit: 1 }, { query: "missing", limit: 1 }];
     for (let restart = 0; restart < 2; restart++) {
       client = new Client({ name: "original-native-reads", version: "1.0.0" });
       await client.connect(new StdioClientTransport({ command: "python3",
@@ -45,11 +47,29 @@ for (const profile of ["compact", "legacy"]) test(`original Note item read/disco
       };
       for (const slug of ["Inline", "Board"])
         await read("note_work_items", { slug }, original("work-items-read", `${slug}.md`));
-      await read("note_work_item_notes", {}, original("work-item-notes", "_discovery.md", { query: "", limit: 20 }));
+      for (const args of discoveryCases)
+        await read("note_work_item_notes", args,
+          original("work-item-notes", "_discovery.md", { query: "", limit: 20, ...args }));
       const spoof = await client.callTool({ name: "note_work_items", arguments: { slug: "Inline", actorId: "user:local" } });
       assert.equal(spoof.isError, true);
       const traversal = await client.callTool({ name: "note_work_items", arguments: { slug: "../outside" } });
       assert.equal(traversal.isError, true);
       await closeLegacyManagedFixture(client);
     }
+    const storage = await Storage.open(data);
+    const actor = { id: "mcp:external", canRead: true, canWrite: false };
+    let runtime;
+    try {
+      runtime = await createNativeRuntime({
+        storage, legacyNoteWorkItems: { authorize: who => who.id === actor.id },
+      });
+      for (const args of discoveryCases) {
+        const response = await runtime.core.dispatch("capability_read", {
+          operation: "legacy.note.workitems.notes", version: 1, arguments: args,
+        }, actor);
+        assert.equal(response.error, undefined, JSON.stringify(response));
+        assert.deepEqual(response.result,
+          original("work-item-notes", "_discovery.md", { query: "", limit: 20, ...args }));
+      }
+    } finally { await runtime?.close(); await storage.close(); }
   });

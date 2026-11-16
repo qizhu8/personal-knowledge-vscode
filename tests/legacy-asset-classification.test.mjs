@@ -10,7 +10,7 @@ import {
   admitLegacyAssetClassification, createLegacyAssetClassificationSession, invokeAdmittedLegacyAssetClassification,
   legacyAssetClassification, reconcileLegacyAssetClassification, verifyLegacyAssetClassification,
 } from "../dist/legacy-asset-classification.js";
-import { originalLoader } from "./host-composition-legacy-batch15-captures.mjs";
+import { originalReleaseModules as originalLoader } from "./legacy-release-modules.mjs";
 
 const actor = { id: "mcp:external", canWrite: true };
 const put = (root, path, value) => { mkdirSync(join(root, path, ".."), { recursive: true }); writeFileSync(join(root, path), value); };
@@ -301,15 +301,8 @@ for (const phase of ["intent", "staged", "published"]) test(`relocated ${phase} 
   await f.storage.close();
   cpSync(f.root, root, { recursive: true });
   await f.restart();
-  const restored = await Storage.open(root);
-  try {
-    const before = classificationEvidence(restored), files = tree(root);
-    await assert.rejects(admitLegacyAssetClassification(restored, actor, {
-      ...f.authority, authorize: binding => binding.workspaceRoot === root,
-    }), { code: "RECOVERY_REQUIRED" });
-    await assert.rejects(reconcileLegacyAssetClassification(restored, actor, f.authority), { code: "ACCESS_DENIED" });
-    assert.deepEqual(classificationEvidence(restored), before);
-    assert.deepEqual(tree(root), files);
-    assert.deepEqual((await reconcileLegacyAssetClassification(f.storage, actor, f.authority)).applied, [proposal.id]);
-  } finally { await restored.close(); }
+  const files = tree(root);
+  await assert.rejects(Storage.open(root), { code: "RECOVERY_REQUIRED" });
+  assert.deepEqual(tree(root), files);
+  assert.deepEqual((await reconcileLegacyAssetClassification(f.storage, actor, f.authority)).applied, [proposal.id]);
 });

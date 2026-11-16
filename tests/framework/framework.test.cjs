@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { createWorkspace, executeSuite } = require("./workspace.cjs");
 const { fileSuite } = require("./suites.cjs");
+const { fixtureRequirements } = require("./fixtures.cjs");
 
 const repositoryRoot = path.resolve(__dirname, "../..");
 const fixture = path.join(__dirname, "fixture.cjs");
@@ -44,6 +45,31 @@ test("failure keeps one bounded summary and removes fixtures even for escape-hea
     assert.equal(JSON.parse(fs.readFileSync(result.report)).code, 7);
   }
   assert.deepEqual(fs.readdirSync(options.reportDirectory), ["last-failure.json"]);
+});
+
+test("private subscription fixtures receive namespace-local RAM without checkout writes", async t => {
+  const options = context(t), ram = path.join(repositoryRoot, "legacy/.pkm-test-subscription-ram");
+  const existed = fs.existsSync(ram);
+  const invokingNetwork = fs.readlinkSync("/proc/self/ns/net");
+  const source = `
+    const fs=require("node:fs"),path=require("node:path"),assert=require("node:assert/strict");
+    const root=process.env.PKM_SUBSCRIPTION_TEST_RAM_ROOT;
+    assert.equal(root,path.resolve("legacy/.pkm-test-subscription-ram"));
+    assert.equal(fs.realpathSync(root),root);
+    assert.equal(fs.statfsSync(root).type,0x01021994);
+    assert.equal(fs.statSync(root).mode&0o777,0o700);
+    assert.equal(process.env.PKM_TEST_ISOLATED_NETWORK,"1");
+    assert.notEqual(fs.readlinkSync("/proc/self/ns/net"),${JSON.stringify(invokingNetwork)});
+    fs.writeFileSync(path.join(root,"synthetic-private-fixture"),"synthetic",{mode:0o600});
+  `;
+  const result = await executeSuite({ name: "private-subscription-ram",
+    command: [process.execPath, "-e", source],
+    fixtures: fixtureRequirements({ environments: ["PKM_SUBSCRIPTION_TEST_RAM_ROOT"] }),
+  }, options);
+  assert.equal(result.status, "passed", result.stderr || result.error);
+  assert.equal(result.cleaned, true);
+  assert.equal(fs.existsSync(path.join(ram, "synthetic-private-fixture")), false);
+  assert.equal(fs.existsSync(ram), existed);
 });
 
 test("detached fixture processes stop before workspace removal", async t => {

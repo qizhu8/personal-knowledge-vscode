@@ -2,8 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, writeFile, readFile, readdir, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile, readFile, readdir, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -14,7 +13,8 @@ const repositoryRoot = resolve(packageRoot, "legacy");
 const require = createRequire(join(repositoryRoot, "package.json"));
 
 test("experimental managed startup rejects production claims before publishing an instance", async t => {
-  const parent = await mkdtemp(join(tmpdir(), "pkm-legacy-chat-manifest-"));
+  const parent = join(packageRoot, `.pkm-legacy-chat-manifest-${randomUUID()}`);
+  await mkdir(parent);
   t.after(() => rm(parent, { recursive: true, force: true }));
   const data = await initialize(join(parent, "workspace"));
   for (const change of [{ version: "1.0.0" }, { enabledFeatureDomains: ["knowledge"] },
@@ -40,7 +40,8 @@ test("experimental managed startup rejects production claims before publishing a
 });
 
 test("existing Chat MCP connector handshakes, reads and drains the isolated compatibility process", { timeout: 60_000 }, async t => {
-  const parent = await mkdtemp(join(tmpdir(), "pkm-legacy-chat-mcp-"));
+  const parent = join(packageRoot, `.pkm-legacy-chat-mcp-${randomUUID()}`);
+  await mkdir(parent);
   let connection;
   t.after(async () => { try { await connection?.close(); } finally { await rm(parent, { recursive: true, force: true }); } });
   const data = join(parent, "workspace");
@@ -114,11 +115,5 @@ test("existing Chat MCP connector handshakes, reads and drains the isolated comp
   assert.equal(statusResult.structuredContent.inFlight, 0);
   await connection.close();
   await assert.rejects(connection.invoke("mcp_pkm_list_notes", {}, new AbortController().signal), /closing|reconnect/i);
-  const instances = await readdir(join(managed, "instances"));
-  for (const file of instances.filter(name => name.endsWith(".json"))) {
-    const status = JSON.parse(await readFile(join(managed, "instances", file), "utf8"));
-    assert.equal(status.acceptingNewCalls, false);
-    assert.equal(status.inFlight, 0);
-    assert.equal(status.uncertainCalls, 0);
-  }
+  await assert.rejects(readdir(join(managed, "instances")), { code: "ENOENT" });
 });

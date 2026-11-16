@@ -32,10 +32,14 @@ test("original uncertainty and failed recovery contracts prohibit automatic repl
 });
 test("source and capture hashes verified by the shared checker; drift is detected", async () => {
   const provenance = JSON.parse(await readFile(new URL("../migration/runtime-process-provenance.json", import.meta.url), "utf8"));
-  assert.deepEqual(await checkCaptureRecords(provenance.files), []);
+  assert.deepEqual(await checkCaptureRecords(provenance.files, undefined, undefined, {
+    dataset: "runtime-runtime-process-historical",
+  }), []);
   const drift = structuredClone(provenance.files[0]);
   drift.capturedSha256 = "0".repeat(64);
-  const issues = await checkCaptureRecords([drift]);
+  const issues = await checkCaptureRecords([drift], undefined, undefined, {
+    dataset: "runtime-runtime-process-historical",
+  });
   assert.equal(issues.length, 1);
   assert.equal(issues[0].kind, "captured");
 });

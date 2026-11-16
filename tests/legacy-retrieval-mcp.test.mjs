@@ -14,7 +14,7 @@ import { nativeRestoreAuthority } from "./host-composition-legacy-batch16-restor
 import { legacyManagedFixture, closeLegacyManagedFixture } from "./legacy-managed-fixture.mjs";
 import { subscriptionReadSourceFiles } from "./subscription-reads-fixtures.mjs";
 
-const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "..");
+const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "legacy");
 const python = execFileSync("python3", ["-c", "import sys;print(sys.executable)"], { encoding: "utf8" }).trim();
 const note = "---\nschema: pkm.knowledge/v1\nknowledgeId: knowledge_000000000000000000000001\nrevision: 2\ntitle: Evidence\n---\nIndexed Evidence body.\n";
 const skill = "---\nschema: pkm.knowledge/v1\nknowledgeId: knowledge_000000000000000000000002\nrevision: 2\nname: Evidence Skill\n---\nIndexed Evidence Skill body.\n";

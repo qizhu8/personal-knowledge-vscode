@@ -12,10 +12,11 @@ import { runInstalledGitHubUi } from "./native-subscription-github-installed.mjs
 
 const require = createRequire(import.meta.url), esbuild = require("esbuild"), Module = require("node:module");
 const dist = resolve(process.env.PKM_TEST_NEXT_DIST || "dist");
+const legacyRoot = resolve(import.meta.dirname, "../legacy");
 const { prepareLegacyRootAdoptionExperimental, resumeLegacyRootAdoptionExperimental } =
   await import(pathToFileURL(join(dist, "legacy-root-adoption.js")));
 const load = path => {
-  const filename = resolve(path);
+  const filename = resolve(legacyRoot, path);
   const compiled = esbuild.buildSync({ entryPoints: [filename], bundle: true, platform: "node",
     format: "cjs", packages: "external", write: false }).outputFiles[0].text;
   const module = new Module(filename, require.main);
@@ -324,14 +325,16 @@ test("native IPC coordinates actual legacy protected pull and removal through a 
       const publisherProfile = join(base, "publisher-profile"), stage = join(base, "host-dist");
       for (const dir of [join(root, "notes"), join(publisherRoot, "notes"), profile, publisherProfile, join(stage, "subscriptions")])
         mkdirSync(dir, { recursive: true, mode: 0o700 });
+      writeFileSync(join(stage, "package.json"), '{"type":"commonjs"}\n', { mode: 0o600 });
+      symlinkSync(join(legacyRoot, "node_modules"), join(stage, "node_modules"), "dir");
       writeFileSync(join(root, "notes", "Original.md"), "---\ntitle: Original\ndocumentId: synthetic-note\nrevision: 1\n---\nOriginal.\n", { mode: 0o600 });
       writeFileSync(join(publisherRoot, "notes", "Shared.md"), "# Synthetic protected share\n", { mode: 0o600 });
       const entry = [
-        `const legacy = require(${JSON.stringify(resolve("src/subscriptions/subscriptions.ts"))});`,
-        `const filestore = require(${JSON.stringify(resolve("src/knowledge/filestore.ts"))});`,
-        `const storage = require(${JSON.stringify(resolve("src/knowledge/storage.ts"))});`,
-        `const transport = require(${JSON.stringify(resolve("src/subscriptions/native-remote-transport.ts"))});`,
-        `const proof = require(${JSON.stringify(resolve("src/subscriptions/authenticated-pull.ts"))});`,
+        `const legacy = require(${JSON.stringify(resolve(legacyRoot, "src/subscriptions/subscriptions.ts"))});`,
+        `const filestore = require(${JSON.stringify(resolve(legacyRoot, "src/knowledge/filestore.ts"))});`,
+        `const storage = require(${JSON.stringify(resolve(legacyRoot, "src/knowledge/storage.ts"))});`,
+        `const transport = require(${JSON.stringify(resolve(legacyRoot, "src/subscriptions/native-remote-transport.ts"))});`,
+        `const proof = require(${JSON.stringify(resolve(legacyRoot, "src/subscriptions/authenticated-pull.ts"))});`,
         "module.exports = { ...legacy, ...transport, ...proof, setRoot: p => { filestore.setStorePath(p); storage.setStorePath(p); } };",
       ].join("\n");
       esbuild.buildSync({ stdin: { contents: entry, resolveDir: resolve("."), loader: "js" }, bundle: true,
@@ -339,7 +342,7 @@ test("native IPC coordinates actual legacy protected pull and removal through a 
       for (const [source, output] of [
         ["src/subscriptions/subscription-materialize-worker.ts", "subscription-materialize-worker.js"],
         ["src/subscriptions/subscription-gateway-entry.ts", "subscription-gateway.js"],
-      ]) esbuild.buildSync({ entryPoints: [resolve(source)], bundle: true, platform: "node", format: "cjs",
+      ]) esbuild.buildSync({ entryPoints: [resolve(legacyRoot, source)], bundle: true, platform: "node", format: "cjs",
         packages: "external", outfile: join(stage, output) });
       const legacy = require(join(stage, "subscriptions", "subscriptions.js"));
       const memory = () => {
@@ -423,6 +426,7 @@ await t.test("GitHub journal pins old Skills-only membership and authenticated c
       const gitExecutable = spawnSync("which", ["git"], { encoding: "utf8" }).stdout.trim();
       assert.ok(gitExecutable.startsWith("/"));
       const mockBin = join(base, "bin"); mkdirSync(mockBin, { mode: 0o700 });
+      writeFileSync(join(mockBin, "package.json"), '{"type":"commonjs"}\n', { mode: 0o600 });
       writeFileSync(join(mockBin, "git"), `#!${process.execPath}
 const {spawnSync}=require("node:child_process");
 const result=spawnSync(${JSON.stringify(gitExecutable)},[
@@ -532,12 +536,14 @@ process.exit(result.status === null ? 1 : result.status);
       const runtime = join(base, "runtime"), serverRuntime = join(runtime, "server"), hostRuntime = join(runtime, "host");
       const grantDir = join(base, "u", "User", "globalStorage", "uone.personal-knowledge");
       mkdirSync(join(hostRuntime, "subscriptions"), { recursive: true, mode: 0o700 });
+      writeFileSync(join(hostRuntime, "package.json"), '{"type":"commonjs"}\n', { mode: 0o600 });
+      symlinkSync(join(legacyRoot, "node_modules"), join(hostRuntime, "node_modules"), "dir");
       mkdirSync(grantDir, { recursive: true, mode: 0o700 });
       cpSync(dist, join(serverRuntime, "dist"), { recursive: true });
       for (const name of ["compat", "browser"]) cpSync(resolve(dist, "..", name), join(serverRuntime, name), { recursive: true });
       symlinkSync(resolve(dist, "..", "node_modules"), join(serverRuntime, "node_modules"), "dir");
       writeFileSync(join(hostRuntime, "subscription-gateway.js"), "", { mode: 0o600 });
-      esbuild.buildSync({ stdin: { contents: `require(${JSON.stringify(resolve("src/subscriptions/native-membership-coordinator.ts"))})
+      esbuild.buildSync({ stdin: { contents: `require(${JSON.stringify(resolve(legacyRoot, "src/subscriptions/native-membership-coordinator.ts"))})
         .runNativeSubscriptionCoordinator(JSON.parse(process.env.TEST_BINDING))
         .catch(error => { console.error(error.message); process.exitCode = 1; });`, resolveDir: resolve("."), loader: "js" },
         bundle: true, platform: "node", format: "cjs", packages: "external", outfile: join(hostRuntime, "subscriptions", "controller.js") });

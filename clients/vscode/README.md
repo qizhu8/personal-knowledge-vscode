@@ -8,7 +8,7 @@ expected workspace ID, `secrets.get`, and `attestServer`. The latter is a truste
 host callback that must independently bind that endpoint, workspace and authenticated
 actor; it must not simply echo user-controlled input. Authenticated `server_info`
 must advertise the actual storage workspace ID, authenticated actor, exact
-`serverId: "pkm-next"`, protocol `v1`, and workspace version. Missing or mismatched
+`serverId: "pkm-v5"`, protocol `v1`, and workspace version. Missing or mismatched
 identity fails closed; attestation cannot substitute a caller-supplied workspace ID.
 The canonical envelope, `/v1` endpoint, workspace schema, catalog
 revision and each available operation's version/read/write flag are checked.

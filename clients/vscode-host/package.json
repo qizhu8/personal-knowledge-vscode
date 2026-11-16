@@ -1,14 +1,15 @@
 {
-  "name": "pkm-next-nonproduction-host",
-  "displayName": "PKM Next Nonproduction Host",
-  "description": "Isolated experimental host for an externally started next-server.",
+  "name": "pkm-v5",
+  "displayName": "pkm-v5",
+  "description": "Isolated experimental pkm-v5 host; not a production replacement.",
   "version": "0.1.0",
   "private": true,
   "publisher": "pkm-nonproduction",
-  "engines": { "vscode": "^1.96.0" },
+  "engines": { "vscode": "^1.101.0" },
   "main": "./dist/extension.cjs",
-  "files": ["dist/**", "README.md", "LICENSE"],
+  "files": ["dist/**", "next-runtime/**", "README.md", "LICENSE"],
   "activationEvents": [
+    "onMcpCollection:pkm-v5",
     "onCommand:pkm.next.connect",
     "onCommand:pkm.next.disconnect",
     "onCommand:pkm.nextHost.open",
@@ -18,24 +19,48 @@
     "onCommand:pkm.nextHost.migrationConnect",
     "onCommand:pkm.nextHost.migrationDisconnect",
     "onCommand:pkm.nextHost.migrationState",
-    "onCommand:pkm.nextHost.migrationInvoke"
+    "onCommand:pkm.nextHost.migrationInvoke",
+    "onCommand:pkm.nextHost.productionPreview",
+    "onCommand:pkm.nextHost.productionTransition",
+    "onCommand:pkm.nextHost.productionState",
+    "onCommand:pkm.nextHost.productionRead",
+    "onCommand:pkm.nextHost.productionRollback",
+    "onCommand:pkm.nextHost.productionDisconnect"
   ],
   "contributes": {
+    "mcpServerDefinitionProviders": [
+      { "id": "pkm-v5", "label": "pkm-v5" }
+    ],
     "commands": [
-      { "command": "pkm.next.connect", "title": "PKM Next (Experimental): Connect" },
-      { "command": "pkm.next.disconnect", "title": "PKM Next (Experimental): Disconnect" },
-      { "command": "pkm.nextHost.open", "title": "PKM Next (Experimental): Open" },
-      { "command": "pkm.nextHost.setToken", "title": "PKM Next (Experimental): Store Token" },
-      { "command": "pkm.nextHost.importPreview", "title": "PKM Next (Experimental): Preview First-Run Import" },
-      { "command": "pkm.nextHost.importConfirm", "title": "PKM Next (Experimental): Confirm Inspected Import" },
-      { "command": "pkm.nextHost.migrationConnect", "title": "PKM Next (Experimental): Connect Isolated Managed MCP" },
-      { "command": "pkm.nextHost.migrationDisconnect", "title": "PKM Next (Experimental): Drain Isolated Managed MCP" },
-      { "command": "pkm.nextHost.migrationState", "title": "PKM Next (Experimental): Isolated Managed MCP State" },
-      { "command": "pkm.nextHost.migrationInvoke", "title": "PKM Next (Experimental): Invoke Isolated Managed MCP" }
+      { "command": "pkm.next.connect", "title": "pkm-v5 (Experimental): Connect" },
+      { "command": "pkm.next.disconnect", "title": "pkm-v5 (Experimental): Disconnect" },
+      { "command": "pkm.nextHost.open", "title": "pkm-v5 (Experimental): Open" },
+      { "command": "pkm.nextHost.setToken", "title": "pkm-v5 (Experimental): Store Token" },
+      { "command": "pkm.nextHost.importPreview", "title": "pkm-v5 (Experimental): Preview First-Run Import" },
+      { "command": "pkm.nextHost.importConfirm", "title": "pkm-v5 (Experimental): Confirm Inspected Import" },
+      { "command": "pkm.nextHost.migrationConnect", "title": "pkm-v5 (Experimental): Connect Isolated Managed MCP" },
+      { "command": "pkm.nextHost.migrationDisconnect", "title": "pkm-v5 (Experimental): Drain Isolated Managed MCP" },
+      { "command": "pkm.nextHost.migrationState", "title": "pkm-v5 (Experimental): Isolated Managed MCP State" },
+      { "command": "pkm.nextHost.migrationInvoke", "title": "pkm-v5 (Experimental): Invoke Isolated Managed MCP" },
+      { "command": "pkm.nextHost.productionPreview", "title": "pkm-v5 (Experimental): Preview Opt-In Same-Root Migration" },
+      { "command": "pkm.nextHost.productionTransition", "title": "pkm-v5 (Experimental): Confirm Opt-In Same-Root Migration" },
+      { "command": "pkm.nextHost.productionState", "title": "pkm-v5 (Experimental): Same-Root Coordinator State" },
+      { "command": "pkm.nextHost.productionRead", "title": "pkm-v5 (Experimental): Same-Root Managed Read" },
+      { "command": "pkm.nextHost.productionRollback", "title": "pkm-v5 (Experimental): Roll Back Exact Same-Root Migration" },
+      { "command": "pkm.nextHost.productionDisconnect", "title": "pkm-v5 (Experimental): Drain Same-Root Coordinator" }
     ],
     "configuration": {
-      "title": "PKM Next Experimental Host",
+      "title": "pkm-v5 Experimental Host",
       "properties": {
+        "pkm.nextHost.productionCoordinator": {
+          "type": "object", "scope": "machine", "default": { "enabled": false },
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "root": { "type": "string", "description": "Explicit canonical absolute isolated Root. Never select live production data for acceptance tests." }
+          },
+          "description": "Explicit opt-in same-root coordinator; disabled by default. Only a user-level enabled/root object is accepted. Actual profile and verified installed payload build are derived by the host, never supplied in settings."
+        },
         "pkm.nextHost.managedRoot": { "type": "string", "scope": "machine", "description": "Absolute isolated experimental generation root, provisioned with experimental/managed-migration.mjs. Never use the production PKM managed root." },
         "pkm.nextHost.origin": { "type": "string", "scope": "machine", "description": "Externally provisioned HTTP origin, http://127.0.0.1:PORT." },
         "pkm.nextHost.workspaceId": { "type": "string", "scope": "machine", "description": "Independently provisioned expected server workspace ID." },
@@ -47,7 +72,7 @@
     "build": "node build.mjs",
     "package:vsix": "npm run build && node package-host.mjs",
     "test:installed": "npm run build && node installed-test.mjs",
-    "test": "npm run build && node --test host.test.mjs",
+    "test": "npm run build && node --test host.test.mjs electron-test-packaging.test.mjs",
     "test:live-runtime": "node --test live-runtime.test.mjs",
     "test:electron": "npm run build && node electron-test.mjs",
     "test:electron:live": "npm run build && node live-electron-test.mjs",

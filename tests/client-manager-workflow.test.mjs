@@ -20,7 +20,7 @@ async function connect(t, fixture, actor = managerActor, transform) {
       assert.equal(endpoint, origin);
       assert.equal(info.workspaceId, workspaceId);
       assert.equal(info.actorId, actor.id);
-      return { serverId: "pkm-next", workspaceId, actorId: actor.id, protocolVersion: "v1" };
+      return { serverId: "pkm-v5", workspaceId, actorId: actor.id, protocolVersion: "v1" };
     },
     fetch: async (url, init) => {
       assert.equal(new URL(url).origin, origin, "only the disposable loopback server is contacted");

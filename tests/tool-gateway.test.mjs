@@ -184,7 +184,7 @@ test("capture provenance verifies actual source paths and deterministic generate
   const records = JSON.parse(await readFile(new URL("../migration/tool-gateway-provenance.json", import.meta.url), "utf8"));
   const hash = data => createHash("sha256").update(data).digest("hex");
   for (const item of records.files) {
-    assert.equal(hash(await readFile(new URL(`../../${item.source}`, import.meta.url))), item.sourceSha256);
+    assert.equal(hash(await readFile(new URL(`../legacy/${item.source}`, import.meta.url))), item.sourceSha256);
     assert.equal(hash(await readFile(new URL(`../${item.captured}`, import.meta.url))), item.capturedSha256);
   }
 });

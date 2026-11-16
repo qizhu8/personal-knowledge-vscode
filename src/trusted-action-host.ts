@@ -3,6 +3,7 @@ import type { Storage } from "./storage.js";
 import type { NativeRuntimeOptions } from "./native-runtime.js";
 import { originalDefinitionValue } from "./domain/action-compiler-validation.js";
 import { createVscodeActionTrustBridge } from "./vscode-action-trust-bridge.js";
+import { ACTION_SOURCE_IDENTITY } from "./domain/action-source-identity.js";
 
 function canonical(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -13,6 +14,9 @@ function canonical(value: unknown): string {
 
 /** Explicit native opt-in. The actor is fixed by the host, never by MCP input. */
 export async function createTrustedActionHostOptions(storage: Storage): Promise<NativeRuntimeOptions["hostServices"]> {
+  if (ACTION_SOURCE_IDENTITY.qualification === "fixture-only") {
+    throw new Error("This Action source identity has fixture agreement only; independent qualification is required before trusted host admission.");
+  }
   const workspaceId = await storage.workspaceId();
   const actorId = "mcp:external";
   const authority = createVscodeActionTrustBridge({ workspaceRoot: storage.workspaceRoot(), workspaceId, actorId, nativeEndpoint: true });

@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { mkdir, rename, rm } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { initialize, Storage } from "./storage.js";
+import { acquireLinuxRootWriterFence, type LinuxRootWriterFence } from "./linux-root-writer-fence.js";
+import { renameNoReplace, renameNoReplaceSync } from "./rename-no-replace.js";
 import { Core } from "./core.js";
 import { planLegacyMemoryImport, stageLegacyMemoryImport, persistLegacyMemoryImport } from "./memory-import.js";
 import { activateReadoptedMemoryScope, continuityScope, deactivateMemoryScopeContinuity,
@@ -68,10 +70,12 @@ export class LegacyApiChatMemory {
     if (realpathSync(parent) !== parent) throw new Error("Native Memory storage traverses a symbolic link.");
     if (!existsSync(directory)) {
       const stage = join(parent, `new-${randomUUID()}`);
+      let fence: LinuxRootWriterFence | undefined;
       try {
         await initialize(stage);
         const initialized = await Storage.open(stage);
         await initialized.close();
+        if (process.platform === "linux") fence = await acquireLinuxRootWriterFence(stage);
         const imported = await stageLegacyMemoryImport(plan, stage);
         const marker = JSON.parse(readFileSync(join(stage, ".pkm-next-workspace"), "utf8"));
         const db = new DatabaseSync(join(stage, "core.sqlite"));
@@ -87,8 +91,12 @@ export class LegacyApiChatMemory {
           db.prepare("INSERT INTO legacy_chat_memory_binding VALUES(?)").run(JSON.stringify(identity));
           db.exec("COMMIT");
         } finally { db.close(); }
-        await rename(stage, directory);
-      } finally { await rm(stage, { recursive: true, force: true }); }
+        if (fence) await fence.publishRootNoReplace(directory, keepAlive => renameNoReplaceSync(stage, directory, undefined, keepAlive));
+        else await renameNoReplace(stage, directory);
+      } finally {
+        try { await fence?.release(); }
+        finally { await rm(stage, { recursive: true, force: true }); }
+      }
     }
     const storage = await Storage.open(directory, { deferRecovery: true });
     try {

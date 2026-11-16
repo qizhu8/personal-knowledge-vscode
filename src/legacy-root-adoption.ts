@@ -21,7 +21,12 @@ import {
 } from "./linux-root-writer-fence.js";
 import {
   assertLinuxLegacyWritersQuiescent, assertLinuxManagedSnapshotHostPermit, type LinuxManagedSnapshotHostPermit,
+  assertLinuxActiveVscodeMigrationBinding,
 } from "./linux-legacy-writer-quiescence.js";
+import {
+  assertActiveVscodeMigrationGrant, bindActiveVscodePreparedIdentity,
+  type ActiveVscodeMigrationHost, type ActiveVscodeMigrationGrant,
+} from "./active-vscode-migration-host.js";
 import { prepareExperimentalInPlaceSkillTrash } from "./legacy-inplace-skill-trash.js";
 import { legacyRollbackDatabaseFingerprint } from "./legacy-root-rollback-baseline.js";
 
@@ -61,6 +66,7 @@ export interface LegacyRootAdoptionOptions {
     allowedTools: readonly LegacySnapshotTool[];
   };
   experimentalManagedSnapshotHost?: LinuxManagedSnapshotHostPermit;
+  activeVscodeMigration?: { host: ActiveVscodeMigrationHost; grant: ActiveVscodeMigrationGrant };
 }
 
 export interface LegacyRootAdoptionSourceEntry {
@@ -106,6 +112,12 @@ export interface LegacyRootAdoptionPrepared {
   recoveredPendingPlan: boolean;
 }
 
+export interface LegacyRootAdoptionResumeOptions extends LegacyRootAdoptionOptions {
+  /** Bind recovery or cancellation to the exact independently retained prepare result. */
+  expectedPrepared?: Pick<LegacyRootAdoptionPrepared,
+    "sourceRoot" | "workspaceId" | "sourceFingerprint" | "planSha256">;
+}
+
 export interface LegacyRootAdoptionResult extends Omit<LegacyRootAdoptionPrepared, "schema"> {
   schema: "pkm.legacy-root-adoption-result/v1";
   storage: Storage;
@@ -113,8 +125,8 @@ export interface LegacyRootAdoptionResult extends Omit<LegacyRootAdoptionPrepare
   qualification: "experimental-unqualified";
 }
 
-export interface LegacyRootAdoptionRollbackOptions extends LegacyRootAdoptionOptions {
-  experimentalRollbackCheckpoint?: (point: "intent-published" | "journal-removed") => void;
+export interface LegacyRootAdoptionRollbackOptions extends LegacyRootAdoptionResumeOptions {
+  experimentalRollbackCheckpoint?: (point: "intent-durable" | "intent-published" | "journal-removed") => void;
 }
 
 async function assertRealRoot(path: string): Promise<string> {
@@ -186,6 +198,7 @@ async function withAdoptionFence<T>(
   ) => Promise<T>,
 ): Promise<T> {
   const canonicalRoot = await assertRealRoot(root);
+  assertLinuxActiveVscodeMigrationBinding(canonicalRoot, options.experimentalManagedSnapshotHost, options.activeVscodeMigration);
   const lock = process.platform === "linux" ? undefined : await safeNonLinuxLockDatabase(canonicalRoot);
   let writerFence: LinuxRootWriterFence | undefined;
   let writers: LegacyRootWriterQuiescence | undefined;
@@ -576,14 +589,35 @@ async function readJournal(root: string): Promise<LegacyRootAdoptionJournal | un
   }
 }
 
-async function readRollbackMarker(root: string): Promise<{ id: string; journal?: LegacyRootAdoptionJournal } | undefined> {
+interface PreparedRollbackMarker {
+  id: string;
+  journal?: LegacyRootAdoptionJournal;
+  workspaceMarker?: { device: string; inode: string; mtimeNs: string; ctimeNs: string } | null;
+  intentSha256?: string;
+}
+
+async function readRollbackMarker(root: string): Promise<PreparedRollbackMarker | undefined> {
   try {
     const path = join(root, rollbackMarker);
     const stat = await lstat(path);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > maximumJournalBytes
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > maximumJournalBytes + 4096
       || process.platform !== "win32" && ((stat.mode & 0o077) !== 0 || process.getuid && stat.uid !== process.getuid()))
       throw new LegacyImportError("RECOVERY_REQUIRED", "Root adoption rollback marker is unsafe.");
     const value: unknown = JSON.parse(await readFile(path, "utf8"));
+    if (value && typeof value === "object" && "schema" in value && value.schema === "pkm.legacy-root-adoption-rollback-intent/v1") {
+      const { intentSha256, ...body } = value as Record<string, unknown>;
+      const identity = body.workspaceMarker as PreparedRollbackMarker["workspaceMarker"];
+      if (typeof intentSha256 !== "string" || jsonSha256(body) !== intentSha256
+        || identity !== null && (!identity || typeof identity !== "object"
+          || Object.keys(identity).sort().join(",") !== "ctimeNs,device,inode,mtimeNs"
+          || typeof identity.device !== "string" || !/^\d+$/.test(identity.device)
+          || typeof identity.inode !== "string" || !/^\d+$/.test(identity.inode)
+          || typeof identity.mtimeNs !== "string" || !/^-?\d+$/.test(identity.mtimeNs)
+          || typeof identity.ctimeNs !== "string" || !/^-?\d+$/.test(identity.ctimeNs)))
+        throw new LegacyImportError("RECOVERY_REQUIRED", "Root adoption rollback intent binding is invalid.");
+      const journal = validateJournal(body.journal, root);
+      return { id: journal.workspaceId, journal, workspaceMarker: identity, intentSha256 };
+    }
     if (value && typeof value === "object" && "schema" in value && value.schema === "pkm.legacy-root-adoption-journal/v1") {
       const journal = validateJournal(value, root);
       return { id: journal.workspaceId, journal };
@@ -701,12 +735,15 @@ async function writePreparedJournal(
 async function prepareLocked(
   root: string, options: LegacyRootAdoptionOptions, assertHeld: () => void,
   assertQuiescent: () => Promise<void>, writerFence: LinuxRootWriterFence,
+  resume?: LegacyRootAdoptionResumeOptions,
 ): Promise<{ journal: LegacyRootAdoptionJournal; recoveredPendingPlan: boolean }> {
   assertHeld();
   if (await readRollbackMarker(root))
     throw new LegacyImportError("RECOVERY_REQUIRED", "A prepared root adoption rollback must be completed before adoption can resume.");
   const prior = await readJournal(root);
   if (prior) {
+    assertActiveLockedPlan(options, prior, "resume");
+    assertExpectedPrepared(prior, resume?.expectedPrepared);
     if (options.experimentalOriginalSkillTrash)
       throw new LegacyImportError("RECOVERY_REQUIRED", "Original Skill Trash preparation is not yet bound to an existing adoption journal.");
     await verifyRootIdentity(root, prior);
@@ -716,6 +753,8 @@ async function prepareLocked(
     await ensureWorkspaceMarker(root, prior);
     return { journal: prior, recoveredPendingPlan: true };
   }
+  if (resume)
+    throw new LegacyImportError("RECOVERY_REQUIRED", "Root adoption recovery requires an existing durable intent; resume will not prepare a new adoption.");
   try {
     const notes = await lstat(join(root, "notes"));
     if (notes.isSymbolicLink() || !notes.isDirectory()) throw new Error("unsafe notes root");
@@ -744,6 +783,10 @@ async function prepareLocked(
     throw new LegacyImportError("IMPORT_BLOCKED", "The existing bounded importer does not qualify every legacy root entry for this minimal in-place slice.", plan.blockers);
   }
   const snapshotAdmission = bindSnapshotAdmission(options, plan);
+  if (options.activeVscodeMigration) {
+    const { host, grant } = options.activeVscodeMigration;
+    assertActiveVscodeMigrationGrant(host, grant, root, { action: "adopt", planSha256: plan.planSha256 });
+  }
   if (!plan.preflight.entries.some(entry => entry.kind === "document" && /^(?:notes|skills)\//.test(entry.path))) {
     throw new LegacyImportError("IMPORT_BLOCKED", "The minimal in-place slice requires an original Note or Skill document.");
   }
@@ -758,9 +801,45 @@ async function prepareLocked(
     throw new LegacyImportError("SOURCE_CHANGED", "Legacy filesystem identity changed while the adoption plan was being qualified.");
   }
   await assertQuiescent();
+  if (options.activeVscodeMigration) {
+    const { host, grant } = options.activeVscodeMigration;
+    assertActiveVscodeMigrationGrant(host, grant, root, { action: "adopt", planSha256: plan.planSha256 });
+  }
   const journal = await writePreparedJournal(root, plan, sourceEntries, snapshotAdmission);
+  if (options.activeVscodeMigration)
+    bindActiveVscodePreparedIdentity(options.activeVscodeMigration.host, options.activeVscodeMigration.grant, journal);
   await ensureWorkspaceMarker(root, journal);
   return { journal, recoveredPendingPlan: false };
+}
+
+function assertExpectedPrepared(
+  journal: LegacyRootAdoptionJournal, expected: LegacyRootAdoptionResumeOptions["expectedPrepared"],
+): void {
+  if (expected !== undefined && (!expected || expected.sourceRoot !== journal.sourceRoot || expected.workspaceId !== journal.workspaceId
+    || expected.sourceFingerprint !== journal.sourceFingerprint || expected.planSha256 !== journal.planSha256))
+    throw new LegacyImportError("RECOVERY_REQUIRED", "The durable adoption intent does not match the prepared root, workspace or source plan.");
+}
+
+function assertActiveLockedPlan(
+  options: LegacyRootAdoptionOptions, journal: LegacyRootAdoptionJournal,
+  action: "resume" | "rollback-prepared" | "rollback-committed",
+): void {
+  if (!options.activeVscodeMigration) return;
+  const { host, grant } = options.activeVscodeMigration;
+  // An adoption approval may finish only the exact identity Core just issued in this activation.
+  if (action === "resume") {
+    try {
+      assertActiveVscodeMigrationGrant(host, grant, journal.sourceRoot, {
+        action: "adopt", planSha256: journal.planSha256, prepared: journal,
+      });
+      return;
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ACTIVE_MIGRATION_AUTHORITY_REQUIRED")) throw error;
+    }
+  }
+  assertActiveVscodeMigrationGrant(host, grant, journal.sourceRoot, {
+    action, planSha256: journal.planSha256, prepared: journal,
+  });
 }
 
 async function writeCommitReceipt(root: string, journal: LegacyRootAdoptionJournal, rollbackBaselineSha256?: string): Promise<void> {
@@ -795,6 +874,7 @@ async function resumeLocked(
   assertQuiescent: () => Promise<void>,
   recoveredPendingPlan: boolean, options: LegacyRootAdoptionOptions, writerFence: LinuxRootWriterFence,
 ): Promise<LegacyRootAdoptionResult> {
+  assertActiveLockedPlan(options, journal, "resume");
   await verifyRootIdentity(root, journal);
   const alreadyCommitted = await hasCommitReceipt(root, journal);
   if (alreadyCommitted) {
@@ -871,6 +951,7 @@ async function resumeLocked(
       await verifySourceEntries(root, journal);
       await assertQuiescent();
     }
+    assertActiveLockedPlan(options, journal, "resume");
     await writeCommitReceipt(root, journal, rollbackBaselineSha256);
     return {
       schema: "pkm.legacy-root-adoption-result/v1",
@@ -905,11 +986,55 @@ export async function prepareLegacyRootAdoptionExperimental(
   });
 }
 
+/** Read-only recovery inspection; the caller must retain its independent plan/pin and obtain fresh authority. */
+export async function inspectLegacyRootAdoptionRecoveryExperimental(
+  root: string, expected: { planSha256: string; prepared?: LegacyRootAdoptionResumeOptions["expectedPrepared"] },
+): Promise<{
+  prepared: LegacyRootAdoptionPrepared; privacy: boolean; snapshotAuthorityId?: string; rollbackPending: boolean;
+} | undefined> {
+  const canonicalRoot = await assertRealRoot(root);
+  const rollback = await readRollbackMarker(canonicalRoot);
+  let journal = await readJournal(canonicalRoot) ?? rollback?.journal;
+  if (!journal && expected.prepared) {
+    const workspaceId = expected.prepared.workspaceId;
+    if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(workspaceId))
+      throw new LegacyImportError("RECOVERY_REQUIRED", "Recovery workspace identity is invalid.");
+    const archive = join(legacyRootAdoptionLockDirectory(canonicalRoot),
+      `${sha256(canonicalRoot).slice(0, 40)}.${workspaceId}.postcommit`);
+    try {
+      const stat = await lstat(archive);
+      if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0
+        || process.getuid === undefined || stat.uid !== process.getuid())
+        throw new LegacyImportError("RECOVERY_REQUIRED", "Recovery archive directory is unsafe.");
+      const manifest = await readPostCommitArchive(join(archive, "manifest.json"), canonicalRoot, workspaceId);
+      if (!manifest) throw new LegacyImportError("RECOVERY_REQUIRED", "Recovery archive manifest is unavailable.");
+      journal = validateJournal(await readPrivateRollbackJson(join(archive, journalName), maximumJournalBytes), canonicalRoot);
+      if (manifest.journalSha256 !== journal.journalSha256)
+        throw new LegacyImportError("RECOVERY_REQUIRED", "Recovery archive journal changed.");
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    }
+  }
+  if (!journal) return undefined;
+  if (journal.planSha256 !== expected.planSha256)
+    throw new LegacyImportError("RECOVERY_REQUIRED", "Recovery journal differs from the independently retained inspected plan.");
+  assertExpectedPrepared(journal, expected.prepared);
+  await verifyRootIdentity(canonicalRoot, journal);
+  return {
+    prepared: { schema: "pkm.legacy-root-adoption-prepared/v1", sourceRoot: canonicalRoot,
+      workspaceId: journal.workspaceId, sourceFingerprint: journal.sourceFingerprint,
+      planSha256: journal.planSha256, recoveredPendingPlan: true },
+    privacy: !!journal.snapshotAdmission,
+    ...(journal.snapshotAdmission ? { snapshotAuthorityId: journal.snapshotAdmission.authorityId } : {}),
+    rollbackPending: !!rollback,
+  };
+}
+
 export async function resumeLegacyRootAdoptionExperimental(
-  root: string, options: LegacyRootAdoptionOptions,
+  root: string, options: LegacyRootAdoptionResumeOptions,
 ): Promise<LegacyRootAdoptionResult> {
   return withAdoptionFence(root, options, async (canonicalRoot, assertHeld, assertQuiescent, writerFence) => {
-    const prepared = await prepareLocked(canonicalRoot, options, assertHeld, assertQuiescent, writerFence);
+    const prepared = await prepareLocked(canonicalRoot, options, assertHeld, assertQuiescent, writerFence, options);
     return resumeLocked(canonicalRoot, prepared.journal, assertHeld, assertQuiescent,
       prepared.recoveredPendingPlan, options, writerFence);
   });
@@ -926,21 +1051,32 @@ export async function adoptLegacyRootInPlaceExperimental(
 }
 
 /**
- * Cancel only the prepared, unpublished fixture slice. Once Storage.open has
- * claimed the root, or Todo projection has begun, its effects need a separate
+ * Cancel only the prepared, unpublished fixture slice. Keep the complete intent
+ * through journal removal so resumed cancellation can still verify source and
+ * host-pinned identity. Once Storage.open has claimed the root, or Todo
+ * projection has begun, its effects need a separate
  * qualified recovery protocol and are never removed here.
  */
 export async function rollbackPreparedLegacyRootAdoptionExperimental(
   root: string, options: LegacyRootAdoptionRollbackOptions = {},
 ): Promise<{ schema: "pkm.legacy-root-adoption-rollback/v1"; sourceRoot: string; workspaceId: string; qualification: "experimental-unqualified" }> {
-  return withAdoptionFence(root, options, async (canonicalRoot, assertHeld, assertQuiescent, writerFence) => {
+  return withAdoptionFence(root, options, async (canonicalRoot, assertHeld, assertQuiescent) => {
     const journalOnDisk = await readJournal(canonicalRoot);
     let intent = await readRollbackMarker(canonicalRoot);
-    if (journalOnDisk && intent?.journal)
+    if (journalOnDisk && intent?.journal && journalOnDisk.journalSha256 !== intent.journal.journalSha256)
       throw new LegacyImportError("RECOVERY_REQUIRED", "Multiple root adoption journals require manual recovery.");
     const journal = journalOnDisk ?? intent?.journal;
     if (!journal && !intent)
       throw new LegacyImportError("RECOVERY_REQUIRED", "There is no prepared root adoption rollback to complete.");
+    if (journal) assertExpectedPrepared(journal, options.expectedPrepared);
+    else if (options.expectedPrepared !== undefined)
+      throw new LegacyImportError("RECOVERY_REQUIRED", "An older rollback intent cannot verify the host-pinned source plan.");
+    if (intent && !intent.journal && options.expectedPrepared !== undefined)
+      throw new LegacyImportError("RECOVERY_REQUIRED", "An older rollback intent cannot durably retain the host-pinned source plan.");
+    if (options.activeVscodeMigration) {
+      if (!journal) throw new LegacyImportError("RECOVERY_REQUIRED", "Active cancellation requires its complete durable journal.");
+      assertActiveLockedPlan(options, journal, "rollback-prepared");
+    }
     const assertNoPublishedState = async () => {
       const ownedMarker = join(canonicalRoot, writerMarkerName);
       for (const path of [join(canonicalRoot, commitName), join(canonicalRoot, "core.sqlite"),
@@ -972,26 +1108,48 @@ export async function rollbackPreparedLegacyRootAdoptionExperimental(
         throw new LegacyImportError("RECOVERY_REQUIRED", "Rollback marker does not match the prepared journal.");
       await verifySourceEntries(canonicalRoot, journal, !!intent);
       await assertQuiescent();
-      if (!intent) {
+      if (!intent || intent.journal) {
         const markerPath = join(canonicalRoot, workspaceMarker);
         let markerStat;
         try {
-          markerStat = await lstat(markerPath);
+          markerStat = await lstat(markerPath, { bigint: true });
         } catch (error) {
           if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
         }
         if (markerStat) {
-          if (!markerStat.isFile() || markerStat.isSymbolicLink() || markerStat.nlink !== 1 || markerStat.size > 4096
-            || process.platform !== "win32" && ((markerStat.mode & 0o077) !== 0 || process.getuid && markerStat.uid !== process.getuid()))
+          if (!markerStat.isFile() || markerStat.isSymbolicLink() || markerStat.nlink !== 1n || markerStat.size > 4096n
+            || process.platform !== "win32" && ((markerStat.mode & 0o077n) !== 0n || process.getuid && markerStat.uid !== BigInt(process.getuid())))
             throw new LegacyImportError("RECOVERY_REQUIRED", "Prepared workspace marker is unsafe.");
           const marker: unknown = JSON.parse(await readFile(markerPath, "utf8"));
           if (!marker || typeof marker !== "object" || !("schema" in marker) || marker.schema !== "pkm.next-workspace/v2"
             || !("id" in marker) || marker.id !== journal.workspaceId)
             throw new LegacyImportError("RECOVERY_REQUIRED", "Prepared workspace marker does not match the journal.");
-          writerFence.renameNoReplaceWithinRoot(markerPath, join(canonicalRoot, rollbackMarker));
-        } else {
-          await assertWorkspaceMarkerAbsent();
-          writerFence.renameNoReplaceWithinRoot(join(canonicalRoot, journalName), join(canonicalRoot, rollbackMarker));
+          if (intent && (!intent.workspaceMarker || intent.workspaceMarker.device !== String(markerStat.dev)
+            || intent.workspaceMarker.inode !== String(markerStat.ino) || intent.workspaceMarker.mtimeNs !== String(markerStat.mtimeNs)
+            || intent.workspaceMarker.ctimeNs !== String(markerStat.ctimeNs)))
+            throw new LegacyImportError("RECOVERY_REQUIRED", "Workspace marker reappeared or changed after rollback intent.");
+        }
+        if (!intent) {
+          const body = {
+            schema: "pkm.legacy-root-adoption-rollback-intent/v1", journal,
+            workspaceMarker: markerStat ? {
+              device: String(markerStat.dev), inode: String(markerStat.ino),
+              mtimeNs: String(markerStat.mtimeNs), ctimeNs: String(markerStat.ctimeNs),
+            } : null,
+          };
+          await writeNoReplace(join(canonicalRoot, rollbackMarker),
+            Buffer.from(JSON.stringify({ ...body, intentSha256: jsonSha256(body) }), "utf8"));
+          await syncDirectory(canonicalRoot);
+          options.experimentalRollbackCheckpoint?.("intent-durable");
+        }
+        if (markerStat) {
+          const current = await lstat(markerPath, { bigint: true });
+          if (current.dev !== markerStat.dev || current.ino !== markerStat.ino || current.mode !== markerStat.mode
+            || current.nlink !== markerStat.nlink || current.size !== markerStat.size
+            || current.mtimeNs !== markerStat.mtimeNs || current.ctimeNs !== markerStat.ctimeNs)
+            throw new LegacyImportError("SOURCE_CHANGED", "Prepared workspace marker changed during rollback.");
+          assertHeld();
+          await unlink(markerPath);
         }
         await syncDirectory(canonicalRoot);
         intent = await readRollbackMarker(canonicalRoot);
@@ -1003,7 +1161,12 @@ export async function rollbackPreparedLegacyRootAdoptionExperimental(
       await assertNoPublishedState();
       await assertWorkspaceMarkerAbsent();
       assertHeld();
-      if (!intent.journal) {
+      if (journalOnDisk) {
+        assertActiveLockedPlan(options, journal, "rollback-prepared");
+        const currentJournal = await readJournal(canonicalRoot);
+        if (!currentJournal || currentJournal.journalSha256 !== journal.journalSha256)
+          throw new LegacyImportError("RECOVERY_REQUIRED", "Prepared journal changed during rollback.");
+        assertHeld();
         await unlink(join(canonicalRoot, journalName));
         await syncDirectory(canonicalRoot);
       }
@@ -1011,12 +1174,18 @@ export async function rollbackPreparedLegacyRootAdoptionExperimental(
     }
     if (!intent) throw new LegacyImportError("RECOVERY_REQUIRED", "Rollback marker is missing.");
     await assertWorkspaceMarkerAbsent();
+    if (journal) {
+      await verifyRootIdentity(canonicalRoot, journal);
+      await verifySourceEntries(canonicalRoot, journal, true);
+    }
     await assertQuiescent();
     await assertNoPublishedState();
     assertHeld();
     const rechecked = await readRollbackMarker(canonicalRoot);
-    if (!rechecked || rechecked.id !== intent.id)
+    if (!rechecked || rechecked.id !== intent.id || rechecked.journal?.journalSha256 !== intent.journal?.journalSha256
+      || rechecked.intentSha256 !== intent.intentSha256)
       throw new LegacyImportError("RECOVERY_REQUIRED", "Rollback marker changed.");
+    if (journal) assertActiveLockedPlan(options, journal, "rollback-prepared");
     await unlink(join(canonicalRoot, rollbackMarker));
     await syncDirectory(canonicalRoot);
     return { schema: "pkm.legacy-root-adoption-rollback/v1", sourceRoot: canonicalRoot,
@@ -1123,15 +1292,16 @@ async function verifyPostCommitCompletion(path: string, manifest: PostCommitArch
 }
 
 export async function rollbackCommittedLegacyRootAdoptionExperimental(
-  root: string, options: {
+  root: string, options: LegacyRootAdoptionResumeOptions & {
     workspaceId: string;
+    expectedPrepared?: LegacyRootAdoptionResumeOptions["expectedPrepared"];
     experimentalRollbackCheckpoint?: (point: "intent-published" | "journal-archived" | "owner-archived" | "completed") => void;
   },
 ): Promise<{ schema: "pkm.legacy-root-postcommit-rollback-result/v1"; sourceRoot: string; workspaceId: string;
   archive: string; qualification: "experimental-unqualified" }> {
   if (process.platform !== "linux" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(options.workspaceId))
     throw new LegacyImportError("RECOVERY_REQUIRED", "Post-commit rollback needs a Linux root and exact workspace identity.");
-  return withAdoptionFence(root, {}, async (canonicalRoot, assertHeld, assertQuiescent, writerFence) => {
+  return withAdoptionFence(root, options, async (canonicalRoot, assertHeld, assertQuiescent, writerFence) => {
     const locks = legacyRootAdoptionLockDirectory(canonicalRoot);
     const rootHash = sha256(canonicalRoot).slice(0, 40);
     const owner = join(locks, writerMarkerName);
@@ -1154,6 +1324,8 @@ export async function rollbackCommittedLegacyRootAdoptionExperimental(
     }
     if (!journal || journal.workspaceId !== options.workspaceId || journal.todoProjection)
       throw new LegacyImportError("RECOVERY_REQUIRED", "Post-commit rollback requires its exact journal and no Todo projection.");
+    assertExpectedPrepared(journal, options.expectedPrepared);
+    assertActiveLockedPlan(options, journal, "rollback-committed");
     await verifyRootIdentity(canonicalRoot, journal);
     const intent = await readRollbackMarker(canonicalRoot);
     if (intent && (intent.journal || intent.id !== options.workspaceId))

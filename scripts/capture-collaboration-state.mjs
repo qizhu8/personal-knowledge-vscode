@@ -2,9 +2,9 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve, relative, dirname } from "node:path";
+import { readCollaborationCaptureSource } from "./lib/collaboration-capture-source.mjs";
 
 const server = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const repo = resolve(server, "legacy");
 const hash = text => createHash("sha256").update(text).digest("hex");
 const captures = [
   ["src/chatroom/collaboration-model.ts", "src/domain/collaboration-state-model.ts"],
@@ -14,7 +14,7 @@ const captures = [
   ["src/chatroom/chatroom-hub.ts", "src/domain/collaboration-state-mentions.ts"],
 ];
 const entries = captures.map(([source, destination]) => {
-  const original = readFileSync(resolve(repo, source), "utf8");
+  const original = readCollaborationCaptureSource(source).toString("utf8");
   const captured = source.endsWith("chatroom-hub.ts")
     ? original.slice(original.indexOf("  private mentionSearchText("), original.indexOf("  private mentionTargets("))
       .replace(/  private (\w+)\(/g, "export function $1(").replace("this.mentionSearchText(", "mentionSearchText(")
@@ -29,7 +29,7 @@ const evidence = [
   "src/chatroom/chatroom-hub.ts", "src/chatroom/chat-join-approval.ts",
   "src/chatroom/meeting-state.ts", "src/chatroom/chat-meeting-lifecycle.ts",
   "src/chatroom/chatroom-protocol.ts",
-].map(source => ({ source, sourceSha256: hash(readFileSync(resolve(repo, source))) }));
+].map(source => ({ source, sourceSha256: hash(readCollaborationCaptureSource(source)) }));
 const provenance = {
   schema: 1, rootsRelativeTo: "provenance-file-directory", sourceRoot: "../..", captureRoot: "..", captures: entries, evidence,
   subset: [

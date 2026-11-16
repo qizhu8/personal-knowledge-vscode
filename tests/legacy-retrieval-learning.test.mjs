@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 test("exact original learner has only an in-memory fixed-table SQL authority, never filesystem connections or arbitrary schema", () => {
   const result = JSON.parse(execFileSync("python3", ["-c", `
 import importlib.util,json,pathlib,sqlite3
-path=pathlib.Path("next-server/compat/legacy-retrieval-learning.py").resolve()
+path=pathlib.Path("compat/legacy-retrieval-learning.py").resolve()
 spec=importlib.util.spec_from_file_location("native_original_learning",path)
 adapter=importlib.util.module_from_spec(spec);spec.loader.exec_module(adapter)
 connections=[]
@@ -30,7 +30,7 @@ try:adapter.execute(dict(state,arbitrary=[]),lambda _:None)
 except ValueError:pass
 else:raise AssertionError("unknown table snapshot accepted")
 print(json.dumps({"connections":connections,"denied":len(denied)}))
-`], { cwd: resolve(import.meta.dirname, "../legacy"), encoding: "utf8",
+`], { cwd: resolve(import.meta.dirname, ".."), encoding: "utf8",
     env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } }));
   assert.equal(result.denied, 4);
   assert.equal(result.connections.length, 6);

@@ -13,7 +13,7 @@ import { createWorkspaceBackup, restoreWorkspaceBackup } from "../dist/workspace
 import { nativeRestoreAuthority } from "./host-composition-legacy-batch16-restore-fixture.mjs";
 import { legacyManagedFixture, closeLegacyManagedFixture } from "./legacy-managed-fixture.mjs";
 
-const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "..");
+const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "legacy");
 const pythonExecutable = execFileSync("python3", ["-c", "import sys;print(sys.executable)"], { encoding: "utf8" }).trim();
 const note = "---\r\ntitle: Board\r\ndocumentKind: todo-board\r\nunknown: {retain: exact}\r\n---\r\nOriginal descriptor.\r\n";
 const first = { id: "first", title: "Verify migrated authority", goal: "Use exact original policy", scope: "Migration",

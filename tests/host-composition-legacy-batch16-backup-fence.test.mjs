@@ -231,5 +231,6 @@ test("legacy restore requires exact external authority before staging and rechec
     mode = "unrelated";
     calls = 0;
     await restoreWorkspaceBackup(backup, target, { ...options, nativeRestoreAuthority });
-    assert.equal(calls, 2);
+    assert.equal(calls, process.platform === "linux" ? 4 : 3,
+      "Restore reauthorizes before staging, after validation, before publication and after Linux fence marker binding");
 });

@@ -13,13 +13,14 @@ import {
   admitLegacyActionArtifactPath, legacyActionArtifact, reconcileLegacyActionArtifact, verifyLegacyActionArtifacts,
 } from "../dist/legacy-action-artifacts.js";
 
-const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "..");
+const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "legacy");
 const actor = { id: "mcp:external", canWrite: true };
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
 async function fixture(t) {
   const parent = join(root, "tests", `.legacy-action-artifacts-${randomUUID()}`);
   const selectedRoot = join(parent, "selected");
   await mkdir(selectedRoot, { recursive: true });
+  await mkdir(join(parent, "original"));
   const workspace = await initialize(join(parent, "workspace"));
   const source = join(selectedRoot, "source.bin"), destination = join(selectedRoot, "export.bin");
   const bytes = Buffer.from([0, 255, 13, 10, 4, 8, 63]);

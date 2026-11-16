@@ -73,6 +73,14 @@ test("imported managed library exposes pinned original Prompt versions and Scrip
     await assert.rejects(auditImportedWorkspace(target, plan), /unplanned library directory/);
     await rm(unplanned, { recursive: true });
   }
+  if (process.platform === "linux") {
+    const markerPath = join(target, ".pkm-next-writer-fenced.json");
+    const markerBytes = await readFile(markerPath, "utf8");
+    const marker = JSON.parse(markerBytes);
+    await writeFile(markerPath, JSON.stringify({ ...marker, root: source }));
+    await assert.rejects(auditImportedWorkspace(target, plan), /writer-fence marker does not match/);
+    await writeFile(markerPath, markerBytes);
+  }
   const audit = await auditImportedWorkspace(target, plan);
   host = bindImportedReadOnlyHost(target, "synthetic-library", audit.assertUnchanged);
   async function invoke(operation, args) {

@@ -7,7 +7,10 @@ import test from "node:test";
 import {
   ACTION_COMPILER_LIMITS, actionCompilerDefinitions, readActionCompiler,
 } from "../dist/action-compiler.js";
-import { componentDigest, originalDigest, pythonCanonicalJson } from "../dist/domain/action-compiler-validation.js";
+import {
+  builtinActionDefinitions, componentDigest, exactRunnablePureBuiltin, originalDefinitionValue,
+  originalDigest, pythonCanonicalJson,
+} from "../dist/domain/action-compiler-validation.js";
 import { ORIGINAL_ACTION_COMPILER_CAPTURE } from "../dist/domain/action-compiler-original.js";
 import {
   originalActionCompilerFixtures as original,
@@ -18,6 +21,23 @@ import { actionCompilerTransportFixture, moduleSetSource } from "./action-compil
 import { checkCaptureRecords } from "../scripts/migration.mjs";
 
 const hash = value => createHash("sha256").update(value).digest("hex");
+// Independent goldens from the authenticated 3d9241d… capture, not the current 432371f8… candidate.
+const historicalV1 = {
+  contentHash: "5059f7f0b9739cdf77aa492cb58e649996e7d7e7ec2da80d9bd4574ecf109b9f",
+  definitionDigest: "8c6143f31a4ddbd3a71339037594197dc6e73b8d254ec39cfc00f335aee7aab5",
+  implementationHash: "1e05119b242a4db2eb443d7a18533db7edbee0e04aef77a66c6e517e1c9173e8",
+  builtinHashes: {
+    "core.date.parse": "019c58522163774874503aec68ec51f0cdecc34fa452e7f3b11f1431ea52377b",
+    "core.cast.integer-to-string": "85e97ca920690799367265212d06ef073de863ac2e46b5bc1394a0afbe8f94cb",
+    "core.cast.string-to-integer": "866c9f9558f37decb4799040ec690386a4881fddb292aa0229619ac7c1be3293",
+    "core.cast.string-to-float": "4c5779a7920b08d0dd43eda84bb1ef8a8a226301e1bd06824ce6b1d8cee5a21d",
+    "core.artifact.write": "75fb4481496c370fa89f8634b235b681c0f1471ee622c1515d095e35c98af16b",
+    "core.artifact.copy": "0a45da12ea816a610cf2e7f61909ed63aee17c2a3869818f9c1802d14cef9311",
+    "core.delay": "d812b8ae54407b28abbcede3724b8486ec6d33b5828d314f6620329334341c9a",
+    "core.ask-user": "0fff34efc5257678cc45cc4893b0e81412dae1006a8ea59691eb39b63f0c4655",
+    "core.chatroom-alias": "a3da7cd43d202b99babc650cc2a07124275dcc046de42943c4b615adfc1afecc",
+  },
+};
 const call = (operation, args) => {
   const result = readActionCompiler({ operation, args });
   return actionCompilerTransportFixture(operation, args, result);
@@ -115,15 +135,17 @@ test("original semantic definition failures remain non-mutating diagnostics", ()
   "Remote reconciler requires a pinned read-only lookup Action and exact success predicate/output.");
 });
 
-test("portable compilation preserves the original ModuleRuntime content digest", () => {
+test("default v1 portable compilation preserves the authenticated historical ModuleRuntime digest", () => {
   const response = call("action.definition.compile", {
     source: { kind: "inline", definition: structuredClone(original.example) },
   });
   const result = response.result;
   assert.equal(result.status, "valid");
-  assert.equal(result.definitionDigest, original.originalRuntimeContentHash);
-  assert.equal(result.definition.content_hash, original.originalRuntimeContentHash);
-  assert.equal(originalDigest(result.definition), original.originalRuntimeDigest);
+  assert.equal(result.definitionDigest, historicalV1.contentHash);
+  assert.equal(result.definition.content_hash, historicalV1.contentHash);
+  assert.equal(result.definition.implementation_hash, historicalV1.implementationHash);
+  assert.equal(originalDigest(result.definition), historicalV1.definitionDigest);
+  assert.notEqual(result.definitionDigest, original.originalRuntimeContentHash);
   assert.equal(result.canonicalJson, pythonCanonicalJson(result.definition));
   assert.deepEqual(JSON.parse(result.canonicalJson), result.definition);
   assert.deepEqual(result.plan.implementations, [{
@@ -131,6 +153,28 @@ test("portable compilation preserves the original ModuleRuntime content digest",
   }]);
   assert.equal(response.operation, "action.definition.compile");
   assert.deepEqual(Object.keys(response), ["operation", "args", "result"]);
+});
+
+test("default v1 restores all nine historical builtin contracts and rejects regenerated dependency pins", () => {
+  const builtins = builtinActionDefinitions();
+  assert.deepEqual(Object.fromEntries([...builtins].map(([id, definition]) => [id, definition.content_hash])),
+    historicalV1.builtinHashes);
+  assert.equal(componentDigest(ORIGINAL_ACTION_COMPILER_CAPTURE.componentDefinitions["core.constant"]),
+    "e3f9e97efcc8e9babfb9b7774dd5230a6bf332716e946cfa0354a8cf0bdf9c9b");
+  for (const [id, definition] of builtins) {
+    assert.equal(definition.implementation_hash, historicalV1.implementationHash, id);
+    assert.deepEqual(originalDefinitionValue(definition), definition, id);
+    const source = { kind: "inline", definition: {
+      ...structuredClone(original.example), dependencies: { [id]: historicalV1.builtinHashes[id] },
+    } };
+    assert.equal(call("action.definition.compile", { source }).result.status, "valid", id);
+    source.definition.dependencies[id] = ORIGINAL_ACTION_COMPILER_CAPTURE.builtinDefinitions[id].content_hash;
+    const stale = call("action.definition.compile", { source }).result;
+    assert.equal(stale.status, "invalid", id);
+    assert.match(stale.diagnostics[0].message, /not pinned/, id);
+  }
+  assert.equal(exactRunnablePureBuiltin(builtins.get("core.cast.string-to-float")), true);
+  assert.equal(exactRunnablePureBuiltin(ORIGINAL_ACTION_COMPILER_CAPTURE.builtinDefinitions["core.cast.string-to-float"]), false);
 });
 
 test("explicit ModuleSet projection verifies package and definition file pins", () => {
@@ -151,7 +195,7 @@ test("explicit ModuleSet projection verifies package and definition file pins", 
     source: fixtureSource(), actionId: original.example.action_id,
   }).result;
   assert.equal(fromModule.status, "valid");
-  assert.equal(fromModule.definitionDigest, original.originalRuntimeContentHash);
+  assert.equal(fromModule.definitionDigest, historicalV1.contentHash);
   const changed = fixtureSource();
   changed.files[`definitions/${original.example.action_id}.json`] += " ";
   assert.throws(() => call("action.moduleSet.project", { source: changed }), /file hash mismatch/);
@@ -189,7 +233,7 @@ test("original Action block graph compiles with dependency pins and a source map
       {
         id: "echo",
         action_id: original.example.action_id,
-        content_hash: original.originalRuntimeContentHash,
+        content_hash: historicalV1.contentHash,
         parameters: {},
       },
     ],
@@ -213,6 +257,12 @@ test("original Action block graph compiles with dependency pins and a source map
     result.definitionDigest,
   );
   assert.equal(result.canonicalJson, pythonCanonicalJson(result.definition));
+  assert.equal(result.definition.dependencies[original.example.action_id], historicalV1.contentHash);
+  const staleGraph = structuredClone(graph);
+  staleGraph.nodes[1].content_hash = original.originalRuntimeContentHash;
+  const stale = call("action.graph.compile", { graph: staleGraph, sourceModules: [fixtureSource(true)] }).result;
+  assert.equal(stale.status, "invalid");
+  assert.match(stale.diagnostics[0].message, /contract changed/);
   const disabled = call("action.graph.compile", { graph, sourceModules: [fixtureSource(false)] }).result;
   assert.equal(disabled.status, "invalid");
   assert.match(disabled.diagnostics[0].message, /not enabled/);
@@ -316,9 +366,10 @@ test("capture includes source validators and the original regression methods", (
   assert.match(originalActionCompilerRegression["test-action-modules.py"].test_numbered_math_ports_in_executable_graph, /graph_save/);
 });
 
-test("Action compiler capture hashes are repeatably current", async () => {
+test("unqualified compiler candidate authenticates its own 05dc source and 432 capture generation", async () => {
   const provenance = JSON.parse(await readFile(new URL("../migration/action-compiler-provenance.json", import.meta.url), "utf8"));
-  assert.deepEqual(await checkCaptureRecords(provenance.files), []);
+  assert.equal(provenance.qualificationStatus.state, "unqualified");
+  assert.deepEqual(await checkCaptureRecords(provenance.files, undefined, undefined, { dataset: "compiler-candidate-432" }), []);
 });
 
 test("Action and Workflow compiler modules import in either order", () => {

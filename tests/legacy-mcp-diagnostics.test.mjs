@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rm, chmod } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, chmod, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -10,6 +11,92 @@ import { initialize } from "../dist/storage.js";
 import { legacyManagedFixture, closeLegacyManagedFixture } from "./legacy-managed-fixture.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+test("active lifecycle keeps real admission, uncertain drain and retirement safety without a registry", { timeout: 15000 }, () => {
+  const result = execFileSync("python3", ["-B", join(root, "tests/legacy-mcp-diagnostics-unit.py")],
+    { encoding: "utf8", timeout: 12000, env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
+  assert.match(result, /ACTIVE_LIFECYCLE_DEFAULT_REGISTRY_IO=0/);
+});
+
+test("default actual compact stdio has nine tools and zero diagnostic registry I/O through shutdown", { timeout: 60000 }, async t => {
+  const parent = join(root, `.default-lifecycle-${randomUUID()}`);
+  await mkdir(parent, { mode: 0o700 });
+  let client;
+  t.after(async () => { try { await client?.close(); } finally { await rm(parent, { recursive: true, force: true }); } });
+  const data = await initialize(join(parent, "workspace"));
+  const generation = await legacyManagedFixture(parent);
+  const managed = resolve(generation, "../..");
+  const wrapper = join(parent, "audit-startup.py"), measurement = join(parent, "io-measurement.json");
+  await writeFile(wrapper, `
+import json, os, runpy, sys
+from pathlib import Path
+registry = ${JSON.stringify(join(managed, "instances"))}
+managed = ${JSON.stringify(managed)}
+observations = {"registryOperations": [], "managedWrites": []}
+def audit(event, arguments):
+    paths = [os.fsdecode(value) for value in arguments if isinstance(value, (str, bytes))]
+    if any(value == registry or value.startswith(registry + os.sep) for value in paths):
+        observations["registryOperations"].append(event)
+    if event in ("os.listdir", "os.scandir") and managed in paths:
+        observations["registryOperations"].append(event)
+    mutation = (event == "open" and isinstance(arguments[2], int)
+                and arguments[2] & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND)
+                or event in ("os.mkdir", "os.rename", "os.remove", "os.rmdir", "os.link", "os.symlink"))
+    if mutation and any(value == managed or value.startswith(managed + os.sep) for value in paths):
+        observations["managedWrites"].append(event)
+sys.addaudithook(audit)
+sys.argv = [${JSON.stringify(join(root, "compat/legacy-compact-mcp.py"))}, "--data", ${JSON.stringify(data)},
+            "--node", ${JSON.stringify(process.execPath)}, "--managed-generation", ${JSON.stringify(generation)}]
+try:
+    runpy.run_path(sys.argv[0], run_name="__main__")
+finally:
+    Path(${JSON.stringify(measurement)}).write_text(json.dumps(observations))
+`);
+  client = new Client({ name: "default-lifecycle-audit", version: "1" });
+  await client.connect(new StdioClientTransport({
+    command: "python3", args: ["-B", wrapper], stderr: "pipe",
+    env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1", PKM_CAPABILITY_PROFILE: "compact",
+      PKM_MCP_DIAGNOSTICS: "1", PKM_MCP_INSTANCE_TRACKING: "1", PKM_MCP_DIAGNOSTICS_HISTORY: "1" },
+  }));
+  const absent = () => assert.rejects(readdir(join(managed, "instances")), { code: "ENOENT" });
+  await absent();
+  const tools = (await client.listTools()).tools.map(tool => tool.name).sort();
+  assert.deepEqual(tools, ["capabilities_describe", "capabilities_inventory", "capabilities_list",
+    "capabilities_search", "capability_call", "capability_read", "check_version", "mcp_lifecycle_quiesce",
+    "mcp_lifecycle_status"].sort());
+  const call = async (name, args = {}) => {
+    const result = await client.callTool({ name, arguments: args });
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    return result.structuredContent;
+  };
+  const initial = await call("mcp_lifecycle_status");
+  assert.equal(initial.acceptingNewCalls, true);
+  await new Promise(resolve => setTimeout(resolve, 750));
+  await absent();
+  for (let index = 0; index < 3; index++) {
+    const notes = await call("capability_read", { operation: "mcp.tool.list_notes", version: 1, arguments: {} });
+    assert.equal(notes.schema, "pkm.note-inventory/v1");
+    const status = await call("mcp_lifecycle_status");
+    assert.equal(status.instanceId, initial.instanceId);
+    assert.equal(status.inFlight, 0);
+    await absent();
+  }
+  const drained = await call("mcp_lifecycle_quiesce");
+  assert.equal(drained.phase, "drained");
+  assert.equal(drained.inFlight, 0);
+  assert.equal(drained.uncertainCalls, 0);
+  assert.equal(drained.automaticReplay, false);
+  assert.equal(drained.automaticTermination, false);
+  assert.equal((await client.callTool({ name: "capability_read", arguments: {
+    operation: "mcp.tool.list_notes", version: 1, arguments: {},
+  } })).isError, true);
+  await absent();
+  await client.close();
+  client = undefined;
+  await absent();
+  assert.deepEqual(JSON.parse(await readFile(measurement, "utf8")), { registryOperations: [], managedWrites: [] });
+  console.log("DEFAULT_ACTUAL_STDIO registryOperations=0 managedWrites=0 tools=9 startup/idle/3calls/status/quiesce/shutdown");
+});
 
 test("opt-in legacy MCP diagnostics persist and page actual calls across authorized restarts", { timeout: 60000 }, async t => {
   const parent = join(root, `.diagnostics-test-${randomUUID()}`);

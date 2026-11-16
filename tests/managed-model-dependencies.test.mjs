@@ -107,10 +107,10 @@ runpy.run_path(script, run_name="__main__")
 
 test("owned fixture generations record exact version/content pins and reject model profile or native dependency tampering", { timeout: 60_000 }, async t => {
   const parent = await fixture(t), fixtureRepository = join(parent, "fixture-repository");
-  const packageRoot = join(fixtureRepository, "next-server");
+  const packageRoot = fixtureRepository;
   for (const name of ["dist", "compat", "compute", "domain", "browser", "node_modules"])
     await mkdir(join(packageRoot, name), { recursive: true });
-  await mkdir(join(fixtureRepository, "resources"));
+  await mkdir(join(fixtureRepository, "legacy/resources"), { recursive: true });
   await writeFile(join(packageRoot, "package.json"), '{"type":"module","version":"0.1.0"}');
   await writeFile(join(packageRoot, "dist", "cli.js"), "// Explicit packaging fixture; no runtime connection claim.\n");
   const data = await initialize(join(parent, "data")), managedRoot = join(parent, "managed");

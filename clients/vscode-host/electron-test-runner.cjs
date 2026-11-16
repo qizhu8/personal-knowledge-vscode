@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const { createServer } = require("node:http");
 const vscode = require("vscode");
 
-const extensionId = "pkm-nonproduction.pkm-next-nonproduction-host";
+const extensionId = "pkm-nonproduction.pkm-v5";
 const bearer = "electron-acceptance-token-".padEnd(40, "x");
 
 function replaceMethod(target, name, replacement) {
@@ -29,8 +29,8 @@ async function createFixture() {
     let result, error;
     if (request.url === "/v1/server_info") {
       result = {
-        name: "pkm-next",
-        serverId: "pkm-next",
+        name: "pkm-v5",
+        serverId: "pkm-v5",
         workspaceId: "electron-workspace",
         actorId: "electron-actor",
         workspaceVersion: "pkm.next-workspace/v2",
@@ -131,7 +131,7 @@ exports.run = async function run() {
     assert.equal(openedPanels.length, 1, "Open did not create an Electron webview panel");
     const first = openedPanels[0];
     assert.equal(first.viewType, "pkmNextHost");
-    assert.equal(first.title, "PKM Next (Experimental)");
+    assert.equal(first.title, "pkm-v5 (Experimental)");
     assert.match(first.webview.html, /default-src 'none'/);
     assert.match(first.webview.html, /textContent/);
     assert.equal(first.webview.html.includes(bearer), false);

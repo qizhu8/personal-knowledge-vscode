@@ -36,7 +36,7 @@ const importer = await import("../dist/legacy-state-import.js");
 const { initialize } = await import("../dist/storage.js");
 
 async function originalHelpers() {
-  const text = await fs.readFile(resolve("src/subscriptions/subscriptions.ts"), "utf8");
+  const text = await fs.readFile(new URL("../legacy/src/subscriptions/subscriptions.ts", import.meta.url), "utf8");
   const file = ts.createSourceFile("subscriptions.ts", text, ts.ScriptTarget.Latest, true);
   const names = ["hash", "deriveSecretKeys", "encryptSnapshot", "unique", "tagsOf"];
   const declarations = names.map(name => file.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name)?.getText(file));

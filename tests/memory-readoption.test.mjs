@@ -12,7 +12,7 @@ import { activateMemoryScopeContinuity, activateReadoptedMemoryScope } from "../
 import { readManagedMemory } from "../dist/managed-memory-reader.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const { MemoryMigrationAuthority } = createRequire(import.meta.url)(join(root, "../dist/runtime/memory-migration-authority.js"));
+const { MemoryMigrationAuthority } = createRequire(import.meta.url)("../legacy/dist/runtime/memory-migration-authority.js");
 const sha = value => createHash("sha256").update(value).digest("hex");
 
 test("expired original adoption is provenance only; a separately confirmed session works without source files or grant mutation", async t => {

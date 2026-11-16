@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -7,7 +7,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 
-const project = path.resolve(new URL("../legacy", import.meta.url).pathname), require = createRequire(import.meta.url);
+const project = path.resolve(new URL("..", import.meta.url).pathname), require = createRequire(import.meta.url);
+const directories = [];
+after(() => { for (const directory of directories) fs.rmSync(directory, { recursive: true, force: true }); });
 const hash = value => createHash("sha256").update(value).digest("hex");
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check) {
@@ -17,23 +19,25 @@ async function until(check) {
 test("original clients and backend-adapted Meeting reducer survive full native cross-root handoff and replay", async t => {
   const directory = path.join(project, ".migration-test-work", `room-full-live-${randomUUID()}`);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  directories.push(directory);
   fs.writeFileSync(path.join(directory, "package.json"), '{"type":"module"}');
-  fs.symlinkSync(path.join(project, "../node_modules"), path.join(directory, "node_modules"), "dir");
+  fs.symlinkSync(path.join(project, "legacy/node_modules"), path.join(directory, "node_modules"), "dir");
   const build = (file, contents) => require("esbuild").buildSync({
     stdin: { contents, resolveDir: project }, bundle: true, platform: "node",
     format: file.endsWith(".cjs") ? "cjs" : "esm", packages: "external",
     outfile: path.join(directory, file), logLevel: "silent" });
-  build("native.mjs", `export {initialize,Storage} from "./next-server/src/storage";
-    export {inspectLegacyChatroomArchive} from "./next-server/src/legacy-chatroom-continuation";
-    export {roomHistoryLineage} from "./next-server/src/next-room-history-sync";
-    export {inspectNativeRoom,createNativeRoom} from "./next-server/src/native-chatroom-identity";
-    export {NextRoomHistoryAssets} from "./next-server/src/next-room-history-assets";
-    export {createNextRoomUiHub} from "./next-server/src/next-room-ui-hub";`);
-  build("storage-worker.js", 'import "./next-server/src/storage-worker";');
-  build("retained.cjs", `export {ChatHub} from "./src/chatroom/chatroom-hub";
-    export {ChatJoinApprovalManager} from "./src/chatroom/chat-join-approval";
-    export {MeetingStateStore} from "./src/chatroom/meeting-state"; export {WebSocketServer} from "ws";`);
-  const archive = path.join(project, "personal-knowledge-4.0.22.vsix");
+  build("native.mjs", `export {initialize,Storage} from "./src/storage";
+    export {inspectLegacyChatroomArchive} from "./src/legacy-chatroom-continuation";
+    export {roomHistoryLineage} from "./src/next-room-history-sync";
+    export {inspectNativeRoom,createNativeRoom} from "./src/native-chatroom-identity";
+    export {NextRoomHistoryAssets} from "./src/next-room-history-assets";
+    export {createNextRoomUiHub} from "./src/next-room-ui-hub";`);
+  build("storage-worker.js", 'import "./src/storage-worker";');
+  build("retained.cjs", `export {ChatHub} from "./legacy/src/chatroom/chatroom-hub";
+    export {ChatJoinApprovalManager} from "./legacy/src/chatroom/chat-join-approval";
+    export {MeetingStateStore} from "./legacy/src/chatroom/meeting-state"; export {WebSocketServer} from "ws";`);
+  const archive = process.env.PKM_LEGACY_VSIX || path.join(project, "legacy/personal-knowledge-4.0.22.vsix");
+  assert(fs.existsSync(archive), "Set PKM_LEGACY_VSIX to the authorized original 4.0.22 VSIX (SHA-256 1804071cb3b9fc86edc5933d5001db6ea1a8d7a9adf30d6d2b3166fcd6048f27).");
   assert.equal(hash(fs.readFileSync(archive)), "1804071cb3b9fc86edc5933d5001db6ea1a8d7a9adf30d6d2b3166fcd6048f27");
   const original = path.join(directory, "original"); fs.mkdirSync(original);
   fs.writeFileSync(path.join(original, "package.json"), '{"type":"commonjs"}');

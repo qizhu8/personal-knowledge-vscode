@@ -9,6 +9,7 @@ import { managerTextConfigSchema } from "./host-composition-manager.js";
 import { createBrowserReview, startTerminalReview } from "./host-composition-review.js";
 import { assertWorkspaceBackupQuiescent } from "./workspace-backup.js";
 import { z } from "zod";
+import { parseArgs } from "node:util";
 import { validateManagerPlan } from "./manager-plan.js";
 import { codingWorkerPath } from "./domain/coding-worker-contracts.js";
 import type { NativeRuntimeOptions } from "./native-runtime.js";
@@ -48,59 +49,72 @@ async function main() {
     await runLegacyImportCli(command, args);
     return;
   }
-  let directory: string | undefined, readOnly = false, port = 0, legacyNoteMcp = false, legacyMcp = false;
-  let allowAssetClassification = false;
-  let trustedActions = false;
-  let trustedPlugins = false;
-  let configPath: string | undefined, humanMode: string | undefined, insecure = false;
-  let managerTextPath: string | undefined;
-  let destination: string | undefined;
-  let codingConfigPath: string | undefined, codingSource: string | undefined, codingStages: string | undefined;
-  let snapshotSchedulerAdmission: string | undefined;
-  const codingChecks: string[] = [];
-  const providers: ("openai-compatible" | "azure-openai")[] = [], endpoints: string[] = [], models: string[] = [], tools: string[] = [];
+  const { values, tokens } = parseArgs({
+    args, strict: true, allowPositionals: false, tokens: true,
+    options: {
+      data: { type: "string" },
+      port: { type: "string" },
+      "read-only": { type: "boolean" },
+      "experimental-legacy-note-mcp": { type: "boolean" },
+      "experimental-legacy-mcp": { type: "boolean" },
+      "allow-asset-classification": { type: "boolean" },
+      "experimental-trusted-actions": { type: "boolean" },
+      "experimental-trusted-plugins": { type: "boolean" },
+      "experimental-managed-snapshot-scheduler": { type: "string" },
+      config: { type: "string" },
+      "human-review": { type: "string" },
+      "manager-text-config": { type: "string" },
+      destination: { type: "string" },
+      "coding-config": { type: "string" },
+      "authorized-disposable-coding-source": { type: "string" },
+      "authorized-coding-stage-parent": { type: "string" },
+      "allow-coding-check": { type: "string", multiple: true },
+      "allow-provider": { type: "string", multiple: true },
+      "allow-endpoint": { type: "string", multiple: true },
+      "allow-model": { type: "string", multiple: true },
+      "allow-tool": { type: "string", multiple: true },
+      "allow-insecure-loopback": { type: "boolean" },
+      "secret-ref": { type: "string", multiple: true },
+    },
+  });
+  const repeatable = new Set(["allow-coding-check", "allow-provider", "allow-endpoint", "allow-model", "allow-tool", "secret-ref"]);
+  const seen = new Set<string>();
+  for (const token of tokens) {
+    if (token.kind !== "option") continue;
+    if (token.value !== undefined && !token.value.trim()) throw new Error(`Missing value for --${token.name}.`);
+    if (seen.has(token.name) && !repeatable.has(token.name)) throw new Error(`Duplicate option: --${token.name}.`);
+    seen.add(token.name);
+    if (command === "init" && token.name !== "data"
+      || command === "backup" && !["data", "destination"].includes(token.name)
+      || token.name === "port" && command !== "http")
+      throw new Error(`Option --${token.name} is not supported by ${command}.`);
+  }
+  const directory = values.data, readOnly = values["read-only"] ?? false;
+  const legacyNoteMcp = values["experimental-legacy-note-mcp"] ?? false, legacyMcp = values["experimental-legacy-mcp"] ?? false;
+  const allowAssetClassification = values["allow-asset-classification"] ?? false;
+  const trustedActions = values["experimental-trusted-actions"] ?? false, trustedPlugins = values["experimental-trusted-plugins"] ?? false;
+  const configPath = values.config, humanMode = values["human-review"], insecure = values["allow-insecure-loopback"] ?? false;
+  const managerTextPath = values["manager-text-config"], destination = values.destination;
+  const codingConfigPath = values["coding-config"], codingSource = values["authorized-disposable-coding-source"];
+  const codingStages = values["authorized-coding-stage-parent"], codingChecks = values["allow-coding-check"] ?? [];
+  const snapshotSchedulerAdmission = values["experimental-managed-snapshot-scheduler"];
+  const providers = (values["allow-provider"] ?? []).map(value => {
+    if (value !== "openai-compatible" && value !== "azure-openai") throw new Error("Invalid provider policy.");
+    return value;
+  });
+  const endpoints = values["allow-endpoint"] ?? [], models = values["allow-model"] ?? [], tools = values["allow-tool"] ?? [];
+  let port = 0;
+  if (values.port !== undefined) {
+    if (!/^\d+$/.test(values.port) || Number(values.port) > 65535) throw new Error("Invalid port.");
+    port = Number(values.port);
+  }
+  if (snapshotSchedulerAdmission !== undefined && !/^[a-f0-9]{64}$/.test(snapshotSchedulerAdmission))
+    throw new Error("An exact native snapshot scheduler enrollment digest is required.");
   const secrets = new Map<string, string>();
-  for (let index = 0; index < args.length; index++) {
-    if (args[index] === "--data") directory = args[++index];
-    else if (args[index] === "--port") {
-      const value = args[++index];
-      if (!value || !/^\d+$/.test(value) || Number(value) > 65535) throw new Error("Invalid port.");
-      port = Number(value);
-    } else if (args[index] === "--read-only") readOnly = true;
-    else if (args[index] === "--experimental-legacy-note-mcp") legacyNoteMcp = true;
-    else if (args[index] === "--experimental-legacy-mcp") legacyMcp = true;
-    else if (args[index] === "--allow-asset-classification") allowAssetClassification = true;
-    else if (args[index] === "--experimental-trusted-actions") trustedActions = true;
-    else if (args[index] === "--experimental-trusted-plugins") trustedPlugins = true;
-    else if (args[index] === "--experimental-managed-snapshot-scheduler") {
-      if (snapshotSchedulerAdmission !== undefined) throw new Error("Duplicate native snapshot scheduler enrollment.");
-      snapshotSchedulerAdmission = args[++index];
-      if (!snapshotSchedulerAdmission || !/^[a-f0-9]{64}$/.test(snapshotSchedulerAdmission))
-        throw new Error("An exact native snapshot scheduler enrollment digest is required.");
-    }
-    else if (args[index] === "--config") configPath = args[++index];
-    else if (args[index] === "--human-review") humanMode = args[++index];
-    else if (args[index] === "--manager-text-config") managerTextPath = args[++index];
-    else if (args[index] === "--destination") destination = args[++index];
-    else if (args[index] === "--coding-config") codingConfigPath = args[++index];
-    else if (args[index] === "--authorized-disposable-coding-source") codingSource = args[++index];
-    else if (args[index] === "--authorized-coding-stage-parent") codingStages = args[++index];
-    else if (args[index] === "--allow-coding-check") codingChecks.push(args[++index]);
-    else if (args[index] === "--allow-provider") {
-      const value = args[++index];
-      if (value !== "openai-compatible" && value !== "azure-openai") throw new Error("Invalid provider policy.");
-      providers.push(value);
-    }
-    else if (args[index] === "--allow-endpoint") endpoints.push(args[++index]);
-    else if (args[index] === "--allow-model") models.push(args[++index]);
-    else if (args[index] === "--allow-tool") tools.push(args[++index]);
-    else if (args[index] === "--allow-insecure-loopback") insecure = true;
-    else if (args[index] === "--secret-ref") {
-      const match = /^(secret:[A-Za-z0-9][A-Za-z0-9._/-]*)=([A-Za-z_][A-Za-z0-9_]*)$/.exec(args[++index] ?? "");
-      if (!match || secrets.has(match[1])) throw new Error("Invalid explicit secret reference.");
-      secrets.set(match[1], match[2]);
-    }
-    else throw new Error(`Unknown option: ${args[index]}`);
+  for (const value of values["secret-ref"] ?? []) {
+    const match = /^(secret:[A-Za-z0-9][A-Za-z0-9._/-]*)=([A-Za-z_][A-Za-z0-9_]*)$/.exec(value);
+    if (!match || secrets.has(match[1])) throw new Error("Invalid explicit secret reference.");
+    secrets.set(match[1], match[2]);
   }
   if (!directory || !["init", "http", "mcp", "backup"].includes(command)) throw new Error("Usage: node dist/cli.js init|http|mcp|backup --data <isolated directory> [--port 0] [--read-only] [--allow-asset-classification] [--destination <NEW backup directory>]");
   if (legacyNoteMcp && (command !== "mcp" || !readOnly)) throw new Error("Experimental legacy Note MCP requires mcp --read-only and an isolated workspace.");

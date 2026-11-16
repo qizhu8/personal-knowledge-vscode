@@ -1,13 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { createRequire } from "node:module";
-import { existsSync, readFileSync } from "node:fs";
 import { chmod, lstat, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
-import { runInThisContext } from "node:vm";
-import ts from "typescript";
+import { originalReleaseModules } from "./legacy-release-modules.mjs";
+import { readContextOriginal } from "./context-original-source-captures.mjs";
 import { importLegacyWorkspace, planLegacyImport, recoverLegacyImportOutcome } from "../dist/legacy-import.js";
 import { migrationPreflight } from "../dist/migration-preflight.js";
 import { Storage } from "../dist/storage.js";
@@ -20,22 +18,7 @@ const scriptIdentity = {
   schema: "pkm.script/v1", knowledgeId: "script_0123456789abcdef01234567",
   aliases: ["pkm://scripts/Old/check.py", "pkm://script/script_fedcba9876543210fedcba98"],
 };
-const require = createRequire(import.meta.url), modules = new Map();
-function original(path) {
-  if (modules.has(path)) return modules.get(path).exports;
-  const mod = { exports: {} }; modules.set(path, mod);
-  const code = ts.transpileModule(readFileSync(path, "utf8"), {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-  }).outputText;
-  runInThisContext(`(function(require,module,exports,__filename,__dirname){${code}\n})`, { filename: path })(
-    name => {
-      if (!name.startsWith(".")) return require(name);
-      const next = resolve(dirname(path), name);
-      return original(existsSync(`${next}.ts`) ? `${next}.ts` : join(next, "index.ts"));
-    }, mod, mod.exports, path, dirname(path));
-  return mod.exports;
-}
-const originalStorage = original(resolve(import.meta.dirname, "../legacy/src/knowledge/storage.ts"));
+const originalStorage = originalReleaseModules()("src/knowledge/storage.ts");
 async function fixture(t) {
   const parent = resolve(import.meta.dirname, `.legacy-library-${randomUUID()}`);
   const source = join(parent, "source"), destination = join(parent, "native");
@@ -131,7 +114,12 @@ test("library oracle uses the separately pinned original storage and locator sou
   const sources = provenance.originalSources.filter(item =>
     ["src/knowledge/storage.ts", "src/knowledge/knowledge-locator.ts"].includes(item.path));
   assert.equal(sources.length, 2);
-  assert.deepEqual(await checkSourceRecords(sources), []);
+  const storage = sources.find(item => item.path === "src/knowledge/storage.ts");
+  assert.ok(storage);
+  const original = await readContextOriginal(storage.path, { sha256: storage.sha256 });
+  const { hash } = await import("../scripts/migration.mjs");
+  assert.equal(hash(original), storage.sha256);
+  assert.deepEqual(await checkSourceRecords(sources.filter(item => item !== storage)), []);
 });
 test("script identity sidecars remain bound to an existing regular script and unique identities/aliases", async t => {
   for (const variant of ["orphan", "malformed", "duplicate-id", "duplicate-alias"]) {

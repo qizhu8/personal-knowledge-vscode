@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:https";
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readlink, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import { networkInterfaces } from "node:os";
 import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
 const require = createRequire(import.meta.url);
@@ -20,7 +20,32 @@ const { syncPlanHash } = await import(pathToFileURL(join(nextDist, "sync-plan.js
 test("Git HTTPS uses a real credential helper against a network-isolated TLS Git server", {
   timeout: 90000, skip: process.env.PKM_TEST_ISOLATED_NETWORK !== "1" ? "requires a private user/mount/network namespace" : false,
 }, async t => {
+  if (process.getuid() !== 0) {
+    const uid = process.getuid();
+    assert.match(await readFile("/proc/self/uid_map", "utf8"), new RegExp(`^\\s*${uid}\\s+${uid}\\s+1\\s*$`));
+    // Keep mount and privileged-port capabilities inside a nested fixture-owned namespace.
+    const env = { ...process.env, PKM_TEST_HTTPS_PARENT_NETNS: await readlink("/proc/self/ns/net") };
+    delete env.NODE_TEST_CONTEXT;
+    const setup = `import fcntl, os, socket, struct, sys
+with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as control:
+    current = fcntl.ioctl(control, 0x8913, struct.pack("16sH14s", b"lo", 0, b""))
+    flags = struct.unpack_from("H", current, 16)[0]
+    fcntl.ioctl(control, 0x8914, struct.pack("16sH14s", b"lo", flags | 1, b""))
+os.execvp(sys.argv[1], sys.argv[1:])
+`;
+    const child = spawnSync("unshare", ["--user", "--map-root-user", "--mount", "--net", "--pid", "--fork",
+      "--mount-proc", "--kill-child=KILL", "python3", "-c", setup,
+      process.execPath, "--test", fileURLToPath(import.meta.url)],
+    { env, encoding: "utf8", timeout: 85000 });
+    assert.equal(child.error, undefined);
+    assert.equal(child.status, 0, `${child.stdout}\n${child.stderr}`);
+    assert.match(child.stdout, /^# pass 1$/m);
+    assert.match(child.stdout, /^# skipped 0$/m);
+    return;
+  }
   assert.equal(process.getuid(), 0);
+  if (process.env.PKM_TEST_HTTPS_PARENT_NETNS)
+    assert.notEqual(await readlink("/proc/self/ns/net"), process.env.PKM_TEST_HTTPS_PARENT_NETNS);
   assert.match(await readFile("/proc/self/uid_map", "utf8"), /^\s*0\s+\d+\s+1\s*$/);
   assert.ok(Object.values(networkInterfaces()).flat().every(address => address.internal));
   const dir = resolve(".migration-test-work", `git-https-${randomUUID()}`);

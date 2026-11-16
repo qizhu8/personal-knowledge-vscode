@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { publicName } from "./public-identity.js";
 import { z } from "zod";
 import { CoreError, definitions, description, discovery, invocation, parse, type Actor } from "./contracts.js";
 import { Storage } from "./storage.js";
@@ -90,8 +91,8 @@ export class Core {
         parse(methods.server_info.schema, input);
         const pluginStatus = await this.plugins.read("plugin.runtime.status", { pluginId: "teams" }) as { available: boolean };
         return { schema: "pkm.next-result/v1", requestId, result: {
-          name: "pkm-next", version: "0.1.0", experimental: true, catalogRevision,
-          workspaceId: await this.storage.workspaceId(), serverId: "pkm-next",
+          name: publicName, version: "0.1.0", experimental: true, catalogRevision,
+          workspaceId: await this.storage.workspaceId(), serverId: publicName,
           workspaceVersion: "pkm.next-workspace/v2", protocolVersion: "v1", actorId: actor.id,
           supportedModes: this.available("manager.chat.artifacts") ? ["pinned-sqlite-text-artifacts/v1"] : [],
           isolation: "Isolated workspace only; offline disposable-copy import is library-only. No production cutover or VS Code dependency.",

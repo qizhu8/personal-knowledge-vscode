@@ -168,9 +168,12 @@ try {
   finally { closeSync(sentinelFd); }
   renameSync(sentinel, sentinelAfter);
   assert.equal(await readFile(sentinelAfter, "utf8"), "Synthetic out-of-scope sentinel");
+  const { renameNoReplaceSync } = await import("../dist/rename-no-replace.js");
+  renameNoReplaceSync(sentinelAfter, sentinel);
+  assert.equal(await readFile(sentinel, "utf8"), "Synthetic out-of-scope sentinel");
   assert.equal(JSON.parse(await readFile(control, "utf8")).hits, 0);
   const failed = await call(operation, args);
-  assert(failed.error, "injected native boundary returned success");
+  assert(failed.error, `injected native boundary returned success: ${JSON.stringify({ domain, fault: fault.name, tamper, transport })}`);
   assert(!Object.hasOwn(failed, "result"), "no success-shaped fallback");
   assert.equal(failed.error.effect, "unknown");
   assert.equal(failed.error.code, ["project", "resource"].includes(domain) ? "RECOVERY_CONFLICT" : "STORAGE_ERROR");

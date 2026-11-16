@@ -181,7 +181,7 @@ test("provenance references actual repository native Manager source and exact ca
   assert.equal(manifest.capturedRoot, ".");
   const hash = value => createHash("sha256").update(value).digest("hex");
   for (const entry of manifest.files) {
-    assert.equal(hash(await readFile(new URL(entry.source, new URL("../", root)))), entry.sourceSha256);
+    assert.equal(hash(await readFile(new URL(`legacy/${entry.source}`, root))), entry.sourceSha256);
     assert.equal(hash(await readFile(new URL(entry.captured, root))), entry.capturedSha256);
   }
   assert.match(rootWorkCriterion, /original user objective/);

@@ -1,9 +1,9 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import ts from "typescript";
-import { packageRoot, hash } from "./migration.mjs";
+import { packageRoot, hash, readOriginalSource } from "./migration.mjs";
 
-const root = resolve(packageRoot, "..");
+const root = resolve(packageRoot, "legacy");
 const args = process.argv.slice(2);
 if (args.length && (args.length !== 1 || args[0] !== "--check")) {
   throw new Error("Usage: node scripts/capture-workflow-compiler.mjs [--check]");
@@ -15,7 +15,17 @@ async function emit(path, content) {
   } else await writeFile(full, content);
 }
 const files = [];
-async function text(source) { return readFile(resolve(root, source), "utf8"); }
+const originalMetadata = args[0] === "--check"
+  ? JSON.parse(await readFile(resolve(packageRoot, "migration/workflow-compiler-provenance.json"), "utf8"))
+  : undefined;
+async function text(source) {
+  if (!originalMetadata) return readFile(resolve(root, source), "utf8");
+  const record = originalMetadata.files.find(record => record.source === source);
+  if (!record) throw new Error(`Unknown workflow compiler source: ${source}`);
+  return (await readOriginalSource(source, {
+    sha256: record.sourceSha256, dataset: "runtime-workflow-compiler-historical",
+  })).toString("utf8");
+}
 async function record(source, captured) {
   files.push({ source, captured, sourceSha256: hash(await text(source)),
     capturedSha256: hash(await readFile(resolve(packageRoot, captured))) });

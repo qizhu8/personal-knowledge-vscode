@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { migrationPreflightReportSchema } from "../migration-preflight.js";
+import { migrationPreflightReportSchema } from "./migration-preflight-contracts.js";
 import { legacyTrashImportPlanSchema } from "./legacy-trash-import-contracts.js";
 import { legacyRecipeTrashImportPlanSchema } from "../legacy-recipe-trash-contracts.js";
 import { subscriptionIdentityBindingSchema } from "../legacy-subscription-identity.js";
@@ -8,7 +8,7 @@ import { memoryScopeContinuitySchema } from "../memory-scope-continuity.js";
 import { noReplacePlatformSupported } from "../rename-no-replace.js";
 import { legacyRouterConfigPlanSchema } from "../legacy-router-config.js";
 import { resourcePath } from "../document-path.js";
-import { legacyRetrievalHistoryPlanSchema } from "../legacy-retrieval-history-import.js";
+import { legacyRetrievalHistoryPlanSchema } from "./legacy-retrieval-history-import-contracts.js";
 import { describeLegacySkillsHistoryArchive, legacySkillsHistoryArchiveSchema } from "../legacy-library.js";
 
 export const legacyImportLimitsSchema = z.strictObject({

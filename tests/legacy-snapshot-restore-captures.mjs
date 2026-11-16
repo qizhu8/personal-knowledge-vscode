@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { createCipheriv, createDecipheriv, createHash, randomUUID } from "node:crypto";
 import { createContext, runInContext } from "node:vm";
 import ts from "typescript";
@@ -7,15 +7,49 @@ import { DatabaseSync } from "node:sqlite";
 import { createLegacySnapshotRestore, initializeLegacySnapshotRestoreSchema } from "../dist/legacy-snapshot-restore.js";
 import { initializeChatSessionSchema, createChatSessionStore } from "../dist/chat-session-store.js";
 import { legacySnapshotRestoreSourcePins } from "../dist/domain/legacy-snapshot-restore-source-pins.js";
+import { readOriginalSource } from "../scripts/migration.mjs";
 
 export const hash = value => createHash("sha256").update(value).digest("hex");
 export const at = "2026-11-07T16:30:00.000Z";
 export const code = value => error => error?.code === value;
-export function sourceOracle() {
-  for (const [path, pin] of Object.entries(legacySnapshotRestoreSourcePins)) {
-    assert.equal(hash(readFileSync(new URL(`../../${path}`, import.meta.url))), pin, `Source pin changed: ${path}`);
+const packageRoot = fileURLToPath(new URL("../", import.meta.url));
+const snapshotArchive = "migration/evidence/snapshot-authentication-originals.zip";
+const snapshotArchiveSha256 = "88c60bdaf4cfafb4a9e5a1e02848518bf223b7be0008fb0908d49d115aab51c6";
+const snapshotMembers = Object.freeze({
+  "src/agent-sessions/agent-snapshots.ts": "snapshot-batch14-original/source/src/agent-sessions/agent-snapshots.ts",
+  "src/agent-sessions/agent-session-lifecycle.ts": "snapshot-batch14-original/source/src/agent-sessions/agent-session-lifecycle.ts",
+  "resources/agent_session_runtime.py": "snapshot-batch14-original/source/resources/agent_session_runtime.py",
+  "src/chat/api-chat-store.ts": "snapshot-batch14-original/source/src/chat/api-chat-store.ts",
+  "src/chat/api-chat-view.ts": "snapshot-batch14-original/source/src/chat/api-chat-view.ts",
+  "src/chat/chat-budget-ledger.ts": "snapshot-batch14-original/source/src/chat/chat-budget-ledger.ts",
+  "next-server/src/agent-runtime.ts": "snapshot-batch14-original/source/next-server/src/agent-runtime.ts",
+  "next-server/src/manager-runtime.ts": "snapshot-batch14-original/source/next-server/src/manager-runtime.ts",
+  "next-server/src/chat-session-store.ts": "snapshot-batch14-original/source/next-server/src/chat-session-store.ts",
+  "next-server/src/legacy-state-import.ts": "snapshot-batch14-original/source/next-server/src/legacy-state-import.ts",
+});
+export async function readSnapshotOriginal(path, {
+  root = packageRoot, kind = "source", sha256 = legacySnapshotRestoreSourcePins[path],
+} = {}) {
+  if (kind !== "source" || !Object.hasOwn(snapshotMembers, path)
+    || !Object.hasOwn(legacySnapshotRestoreSourcePins, path) || sha256 !== legacySnapshotRestoreSourcePins[path]) {
+    throw new Error("No exact snapshot source path/role/digest binding.");
   }
-  const source = readFileSync(new URL("../legacy/src/agent-sessions/agent-snapshots.ts", import.meta.url), "utf8");
+  return readOriginalSource(`${snapshotArchive}!/${snapshotMembers[path]}`, {
+    root, kind, sha256, archiveSha256: snapshotArchiveSha256,
+  });
+}
+assert.deepEqual(Object.keys(snapshotMembers).sort(), Object.keys(legacySnapshotRestoreSourcePins).sort());
+const authenticatedSources = new Map(await Promise.all(Object.keys(legacySnapshotRestoreSourcePins)
+  .map(async path => [path, await readSnapshotOriginal(path)])));
+export function snapshotOriginalSource(path) {
+  assert.equal(Object.hasOwn(snapshotMembers, path), true, "Unknown snapshot original");
+  const bytes = authenticatedSources.get(path);
+  assert.equal(hash(bytes), legacySnapshotRestoreSourcePins[path], `Source pin changed: ${path}`);
+  return bytes.toString("utf8");
+}
+export function sourceOracle() {
+  for (const path of Object.keys(legacySnapshotRestoreSourcePins)) snapshotOriginalSource(path);
+  const source = snapshotOriginalSource("src/agent-sessions/agent-snapshots.ts");
   const ast = ts.createSourceFile("original.ts", source, ts.ScriptTarget.Latest, true);
   const names = ["continuationTodo", "agentSnapshotRecovery", "snapshotAad", "encryptPayload",
     "payloadKey", "decryptEnvelope", "decryptPayload", "snapshotCapture"];

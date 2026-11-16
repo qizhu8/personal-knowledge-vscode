@@ -49,7 +49,7 @@ function legacySupervisor() {
   mkdirSync(join(legacyRoot, "chat"), { recursive: true }); mkdirSync(join(legacyRoot, "runtime"));
   writeFileSync(join(legacyRoot, "package.json"), '{"type":"commonjs"}');
   for (const relative of ["chat/chat-process-runtime", "runtime/cross-process-lock"]) {
-    const source = readFileSync(resolve("..", "src", relative + ".ts"), "utf8");
+    const source = readFileSync(resolve(import.meta.dirname, "../legacy/src", relative + ".ts"), "utf8");
     let output = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
     if (relative === "chat/chat-process-runtime") {
       const needle = 'await new Promise((resolve, reject) => {\n            worker.once("spawn", resolve);';

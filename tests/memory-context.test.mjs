@@ -5,7 +5,8 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { MemoryContextService } from "../dist/memory-context.js";
 import { chatMemorySegments, estimateInputTokens, memoryAgeAllows } from "../dist/domain/memory-context-selection.js";
-import { checkCaptureRecords } from "../scripts/migration.mjs";
+import { packageRoot, readOriginalSource } from "../scripts/migration.mjs";
+import { authenticateContextSources } from "./context-original-source-captures.mjs";
 
 const hash = value => createHash("sha256").update(value).digest("hex");
 const binding = () => ({ actorId: "actor-a", namespace: "workspace-a", chatId: "chat-a", historyRevision: "h1", memoryRevision: "m1" });
@@ -275,10 +276,18 @@ test("synthetic closed-loop Chat consumer admits prompt, gets tool request, and 
   assert.throws(() => ready.assertCurrent(), /Stale/);
 });
 
-test("provenance hashes use actual original source and migrated test roots", async () => {
+test("memory context provenance authenticates the exact historical original sources", async () => {
   const manifest = JSON.parse(await readFile(new URL("../migration/memory-context-provenance.json", import.meta.url), "utf8"));
-  assert.deepEqual(await checkCaptureRecords(manifest.files), []);
-  for (const item of manifest.migrated) assert.equal(hash(await readFile(new URL(`../${item.path}`, import.meta.url))), item.sha256, item.path);
+  await authenticateContextSources(manifest.files);
+});
+
+test("provenance hashes still require exact current captured and migrated bytes", async () => {
+  const { checkNativeRecords } = await import("../scripts/migration.mjs");
+  const manifest = JSON.parse(await readFile(new URL("../migration/memory-context-provenance.json", import.meta.url), "utf8"));
+  assert.deepEqual(await checkNativeRecords([
+    ...manifest.files.map(record => ({ file: record.captured, sha256: record.capturedSha256 })),
+    ...manifest.migrated.map(item => ({ file: item.path, sha256: item.sha256 })),
+  ]), []);
   assert.equal(manifest.sourceRoot, "..");
   assert.equal(manifest.capturedRoot, ".");
   assert(fileURLToPath(new URL("../legacy/src/chat/chat-memory.ts", import.meta.url)).endsWith("/src/chat/chat-memory.ts"));

@@ -30,6 +30,7 @@ import { startHttp } from "../dist/http.js";
 import { startMcp } from "../dist/mcp.js";
 import { Storage } from "../dist/storage.js";
 import { createWorkspaceBackup, restoreWorkspaceBackup } from "../dist/workspace-backup.js";
+import { projectOriginalSource } from "./legacy-project-original-captures.mjs";
 
 // Execute the current original TypeScript, not a potentially stale extension build.
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "../legacy");
@@ -69,7 +70,7 @@ function transaction(db, action) {
 }
 test("original oracle source fingerprints remain distinct from native implementation qualification", () => {
   for (const source of originalLegacyCommandSources) {
-    assert.equal(hash(readFileSync(join(repository, source.path))), source.sha256, source.path);
+    assert.equal(hash(projectOriginalSource(source.path, source.sha256)), source.sha256, source.path);
     assert.ok(source.symbols.length > 0);
   }
 });

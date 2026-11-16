@@ -1,0 +1,32 @@
+{
+  "schema": "pkm.original-authentication-archive/v1",
+  "qualification": "Historical Recipe trash authentication only, not native or installed UI qualification. Existing source pins and captured declarations are unchanged. Git is provisioning-only; tests read the repository-contained authenticated archive. The four pinned modules are shared by capture verification and the live original-store oracle; unpinned supporting imports remain the retained legacy test dependencies. No installed Recipe, metadata, ownership or consent evidence is fabricated.",
+  "archive": "migration/evidence/recipe-trash-authentication-originals.zip",
+  "archiveSha256": "64bfa28487a0980b60e6510e2fbe8b3db2727a60e6bd24757fc99b4a8a41a46c",
+  "members": [
+    {
+      "path": "src/workflows/project-model.ts",
+      "sha256": "505f56e2351a9f173268007990eaf02f1014abe0dc4f722b12a8f6aa81c94195",
+      "provisioning": "git 6265c8b4562198dc0e18bfa50edff9548d9afd9b:src/workflows/project-model.ts",
+      "member": "recipe-trash-original/source/src/workflows/project-model.ts"
+    },
+    {
+      "path": "src/workflows/project-store.ts",
+      "sha256": "a88568af85c6cbf714cc8c9efcfb641da12502df888b4c6dd9e4b7e24dacc010",
+      "provisioning": "git b64099b4ac794aea95c466b9b619c8807377c878:src/workflows/project-store.ts",
+      "member": "recipe-trash-original/source/src/workflows/project-store.ts"
+    },
+    {
+      "path": "src/workflows/recipe-filesystem-store.ts",
+      "sha256": "3ecfb22753d16455ff7427993fd4d017dc00c1d2ffd65be9414157e31421b6f5",
+      "provisioning": "git 73f75b517ceb523d4d73d8e7a717009a2ad6e531:legacy/src/workflows/recipe-filesystem-store.ts",
+      "member": "recipe-trash-original/source/src/workflows/recipe-filesystem-store.ts"
+    },
+    {
+      "path": "src/workflows/project-filesystem-store.ts",
+      "sha256": "20c0f58161b3f82181e48049e3ad95f0091ec41e1a1fba61413514c97502e0f8",
+      "provisioning": "git 73f75b517ceb523d4d73d8e7a717009a2ad6e531:legacy/src/workflows/project-filesystem-store.ts",
+      "member": "recipe-trash-original/source/src/workflows/project-filesystem-store.ts"
+    }
+  ]
+}

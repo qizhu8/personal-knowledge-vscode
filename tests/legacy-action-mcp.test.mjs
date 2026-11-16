@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile, lstat } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { Storage, initialize } from "../dist/storage.js";
@@ -19,9 +19,11 @@ import { nativeRestoreAuthority } from "./host-composition-legacy-batch16-restor
 import { legacyManagedFixture, closeLegacyManagedFixture } from "./legacy-managed-fixture.mjs";
 import { componentDigest } from "../dist/domain/action-compiler-validation.js";
 import { ORIGINAL_ACTION_COMPILER_CAPTURE } from "../dist/domain/action-compiler-original.js";
+import { ACTION_SOURCE_IDENTITY } from "../dist/domain/action-source-identity.js";
 import { originalActionCompilerFixtures as original } from "./action-compiler-original-fixtures.mjs";
+import { originalActionFixture } from "./legacy-action-original-fixture.mjs";
 
-const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "..");
+const root = resolve(import.meta.dirname, "..");
 const actor = { id: "mcp:external", canWrite: true };
 const graph = {
   action_id: "example.original.graph", version: 1, name: "Original graph",
@@ -32,12 +34,20 @@ const graph = {
 const tools = ["action_definition_check", "action_graph_check", "action_templates", "action_template_create",
   "action_register", "action_proposals", "action_graph_save",
   "action_module_sets", "action_module_set_import", "action_module_set_load", "action_module_set_remove"];
-const oracle = (directory, operation, args = {}) => JSON.parse(execFileSync("python3", ["-c", `
+// Only explicit frozen-v2 fixtures advertise automatic admission; this projection remains pending-only.
+const pendingOnlyDescriptions = {
+  action_template_create: "Submit a template-based Action proposal for operator admission. Never registers or grants execution; wait for human approval before qualification.",
+  action_register: "Submit a versioned Action proposal, not a formal library registration. Return pending_operator_approval; ask the operator to approve it in Action Library and wait. The previous approved version is unchanged. No validation, invocation or automatic retry before approval.",
+  action_graph_save: "Submit a graphical composition proposal. It is not callable until operator admission and qualification.",
+};
+const oracle = (directory, operation, args = {}) => originalActionFixture(dirname(directory)).json(`
 import ast,json,sys
 from pathlib import Path
 sys.path.insert(0,sys.argv[1])
 from action_modules import ModuleRuntime
 request=json.load(sys.stdin)
+if request["operation"] not in {"contracts","definition_check","templates","graph_definition","definition","template_create","proposal_list","register","graph_save","configure_workspace","module_set_import","module_set_load"}:
+ raise ValueError("Operation outside original Action fixture scope")
 runtime=ModuleRuntime(sys.argv[2],proposal_mode=True)
 if request["operation"]=="contracts":
  from fastmcp import FastMCP
@@ -57,20 +67,31 @@ if request["operation"]=="contracts":
 else:
  result=getattr(runtime,request["operation"])(**request["arguments"])
  print(json.dumps(result))
-`, join(repository, "resources"), directory], {
-  input: JSON.stringify({ operation, arguments: args }), encoding: "utf8",
-  stdio: ["pipe", "pipe", "pipe"],
-  env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
-}));
+`, [directory], JSON.stringify({ operation, arguments: args }));
 
 async function fixture(t) {
   const parent = join(root, "tests", `.legacy-action-${randomUUID()}`);
-  await mkdir(parent);
+  await mkdir(join(parent, "oracle"), { recursive: true });
   const data = await initialize(join(parent, "workspace"));
   t.after(() => rm(parent, { recursive: true, force: true }));
   return { parent, data, oracle: join(parent, "oracle") };
 }
 const normalizedProposal = record => ({ ...record, proposal_id: "<generated>", submitted_at: "<generated>" });
+function assertPendingResponseCompatibility(actual, expected) {
+  const originalGuidance = "The trusted PKM Extension Host prepares this revision automatically in the background. Wait for Action readiness; no manual Validate or model selection is required. If blocked, inspect preparation details. Do not self-grant or retry registration.";
+  const nativeGuidance = "The trusted VS Code Extension Host may automatically admit this exact revision. GPT review is optional; inputs, host authorization, and effect consent remain required. Without active workspace trust the proposal remains pending and is not callable.";
+  assert.equal(expected.next_action, originalGuidance);
+  assert.equal(actual.next_action, nativeGuidance);
+  for (const response of [actual, expected]) {
+    assert.equal(response.state, "pending_operator_approval");
+    assert.equal(response.next_owner, "background");
+    assert.equal(response.registered, false);
+    assert.equal(response.callable, false);
+  }
+  // Only the documented host-policy guidance differs; preserve every other field.
+  assert.deepEqual({ ...actual, proposal_id: "<generated>", next_action: originalGuidance },
+    { ...expected, proposal_id: "<generated>" });
+}
 
 test("original action_run_get reads only a redacted native owner-scoped status projection", async () => {
   const calls = [];
@@ -111,7 +132,9 @@ test("original action_run_get reads only a redacted native owner-scoped status p
 });
 
 test("original Action tool signatures and native metadata captures remain source exact", () => {
-  for (const script of ["capture-legacy-action-mcp.mjs", "capture-legacy-knowledge-mcp.mjs"])
+  const scripts = ACTION_SOURCE_IDENTITY.identity === "frozen-original-v2"
+    ? ["check-action-source-v2.mjs"] : ["capture-legacy-action-mcp.mjs", "capture-legacy-knowledge-mcp.mjs"];
+  for (const script of scripts)
     execFileSync(process.execPath, [join(root, "scripts", script), "--check"], { stdio: ["ignore", "pipe", "pipe"] });
 });
 
@@ -144,7 +167,7 @@ test("original poll template creates the exact pinned pending proposal without e
     const args = { action_id: "example.poll", parameters };
     const expected = oracle(f.oracle, "template_create", args);
     const actual = await legacyActionWrite(storage, actor, { tool: "action_template_create", arguments: args });
-    assert.deepEqual({ ...actual, proposal_id: "<generated>" }, { ...expected, proposal_id: "<generated>" });
+    assertPendingResponseCompatibility(actual, expected);
     const actualRows = await legacyActionRead(storage, actor, { tool: "action_proposals", arguments: {} });
     const expectedRows = oracle(f.oracle, "proposal_list");
     assert.deepEqual(actualRows.proposals.map(normalizedProposal), expectedRows.proposals.map(normalizedProposal));
@@ -168,7 +191,7 @@ test("original Action proposal receipts deduplicate without registration, approv
     const request = { tool: "action_register", arguments: { definition: original.example } };
     const expected = oracle(f.oracle, "register", request.arguments);
     const actual = await legacyActionWrite(storage, actor, request);
-    assert.deepEqual({ ...actual, proposal_id: "<generated>" }, { ...expected, proposal_id: "<generated>" });
+    assertPendingResponseCompatibility(actual, expected);
     assert.equal(actual.registered, false);
     assert.equal(actual.callable, false);
     assert.deepEqual(await legacyActionWrite(storage, actor, request), actual);
@@ -177,7 +200,7 @@ test("original Action proposal receipts deduplicate without registration, approv
     assert.deepEqual(nativeRecords.proposals.map(normalizedProposal), originalRecords.proposals.map(normalizedProposal));
     const saved = await legacyActionWrite(storage, actor, { tool: "action_graph_save", arguments: { graph } });
     const graphExpected = oracle(f.oracle, "graph_save", { graph });
-    assert.deepEqual({ ...saved, proposal_id: "<generated>" }, { ...graphExpected, proposal_id: "<generated>" });
+    assertPendingResponseCompatibility(saved, graphExpected);
     await assert.rejects(legacyActionWrite(storage, { ...actor, canWrite: false }, request), /write permission/);
     await assert.rejects(legacyActionWrite(storage, { ...actor, boardWorker: { boardId: "spoof" } }, request), /fixed external actor/);
     for (const extra of [{ actorId: "user:local" }, { approved: true }, { operationId: randomUUID() }])
@@ -251,7 +274,8 @@ test(`original Action MCP contracts and pending-only proposal state survive rest
       assert.notEqual(described.isError, true, JSON.stringify(described));
       assert.deepEqual(described.structuredContent.inputSchema, contract.inputSchema, name);
       assert.deepEqual(described.structuredContent.outputSchema, contract.outputSchema ?? null, name);
-      assert.equal(described.structuredContent.description, contract.description, name);
+      assert.equal(described.structuredContent.description, ACTION_SOURCE_IDENTITY.identity === "frozen-original-v2"
+        ? pendingOnlyDescriptions[name] ?? contract.description : contract.description, name);
     }
     assert.deepEqual(await invoke("action_templates", {}), oracle(f.oracle, "templates"));
     assert.deepEqual(await invoke("action_graph_check", { graph }), oracle(f.oracle, "graph_definition", { graph }));
@@ -352,7 +376,7 @@ test(`original ModuleSet MCP consumers require exact native host admission, use 
         assert.deepEqual(await invoke("action_definition_check", { definition }), oracle(f.oracle, "definition_check", { definition }));
         const saved = await invoke("action_register", { definition }, true);
         const originalSaved = oracle(f.oracle, "register", { definition });
-        assert.deepEqual({ ...saved, proposal_id: "<generated>" }, { ...originalSaved, proposal_id: "<generated>" });
+        assertPendingResponseCompatibility(saved, originalSaved);
         assert.equal(saved.callable, false);
         const before = await invoke("action_module_sets", {});
         await closeLegacyManagedFixture(client);

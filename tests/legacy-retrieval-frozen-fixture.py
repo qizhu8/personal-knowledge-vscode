@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import sys
 
-root = Path(__file__).resolve().parents[2]
+root = Path(__file__).resolve().parents[1] / "legacy"
 wheel = root / "resources/vendor/adaptive_skill_retrieval-0.3.0.dev2026100504-py3-none-any.whl"
 sys.path.insert(0, str(wheel))
 from adaptive_skill_retrieval import RetrievalEngine, SkillDocument

@@ -13,7 +13,7 @@ import { nativeRestoreAuthority } from "./host-composition-legacy-batch16-restor
 import { legacyManagedFixture, closeLegacyManagedFixture } from "./legacy-managed-fixture.mjs";
 import { legacyTodoBoardCreateSlug } from "../dist/legacy-todo-board-create-contracts.js";
 
-const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "..");
+const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "legacy");
 const originalContract = JSON.parse(execFileSync("python3", ["-c", `
 import ast,asyncio,json,sys
 from fastmcp import FastMCP

@@ -18,18 +18,26 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import vm from "node:vm";
 import ts from "typescript";
 import { capturedDeclarations } from "../dist/domain/knowledge-mutations-original.js";
+import { readOriginalSource } from "../scripts/migration.mjs";
 
 const execute = promisify(execFile), cli = resolve(import.meta.dirname, "../dist/cli.js");
 const require = createRequire(import.meta.url), originalModules = new Map();
 const repositoryRoot = [resolve(import.meta.dirname, "../legacy"), resolve(import.meta.dirname, "../../..")]
   .find(path => existsSync(join(path, "src/knowledge/filestore.ts")));
 if (!repositoryRoot) throw new Error("Cannot locate the original PKM source tree.");
+const originalMetadata = JSON.parse(await readFile(new URL("../migration/knowledge-mutations-provenance.json", import.meta.url), "utf8"));
+const authenticatedSources = new Map(await Promise.all(originalMetadata.files
+  .filter(record => record.source.startsWith("src/"))
+  .map(async record => [resolve(repositoryRoot, record.source), (await readOriginalSource(record.source, {
+    root: repositoryRoot, sha256: record.sourceSha256, dataset: "knowledge-knowledge-mutations-historical",
+  })).toString("utf8")])));
+const originalText = path => authenticatedSources.get(path) ?? readFileSync(path, "utf8");
 
 function original(path) {
   if (originalModules.has(path)) return originalModules.get(path).exports;
   const module = { exports: {} };
   originalModules.set(path, module);
-  const code = ts.transpileModule(readFileSync(path, "utf8"), {
+  const code = ts.transpileModule(originalText(path), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText;
   const localRequire = name => {
@@ -44,7 +52,7 @@ function original(path) {
 }
 
 function originalDeclaration(source, name) {
-  const parsed = ts.createSourceFile(source, readFileSync(source, "utf8"), ts.ScriptTarget.Latest, true);
+  const parsed = ts.createSourceFile(source, originalText(source), ts.ScriptTarget.Latest, true);
   const declarations = parsed.statements.filter(statement =>
     "name" in statement && statement.name?.getText(parsed) === name);
   assert.equal(declarations.length, 1, `Original source declaration ${name} is unique`);

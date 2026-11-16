@@ -88,6 +88,12 @@ function empty(value: unknown): boolean {
   return value === undefined || Array.isArray(value) && value.length === 0;
 }
 
+function emptyEntityBases(value: unknown): boolean {
+  // Nonempty maps retain unresolved per-entity history, not the global baseline.
+  return value === undefined || value !== null && typeof value === "object"
+    && !Array.isArray(value) && Object.keys(value).length === 0;
+}
+
 function validRecordedOutbox(value: unknown): boolean {
   if (value === undefined) return true;
   return Array.isArray(value) && value.length <= 10_000 && value.every(item => {
@@ -248,7 +254,7 @@ function legacyBinding(globalStorage: string, root: string, targetId: string, po
     skillsMount = true;
   }
   if (target.publication || !empty(target.pausedItems) || !empty(target.pendingDeletions)
-    || baseline?.entityBases && Object.keys(object(baseline.entityBases)).length) fail("legacy target requires review");
+    || !emptyEntityBases(baseline?.entityBases)) fail("legacy target requires review");
   const selection = validateSkillsSelection(target.selection, policy);
   if (skillsMount && (["public", "private"] as const).some(scope =>
     selection[scope].items.length || selection[scope].folders.length !== 1 || selection[scope].folders[0] !== ""))
@@ -269,7 +275,7 @@ function legacyBinding(globalStorage: string, root: string, targetId: string, po
       || receipt.repository !== target.repository || receipt.branch !== target.branch
       || typeof receipt.transactionId !== "string"
       || receipt.operation !== "sync" || !validRecordedOutbox(receipt.outbox)
-      || receipt.entityBases && Object.keys(object(receipt.entityBases)).length)
+      || !emptyEntityBases(receipt.entityBases))
       fail("legacy transaction requires recovery");
     if (receipt.state === "recorded") {
       if (receipt.pushedCommit !== baseline.commit) fail("legacy transaction requires recovery");

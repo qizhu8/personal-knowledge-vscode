@@ -23,16 +23,24 @@ test("retained legacy pushed receipt reconciles offline on the same adopted root
   for (const dir of ["legacy-root/skills", "legacy-root/notes", "profile", "provider", "t"])
     fs.mkdirSync(path.join(fixture, dir), { recursive: true, mode: 0o700 });
   t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+  // Keep the genuine legacy ignore-rule evaluation out of the enclosing worktree.
+  execFileSync("git", ["init", "-q", fixture], { env: { PATH: process.env.PATH,
+    HOME: fixture, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" } });
   for (const name of ["InstallAlpha", "InstallBeta"])
     fs.writeFileSync(path.join(root, "skills", `${name}.md`), `---\nname: ${name}\n---\nbase\n`);
   const note = "---\ntitle: Keep\ndocumentId: fixture-keep\nrevision: 1\n---\nlegacy note\n";
   fs.writeFileSync(path.join(root, "notes/Keep.md"), note);
   const previous = await prepareLegacySync({ fixture, root, globalStorage: profile,
     legacyDist: process.env.PKM_LEGACY_SYNC_DIST ? path.resolve(process.env.PKM_LEGACY_SYNC_DIST) : undefined, pending: true });
+  assert.notEqual(previous.receipt.baseCommit, previous.receipt.pushedCommit);
+  assert.deepEqual(previous.receipt.entityBases, {});
+  assert.deepEqual(previous.receipt.outbox.map(item => item.entity).sort(),
+    ["notes\0Keep", "skills\0InstallAlpha", "skills\0InstallBeta"]);
   const identity = fs.statSync(root, { bigint: true });
   const configPath = path.join(profile, "github-sync/targets.json");
   const receiptPath = path.join(profile, "github-sync/checkouts/fixture-target/transactions/latest.json");
   const originalConfig = fs.readFileSync(configPath), originalReceipt = fs.readFileSync(receiptPath);
+  const configIdentity = fs.statSync(configPath, { bigint: true }), receiptIdentity = fs.statSync(receiptPath, { bigint: true });
   const policy = { policyId: randomUUID(), owner: "fixture", repository: "fixture", branch: "main",
     secretRef: randomUUID(), expectedLogin: "fixture", visibility: "public", allowPrivate: false,
     extensionVersion: "4.0.22", approvalId: randomUUID() };
@@ -76,6 +84,21 @@ test("retained legacy pushed receipt reconciles offline on the same adopted root
     publisherPolicy: { policyId: policy.policyId, enforcement: "all-repository-ref-writers" },
     readSecret: async key => { assert.equal(key, "personalKnowledge.githubSync.vscode.fixture-target"); reads++;
       return JSON.stringify({ accountLabel: "fixture", accessToken: "fixture-token" }); } });
+  for (const entityBases of [null, false, 0, "", [], { "skills\0InstallAlpha": previous.receipt.baseCommit }]) {
+    const invalidReceipt = JSON.parse(originalReceipt);
+    invalidReceipt.entityBases = entityBases;
+    const bytes = JSON.stringify(invalidReceipt);
+    fs.writeFileSync(receiptPath, bytes);
+    await assert.rejects(openHost(), /legacy transaction requires recovery/);
+    assert.equal(fs.readFileSync(receiptPath, "utf8"), bytes);
+    fs.writeFileSync(receiptPath, originalReceipt);
+    const invalidConfig = JSON.parse(originalConfig);
+    invalidConfig.targets[0].lastSync.entityBases = entityBases;
+    fs.writeFileSync(configPath, JSON.stringify(invalidConfig));
+    await assert.rejects(openHost(), /legacy target requires review/);
+    fs.writeFileSync(configPath, originalConfig);
+  }
+  assert.equal(reads, 0); assert.equal(requests, 0);
   const conflictRoot = path.join(profile, "github-sync/conflicts/fixture-target");
   fs.mkdirSync(conflictRoot, { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(conflictRoot, "conflict.json"), "{\"unresolved\":true}\n");
@@ -159,6 +182,8 @@ test("retained legacy pushed receipt reconciles offline on the same adopted root
   assert.deepEqual(fs.readFileSync(configPath), originalConfig);
   assert.deepEqual(fs.readFileSync(receiptPath), originalReceipt);
   assert.equal(fs.statSync(root, { bigint: true }).ino, identity.ino);
+  assert.equal(fs.statSync(configPath, { bigint: true }).ino, configIdentity.ino);
+  assert.equal(fs.statSync(receiptPath, { bigint: true }).ino, receiptIdentity.ino);
   assert.match(execFileSync("git", ["--git-dir", previous.bare, "show", "main:skills/InstallAlpha.md"], { env, encoding: "utf8" }), /next after recovery/);
   assert.match(execFileSync("git", ["--git-dir", previous.bare, "show", "main:notes/Keep.md"], { env, encoding: "utf8" }), /legacy note/);
 });

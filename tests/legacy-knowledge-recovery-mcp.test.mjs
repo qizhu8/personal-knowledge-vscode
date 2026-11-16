@@ -13,7 +13,7 @@ import { createWorkspaceBackup, restoreWorkspaceBackup } from "../dist/workspace
 import { nativeRestoreAuthority } from "./host-composition-legacy-batch16-restore-fixture.mjs";
 import { legacyManagedFixture, closeLegacyManagedFixture } from "./legacy-managed-fixture.mjs";
 
-const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "..");
+const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "legacy");
 const sha = value => createHash("sha256").update(value).digest("hex");
 const originalSource = await readFile(join(repository, "resources/knowledge_recovery.py"), "utf8");
 const contracts = JSON.parse(execFileSync("python3", ["-c", `

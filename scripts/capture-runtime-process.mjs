@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import ts from "typescript";
 import { packageRoot, hash, checkCaptureRecords, checkNativeRecords } from "./migration.mjs";
 
-const root = resolve(packageRoot, "..");
+const root = resolve(packageRoot, "legacy");
 const target = "src/domain/runtime-process-original.ts";
 const provenance = resolve(packageRoot, "migration/runtime-process-provenance.json");
 const mode = process.argv.slice(2);
@@ -20,7 +20,9 @@ async function nativePins() {
 }
 if (mode.length) {
   const record = JSON.parse(await readFile(provenance, "utf8"));
-  const issues = await checkCaptureRecords(record.files);
+  const issues = await checkCaptureRecords(record.files, undefined, undefined, {
+    dataset: "runtime-runtime-process-historical",
+  });
   if (mode[0] === "--check") issues.push(...await checkNativeRecords(record.native ?? []));
   if (issues.length) throw new Error(JSON.stringify(issues));
   if (mode[0] === "--refresh-native") {

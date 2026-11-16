@@ -1,4 +1,5 @@
 import { operations, type OperationInput, type OperationKey } from "./contracts.ts";
+import { publicName } from "../../src/public-identity.ts";
 import {
   managerProgressOverviewSchema, managerProgressEventsResponseSchema, managerProgressFeedbackReceiptSchema,
   type ManagerProgressOverview, type ManagerProgressEvent, type ManagerProgressEventsResponse,
@@ -48,7 +49,7 @@ const managerRunResponseSchema = z.object({
 }).passthrough();
 
 export interface ServerBinding {
-  serverId: "pkm-next";
+  serverId: typeof publicName;
   workspaceId: string;
   actorId: string;
   protocolVersion: "v1";
@@ -138,14 +139,14 @@ export class VscodeClient {
       if (!token || token.length < 32 || /[\r\n]/.test(token)) throw new ClientError("AUTHENTICATION_REQUIRED");
       this.#token = token;
       const info = await this.request("server_info", "{}", false);
-      if (info.name !== "pkm-next" || info.serverId !== "pkm-next" || !validId(info.workspaceId) || !validId(info.actorId) ||
+      if (info.name !== publicName || info.serverId !== publicName || !validId(info.workspaceId) || !validId(info.actorId) ||
           info.workspaceVersion !== "pkm.next-workspace/v2" || info.protocolVersion !== "v1" ||
           !isRecord(info.storage) || info.storage.workspaceSchema !== "pkm.next-workspace/v2" ||
           info.storage.authority !== "Markdown" || !validId(info.catalogRevision) ||
           (info.protocolVersion !== undefined && info.protocolVersion !== "v1")) throw new ClientError("INCOMPATIBLE_SERVER");
       const binding = await this.host.attestServer(this.origin, info);
       if (generation !== this.generation) throw new ClientError("REQUEST_ABORTED");
-      if (!binding || binding.serverId !== "pkm-next" || binding.workspaceId !== this.expectedWorkspaceId ||
+      if (!binding || binding.serverId !== publicName || binding.workspaceId !== this.expectedWorkspaceId ||
           binding.workspaceId !== info.workspaceId || binding.actorId !== info.actorId ||
           !validId(binding.actorId) || binding.protocolVersion !== "v1")
         throw new ClientError("WORKSPACE_BINDING_MISMATCH");

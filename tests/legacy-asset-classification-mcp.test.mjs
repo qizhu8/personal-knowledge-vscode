@@ -10,7 +10,7 @@ import { initialize } from "../dist/storage.js";
 import { legacyManagedFixture, closeLegacyManagedFixture } from "./legacy-managed-fixture.mjs";
 import { originalLoader } from "./host-composition-legacy-batch15-captures.mjs";
 
-const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "..");
+const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "legacy");
 const allowedTools = ["asset_classify_preview", "asset_classify_apply", "asset_classify_rollback"];
 function contracts() {
   return JSON.parse(execFileSync("python3", ["-c", `

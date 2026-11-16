@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "resources"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "legacy" / "resources"))
 from note_inventory import note_inventory_page
 
 

@@ -8,11 +8,11 @@ if (process.argv.length !== 3 || !["--check", "--capture"].includes(mode))
   throw new Error("Usage: node scripts/capture-legacy-mcp-contracts.mjs --check|--capture");
 const captures = [
   {
-    source: "../src/capabilities/registry.ts", target: "src/domain/legacy-mcp-registry.ts",
+    source: "legacy/src/capabilities/registry.ts", target: "src/domain/legacy-mcp-registry.ts",
     transform: text => text.replace('from "../knowledge/todo-api-contract"', 'from "./todo-api-contract.js"'),
   },
   {
-    source: "../src/capabilities/memory-contract.ts", target: "src/domain/legacy-mcp-memory-contract.ts",
+    source: "legacy/src/capabilities/memory-contract.ts", target: "src/domain/legacy-mcp-memory-contract.ts",
     transform: text => text.slice(text.indexOf("const text = "), text.indexOf("export function repositoryMemoryScope"))
       .replace(/^/u, 'import type { Capability } from "./legacy-mcp-registry.js";\n\n'),
   },

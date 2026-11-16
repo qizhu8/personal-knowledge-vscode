@@ -82,7 +82,10 @@ test("Batch12 actual native filesystem boundary errors and restart qualification
   const blockedRecoveries = reports.filter(report => report.recovery.startsWith("blocked-")).length;
   assert.equal(recognizedRecoveries, 24); assert.equal(blockedRecoveries, 0);
   const nativeSourceDigest = hash(JSON.stringify(Object.entries(sources.files).filter(([path]) => path.startsWith("src/") || path.startsWith("dist/"))));
-  const report = { ...qualification, runtime: { node: process.version, platform: process.platform, arch: process.arch },
+  const report = { ...qualification,
+    probeVersion: 2,
+    faultModel: "child and inherited storage-worker adapters inject errno at scoped node:fs and exact no-replace helper execFileSync boundaries; successful calls use real filesystem APIs, partial ENOSPC performs a seven-byte native write; not genuine kernel fault events",
+    runtime: { node: process.version, platform: process.platform, arch: process.arch },
     repeatedExecutionVerified: process.env.PKM_STORAGE_IO_FAULT_REPEAT === "1", baselineObservations,
     baselineNativeSourceMatches: baselineObservations.fullBaseline?.nativeSourceDigest === nativeSourceDigest,
     functionalNativeSourceMatches: baselineObservations.currentFunctionalRegression?.nativeSourceDigest === nativeSourceDigest,

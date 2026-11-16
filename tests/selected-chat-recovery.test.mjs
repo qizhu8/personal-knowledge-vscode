@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { assertSelectedChatRecovery } from "../dist/selected-chat-recovery.js";
 
 test("recovery admission binds the exact workspace, source and snapshot", t => {
-  const root = resolve("..", ".migration-test-work", `selected-admission-${randomUUID()}`);
+  const root = resolve(".migration-test-work", `selected-admission-${randomUUID()}`);
   const parent = join(root, "trial"), workspace = join(parent, "workspace"), legacyRoot = join(root, "legacy");
   const snapshotRoot = join(parent, "control", `selected-chat-${randomUUID()}`, `chat-snapshot-${randomUUID()}`);
   for (const dir of [workspace, legacyRoot, snapshotRoot]) mkdirSync(dir, { recursive: true, mode: 0o700 });

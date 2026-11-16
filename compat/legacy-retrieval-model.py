@@ -9,7 +9,7 @@ os.environ.update({"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "HF_DATAS
 
 
 def validate(root, identity):
-    wheel = Path(__file__).resolve().parents[2] / "resources/vendor/adaptive_skill_retrieval-0.3.0.dev2026100504-py3-none-any.whl"
+    wheel = Path(__file__).resolve().parents[1] / "legacy" / "resources/vendor/adaptive_skill_retrieval-0.3.0.dev2026100504-py3-none-any.whl"
     if hashlib.sha256(wheel.read_bytes()).hexdigest() != "332e434272a3cc88410eb50c7e4bfc3e3f69c5bf1e13f7f9a799087c37124f89":
         raise ValueError("Original model validator wheel changed.")
     sys.path.insert(0, str(wheel))
@@ -36,7 +36,7 @@ def validate(root, identity):
 
 def frozen(root, identity, envelope_json, snapshot=None):
     manifest = validate(root, identity)
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "resources"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "legacy" / "resources"))
     from retrieval_serving import FrozenSkillPath
     envelope = json.loads(envelope_json)
     config = envelope["release"]["config"]

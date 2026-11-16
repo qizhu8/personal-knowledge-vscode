@@ -19,6 +19,7 @@ export interface LinuxRootWriterFence {
   readonly root: string;
   readonly mode: "exclusive";
   assertHeld(): void;
+  publishRootNoReplace(destination: string, publish: (keepAlive: number) => void | Promise<void>): Promise<void>;
   renameNoReplaceWithinRoot(source: string, destination: string, pythonExecutable?: string): void;
   archiveFileToPrivateDirectory(source: string, directory: string, name: string): Promise<void>;
   release(): Promise<void>;
@@ -37,7 +38,7 @@ interface Paths {
 
 async function paths(root: string): Promise<Paths> {
   const absolute = resolve(root), canonical = await realpath(absolute);
-  if (canonical !== absolute) throw new CoreError("INVALID_WORKSPACE", "Writer fencing requires a canonical Knowledge Root.");
+  if (canonical !== absolute) throw new CoreError("INVALID_WORKSPACE", "Writer fencing requires a canonical Knowledge Root without symlinks.");
   const rootStat = await lstat(canonical, { bigint: true });
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink())
     throw new CoreError("INVALID_WORKSPACE", "Writer fencing requires a real Knowledge Root.");
@@ -130,6 +131,7 @@ export async function acquireLinuxRootWriterFence(
 ): Promise<LinuxRootWriterFence> {
   if (process.platform !== "linux") {
     const fence = { root: resolve(root), mode: "exclusive" as const, assertHeld() {},
+      async publishRootNoReplace() { throw new CoreError("STORAGE_UNAVAILABLE", "This fenced publication requires Linux."); },
       renameNoReplaceWithinRoot() { throw new CoreError("STORAGE_UNAVAILABLE", "This fenced move requires Linux."); },
       async archiveFileToPrivateDirectory() { throw new CoreError("STORAGE_UNAVAILABLE", "This fenced move requires Linux."); },
       async release() {} };
@@ -165,6 +167,34 @@ export async function acquireLinuxRootWriterFence(
       if (released || child.exitCode !== null || child.signalCode !== null)
         throw new CoreError("STORAGE_UNAVAILABLE", "The Linux cross-process writer fence was lost.", "unknown");
       assertRootIdentity(value);
+    },
+    async publishRootNoReplace(destination, publish) {
+      fence.assertHeld();
+      if (resolve(destination) !== destination || destination === value.root
+        || dirname(destination) !== dirname(value.root))
+        throw new CoreError("INVALID_WORKSPACE", "Fenced root publication requires a distinct canonical sibling destination.");
+      const targetHash = createHash("sha256").update(destination).digest("hex").slice(0, 40);
+      const targetValue = { ...value, root: destination, lockDirectory: destination,
+        markerPath: join(destination, ".pkm-next-writer-fenced.json"),
+        siblingLockPath: join(dirname(value.siblingLockPath), `${targetHash}.writer.lock`),
+        siblingMarkerPath: join(dirname(value.siblingMarkerPath), `${targetHash}.writer-fenced.json`) };
+      await assertNoSiblingPreview(targetValue);
+      await assertExistingMarker(value);
+      try {
+        await lstat(destination);
+        throw new CoreError("CONFLICT", "The root publication destination already exists.");
+      } catch (error) {
+        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+      }
+      const keepAlive = (child.stdin as unknown as { _handle?: { fd?: unknown } })?._handle?.fd;
+      if (typeof keepAlive !== "number" || !Number.isInteger(keepAlive) || keepAlive < 0)
+        throw new CoreError("STORAGE_UNAVAILABLE", "The Linux writer-fence keepalive descriptor is unavailable.", "unknown");
+      // Bind the marker before publication so a crash cannot expose an unfenced target.
+      await writeOwnerMarker(value, destination);
+      fence.assertHeld();
+      await publish(keepAlive);
+      assertRootIdentity(targetValue);
+      await assertExistingMarker(targetValue);
     },
     renameNoReplaceWithinRoot(source, destination, pythonExecutable) {
       fence.assertHeld();
@@ -223,10 +253,13 @@ export async function acquireLinuxRootWriterFence(
       child.stdin?.end();
       const deadline = Date.now() + 3000;
       if (child.exitCode === null && child.signalCode === null) {
-        await Promise.race([
-          new Promise<void>(resolveExit => child.once("close", () => resolveExit())),
-          new Promise<void>(resolveTimeout => setTimeout(resolveTimeout, Math.max(0, deadline - Date.now()))),
-        ]);
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          await Promise.race([
+            new Promise<void>(resolveExit => child.once("close", () => resolveExit())),
+            new Promise<void>(resolveTimeout => { timer = setTimeout(resolveTimeout, Math.max(0, deadline - Date.now())); }),
+          ]);
+        } finally { if (timer) clearTimeout(timer); }
       }
       if (child.exitCode === null && child.signalCode === null) {
         try { child.kill("SIGTERM"); } catch { /* The lock holder already exited. */ }
@@ -253,9 +286,13 @@ export async function markLinuxRootNextOwned(root: string, fence: LinuxRootWrite
   } catch (error) {
     if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
   }
+  await writeOwnerMarker(value, value.root);
+}
+
+async function writeOwnerMarker(value: Paths, root: string): Promise<void> {
   const marker = {
     schema: markerSchema,
-    root: value.root,
+    root,
     device: value.rootDevice,
     inode: value.rootInode,
     owner: "next-server",

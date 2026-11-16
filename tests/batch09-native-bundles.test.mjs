@@ -271,7 +271,8 @@ test("configured bundle package bytes and shared grants survive native quiescent
     destination: restored, backupErasureEpoch: null,
   };
   await f.composed.runtime.services.hostServices.restore(backup, restored);
-  assert.equal(f.restorePin.calls, 2);
+  assert.equal(f.restorePin.calls, process.platform === "linux" ? 4 : 3,
+    "Restore reauthorizes before staging, after validation, before publication and after Linux fence marker binding");
   for (const file of applied.body.result.apply.files) assert.equal(hash(await readFile(join(restored, file.path))), file.sha256);
   const db = new DatabaseSync(join(restored, "core.sqlite"));
   try {

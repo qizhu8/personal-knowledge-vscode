@@ -9,7 +9,8 @@ import { decodeMarkdown } from "../dist/markdown.js";
 import { readSkillRouting, skillRoutingDefinitions } from "../dist/skill-routing.js";
 import { rankSkillContext, skillContextHash, skillContextTerms } from "../dist/domain/skill-routing-context.js";
 import { originalSkillRoutingSource } from "../dist/domain/skill-routing-original.js";
-import { checkCaptureRecords, hash } from "../scripts/migration.mjs";
+import { hash, packageRoot, readOriginalSource } from "../scripts/migration.mjs";
+import { authenticateContextSources, readContextOriginal } from "./context-original-source-captures.mjs";
 
 async function fixture(t) {
   const root = fileURLToPath(new URL(`skill-routing-fixture-${randomUUID()}/`, import.meta.url));
@@ -246,9 +247,39 @@ test("metadata fallback rank/coverage/reasons are differential-tested against ca
 
 test("repeatable source captures have exact provenance hashes and no vscode runtime import", async () => {
   const provenance = JSON.parse(await readFile(new URL("../migration/skill-routing-provenance.json", import.meta.url), "utf8"));
-  assert.deepEqual(await checkCaptureRecords(provenance.files), []);
+  await authenticateContextSources(provenance.files);
+  for (const record of provenance.files) {
+    await readOriginalSource(record.captured, { root: packageRoot, kind: "captured", sha256: record.capturedSha256 });
+  }
   for (const record of provenance.files.filter(record => record.captured.endsWith(".ts"))) {
     const content = await readFile(new URL(`../${record.captured}`, import.meta.url), "utf8");
     assert.doesNotMatch(content, /(?:from\s+|require\(\s*)["']vscode/);
   }
+});
+
+test("Context original bindings reject other paths, captured roles and changed source or producer pins", async () => {
+  const path = "src/mcp/mcp.ts", sha256 = "2a5f623b20b71e3d3ce12283db1fbcb01fb5fa4b43ebbf29d2fd9a28a992f948";
+  for (const [source, options] of [
+    ["src/domain/skill-routing-original.ts", { sha256 }],
+    [path, { sha256, kind: "captured" }],
+    [path, { sha256: "0".repeat(64) }],
+    ["scripts/capture-subscription-bundle.mjs", { sha256 }],
+  ]) {
+    await assert.rejects(readContextOriginal(source, options), /No exact Context original path\/role\/digest binding/);
+  }
+});
+
+test("Context archive authentication rejects missing or tampered archives and cross-source bytes", async t => {
+  const f = await fixture(t);
+  const path = "src/mcp/mcp.ts", sha256 = "2a5f623b20b71e3d3ce12283db1fbcb01fb5fa4b43ebbf29d2fd9a28a992f948";
+  await assert.rejects(readContextOriginal(path, { sha256, root: f.root }), { code: "ENOENT" });
+  await mkdir(join(f.root, "migration/evidence"), { recursive: true });
+  await writeFile(join(f.root, "migration/evidence/context-authentication-originals.zip"), "synthetic untrusted archive bytes");
+  await assert.rejects(readContextOriginal(path, { sha256, root: f.root }),
+    error => error.evidenceReason === "archive-hash-changed");
+  const metadata = JSON.parse(await readFile(new URL("../migration/evidence/context-authentication-originals.json", import.meta.url), "utf8"));
+  const producer = metadata.members.find(member => member.path === "scripts/capture-subscription-bundle.mjs");
+  await assert.rejects(readOriginalSource(`${metadata.archive}!/${producer.member}`, {
+    root: packageRoot, kind: "source", sha256, archiveSha256: metadata.archiveSha256,
+  }), error => error.evidenceReason === "hash-changed");
 });

@@ -38,7 +38,7 @@ test("original ProjectStore Recipe envelope becomes audited client-readable with
   await cp(join(project, "package.json"), join(extension, "package.json"));
   execFileSync(process.execPath, [require.resolve("typescript/bin/tsc"), "-p", project, "--outDir", join(extension, "dist"),
     "--sourceMap", "false"], { stdio: "pipe", timeout: 120000 });
-  require(join(project, "scripts/next-rehearsal-runtime.js")).stage(join(extension, "next-runtime"), { production: true });
+  require("../scripts/stage-runtime.cjs").stage(join(extension, "next-runtime"), { production: true });
   const dist = join(extension, "next-runtime/server/dist");
   const { ProjectStore } = require(join(extension, "dist/workflows/project-store.js"));
   const { canonicalJson } = require(join(extension, "dist/workflows/workflow-contracts.js"));
@@ -212,7 +212,9 @@ os.execv(${JSON.stringify(python)}, [${JSON.stringify(python)}, *sys.argv[1:]])
     const names = (await readdir(root)).filter(name => /^\.crash-target\.pkm-legacy-import-[a-f0-9-]{36}$/.test(name));
     assert.equal(names.length, 1);
     const stage = join(root, names[0]);
-    await auditImportedWorkspace(stage, approvedPlan);
+    await assert.rejects(auditImportedWorkspace(stage, approvedPlan), /writer-fence marker does not match/);
+    for (const entry of approvedPlan.entries.filter(entry => entry.destination && entry.kind !== "directory"))
+      assert.equal(hash(await readFile(join(stage, entry.destination))), entry.sha256);
     const record = join(root, ".crash-target.pkm-legacy-import.outcome.json"), outcome = await readFile(record);
     assert.notEqual((await recoverLegacyImportOutcome(destination)).status, "published");
     assert.deepEqual(await cleanupInterruptedLegacyImportStages(destination), { removed: [stage], retained: [] });

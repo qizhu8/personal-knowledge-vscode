@@ -5,6 +5,7 @@ import { lstat, mkdir, open, readdir, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { planLegacyImport, recoverLegacyImportOutcome } from "../dist/legacy-import.js";
+import { assertLinuxRootOwnerMarker } from "../dist/linux-root-writer-fence.js";
 
 const ack = "--acknowledge-quiescent-disposable-copy";
 const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
@@ -297,7 +298,9 @@ async function consistentDelivery(root, baselinePath, destination, python) {
       : { path: item.path, kind: item.kind, size: item.size, sha256: item.sha256 });
   if (JSON.stringify(stable(before.entries)) !== JSON.stringify(stable(source.entries)))
     throw new Error("Workspace files changed during backup; incomplete delivery retained.");
-  const expectedFiles = stable(source.entries);
+  await assertLinuxRootOwnerMarker(root);
+  const expectedFiles = stable(source.entries).filter(item =>
+    process.platform !== "linux" || item.path !== ".pkm-next-writer-fenced.json");
   const capturedFiles = stable(captured.entries).filter(item => item.path !== ".pkm-workspace-backup.json");
   if (JSON.stringify(expectedFiles) !== JSON.stringify(capturedFiles))
     throw new Error("Backup omits or changes workspace files; incomplete delivery retained.");
@@ -306,7 +309,7 @@ async function consistentDelivery(root, baselinePath, destination, python) {
     throw new Error("Backup manifest digest differs from receipt.");
   const manifest = { schema: "pkm.disposable-consistent-delivery/v1", baseline, source, changes,
     backupReceipt: receipt, backupInventory: captured,
-    scope: "Host backup with SQLite snapshot and bounded workspace files; external state and authority are not established." };
+    scope: "Host backup with SQLite snapshot and bounded workspace files; validated Linux root-bound fence marker is not copied. External state and authority are not established." };
   const bytes = Buffer.from(JSON.stringify(manifest));
   const file = await open(join(destination, "manifest.json"), "wx", 0o600);
   try { await file.writeFile(bytes); await file.sync(); } finally { await file.close(); }

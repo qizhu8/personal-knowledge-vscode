@@ -204,8 +204,8 @@ test("partially applied two-file Integrator crash is durably mixed/unknown; reco
 
 test("native check timeout is unknown, not failed repair evidence; cancellation/drain leaves no owned child", async t => {
   const baseline = process.getActiveResourcesInfo().filter(name => name === "ProcessWrap").length;
-  const f = codingFixture(t, { bounds: { deadlineMs: 150 }, source: {
-    "check.mjs": 'setTimeout(() => console.log(JSON.stringify({ok:true})), 5000);\n',
+  const f = codingFixture(t, { source: {
+    "check.mjs": 'setInterval(() => {}, 1000);\n',
   } });
   await f.admit();
   const input = f.workerInput("add"), delivery = await f.composition.host.worker(input, f.signal);
@@ -213,6 +213,9 @@ test("native check timeout is unknown, not failed repair evidence; cancellation/
   assert.equal(f.db.prepare("SELECT count(*) n FROM coding_worker_records WHERE kind='accepted'").get().n, 0);
   await f.composition.native.close();
   await until(() => process.getActiveResourcesInfo().filter(name => name === "ProcessWrap").length <= baseline);
+  const jobs = f.processDatabase.prepare("SELECT record_json FROM runtime_process_jobs").all().map(row => JSON.parse(row.record_json));
+  assert.equal(jobs.length, 1, "the native check must start before its deadline expires");
+  assert(["TIMED_OUT", "CANCELLED"].includes(jobs[0].state), JSON.stringify(jobs[0]));
   f.assertOriginals();
 });
 

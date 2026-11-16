@@ -45,6 +45,8 @@ import { validateLegacyMemoryErasureLedger } from "./legacy-memory-erasure.js";
 import { inspectPausedSnapshotJournal } from "./host-composition-legacy-snapshot-restore.js";
 import { readLegacyProjectEnvelopeAdoption } from "./legacy-project-envelope.js";
 import { Storage, validateWorkspace } from "./storage.js";
+import { acquireLinuxRootWriterFence, assertLinuxRootOwnerMarker } from "./linux-root-writer-fence.js";
+import { CoreError } from "./contracts.js";
 import {
   authorizeLegacyTrashNative, inspectLegacyTrashNative, rebindLegacyTrashBackup, type LegacyTrashAdoptionReceipt,
   type LegacyTrashNativeHost,
@@ -469,6 +471,10 @@ async function listFiles(root: string, limits: WorkspaceBackupLimits): Promise<{
   }
   for (const name of await readdir(root)) {
     if (name === "core.sqlite-wal" || name === "core.sqlite-shm") continue;
+    if (process.platform === "linux" && name === ".pkm-next-writer-fenced.json") {
+      await assertLinuxRootOwnerMarker(root);
+      continue;
+    }
     if (name === ".pkm-action-builds") {
       const stat = await lstat(join(root, name));
       if (!stat.isDirectory() || stat.isSymbolicLink()
@@ -608,9 +614,9 @@ async function syncDirectoryTree(root: string): Promise<void> {
   await syncDirectory(root);
 }
 
-function publishNoReplace(stage: string, destination: string, pythonExecutable: string): void {
+function publishNoReplace(stage: string, destination: string, pythonExecutable: string, keepAlive?: number): void {
   try {
-    renameNoReplaceSync(stage, destination, pythonExecutable);
+    renameNoReplaceSync(stage, destination, pythonExecutable, keepAlive);
   } catch (error) {
     if (!(error instanceof RenameNoReplaceError)) throw error;
     if (error.code === "DESTINATION_EXISTS") throw new WorkspaceBackupError("DESTINATION_EXISTS", error.message);
@@ -1616,99 +1622,118 @@ export async function restoreWorkspaceBackup(
       await syncFile(join(stage, "core.sqlite"));
       await syncDirectoryTree(stage);
     }
-    if (classificationPin && classificationPolicy && adoptionBase) {
-      classificationPolicy.assertFixtureOwnership();
-      checkClassificationSourceAuthority();
-      const currentSourceBackupPin = await directoryPin(backupRootPath);
-      const currentParentPin = await directoryPin(parent);
-      const currentStagePin = await directoryPin(stage);
-      const stageRoot = join(stage, ...classificationPin.request.sourceRelative.split("/"));
-      const currentStageRootPin = await directoryPin(stageRoot);
-      const currentStageParentPin = await directoryPin(dirname(stageRoot));
-      const publishDb = new DatabaseSync(join(stage, "core.sqlite"), { readOnly: true });
-      try {
-        assertRestoreDatabaseOwner(publishDb, stage);
-        let checked;
-        try { checked = verifyClassificationHistory(publishDb, backup.manifest.workspaceId, stageRoot, classificationPolicy); }
-        catch (error) {
-          const code = error && typeof error === "object" && "code" in error
-            && (error as { code?: unknown }).code === "CONFLICT" ? "CONFLICT" : "RECOVERY_AUTHORITY_REQUIRED";
-          throw new WorkspaceBackupError(code,
-            error instanceof Error ? error.message : "Native adoption lineage validation failed.");
-        }
-        if (checked.status.status !== "committed" || checked.scan.layoutSha256 !== classificationPin.request.layoutSha256
-          || checked.scan.pin.dev !== currentStageRootPin.dev || checked.scan.pin.ino !== currentStageRootPin.ino
-          || JSON.stringify(checked.scan.entries) !== JSON.stringify(backup.classificationLayout))
-          throw new WorkspaceBackupError("SOURCE_CHANGED", "Classification stage changed after immutable adoption validation.");
-      } finally { publishDb.close(); }
-      const targetExists = await lstat(target).then(() => true, error =>
-        (error as NodeJS.ErrnoException).code === "ENOENT" ? false : Promise.reject(error));
-      if (JSON.stringify(currentSourceBackupPin) !== JSON.stringify(sourceBackupPin)
-        || JSON.stringify(currentParentPin) !== JSON.stringify(destinationParentPin)
-        || JSON.stringify(currentStagePin) !== JSON.stringify(adoptedStageWorkspacePin)
-        || JSON.stringify(currentStageRootPin) !== JSON.stringify(adoptedStageRootPin)
-        || JSON.stringify(currentStageParentPin) !== JSON.stringify(adoptedStageParentPin)
-        || targetExists || !adoptionPublishRequest || adoptionPublishRequest.receiptCount !== adoptedReceiptCount) {
-        throw new WorkspaceBackupError("SOURCE_CHANGED", "Classification source, staging parent, or target identity changed before publication.");
-      }
-      if (adoptionPublishRequest.stageWorkspaceRoot !== stage || adoptionPublishRequest.stageRoot !== stageRoot
-        || JSON.stringify(adoptionPublishRequest.stageWorkspacePin) !== JSON.stringify(currentStagePin)
-        || JSON.stringify(adoptionPublishRequest.stageRootPin) !== JSON.stringify(currentStageRootPin)
-        || JSON.stringify(adoptionPublishRequest.stageParent) !== JSON.stringify(currentStageParentPin))
-        throw new WorkspaceBackupError("SOURCE_CHANGED", "Approved staging identity changed before publication.");
-      const finalApproval = checkAdoptionApproval(adoptionPublishRequest);
-      if (finalApproval.authorityId !== prepareAdoptionApproval?.authorityId
-        || finalApproval.policyIdentity !== prepareAdoptionApproval?.policyIdentity
-        || finalApproval.trustedEpoch !== prepareAdoptionApproval?.trustedEpoch)
-        throw new WorkspaceBackupError("RECOVERY_AUTHORITY_REQUIRED", "Native root-adoption authority was revoked before publication.");
-      checkClassificationSourceAuthority();
-      classificationPolicy.assertFixtureOwnership();
-      if (classificationPolicy.originalCompatible) {
-        const finalDb = new DatabaseSync(join(stage, "core.sqlite"), { readOnly: true });
+    const assertPublicationAuthority = async () => {
+      await assertRestoreAuthority();
+      if (classificationPin && classificationPolicy && adoptionBase) {
+        classificationPolicy.assertFixtureOwnership();
+        checkClassificationSourceAuthority();
+        const currentSourceBackupPin = await directoryPin(backupRootPath);
+        const currentParentPin = await directoryPin(parent);
+        const currentStagePin = await directoryPin(stage);
+        const stageRoot = join(stage, ...classificationPin.request.sourceRelative.split("/"));
+        const currentStageRootPin = await directoryPin(stageRoot);
+        const currentStageParentPin = await directoryPin(dirname(stageRoot));
+        const publishDb = new DatabaseSync(join(stage, "core.sqlite"), { readOnly: true });
         try {
-          const checked = verifyOriginalClassificationBackupHistory(finalDb, backup.manifest.workspaceId, stageRoot, classificationPolicy);
-          if (checked.scan.layoutSha256 !== classificationPin.request.layoutSha256
+          assertRestoreDatabaseOwner(publishDb, stage);
+          let checked;
+          try { checked = verifyClassificationHistory(publishDb, backup.manifest.workspaceId, stageRoot, classificationPolicy); }
+          catch (error) {
+            const code = error && typeof error === "object" && "code" in error
+              && (error as { code?: unknown }).code === "CONFLICT" ? "CONFLICT" : "RECOVERY_AUTHORITY_REQUIRED";
+            throw new WorkspaceBackupError(code,
+              error instanceof Error ? error.message : "Native adoption lineage validation failed.");
+          }
+          if (checked.status.status !== "committed" || checked.scan.layoutSha256 !== classificationPin.request.layoutSha256
+            || checked.scan.pin.dev !== currentStageRootPin.dev || checked.scan.pin.ino !== currentStageRootPin.ino
             || JSON.stringify(checked.scan.entries) !== JSON.stringify(backup.classificationLayout))
-            throw new WorkspaceBackupError("SOURCE_CHANGED", "Original classification bytes or modes changed in final native publication approval.");
-        } finally { finalDb.close(); }
+            throw new WorkspaceBackupError("SOURCE_CHANGED", "Classification stage changed after immutable adoption validation.");
+        } finally { publishDb.close(); }
+        const targetExists = await lstat(target).then(() => true, error =>
+          (error as NodeJS.ErrnoException).code === "ENOENT" ? false : Promise.reject(error));
+        if (JSON.stringify(currentSourceBackupPin) !== JSON.stringify(sourceBackupPin)
+          || JSON.stringify(currentParentPin) !== JSON.stringify(destinationParentPin)
+          || JSON.stringify(currentStagePin) !== JSON.stringify(adoptedStageWorkspacePin)
+          || JSON.stringify(currentStageRootPin) !== JSON.stringify(adoptedStageRootPin)
+          || JSON.stringify(currentStageParentPin) !== JSON.stringify(adoptedStageParentPin)
+          || targetExists || !adoptionPublishRequest || adoptionPublishRequest.receiptCount !== adoptedReceiptCount) {
+          throw new WorkspaceBackupError("SOURCE_CHANGED", "Classification source, staging parent, or target identity changed before publication.");
+        }
+        if (adoptionPublishRequest.stageWorkspaceRoot !== stage || adoptionPublishRequest.stageRoot !== stageRoot
+          || JSON.stringify(adoptionPublishRequest.stageWorkspacePin) !== JSON.stringify(currentStagePin)
+          || JSON.stringify(adoptionPublishRequest.stageRootPin) !== JSON.stringify(currentStageRootPin)
+          || JSON.stringify(adoptionPublishRequest.stageParent) !== JSON.stringify(currentStageParentPin))
+          throw new WorkspaceBackupError("SOURCE_CHANGED", "Approved staging identity changed before publication.");
+        const finalApproval = checkAdoptionApproval(adoptionPublishRequest);
+        if (finalApproval.authorityId !== prepareAdoptionApproval?.authorityId
+          || finalApproval.policyIdentity !== prepareAdoptionApproval?.policyIdentity
+          || finalApproval.trustedEpoch !== prepareAdoptionApproval?.trustedEpoch)
+          throw new WorkspaceBackupError("RECOVERY_AUTHORITY_REQUIRED", "Native root-adoption authority was revoked before publication.");
+        checkClassificationSourceAuthority();
+        classificationPolicy.assertFixtureOwnership();
+        if (classificationPolicy.originalCompatible) {
+          const finalDb = new DatabaseSync(join(stage, "core.sqlite"), { readOnly: true });
+          try {
+            const checked = verifyOriginalClassificationBackupHistory(finalDb, backup.manifest.workspaceId, stageRoot, classificationPolicy);
+            if (checked.scan.layoutSha256 !== classificationPin.request.layoutSha256
+              || JSON.stringify(checked.scan.entries) !== JSON.stringify(backup.classificationLayout))
+              throw new WorkspaceBackupError("SOURCE_CHANGED", "Original classification bytes or modes changed in final native publication approval.");
+          } finally { finalDb.close(); }
+        }
+        if (JSON.stringify(directoryPinSync(backupRootPath)) !== JSON.stringify(sourceBackupPin)
+          || JSON.stringify(directoryPinSync(parent)) !== JSON.stringify(destinationParentPin)
+          || JSON.stringify(directoryPinSync(stage)) !== JSON.stringify(adoptedStageWorkspacePin)
+          || JSON.stringify(directoryPinSync(stageRoot)) !== JSON.stringify(adoptedStageRootPin)
+          || JSON.stringify(directoryPinSync(dirname(stageRoot))) !== JSON.stringify(adoptedStageParentPin))
+          throw new WorkspaceBackupError("SOURCE_CHANGED", "Pinned classification source or destination identity changed at publication.");
+        try { lstatSync(target); throw new WorkspaceBackupError("DESTINATION_EXISTS", "Destination became occupied; no files were replaced."); }
+        catch (error) {
+          if (error instanceof WorkspaceBackupError) throw error;
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
       }
-      if (JSON.stringify(directoryPinSync(backupRootPath)) !== JSON.stringify(sourceBackupPin)
-        || JSON.stringify(directoryPinSync(parent)) !== JSON.stringify(destinationParentPin)
-        || JSON.stringify(directoryPinSync(stage)) !== JSON.stringify(adoptedStageWorkspacePin)
-        || JSON.stringify(directoryPinSync(stageRoot)) !== JSON.stringify(adoptedStageRootPin)
-        || JSON.stringify(directoryPinSync(dirname(stageRoot))) !== JSON.stringify(adoptedStageParentPin))
-        throw new WorkspaceBackupError("SOURCE_CHANGED", "Pinned classification source or destination identity changed at publication.");
-      try { lstatSync(target); throw new WorkspaceBackupError("DESTINATION_EXISTS", "Destination became occupied; no files were replaced."); }
-      catch (error) {
-        if (error instanceof WorkspaceBackupError) throw error;
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if (skillSource && skillPublishRequest?.adoption && skillPublishRequest.adoptedSnapshotDigest && skillPublishRequest.adoptedHead) {
+        const publishDb = new DatabaseSync(join(stage, "core.sqlite"), { readOnly: true });
+        try {
+          verifyAdoptedSkillSourceBackup(publishDb, stage, skillSource.pin, skillPublishRequest.adoption,
+            skillPublishRequest.adoptedSnapshotDigest, skillPublishRequest.adoptedHead, skillSource.policy);
+          approveSkillSourceRestore(skillPublishRequest, skillSource.policy);
+          await assertRestoreAuthority();
+          verifyAdoptedSkillSourceBackup(publishDb, stage, skillSource.pin, skillPublishRequest.adoption,
+            skillPublishRequest.adoptedSnapshotDigest, skillPublishRequest.adoptedHead, skillSource.policy);
+        } finally { publishDb.close(); }
+        if (JSON.stringify(directoryPinSync(stage)) !== JSON.stringify(skillPublishRequest.stagePin)
+          || JSON.stringify(directoryPinSync(parent)) !== JSON.stringify(skillPublishRequest.destinationParentPin)
+          || JSON.stringify(directoryPinSync(backupRootPath)) !== JSON.stringify(skillPublishRequest.backupRootPin))
+          throw new WorkspaceBackupError("SOURCE_CHANGED", "Canonical Skill source approved stage, backup or publication parent changed.");
+        try { lstatSync(target); throw new WorkspaceBackupError("DESTINATION_EXISTS", "Canonical Skill destination became occupied."); }
+        catch (error) {
+          if (error instanceof WorkspaceBackupError || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
       }
-    }
-    if (skillSource && skillPublishRequest?.adoption && skillPublishRequest.adoptedSnapshotDigest && skillPublishRequest.adoptedHead) {
-      const publishDb = new DatabaseSync(join(stage, "core.sqlite"), { readOnly: true });
+      const identityPublishDb = new DatabaseSync(join(stage, "core.sqlite"), { readOnly: true });
       try {
-        verifyAdoptedSkillSourceBackup(publishDb, stage, skillSource.pin, skillPublishRequest.adoption,
-          skillPublishRequest.adoptedSnapshotDigest, skillPublishRequest.adoptedHead, skillSource.policy);
-        approveSkillSourceRestore(skillPublishRequest, skillSource.policy);
-        await assertRestoreAuthority();
-        verifyAdoptedSkillSourceBackup(publishDb, stage, skillSource.pin, skillPublishRequest.adoption,
-          skillPublishRequest.adoptedSnapshotDigest, skillPublishRequest.adoptedHead, skillSource.policy);
-      } finally { publishDb.close(); }
-      if (JSON.stringify(directoryPinSync(stage)) !== JSON.stringify(skillPublishRequest.stagePin)
-        || JSON.stringify(directoryPinSync(parent)) !== JSON.stringify(skillPublishRequest.destinationParentPin)
-        || JSON.stringify(directoryPinSync(backupRootPath)) !== JSON.stringify(skillPublishRequest.backupRootPin))
-        throw new WorkspaceBackupError("SOURCE_CHANGED", "Canonical Skill source approved stage, backup or publication parent changed.");
-      try { lstatSync(target); throw new WorkspaceBackupError("DESTINATION_EXISTS", "Canonical Skill destination became occupied."); }
-      catch (error) {
-        if (error instanceof WorkspaceBackupError || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      }
-    }
-    const identityPublishDb = new DatabaseSync(join(stage, "core.sqlite"), { readOnly: true });
-    try {
-      await verifyNativeSubscriptionIdentity(identityPublishDb, stage, backup.manifest.workspaceId,
-        options.subscriptionIdentity, "restore", target);
-    } finally { identityPublishDb.close(); }
-    if (options.nativePublishNoReplace) await options.nativePublishNoReplace(stagePublishPath, target);
+        await verifyNativeSubscriptionIdentity(identityPublishDb, stage, backup.manifest.workspaceId,
+          options.subscriptionIdentity, "restore", target);
+      } finally { identityPublishDb.close(); }
+    };
+    await assertPublicationAuthority();
+    if (process.platform === "linux") {
+      const fence = await acquireLinuxRootWriterFence(stagePublishPath);
+      try {
+        await fence.publishRootNoReplace(target, async keepAlive => {
+          // Fence acquisition and destination marker binding both await external I/O.
+          await assertPublicationAuthority();
+          fence.assertHeld();
+          if (options.nativePublishNoReplace) await options.nativePublishNoReplace(stagePublishPath, target);
+          else publishNoReplace(stagePublishPath, target, executable, keepAlive);
+        });
+      } catch (error) {
+        if (error instanceof CoreError && error.code === "CONFLICT")
+          throw new WorkspaceBackupError("DESTINATION_EXISTS", error.message);
+        throw error;
+      } finally { await fence.release(); }
+    } else if (options.nativePublishNoReplace) await options.nativePublishNoReplace(stagePublishPath, target);
     else publishNoReplace(stagePublishPath, target, executable);
     await syncDirectory(parent);
     if (skillSource && skillPublishRequest?.adoption && skillPublishRequest.adoptedSnapshotDigest && skillPublishRequest.adoptedHead) {

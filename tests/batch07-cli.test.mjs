@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, mkdir, readdir, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -24,10 +25,42 @@ const terminal = (child, input) => until(() => readTurn(child, input), value =>
   value && ["completed", "failed", "cancelled", "unknown"].includes(value.status));
 const execute = promisify(execFile);
 
+test("CLI rejects ambiguous or command-inapplicable configuration before creating a workspace", { timeout: 45000 }, async t => {
+  const root = resolve("tests", `.cli-options-${randomUUID()}`);
+  await mkdir(root);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const workspace = resolve(root, "workspace"), other = resolve(root, "other");
+  const cli = resolve(import.meta.dirname, "../dist/cli.js");
+  const invalid = [
+    [["init", "--data", workspace, "--data", other], /Duplicate option: --data/],
+    [["init", "--data", workspace, "--config"], /argument missing/],
+    [["init", "--data", workspace, "--read-only"], /--read-only is not supported by init/],
+    [["init", "--data", workspace, "--config", "ignored.json"], /--config is not supported by init/],
+    [["init", "--data", workspace, "--allow-tool", "knowledge.document.get"], /--allow-tool is not supported by init/],
+    [["backup", "--data", workspace, "--destination", other, "--read-only"], /--read-only is not supported by backup/],
+    [["mcp", "--data", workspace, "--port", "0"], /--port is not supported by mcp/],
+    [["http", "--data", workspace, "--read-only", "--read-only"], /Duplicate option: --read-only/],
+    [["http", "--data", workspace, "--config", ""], /Missing value for --config/],
+    [["http", "--data", workspace, "--allow-tool", "--read-only"], /argument is ambiguous/],
+    [["http", "--data", workspace, "--port", "0", "--port", "1"], /Duplicate option: --port/],
+    [["http", "--data", workspace, "--allow-endpoint", "   "], /Missing value for --allow-endpoint/],
+    [["http", "--data", workspace, "--secret-ref"], /argument missing/],
+    [["init", "--data", workspace, "unexpected"], /Unexpected argument/],
+  ];
+  for (const [args, expected] of invalid) {
+    await assert.rejects(execute(process.execPath, [cli, ...args], { cwd: root, timeout: 5000 }),
+      error => error.code === 1 && !error.killed && expected.test(error.stderr), JSON.stringify(args));
+    assert.deepEqual(await readdir(root), [], "invalid configuration must not create either data directory");
+  }
+  const initialized = JSON.parse((await execute(process.execPath, [cli, "init", `--data=${workspace}`], { timeout: 5000 })).stdout);
+  assert(initialized.initialized);
+  assert((await readdir(workspace)).length > 0);
+});
+
 test("actual CLI remains deny-by-default without explicit configured host authority", { timeout: 20000 }, async t => {
   const f = await cliFixture(t), child = await f.launch([], false);
   const info = (await child.rpc("server_info", {})).body.result;
-  assert.equal(info.serverId, "pkm-next");
+  assert.equal(info.serverId, "pkm-v5");
   assert.equal(info.workspaceId, f.identity.id);
   assert.equal(info.actorId, "local:owner");
   assert.equal(info.protocolVersion, "v1");
@@ -72,7 +105,12 @@ test("actual CLI backup refuses a live workspace owner and publishes a real quie
 });
 
 test("spawned configured CLI socket SSE uses native terminal exact approval/reject/cancel and fences stale/restart", { timeout: 75000 }, async t => {
-  const f = await cliFixture(t), child = await f.launch(["--human-review", "terminal"]);
+  const f = await cliFixture(t), child = await f.launch([
+    "--human-review", "terminal",
+    "--allow-provider", "azure-openai", "--allow-endpoint", "http://127.0.0.1:1/v1",
+    "--allow-model", "another-synthetic-model", "--allow-tool", "knowledge.document.get",
+    "--secret-ref", "secret:synthetic/other=PKM_SYNTHETIC_PROVIDER",
+  ]);
   for (const decision of ["approve", "reject", "cancel"]) {
     const input = turn(decision);
     assert.equal((await child.rpc("capability_call", invocation("chat.turn.start", input))).status, 200);
@@ -105,10 +143,16 @@ test("spawned configured CLI socket SSE uses native terminal exact approval/reje
   const interrupted = turn("hold");
   assert.equal((await child.rpc("capability_call", invocation("chat.turn.start", interrupted))).status, 200);
   await until(() => f.requests.some(value => value.messages.find(message => message.role === "user")?.content === "hold"));
+  const ownerDatabase = new DatabaseSync(resolve(f.workspace, "core.sqlite"), { readOnly: true });
+  let priorOwner;
+  try { priorOwner = ownerDatabase.prepare("SELECT owner_id,fence FROM native_runtime_owner WHERE singleton=1").get(); }
+  finally { ownerDatabase.close(); }
   child.process.kill("SIGKILL");
   await child.closed;
-  await assert.rejects(f.launch(["--human-review", "terminal"]), /startup failed/);
-  await new Promise(resolve => setTimeout(resolve, 30100));
+  if (process.platform !== "linux") {
+    await assert.rejects(f.launch(["--human-review", "terminal"]), /startup failed/);
+    await new Promise(resolve => setTimeout(resolve, 30100));
+  }
   const beforeRestart = f.requests.length;
   const restarted = await f.launch(["--human-review", "terminal"]);
   const recovered = await readTurn(restarted, interrupted);
@@ -118,6 +162,9 @@ test("spawned configured CLI socket SSE uses native terminal exact approval/reje
   await restarted.stop();
   const database = new DatabaseSync(resolve(f.workspace, "core.sqlite"), { readOnly: true });
   try {
+    const currentOwner = database.prepare("SELECT owner_id,fence FROM native_runtime_owner WHERE singleton=1").get();
+    assert.notEqual(currentOwner.owner_id, priorOwner.owner_id);
+    assert(currentOwner.fence > priorOwner.fence);
     for (const { name } of database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all()) {
       const rows = database.prepare(`SELECT * FROM "${name.replaceAll('"', '""')}"`).all();
       const serialized = JSON.stringify(rows, (_, value) => typeof value === "bigint" ? String(value) : value);

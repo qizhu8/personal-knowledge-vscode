@@ -19,6 +19,7 @@ export const legacyNoteWorkItemsDefinitions = [
       notes: z.array(z.strictObject({ slug: z.string(), title: z.string(), count: z.number().int().nonnegative(),
         digest: digest.optional(), error: z.string().optional() })),
       truncated: z.boolean(),
+      next_offset: z.number().int().nonnegative().nullable(),
     }),
   },
   {

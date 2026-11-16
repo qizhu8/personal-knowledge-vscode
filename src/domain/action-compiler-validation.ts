@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { ACTION_COMPILER_LIMITS as L } from "../action-compiler-contracts.js";
 import { ORIGINAL_ACTION_COMPILER_CAPTURE as C } from "./action-compiler-original.js";
+import { ACTION_SOURCE_IDENTITY } from "./action-source-identity.js";
 
 export type JsonRecord = Record<string, unknown>;
 export type ActionDiagnostic = {
@@ -135,12 +136,12 @@ export function originalDefinitionValue(value: JsonRecord): JsonRecord {
   if (typeof actionId !== "string") throw new TypeError("Action ID must be a string.");
   const knowledgeId = typeof value.knowledgeId === "string" && value.knowledgeId
     ? value.knowledgeId : `action_${originalDigest(actionId).slice(0, 24)}`;
-  const sourceHashes = C.sourceHashes as unknown as Record<string, string>;
+  const sourceHashes = ACTION_SOURCE_IDENTITY.sourceHashes as unknown as Record<string, string>;
   const implementationHash = originalDigest({
     module: sourceHashes["resources/action_modules.py"],
     run_store: sourceHashes["resources/action_run_store.py"],
     recovery: sourceHashes["resources/action_recovery.py"],
-    components: C.componentEngineHash,
+    components: ACTION_SOURCE_IDENTITY.componentEngineHash,
     worker: sourceHashes["resources/recipe_runtime.py"],
   });
   const result: JsonRecord = {
@@ -150,6 +151,12 @@ export function originalDefinitionValue(value: JsonRecord): JsonRecord {
     implementation_hash: implementationHash,
   };
   result.content_hash = originalDigest(result);
+  const builtin = capturedBuiltins[actionId];
+  if (builtin
+    && originalDigest(portableActionDefinition({ ...value, knowledgeId })) === originalDigest(portableActionDefinition(builtin))) {
+    // Python builtin literals retain int64 bounds and 150.0; JS JSON cannot reconstruct those bytes.
+    result.content_hash = (ACTION_SOURCE_IDENTITY.builtinContentHashes as Record<string, string>)[actionId];
+  }
   return result;
 }
 
@@ -174,8 +181,9 @@ export function exactRunnableArtifactBuiltin(value: unknown): boolean {
 }
 
 export function runnablePureBuiltinSourceHash(actionId: string): string | undefined {
-  const definition = runnablePureBuiltins.has(actionId) || runnableArtifactBuiltins.has(actionId) ? capturedBuiltins[actionId] : undefined;
-  const hashes = C.sourceHashes as unknown as Record<string, string>;
+  const definition = runnablePureBuiltins.has(actionId) || runnableArtifactBuiltins.has(actionId)
+    ? builtinActionDefinitions().get(actionId) : undefined;
+  const hashes = ACTION_SOURCE_IDENTITY.sourceHashes as unknown as Record<string, string>;
   return typeof definition?.content_hash === "string" && typeof hashes["resources/action_modules.py"] === "string"
     ? originalDigest({ definition: definition.content_hash, source: hashes["resources/action_modules.py"] }) : undefined;
 }
@@ -752,7 +760,7 @@ export function actionComponents(): Record<string, JsonRecord> {
 }
 
 export function componentDigest(definition: JsonRecord): string {
-  return originalDigest({ definition, engine: C.componentEngineHash });
+  return originalDigest({ definition, engine: ACTION_SOURCE_IDENTITY.componentEngineHash });
 }
 
 export function moduleSnapshotDefinitions(sources: ActionModuleSnapshot[]): Map<string, JsonRecord> {
@@ -770,7 +778,9 @@ export function moduleSnapshotDefinitions(sources: ActionModuleSnapshot[]): Map<
 }
 
 export function builtinActionDefinitions(): Map<string, JsonRecord> {
-  return new Map(Object.entries(capturedBuiltins));
+  return new Map(Object.entries(capturedBuiltins).map(([id, definition]) => [
+    id, originalDefinitionValue(definition),
+  ]));
 }
 
 export function actionIdValid(value: unknown): value is string {

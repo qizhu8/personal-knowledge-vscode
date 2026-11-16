@@ -1,0 +1,68 @@
+{
+  "schema": "pkm.original-source-archive/v1",
+  "qualification": "Exact historical original bytes only; not qualification of current native implementations.",
+  "archive": "migration/evidence/runtime-authentication-originals.zip",
+  "archiveSha256": "1993f0e5070d748237ccba13a3fea70cdcc3a26a2e8f6db509d4e9dd7649ef82",
+  "members": [
+    {
+      "kind": "source",
+      "path": "tests/test-api-chat.js",
+      "sha256": "5e137991a8923a60234f26f34c00aaa2969a847335909cbd6bc634b47e9baa12",
+      "member": "5e137991a892/source/tests/test-api-chat.js",
+      "provisioning": {
+        "revision": "ec92febf240991770172f144fc0138b298491fb0",
+        "path": "tests/test-api-chat.js"
+      }
+    },
+    {
+      "kind": "source",
+      "path": "src/runtime/pkm-service.ts",
+      "sha256": "663a189e39666ee1b32d95a0ab7c2a2188e0baec3d69f7310ce68d15a2459635",
+      "member": "663a189e3966/source/src/runtime/pkm-service.ts",
+      "provisioning": {
+        "revision": "4b68869e33251b714e671a551b54db05659af647",
+        "path": "src/runtime/pkm-service.ts"
+      }
+    },
+    {
+      "kind": "source",
+      "path": "src/retrieval/retrieval-worker.ts",
+      "sha256": "a7235794858fa5e49d8c69ade64b2fb617c1c17758acf0099fc7ef04103824bc",
+      "member": "a7235794858f/source/src/retrieval/retrieval-worker.ts",
+      "provisioning": {
+        "revision": "a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6",
+        "path": "src/retrieval/retrieval-worker.ts"
+      }
+    },
+    {
+      "kind": "source",
+      "path": "resources/retrieval_worker.py",
+      "sha256": "3c51c84d821e292dc42c5a0c328284d6289e5a0105a45539d38d99d928c1fe64",
+      "member": "3c51c84d821e/source/resources/retrieval_worker.py",
+      "provisioning": {
+        "revision": "a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6",
+        "path": "resources/retrieval_worker.py"
+      }
+    },
+    {
+      "kind": "source",
+      "path": "src/workflows/project-model.ts",
+      "sha256": "505f56e2351a9f173268007990eaf02f1014abe0dc4f722b12a8f6aa81c94195",
+      "member": "505f56e2351a/source/src/workflows/project-model.ts",
+      "provisioning": {
+        "revision": "a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6",
+        "path": "src/workflows/project-model.ts"
+      }
+    },
+    {
+      "kind": "source",
+      "path": "resources/recipe_runtime.py",
+      "sha256": "8fb3baf4e7f76a21cd953aa866fb402a8b5636e8d2afd8b3e009d9463645621c",
+      "member": "8fb3baf4e7f7/source/resources/recipe_runtime.py",
+      "provisioning": {
+        "revision": "a75e6eb185c52bd5741d8f0cb2b84c0e4e1e04c6",
+        "path": "resources/recipe_runtime.py"
+      }
+    }
+  ]
+}

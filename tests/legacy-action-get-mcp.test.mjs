@@ -1,9 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { initialize, Storage } from "../dist/storage.js";
@@ -17,12 +16,13 @@ import { originalActionCompilerFixtures as original } from "./action-compiler-or
 import { portableActionArchive, portableActionManifest } from "./legacy-action-catalog-fixture.mjs";
 import { nativeRestoreAuthority } from "./host-composition-legacy-batch16-restore-fixture.mjs";
 import { legacyManagedFixture, closeLegacyManagedFixture } from "./legacy-managed-fixture.mjs";
+import { originalActionFixture } from "./legacy-action-original-fixture.mjs";
 
-const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "..");
+const root = resolve(import.meta.dirname, "..");
 const actor = { id: "mcp:external", canWrite: true };
 
 function oracle(data, source, archive) {
-  return JSON.parse(execFileSync("python3", ["-c", `
+  return originalActionFixture(dirname(data)).json(`
 import ast,asyncio,json,sys
 from pathlib import Path
 sys.path.insert(0,sys.argv[1])
@@ -44,16 +44,14 @@ async def main():
  tool,=await mcp.list_tools()
  print(json.dumps({"contract":tool.to_mcp_tool().model_dump(mode="json"),"value":action_get(sys.argv[7])}))
 asyncio.run(main())
-`, join(repository, "resources"), data, source, archive, portableActionManifest.module_set_id,
-    String(portableActionManifest.version), original.example.action_id], {
-    encoding: "utf8", env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
-  }));
+`, [data, source, archive, portableActionManifest.module_set_id,
+    String(portableActionManifest.version), original.example.action_id]);
 }
 
 for (const profile of ["compact", "legacy"]) test(`original Action get returns only blocked selected native package (${profile})`,
   { timeout: 90_000 }, async t => {
     const parent = join(root, "tests", `.legacy-action-get-${randomUUID()}`);
-    await mkdir(parent);
+    await mkdir(join(parent, "oracle"), { recursive: true });
     let client;
     t.after(async () => { try { await client?.close(); } finally { await rm(parent, { recursive: true, force: true }); } });
     const data = await initialize(join(parent, "workspace")), source = join(parent, "source");

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,7 @@ import { createApprovalBridge } from "../dist/approval-bridge.js";
 import { ExecutionStateStore } from "../dist/execution-state.js";
 import { approvalBridgeDigest, approvalBridgeJSON } from "../dist/domain/approval-bridge-digest.js";
 import { recordPortalCommand } from "../dist/domain/approval-bridge-native-activity.js";
+import { checkCaptureRecords } from "../scripts/migration.mjs";
 
 const op = randomUUID;
 const executionOperations = new Map();
@@ -322,7 +323,7 @@ test("create/request operation receipts are exact and survive repeated calls", (
   } finally { f.db.close(); }
 });
 
-test("original Portal activity capture preserves terminal non-downgrade; provenance names both roots", () => {
+test("original Portal activity capture preserves terminal non-downgrade; historical 71ddd provenance names both roots", async () => {
   const activity = {
     requestId: op(), role: "controlled", peerName: "fixture-peer",
     command: { program: "fixture", arguments: [], timeoutSeconds: 30 }, state: "denied",
@@ -333,10 +334,5 @@ test("original Portal activity capture preserves terminal non-downgrade; provena
   assert.deepEqual(provenance.roots, { source: "..", captured: "." });
   assert.match(provenance.qualification, /NEW conservative projection/);
   assert.ok(provenance.files.length >= 4);
-  for (const entry of provenance.files) {
-    const source = readFileSync(new URL(`../../${entry.source}`, import.meta.url));
-    const captured = readFileSync(new URL(`../${entry.captured}`, import.meta.url));
-    assert.equal(createHash("sha256").update(source).digest("hex"), entry.sourceSha256);
-    assert.equal(createHash("sha256").update(captured).digest("hex"), entry.capturedSha256);
-  }
+  assert.deepEqual(await checkCaptureRecords(provenance.files, undefined, undefined, { dataset: "approval-historical-71ddd" }), []);
 });

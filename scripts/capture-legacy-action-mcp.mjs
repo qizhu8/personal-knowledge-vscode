@@ -3,13 +3,20 @@ import { readFile, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
+import { readOriginalSource } from "./migration.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const mode = process.argv[2];
 if (process.argv.length !== 3 || !["--check", "--capture"].includes(mode))
   throw new Error("Usage: node scripts/capture-legacy-action-mcp.mjs --check|--capture");
-const source = await readFile(resolve(root, "legacy/resources/action_modules.py"), "utf8");
-const runStore = await readFile(resolve(root, "legacy/resources/action_run_store.py"), "utf8");
+const source = mode === "--check" ? (await readOriginalSource("resources/action_modules.py", {
+  dataset: "action-mcp-release-4.0.22",
+  sha256: "8b939ae9a2de32c5cc0e99538c8ff5722f3a9c7f6f69bd169baf3675788c2a55",
+})).toString("utf8") : await readFile(resolve(root, "legacy/resources/action_modules.py"), "utf8");
+const runStore = mode === "--check" ? (await readOriginalSource("resources/action_run_store.py", {
+  dataset: "action-mcp-release-4.0.22",
+  sha256: "ae79232105b21940f0addc26f1fc28a125a158ec60af7558d374f3f16531c479",
+})).toString("utf8") : await readFile(resolve(root, "legacy/resources/action_run_store.py"), "utf8");
 const result = spawnSync("python3", ["-c", `
 import ast,json,sys
 source=sys.stdin.read()

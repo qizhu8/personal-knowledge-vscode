@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -11,6 +11,9 @@ import { pathToFileURL } from "node:url";
 
 const require = createRequire(import.meta.url);
 const project = path.resolve(new URL("../legacy", import.meta.url).pathname);
+const core = path.resolve(new URL("..", import.meta.url).pathname);
+const directories = [];
+after(() => { for (const directory of directories) fs.rmSync(directory, { recursive: true, force: true }); });
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check, label) {
   const end = Date.now() + 12000;
@@ -21,8 +24,9 @@ async function until(check, label) {
 for (const [policy, portalEnabled] of [["legacy-client-id", false], ["host-approval", false],
   ["legacy-client-id", true], ["host-approval", true]]) {
   test(`real legacy Host UI methods use one Next owner (${policy}${portalEnabled ? ", Portal" : ""}) without a legacy writer`, async t => {
-    const directory = path.join(project, ".migration-test-work", `room-ui-focused-${randomUUID()}`);
+    const directory = path.join(core, ".migration-test-work", `room-ui-focused-${randomUUID()}`);
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    directories.push(directory);
     const bundle = path.join(directory, "retained.cjs");
     const nativeBundle = path.join(directory, "native.mjs");
     const esbuild = require("esbuild");
@@ -30,7 +34,7 @@ for (const [policy, portalEnabled] of [["legacy-client-id", false], ["host-appro
     const oldDirectory = path.join(directory, "legacy");
     fs.mkdirSync(oldDirectory);
     fs.writeFileSync(path.join(oldDirectory, "package.json"), '{"type":"commonjs"}');
-    fs.symlinkSync(path.join(project, "../node_modules"), path.join(directory, "node_modules"), "dir");
+    fs.symlinkSync(path.join(project, "node_modules"), path.join(directory, "node_modules"), "dir");
     esbuild.buildSync({ entryPoints: [path.join(project, "../src/storage-worker.ts")],
       bundle: true, platform: "node", format: "esm", packages: "external",
       outfile: path.join(directory, "storage-worker.js"), logLevel: "silent" });
@@ -54,14 +58,15 @@ for (const [policy, portalEnabled] of [["legacy-client-id", false], ["host-appro
       export {WebSocketServer} from "ws";`, resolveDir: project },
       bundle: true, platform: "node", format: "cjs", packages: "external", outfile: bundle, logLevel: "silent" });
     esbuild.buildSync({ stdin: { contents: `
-      export {initialize,Storage} from "./next-server/src/storage";
-      export {createNextRoomUiHub} from "./next-server/src/next-room-ui-hub";
-      export {createNextRoomPortalAuthority} from "./next-server/src/next-room-portals";
-      export {copyPrivateRoomArchive} from "./next-server/src/legacy-chatroom-private-copy";
-      export {rotateRoomJoinSecret,resolveRoomJoinSecretHash} from "./next-server/src/next-room-secret-state";`, resolveDir: project },
+      export {initialize,Storage} from "./src/storage";
+      export {createNextRoomUiHub} from "./src/next-room-ui-hub";
+      export {createNextRoomPortalAuthority} from "./src/next-room-portals";
+      export {copyPrivateRoomArchive} from "./src/legacy-chatroom-private-copy";
+      export {rotateRoomJoinSecret,resolveRoomJoinSecretHash} from "./src/next-room-secret-state";`, resolveDir: core },
       bundle: true, platform: "node", format: "esm", packages: "external", outfile: nativeBundle, logLevel: "silent" });
     const retained = require(bundle), native = await import(pathToFileURL(nativeBundle));
-    const baseline = path.join(project, "personal-knowledge-4.0.22.vsix");
+    const baseline = process.env.PKM_LEGACY_VSIX || path.join(project, "personal-knowledge-4.0.22.vsix");
+    assert(fs.existsSync(baseline), "Set PKM_LEGACY_VSIX to the authorized original 4.0.22 VSIX (SHA-256 1804071cb3b9fc86edc5933d5001db6ea1a8d7a9adf30d6d2b3166fcd6048f27).");
     assert.equal(createHash("sha256").update(fs.readFileSync(baseline)).digest("hex"),
       "1804071cb3b9fc86edc5933d5001db6ea1a8d7a9adf30d6d2b3166fcd6048f27");
     let originalPortal, originalPeer, originalStore;
@@ -699,7 +704,7 @@ test("original Meeting dialogs preserve legacy defaults and disclose retained so
 });
 
 test("unadopted roots retain the legacy factory; experimental adoption cannot register", async () => {
-  const directory = path.join(project, ".migration-test-work", `room-owner-${randomUUID()}`);
+  const directory = path.join(core, ".migration-test-work", `room-owner-${randomUUID()}`);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   try {
     const file = path.join(directory, "owner.cjs");

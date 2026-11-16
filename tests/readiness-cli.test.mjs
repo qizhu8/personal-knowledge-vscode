@@ -57,19 +57,20 @@ test("operator evidence CLI preserves signatures, exact scope, fingerprints, art
   const fixture = resolve(directory, "repository");
   const packageRoot = fileURLToPath(new URL("..", import.meta.url));
   const repository = resolve(packageRoot, "legacy");
-  await mkdir(resolve(fixture, "next-server"), { recursive: true });
+  const fixtureLegacy = resolve(fixture, "legacy");
+  await mkdir(fixtureLegacy, { recursive: true });
   await Promise.all([
-    ...["src", "resources", "package.json"].map(path => cp(resolve(repository, path), resolve(fixture, path), { recursive: true })),
+    ...["src", "resources", "package.json"].map(path => cp(resolve(repository, path), resolve(fixtureLegacy, path), { recursive: true })),
     ...["dist/knowledge", "dist/runtime"].map(path =>
-      cp(resolve(repository, path), resolve(fixture, path), { recursive: true })),
+      cp(resolve(repository, path), resolve(fixtureLegacy, path), { recursive: true })),
     ...["src", "scripts", "browser", "clients", "compat", "compute", "dist", "migration", "experimental",
       "package.json", "package-lock.json", "tsconfig.json"].map(path =>
-      cp(resolve(packageRoot, path), resolve(fixture, "next-server", path), { recursive: true })),
-    copyTestSources(resolve(repository, "tests"), resolve(fixture, "tests")),
-    copyTestSources(resolve(packageRoot, "tests"), resolve(fixture, "next-server/tests"), true),
+      cp(resolve(packageRoot, path), resolve(fixture, path), { recursive: true })),
+    copyTestSources(resolve(repository, "tests"), resolve(fixtureLegacy, "tests")),
+    copyTestSources(resolve(packageRoot, "tests"), resolve(fixture, "tests"), true),
   ]);
-  await symlink(resolve(packageRoot, "node_modules"), resolve(fixture, "next-server/node_modules"));
-  const fixtureCli = resolve(fixture, "next-server/scripts/readiness.mjs");
+  await symlink(resolve(packageRoot, "node_modules"), resolve(fixture, "node_modules"));
+  const fixtureCli = resolve(fixture, "scripts/readiness.mjs");
   const run = (args, trust) => invoke(fixtureCli, args, trust);
   const evidenceFile = resolve(directory, "evidence.json");
   const trustFile = resolve(fixture, "authorities.json");
@@ -81,12 +82,12 @@ test("operator evidence CLI preserves signatures, exact scope, fingerprints, art
       { id: "independent-verifier", roles: ["verifier"], publicKey: verifier.publicKey.export({ type: "spki", format: "pem" }) },
     ],
   };
-  const contract = JSON.parse(await readFile(resolve(fixture, "next-server/migration/readiness-contract.json"), "utf8"));
+  const contract = JSON.parse(await readFile(resolve(fixture, "migration/readiness-contract.json"), "utf8"));
   const initial = run([]);
   assert.equal(initial.status, 0, initial.stderr);
   const report = JSON.parse(initial.stdout);
   const artifact = "migration/manifest.json";
-  const artifactHash = createHash("sha256").update(await readFile(resolve(fixture, "next-server", artifact))).digest("hex");
+  const artifactHash = createHash("sha256").update(await readFile(resolve(fixture, artifact))).digest("hex");
   const parity = readinessRequirements(contract).find(item => item.kind === "parity");
   const decision = readinessRequirements(contract).find(item => item.id === "decision:operator.scope-layouts-and-legacy-replacements");
   const makeRecord = (requirement, key, authorityId, change = {}) => {
@@ -170,11 +171,13 @@ test("operator evidence CLI preserves signatures, exact scope, fingerprints, art
   });
 
   await t.test("repository registries and their symlink aliases are not independently enrolled", async () => {
-    await writeFile(trustFile, JSON.stringify(trust));
-    fail(run(["--evidence", evidenceFile, "--trusted-authorities", trustFile]));
-    const alias = resolve(directory, "trust-alias.json");
-    await symlink(trustFile, alias);
-    fail(run(["--evidence", evidenceFile, "--trusted-authorities", alias]));
+    for (const [index, path] of [trustFile, resolve(fixtureLegacy, "authorities.json")].entries()) {
+      await writeFile(path, JSON.stringify(trust));
+      fail(run(["--evidence", evidenceFile, "--trusted-authorities", path]));
+      const alias = resolve(directory, `trust-alias-${index}.json`);
+      await symlink(path, alias);
+      fail(run(["--evidence", evidenceFile, "--trusted-authorities", alias]));
+    }
   });
 
   await t.test("explicit missing, unreadable, malformed and ambiguous inputs exit visibly nonzero", async () => {

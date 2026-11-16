@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import ts from "typescript";
 
 const server = resolve(import.meta.dirname, "..");
-const root = resolve(server, "..");
+const root = resolve(server, "legacy");
 const hash = value => createHash("sha256").update(value).digest("hex");
 const files = [];
 async function capture(source, captured, transform) {

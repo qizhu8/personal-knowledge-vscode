@@ -5,8 +5,14 @@ import { chmod, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { initialize } from "../dist/storage.js";
 import { startStandaloneHost } from "../dist/standalone-host.js";
+import { attachAdoptedRootReadOnlyMcp } from "../dist/adopted-root-mcp.js";
+import { startLegacyNoteMcp } from "../dist/legacy-note-mcp.js";
 import { chatTurnInput } from "./chat-turn-fixtures.mjs";
 import { startHttp } from "../dist/http.js";
 
@@ -121,6 +127,73 @@ async function start(f, extra) {
   f.hosts.push(host);
   return host;
 }
+
+test("real MCP owner children close before shared Storage without stopping a peer attachment", { timeout: 60_000 }, async t => {
+  const f = await fixture(t), host = await start(f), owner = host.ownerResourceContext();
+  const children = [], failures = [], originalSpawn = childProcess.spawn;
+  childProcess.spawn = (...args) => {
+    const child = originalSpawn(...args);
+    if (args[1]?.includes("--persistent")) children.push(child);
+    return child;
+  };
+  syncBuiltinESMExports();
+  t.after(() => { childProcess.spawn = originalSpawn; syncBuiltinESMExports(); });
+  const attach = async name => {
+    const [clientTransport, transport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name, version: "1.0.0" });
+    const attachment = await attachAdoptedRootReadOnlyMcp({
+      owner, transport, connection: new AbortController().signal,
+      assertMcpAuthority() { owner.assertCurrent(); },
+      closeConnection: () => client.close(),
+      onCloseError: error => failures.push(error),
+    });
+    await client.connect(clientTransport);
+    assert.notEqual((await client.callTool({ name: "list_notes", arguments: {} })).isError, true);
+    return { client, attachment };
+  };
+  const first = await attach("first-owner-connection"), second = await attach("peer-owner-connection");
+  assert.equal(children.length, 2);
+  const [ownPid, peerPid] = children.map(child => child.pid);
+  assert(Number.isInteger(ownPid) && Number.isInteger(peerPid));
+  process.kill(ownPid, 0); process.kill(peerPid, 0);
+  await first.attachment.close();
+  assert.throws(() => process.kill(ownPid, 0), /ESRCH/);
+  owner.storage.assertWorkspaceLease();
+  process.kill(peerPid, 0);
+  assert.notEqual((await second.client.callTool({ name: "list_notes", arguments: {} })).isError, true);
+  await host.close();
+  assert.throws(() => process.kill(peerPid, 0), /ESRCH/);
+  assert.throws(() => owner.storage.assertWorkspaceLease());
+  assert.deepEqual(failures, []);
+});
+
+test("MCP server close reports abnormal termination of its actual private worker", { timeout: 60_000 }, async t => {
+  const f = await fixture(t), host = await start(f), owner = host.ownerResourceContext();
+  const children = [], originalSpawn = childProcess.spawn;
+  childProcess.spawn = (...args) => {
+    const child = originalSpawn(...args);
+    if (args[1]?.includes("--persistent")) children.push(child);
+    return child;
+  };
+  syncBuiltinESMExports();
+  t.after(() => { childProcess.spawn = originalSpawn; syncBuiltinESMExports(); });
+  const [clientTransport, transport] = InMemoryTransport.createLinkedPair();
+  const server = await startLegacyNoteMcp(owner.storage, transport, {
+    core: owner.core, actor: { id: "local:owner", canRead: true, canWrite: false },
+  });
+  const client = new Client({ name: "failed-owned-worker", version: "1.0.0" });
+  await client.connect(clientTransport);
+  assert.equal(children.length, 1);
+  const worker = children[0], pid = worker.pid;
+  const exited = new Promise(resolve => worker.once("close", resolve));
+  assert.equal(worker.kill("SIGKILL"), true);
+  await exited;
+  await assert.rejects(server.close(), /shutdown is unconfirmed/);
+  assert.throws(() => process.kill(pid, 0), /ESRCH/);
+  await client.close();
+  owner.storage.assertWorkspaceLease();
+  await host.close();
+});
 
 async function turn(host, input) {
   const started = await host.core.dispatch("capability_call", invoke("chat.turn.start", input), actor);

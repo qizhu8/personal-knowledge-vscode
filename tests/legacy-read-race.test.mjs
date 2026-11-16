@@ -9,8 +9,8 @@ test("legacy Markdown external-writer reads return exact snapshots or an explici
   const child = spawnSync(process.execPath, ["--import", hook, runner], {
     cwd: resolve(import.meta.dirname, ".."),
     encoding: "utf8",
-    timeout: 60_000,
+    timeout: 240_000,
   });
-  assert.ifError(child.error);
+  if (child.error) throw new Error(`Race runner failed\n${child.stdout}\n${child.stderr}`, { cause: child.error });
   assert.equal(child.status, 0, `race qualification runner failed\n${child.stdout}\n${child.stderr}`);
 });

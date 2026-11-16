@@ -1,10 +1,24 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import ts from "typescript";
-import { packageRoot, hash } from "./migration.mjs";
+import { packageRoot, hash, readOriginalSource } from "./migration.mjs";
+
+const args = process.argv.slice(2);
+if (args.length && (args.length !== 1 || args[0] !== "--check")) throw new Error("Usage: node scripts/capture-resource-lifecycle.mjs [--check]");
+const originalMetadata = JSON.parse(await readFile(resolve(packageRoot, "migration/resource-lifecycle-provenance.json"), "utf8"));
+const originalText = async source => (await readOriginalSource(source, {
+  sha256: originalMetadata.files.find(record => record.source === source)?.sourceSha256,
+  dataset: "knowledge-resource-lifecycle-historical",
+})).toString("utf8");
+async function emit(path, content) {
+  const full = resolve(packageRoot, path);
+  if (args[0] === "--check") {
+    if (await readFile(full, "utf8") !== content) throw new Error(`Resource lifecycle capture is stale: ${path}`);
+  } else await writeFile(full, content);
+}
 
 const sourcePath = "src/knowledge/markdown-assets.ts";
-const source = await readFile(resolve(packageRoot, "..", sourcePath), "utf8");
+const source = await originalText(sourcePath);
 const parsed = ts.createSourceFile(sourcePath, source, ts.ScriptTarget.Latest, true);
 function declaration(name) {
   const matches = parsed.statements.filter(node => node.name?.getText(parsed) === name);
@@ -42,16 +56,16 @@ export function resourceLifecycleIsReferenced(original: string, document: string
 export const resourceLifecycleOriginalRules = ${JSON.stringify(Object.fromEntries(names.map(name => [name, declaration(name).getText(parsed)])), null, 2)} as const;
 `;
 const captured = "src/domain/resource-lifecycle-original.ts";
-await writeFile(resolve(packageRoot, captured), content);
+await emit(captured, content);
 const filestorePath = "src/knowledge/filestore.ts";
-const filestore = await readFile(resolve(packageRoot, "..", filestorePath), "utf8");
+const filestore = await originalText(filestorePath);
 const filestoreAst = ts.createSourceFile(filestorePath, filestore, ts.ScriptTarget.Latest, true);
 const moves = filestoreAst.statements.filter(node => node.name?.getText(filestoreAst) === "moveKnowledgePathUnlocked");
 if (moves.length !== 1) throw new Error("Original filestore lifecycle boundary changed.");
 const filestoreCaptured = "src/domain/resource-lifecycle-filestore.ts";
 const filestoreContent = `// Evidence only: original coupled document/resource move and deletion-journal rules.\nexport const resourceLifecycleFilestoreOriginal = ${JSON.stringify(moves[0].getText(filestoreAst))};\n`;
-await writeFile(resolve(packageRoot, filestoreCaptured), filestoreContent);
-await writeFile(resolve(packageRoot, "migration/resource-lifecycle-provenance.json"), JSON.stringify({
+await emit(filestoreCaptured, filestoreContent);
+await emit("migration/resource-lifecycle-provenance.json", JSON.stringify({
   schema: "pkm.domain-capture/v1",
   transformation: "AST-extracted original rename rewrite and delete-reference expressions, unchanged; reused captured Markdown parser. Original destructive/shared-reference and filestore journal functions retained as non-executable evidence strings.",
   files: [

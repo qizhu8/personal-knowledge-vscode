@@ -30,7 +30,7 @@ import { isolatedManagedLaunch, publishIsolatedManagedGeneration, stageIsolatedM
   verifyIsolatedManagedGeneration } from "../experimental/managed-migration.mjs";
 
 const testsRoot = dirname(fileURLToPath(import.meta.url));
-const packageRoot = resolve(testsRoot, ".."), repositoryRoot = resolve(packageRoot, "..");
+const packageRoot = resolve(testsRoot, ".."), repositoryRoot = resolve(packageRoot, "legacy");
 const require = createRequire(join(repositoryRoot, "package.json"));
 const sha = value => createHash("sha256").update(value).digest("hex");
 const python = execFileSync("python3", ["-I", "-c", "import sys; print(sys.executable)"], { encoding: "utf8" }).trim();
@@ -593,9 +593,9 @@ print(json.dumps({"origins":origins,"isolated":bool(sys.flags.isolated),"noSite"
         `Generation captures exact current implementation bytes: ${name}`);
     }
     const wheel = "vendor/adaptive_skill_retrieval-0.3.0.dev2026100504-py3-none-any.whl";
-    assert.equal(generation.files[`runtime/resources/${wheel}`],
+    assert.equal(generation.files[`runtime/next-server/legacy/resources/${wheel}`],
       "332e434272a3cc88410eb50c7e4bfc3e3f69c5bf1e13f7f9a799087c37124f89");
-    assert.equal(generation.files[`runtime/resources/${wheel}`],
+    assert.equal(generation.files[`runtime/next-server/legacy/resources/${wheel}`],
       sha(await readFile(join(repositoryRoot, "resources", wheel))));
     return generation;
   };
@@ -811,14 +811,7 @@ print(json.dumps({"origins":origins,"isolated":bool(sys.flags.isolated),"noSite"
     for (const name of ["dev", "ino", "size", "mtimeNs"]) assert.equal(after[name], databaseStat[name]);
   }
   for (const suffix of ["-wal", "-shm"]) await assert.rejects(lstat(database + suffix), { code: "ENOENT" });
-  for (const name of (await readdir(join(managedRoot, "instances"))).filter(name => name.endsWith(".json"))) {
-    const state = JSON.parse(await readFile(join(managedRoot, "instances", name), "utf8"));
-    assert.equal(state.acceptingNewCalls, false);
-    assert.equal(state.inFlight, 0);
-    assert.equal(state.uncertainCalls, 0);
-    assert.equal(state.automaticReplay, false);
-    assert.equal(state.automaticTermination, false);
-  }
+  await assert.rejects(readdir(join(managedRoot, "instances")), { code: "ENOENT" });
   console.log("MANAGED_MEMORY_MIGRATION_OK", JSON.stringify({
     experimental: true, productionCutover: false, completeFeatureDomains: false,
     importOwned: true, scopeContinuityExplicit: true, originalSourcesUnchanged: true,

@@ -151,7 +151,9 @@ test("public folder schemas are schema-only and match the exact transport fixtur
 test("original folder and resource lifecycle source captures remain current", async () => {
   const provenance = JSON.parse(await readFile(join(packageRoot, "migration/folder-lifecycle-provenance.json"), "utf8"));
   assert.equal(provenance.schema, "pkm.domain-capture/v1");
-  assert.deepEqual(await checkCaptureRecords(provenance.files), []);
+  assert.deepEqual(await checkCaptureRecords(provenance.files, undefined, undefined, {
+    dataset: "knowledge-folder-lifecycle-historical",
+  }), []);
   const rules = folderLifecycleOriginalRules["src/knowledge/filestore.ts"];
   assert.match(rules.folderRename, /moveKnowledgePath/);
   assert.match(rules.folderDeletePromote, /moveKnowledgePath/);

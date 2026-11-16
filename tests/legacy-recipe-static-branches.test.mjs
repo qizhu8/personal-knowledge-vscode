@@ -39,7 +39,7 @@ async function setup(t) {
   require("../legacy/tests/next-trial-electron/controlled-lazy-recipe-fixture.cjs").create({
     extension, fixture: prepared.fixture, root: prepared.originalRoot });
   const evidence = helper.create({ extension, root: prepared.originalRoot, fixture: prepared.fixture });
-  const oracle = spawnSync("python3", ["-B", "tests/next-trial-electron/legacy-static-branch-oracle.py",
+  const oracle = spawnSync("python3", ["-B", path.resolve(import.meta.dirname, "../legacy/tests/next-trial-electron/legacy-static-branch-oracle.py"),
     extension, prepared.fixture], { encoding: "utf8", timeout: 30000 });
   assert.equal(oracle.status, 0, oracle.stderr + oracle.stdout);
   const old = JSON.parse(oracle.stdout);

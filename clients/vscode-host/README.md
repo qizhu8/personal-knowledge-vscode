@@ -1,4 +1,36 @@
-# Experimental VS Code host for next-server
+# pkm-v5 — experimental VS Code host
+
+The test package and display name are **`pkm-v5`**; its VSIX identity is
+`pkm-nonproduction.pkm-v5` and its default artifact is `pkm-v5-0.1.0.vsix`.
+Core discovery (`name`/`serverId`) and the native, Note and compact MCP adapters' initialize
+responses use `pkm-v5`. The native VS Code MCP provider ID and definition label
+are also `pkm-v5`, distinct from the existing production `pkm` provider.
+
+On VS Code versions with the native MCP API, the provider publishes a definition
+only when **user-level** `pkm.nextHost.managedRoot` explicitly selects an already
+provisioned isolated managed generation. It uses the existing verified isolated
+launcher; no account binding or user/workspace MCP configuration is written.
+Workspace configuration is ignored. Changes to `managedRoot` or
+`productionCoordinator` immediately invalidate old definitions and notify native
+VS Code to rediscover servers; no reload is required. Definitions are also
+revalidated at resolve time, and changed/forged definitions are rejected.
+The same-root coordinator excludes this provider while enabled.
+
+For side-by-side installation/comparison, keep old `pkm` installed and use owned
+nonproduction profiles and separate disposable data roots. The host's existing
+`pkm.next*` command/settings IDs, `pkm.next-host.bearer` SecretStorage key (scoped
+to this extension), internal schemas, workspace markers and runtime compatibility
+paths remain stable. They do not reuse the production extension's credential or
+default data selection. Coexistence is **not** permission for simultaneous writers
+on the same Root.
+
+After qualification, an explicit public rename can change `src/public-identity.ts`,
+`compat/legacy-compact-mcp.py`'s `PUBLIC_NAME`,
+the two package manifests, root lockfile, provider contribution and packaging/test
+expectations to `pkm`. That alone does **not** replace the installed production
+extension: publisher/extension-ID migration, credentials, profile/data ownership,
+conflicting provider removal and an authorized replacement/install remain separate
+decisions. Nothing here automatically cuts over or weakens admission guards.
 
 This is a **separate, nonproduction extension**. It does not modify or activate the
 production extension. Its HTTP path does not start a server. It does not select a Knowledge Root, implement
@@ -18,11 +50,11 @@ an isolated profile (host-only VSIX or Extension Development Host); do not insta
    `http://127.0.0.1:PORT`), `pkm.nextHost.workspaceId`, and
    `pkm.nextHost.actorId`. These settings are machine-scoped; workspace/folder
    settings are deliberately ignored. The trusted configuration independently
-   asserts server ID `pkm-next`, protocol `v1`, workspace and actor. The client
+   asserts server ID `pkm-v5`, protocol `v1`, workspace and actor. The client
    compares it with authenticated server info before capability discovery.
    The host relies on the operator's secure provisioning; it does not discover
    server identity independently or protect a compromised user profile.
-3. Execute **PKM Next (Experimental): Store Token** and enter the token in the
+3. Execute **pkm-v5 (Experimental): Store Token** and enter the token in the
    native password prompt. It is stored using VS Code SecretStorage under a fixed
    opaque key, never in settings or the webview. Execute **Connect**, then **Open**.
    Connecting again or changing the token closes panels and disposes the client.
@@ -36,7 +68,7 @@ disposes panel bindings, commands and clients. Pending uncertain writes are kept
 only in client memory and are lost on replacement/disposal; reconcile server
 receipts before submitting a replacement. If a connection is reset with in-flight
 or uncertain writes, the host warns and records their operation IDs in the
-**PKM Next Experimental** output channel without recording request bodies or
+**pkm-v5 Experimental** output channel without recording request bodies or
 credentials. This session-only diagnostic is not durable recovery: a shutdown
 may prevent the warning from being seen, and exact retry bodies are still lost.
 No automatic replay is performed.
@@ -46,7 +78,7 @@ No automatic replay is performed.
 The installed host exposes two Command Palette commands. They need no HTTP
 connection, token, `managedRoot` setting, or repository checkout at runtime:
 
-1. **PKM Next (Experimental): Preview First-Run Import** asks you to select an
+1. **pkm-v5 (Experimental): Preview First-Run Import** asks you to select an
    existing, quiescent **disposable legacy copy**, a **new destination directory
    path** (the save dialog selects a path, not an existing workspace), a trusted
    Node.js executable **>=22.18 with `node:sqlite`**, and a trusted Python executable
@@ -55,13 +87,13 @@ connection, token, `managedRoot` setting, or repository checkout at runtime:
    source and destination must be disjoint, canonical trees without directory
    symlinks. You must separately acknowledge that this is a disposable copy before
    inspection. Never select live production data.
-2. Read the **PKM Next Experimental** output. It is a read-only VS Code output
+2. Read the **pkm-v5 Experimental** output. It is a read-only VS Code output
    channel, not a file saved into the source or destination. The JSON includes exact
    source/destination/runtime paths, full bounded preflight, inventory mappings,
    blockers and plan SHA-256. A blocked/incomplete plan cannot be confirmed.
    Preserve and review unsupported material; do not delete data just to pass
    preflight. There is no “ignore blockers” or native-authority override.
-3. Only after review, run **PKM Next (Experimental): Confirm Inspected Import**.
+3. Only after review, run **pkm-v5 (Experimental): Confirm Inspected Import**.
    A distinct modal repeats the exact paths, runtimes and digest and explicitly
    authorizes staging, receipt writes and publication. Cancel/deny consumes the
    in-memory plan without writes. Changing selections requires a fresh preview;
@@ -103,7 +135,15 @@ From the repository root, with the existing TypeScript, esbuild, VS Code types
 and next-server dependencies already installed:
 
 ```sh
-npm --prefix next-server/clients/vscode-host test
+# Direct packaging or direct node test runs need current generated assets:
+npm run build
+npm --prefix clients/vscode-host run build
+
+# Canonical host selectors prepare fresh Core, compatibility and host assets
+# automatically in the isolated preparation layer; manual builds are not needed:
+npm test -- --file clients/vscode-host/host.test.mjs \
+  --file clients/vscode-host/electron-test-packaging.test.mjs \
+  --file clients/vscode-host/live-runtime.test.mjs --jobs 1
 ```
 
 The adapter suite executes the bundled extension against a VS Code module
@@ -120,22 +160,41 @@ coverage, not a claim of native-dialog Electron acceptance.
 ### Host-only VSIX and private installed-profile acceptance
 
 ```sh
-npm --prefix next-server/clients/vscode-host run package:vsix
-npm --prefix next-server/clients/vscode-host run test:installed
+npm --prefix clients/vscode-host run package:vsix
+npm --prefix clients/vscode-host run test:installed
+
+# Retain and verify one exact artifact, with durable native evidence:
+node clients/vscode-host/package-host.mjs ../../artifacts/pkm-v5-host-0.1.0.vsix
+node clients/vscode-host/installed-test.mjs \
+  --vsix artifacts/pkm-v5-host-0.1.0.vsix \
+  --evidence artifacts/pkm-v5-host-installed.json
 ```
 
 `package:vsix` uses an **already installed** `vsce` CLI (or explicit
 `PKM_VSCE_EXECUTABLE`), `--no-dependencies`, and an allowlisted staging directory
 containing only this host's manifest, built assets, README and license. It emits
-`pkm-next-nonproduction-host-0.1.0.vsix` in this package. It does not invoke the
+`pkm-v5-0.1.0.vsix` in this package. It does not invoke the
 production packaging scripts, modify the production manifest/entry, or install
-tooling. The archive includes the migration helper, SQLite worker, compatibility
-assets and action-component resource; source checkout/dependencies are not needed
-at runtime.
+tooling. Output paths passed to `package-host.mjs` are relative to the host package;
+`installed-test.mjs` paths are relative to the invoking directory. Build Core
+first; host build compiles the unchanged retained CommonJS sources and stages a
+complete `next-runtime` with locked production dependencies. The archive includes
+a thin migration helper that imports the same installed Core importer, SQLite
+worker, compatibility Python assets and retained resources from that payload.
+There is exactly one physical unchanged retained authority closure under
+`next-runtime/server/legacy/dist`; the extension's managed client externalizes
+its shared session imports there. The shared active-host Core brand leaf is
+never bundled into the extension or first-run helper. Source checkout and Node
+dependencies are not needed at runtime. The build first clears its own `dist` and records every asset's
+SHA-256 in `dist/host-build.json`; packaging rejects missing, changed, additional
+or linked assets rather than silently shipping stale build files. The unchanged
+retained verifier validates the full installed payload and its exact host-version
+binding before packaging and again after real installation.
 
 `test:installed` requires existing Linux `unshare -Urn` support, `ip`, `xauth`,
 `xdpyinfo`, cached Xvfb (or `PKM_TRIAL_XVFB`), cached VS Code plus its `bin/code`
-CLI (or `PKM_VSCODE_EXECUTABLE`), existing `vsce`, and Python Playwright. Missing
+CLI (or `PKM_VSCODE_EXECUTABLE`), existing `vsce`, and Python Playwright. The installed
+journey does not require the optional `@vscode/test-electron` development runner. Missing
 prerequisites fail explicitly; there is no download/install/mock fallback.
 Everything writable—HOME, XDG storage, temporary files, display authorization,
 user data, installed extensions and disposable source/destination—is under a
@@ -160,16 +219,115 @@ digest/path confirmation, actual new-workspace publication, unchanged source
 bytes/mtime, and no cutover. It selects/copies the real read-only Output editor;
 the installed runner reads the actual private-display clipboard and checks the
 inspected digest against the modal, source/destination, matching preview/receipt
-fingerprints, and the publication receipt. The host is then CLI-uninstalled and
+fingerprints, and the publication receipt. It explicitly activates the installed
+extension, checks disconnected managed state and repeated disconnect, and records
+the clean extension-host/application exit. This is not a connected managed-runtime
+drain or production takeover test. The host is then CLI-uninstalled and
 the private profile removed. Failures retain only package-local fixture evidence
-for diagnosis. A Linux cached VS Code 1.143.0 run passed this installed-VSIX
+for diagnosis. `--vsix` installs the supplied artifact without rebuilding it;
+`--evidence` preserves the artifact SHA-256, exact isolated install arguments,
+installed extension path/version/activation, UI results, exit status, uninstall
+and profile cleanup after success. No build/list-only result is activation evidence.
+A Linux cached VS Code 1.143.0 run passed this installed-VSIX
 journey; broader source layouts/native approvals, other operating systems,
 recovery and cutover remain outside this acceptance claim.
+
+Packaging and this installed nonproduction journey are separate acceptance
+gates from migration completion. Neither changes the installed legacy extension,
+authorizes a live legacy writer handoff, selects a production root, nor certifies
+same-root production cutover.
+
+### Explicit same-root coordinator acceptance
+
+The six `pkm.nextHost.production{Preview,Transition,State,Read,Rollback,Disconnect}`
+commands are independently gated by the **user-level only** setting
+`pkm.nextHost.productionCoordinator: { "enabled": true, "root": "/canonical/absolute/disposable/root" }`.
+The default is disabled. No workspace setting, caller-supplied profile or build
+override is accepted: the host derives its actual global-storage profile and the
+verified installed payload build. Configure before activation; changing enablement
+requires reload so pre-existing unrelated clients cannot become migration authority.
+Never use a production Root for an acceptance run.
+
+**Current enforced boundary: installed same-root transition is unavailable.**
+Read-only preview remains available. Transition preflight fails with
+`cold-host boundary is unproven` before resource drain, snapshot/migration
+consent, durable migration intent or Root effects. Rollback also requires this
+boundary before closing an owner or requesting consent. State reports
+`writerBoundary: "cold-host-unproven"` and `installedLegacyTakeover: false`.
+Native same-root adoption/read/rollback acceptance is **UNIMPLEMENTED**, not just
+waiting for a quieter environment. There is no setting, receipt or PID exemption
+that enables it.
+
+The shared Core authority resolves the real native `vscode` module itself.
+Its native extension inventory rejects the exact `Uone.personal-knowledge`
+identity (including the manifest identity), **even when inactive**, and declared
+native entrypoints resolving into that legacy package's `dist/extension.js`.
+These checks do not mistake unchanged retained utility modules under the verified
+active `next-runtime/server/legacy/dist` for an old extension activation.
+The inventory is re-read during authority/grant checks and after modal awaits;
+`extensions.onDidChange` revokes observed unsafe authority permanently, even if
+the old extension is subsequently removed. Unrelated extensions are neither an
+exemption nor an arbitrary denylist.
+
+Native inventory only describes extensions currently available to this host.
+It cannot establish that previously loaded/uninstalled legacy code ended.
+No module-cache heuristic, an empty new child registry, planning-only admission
+drain or exact-plan consent can prove that cold boundary. Consequently the active
+Linux permit binder also rejects a current-PID exemption, independently of the UI.
+The existing conservative process inventory and frozen legacy binding are unchanged.
+
+The retained legacy interfaces are useful but do not close this gap:
+`personalKnowledge.requestManagedHostDrains` routes requests only; each actual old
+window independently confirms `confirmLocalDrain`, which drains its enrolled
+admission, registered children, Chat and retrieval work. Its original registration
+and bound admission are required to record confirmation. `discoverManagedProfiles`
+is participation discovery, not a census; `beginConfirmedManagedProfileFence` and
+`sealConfirmedManagedProfiles` require the exact independently confirmed set, but
+still report external/preexisting writers unknown and cutover unauthorized.
+`observeManagedProfileInstallations` detects compatible local profile-index/build
+changes, not process/child termination. `holdSnapshotTransition`/`snapshotHost`
+require the original process-local brands, completed records and exact fenced
+successor rotation; JSON cannot recreate them after restart. A real cold installed
+handoff still needs authentic old-process/owned-child termination and complete
+profile/writer coverage. No durable handoff proof is produced by this coordinator.
+
+Active resource cleanup is narrower than that missing installed handoff.
+`StandaloneHost` closes its registered actual owner children before native
+services and Storage; failed children keep Storage owned. The adopted-owner MCP
+attachment closes admission, awaits its real calls, then closes its privately
+constructed `LegacyMcpPythonWorker` and connection. Worker close awaits actual
+process termination and rejects abnormal exit/protocol failure; one attachment
+does not own another attachment's worker. This is not the frozen shared HTTP
+`RetrievalWorkerManager`. The managed client child separately awaits its actual
+`HostLocalEnvironmentWorkflow.close()`, including owned runtime children and
+journal cleanup, before acknowledging shutdown. These mechanisms cover resources
+constructed through those active paths, not retroactive enrollment of old hosts
+or arbitrary detached descendants. They issue no native cold-upgrade proof.
+
+The opt-in native runner mode is an unfinished positive acceptance target, not a
+supported transition. It provisions a separate synthetic same-root fixture
+with private snapshot policy, leaves the first-run import fixture separate, and
+attempts native consent, adoption, owner reads and rollback. With the current
+enforced boundary it must stop at preflight, before consent. Do not retry it to
+obtain a green report or reuse historical artifact evidence as current acceptance:
+
+```sh
+node clients/vscode-host/installed-test.mjs \
+  --vsix artifacts/pkm-v5-host-active.vsix \
+  --evidence artifacts/pkm-v5-host-active-installed.json --coordinator
+```
+
+Only a future implementation plus a matching successful evidence report containing
+`coordinator.passed: true` could establish this isolated native journey.
+Merely packaging these commands, unit mock approval,
+the default first-run test, or a historical VSIX report does not. This remains a
+bounded opt-in coordinator, not automatic production extension takeover, service
+registration, parity certification or production deployment.
 
 For Electron Extension Development Host acceptance, use the separate command:
 
 ```sh
-npm --prefix next-server/clients/vscode-host run test:electron
+npm --prefix clients/vscode-host run test:electron
 ```
 
 It uses an already-cached Linux VS Code executable under
@@ -190,11 +348,11 @@ extension; it does not establish migration parity or cutover readiness.
 ### Additional live-runtime acceptance (not production cutover)
 
 ```sh
-npm --prefix next-server/clients/vscode-host run test:electron:live
+npm --prefix clients/vscode-host run test:electron:live
 ```
 
 This separate test **does run the actual next-server runtime**, using the existing
-`next-server/dist/cli.js init` and `http --read-only --port 0` launcher. It needs
+`dist/cli.js init` and `http --read-only --port 0` launcher. It needs
 that build and its dependencies already present; it does not rebuild or modify
 the server, use a mock backend on failure, or download any dependencies. CLI
 initialization/startup each have a 30-second deadline and report the actual
@@ -248,7 +406,7 @@ The separate managed-MCP path starts **only an explicitly provisioned experiment
 generation**, not the installed PKM service. It neither registers an MCP provider
 nor changes the production MCP registry, extension, install, or Knowledge Root.
 Provision an initialized disposable/imported next workspace and a separate empty
-absolute managed directory using `next-server/experimental/managed-migration.mjs`:
+absolute managed directory using `experimental/managed-migration.mjs`:
 
 ```js
 const generation = await stageIsolatedManagedGeneration({
@@ -299,8 +457,8 @@ Targeted real subprocess coverage:
 
 ```sh
 npm --prefix next-server run build
-node --test next-server/tests/managed-migration.test.mjs
-npm --prefix next-server/clients/vscode-host run test:electron:migration
+node --test tests/managed-migration.test.mjs
+npm --prefix clients/vscode-host run test:electron:migration
 ```
 
 The final command requires a usable display and an already cached/installed VS
@@ -372,7 +530,7 @@ runtime admission and are not provided by dependency staging.
 Run the bounded provisioning tests without copying active server source:
 
 ```sh
-node --test next-server/tests/managed-model-dependencies.test.mjs
+node --test tests/managed-model-dependencies.test.mjs
 ```
 
 These prove default behavior, real installed-version refusal and pre-copy size
@@ -388,8 +546,8 @@ compliant virtual environment's `bin` to `PATH`, unset `PYTHONPATH`, `PYTHONHOME
 `HF_DATASETS_OFFLINE=1`. Keep `TMPDIR` in an owned project directory. Then run:
 
 ```sh
-PKM_MANAGED_MODEL_ACCEPTANCE=1 node --test next-server/tests/managed-memory-migration.test.mjs
-PKM_MANAGED_MODEL_ACCEPTANCE=1 node next-server/clients/vscode-host/migration-electron-test.mjs
+PKM_MANAGED_MODEL_ACCEPTANCE=1 node --test tests/managed-memory-migration.test.mjs
+PKM_MANAGED_MODEL_ACCEPTANCE=1 node clients/vscode-host/migration-electron-test.mjs
 ```
 
 The Electron command requires the previously built host, cached VS Code and a

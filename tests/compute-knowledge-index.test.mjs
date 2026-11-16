@@ -69,8 +69,12 @@ async function inspect(result, action) {
 }
 
 test("transformed knowledge-index provenance is repeatable and has correct source/captured paths", async () => {
-  const output = execFileSync(process.execPath, [join(server, "scripts/capture-knowledge-index.mjs"), "--check"], { encoding: "utf8" });
+  const before = await readFile(join(server, "migration/knowledge-index-provenance.json"));
+  const output = execFileSync(process.execPath, [join(server, "scripts/capture-knowledge-index.mjs"), "--check"], {
+    encoding: "utf8", cwd: join(server, "tests"),
+  });
   assert.match(output, /8 source\/capture hash pairs/);
+  assert.deepEqual(await readFile(join(server, "migration/knowledge-index-provenance.json")), before);
   const manifest = JSON.parse(await readFile(join(server, "migration/knowledge-index-provenance.json"), "utf8"));
   const originalSources = [
     "modules/pkm-memory-engine/src/pkm_memory_engine/engine.py",
@@ -106,12 +110,59 @@ test("transformed knowledge-index provenance is repeatable and has correct sourc
     file: "src/compute/chat-memory-worker.ts",
     sha256: "78118937bc28fc2f9e5eb088dd266bcad19903522e6d591b4bf18fa2414468b2",
   }]);
-  assert.equal(hash(await readFile(join(server, workerPins[0].file))), workerPins[0].sha256);
+  const nativeV5 = JSON.parse(await readFile(join(server, "migration/compute-native-v5-qualification.json"), "utf8"));
+  assert.equal(nativeV5.schema, "pkm.compute-native-qualification/v5");
+  assert.equal(nativeV5.scope, "bounded-compute-accounting-fixture-regression-only");
+  assert.deepEqual(nativeV5.historicalNative, {
+    qualification: "migration/native-qualification.json",
+    commit: "709b71263c4d31f6aae6523525c8bc12b2c16535",
+    path: nativeWorker,
+    blob: "eba61f0d14cd54c0b0514cb0db0196765219bd69",
+    archive: "migration/evidence/compute-chat-memory-worker-78118937.ts.txt",
+    bytes: 20562,
+    sha256: workerPins[0].sha256,
+  });
+  const historicalWorker = await readFile(join(server, nativeV5.historicalNative.archive));
+  assert.equal(hash(historicalWorker), workerPins[0].sha256);
+  assert.equal(historicalWorker.length, nativeV5.historicalNative.bytes);
+  assert.equal(createHash("sha1").update(`blob ${historicalWorker.length}\0`).update(historicalWorker).digest("hex"),
+    nativeV5.historicalNative.blob);
+  assert.deepEqual(Buffer.from(new TextDecoder("utf-8", { fatal: true }).decode(historicalWorker)), historicalWorker);
+  assert.equal(historicalWorker.at(-1), 10);
   assert.notEqual(workerPins[0].sha256, manifest.sourceHistory[0].previousSourceSha256);
+  assert.deepEqual(nativeV5.native.map(pin => pin.file).sort(), [
+    "src/compute/chat-memory-worker.ts", "src/compute/memory-accounting.ts",
+  ]);
+  for (const pin of nativeV5.native) {
+    assert.equal(hash(await readFile(join(server, pin.file))), pin.sha256);
+  }
+  assert.notEqual(nativeV5.native.find(pin => pin.file === workerPins[0].file).sha256, workerPins[0].sha256);
+  const { sourceCommit } = JSON.parse(await readFile(join(server, "migration/compute-provenance.json"), "utf8"));
   for (const file of manifest.files) {
-    assert.equal(hash(await readFile(join(server, "..", file.source))), file.sourceSha256);
+    const sourcePath = file.source.startsWith("next-server/")
+      ? join(server, file.source.slice("next-server/".length))
+      : join(server, "legacy", file.source);
+    const source = file.source === "src/retrieval/retrieval-snapshot.ts"
+      ? execFileSync("git", ["show", `${sourceCommit}:${file.source}`], { cwd: server })
+      : await readFile(sourcePath);
+    assert.equal(hash(source), file.sourceSha256);
     assert.equal(hash(await readFile(join(server, file.captured))), file.capturedSha256);
   }
+});
+
+test("historical native worker archive verifies without session Git objects", async () => {
+  const { historicalNative } = JSON.parse(await readFile(join(server, "migration/compute-native-v5-qualification.json"), "utf8"));
+  const original = JSON.parse(await readFile(join(server, historicalNative.qualification), "utf8"));
+  const pin = original.native.find(item => item.file === "src/compute/chat-memory-worker.ts");
+  const archived = await readFile(join(server, historicalNative.archive));
+  const unavailableGit = join(server, "tests", `.absent-archive-git-${randomUUID()}`);
+  await missing(unavailableGit);
+  const blob = execFileSync("git", ["hash-object", "--no-filters", "--stdin"], {
+    cwd: server, input: archived, encoding: "utf8",
+    env: { ...process.env, GIT_DIR: unavailableGit, GIT_OBJECT_DIRECTORY: join(unavailableGit, "objects") },
+  }).trim();
+  assert.equal(blob, historicalNative.blob);
+  assert.equal(hash(archived), pin.sha256);
 });
 
 test("real persistent rebuild preserves Note/Skill/Paper bodies, metadata, exact pins and directed edges", async t => {

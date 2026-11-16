@@ -13,7 +13,7 @@ import { nativeRestoreAuthority } from "./host-composition-legacy-batch16-restor
 import { admitLegacyKnowledgeRecovery, legacyKnowledgeRecovery, reconcileLegacyKnowledgeRecovery,
   verifyLegacyKnowledgeRecovery } from "../dist/legacy-knowledge-recovery.js";
 
-const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "..");
+const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "legacy");
 const actor = { id: "mcp:external", canWrite: true }, sha = value => createHash("sha256").update(value).digest("hex");
 async function fixture(t, rows = [
   { path: "notes/Recovered.md", bytes: Buffer.from("---\r\ntitle: Recovered\r\nunknown: keep\r\n---\r\nExact original recovery.\r\n"), mode: "100644" },

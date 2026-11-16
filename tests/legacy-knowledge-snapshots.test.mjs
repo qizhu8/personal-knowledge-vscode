@@ -130,11 +130,13 @@ test("actual pre-intent process death leaves a registered stage, fences startup 
     })().catch(error=>{console.error(error);process.exit(1);});
   `, f.data], { cwd: resolve(import.meta.dirname, ".."), encoding: "utf8", stdio: "pipe", env: { ...process.env, NODE_NO_WARNINGS: "1" } }),
   error => error.status === 71);
-  const owner = new DatabaseSync(join(f.data, "core.sqlite"));
-  let expires;
-  try { expires = Number(owner.prepare("SELECT lease_until FROM native_runtime_owner WHERE singleton=1").get().lease_until); }
-  finally { owner.close(); }
-  await new Promise(resolve => setTimeout(resolve, Math.max(0, expires - Date.now() + 50)));
+  if (process.platform !== "linux") {
+    const owner = new DatabaseSync(join(f.data, "core.sqlite"));
+    let expires;
+    try { expires = Number(owner.prepare("SELECT lease_until FROM native_runtime_owner WHERE singleton=1").get().lease_until); }
+    finally { owner.close(); }
+    await new Promise(resolve => setTimeout(resolve, Math.max(0, expires - Date.now() + 50)));
+  }
   await assert.rejects(f.open(), /preparation/);
   const deferred = await f.open(f.data, { deferRecovery: true });
   await assert.rejects(reconcileLegacyKnowledgeSnapshots(deferred, actor, { authorize: () => false }), /host-admitted/);
@@ -344,12 +346,12 @@ test("persistent scheduling is denied without actual native host scheduler autho
 test("original current privacy is captured as original Git content but changed current policy survives restore and relocated schema25 backup", async t => {
   const f = await fixture(t);
   await chmod(join(f.data, "prompts/Prompt.txt"), 0o751);
-  await mkdir(join(f.data, ".pkm"));
-  const policy = Buffer.from('{"schema":"original-disposable-private-policy","allow_model":false}\r\n');
-  await writeFile(join(f.data, ".pkm/content-privacy.json"), policy);
+  await mkdir(join(f.data, ".pkm"), { mode: 0o700 });
+  const policy = Buffer.from('{"schema":1,"private":{"notes":["Original"]}}\r\n');
+  await writeFile(join(f.data, ".pkm/content-privacy.json"), policy, { mode: 0o600 });
   const created = await f.call("create"), state = join(f.data, "packages/knowledge-snapshots");
   assert.deepEqual(execFileSync("git", [`--git-dir=${state}/repository.git`, "show", `${created.commit}:.pkm/content-privacy.json`]), policy);
-  const stricter = Buffer.from('{"allow_model":false,"portable_snapshot":"not-a-policy-restore"}\n');
+  const stricter = Buffer.from('{"schema":1,"private":{"notes":["Original","More private notes"]}}\n');
   await writeFile(join(f.data, ".pkm/content-privacy.json"), stricter);
   await writeFile(join(f.data, "notes/Original.md"), "# Current\n");
   const preview = await f.call("restore_preview", { tag: created.tag });
@@ -518,7 +520,7 @@ test("native MCP consumer consumes only explicitly enrolled operation scope with
   }), /explicitly authorized native scheduler/);
   await mkdir(join(f.data, ".pkm"));
   await writeFile(join(f.data, ".pkm/NOT-content-privacy.json"), "No old runtime-state admission");
-  await assert.rejects(invoke("status"), /Only the original current/);
+  await assert.rejects(invoke("status"), { code: "INVALID_WORKSPACE" });
 });
 
 test("original Board Note, missing-only recovery and private Git owners coexist without downgrading schema25 through restart/backup", async t => {

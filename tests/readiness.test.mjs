@@ -131,7 +131,7 @@ test("dynamic legacy operations need an exact profile/source mapping; unknown ca
   assert.equal(evaluateReadiness(context).readyForCutoverReview, false);
 });
 
-test("all 228 current canonical native operations map to exact workstream obligations without accepting candidates", () => {
+test("all 244 current canonical native operations map to exact workstream obligations without accepting candidates", () => {
   const mapped = new Set(contract.workstreams.flatMap(item => item.contracts));
   const batch15 = [
     { id: "legacy.skill.router.inject", version: 1, readOnly: false },
@@ -176,6 +176,22 @@ test("all 228 current canonical native operations map to exact workstream obliga
     { id: "plugin.runtime.enable", version: 1, readOnly: false },
     { id: "plugin.runtime.invoke", version: 1, readOnly: false },
     { id: "subscription.broker.share-markers", version: 1, readOnly: true },
+    { id: "remote.runtime.readHistoricalBase", version: 1, readOnly: true },
+    { id: "mcp.tool.recipe_run_start", version: 1, readOnly: false },
+    { id: "mcp.tool.recipe_run_get", version: 1, readOnly: false },
+    { id: "mcp.tool.recipe_run_next", version: 1, readOnly: false },
+    { id: "mcp.tool.recipe_run_progress", version: 1, readOnly: false },
+    { id: "mcp.tool.recipe_run_report", version: 1, readOnly: false },
+    { id: "mcp.tool.recipe_run_submit_input", version: 1, readOnly: false },
+    { id: "mcp.tool.recipe_search", version: 1, readOnly: true },
+    { id: "mcp.tool.recipe_capabilities", version: 1, readOnly: true },
+    { id: "recipe.compat.search", version: 1, readOnly: true },
+    { id: "recipe.library.state", version: 1, readOnly: true },
+    { id: "recipe.library.save", version: 1, readOnly: false },
+    { id: "recipe.runtime.start", version: 1, readOnly: false },
+    { id: "recipe.runtime.get", version: 1, readOnly: true },
+    { id: "recipe.history.get", version: 1, readOnly: true },
+    { id: "recipe.runtime.cancel", version: 1, readOnly: false },
   ];
   assert.deepEqual(contract.nativeCatalogMap.batch19AddedPublicOperations, batch19);
   assert.deepEqual(contract.nativeCatalogMap.batch20AddedPublicOperations, batch20);
@@ -191,7 +207,7 @@ test("all 228 current canonical native operations map to exact workstream obliga
     assert.equal(definition.readOnly, expected.readOnly);
   }
   assert.deepEqual([...definitions].map(item => item.id).sort(), [...mapped].sort());
-  assert.equal(definitions.length, 228);
+  assert.equal(definitions.length, 244);
   for (const id of ["knowledge.trash.delete.original", "knowledge.trash.empty.original"]) {
     assert(mapped.has(id));
     assert.equal(definitions.find(item => item.id === id).readOnly, false);

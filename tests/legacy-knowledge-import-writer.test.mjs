@@ -1,9 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import childProcess, { execFileSync } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -16,6 +15,7 @@ import { startLegacyNoteMcp } from "../dist/legacy-note-mcp.js";
 import { scanMarkdown } from "../dist/markdown.js";
 import { createWorkspaceBackup, restoreWorkspaceBackup } from "../dist/workspace-backup.js";
 import { nativeRestoreAuthority } from "./host-composition-legacy-batch16-restore-fixture.mjs";
+import { renameNoReplaceProgram } from "../dist/rename-no-replace.js";
 
 const actor = { id: "mcp:external", canWrite: true };
 const pythonExecutable = execFileSync("python3", ["-c", "import sys;print(sys.executable)"], { encoding: "utf8" }).trim();
@@ -69,12 +69,15 @@ test("original path-only import survives atomic MCP write/assets crash, restart,
       return identity;
     }
     await connect(target);
-    const rename = fs.renameSync;
+    const execute = childProcess.execFileSync;
     let interrupted = false;
-    fs.renameSync = (...args) => {
-      const result = rename(...args);
-      if (String(args[0]).endsWith("Before.assets")) {
-        interrupted = true; throw new Error("original-import assets interruption");
+    childProcess.execFileSync = (file, args, options) => {
+      const result = execute(file, args, options);
+      if (args?.[1] === renameNoReplaceProgram && String(args[2]).endsWith("Before.assets")) {
+        interrupted = true;
+        throw Object.assign(new Error("original-import assets interrupted"), {
+          status: 79, stderr: Buffer.from("original-import assets interrupted"),
+        });
       }
       return result;
     };
@@ -85,7 +88,7 @@ test("original path-only import survives atomic MCP write/assets crash, restart,
       } });
       assert.equal(response.isError, true);
       assert.match(JSON.stringify(response), /interrupted/);
-    } finally { fs.renameSync = rename; syncBuiltinESMExports(); }
+    } finally { childProcess.execFileSync = execute; syncBuiltinESMExports(); }
     assert.equal(interrupted, true);
     const database = new DatabaseSync(join(target, "core.sqlite"), { readOnly: true });
     const pending = database.prepare("SELECT * FROM migration_runtime_intents").get();

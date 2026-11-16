@@ -51,9 +51,9 @@ test("genuine old profile Memory becomes scoped native recall with exact-human r
       try { const data = JSON.parse(message.content); return data.schema === "pkm.chat.memory-context/v1" ? [data] : []; }
       catch { return []; }
     });
-    const call = (action, args, operationId = randomUUID()) => memory.execute({ ...binding,
+    const call = (action, args, operationId = randomUUID(), signal = request.signal) => memory.execute({ ...binding,
       turnId: request.turnId, inputId: request.turnId, taskSessionId: "native-task-extra-context" }, {
-      call: { name: `memory_record_${action}`, arguments: args }, operationId, signal: request.signal });
+      call: { name: `memory_record_${action}`, arguments: args }, operationId, signal });
     const read = async action => JSON.parse((await action).content);
     const adopt = async () => {
       const state = await memory.state(binding);
@@ -96,6 +96,14 @@ test("genuine old profile Memory becomes scoped native recall with exact-human r
     await decide(await pending());
     assert.equal((await read(confirming)).revision, 4);
     assert.deepEqual(quotes(await memory.context(binding, request)).map(item => item.quotedText), [replacement.content]);
+    const cancellation = new AbortController();
+    const cancelled = assert.rejects(call("revoke", { id: fixture.original.id, expected_revision: 4 },
+      randomUUID(), cancellation.signal), /MEMORY_ACCESS_DENIED/);
+    const cancelledDecision = await pending();
+    cancellation.abort();
+    await cancelled;
+    await assert.rejects(decide(cancelledDecision), /changed or belongs/);
+    assert.equal((await read(call("get", { id: fixture.original.id }))).revision, 4);
     const declined = call("revoke", { id: fixture.original.id, expected_revision: 4 });
     const rejected = assert.rejects(declined, /MEMORY_ACCESS_DENIED/);
     await decide(await pending(), "deny"); await rejected;

@@ -392,17 +392,18 @@ export class ActionRuntime {
     return this.mutate(() => {
       actor(actorId); bounded(args, L.inputBytes);
       const parsed = actionRuntimeDefinitions[0].input.parse(args) as ActionRuntimeCreate;
+      // Check the selected source identity before replaying a receipt from another process version.
+      const compiled = readActionCompiler({ operation: "action.definition.compile", args: { source: parsed.source } }) as {
+        status: string; definitionDigest: string; definition: JsonRecordValue; source: unknown;
+      };
+      if (compiled.status !== "valid") fail("INVALID_DEFINITION", "Original Action compiler rejected this definition.");
+      if (compiled.definitionDigest !== parsed.expectedDefinitionDigest) fail("CONFLICT", "Action definition digest changed before pinning.");
       return this.receipt(actorId, parsed.operationId, hash({ operation: "action.runtime.create", args: parsed }), () => {
         const now = this.clock();
         if (!Number.isSafeInteger(now) || parsed.deadline <= now || parsed.deadline > now + L.deadlineMs) {
           fail("INVALID_ARGUMENT", "Action run deadline is outside the configured bound.");
         }
         if (Number(this.database.prepare("SELECT count(*) n FROM action_runtime_runs").get()!.n) >= L.runs) fail("RESOURCE_LIMIT", "Action run capacity reached.");
-        const compiled = readActionCompiler({ operation: "action.definition.compile", args: { source: parsed.source } }) as {
-          status: string; definitionDigest: string; definition: JsonRecordValue; source: unknown;
-        };
-        if (compiled.status !== "valid") fail("INVALID_DEFINITION", "Original Action compiler rejected this definition.");
-        if (compiled.definitionDigest !== parsed.expectedDefinitionDigest) fail("CONFLICT", "Action definition digest changed before pinning.");
         if (!isRecord(compiled.definition)) return fail("INVALID_DEFINITION", "Compiled Action definition is not an object.");
         const definition = compiled.definition;
         validateSchema(definition.input_schema, parsed.inputs, "Action input violates its pinned schema");
@@ -581,6 +582,12 @@ export class ActionRuntime {
   async tick(actorId: string, runId: string): Promise<unknown> {
     if (this.closing) fail("CLOSED", "Action runtime is closing.");
     this.outside(); actor(actorId); id.parse(runId);
+    const pinned = load(this.database, actorId, runId);
+    const selected = readActionCompiler({
+      operation: "action.definition.compile", args: { source: pinned.sourceSnapshot },
+    }) as { status: string; definitionDigest?: string };
+    if (selected.status !== "valid" || selected.definitionDigest !== pinned.definitionDigest)
+      fail("CONFLICT", "Stored Action belongs to a different source identity; execution requires its own version and admission.");
     const key = keyFor(actorId, runId);
     if (this.active.has(key)) fail("BUSY", "Action run already has an execution owner.");
     const controller = new AbortController(); this.active.set(key, controller);

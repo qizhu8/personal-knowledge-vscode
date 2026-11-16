@@ -103,5 +103,9 @@ test("headless Chromium performs CAS conflict, resumable upload, Todo denial and
   const todo = await f.call("todo.workitem.get", { board_slug: boardSlug, id: "review-me" });
   assert.equal(todo.result.item.acceptanceDecision, undefined, "browser-authenticated user cannot forge delegated reviewer authority");
   const terminalAction = await f.call("action.runtime.get", { runId: actionRunId });
-  assert.equal(terminalAction.result.state, "cancelled");
+  assert.equal(terminalAction.result.state, "unknown");
+  assert.equal(terminalAction.result.nodes[0].state, "unknown");
+  const actionEvents = await f.call("action.runtime.events", { runId: actionRunId, after: 0, limit: 100 });
+  assert.ok(actionEvents.result.items.some(event => event.kind === "cancel-requested"));
+  assert.equal(actionEvents.result.items.some(event => event.kind === "run-succeeded"), false);
 });

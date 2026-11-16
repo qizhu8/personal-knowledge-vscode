@@ -1,4 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { publicName } from "./public-identity.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { methods, type Core } from "./core.js";
@@ -9,7 +10,7 @@ import { legacyRecipeSearchInput } from "./recipe-public-contracts.js";
 import { legacyRecipeLazyOperations } from "./legacy-recipe-lazy-contracts.js";
 
 export async function startMcp(core: Core, actor: Actor, transport: Transport = new StdioServerTransport()) {
-  const server = new McpServer({ name: "pkm-next-mcp-server", version: "0.1.0" });
+  const server = new McpServer({ name: publicName, version: "0.1.0" });
   const recipe = await core.dispatch("capabilities_describe", { operation: "recipe.compat.search" }, actor);
   const nativeRecipes = !recipe.error;
   for (const [name, method] of Object.entries(methods)) {

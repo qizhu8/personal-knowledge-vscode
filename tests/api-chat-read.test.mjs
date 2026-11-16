@@ -13,7 +13,7 @@ const actor = { id: "reader", canWrite: false };
 const chatId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 test("original API Chat source oracle declares the bounded read-only family", async () => {
-  const source = await readFile(resolve(root, "../resources/api_chat_control.py"), "utf8");
+  const source = await readFile(resolve(root, "legacy/resources/api_chat_control.py"), "utf8");
   for (const name of ["api_chat_capabilities", "api_chat_models", "api_chat_list", "api_chat_get", "api_chat_request_get"]) {
     assert.match(source, new RegExp(`def ${name}\\(`));
     const declaration = source.slice(source.indexOf(`def ${name}(`) - 100, source.indexOf(`def ${name}(`));
@@ -53,6 +53,10 @@ test("API Chat read tools use the local native Chat and model read APIs only", a
   const core = {
     async dispatch(method, input) {
       if (method === "server_info") return { result: { workspaceId } };
+      if (method === "capabilities_describe") {
+        assert.equal(input.operation, "recipe.compat.search");
+        return { error: { code: "NOT_FOUND", message: "Unavailable." } };
+      }
       assert.equal(method, "capability_read");
       calls.push(input.operation);
       if (!(input.operation in data)) return { error: { code: "NOT_FOUND", message: "Unavailable." } };

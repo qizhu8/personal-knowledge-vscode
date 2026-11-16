@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
+import { readOriginalSource } from "./migration.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const mode = process.argv[2];
@@ -153,7 +154,10 @@ print("\\n\\n".join(parts) + "\\n")
   recipes: await readFile(resolve(root, "legacy/resources/recipe_runtime.py"), "utf8"),
   nativeSource: await readFile(resolve(root, "legacy/resources/knowledge_mutations.py"), "utf8"), nativeTools,
   recoverySource: await readFile(resolve(root, "legacy/resources/knowledge_recovery.py"), "utf8"), recoveryTools,
-  actionSource: await readFile(resolve(root, "legacy/resources/action_runtime.py"), "utf8"), actionTools,
+  actionSource: mode === "--check" ? (await readOriginalSource("resources/action_runtime.py", {
+    dataset: "knowledge-mcp-release-4.0.22",
+    sha256: "be8823458bc20b4e095b62f2b8a8208a101bc6da6158f7a0b7e449609802d19f",
+  })).toString("utf8") : await readFile(resolve(root, "legacy/resources/action_runtime.py"), "utf8"), actionTools,
   snapshotSource: await readFile(resolve(root, "legacy/resources/knowledge_snapshots.py"), "utf8"), snapshotTools,
   assetSource: await readFile(resolve(root, "legacy/resources/asset_classification.py"), "utf8"), assetClassificationTools,
   agentSource: await readFile(resolve(root, "legacy/resources/agent_session_runtime.py"), "utf8"), agentTools, recipeTools, trashTools }),

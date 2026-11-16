@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { publicName } from "../../src/public-identity.js";
 import { definitions as coreDefinitions } from "../../src/contracts.js";
 import { documentLifecycleDefinitions } from "../../src/document-lifecycle-contracts.js";
 import { folderLifecycleDefinitions } from "../../src/folder-lifecycle-contracts.js";
@@ -59,7 +60,7 @@ type KnowledgeLifecycleState = {
   workspaceId?: string;
 };
 type ServerBinding = {
-  serverId: "pkm-next";
+  serverId: typeof publicName;
   workspaceId: string;
   actorId: string;
   protocolVersion: "v1";
@@ -150,14 +151,14 @@ export class KnowledgeLifecycleClient {
         throw new KnowledgeLifecycleClientError("AUTHENTICATION_REQUIRED");
       this.#token = token;
       const info = await this.#request("server_info", {}, false);
-      if (info.name !== "pkm-next" || info.serverId !== "pkm-next" || !validId(info.workspaceId) ||
+      if (info.name !== publicName || info.serverId !== publicName || !validId(info.workspaceId) ||
           !validId(info.actorId) || info.workspaceVersion !== "pkm.next-workspace/v2" ||
           info.protocolVersion !== "v1" || !isRecord(info.storage) ||
           info.storage.workspaceSchema !== "pkm.next-workspace/v2" || info.storage.authority !== "Markdown" ||
           !validId(info.catalogRevision)) throw new KnowledgeLifecycleClientError("INCOMPATIBLE_SERVER");
       const binding = await this.#host.attestServer(this.#origin, info);
       if (generation !== this.#generation) throw new KnowledgeLifecycleClientError("REQUEST_ABORTED");
-      if (!binding || binding.serverId !== "pkm-next" || binding.workspaceId !== this.#expectedWorkspaceId ||
+      if (!binding || binding.serverId !== publicName || binding.workspaceId !== this.#expectedWorkspaceId ||
           binding.workspaceId !== info.workspaceId || binding.actorId !== info.actorId ||
           !validId(binding.actorId) || binding.protocolVersion !== "v1")
         throw new KnowledgeLifecycleClientError("WORKSPACE_BINDING_MISMATCH");

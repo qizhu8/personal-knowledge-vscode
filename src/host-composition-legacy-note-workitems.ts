@@ -459,7 +459,8 @@ export function createNativeLegacyNoteWorkItemsComposition(
     }
     if (!authorized(actor, operation, "")) throw new CoreError("ACCESS_DENIED", "Native Note discovery policy denied this actor.");
     const source = await sourceHost.dispatch(operation, parsed, actor) as {
-      ok: true; notes: Array<{ slug: string; title: string; count: number; digest?: string; error?: string }>; truncated: boolean;
+      ok: true; notes: Array<{ slug: string; title: string; count: number; digest?: string; error?: string }>;
+      truncated: boolean; next_offset: number | null;
     };
     const notes = [];
     for (const note of source.notes) {
@@ -468,7 +469,7 @@ export function createNativeLegacyNoteWorkItemsComposition(
       const snapshot = await journal.read(key, actor);
       notes.push({ slug: note.slug, title: note.title, count: snapshot.items.filter(item => !item.deletedAt).length, digest: snapshot.digest });
     }
-    return { ok: true, notes, truncated: source.truncated };
+    return { ok: true, notes, truncated: source.truncated, next_offset: source.next_offset };
   }
 
   return {

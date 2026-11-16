@@ -5,6 +5,7 @@ import {
   type ActionCompilerOperation, type ActionCompilerRequest,
 } from "./action-compiler-contracts.js";
 import { compileActionGraph } from "./domain/action-compiler-graph.js";
+import { ACTION_SOURCE_IDENTITY } from "./domain/action-source-identity.js";
 import {
   actionDefinitionDiagnostics, builtinActionDefinitions, loadModuleSet,
   originalDefinitionValue, pythonCanonicalJson, portableActionDefinition, validateActionDefinition,
@@ -142,6 +143,7 @@ function compilerCapabilities(): JsonRecord {
     definitionSchema: "pkm.action.definition/v1",
     moduleSetSchema: "pkm.action.module-set/v1",
     runtimeStatus: "not-runnable-here",
+    sourceIdentity: { id: ACTION_SOURCE_IDENTITY.identity, evidence: ACTION_SOURCE_IDENTITY.qualification },
     limits: L,
     implementationKinds: ["program", "pipeline", "mcp"],
     unavailable: ["persistence", "execution", "qualification", "host-path-reads", "provider", "network", "credentials", "module-set-discovery"],

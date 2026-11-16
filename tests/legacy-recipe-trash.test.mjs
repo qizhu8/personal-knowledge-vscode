@@ -20,15 +20,37 @@ import { canonicalJson } from "../dist/domain/project-recipes-workflow-contracts
 import { capturedDeclarations, originalSources } from "../dist/domain/legacy-recipe-trash-original.js";
 import { fixture, hash, pythonExecutable } from "./batch09-original-control-fixtures.mjs";
 import { importLegacyWorkspace, planLegacyImport } from "../dist/legacy-import.js";
+import { readOriginalSource } from "../scripts/migration.mjs";
 
 const repo = resolve(import.meta.dirname, "../legacy");
+const packageRoot = resolve(import.meta.dirname, "..");
+const originalArchive = "migration/evidence/recipe-trash-authentication-originals.zip";
+const originalArchiveSha256 = "64bfa28487a0980b60e6510e2fbe8b3db2727a60e6bd24757fc99b4a8a41a46c";
+const originalPins = Object.freeze({
+  "src/workflows/project-model.ts": "505f56e2351a9f173268007990eaf02f1014abe0dc4f722b12a8f6aa81c94195",
+  "src/workflows/project-store.ts": "a88568af85c6cbf714cc8c9efcfb641da12502df888b4c6dd9e4b7e24dacc010",
+  "src/workflows/recipe-filesystem-store.ts": "3ecfb22753d16455ff7427993fd4d017dc00c1d2ffd65be9414157e31421b6f5",
+  "src/workflows/project-filesystem-store.ts": "20c0f58161b3f82181e48049e3ad95f0091ec41e1a1fba61413514c97502e0f8",
+});
+assert.deepEqual(Object.fromEntries(originalSources.map(source => [source.path, source.sha256])), originalPins);
+function readTrashOriginal(path, { root = packageRoot, kind = "source", sha256 = originalPins[path] } = {}) {
+  if (kind !== "source" || !Object.hasOwn(originalPins, path) || sha256 !== originalPins[path]) {
+    throw new Error("No exact Recipe trash source path/role/digest binding.");
+  }
+  return readOriginalSource(`${originalArchive}!/recipe-trash-original/source/${path}`, {
+    root, kind, sha256, archiveSha256: originalArchiveSha256,
+  });
+}
+const authenticatedSources = new Map(await Promise.all(Object.keys(originalPins)
+  .map(async path => [path, await readTrashOriginal(path)])));
 const require = createRequire(import.meta.url);
 const originalModules = new Map();
 function original(path) {
   if (originalModules.has(path)) return originalModules.get(path).exports;
   const module = { exports: {} };
   originalModules.set(path, module);
-  const source = ts.transpileModule(readFileSync(path, "utf8"), {
+  const pinned = authenticatedSources.get(relative(repo, path).split("\\").join("/"));
+  const source = ts.transpileModule(pinned ? pinned.toString("utf8") : readFileSync(path, "utf8"), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText;
   runInThisContext(`(function(require,module,exports,__filename,__dirname){${source}\n})`, { filename: path })(
@@ -307,13 +329,13 @@ test("mixed Recipe trash recovery can be explicitly rolled back without a receip
 
 test("trash captures remain tied to exact original model, stores, command history and supported operations", async () => {
   for (const source of originalSources) {
-    assert.equal(hash(readFileSync(join(repo, source.path))), source.sha256, source.path);
+    assert.equal(hash(authenticatedSources.get(source.path)), source.sha256, source.path);
     assert.ok(source.symbols.length > 0);
   }
   const [model, store, files] = [
-    readFileSync(join(repo, originalSources[0].path), "utf8"),
-    readFileSync(join(repo, originalSources[1].path), "utf8"),
-    readFileSync(join(repo, originalSources[2].path), "utf8"),
+    authenticatedSources.get(originalSources[0].path).toString("utf8"),
+    authenticatedSources.get(originalSources[1].path).toString("utf8"),
+    authenticatedSources.get(originalSources[2].path).toString("utf8"),
   ];
   assert.ok(capturedDeclarations[0].includes("moveRecipeToTrash"));
   assert.ok(model.includes(capturedDeclarations[0]));
@@ -328,6 +350,21 @@ test("trash captures remain tied to exact original model, stores, command histor
     ["ProjectStore.moveRecipeToTrash", "ProjectStore.restoreRecipeFromTrash", "ProjectStore.mutate"],
     ["RecipeFilesystemStore.moveToTrash", "RecipeFilesystemStore.restoreFromTrash", "RecipeFilesystemStore.replaceFromState"],
   ]);
+});
+
+test("Recipe trash original authentication rejects generation, role, path and archive substitution", async t => {
+  const path = originalSources[0].path;
+  assert.throws(() => readTrashOriginal(path, { sha256: "0".repeat(64) }),
+    /path\/role\/digest binding/);
+  assert.throws(() => readTrashOriginal(path, { kind: "captured" }), /path\/role\/digest binding/);
+  assert.throws(() => readTrashOriginal("src/workflows/unknown.ts"), /path\/role\/digest binding/);
+  const root = resolve(import.meta.dirname, `.recipe-trash-authentication-${randomUUID()}`);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, "migration/evidence"), { recursive: true });
+  const bytes = Buffer.from(await readFile(join(packageRoot, originalArchive)));
+  bytes[bytes.length - 1] ^= 1;
+  await writeFile(join(root, originalArchive), bytes);
+  await assert.rejects(readTrashOriginal(path, { root }), error => error.evidenceReason === "archive-hash-changed");
 });
 
 test("legacy Recipe command history remains ordered and capped at the original 256 receipts", async t => {

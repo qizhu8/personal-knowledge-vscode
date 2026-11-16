@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
@@ -7,7 +7,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
-const require = createRequire(import.meta.url), project = path.resolve(new URL("../legacy", import.meta.url).pathname);
+const require = createRequire(import.meta.url), project = path.resolve(new URL("..", import.meta.url).pathname);
+const directories = [];
+after(() => { for (const directory of directories) fs.rmSync(directory, { recursive: true, force: true }); });
 const digest = file => createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check) {
@@ -15,9 +17,10 @@ async function until(check) {
   throw new Error("Original client did not recover its actual history/identity.");
 }
 test("malformed saved Collaboration selections report blocked and cannot silently retry the legacy writer", async t => {
-  for (const saved of ["{", "null"]) await t.test(saved, async () => {
+  for (const saved of ["{", "null"]) await t.test(saved, async t => {
     const directory = path.join(project, ".migration-test-work", `collaboration-selection-${randomUUID()}`);
-    fs.mkdirSync(directory, { mode: 0o700 });
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    directories.push(directory);
     const source = path.join(directory, "source");
     fs.mkdirSync(source, { mode: 0o700 });
     let commands = new Map(), savedKey;
@@ -36,7 +39,7 @@ test("malformed saved Collaboration selections report blocked and cannot silentl
     const mock = path.join(directory, "vscode.cjs");
     fs.writeFileSync(mock, `module.exports=globalThis[${JSON.stringify(symbol)}];`);
     const output = path.join(directory, "activation.cjs");
-    require("esbuild").buildSync({ stdin: { contents: 'export {registerNextCollaboration} from "./src/chatroom/next-collaboration-activation";',
+    require("esbuild").buildSync({ stdin: { contents: 'export {registerNextCollaboration} from "./legacy/src/chatroom/next-collaboration-activation";',
       resolveDir: project }, bundle: true, platform: "node", format: "cjs", packages: "external",
       alias: { vscode: mock }, outfile: output, logLevel: "silent" });
     try {
@@ -61,22 +64,24 @@ test("malformed saved Collaboration selections report blocked and cannot silentl
 });
 test("configured original profile recovers a real old Room/Meeting/Note into one persistent Collaboration owner", async t => {
   const directory = path.join(project, ".migration-test-work", `collaboration-upgrade-${randomUUID()}`);
-  fs.mkdirSync(directory, { mode: 0o700 });
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  directories.push(directory);
   fs.writeFileSync(path.join(directory, "package.json"), '{"type":"module"}');
-  fs.symlinkSync(path.join(project, "../node_modules"), path.join(directory, "node_modules"), "dir");
+  fs.symlinkSync(path.join(project, "legacy/node_modules"), path.join(directory, "node_modules"), "dir");
   const build = (file, contents) => require("esbuild").buildSync({ stdin: { contents, resolveDir: project },
     bundle: true, platform: "node", format: file.endsWith(".cjs") ? "cjs" : "esm", packages: "external",
     outfile: path.join(directory, file), logLevel: "silent" });
-  build("next-collaboration-child.js", 'import "./next-server/src/next-collaboration-child";');
-  build("storage-worker.js", 'import "./next-server/src/storage-worker";');
-  build("legacy-chatroom-retained.cjs", `export {ChatHub} from "./src/chatroom/chatroom-hub";
-    export {ChatJoinApprovalManager} from "./src/chatroom/chat-join-approval";
-    export {MeetingStateStore} from "./src/chatroom/meeting-state"; export {WebSocketServer} from "ws";`);
-  build("client.cjs", 'export {NextCollaborationClient} from "./src/chatroom/next-collaboration-client";');
-  build("project.cjs", 'export {ProjectStore} from "./src/workflows/project-store";');
-  build("inspect.mjs", `export {inspectLegacyChatroomArchive} from "./next-server/src/legacy-chatroom-continuation";
-    export {resolveRoomOwner} from "./next-server/src/next-room-owner-directory";`);
-  const archive = path.join(project, "personal-knowledge-4.0.22.vsix");
+  build("next-collaboration-child.js", 'import "./src/next-collaboration-child";');
+  build("storage-worker.js", 'import "./src/storage-worker";');
+  build("legacy-chatroom-retained.cjs", `export {ChatHub} from "./legacy/src/chatroom/chatroom-hub";
+    export {ChatJoinApprovalManager} from "./legacy/src/chatroom/chat-join-approval";
+    export {MeetingStateStore} from "./legacy/src/chatroom/meeting-state"; export {WebSocketServer} from "ws";`);
+  build("client.cjs", 'export {NextCollaborationClient} from "./legacy/src/chatroom/next-collaboration-client";');
+  build("project.cjs", 'export {ProjectStore} from "./legacy/src/workflows/project-store";');
+  build("inspect.mjs", `export {inspectLegacyChatroomArchive} from "./src/legacy-chatroom-continuation";
+    export {resolveRoomOwner} from "./src/next-room-owner-directory";`);
+  const archive = process.env.PKM_LEGACY_VSIX || path.join(project, "legacy/personal-knowledge-4.0.22.vsix");
+  assert(fs.existsSync(archive), "Set PKM_LEGACY_VSIX to the authorized original 4.0.22 VSIX (SHA-256 1804071cb3b9fc86edc5933d5001db6ea1a8d7a9adf30d6d2b3166fcd6048f27).");
   assert.equal(digest(archive), "1804071cb3b9fc86edc5933d5001db6ea1a8d7a9adf30d6d2b3166fcd6048f27");
   const extension = path.join(directory, "original");
   for (const file of ["chat-persistence.js", "chat-persistence-worker.js", "chatroom/chat-persistence.js",

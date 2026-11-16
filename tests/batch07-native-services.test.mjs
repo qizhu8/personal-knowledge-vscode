@@ -204,7 +204,8 @@ test("real native host Action dispatcher schedules an authenticated child postco
   };
   const restored = await f.runtime.services.hostServices.restore(backupPath, destination);
   assert.equal(restored.workspaceId, f.workspaceId);
-  assert.equal(f.restorePin.calls, 2);
+  assert.equal(f.restorePin.calls, process.platform === "linux" ? 4 : 3,
+    "Restore reauthorizes before staging, after validation, before publication and after Linux fence marker binding");
   assert.ok((await readFile(resolve(destination, "core.sqlite"))).length);
   const reopened = await Storage.open(destination);
   try { assert.equal(await reopened.workspaceId(), f.workspaceId); } finally { await reopened.close(); }
@@ -259,8 +260,13 @@ test("real active Action child blocks backup, public cancellation drains it with
   });
   assert.equal(cancelled.status, 200, JSON.stringify(cancelled));
   const terminal = await until(() => f.rpc("capability_read", "action.runtime.get", { runId: args.runId }).then(value => value.body.result),
-    value => value && value.state === "cancelled");
+    value => value && value.state === "unknown");
   assert.equal(terminal.nodes[0].state, "unknown");
+  const events = (await f.rpc("capability_read", "action.runtime.events", {
+    runId: args.runId, after: 0, limit: 100,
+  })).body.result.items;
+  assert.ok(events.some(event => event.kind === "cancel-requested"));
+  assert.equal(events.some(event => event.kind === "run-succeeded"), false);
   await until(() => {
     const db = f.storage.connectNative();
     try { return db.prepare("SELECT count(*) n FROM runtime_process_jobs WHERE state='RUNNING'").get().n === 0; }
@@ -482,7 +488,7 @@ test("trusted-workspace proposal admission is exact, revocable and still require
   }
   finally { db.close(); }
   const externallyRevoked = await until(() => status(activeRun.runId), run => ["unknown", "cancelled"].includes(run.state));
-  assert.equal(externallyRevoked.state, "cancelled");
+  assert.equal(externallyRevoked.state, "unknown");
   assert.equal(externallyRevoked.nodes[0].state, "unknown");
   const afterFence = storage.connectNative();
   try {

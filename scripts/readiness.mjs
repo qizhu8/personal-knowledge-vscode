@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { readFile, readdir, lstat, realpath } from "node:fs/promises";
-import { dirname, resolve, relative, isAbsolute } from "node:path";
+import { dirname, resolve, relative, isAbsolute, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { captureStatus, implementationDigest } from "./migration.mjs";
@@ -474,9 +474,9 @@ async function operatorInputs(evidenceFile, authorityFile) {
     for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
     trustText = Buffer.concat(chunks).toString("utf8");
   } else {
-    const [file, repo] = await Promise.all([realpath(resolve(authorityFile)), realpath(repository)]);
+    const [file, repo] = await Promise.all([realpath(resolve(authorityFile)), realpath(root)]);
     const path = relative(repo, file);
-    if (path === "" || (!isAbsolute(path) && path !== ".." && !path.startsWith("../"))) {
+    if (path === "" || (!isAbsolute(path) && path !== ".." && !path.startsWith(`..${sep}`))) {
       throw new Error("Trusted authority registry must be outside the repository (including symlink targets), or supplied on operator stdin.");
     }
     trustText = await readFile(file, "utf8");

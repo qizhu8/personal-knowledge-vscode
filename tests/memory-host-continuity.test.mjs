@@ -15,7 +15,7 @@ import { nativeRestoreAuthority } from "./host-composition-legacy-batch16-restor
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = resolve(process.env.PKM_NEXT_SERVER_DIST ?? join(root, "dist"));
 const require = createRequire(import.meta.url);
-const { MemoryMigrationAuthority } = require(join(root, "../dist/runtime/memory-migration-authority.js"));
+const { MemoryMigrationAuthority } = require("../legacy/dist/runtime/memory-migration-authority.js");
 const sha = value => createHash("sha256").update(value).digest("hex");
 const python = realpathSync(execFileSync("python3", ["-I", "-c", "import sys; print(sys.executable)"], { encoding: "utf8" }).trim());
 const sources = [{ id: "s", chat: "c", revision: "r", locator: "l" }];

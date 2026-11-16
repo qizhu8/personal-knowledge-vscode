@@ -15,19 +15,28 @@ import { nativeRestoreAuthority } from "./host-composition-legacy-batch16-restor
 import { createNativeRuntime } from "../dist/native-runtime.js";
 import { legacyKnowledgeWrite } from "../dist/legacy-knowledge-write.js";
 import { LegacyMcpPythonWorker } from "../dist/legacy-mcp-python-worker.js";
+import { readOriginalSource } from "../scripts/migration.mjs";
 
-const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "..");
+const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "legacy");
 const hash = value => createHash("sha256").update(value).digest("hex");
 const id = "knowledge_000000000000000000000001";
 const note = `---\nschema: pkm.knowledge/v1\nknowledgeId: ${id}\nrevision: 3\ntitle: Index Evidence\ntags: [reliable]\ncreated: "2001-02-03"\n---\nExact search Evidence and lexical receipts.\n`;
-const originalSnapshotSource = await readFile(join(repository, "src/retrieval/retrieval-snapshot.ts"), "utf8");
+async function originalEvidence(path, provenance, field = "files") {
+  const metadata = JSON.parse(await readFile(join(root, "migration", provenance), "utf8"));
+  const pin = metadata[field].find(row => (row.source ?? row.path) === path);
+  assert.ok(pin, `Missing original retrieval source pin: ${path}`);
+  return (await readOriginalSource(path, {
+    sha256: pin.sourceSha256 ?? pin.sha256, dataset: "linux-candidate-originals",
+  })).toString("utf8");
+}
+const originalSnapshotSource = await originalEvidence("src/retrieval/retrieval-snapshot.ts", "links-provenance.json");
 const snapshotAst = ts.createSourceFile("snapshot.ts", originalSnapshotSource, ts.ScriptTarget.Latest, true);
 const noImports = snapshotAst.statements.filter(node => !ts.isImportDeclaration(node)).map(node => node.getText(snapshotAst)).join("\n");
 const oracleSnapshot = await import(`data:text/javascript;base64,${Buffer.from(
   `import {createHash} from "node:crypto";import {compileKnowledgeLinksV1} from ${JSON.stringify(pathToFileURL(join(root, "dist/domain/knowledge-contracts.js")).href)};\n`
   + ts.transpileModule(noImports, { compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 } }).outputText).toString("base64")}`);
 const extensionSource = ts.createSourceFile("extension.ts",
-  await readFile(join(repository, "src/extension.ts"), "utf8"), ts.ScriptTarget.Latest, true);
+  await originalEvidence("src/extension.ts", "legacy-state-import-provenance.json", "originalSources"), ts.ScriptTarget.Latest, true);
 const originalSourceAdmission = extensionSource.statements.find(node =>
   ts.isFunctionDeclaration(node) && node.name?.text === "currentRetrievalSnapshot");
 assert(originalSourceAdmission);
@@ -91,7 +100,7 @@ test("retrieval captures are exact and real pinned worker get/search match an in
   oracleSnapshot.createRetrievalSnapshot, nodePath);
   assert.notEqual(original.corpus_revision, projected.corpus_revision);
   assert.deepEqual(before.snapshot, { ...projected, documents: projected.documents.map(oracleSnapshot.indexedRetrievalDocument) });
-  const workerSource = await readFile(join(repository, "resources/retrieval_worker.py"), "utf8");
+  const workerSource = await originalEvidence("resources/retrieval_worker.py", "retrieval-runtime-provenance.json", "sourceEvidence");
   const oracleCode = `
 import ast,json,sys,math,re,time,threading
 from pathlib import Path
@@ -272,6 +281,73 @@ test("owned original persistent worker reports its actual PID, source generation
   await worker.close();
   await assert.rejects(call("retrieval_status"), /exited|write after end/);
   assert.throws(() => process.kill(first.pid, 0), /ESRCH/);
+});
+
+test("persistent worker shutdown closes admission, drains actual work and leaves the peer worker alive", { timeout: 30_000 }, async t => {
+  const f = await fixture(t);
+  const script = join(f.parent, "owned-worker.py"), gate = join(f.parent, "release");
+  await writeFile(script, `
+import json, os, sys, time
+for line in sys.stdin:
+    request = json.loads(line)
+    if request.get("gate"):
+        with open(request["gate"] + ".started", "w") as started:
+            started.write("running")
+        while not os.path.exists(request["gate"]):
+            time.sleep(0.01)
+    print(json.dumps({"result": {"pid": os.getpid()}}), flush=True)
+`);
+  const worker = new LegacyMcpPythonWorker(script), peer = new LegacyMcpPythonWorker(script);
+  try {
+    const ownPid = (await worker.execute({})).pid, peerPid = (await peer.execute({})).pid;
+    assert.notEqual(ownPid, peerPid);
+    const running = worker.execute({ gate });
+    for (let count = 0; ; count++) {
+      try { await readFile(`${gate}.started`); break; }
+      catch (error) {
+        if (error.code !== "ENOENT" || count >= 500) throw error;
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    }
+    let closed = false;
+    const closing = worker.close().then(() => { closed = true; });
+    await assert.rejects(worker.execute({}), /closing/);
+    assert.equal(closed, false);
+    process.kill(ownPid, 0);
+    assert.equal((await peer.execute({})).pid, peerPid);
+    await writeFile(gate, "release");
+    assert.equal((await running).pid, ownPid);
+    await closing;
+    assert.throws(() => process.kill(ownPid, 0), /ESRCH/);
+    assert.equal((await peer.execute({})).pid, peerPid);
+    await peer.close();
+    assert.throws(() => process.kill(peerPid, 0), /ESRCH/);
+  } finally {
+    await writeFile(gate, "release");
+    await Promise.all([worker.close(), peer.close()]);
+  }
+});
+
+for (const failure of ["exit", "protocol"]) test(`persistent worker ${failure} failure cannot become a successful close`, async t => {
+  const f = await fixture(t), script = join(f.parent, "failed-worker.py");
+  await writeFile(script, `
+import json, os, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if request.get("fail"):
+        if request["fail"] == "exit":
+            os._exit(7)
+        print("not-json", flush=True)
+    else:
+        print(json.dumps({"result": {"pid": os.getpid()}}), flush=True)
+`);
+  const worker = new LegacyMcpPythonWorker(script);
+  t.after(() => worker.close().catch(() => {}));
+  const { pid } = await worker.execute({});
+  await assert.rejects(worker.execute({ fail: failure }), /exited|response is invalid/);
+  await assert.rejects(worker.close(), /shutdown is unconfirmed|response is invalid/);
+  assert.throws(() => process.kill(pid, 0), /ESRCH/);
+  await assert.rejects(worker.close(), /shutdown is unconfirmed|response is invalid/);
 });
 
 test("configured model sources fail explicitly before worker execution, never silently download or fall back", async t => {

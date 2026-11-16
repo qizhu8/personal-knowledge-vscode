@@ -11,7 +11,7 @@ import { test } from "node:test";
 
 const require = createRequire(import.meta.url), ts = require("typescript");
 process.umask(0o077);
-const project = resolve("..");
+const project = resolve(import.meta.dirname, "../legacy");
 const dist = process.env.PKM_TEST_DIST ?? resolve("dist");
 const legacy = process.env.PKM_TEST_LEGACY_CHAT_EXTENSION ?? project;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));

@@ -19,7 +19,7 @@ test("original built-in Reflection keeps global input collisions and performs ac
     const evidence = require("../legacy/tests/next-trial-electron/legacy-reflection-gate-fixture.cjs").create({
       extension: original, root: prepared.originalRoot, fixture: prepared.fixture,
     });
-    const oracle = spawnSync("python3", ["-B", "tests/next-trial-electron/legacy-reflection-gate-oracle.py",
+    const oracle = spawnSync("python3", ["-B", join(import.meta.dirname, "../legacy/tests/next-trial-electron/legacy-reflection-gate-oracle.py"),
       original, prepared.fixture], { encoding: "utf8", timeout: 30000 });
     assert.equal(oracle.status, 0, oracle.stderr + oracle.stdout);
     const old = JSON.parse(oracle.stdout);

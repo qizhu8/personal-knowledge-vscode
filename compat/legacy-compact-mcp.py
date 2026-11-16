@@ -11,12 +11,20 @@ from fastmcp import Client, FastMCP
 from fastmcp.client.transports import StdioTransport
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PACKAGE_ROOT.parent / "resources"))
+PUBLIC_NAME = "pkm-v5"
+sys.path.insert(0, str(PACKAGE_ROOT / "legacy" / "resources"))
 import capability_api
 from todo_api import register_todo_api_tools
-from mcp_call_guard import ManagedMcpLifecycle, McpDiagnosticsMiddleware, run_managed_stdio
+from mcp_call_guard import McpDiagnosticsMiddleware
 from diagnostic_log import DiagnosticLog
 import importlib.util
+
+lifecycle_spec = importlib.util.spec_from_file_location(
+    "active_managed_mcp_lifecycle", Path(__file__).with_name("managed_mcp_lifecycle.py"))
+lifecycle_module = importlib.util.module_from_spec(lifecycle_spec)
+lifecycle_spec.loader.exec_module(lifecycle_module)
+ManagedMcpLifecycle = lifecycle_module.ManagedMcpLifecycle
+run_managed_stdio = lifecycle_module.run_managed_stdio
 
 knowledge_spec = importlib.util.spec_from_file_location(
     "legacy_knowledge_mcp", Path(__file__).with_name("legacy-knowledge-mcp.py"))
@@ -102,9 +110,11 @@ async def main():
     ] + ([] if options.allow_writes else ["--read-only"])
     + (["--experimental-managed-snapshot-scheduler", scheduler] if scheduler is not None else [])
     + (["--allow-asset-classification"] if options.allow_asset_classification else []),
-        env={"ELECTRON_RUN_AS_NODE": "1"} if os.environ.get("ELECTRON_RUN_AS_NODE") == "1" else None)
+        env={**({"ELECTRON_RUN_AS_NODE": "1"} if os.environ.get("ELECTRON_RUN_AS_NODE") == "1" else {}),
+             **({"PKM_ACTION_SOURCE_IDENTITY": os.environ["PKM_ACTION_SOURCE_IDENTITY"]}
+                if "PKM_ACTION_SOURCE_IDENTITY" in os.environ else {})} or None)
     async with Client(transport) as backend:
-        mcp = FastMCP("pkm-legacy-compat-experiment")
+        mcp = FastMCP(PUBLIC_NAME)
         if options.diagnostics_directory is not None:
             log = DiagnosticLog(options.diagnostics_directory)
             log.record("runtime.started", component="unified-mcp", parentPid=os.getppid())
@@ -157,7 +167,7 @@ async def main():
             @mcp.tool(annotations={"readOnlyHint": True})
             def check_version() -> dict:
                 """Report this isolated experimental generation, not production MCP compatibility."""
-                return {"name": "pkm-legacy-compat-experiment", "version": "0.1.0",
+                return {"name": PUBLIC_NAME, "version": "0.1.0",
                         "components": lifecycle.manifest["components"],
                         "enabled_feature_domains": [], "capabilities": ["managed-lifecycle-v1"],
                         "experimental": True, "runtime": lifecycle.status()}

@@ -495,7 +495,7 @@ test("exact original historical learner genesis preserves salt/user authority wi
       assert name in {"settings","models","calls","query_judgments"}
       db.execute("DELETE FROM "+name)
       if rows:db.executemany("INSERT INTO "+name+" VALUES ("+",".join("?" for _ in rows[0])+")",rows)
-    `.replace(/^ {4}/gm, ""), originalState], { cwd: resolve(root, ".."), input: JSON.stringify(state), encoding: "utf8",
+    `.replace(/^ {4}/gm, ""), originalState], { cwd: resolve(root, "legacy"), input: JSON.stringify(state), encoding: "utf8",
         env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1", TMPDIR: f.parent } });
       if (predecessor) execFileSync("python3", ["-c", `
 import sqlite3,sys

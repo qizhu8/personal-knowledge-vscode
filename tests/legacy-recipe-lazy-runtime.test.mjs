@@ -44,7 +44,7 @@ function projection(response) {
 
 test("original real compiler/worker and Next durable executor match controlled lazy start/get/next receipts, side-effecting get and owned-child cancellation over real MCP + HTTP", { skip, timeout: 90000 }, async t => {
   const { prepared, evidence } = fixture();
-  const oracle = spawnSync("python3", ["-B", "tests/next-trial-electron/legacy-lazy-contract-oracle.py",
+  const oracle = spawnSync("python3", ["-B", path.resolve(import.meta.dirname, "../legacy/tests/next-trial-electron/legacy-lazy-contract-oracle.py"),
     process.env.PKM_TEST_LEGACY_RECIPE_EXTENSION, prepared.fixture], { encoding: "utf8", timeout: 45000 });
   assert.equal(oracle.status, 0, oracle.stderr + oracle.stdout);
   const old = JSON.parse(oracle.stdout).trace, before = capture(prepared.originalRoot);

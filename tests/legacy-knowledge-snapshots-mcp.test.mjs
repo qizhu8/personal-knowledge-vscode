@@ -13,7 +13,7 @@ import { createWorkspaceBackup, restoreWorkspaceBackup } from "../dist/workspace
 import { nativeRestoreAuthority } from "./host-composition-legacy-batch16-restore-fixture.mjs";
 import { legacyManagedFixture, closeLegacyManagedFixture } from "./legacy-managed-fixture.mjs";
 
-const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "..");
+const root = resolve(import.meta.dirname, ".."), repository = resolve(root, "legacy");
 const tools = ["knowledge_snapshot_status", "knowledge_snapshot_create",
   "knowledge_snapshot_restore_preview", "knowledge_snapshot_restore_apply"];
 const source = await readFile(join(repository, "resources/knowledge_snapshots.py"), "utf8");

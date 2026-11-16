@@ -1,0 +1,186 @@
+{
+  "schema": "pkm.original-authentication-archive/v1",
+  "qualification": "Exact historical SOURCE authentication only for the isolated Linux candidate's bounded Skill routing, Portal lifecycle, Memory context and Subscription bundle tests. Not production, Windows or current-native qualification. Existing source/capture/native pins and manifests are unchanged; current captured/native comparisons remain exact and can still fail. No historical native implementation or test is substituted for current bytes. Git was read-only provisioning only, inspecting at most 40 commits per requested path; ordinary validation reads only repository-contained evidence with the existing generic ZIP reader. The historical Subscription bundle producer is authenticated from actual original script bytes, separately from current native equality.",
+  "archive": "migration/evidence/context-authentication-originals.zip",
+  "archiveSha256": "814693241e47577674ca0b3b862c8d8048a643124372ebc400d9b3841ba0dbaa",
+  "memberNamespace": "context-authentication-original/source/",
+  "changedFiles": [
+    "tests/skill-routing.test.mjs",
+    "tests/portal-lifecycle.test.mjs",
+    "tests/memory-context.test.mjs",
+    "tests/subscription-bundle.test.mjs",
+    "tests/context-original-source-captures.mjs",
+    "migration/evidence/context-authentication-originals.zip",
+    "migration/evidence/context-authentication-originals.json"
+  ],
+  "libraryReuse": {
+    "helper": "tests/context-original-source-captures.mjs",
+    "export": "readContextOriginal",
+    "call": "await readContextOriginal('src/knowledge/storage.ts', { sha256: 'a1a6be3f373ce0d89f8ecbe7b51d30e7c773621fd0bccfc234a0b6ce6c27b55d' })",
+    "result": "Promise<Buffer> of authenticated exact original TypeScript bytes, not original release JavaScript or current native qualification. Library test remains parent-owned and untouched."
+  },
+  "validation": {
+    "command": "node --test tests/skill-routing.test.mjs tests/portal-lifecycle.test.mjs tests/memory-context.test.mjs tests/subscription-bundle.test.mjs",
+    "baseline": { "cases": 44, "passed": 40, "failed": 4 },
+    "after": { "cases": 49, "passed": 46, "failed": 3, "skipped": 0 },
+    "sourceAndAuthenticationNegatives": {
+      "namePattern": "authenticates the exact historical|authenticates historical sources|repeatable source captures|Context original bindings|Context archive authentication",
+      "cases": 6,
+      "passed": 6,
+      "failed": 0,
+      "skipped": 0
+    },
+    "additionalChecks": [
+      "All five changed test/helper modules pass node --check; scoped git diff --check passes.",
+      "Whole archive SHA256 and all six unique, exact SOURCE-only member names and digests pass.",
+      "Unknown path, incorrect role, incorrect requested source or producer digest, missing archive, tampered whole archive and cross-source member bytes fail closed.",
+      "Protected source trees, provenance manifests, Portal captures and existing capture scripts retain their before hashes."
+    ],
+    "remainingFailures": [
+      {
+        "test": "tests/memory-context.test.mjs: provenance hashes still require exact current captured and migrated bytes",
+        "mismatches": [
+          {
+            "path": "tests/memory-context-original.test.mjs",
+            "expectedSha256": "8a19b59c6ea362f4b47b5dbdb4d449552f3f1222f6af7be3f419205a35c7a5de",
+            "actualSha256": "21c78ea08af3fc7f00981aa6a077f871d881d175d23c8c87422bb894affd66bb"
+          },
+          {
+            "path": "tests/memory-context.test.mjs",
+            "expectedSha256": "60101fe8f582be2d8da152b4f7b334342ebe6753331a7bd142ad8ea36978f7d6",
+            "actualSha256": "2b675ef57e5494bfc3eb7264c008b2b7f5102568de20661b867f8d4611cb70a8"
+          },
+          {
+            "path": "scripts/capture-memory-context.mjs",
+            "expectedSha256": "14f21d96aa6601f030276438f44f748fa3bc638698f58eba9f31e47aa44dfa5e",
+            "actualSha256": "3970b5c4df9e00fe594033bb1afb808b91e7ad8ed64703637d4b9631ed62f89d"
+          }
+        ]
+      },
+      {
+        "test": "tests/portal-lifecycle.test.mjs: original Portal request oracle maps only the exact captured operation vocabulary",
+        "mismatches": [
+          {
+            "path": "src/collaboration-state.ts",
+            "expectedSha256": "22d11c7e86214b4d5b2a3c021a4154f540b1a74253c5f16373d39ef9f8c1e16f",
+            "actualSha256": "38eb59fd4d5e1bca365a0ea2f99c96b995bb1562634e14115415594a0c88b9b7"
+          }
+        ]
+      },
+      {
+        "test": "tests/subscription-bundle.test.mjs: capture and native SHA comparisons remain exact and have no secret fixtures",
+        "mismatches": [
+          {
+            "path": "tests/subscription-bundle.test.mjs",
+            "expectedSha256": "06cb4b55b177ba562e682e5e4df7d96f3343233fc140516c76c8f47eb8baa095",
+            "actualSha256": "7af46284a4402bb012782f8389235050bebc1251b620ccc20eba75431b413d03"
+          },
+          {
+            "path": "scripts/capture-subscription-bundle.mjs",
+            "expectedSha256": "b5f14b79cb85abd2a8605b560b880f2f94afd64eacfb3f8c7badd80e1cb65b06",
+            "actualSha256": "0f4fe4c22fc195500e59aacefcbff2c3a84ce7606f6d36a6e2c44c2edafdec80"
+          }
+        ]
+      }
+    ],
+    "scope": "Small direct isolated checks only. No build, full CI, install, system/default-profile changes, real keys/profile data, network or nested agents. Ordinary test validation requires no Git or session files. Parent owns all current-native requalification and integrated acceptance."
+  },
+  "protectedBeforeAfter": {
+    "treeAlgorithm": "SHA256 of lexicographically sorted regular-file rows: relative POSIX path + NUL + file SHA256 hex + LF. Paths include the tree name.",
+    "src": {
+      "files": 523,
+      "beforeSha256": "58179f148ee72da5aabe0e7485abbbb447077c65f58455da824a0ffa22e8b964",
+      "afterSha256": "58179f148ee72da5aabe0e7485abbbb447077c65f58455da824a0ffa22e8b964"
+    },
+    "legacy": {
+      "files": 26314,
+      "beforeSha256": "9602fccd45dcded48707fe3bb8671681a26e1af404cf5c65b5fca345cfe79c2d",
+      "afterSha256": "9602fccd45dcded48707fe3bb8671681a26e1af404cf5c65b5fca345cfe79c2d"
+    },
+    "unchangedProvenanceSha256": {
+      "migration/skill-routing-provenance.json": "7c4259d2ec69fbd7c6592373218c874781663d72bdedd9082b384118386c546b",
+      "migration/portal-lifecycle-provenance.json": "6199b51ed176e27c6cbea4bc6498a976d68d53a5f42d275762963349fe11cf61",
+      "migration/memory-context-provenance.json": "6b571cb915f0980d0d38b19f75e352934f180822e1a8e71a9c077fe09a2e7ca2",
+      "migration/subscription-bundle-provenance.json": "7cf4ee6d92d8c6e7321d74b7804862c446575dabd8839e2d112f1a9800252f52"
+    },
+    "unchangedCaptureSha256": {
+      "domain/portal-lifecycle-original-api-chat-control.py": "eb29ecb34b8378a3f6c8a58cd2af53171241bc7af6847daa1aa9049eca6af0da",
+      "domain/portal-lifecycle-original-peer-session.ts": "f63f93a01da9950b76c0288c2ce499389be59b0d22c779bf91e4bb5548c611cf",
+      "domain/portal-lifecycle-original-meeting-state.ts": "777ea01d26cd721e61b8cb6599b640086d5bb10e80e3f8753732c83983f9201a",
+      "domain/portal-lifecycle-original-chat-meeting-lifecycle.ts": "fa9f4506dcc167cbba00ae4b1ef4886455781676fbeda51f73786458e60d09f8"
+    },
+    "unchangedCaptureScriptSha256": {
+      "scripts/capture-skill-routing.mjs": "1a2d3a2c02f804770e99d2dfdbaa54c587ce1fd34d968699641778d2a5812fc0",
+      "scripts/capture-memory-context.mjs": "3970b5c4df9e00fe594033bb1afb808b91e7ad8ed64703637d4b9631ed62f89d",
+      "scripts/capture-subscription-bundle.mjs": "0f4fe4c22fc195500e59aacefcbff2c3a84ce7606f6d36a6e2c44c2edafdec80"
+    }
+  },
+  "members": [
+    {
+      "kind": "source",
+      "path": "scripts/capture-subscription-bundle.mjs",
+      "sha256": "b5f14b79cb85abd2a8605b560b880f2f94afd64eacfb3f8c7badd80e1cb65b06",
+      "member": "context-authentication-original/source/scripts/capture-subscription-bundle.mjs",
+      "protectedRecord": "migration/subscription-bundle-provenance.json native[file=scripts/capture-subscription-bundle.mjs]",
+      "provisioning": {
+        "revision": "6d60456f8c6ae5d6787fa3bc11a93fc7c2a53043",
+        "path": "next-server/scripts/capture-subscription-bundle.mjs"
+      }
+    },
+    {
+      "kind": "source",
+      "path": "src/chat/api-chat-view.ts",
+      "sha256": "71ddd872aaf2e1fdf1a70616ebc4d50f03e4552152a6670b0e44cfcfdc2397e6",
+      "member": "context-authentication-original/source/src/chat/api-chat-view.ts",
+      "protectedRecord": "migration/memory-context-provenance.json files[source=src/chat/api-chat-view.ts]",
+      "provisioning": {
+        "revision": "8d2966ca511b3873cd729cf72aa18e7a1e09b9c8",
+        "path": "src/chat/api-chat-view.ts"
+      }
+    },
+    {
+      "kind": "source",
+      "path": "src/chatroom/chat-meeting-lifecycle.ts",
+      "sha256": "fa9f4506dcc167cbba00ae4b1ef4886455781676fbeda51f73786458e60d09f8",
+      "member": "context-authentication-original/source/src/chatroom/chat-meeting-lifecycle.ts",
+      "protectedRecord": "migration/portal-lifecycle-provenance.json captures[source=src/chatroom/chat-meeting-lifecycle.ts]",
+      "provisioning": {
+        "revision": "6e6660816443856cc5047b9be9058b14fdbb3d98",
+        "path": "src/chatroom/chat-meeting-lifecycle.ts"
+      }
+    },
+    {
+      "kind": "source",
+      "path": "src/chatroom/meeting-state.ts",
+      "sha256": "777ea01d26cd721e61b8cb6599b640086d5bb10e80e3f8753732c83983f9201a",
+      "member": "context-authentication-original/source/src/chatroom/meeting-state.ts",
+      "protectedRecord": "migration/portal-lifecycle-provenance.json captures[source=src/chatroom/meeting-state.ts]",
+      "provisioning": {
+        "revision": "6e6660816443856cc5047b9be9058b14fdbb3d98",
+        "path": "src/chatroom/meeting-state.ts"
+      }
+    },
+    {
+      "kind": "source",
+      "path": "src/knowledge/storage.ts",
+      "sha256": "a1a6be3f373ce0d89f8ecbe7b51d30e7c773621fd0bccfc234a0b6ce6c27b55d",
+      "member": "context-authentication-original/source/src/knowledge/storage.ts",
+      "protectedRecord": "migration/subscription-bundle-provenance.json sourceReferences[source=src/knowledge/storage.ts]",
+      "provisioning": {
+        "revision": "8e75060cc86df98cf196e4e96f49dda6d98a1c64",
+        "path": "src/knowledge/storage.ts"
+      }
+    },
+    {
+      "kind": "source",
+      "path": "src/mcp/mcp.ts",
+      "sha256": "2a5f623b20b71e3d3ce12283db1fbcb01fb5fa4b43ebbf29d2fd9a28a992f948",
+      "member": "context-authentication-original/source/src/mcp/mcp.ts",
+      "protectedRecord": "migration/skill-routing-provenance.json files[source=src/mcp/mcp.ts]",
+      "provisioning": {
+        "revision": "ec92febf240991770172f144fc0138b298491fb0",
+        "path": "src/mcp/mcp.ts"
+      }
+    }
+  ]
+}

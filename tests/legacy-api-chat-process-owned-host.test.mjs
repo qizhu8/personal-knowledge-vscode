@@ -118,7 +118,7 @@ setInterval(() => appendFileSync(${JSON.stringify(join(directory, "ticks"))}, "x
     const status = await ok({ method: "status" });
     try {
       await require("../legacy/tests/next-trial-electron/owned-process-ui.cjs").run({
-        project: resolve(".."), fixture: directory, source, workspace: root, host, actorId,
+        project: resolve(import.meta.dirname, "../legacy"), fixture: directory, source, workspace: root, host, actorId,
         sourceFingerprint: status.sourceFingerprint, workspaceId: status.workspaceId, ...identity,
       });
     } catch (error) {

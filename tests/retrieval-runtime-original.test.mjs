@@ -7,6 +7,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { retrievalOriginalFunctions, retrievalOriginalMethods } from "../dist/domain/retrieval-runtime-original.js";
 import { retrievalSections, retrievalRank } from "../dist/domain/retrieval-runtime.js";
+import { checkNativeRecords, readOriginalSource } from "../scripts/migration.mjs";
 
 test("captured original Python sectionizer and normalized dot scores equal migrated cosine/maxpool ranking", () => {
   const sources = [
@@ -70,22 +71,25 @@ print(json.dumps({"sections":sections,"scores":scores,"ranked":ranked,"unicodeSe
 
 test("provenance contains repeatable exact original archive/member and captured file hashes", async () => {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const originalRoot = resolve(root, "legacy");
   const provenance = JSON.parse(await readFile(resolve(root, "migration/retrieval-runtime-provenance.json"), "utf8"));
   const hash = value => createHash("sha256").update(value).digest("hex");
   for (const item of provenance.sourceEvidence) {
-    assert.equal(item.sourceRoot, resolve(root, ".."));
-    assert.equal(hash(await readFile(resolve(item.sourceRoot, item.source))), item.sourceSha256);
+    assert.equal(item.sourceRoot, provenance.files[0].sourceRoot);
+    assert.equal(hash(await readOriginalSource(item.source, {
+      sha256: item.sourceSha256, dataset: "runtime-retrieval-evidence-historical",
+    })), item.sourceSha256);
   }
   for (const item of provenance.files) {
-    assert.equal(item.sourceRoot, resolve(root, ".."));
-    assert.equal(item.capturedRoot, root);
-    assert.equal(hash(await readFile(resolve(root, item.captured))), item.capturedSha256);
-    assert.equal(hash(await readFile(resolve(root, "..", item.source.split("!/")[0]))), item.archiveSha256);
+    assert.equal(item.sourceRoot, provenance.sourceEvidence[0].sourceRoot);
+    assert.equal(item.capturedRoot, resolve(item.sourceRoot, "next-server"));
+    assert.deepEqual(await checkNativeRecords([{ file: item.captured, sha256: item.capturedSha256 }]), []);
+    assert.equal(hash(await readFile(resolve(originalRoot, item.source.split("!/")[0]))), item.archiveSha256);
   }
   const item = provenance.files[0];
   const member = spawnSync("python", ["-c",
     "import zipfile,sys;sys.stdout.buffer.write(zipfile.ZipFile(sys.argv[1]).read(sys.argv[2]))",
-    resolve(root, "..", item.source.split("!/")[0]), item.source.split("!/")[1]]);
+    resolve(originalRoot, item.source.split("!/")[0]), item.source.split("!/")[1]]);
   assert.equal(member.status, 0);
   assert.equal(hash(member.stdout), item.sourceSha256);
 });

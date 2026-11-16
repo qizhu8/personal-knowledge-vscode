@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync, readdirSync, lstatSync, writeFileSync, rmSync,
 import { resolve, join } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import { prepareLegacyRootAdoptionExperimental } from "../dist/legacy-root-adoption.js";
+import { stageRetainedChatRuntime } from "./legacy-api-chat-upgrade-fixtures.mjs";
 const require = createRequire(import.meta.url);
 const project = resolve(new URL("../legacy", import.meta.url).pathname);
 const fixture = require("../legacy/tests/next-trial-electron/api-chat-fixture.cjs");
@@ -24,8 +25,9 @@ function snapshot(root) {
 test("ordinary API Chat adopts its actual original root; real MCP/HTTP clients read segmented/PNG history, continue and recover real process failures", async t => {
   const directory = join(project, ".migration-test-work", `api-chat-upgrade-${randomUUID()}`);
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const result = await fixture.runUpgrade({ extension: project, root: join(directory, "knowledge"),
-    runtime: join(project, "../"), node: process.execPath });
+  const { extension, runtime } = stageRetainedChatRuntime(directory);
+  const result = await fixture.runUpgrade({ extension, root: join(directory, "knowledge"),
+    runtime, node: process.execPath });
   assert.equal(result.takeover, "EXPERIMENTAL_SAME_ROOT");
   assert.equal(result.nativeHttpContinuation, true);
   assert.equal(result.crashRecoveredWithoutDuplicateEffect, true);

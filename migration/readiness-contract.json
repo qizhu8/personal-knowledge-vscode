@@ -48,7 +48,7 @@
     "databaseSchema": 23,
     "memoryEngineSchema": 2,
     "operationVersion": 1,
-    "composedCanonicalOperationCount": 228,
+    "composedCanonicalOperationCount": 244,
     "batch13AddedPublicOperations": [
       {
         "id": "legacy.note.workitems.read",
@@ -212,8 +212,89 @@
         "id": "subscription.broker.share-markers",
         "version": 1,
         "readOnly": true
+      },
+      {
+        "id": "remote.runtime.readHistoricalBase",
+        "version": 1,
+        "readOnly": true
+      },
+      {
+        "id": "mcp.tool.recipe_run_start",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "mcp.tool.recipe_run_get",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "mcp.tool.recipe_run_next",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "mcp.tool.recipe_run_progress",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "mcp.tool.recipe_run_report",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "mcp.tool.recipe_run_submit_input",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "mcp.tool.recipe_search",
+        "version": 1,
+        "readOnly": true
+      },
+      {
+        "id": "mcp.tool.recipe_capabilities",
+        "version": 1,
+        "readOnly": true
+      },
+      {
+        "id": "recipe.compat.search",
+        "version": 1,
+        "readOnly": true
+      },
+      {
+        "id": "recipe.library.state",
+        "version": 1,
+        "readOnly": true
+      },
+      {
+        "id": "recipe.library.save",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "recipe.runtime.start",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "recipe.runtime.get",
+        "version": 1,
+        "readOnly": true
+      },
+      {
+        "id": "recipe.history.get",
+        "version": 1,
+        "readOnly": true
+      },
+      {
+        "id": "recipe.runtime.cancel",
+        "version": 1,
+        "readOnly": false
       }
     ],
+    "currentRegistryLimits": "Mapping current Recipe and historical remote-read operations adds exact signed parity obligations only. All remain unaccepted candidates; mapping grants no execution authority, independent qualification, workstream acceptance or cutover.",
     "batch21Limits": "This native-composed writer is explicitly mapped to the skills workstream only to require its own signed parity evidence; it remains an unaccepted candidate. Removal requires the native-owned disposable fixture, exact actor/workspace/package source and target bindings, owner/epoch and plan approvals, ordered source/projection history and durable anchors. It removes only an existing managed lineage; mixed source/projection history is denied. Unknown partial unlink, directory removal or post-commit anchor outcomes require exact native recovery and are never startup-applied. Unix no-follow bounded UTF-8 handling is covered only in bounded fixtures. Install and remove history remains separate from the older projection journal; unrelated storage/direct-native effects require composed authority. This does not qualify hostile external-writer exclusion, OS-level locking, production authority, power-loss durability, or cutover.",
     "batch22Limits": "This native-composed bridge is explicitly mapped to the skills workstream only to require its own signed parity evidence; it remains an unaccepted candidate. It bridges only a strictly pinned, already-installed old Skill-source head into sequence-one native source history, retaining the immutable legacy genesis and old receipts. Independent approveBridge, verifyBridge and reconcileBridgeAnchor callbacks are required outside SQLite transactions. A removed legacy head must first be reinstalled by the old writer; direct removed-genesis bridging and broader legacy/all-target qualification are unsupported. Recognized bundled leaves remain rejected; custom-source preservation is bounded to the exercised case. Existing source/projection snapshots and database schema are unchanged. This does not qualify hostile external-writer exclusion, OS-level locking, production authority, power-loss durability, workstream acceptance, or cutover.",
     "batch20Limits": "This native-composed writer is explicitly mapped to the skills workstream only to require its own signed parity evidence; it remains an unaccepted candidate. Exclusive native-owned disposable fixtures require independent exact actor/workspace/package source and target bindings, owner/epoch and plan approvals, source history and durable anchors. Actual original-writer Core HTTP/MCP install, coordinated backup and fresh atomic restore/adoption, old retry/new install, rebackup and rerestore are bounded fixture tests. Source and older projection journals cannot coexist; unrelated storage/direct-native effects require composed authority. This does not qualify a general installer, multiple targets, hostile external-writer exclusion, OS-level locking, production authority, power-loss durability or cutover.",
@@ -1328,7 +1409,22 @@
         "workflow.run.cancel",
         "workflow.executor.create",
         "workflow.executor.get",
-        "workflow.executor.cancel"
+        "workflow.executor.cancel",
+        "mcp.tool.recipe_run_start",
+        "mcp.tool.recipe_run_get",
+        "mcp.tool.recipe_run_next",
+        "mcp.tool.recipe_run_progress",
+        "mcp.tool.recipe_run_report",
+        "mcp.tool.recipe_run_submit_input",
+        "mcp.tool.recipe_search",
+        "mcp.tool.recipe_capabilities",
+        "recipe.compat.search",
+        "recipe.library.state",
+        "recipe.library.save",
+        "recipe.runtime.start",
+        "recipe.runtime.get",
+        "recipe.history.get",
+        "recipe.runtime.cancel"
       ],
       "scenarios": [
         "workflows.full-project-recipe-lifecycle",
@@ -1401,7 +1497,8 @@
         "remote.runtime.apply",
         "remote.runtime.publish",
         "remote.runtime.status",
-        "remote.runtime.reconcile"
+        "remote.runtime.reconcile",
+        "remote.runtime.readHistoricalBase"
       ],
       "scenarios": [
         "sync.actual-local-provider-publication",

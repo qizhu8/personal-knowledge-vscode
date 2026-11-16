@@ -86,9 +86,9 @@ export function createNativeLegacyNoteWorkItemsHost(storage: Storage, policy: Le
             if (error instanceof CoreError && ["CONFLICT", "ACCESS_DENIED", "STORAGE_ERROR", "STORAGE_UNAVAILABLE"].includes(error.code)) throw error;
             notes.push({ slug: note.slug, title: note.title, count: 0, error: error instanceof Error ? error.message : String(error) });
           }
-          if (notes.length > limit) return { ok: true, notes: notes.slice(0, limit), truncated: true };
+          if (notes.length > limit) return { ok: true, notes: notes.slice(0, limit), truncated: true, next_offset: limit };
         }
-        if (page.nextOffset === null) return { ok: true, notes, truncated: false };
+        if (page.nextOffset === null) return { ok: true, notes, truncated: false, next_offset: null };
         offset = page.nextOffset;
       }
     },

@@ -1,7 +1,9 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import ts from "typescript";
-import { packageRoot, hash } from "./migration.mjs";
+import { packageRoot, hash, readOriginalSource } from "./migration.mjs";
+
+const originalMetadata = JSON.parse(await readFile(resolve(packageRoot, "migration/document-lifecycle-provenance.json"), "utf8"));
 
 const args = process.argv.slice(2);
 if (args.length && (args.length !== 1 || args[0] !== "--check")) {
@@ -20,7 +22,10 @@ const sources = [
 ];
 const files = [];
 for (const [source, names] of sources) {
-  const raw = await readFile(resolve(packageRoot, "..", source), "utf8");
+  const raw = (await readOriginalSource(source, {
+    sha256: originalMetadata.files.find(record => record.source === source)?.sourceSha256,
+    dataset: "knowledge-document-lifecycle-historical",
+  })).toString("utf8");
   const ast = ts.createSourceFile(source, raw, ts.ScriptTarget.Latest, true);
   const declarations = Object.fromEntries(names.map(name => {
     const matches = ast.statements.filter(node => node.name?.getText(ast) === name);
