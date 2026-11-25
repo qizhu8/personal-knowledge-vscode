@@ -102,6 +102,30 @@ test("active client regressions are catalogued with helper capabilities and sour
   assert.notEqual(createCatalog(root).fingerprint, catalog.fingerprint);
 });
 
+test("measured lifecycle files retain explicit budgets without increasing neighboring defaults", t => {
+  const root = fixture(t), directory = path.join(root, "clients/vscode-host");
+  fs.mkdirSync(directory, { recursive: true });
+  const lifecycle = "clients/vscode-host/installed-native-private-resource-lifecycle-ui.test.mjs";
+  const budgeted = [lifecycle, "tests/managed-migration.test.mjs",
+    "tests/legacy-read-race.test.mjs", "tests/shared-managed-server.test.mjs"];
+  const neighbor = "clients/vscode-host/installed-native-private-resource-other-ui.test.mjs";
+  const managedNeighbor = "tests/managed-migration-other.test.mjs";
+  const distinctCode = "tests/shared-managed-server-distinct-code.test.mjs";
+  const distinctNeighbor = "tests/shared-managed-server-distinct-code-other.test.mjs";
+  for (const file of [...budgeted, neighbor, managedNeighbor, distinctCode, distinctNeighbor])
+    fs.writeFileSync(path.join(root, file), 'import test from "node:test"; test("UI", () => {});');
+  const catalog = createCatalog(root), ci = selectTests(catalog, { profile: "ci" });
+  for (const entries of [catalog.entries, ci.entries]) {
+    for (const file of budgeted)
+      assert.equal(entries.find(entry => entry.id === file).timeoutMs, 300000);
+    assert.equal(entries.find(entry => entry.id === distinctCode).timeoutMs, 600000);
+    assert.equal(entries.find(entry => entry.id === distinctNeighbor).timeoutMs, 120000);
+    assert.equal(entries.find(entry => entry.id === neighbor).timeoutMs, 120000);
+    assert.equal(entries.find(entry => entry.id === managedNeighbor).timeoutMs, 120000);
+    assert.equal(entries.find(entry => entry.id === "tests/test-core.js").timeoutMs, 120000);
+  }
+});
+
 test("host preparation follows transitive source dependencies through files and suites, not example text", t => {
   const root = fixture(t), directory = path.join(root, "clients/vscode-host");
   fs.mkdirSync(directory, { recursive: true });

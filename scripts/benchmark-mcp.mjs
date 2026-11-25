@@ -13,6 +13,8 @@ import os from "node:os";
 import { performance } from "node:perf_hooks";
 
 const script = fileURLToPath(import.meta.url);
+const baselineNewVsixSha256 = "c8486a6eac170d88b1dea0ac09433de1589424aca3bd5007f532780453a57df8";
+const factoryInputs = ["managed-migration.mjs", "managed-launch-client.mjs", "managed-launcher.py", "python-bootstrap.py", "python-dependencies.py"];
 const digest = value => createHash("sha256").update(value).digest("hex");
 const sleep = ms => new Promise(done => setTimeout(done, ms));
 const clock = () => performance.now();
@@ -98,6 +100,26 @@ export function equivalent(operation, value, fixture) {
     return { count: actual.length, logicalSha256: digest(JSON.stringify(actual)) };
   }
   throw new Error(`Unknown equivalence operation ${operation}`);
+}
+
+export function comparisonValue(operation, value, fixture, allowStableNoteTies = false, variant = "old") {
+  if (!allowStableNoteTies || operation !== "search_ten") return value;
+  assert(Array.isArray(value), "Expected the full search array");
+  const qualification = fixture.searchTenRankGroups;
+  assert.equal(qualification?.schema, "pkm.benchmark-exact-fts-rank-groups/v1", "Missing exact-rank qualification");
+  const rows = [];
+  let offset = 0;
+  for (const group of qualification.groups) {
+    const block = value.slice(offset, offset + group.slugs.length);
+    assert.deepEqual(block.map(row => row.slug).sort(), [...group.slugs].sort(),
+      "Search results crossed a rank boundary or changed membership");
+    const stable = [...block].sort((a, b) => Buffer.compare(Buffer.from(a.slug), Buffer.from(b.slug)));
+    if (variant === "new") assert.deepEqual(block, stable, "NEW equal-rank results must use stable path order");
+    rows.push(...stable);
+    offset += group.slugs.length;
+  }
+  assert.equal(offset, value.length, "Unqualified extra search rows");
+  return rows;
 }
 
 function command(command_, args, options = {}) {
@@ -352,7 +374,9 @@ async function runOne(options, context, cell, pair, order, variant) {
         const validation = name === "discovery" ? validateDiscovery(value) : equivalent(name, value, cell.fixture);
         const op = result.operations[name];
         op.samples.push({ iteration: i, ms, responseBytes: Buffer.byteLength(JSON.stringify(response)),
-          logicalBytes: Buffer.byteLength(JSON.stringify(value)), logicalSha256: logicalDigest(value), validation });
+          logicalBytes: Buffer.byteLength(JSON.stringify(value)), logicalSha256: logicalDigest(value),
+          comparisonSha256: logicalDigest(comparisonValue(name, value, cell.fixture, options.allowStableNoteTies, variant)),
+          validation });
         if (i === 0) op.firstResponse = response;
       } catch (e) {
         result.operations[name].samples.push({ iteration: i, error: String(e) });
@@ -417,7 +441,38 @@ function validateDiscovery(value) {
   return { operation: value.id, version: value.version };
 }
 
-async function prepare(options, report) {
+export function validateResourceAudit(accepted, { vsixSha256, factorySha256, dependencies }) {
+  const legacySchema = "pkm.no-tracking-independent-resource-acceptance/v1";
+  const currentSchema = "pkm.no-tracking-independent-resource-acceptance/v2";
+  assert(accepted && [legacySchema, currentSchema].includes(accepted.schema), "Unknown installed resource audit schema");
+  assert.equal(accepted.passed, true, "Installed resource audit must have passed");
+  for (const hash of [vsixSha256, factorySha256, ...Object.values(dependencies)])
+    assert(/^[a-f0-9]{64}$/.test(hash), "Invalid provisioning input SHA256");
+  assert.deepEqual(Object.keys(dependencies).sort(), [...factoryInputs].sort(), "Incomplete factory dependency inventory");
+  assert.equal(dependencies["managed-migration.mjs"], factorySha256, "Factory dependency digest disagrees");
+  assert.equal(accepted.vsixSha256, vsixSha256, "VSIX must match accepted installed resource gate");
+  assert.equal(accepted.factorySha256, factorySha256, "Factory must match accepted installed resource gate");
+  if (accepted.schema === currentSchema || vsixSha256 !== baselineNewVsixSha256) {
+    assert.equal(accepted.schema, currentSchema, "A new VSIX requires a v2 installed resource audit with factory dependency pins");
+    assert.deepEqual(accepted.factoryDependencies, dependencies, "Factory dependencies must match accepted installed resource gate");
+  }
+}
+
+async function loadResourceAudit(options, vsixSha256) {
+  const bytes = await fs.readFile(options.newResourceAudit);
+  const accepted = JSON.parse(bytes);
+  const factory = join(options.repository, "experimental/managed-migration.mjs");
+  const dependencies = {};
+  for (const name of factoryInputs)
+    dependencies[name] = digest(await fs.readFile(join(dirname(factory), name)));
+  const factorySha256 = dependencies["managed-migration.mjs"];
+  validateResourceAudit(accepted, { vsixSha256, factorySha256, dependencies });
+  return { path: factory, sha256: factorySha256, dependencies,
+    source: "Accepted generation factory, not shipped inside NEW VSIX; product runtime from the audit-bound immutable VSIX.",
+    acceptedEvidencePath: options.newResourceAudit, acceptedEvidenceSha256: digest(bytes), acceptedEvidenceSchema: accepted.schema };
+}
+
+async function prepare(options, report, factoryEvidence) {
   const before = clock();
   await extract(options.python, options.oldVsix, join(options.root, "old-package"));
   await extract(options.python, options.newVsix, join(options.root, "new-package"));
@@ -425,15 +480,8 @@ async function prepare(options, report) {
   const oldExtension = join(options.root, "old-package/extension");
   const runtime = join(options.root, "new-package/extension/next-runtime/server");
   const factory = join(options.repository, "experimental/managed-migration.mjs");
-  const accepted = JSON.parse(await fs.readFile(join(options.repository, "artifacts/pkm-v5-no-tracking-resource-audit.json")));
-  const factorySha256 = digest(await fs.readFile(factory));
-  assert.equal(factorySha256, accepted.factorySha256, "Factory must match accepted installed resource gate");
-  const factoryDependencies = {};
-  for (const name of ["managed-migration.mjs", "managed-launch-client.mjs", "managed-launcher.py", "python-bootstrap.py", "python-dependencies.py"])
-    factoryDependencies[name] = digest(await fs.readFile(join(dirname(factory), name)));
-  report.provisioning.factory = { path: factory, sha256: factorySha256, dependencies: factoryDependencies,
-    source: "Existing accepted generation factory; not shipped inside NEW VSIX. Product runtime from immutable VSIX.",
-    acceptedEvidenceSha256: digest(await fs.readFile(join(options.repository, "artifacts/pkm-v5-no-tracking-resource-audit.json"))) };
+  report.provisioning.factory = factoryEvidence;
+  report.provisioning.runtimeFacade = JSON.parse(await fs.readFile(join(runtime, "package.json"))).runtimeMcpFacade ?? "python-compat";
   const { stageIsolatedManagedGeneration, publishIsolatedManagedGeneration } = await import(pathToFileURL(factory));
   const { planLegacyImport, importLegacyWorkspace } = await import(pathToFileURL(join(runtime, "dist/legacy-import.js")));
   const cells = [];
@@ -441,7 +489,7 @@ async function prepare(options, report) {
     const source = join(options.root, `source-${size}`);
     await fs.mkdir(join(source, "notes"), { recursive: true, mode: 0o700 });
     await fs.chmod(source, 0o700);
-    const all = [], files = {};
+    const all = [], files = {}, lexicalRows = [];
     for (let n = 0; n < size; n++) {
       const slug = `Bench-${String(n).padStart(5, "0")}`, title = slug;
       const body = `Canonical benchmark note ${String(n).padStart(5, "0")}.\n${n === 0 ? "needleunique" : "ordinarytoken"} ${n < 10 ? "needlegroup" : "ordinarygroup"}.\n${"Fixed synthetic read-only text. ".repeat(20)}\n`;
@@ -450,11 +498,36 @@ async function prepare(options, report) {
       await fs.utimes(join(source, "notes", `${slug}.md`), new Date("2025-01-01T00:00:00Z"), new Date("2025-01-01T00:00:00Z"));
       files[`notes/${slug}.md`] = digest(text);
       all.push({ slug, title });
+      if (options.allowStableNoteTies) lexicalRows.push({ slug, title, content: body });
     }
     const firstRaw = await fs.readFile(join(source, "notes/Bench-00000.md"), "utf8");
     const fixture = { slug: "Bench-00000", title: "Bench-00000", stableIdentities: true,
       body: firstRaw.split("---\n").slice(2).join("---\n"),
       all, one: all.slice(0, 1), ten: all.slice(0, 10), files, digest: digest(JSON.stringify(files)) };
+    if (options.allowStableNoteTies) {
+      const input = JSON.stringify(lexicalRows);
+      fixture.searchTenRankGroups = JSON.parse(command(options.python, ["-I", "-B", "-c", `
+import hashlib,json,sqlite3,sys
+payload=sys.stdin.buffer.read();rows=json.loads(payload)
+connection=sqlite3.connect(":memory:")
+try:
+ connection.execute("CREATE VIRTUAL TABLE n USING fts5(slug,title,content,tokenize='trigram')")
+ for row in rows:
+  connection.execute("INSERT INTO n VALUES(?,?,?)",[row["slug"],row["title"],row["content"]])
+ groups=[]
+ for slug,rank in connection.execute("SELECT slug,rank FROM n WHERE n MATCH ? ORDER BY rank LIMIT ?",["needlegroup",20]):
+  key=rank.hex()
+  if not groups or groups[-1]["rankHex"]!=key:groups.append({"rankHex":key,"slugs":[]})
+  groups[-1]["slugs"].append(slug)
+ print(json.dumps({"schema":"pkm.benchmark-exact-fts-rank-groups/v1","query":"needlegroup",
+  "sqliteVersion":sqlite3.sqlite_version,"notesSha256":hashlib.sha256(payload).hexdigest(),"groups":groups}))
+finally:connection.close()
+`], { input }));
+      assert.equal(fixture.searchTenRankGroups.notesSha256, digest(input));
+      assert.deepEqual(fixture.searchTenRankGroups.groups.map(group => group.slugs), [
+        fixture.one.map(row => row.slug), fixture.ten.slice(1).map(row => row.slug),
+      ], "The approved fixture must have one higher-ranked result and nine exactly tied results");
+    }
     const data = join(options.root, `new-workspace-${size}`);
     const importStarted = clock();
     const plan = await planLegacyImport(source);
@@ -502,7 +575,7 @@ async function prepare(options, report) {
 
 async function main(args) {
   if (args.includes("--help")) {
-    console.log("node scripts/benchmark-mcp.mjs --old-vsix PATH --new-vsix PATH --repository PATH --root NEW_OWNED_DIRECTORY --output PATH [--pairs 6 --calls 30 --warmup 3 --idle-ms 3000 --sizes 100,1000 --stale-counts 0,1390] [--probe]");
+    console.log("node scripts/benchmark-mcp.mjs --old-vsix PATH --new-vsix PATH --repository PATH --root NEW_OWNED_DIRECTORY --output PATH [--new-resource-audit PATH] [--allow-stable-note-ties] [--pairs 6 --calls 30 --warmup 3 --idle-ms 3000 --sizes 100,1000 --stale-counts 0,1390] [--probe]");
     return;
   }
   const flags = Object.fromEntries(args.reduce((acc, v, i) => {
@@ -511,12 +584,18 @@ async function main(args) {
   }, []));
   const required = ["old-vsix", "new-vsix", "repository", "root", "output"];
   for (const k of required) assert(typeof flags[k] === "string", `--${k} required`);
+  assert(flags["new-resource-audit"] === undefined || typeof flags["new-resource-audit"] === "string", "--new-resource-audit requires a path");
+  assert(flags["allow-stable-note-ties"] === undefined || flags["allow-stable-note-ties"] === true,
+    "--allow-stable-note-ties is an explicit opt-in flag");
   const options = { oldVsix: resolve(flags["old-vsix"]), newVsix: resolve(flags["new-vsix"]),
     repository: resolve(flags.repository), root: resolve(flags.root), output: resolve(flags.output),
+    newResourceAudit: flags["new-resource-audit"] === undefined
+      ? resolve(flags.repository, "artifacts/pkm-v5-no-tracking-resource-audit.json") : resolve(flags["new-resource-audit"]),
     python: command("python3", ["-I", "-B", "-c", "import os,sys;print(os.path.realpath(sys.executable))"]).trim(),
     pairs: Number(flags.pairs ?? 6), calls: Number(flags.calls ?? 30), warmup: Number(flags.warmup ?? 3),
     idleMs: Number(flags["idle-ms"] ?? 3000), sizes: String(flags.sizes ?? "100,1000").split(",").map(Number),
-    staleCounts: String(flags["stale-counts"] ?? "0,1390").split(",").map(Number), probe: !!flags.probe };
+    staleCounts: String(flags["stale-counts"] ?? "0,1390").split(",").map(Number), probe: !!flags.probe,
+    allowStableNoteTies: flags["allow-stable-note-ties"] === true };
   assert(options.pairs >= 6 && options.calls >= 30 && options.warmup >= 3 && options.idleMs >= 3000,
     "At least 6 pairs, 30 calls, 3 warmups, 3 seconds idle required");
   assert(options.sizes.every(n => [100, 1000].includes(n)) && options.staleCounts.every(n => [0, 1390].includes(n)));
@@ -524,14 +603,16 @@ async function main(args) {
   assert(!await exists(options.output), "Refuse to replace an existing evidence file");
   const hashes = { old: digest(await fs.readFile(options.oldVsix)), new: digest(await fs.readFile(options.newVsix)) };
   assert.equal(hashes.old, "1804071cb3b9fc86edc5933d5001db6ea1a8d7a9adf30d6d2b3166fcd6048f27");
-  assert.equal(hashes.new, "c8486a6eac170d88b1dea0ac09433de1589424aca3bd5007f532780453a57df8");
+  if (flags["new-resource-audit"] === undefined) assert.equal(hashes.new, baselineNewVsixSha256,
+    "A different NEW VSIX requires --new-resource-audit with independently accepted installed evidence");
+  const factoryEvidence = await loadResourceAudit(options, hashes.new);
   if (!flags.inside) {
     assert(!await exists(options.root), "Owned root must not exist; refuse adoption");
     await fs.mkdir(options.root, { mode: 0o700 });
     for (const name of ["home", "scratch/runtime"]) await fs.mkdir(join(options.root, name), { recursive: true, mode: 0o700 });
     await write(join(options.root, ".benchmark-owned.json"), { schema: "pkm.mcp-performance-owned/v1", nonce: randomUUID() });
     command("unshare", ["-Urn", "true"]);
-    const absoluteArgs = args.map((value, i) => required.includes(args[i - 1]?.slice(2)) ? resolve(value) : value);
+    const absoluteArgs = args.map((value, i) => [...required, "new-resource-audit"].includes(args[i - 1]?.slice(2)) ? resolve(value) : value);
     const child = spawn("unshare", ["-Urn", process.execPath, script, ...absoluteArgs, "--inside"],
       { cwd: options.root, env: environment(options.root), stdio: "inherit" });
     const code = await new Promise((done, reject) => { child.once("error", reject); child.once("exit", done); });
@@ -543,15 +624,17 @@ async function main(args) {
     options, inputSha256Before: hashes, command: [process.execPath, script, ...args.filter(a => a !== "--inside")],
     harness: { path: script, sha256: digest(await fs.readFile(script)) },
     methodology: {
-      scope: "Actual OLD managed release generation and NEW accepted managed Python launcher plus actual packaged Core child; server-only. No VSCode/Electron/UI overhead.",
+      scope: "Actual OLD managed release generation and NEW audit-bound verified managed launcher plus actual packaged runtime; server-only. Runtime facade recorded from the immutable VSIX. No VSCode/Electron/UI overhead.",
       isolation: "unshare -Urn: private user/network namespaces, no network interfaces brought up. Owned synthetic HOME/XDG/root only. No hooks, strace or profiling.",
       setup: "Full VSIX extraction, genuine release generator, actual legacy import and accepted NEW immutable generation factory excluded from request timings and separately recorded.",
-      pythonContext: "Same real Python executable and installed fastmcp dependency versions. OLD supported generator points at an owned synthetic runtime/bin/python symlink to that executable (maintenance path stays owned), then actual OLD managed server uses ambient site-packages. NEW actual -I -S launcher pins/copies the installed fastmcp dependency closure and verifies it at startup; its existing Core worker resolves the same PATH python3. This release architecture difference is retained, not bypassed.",
+      pythonContext: "Same real Python executable and installed fastmcp dependency versions. OLD supported generator points at an owned synthetic runtime/bin/python symlink to that executable (maintenance path stays owned), then actual OLD managed server uses ambient site-packages. NEW stages/pins the installed Python dependency closure and verifies it at startup; Python execution is retained as shipped, including any on-demand compatibility workers. No release runtime boundary is bypassed.",
       cold: "Fresh process, warm shared OS page caches; client transport connect/spawn invocation through MCP initialize plus tools/list. Synthetic registry snapshots and transport/client object construction are preflightSetupMs, explicitly excluded. Three contract-discovery calls precede separately measured first logical read. Spawn-to-first-read includes that discovery gap.",
       warm: "Three successful warmups per operation before idle and timed calls. Thirty timed calls per op/run; interleaved ops. Gateway overhead included.",
       discovery: "Common logical capability discovery is capabilities_describe(mcp.tool.get_note,v1); catalogs differ, so tools/list bytes are not asserted equivalent.",
       discoveryQualification: "Described operation identity/version/input schema/read-only classification must match, but authorization/result text and catalog revision differ. Discovery timing is descriptive, not an equal-full-output speedup claim.",
-      equivalence: "Every timed read: exact title/slug/body for get; entire matching row slug/title set for list (limit=0, total and terminal next_offset, all stable identities); exact one/ten expected search hits, legacy lexical route limit20. Additionally every old/new logical payload must have the identical full canonical JSON digest across the cell.",
+      equivalence: "Every timed read: exact title/slug/body for get; entire matching row slug/title set for list (limit=0, total and terminal next_offset, all stable identities); exact one/ten expected search hits, legacy lexical route limit20. " + (options.allowStableNoteTies
+        ? "Explicitly approved Note tie policy: independently recreate the original trigram FTS query from the same full bodies before timing; permit reordering only within its exact-float equal-rank groups for search_ten and require NEW path order. Compare all fields; retain raw ordered logical digests separately. Other outputs require identical full canonical JSON."
+        : "Additionally every old/new logical payload must have the identical full canonical JSON digest across the cell."),
       wireOutput: "Native release serialization retained, not padded or rewritten. OLD get_note duplicates content in text+structuredContent, NEW returns text only; decoded logical output must be identical. Search JSON whitespace differs; discovery authorization/result text and catalog revision intentionally differ. Record transport response bytes and logical bytes separately; no output-volume reduction presented as a like-for-like latency win.",
       quantiles: "Nearest rank: sorted[ceil(q*n)-1]. Run medians/p95 and paired new/old ratios retained. Six pairs are the independent repeats, not 180 pooled requests.",
       resources: "Uninstrumented server processes observed from /proc every 250ms. Full descendant tree identified by PID+startticks; RSS sum double-counts shared pages; PSS when readable. Sampled peaks are NOT kernel peaks. CPU/IO endpoint deltas exclude short-lived children absent at endpoints; no RUSAGE whole-tree claim.",
@@ -567,7 +650,7 @@ async function main(args) {
     provisioning: { datasets: [] }, runs: [], summaries: [], failures: [] };
   systemPageSize = report.host.pageSize;
   try {
-    const { cells, runtime } = await prepare(options, report);
+    const { cells, runtime } = await prepare(options, report, factoryEvidence);
     report.cells = cells.map(({ fixture, ...cell }) => ({ ...cell, fixtureDigest: fixture.digest }));
     await write(options.output, report);
     const sdk = suffix => import(pathToFileURL(join(runtime, `node_modules/@modelcontextprotocol/sdk/dist/esm/${suffix}.js`)));
@@ -590,8 +673,13 @@ async function main(args) {
       for (const operation of Object.keys(runs[0].operations)) {
         if (operation === "discovery") continue;
         const samples = runs.flatMap(r => r.operations[operation].samples);
-        assert.equal(new Set(samples.map(s => s.logicalSha256)).size, 1, `${operation}: OLD/NEW full logical payload differs`);
-        equivalenceChecks[operation] = { calls: samples.length, fullLogicalSha256: samples[0].logicalSha256,
+        assert.equal(new Set(samples.map(s => s.comparisonSha256)).size, 1, `${operation}: OLD/NEW qualified full logical payload differs`);
+        const rawDigests = [...new Set(samples.map(s => s.logicalSha256))];
+        equivalenceChecks[operation] = { calls: samples.length,
+          fullLogicalSha256: rawDigests.length === 1 ? rawDigests[0] : null,
+          comparisonSha256: samples[0].comparisonSha256,
+          approvedEqualRankReordering: options.allowStableNoteTies && operation === "search_ten",
+          rawOrderedLogicalSha256: rawDigests,
           oldWireBytes: [...new Set(runs.filter(r => r.variant === "old").flatMap(r => r.operations[operation].samples.map(s => s.responseBytes)))],
           newWireBytes: [...new Set(runs.filter(r => r.variant === "new").flatMap(r => r.operations[operation].samples.map(s => s.responseBytes)))] };
       }
@@ -636,6 +724,9 @@ async function main(args) {
       factoryAfter[name] = digest(await fs.readFile(join(options.repository, "experimental", name)));
     assert.deepEqual(factoryAfter, report.provisioning.factory.dependencies);
     report.provisioning.factory.dependenciesAfter = factoryAfter;
+    const evidenceAfter = digest(await fs.readFile(options.newResourceAudit));
+    assert.equal(evidenceAfter, report.provisioning.factory.acceptedEvidenceSha256, "Installed resource audit changed during measurement");
+    report.provisioning.factory.acceptedEvidenceSha256After = evidenceAfter;
     assert.equal(digest(await fs.readFile(script)), report.harness.sha256, "Harness changed during measurement");
     report.passed = !options.probe;
     report.probeOnly = options.probe;

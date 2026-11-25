@@ -128,8 +128,18 @@ async function start(f, extra) {
   return host;
 }
 
+async function readPrivateWorkerNote(client) {
+  const result = await client.callTool({ name: "legacy_knowledge_read",
+    arguments: { tool: "get_note", arguments: { slug: "Worker" } } });
+  assert.notEqual(result.isError, true, JSON.stringify(result));
+  assert.equal(result.structuredContent?.value?.content, "Actual private worker Note.\n");
+}
+
 test("real MCP owner children close before shared Storage without stopping a peer attachment", { timeout: 60_000 }, async t => {
-  const f = await fixture(t), host = await start(f), owner = host.ownerResourceContext();
+  const f = await fixture(t);
+  await writeFile(join(f.workspace, "notes", "Worker.md"), "---\ndocumentId: worker\ntitle: Worker\n---\nActual private worker Note.\n",
+    { mode: 0o600 });
+  const host = await start(f), owner = host.ownerResourceContext();
   const children = [], failures = [], originalSpawn = childProcess.spawn;
   childProcess.spawn = (...args) => {
     const child = originalSpawn(...args);
@@ -149,6 +159,7 @@ test("real MCP owner children close before shared Storage without stopping a pee
     });
     await client.connect(clientTransport);
     assert.notEqual((await client.callTool({ name: "list_notes", arguments: {} })).isError, true);
+    await readPrivateWorkerNote(client);
     return { client, attachment };
   };
   const first = await attach("first-owner-connection"), second = await attach("peer-owner-connection");
@@ -161,6 +172,7 @@ test("real MCP owner children close before shared Storage without stopping a pee
   owner.storage.assertWorkspaceLease();
   process.kill(peerPid, 0);
   assert.notEqual((await second.client.callTool({ name: "list_notes", arguments: {} })).isError, true);
+  await readPrivateWorkerNote(second.client);
   await host.close();
   assert.throws(() => process.kill(peerPid, 0), /ESRCH/);
   assert.throws(() => owner.storage.assertWorkspaceLease());
@@ -168,7 +180,10 @@ test("real MCP owner children close before shared Storage without stopping a pee
 });
 
 test("MCP server close reports abnormal termination of its actual private worker", { timeout: 60_000 }, async t => {
-  const f = await fixture(t), host = await start(f), owner = host.ownerResourceContext();
+  const f = await fixture(t);
+  await writeFile(join(f.workspace, "notes", "Worker.md"), "---\ndocumentId: worker\ntitle: Worker\n---\nActual private worker Note.\n",
+    { mode: 0o600 });
+  const host = await start(f), owner = host.ownerResourceContext();
   const children = [], originalSpawn = childProcess.spawn;
   childProcess.spawn = (...args) => {
     const child = originalSpawn(...args);
@@ -183,6 +198,7 @@ test("MCP server close reports abnormal termination of its actual private worker
   });
   const client = new Client({ name: "failed-owned-worker", version: "1.0.0" });
   await client.connect(clientTransport);
+  await readPrivateWorkerNote(client);
   assert.equal(children.length, 1);
   const worker = children[0], pid = worker.pid;
   const exited = new Promise(resolve => worker.once("close", resolve));
@@ -195,7 +211,17 @@ test("MCP server close reports abnormal termination of its actual private worker
   await host.close();
 });
 
+async function createTurnSession(host, input) {
+  input.sessionId = randomUUID();
+  input.expectedSessionRevision = 1;
+  const created = await host.core.dispatch("capability_call", invoke("chat.session.create", {
+    id: input.sessionId, title: "Standalone Chat", operationId: randomUUID(), expectedRevision: 0,
+  }), actor);
+  assert.equal(created.result.id, input.sessionId);
+}
+
 async function turn(host, input) {
+  await createTurnSession(host, input);
   const started = await host.core.dispatch("capability_call", invoke("chat.turn.start", input), actor);
   assert.equal(started.result.id, input.id);
   return eventually(
@@ -397,6 +423,7 @@ test("standalone configured host uses only a local SSE provider, human approval 
     messages: [{ role: "user", content: "Cancel this provider response." }],
     deadlineMs: 10000,
   });
+  await createTurnSession(host, cancelInput);
   const started = await host.core.dispatch("capability_call", invoke("chat.turn.start", cancelInput), actor);
   assert.equal(started.result.id, cancelInput.id);
   const inFlight = await eventually(

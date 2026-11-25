@@ -342,9 +342,10 @@ export async function startLegacyApiChatUiHost(options: LegacyApiChatRuntimeOpti
     close(): Promise<void> {
       return closing ??= (async () => {
         admitting = false;
+        managed?.closeAdmission();
         options.processApprovalUi?.close();
-        await managed?.close();
         await options.processes?.close();
+        await managed?.close();
         await runtime.drain();
         await new Promise<void>((resolve, reject) => {
           server.close(error => error ? reject(error) : resolve());

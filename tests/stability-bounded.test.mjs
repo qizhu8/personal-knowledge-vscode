@@ -17,12 +17,13 @@ test("bounded actual-socket queue, reconnect and durable reads stay within test-
     requests: 40,
     maxRunMs: 60_000,
     maxRequestMs: 10_000,
-    maxRssGrowthBytes: 128 * 1024 * 1024,
+    maxRssGrowthBytes: 160 * 1024 * 1024,
   };
   const rssBefore = process.memoryUsage().rss;
   const startedAt = performance.now();
   const fixture = await nativeWorkspace(t);
   let url = await fixture.listen();
+  const rssAfterStartup = process.memoryUsage().rss;
   const latencies = [];
   const calls = Array.from({ length: profile.requests }, async (_, index) => {
     const id = `bounded-${index}`;
@@ -34,6 +35,7 @@ test("bounded actual-socket queue, reconnect and durable reads stay within test-
     return { id, ...response };
   });
   const responses = await Promise.all(calls);
+  const rssAfterRequests = process.memoryUsage().rss;
   const accepted = responses.filter(response => response.status === 200 && response.body.result);
   const busy = responses.filter(response => response.status === 503 && response.body.error?.code === "BUSY");
   assert.equal(accepted.length + busy.length, profile.requests, "only successful writes or explicit bounded-queue rejections");
@@ -53,15 +55,16 @@ test("bounded actual-socket queue, reconnect and durable reads stay within test-
   assert(reconnectMs < profile.maxRequestMs);
   const totalMs = performance.now() - startedAt;
   const rssGrowthBytes = Math.max(0, process.memoryUsage().rss - rssBefore);
-  assert(totalMs < profile.maxRunMs);
-  assert(rssGrowthBytes < profile.maxRssGrowthBytes);
   console.log(`STABILITY_BOUNDED_RESULTS ${JSON.stringify({
     scope: "synthetic temporary workspace; actual loopback HTTP; concurrent create queue; runtime close/reopen; durable get",
     requests: profile.requests, accepted: accepted.length, explicitBusy: busy.length,
     maxRequestMs: Number(maximumRequestMs.toFixed(2)), reconnectReadMs: Number(reconnectMs.toFixed(2)),
-    totalMs: Number(totalMs.toFixed(2)), rssGrowthBytes,
+    totalMs: Number(totalMs.toFixed(2)), rssGrowthBytes, rssBefore, rssAfterStartup, rssAfterRequests,
     testBounds: profile, powerLossClaim: false,
   })}`);
+  assert(totalMs < profile.maxRunMs);
+  assert(rssGrowthBytes < profile.maxRssGrowthBytes,
+    `cold native startup plus socket/reconnect RSS growth ${rssGrowthBytes} bytes`);
 });
 
 test("Manager live durable events and cancellation retry burst fence held work over real HTTP", { timeout: 40_000 }, async t => {

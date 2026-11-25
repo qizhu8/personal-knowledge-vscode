@@ -19,6 +19,12 @@ import {
 } from "./legacy-note-workitems.js";
 import { legacyNoteWorkItemsDefinitions } from "./legacy-note-workitems-contracts.js";
 import { todoDefinitions } from "./todo-definitions.js";
+import { readOriginalMcpJournal } from "./original-mcp-root-custody.js";
+import { assertOriginalMcpDomainSession } from "./original-mcp-domains.js";
+import { originalMcpTodoSession, readOriginalMcpDomain, originalMcpDomainHash } from "./original-mcp-domain-state.js";
+import { readOriginalMcpNativeTodoSourceScope, type OriginalMcpNativeTodoSourceScope } from "./original-mcp-native-source-policy.js";
+import type { OriginalMcpNativeHost } from "./original-mcp-native-host.js";
+import { readOriginalMcpTodoGenesisSource } from "./original-mcp-todo-genesis-native.js";
 
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 const admissionDigest = /^[a-f0-9]{64}$/;
@@ -310,6 +316,20 @@ export function createNativeLegacyNoteWorkItemsComposition(
   invokeCoreTodo: (operation: string, args: Record<string, unknown>, actor: Actor) => Promise<Record<string, unknown>>,
 ) {
   const root = storage.workspaceRoot();
+  const signedSources = new Map<string, { host: OriginalMcpNativeHost; scope: OriginalMcpNativeTodoSourceScope }>();
+  const signedGenesis = new Map<string, OriginalMcpNativeHost>();
+  const assertSignedSource = (slug: string) => {
+    const genesis = signedGenesis.get(slug);
+    if (genesis && readOriginalMcpTodoGenesisSource(storage, genesis, slug)) return;
+    const selected = signedSources.get(slug);
+    if (!selected) throw new CoreError("NATIVE_AUTHORITY_REQUIRED", "Original Note bridge requires its exact signed Todo source.");
+    const source = readOriginalMcpNativeTodoSourceScope(selected.scope, storage, selected.host);
+    assertOriginalMcpDomainSession(storage, selected.host, "todo");
+    const session = originalMcpTodoSession(root);
+    if (source.approval.decisionId !== session.decisionId || source.approval.actorId !== session.actorId
+      || !source.request.files.some(item => item.key === slug))
+      throw new CoreError("NATIVE_AUTHORITY_REQUIRED", "Original Note bridge source epoch changed.");
+  };
   const readPinnedAuthority = (slug: string) => {
     const historical = readNativeBoardGenesis(root, slug, database);
     const markdown = historical?.markdown ?? readVerified(checkedDocumentPath(root, `${slug}.md`, false, "notes"));
@@ -407,6 +427,7 @@ export function createNativeLegacyNoteWorkItemsComposition(
     if (!policy || !actor?.id) return false;
     try {
       if (policy.authorize(Object.freeze({ ...actor }), operation) !== true) return false;
+      if (readOriginalMcpJournal(root)) assertSignedSource(slug);
       const source = database.prepare("SELECT actor_id FROM legacy_note_workitems_canonical_source WHERE slug=?").get(slug);
       if (source && source.actor_id !== actor.id) return false;
       if (operation === "legacy.note.workitems.read" || operation === "legacy.note.workitems.notes") return true;
@@ -473,6 +494,46 @@ export function createNativeLegacyNoteWorkItemsComposition(
   }
 
   return {
+    admitOriginalMcpTodoGenesisSource(host: OriginalMcpNativeHost, slug: string) {
+      if (!readOriginalMcpTodoGenesisSource(storage, host, slug) || !rowFor(slug))
+        throw new CoreError("NATIVE_AUTHORITY_REQUIRED", "Todo genesis bridge needs the actual current source and journal admission.");
+      boardFor(slug);
+      signedGenesis.set(slug, host);
+    },
+    async admitOriginalMcpTodoSources(host: OriginalMcpNativeHost, scope: OriginalMcpNativeTodoSourceScope) {
+      const source = readOriginalMcpNativeTodoSourceScope(scope, storage, host);
+      assertOriginalMcpDomainSession(storage, host, "todo");
+      const state = readOriginalMcpDomain(root, "todo", database), session = originalMcpTodoSession(root);
+      if (!state?.committed || source.request.sourceSha256 !== state.intent.sourceSha256
+        || source.approval.decisionId !== session.decisionId || source.approval.actorId !== session.actorId
+        || source.request.nativeHostReceiptSha256 !== session.nativeHostReceiptSha256
+        || originalMcpDomainHash(source.request.files) !== originalMcpDomainHash(state.intent.files))
+        throw new CoreError("NATIVE_AUTHORITY_REQUIRED", "Exact committed Todo source selection is required.");
+      const selected = source.request.files.map(file => {
+        const original = readPinnedAuthority(file.key);
+        if (hash(original.markdown) !== file.noteSha256 || hash(original.sourceBoard) !== file.sha256)
+          throw new CoreError("CONFLICT", "Selected original Note/pair changed after signed review.");
+        if (!scanBoards(root, database).has(file.key))
+          throw new CoreError("NOT_AVAILABLE", "Selected canonical Todo Board is unavailable.");
+        return file;
+      });
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        for (const file of selected) {
+          const existing = rowFor(file.key);
+          if (existing && (existing.source_markdown_sha256 !== file.noteSha256
+            || existing.source_board_sha256 !== file.sha256 || existing.native_board_sha256 !== file.sha256))
+            throw new CoreError("CONFLICT", "Signed Todo source cannot replace another Note admission.");
+          if (!existing) database.prepare(`INSERT INTO legacy_note_workitems_admission
+            (slug,source_markdown_sha256,source_board_sha256,native_board_sha256,admitted_at)
+            VALUES(?,?,?,?,?)`).run(file.key, file.noteSha256!, file.sha256, file.sha256, new Date().toISOString());
+        }
+        readOriginalMcpNativeTodoSourceScope(scope, storage, host);
+        assertOriginalMcpDomainSession(storage, host, "todo");
+        database.exec("COMMIT");
+      } catch (error) { database.exec("ROLLBACK"); throw error; }
+      for (const file of selected) signedSources.set(file.key, { host, scope });
+    },
     available(operation: string, actor?: Readonly<Actor>): boolean {
       const definition = legacyNoteWorkItemsDefinitions.find(item => item.id === operation);
       if (!definition || !actor?.id || !policy) return false;

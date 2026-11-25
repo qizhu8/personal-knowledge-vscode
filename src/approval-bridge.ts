@@ -241,7 +241,9 @@ export function createApprovalBridge(options: ApprovalBridgeOptions) {
     reviewing.set(key, task);
     try { return await task; } finally { reviewing.delete(key); }
   }
+  const dispatches = new Set<Promise<unknown>>();
   const nativePort = Object.freeze({
+    activity: () => dispatches.size,
     create(actor: string, input: {
       tool: string; arguments: Record<string, unknown>; approvalRequired: boolean; operationId: string; context: ApprovalBridgeContext;
     }): ExecutionRecord {
@@ -322,11 +324,11 @@ export function createApprovalBridge(options: ApprovalBridgeOptions) {
         });
         read(() => undefined);
         if (interrupted) throw new Error("Execution cancelled before host dispatch.");
-        const observed = await Promise.race([
-          options.dispatch!(Object.freeze({ workspaceId, actorId: actor, operationId: parsed.operationId,
-            execution: approvalBridgeFreeze(structuredClone(running)), approval: proof, signal: controller.signal })),
-          cancelled,
-        ]);
+        const dispatching = options.dispatch!(Object.freeze({ workspaceId, actorId: actor, operationId: parsed.operationId,
+          execution: approvalBridgeFreeze(structuredClone(running)), approval: proof, signal: controller.signal }));
+        dispatches.add(dispatching);
+        void dispatching.then(() => dispatches.delete(dispatching), () => dispatches.delete(dispatching));
+        const observed = await Promise.race([dispatching, cancelled]);
         if (interrupted || controller.signal.aborted) throw new Error("Native execution interrupted.");
         const result = hostSchema.parse(observed);
         const encoded = result.result === undefined ? null : approvalBridgeJSON(result.result);

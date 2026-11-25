@@ -5,6 +5,7 @@ import { planSync, syncPlanHash } from "./sync-plan.js";
 import { readSyncApplyReceipt, serializeSyncApplyPlan } from "./sync-apply.js";
 import { syncApplyPlanSchema, syncApplyReceiptSchema } from "./sync-apply-contracts.js";
 import { syncPlanInputSchema, syncPlanSessionSchema, type SyncManifest } from "./sync-plan-contracts.js";
+import type { SyncContentAuthority } from "./sync-content.js";
 import {
   syncTransportPinSchema, syncTransportPublicationSchema,
   type SyncTransportPin, type SyncTransportPublication,
@@ -18,11 +19,11 @@ export type SyncTransportStagingAuthority = {
   }): void;
 };
 
-/** Bridge for the existing Markdown/attachment apply journal; other domains require native staged receipts. */
+/** Bridge for the existing byte apply journal; privileged typed sources still require current native custody. */
 export function syncTransportApplyStaging(db: DatabaseSync, store: SyncPlanStore, request: {
   sessionId: string; actorId: string; input: unknown;
-}): SyncTransportStagingAuthority {
-  const plan = serializeSyncApplyPlan(store, request);
+}, authority: { root?: string; contentAuthority?: SyncContentAuthority } = {}): SyncTransportStagingAuthority {
+  const plan = serializeSyncApplyPlan(store, request, authority, authority.root);
   return {
     verifyStaged(expected) {
       if (expected.actorId !== plan.actorId || expected.sessionHash !== plan.sessionHash

@@ -54,7 +54,8 @@ function validateInitialBootstrap(before, after) {
   }
   for (const area of areas) {
     const trash = `${area}/.trash`;
-    assert(after[trash]?.kind === "directory", `Native bootstrap did not provision ${trash}`);
+    if (after[trash]) assert.equal(after[trash].kind, "directory",
+      `Optional native bootstrap trash path must be a directory: ${trash}`);
     assert(!Object.keys(after).some(name => name.startsWith(`${trash}/`)),
       "The known bootstrap may create only EMPTY Trash directories");
   }
@@ -184,8 +185,21 @@ async function ownedMcpChildren(selected) {
     }
   };
   await inspect(process.pid);
-  assert(found.some(child => child.args.includes(join(selected.managedRoot, "launch.py"))),
-    "The native server must be an actual owned child using this exact verified launcher");
+  const generation = join(selected.managedRoot, "generations", selected.generation);
+  const manifest = JSON.parse(await readFile(join(generation, "manifest.json"), "utf8"));
+  const runtimePackage = JSON.parse(await readFile(join(generation, "runtime/next-server/package.json"), "utf8"));
+  assert([undefined, "native-v1"].includes(runtimePackage.runtimeMcpFacade), "Unknown packaged MCP facade");
+  if (runtimePackage.runtimeMcpFacade === "native-v1" && process.env.PKM_CAPABILITY_PROFILE !== "legacy") {
+    assert(found.some(child => child.args[0] === manifest.interpreters.node.path
+      && child.args.includes(join(generation, "runtime/next-server/dist/cli.js"))
+      && child.args.includes("--experimental-legacy-mcp")
+      && child.args.includes("--native-public-mcp")
+      && child.args[child.args.indexOf("--managed-generation") + 1] === generation),
+    "The native server must be the actual verified generation's Node CLI after the launcher's exec");
+  } else {
+    assert(found.some(child => child.args.includes(join(selected.managedRoot, "launch.py"))),
+      "The compatibility server must be an actual owned child using this exact verified launcher");
+  }
   return found;
 }
 
@@ -408,7 +422,78 @@ async function verifySideBySide(fixture, extension, progress) {
   assert.equal((await waitForJson(join(fixture.root, "ui-passed.json"))).passed, true);
 }
 
-async function run() {
+async function verifyNativeIdentity(fixture, extension, progress, previous, options = {}) {
+  await progress({ stage: previous ? "native-identity-reopening" : "native-identity-enroll" });
+  const result = await vscode.commands.executeCommand("pkm.nextHost.enrollNativeIdentity");
+  assert.equal(result.businessActivation, false);
+  const text = await readFile(result.path, "utf8");
+  assert(!text.includes("PRIVATE KEY"), "Only public identity data may be written outside SecretStorage");
+  const { verifyOriginalMcpNativeIdentity } = await import(pathToFileURL(
+    join(fixture.installed, "next-runtime/server/dist/original-mcp-native-identity.js")).href);
+  verifyOriginalMcpNativeIdentity(JSON.parse(text), result.sha256, result.profileSha256);
+  assert.equal((await stat(result.path)).mode & 0o077, 0);
+  assert.equal((await stat(require("node:path").dirname(result.path))).mode & 0o077, 0);
+  if (!previous) {
+    await writeFile(join(fixture.root, "native-identity-first.json"), JSON.stringify({
+      result, publicRecord: text, extensionHostPid: process.pid,
+    }));
+    await waitForJson(join(fixture.root, "native-attachment-bootstrap-ready.json"));
+    await progress({ stage: "native-identity-reloading" });
+    void Promise.resolve(vscode.commands.executeCommand("workbench.action.reloadWindow")).catch(async error => {
+      if (error?.name === "Canceled" || error?.name === "CancellationError") {
+        await writeFile(join(fixture.root, "native-reload-transport-canceled.json"),
+          JSON.stringify({ expectedTransportCancellation: true, successRequiresNewNativeHost: true }));
+      } else {
+        await progress({ stage: "failed", error: String(error) });
+      }
+    });
+    await new Promise(() => {});
+  }
+  assert.notEqual(process.pid, previous.extensionHostPid, "The identity must be recovered by a different native extension host");
+  assert.deepEqual(result, previous.result);
+  assert.equal(text, previous.publicRecord, "Reload must recover the existing SecretStorage key, not rotate its identity");
+  await progress({ stage: "native-attachment-confirm" });
+  assert.deepEqual(await vscode.commands.executeCommand("pkm.nextHost.attachNativeProducer"),
+    { authenticated: true, businessReady: false });
+  if (fixture.nativeModels) {
+    await waitForJson(join(fixture.root, "native-model-enable-requested.json"), 120000);
+    assert.deepEqual(await vscode.commands.executeCommand("pkm.nextHost.enableNativeModels"),
+      { nativeModelChannel: true, businessReady: false });
+    if (fixture.nativeModelTokenPersistence) {
+      assert.equal(typeof options.nativeModelCounterFlush, "function", "The owned provider counter-flush handler is required.");
+      const request = await waitForJson(join(fixture.root, "native-model-counter-flush-request.json"), 120000);
+      await options.nativeModelCounterFlush(request);
+    }
+    await waitForJson(join(fixture.root, "native-action-enable-requested.json"), 120000);
+    assert.deepEqual(await vscode.commands.executeCommand("pkm.nextHost.enableNativeActions"),
+      { nativeActionApprovals: true, businessReady: false });
+    await writeFile(join(fixture.root, "native-action-enabled.json"), '{"enabled":true}');
+  }
+  const nativeProof = await waitForJson(join(fixture.root, "native-attachment-verified.json"), 150000);
+  assert.equal(nativeProof.identitySha256, result.sha256);
+  assert.equal(nativeProof.businessReady, false);
+  assert.equal(nativeProof.livenessPastDeadline, true);
+  assert.notEqual(nativeProof.brokerPid, process.pid);
+  await writeFile(join(fixture.root, "native-identity-passed.json"), JSON.stringify({
+    passed: true, extensionId: extension.id, realInstalledExtension: true, nativeModalEnrollment: true,
+    keyContinuityAcrossNativeReload: true, publicOnlyProfileFile: true, businessActivation: false,
+    firstExtensionHostPid: previous.extensionHostPid, secondExtensionHostPid: process.pid,
+    signedNativeAttachment: true, authenticatedSessionLiveness: true, brokerPid: nativeProof.brokerPid,
+    nativeRequests: nativeProof.nativeRequests,
+    identitySha256: result.sha256, keyId: result.keyId,
+    passwordStore: "basic-isolated-test-only", actualProductionKeyringQualified: false,
+  }));
+  await progress({ stage: "native-identity-restored" });
+  await waitForJson(join(fixture.root, "native-identity-ui-passed.json"));
+  if (fixture.nativeModels && fixture.nativeModelRounds === 48) {
+    const binding = { identitySha256: result.sha256, brokerPid: nativeProof.brokerPid };
+    await writeFile(join(fixture.root, "native-model-close-ready.json"), JSON.stringify(binding), { flag: "wx" });
+    const closed = await waitForJson(join(fixture.root, "native-model-close-completed.json"), 5000);
+    assert.deepEqual(closed, { ...binding, closed: true });
+  }
+}
+
+async function run(options = {}) {
   const fixture = JSON.parse(process.env.PKM_HOST_INSTALLED_FIXTURE);
   const progress = async value => writeFile(join(fixture.root, "progress.json"), JSON.stringify(value));
   const extension = vscode.extensions.getExtension("pkm-nonproduction.pkm-v5");
@@ -423,9 +508,100 @@ async function run() {
   for (const name of ["importPreview", "importConfirm"])
     assert(extension.packageJSON.contributes.commands.some(item => item.command === `pkm.nextHost.${name}`));
   await extension.activate();
+  if (fixture.nativeRoom) {
+    assert(options.roomActivationReady, "Actual native Room activation observation must be armed before activation");
+    await options.roomActivationReady;
+  }
   assert.equal(extension.isActive, true);
   assert.equal(typeof extension.exports.assertActiveMigrationContext, "function",
     "Coordinator commands must run only after activation exports are available");
+  if (fixture.coldComponent) {
+    assert.deepEqual(await vscode.commands.executeCommand("pkm.nextHost.attachNativeProducer"),
+      { authenticated: true, businessReady: false });
+    if (fixture.nativeScriptSegment) {
+      const segment = fixture.nativeScriptSegment;
+      assert(["deny", "approve"].includes(segment));
+      assert.match(fixture.nativeScriptEpochRunId, /^[a-f0-9-]{36}$/);
+      await writeFile(join(fixture.root, `native-script-${segment}-attached.json`), JSON.stringify({
+        passed: true, segment, runId: fixture.nativeScriptEpochRunId,
+        sourceRoot: fixture.coldComponent.root, actualAttachConsent: true,
+      }), { mode: 0o600, flag: "wx" });
+      const evidence = await waitForJson(join(fixture.root, `native-script-${segment}-effects.json`), 150000);
+      assert.equal(evidence.passed, true);
+      assert.equal(evidence.segment, segment);
+      assert.equal(evidence.runId, fixture.nativeScriptEpochRunId);
+      assert.equal(evidence.sourceRoot, fixture.coldComponent.root);
+      assert.equal(evidence.componentClosed, true);
+      assert.equal(evidence.actualInstalledScriptRead, segment === "approve");
+      const ui = await waitForJson(join(fixture.root, `ui-native-script-${segment}-passed.json`));
+      assert.equal(ui.passed, true);
+      assert.equal(ui.segment, segment);
+      assert.equal(ui.runId, fixture.nativeScriptEpochRunId);
+      assert.equal(ui.sourceRoot, fixture.coldComponent.root);
+      return;
+    }
+    if (fixture.nativePrivateResourceRecoveryEpoch) {
+      const decision = fixture.nativePrivateResourceRecoveryEpoch;
+      assert(["deny", "approve"].includes(decision));
+      const evidence = await waitForJson(join(fixture.root, `native-recovery-${decision}-effects.json`), 150000);
+      assert.equal(evidence.passed, true);
+      assert.equal(evidence.decision, decision);
+      assert.equal(evidence.epochClosed, true);
+      assert.equal((await waitForJson(join(fixture.root, `ui-recovery-${decision}-passed.json`))).passed, true);
+      return;
+    }
+    if (fixture.nativeOriginalTrashRecoveryEpoch) {
+      const decision = fixture.nativeOriginalTrashRecoveryEpoch;
+      assert(["deny", "approve"].includes(decision));
+      assert.match(fixture.nativeTrashRecoveryRunId, /^[a-f0-9-]{36}$/);
+      const evidence = await waitForJson(join(fixture.root, `native-trash-recovery-${decision}-effects.json`), 150000);
+      assert.equal(evidence.passed, true);
+      assert.equal(evidence.decision, decision);
+      assert.equal(evidence.runId, fixture.nativeTrashRecoveryRunId);
+      assert.equal(evidence.sourceRoot, fixture.coldComponent.root);
+      assert.equal(evidence.epochClosed, true);
+      const ui = await waitForJson(join(fixture.root, `ui-trash-recovery-${decision}-passed.json`));
+      assert.equal(ui.passed, true);
+      assert.equal(ui.decision, decision);
+      assert.equal(ui.runId, fixture.nativeTrashRecoveryRunId);
+      assert.equal(ui.sourceRoot, fixture.coldComponent.root);
+      return;
+    }
+    if (fixture.nativeOriginalTodoRecoveryEpoch) {
+      const decision = fixture.nativeOriginalTodoRecoveryEpoch;
+      assert(["deny", "approve"].includes(decision));
+      assert.match(fixture.nativeTodoRecoveryRunId, /^[a-f0-9-]{36}$/);
+      const evidence = await waitForJson(join(fixture.root, `native-todo-recovery-${decision}-effects.json`), 150000);
+      assert.equal(evidence.passed, true);
+      assert.equal(evidence.decision, decision);
+      assert.equal(evidence.runId, fixture.nativeTodoRecoveryRunId);
+      assert.equal(evidence.sourceRoot, fixture.coldComponent.root);
+      assert.equal(evidence.epochClosed, true);
+      const ui = await waitForJson(join(fixture.root, `ui-todo-recovery-${decision}-passed.json`));
+      assert.equal(ui.passed, true);
+      assert.equal(ui.decision, decision);
+      assert.equal(ui.runId, fixture.nativeTodoRecoveryRunId);
+      assert.equal(ui.sourceRoot, fixture.coldComponent.root);
+      return;
+    }
+    if (fixture.nativeMemory || fixture.nativeTodoAssignment || fixture.nativeManagedTask) {
+      assert.deepEqual(await vscode.commands.executeCommand("pkm.nextHost.enableNativeModels"),
+        { nativeModelChannel: true, businessReady: false });
+    }
+    const evidence = await waitForJson(join(fixture.root, "cold-component-effects-passed.json"),
+      fixture.nativePrivateResourceLifecycle ? 300000 : 150000);
+    assert.equal(evidence.passed, true);
+    assert.equal(evidence.noteAndSkillActualEffects, true);
+    assert.equal(evidence.componentClosed, true);
+    assert.equal((await waitForJson(join(fixture.root, "ui-cold-passed.json"))).passed, true);
+    return;
+  }
+  if (fixture.nativeIdentity) {
+    let previous;
+    try { previous = JSON.parse(await readFile(join(fixture.root, "native-identity-first.json"), "utf8")); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    if (previous) { await verifyNativeIdentity(fixture, extension, progress, previous, options); return; }
+  }
   if (!fixture.coordinator) {
     const disabled = await invoke("productionState");
     assert.equal(disabled.enabled, false);
@@ -490,6 +666,7 @@ async function run() {
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   assert(verified, "UI driver did not verify receipt");
+  if (fixture.nativeIdentity) { await verifyNativeIdentity(fixture, extension, progress, undefined, options); return; }
   if (fixture.sideBySide) await verifySideBySide(fixture, extension, progress);
   if (!fixture.coordinator) return;
   const selected = fixture.coordinator;
@@ -607,13 +784,14 @@ async function run() {
   throw new Error("UI driver did not finish same-root coordinator verification");
 }
 
-exports.run = async () => {
+exports.run = async (options = {}) => {
   let timer;
   try {
-    await Promise.race([run(), new Promise((_, reject) => {
+    await Promise.race([run(options), new Promise((_, reject) => {
       timer = setTimeout(() => reject(new Error("Installed-host dialog acceptance timed out")),
         (() => { const fixture = JSON.parse(process.env.PKM_HOST_INSTALLED_FIXTURE);
-          return fixture.coordinator || fixture.sideBySide ? 210000 : 75000; })());
+          return fixture.nativeModelTokenPersistence || fixture.nativeModels && fixture.nativeModelRounds === 48 ? 150000
+            : fixture.nativePrivateResourceLifecycle ? 300000 : fixture.coordinator || fixture.sideBySide ? 210000 : 75000; })());
     })]);
   }
   catch (error) {

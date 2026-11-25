@@ -8,6 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
+import { coreDatabasePath } from "../dist/workspace-storage-paths.js";
 
 const require = createRequire(import.meta.url), ts = require("typescript");
 process.umask(0o077);
@@ -152,7 +153,7 @@ setTimeout(()=>{}, ${scenario === "effect-revoke" || scenario === "casual-effect
     const current = await history();
     const turn = current.nativeTurns.find(turn => turn.id === attempt);
     if (turn && ["failed", "unknown", "cancelled"].includes(turn.status)) {
-      const db = new DatabaseSync(join(trial, "workspace/core.sqlite"), { readOnly: true });
+      const db = new DatabaseSync(coreDatabasePath(join(trial, "workspace")), { readOnly: true });
       const record = JSON.parse(db.prepare("SELECT record FROM chat_turn_records WHERE id=?").get(attempt).record);
       db.close();
       throw new Error(`Turn ended before approval: ${JSON.stringify({ turn, failure: record.failure })}`);
@@ -194,7 +195,7 @@ setTimeout(()=>{}, ${scenario === "effect-revoke" || scenario === "casual-effect
     const challenge = await until(() => received.find(value => value.type === "selected-chat-review-request"), "review IPC challenge");
     child.send({ type: "selected-chat-review-response", id: challenge.id, session: randomUUID(), approved: true });
     await pause(150);
-    const before = new DatabaseSync(join(trial, "workspace/core.sqlite"), { readOnly: true });
+    const before = new DatabaseSync(coreDatabasePath(join(trial, "workspace")), { readOnly: true });
     assert.equal(before.prepare("SELECT count(*) AS n FROM legacy_managed_chat_reviews").get().n, 0);
     before.close();
     if (scenario === "review-timeout") {
@@ -214,7 +215,7 @@ setTimeout(()=>{}, ${scenario === "effect-revoke" || scenario === "casual-effect
     const revoked = await send({ type: "selected-owner-revoke", session });
     assert.deepEqual(revoked.result, { revoked: true }, JSON.stringify(revoked));
   }
-  const db = new DatabaseSync(join(trial, "workspace/core.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(coreDatabasePath(join(trial, "workspace")), { readOnly: true });
   const queue = JSON.parse(db.prepare("SELECT state_json FROM legacy_managed_chat_queue WHERE chat_id=?").get(identity.chatId).state_json);
   const turn = JSON.parse(db.prepare("SELECT record FROM chat_turn_records WHERE id=?").get(attempt).record);
   db.close();
@@ -230,7 +231,7 @@ setTimeout(()=>{}, ${scenario === "effect-revoke" || scenario === "casual-effect
   if (scenario.endsWith("effect-revoke") || scenario.startsWith("review"))
     assert.equal(turn.uncertain, true, JSON.stringify(turn));
   if (scenario.startsWith("review")) {
-    const reviewDb = new DatabaseSync(join(trial, "workspace/core.sqlite"), { readOnly: true });
+    const reviewDb = new DatabaseSync(coreDatabasePath(join(trial, "workspace")), { readOnly: true });
     assert.equal(reviewDb.prepare("SELECT count(*) AS n FROM legacy_managed_chat_reviews").get().n, 0);
     reviewDb.close();
   }
@@ -248,7 +249,7 @@ setTimeout(()=>{}, ${scenario === "effect-revoke" || scenario === "casual-effect
   const id = file => { const stat = lstatSync(file, { bigint: true }); return `${stat.dev}:${stat.ino}`; };
   const workspace = join(trial, "workspace"), snapshotRoot = started.result.root;
   const pin = { schema: "pkm.next-selected-chat-recovery/v1", parent: trial, parentIdentity: id(trial),
-    workspaceIdentity: id(workspace), databaseIdentity: id(join(workspace, "core.sqlite")),
+    workspaceIdentity: id(workspace), databaseIdentity: id(coreDatabasePath(workspace)),
     markerIdentity: id(join(workspace, ".pkm-next-workspace")), legacyRoot: root, legacyIdentity: id(root),
     workspaceId: ready.workspaceId, ...identity, snapshotRoot, snapshotParentIdentity: id(dirname(snapshotRoot)),
     snapshotIdentity: id(snapshotRoot), sourceFingerprint: started.result.sourceFingerprint };

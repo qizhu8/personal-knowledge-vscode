@@ -16,7 +16,12 @@ import {
   trashLifecycleDefinitions, trashLifecycleLayout, type TrashLifecycleHost, type TrashLifecyclePlan,
 } from "./trash-lifecycle.js";
 import { trashEntryId } from "./trash-lifecycle-contracts.js";
-import { knowledgeArea, resourcePath } from "./document-path.js";
+import { resourcePath } from "./document-path.js";
+import { trashCustodyArea } from "./opaque-trash-contracts.js";
+import { ORIGINAL_NATIVE_TRASH_DDL, commitOriginalTrashSuccessor, originalTrashPreservedBuckets,
+  inspectOriginalTrashHistoryPhase } from "./original-native-trash-custody.js";
+import { readOriginalMcpJournal } from "./original-mcp-root-custody.js";
+import { assertNativeOriginalTrashPortRoot, type NativeOriginalTrashPort } from "./original-native-trash-native.js";
 
 export const migrationRuntimeDefinitions = [...knowledgeMutationDefinitions, ...trashLifecycleDefinitions];
 export const MIGRATION_RUNTIME_DDL = `
@@ -46,7 +51,7 @@ CREATE TABLE IF NOT EXISTS migration_runtime_knowledge_commits (
  sequence INTEGER PRIMARY KEY, workspace_id TEXT NOT NULL, operation_id TEXT NOT NULL UNIQUE,
  request_json TEXT NOT NULL, plan_json TEXT NOT NULL, result_json TEXT NOT NULL, digest TEXT NOT NULL
 ) STRICT;`;
-export function initializeMigrationRuntime(database: DatabaseSync): void { database.exec(MIGRATION_RUNTIME_DDL); }
+export function initializeMigrationRuntime(database: DatabaseSync): void { database.exec(MIGRATION_RUNTIME_DDL + ORIGINAL_NATIVE_TRASH_DDL); }
 export interface MigrationRuntimeOptions {
   database: DatabaseSync;
   root: string;
@@ -56,7 +61,7 @@ export interface MigrationRuntimeOptions {
   assertOperationAvailable(operationId: string): void;
   fingerprint?(request: DataRuntimeRequest): string;
   /** Storage, not this helper, explicitly provisions and qualifies the exact layout. */
-  trash?: { layoutVersion: "pkm.trash-lifecycle/v1"; faultInjector?: (point: string) => void };
+  trash?: { layoutVersion: "pkm.trash-lifecycle/v1"; faultInjector?: (point: string) => void; original?: NativeOriginalTrashPort };
 }
 const text = z.string().min(1);
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
@@ -223,7 +228,7 @@ export function readOriginalTrashDeletionHistory(database: DatabaseSync, workspa
   const rows = database.prepare("SELECT * FROM migration_runtime_deletions ORDER BY sequence").all();
   const records = rows.map(row => {
     if (!Number.isSafeInteger(row.sequence) || Number(row.sequence) < 1 || row.workspace_id !== workspaceId
-      || typeof row.path !== "string" || !knowledgeArea.safeParse(row.path.split("/")[0]).success
+      || typeof row.path !== "string" || !trashCustodyArea.safeParse(row.path.split("/")[0]).success
       || !resourcePath.safeParse(row.path.slice(row.path.indexOf("/") + 1)).success
       || !z.string().datetime().safeParse(row.deleted_at).success
       || row.digest !== sha256(JSON.stringify([row.sequence, workspaceId, row.path, row.deleted_at]))) {
@@ -286,6 +291,9 @@ export class MigrationRuntime {
     }
     this.db = options.database;
     this.root = resolve(options.root);
+    if (options.trash && readOriginalMcpJournal(this.root) && !options.trash.original)
+      throw new CoreError("NATIVE_AUTHORITY_REQUIRED", "Original-root Trash requires its actual native producer, not a generic layout flag.");
+    if (options.trash?.original) assertNativeOriginalTrashPortRoot(options.trash.original, this.root, options.workspaceId);
   }
   available(operation: string): boolean {
     return migrationRuntimeDefinitions.some(definition => definition.id === operation)
@@ -388,7 +396,8 @@ export class MigrationRuntime {
       if (plan.action === "restore") {
         const original = this.committedEntry(plan.entryId);
         const expected = { ...original, action: "restore", operationId: plan.operationId,
-          actorId: plan.actorId, referencePins: plan.referencePins, expectedScanRevision: plan.expectedScanRevision };
+          actorId: plan.actorId, referencePins: plan.referencePins, expectedScanRevision: plan.expectedScanRevision,
+          ...(plan.originalTrash ? { originalTrash: plan.originalTrash } : {}) };
         if (JSON.stringify(expected) !== row.plan_json) conflict("Restore plan no longer matches the authoritative trash entry.");
       } else if (this.db.prepare("SELECT 1 FROM migration_runtime_trash WHERE entry_id=?").get(plan.entryId)) {
         conflict("Pending trash intent collides with a committed entry.");
@@ -437,6 +446,8 @@ export class MigrationRuntime {
     }
     this.db.prepare("INSERT INTO receipts VALUES(?,?,?,?,?,?)").run(String(request.args.operationId),
       this.fingerprint(request), JSON.stringify(parsed.data), request.actorId, request.operation, new Date().toISOString());
+    if (trash?.originalTrash) commitOriginalTrashSuccessor(this.db, this.options.workspaceId, this.root,
+      trash.originalTrash, serializeTrashLifecyclePlan(trash));
     if (!trash) {
       const sequence = Number(this.db.prepare("SELECT COALESCE(MAX(sequence),0)+1 AS next FROM migration_runtime_knowledge_commits").get()!.next);
       const binding = [sequence, this.options.workspaceId, row.operation_id, row.request_json, row.plan_json, JSON.stringify(parsed.data)];
@@ -499,7 +510,13 @@ export class MigrationRuntime {
     const rows = this.db.prepare("SELECT * FROM migration_runtime_intents ORDER BY operation_id").all() as unknown as Intent[];
     for (const row of rows) {
       const request = this.validate(row); this.bindPlan(row, request);
-      if (request.operation.startsWith("knowledge.trash.")) inspectTrashLifecycleRecovery(this.root, deserializeTrashLifecyclePlan(row.plan_json));
+      if (request.operation.startsWith("knowledge.trash.")) {
+        const plan = deserializeTrashLifecyclePlan(row.plan_json);
+        if (readOriginalMcpJournal(this.root) && !plan.originalTrash)
+          conflict("Old original-root Trash intents do not carry the new native transition protocol.");
+        inspectTrashLifecycleRecovery(this.root, plan);
+        if (plan.originalTrash) inspectOriginalTrashHistoryPhase(this.root, plan.originalTrash);
+      }
       else inspectKnowledgeMutationRecovery(this.root, deserializeKnowledgeMutationPlan(row.plan_json));
     }
     if (this.options.trash) {
@@ -509,9 +526,12 @@ export class MigrationRuntime {
         if (!parsed.success) conflict("Unknown committed trash row.");
         return this.committedEntry(parsed.data.entry_id);
       });
-      for (const directory of trashLifecycleLayout.directories) {
+      for (const directory of [...trashLifecycleLayout.directories,
+        ...(this.options.trash.original ? ["scripts/.trash", "prompts/.trash"] : [])]) {
         const area = directory.split("/")[0];
         const owned = new Set(plans.filter(plan => plan.area === area).map(plan => plan.entryId));
+        if (this.options.trash.original)
+          for (const id of await originalTrashPreservedBuckets(this.root, area!)) owned.add(id);
         for (const row of rows) {
           if (!row.operation.startsWith("knowledge.trash.")) continue;
           const plan = deserializeTrashLifecyclePlan(row.plan_json);

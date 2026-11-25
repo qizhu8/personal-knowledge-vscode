@@ -3,11 +3,12 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { CoreError } from "./host-composition-legacy-batch15-errors.js";
-import { githubSyncIgnoredPath, githubSyncSafeRelativePath } from "./domain/sync-plan-original.js";
+import { githubSyncIgnoredPath, githubSyncSafeRelativePath } from "./sync-storage-boundary.js";
 import { syncApplyPlanSchema, syncApplyReceiptSchema, syncApplyRequestSchema, type SyncApplyPlan, type SyncApplyReceipt } from "./sync-apply-contracts.js";
 import { syncPlanInputSchema, syncPlanManifestSchema, syncPlanSessionSchema } from "./sync-plan-contracts.js";
 import { planSync, syncPlanHash, syncRemoteRestoreMembers } from "./sync-plan.js";
 import { SyncPlanStore } from "./sync-plan-store.js";
+import { assertSyncContentAuthority, syncContentPath, syncContentReview, validateSyncContentState, type SyncContentAuthority } from "./sync-content.js";
 
 type File = ReturnType<typeof syncPlanManifestSchema.parse>["files"][number];
 type Deletion = ReturnType<typeof syncPlanManifestSchema.parse>["deletions"][number];
@@ -16,6 +17,7 @@ type Action = SyncApplyPlan["actions"][number];
 type FaultInjector = (action: Action, index: number, phase?: "before-mode-change") => void;
 export type SyncApplyOptions = {
   faultInjector?: FaultInjector;
+  contentAuthority?: SyncContentAuthority;
   /** Shared host receipt/index/intent commit. Runs inside the journal's final transaction. */
   beforeCommit?: (receipt: SyncApplyReceipt) => void;
 };
@@ -30,8 +32,6 @@ const digest = (value: Buffer | string): string => createHash("sha256").update(v
 const keyOf = (value: { type: string; itemId: string }): string => JSON.stringify([value.type, value.itemId]);
 const portable = (value: string): string => value.normalize("NFC").toLocaleLowerCase("en-US");
 const compare = (left: string, right: string): number => left < right ? -1 : left > right ? 1 : 0;
-const allowedTypes = new Set(["notes", "papers", "prompts", "skills"]);
-const assets = new Set([".avif", ".bmp", ".gif", ".ico", ".jpeg", ".jpg", ".pdf", ".png", ".svg", ".tif", ".tiff", ".webp"]);
 const protectedWords = new Set(["todo", "todos", "memory", "memories"]);
 
 class PermissionOnlyTransitionError extends CoreError {
@@ -113,7 +113,7 @@ function databaseOf(store: SyncPlanStore): DatabaseSync {
 }
 
 function validatePath(value: string, type: string, itemId: string, category: string, member: string): string {
-  if (!allowedTypes.has(type)) throw new Error(`Offline apply is restricted to Markdown and attachment entities, not ${type}.`);
+  syncContentPath(value, type);
   const safe = githubSyncSafeRelativePath(value);
   const segments = safe.split("/");
   if (safe !== value || value.startsWith("/") || value.includes("\\") || value !== value.normalize("NFC")
@@ -126,8 +126,6 @@ function validatePath(value: string, type: string, itemId: string, category: str
     || /(?:^|\/)research\/pkm\/migration\/migration board\.md$/i.test(value)) {
     throw new Error("Generic Todo/memory descriptors and the canonical Todo Board cannot be raw filesystem apply targets.");
   }
-  const extension = path.posix.extname(value).toLocaleLowerCase("en-US");
-  if (extension !== ".md" && !assets.has(extension)) throw new Error(`Unsupported sync apply file type: ${value}`);
   return safe;
 }
 
@@ -189,7 +187,18 @@ function sourceSession(store: SyncPlanStore, request: ReturnType<typeof syncAppl
   return { session, input, decisions };
 }
 
-function serializeVerifiedPlan(store: SyncPlanStore, request: ReturnType<typeof syncApplyRequestSchema.parse>): SyncApplyPlan {
+export function inspectSyncApplySourceReview(store: SyncPlanStore, raw: unknown) {
+  const request = syncApplyRequestSchema.parse(raw), { session, input, decisions } = sourceSession(store, request);
+  const entities = [...session.plan.proposals.map(({ type, itemId }) => ({ type, itemId })),
+    ...[...decisions.keys()].map(id => {
+      const { type, itemId } = session.plan.conflicts.find(conflict => conflict.id === id)!;
+      return { type, itemId };
+    })];
+  return { input, review: syncContentReview({ ...request, input }, entities) };
+}
+
+function serializeVerifiedPlan(store: SyncPlanStore, request: ReturnType<typeof syncApplyRequestSchema.parse>,
+  options: Pick<SyncApplyOptions, "contentAuthority"> = {}, root?: string): SyncApplyPlan {
   const { session, input, decisions } = sourceSession(store, request);
   const local = stateMap(syncPlanManifestSchema.parse(input.local.manifest));
   const selected = new Map<string, { type: File["type"]; itemId: string; state: State; source: "proposal" | "decision"; conflictId?: string }>();
@@ -217,6 +226,8 @@ function serializeVerifiedPlan(store: SyncPlanStore, request: ReturnType<typeof 
       revision: decision.revision, choice: decision.choice, reason: decision.reason,
     };
   }).sort((a, b) => compare(a.conflictId, b.conflictId));
+  assertSyncContentAuthority(options.contentAuthority, { ...request, input },
+    [...selected.values()].map(({ type, itemId }) => ({ type, itemId })), root);
 
   const currentFiles = new Map<string, File>();
   const desiredFiles = new Map<string, File>();
@@ -224,6 +235,9 @@ function serializeVerifiedPlan(store: SyncPlanStore, request: ReturnType<typeof 
   const tombstones: SyncApplyPlan["tombstones"] = [];
   for (const [key, choice] of selected) {
     const prior = local.get(key) ?? { kind: "absent" as const };
+    validateSyncContentState(prior.kind === "live" ? prior.files : [], prior.kind === "deleted" ? prior.deletion : undefined);
+    validateSyncContentState(choice.state.kind === "live" ? choice.state.files : [],
+      choice.state.kind === "deleted" ? choice.state.deletion : undefined);
     if (prior.kind === "live") for (const file of prior.files) {
       validateContent(file);
       currentFiles.set(file.path, file);
@@ -275,6 +289,7 @@ function serializeVerifiedPlan(store: SyncPlanStore, request: ReturnType<typeof 
         beforeSha256: oldFile.digest, afterSha256: next.digest, afterMode: 0o600,
       });
     } else if (next.digest !== oldFile.digest) {
+      if (next.type === "action-module-sets") throw new CoreError("CONFLICT", "Immutable ModuleSet members require a new version; Sync cannot replace an installed member.");
       if (next.contentBase64 === undefined) throw new Error(`Chosen replacement has no staged bytes: ${next.path}`);
       actions.push({
         path: value, type: next.type, itemId: next.itemId, member: next.member, privacy: next.privacy,
@@ -309,8 +324,10 @@ function serializeVerifiedPlan(store: SyncPlanStore, request: ReturnType<typeof 
 export function serializeSyncApplyPlan(
   store: SyncPlanStore,
   request: { sessionId: string; actorId: string; input: unknown },
+  options: Pick<SyncApplyOptions, "contentAuthority"> = {},
+  root?: string,
 ): SyncApplyPlan {
-  return serializeVerifiedPlan(store, syncApplyRequestSchema.parse(request));
+  return serializeVerifiedPlan(store, syncApplyRequestSchema.parse(request), options, root);
 }
 
 export function initializeSyncApplyJournal(db: DatabaseSync): void {
@@ -346,6 +363,7 @@ function validatedRoot(rootPath: string): string {
 
 function inspect(root: string, relative: string): { bytes?: Buffer; mode?: number; dev?: number; ino?: number } {
   const segments = relative.split("/");
+  const parents: Array<{ path: string; dev: number; ino: number }> = [];
   let current = root;
   for (let index = 0; index < segments.length; index++) {
     current = path.join(current, segments[index]);
@@ -358,9 +376,26 @@ function inspect(root: string, relative: string): { bytes?: Buffer; mode?: numbe
     if (info.isSymbolicLink()) throw new Error(`Symlink in sync apply path: ${relative}`);
     if (index < segments.length - 1) {
       if (!info.isDirectory()) throw new Error(`Non-directory parent in sync apply path: ${relative}`);
+      parents.push({ path: current, dev: info.dev, ino: info.ino });
     } else {
-      if (!info.isFile()) throw new Error(`Non-regular sync apply target: ${relative}`);
-      return { bytes: fs.readFileSync(current), mode: info.mode & 0o777, dev: info.dev, ino: info.ino };
+      if (!info.isFile() || info.nlink !== 1 || process.getuid !== undefined && info.uid !== process.getuid())
+        throw new Error(`Non-regular or shared sync apply target: ${relative}`);
+      const descriptor = fs.openSync(current, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+      try {
+        const opened = fs.fstatSync(descriptor), bytes = fs.readFileSync(descriptor), after = fs.fstatSync(descriptor);
+        const entry = fs.lstatSync(current);
+        if (!opened.isFile() || opened.nlink !== 1 || opened.dev !== info.dev || opened.ino !== info.ino
+          || after.size !== opened.size || after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs
+          || bytes.length !== after.size || entry.isSymbolicLink() || entry.dev !== after.dev || entry.ino !== after.ino
+          || entry.mtimeMs !== after.mtimeMs || entry.ctimeMs !== after.ctimeMs)
+          throw new NeedsReviewError(`Sync apply target changed while reading: ${relative}`);
+        for (const parent of parents) {
+          const now = fs.lstatSync(parent.path);
+          if (!now.isDirectory() || now.isSymbolicLink() || now.dev !== parent.dev || now.ino !== parent.ino)
+            throw new NeedsReviewError(`Sync apply parent changed while reading: ${relative}`);
+        }
+        return { bytes, mode: after.mode & 0o777, dev: after.dev, ino: after.ino };
+      } finally { fs.closeSync(descriptor); }
     }
   }
   return {};
@@ -517,7 +552,7 @@ function executeJournal(store: SyncPlanStore, db: DatabaseSync, row: JournalRow,
       const request = syncApplyRequestSchema.parse({
         sessionId: row.session_id, actorId: row.actor_id, input: JSON.parse(row.input_json),
       });
-      currentPlan = serializeVerifiedPlan(store, request);
+      currentPlan = serializeVerifiedPlan(store, request, options, root);
     } catch (error) {
       throw new NeedsReviewError(`Persisted sync apply source validation failed: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -546,6 +581,9 @@ function executeJournal(store: SyncPlanStore, db: DatabaseSync, row: JournalRow,
       }
     }
     for (const [index, action] of plan.actions.entries()) {
+      assertSyncContentAuthority(options.contentAuthority, {
+        actorId: row.actor_id, sessionId: row.session_id, input: syncPlanInputSchema.parse(JSON.parse(row.input_json)),
+      }, plan.actions.map(({ type, itemId }) => ({ type, itemId })), root);
       const observed = inspect(root, action.path);
       const currentHash = observed.bytes ? digest(observed.bytes) : null;
       if (isModeAction(action)) {
@@ -609,6 +647,9 @@ function executeJournal(store: SyncPlanStore, db: DatabaseSync, row: JournalRow,
       tombstones: plan.tombstones,
       completedAt: new Date().toISOString(),
     });
+    serializeVerifiedPlan(store, syncApplyRequestSchema.parse({
+      sessionId: row.session_id, actorId: row.actor_id, input: JSON.parse(row.input_json),
+    }), options, root);
     db.prepare("UPDATE sync_apply_journal SET state = 'completed', receipt_json = ?, error = NULL WHERE apply_id = ?")
       .run(JSON.stringify(receipt), row.apply_id);
     options.beforeCommit?.(receipt);
@@ -650,7 +691,7 @@ export function applySyncPlan(
   db.exec("BEGIN IMMEDIATE");
   let row: JournalRow;
   try {
-    const plan = serializeVerifiedPlan(store, parsed);
+    const plan = serializeVerifiedPlan(store, parsed, options, root);
     const inputJson = JSON.stringify(parsed.input);
     const applyKey = syncPlanHash({ planHash: plan.planHash, root });
     const previous = db.prepare("SELECT * FROM sync_apply_journal WHERE apply_key = ?").get(applyKey) as JournalRow | undefined;

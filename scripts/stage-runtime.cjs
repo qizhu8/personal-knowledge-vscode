@@ -85,6 +85,8 @@ function stage(output = target, { production = false, extensionVersion } = {}) {
   if (typeof extensionVersion !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(extensionVersion))
     throw new Error("An exact extension package version is required.");
   const declared = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  if (declared.runtimeMcpFacade !== undefined && declared.runtimeMcpFacade !== "native-v1")
+    throw new Error("Unsupported runtime MCP facade marker.");
   const lock = JSON.parse(fs.readFileSync(path.join(root, "package-lock.json"), "utf8"));
   const locked = lock.packages?.[""];
   if (locked?.version !== declared.version || !locked.dependencies
@@ -100,13 +102,19 @@ function stage(output = target, { production = false, extensionVersion } = {}) {
   try {
     const runtime = path.join(output, "server");
     copyTree(path.join(root, "dist"), path.join(runtime, "dist"));
-    require("esbuild").buildSync({ stdin: { contents: `
-      export { ChatHub } from "./src/chatroom/chatroom-hub";
-      export { ChatJoinApprovalManager } from "./src/chatroom/chat-join-approval";
-      export { MeetingStateStore } from "./src/chatroom/meeting-state";
-      export { WebSocketServer } from "ws";`, resolveDir: legacy },
-    bundle: true, platform: "node", format: "cjs", absWorkingDir: root,
-    outfile: path.join(runtime, "dist", "legacy-chatroom-retained.cjs"), logLevel: "silent" });
+    require("./build-chatroom-retained.cjs").build(root, path.join(runtime, "dist", "legacy-chatroom-retained.cjs"));
+    const nativeChat = require("esbuild").buildSync({
+      stdin: { contents: 'export { streamVscodeChat } from "./src/chat/api-chat-vscode"; export { decodeChatImage } from "./src/chat/api-chat-client"; export { streamCopilotSdkChat, copilotSdkPrompt, copilotSdkModels } from "./src/chat/api-chat-copilot-sdk";', resolveDir: legacy },
+      bundle: true, platform: "node", format: "cjs", absWorkingDir: root,
+      external: ["vscode"], write: false, metafile: true, logLevel: "silent",
+    });
+    const nativeImports = Object.values(nativeChat.metafile.outputs).flatMap(output => output.imports);
+    if (nativeImports.some(item => item.external && item.path !== "vscode" && !isBuiltin(item.path))
+      || Object.keys(nativeChat.metafile.inputs).some(file =>
+        file.startsWith("src/") || /(?:^|\/)(?:active-vscode-migration-host|root-owner|original-mcp-root)\.[cm]?[jt]s$/.test(file)))
+      throw new Error("Native Chat must not embed Core/RootOwner/active-host brands or undeclared externals.");
+    fs.writeFileSync(path.join(runtime, "dist", "native-vscode-chat-retained.cjs"),
+      nativeChat.outputFiles[0].contents, { flag: "wx" });
     // Keep classes, AsyncLocalStorage and WeakMap brands in one physical CJS cache.
     for (const name of retainedRuntimeFiles())
       copyTree(path.join(legacy, "dist", name), path.join(runtime, "legacy", "dist", name));
@@ -119,10 +127,13 @@ function stage(output = target, { production = false, extensionVersion } = {}) {
       ["compat", [".py", ".cjs", ".json"]], ["compute", [".py"]],
       ["domain", [".py"]], ["browser", [".mjs", ".html", ".css"]],
     ]) copyTree(path.join(root, name), path.join(runtime, name), file => extensions.includes(path.extname(file)));
+    for (const name of ["managed-migration.mjs", "managed-launch-client.mjs", "managed-launcher.py",
+      "python-bootstrap.py", "python-dependencies.py"])
+      copyTree(path.join(root, "experimental", name), path.join(runtime, "experimental", name));
     const resources = path.join(legacy, "resources");
     copyTree(resources, path.join(runtime, "legacy", "resources"), file =>
       path.dirname(file) === resources && ([".py", ".txt"].includes(path.extname(file))
-        || path.basename(file) === "action_components.js")
+        || ["action_components.js", "chat_server.py.template"].includes(path.basename(file)))
       || path.dirname(file) === path.join(resources, "vendor") && path.extname(file) === ".whl");
     // The retained client prerequisite checker still names these two public resources.
     for (const name of ["note_inventory.py", "action_components.js"])
@@ -137,17 +148,41 @@ function stage(output = target, { production = false, extensionVersion } = {}) {
         throw new Error(`Dependency does not match Core lockfile: ${local}`);
       copyTree(source, path.join(runtime, "node_modules", local), () => true, true);
     }
+    if (declared.runtimeMcpFacade === "native-v1") {
+      const { buildDeploymentCore } = require(path.join(root, "dist", "deployment-integrity-worker.js"));
+      fs.writeFileSync(path.join(runtime, "deployment-core.json"),
+        JSON.stringify(buildDeploymentCore(runtime)) + "\n", { flag: "wx" });
+    }
     const files = inventory(output);
-    for (const required of ["check.cjs", "server/dist/cli.js", "server/dist/managed-client-child.js",
+    const requiredFiles = ["check.cjs", "server/dist/cli.js", "server/dist/managed-client-child.js",
+      "server/dist/native-vscode-chat-retained.cjs",
       "server/dist/active-vscode-migration-host.js",
       "server/dist/legacy-import-cli.js", "server/dist/storage-worker.js",
+      "server/dist/workspace-storage-paths.js",
+      "server/dist/fresh-note-index-storage.js", "server/dist/workspace-storage-migration.js",
+      "server/dist/workspace-runtime-control.js", "server/dist/workspace-git-protection.js",
+      "server/dist/shared-manager-control.js", "server/dist/sync-storage-boundary.js",
+      "server/dist/browser-mutation-receipt.js", "server/dist/mutation-receipt-contracts.js",
+      "server/dist/shared-managed-server.js", "server/dist/shared-managed-server-cli.js",
+      "server/dist/shared-managed-client.js", "server/dist/shared-managed-relay.js",
+      "server/dist/shared-core-backend.js", "server/dist/shared-core-profile.js",
+      "server/experimental/managed-migration.mjs", "server/experimental/managed-launch-client.mjs",
+      "server/experimental/managed-launcher.py", "server/experimental/python-bootstrap.py",
+      "server/experimental/python-dependencies.py",
       "server/compat/legacy-compact-mcp.py", "server/legacy/resources/note_inventory.py",
+      "server/legacy/resources/chat_server.py.template", "server/legacy/resources/mcp_call_guard.py",
       "server/legacy/package.json", "server/legacy/resources/action_components.js",
       "server/legacy/dist/knowledge/markdown-assets.js", "server/legacy/dist/runtime/cross-process-lock.js",
       "server/legacy/dist/runtime/next-payload-verifier.js", "server/legacy/dist/runtime/host-writer-admission.js",
       "server/legacy/dist/runtime/managed-host-child-registry.js", "server/legacy/dist/runtime/legacy-snapshot-vscode-authority.js",
       "server/legacy/dist/knowledge/filestore.js",
-      "server/node_modules/zod/package.json", "server/node_modules/@modelcontextprotocol/sdk/package.json"])
+      "server/node_modules/zod/package.json", "server/node_modules/@modelcontextprotocol/sdk/package.json"];
+    if (declared.runtimeMcpFacade === "native-v1") requiredFiles.push(
+      "server/dist/native-public-mcp.js", "server/dist/native-public-mcp-backend.js",
+      "server/dist/native-public-mcp-lifecycle.js", "server/dist/native-public-mcp-contracts.js",
+      "server/dist/deployment-integrity.js", "server/dist/deployment-integrity-worker.js",
+      "server/deployment-core.json");
+    for (const required of requiredFiles)
       if (!files[required]) throw new Error(`Missing runtime payload: ${required}`);
     const manifest = production ? {
       schema: "pkm.next-payload/v1",

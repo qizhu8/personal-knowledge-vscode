@@ -5,6 +5,8 @@ import { mkdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
+import { initialize, Storage } from "../dist/storage.js";
+import { createNativeRuntime } from "../dist/native-runtime.js";
 import { createAgentRuntime } from "../dist/agent-runtime.js";
 import { createAgentRuntimeStore, initializeAgentRuntimeSchema, AGENT_RUNTIME_TABLES } from "../dist/agent-runtime-store.js";
 import { agentRuntimeDefinitions, AGENT_RUNTIME_LIMITS } from "../dist/agent-runtime-contracts.js";
@@ -15,6 +17,144 @@ import {
 } from "./agent-runtime-fixtures.mjs";
 
 const code = expected => error => error?.code === expected;
+async function publicAgentFixture(t, options = {}) {
+  const root = resolve("tests", ".agent-public-" + randomUUID());
+  await initialize(root);
+  const storage = await Storage.open(root);
+  const actor = { id: owner.actorId, canWrite: true };
+  const calls = [], sessions = new Map();
+  let nativeOwnerId = owner.nativeOwnerId;
+  const nativeOptions = {
+    storage,
+    agents: {
+      tasks, snapshots,
+      ownerForActor: actorId => ({ actorId, nativeOwnerId }),
+      host: {
+        async spawn(request) {
+          calls.push({ kind: "spawn", id: request.sessionId });
+          if (options.unknownSpawn) throw new Error("Ambiguous synthetic spawn");
+          const observation = { state: "running", handle: "synthetic:" + request.sessionId };
+          sessions.set(request.sessionId, observation);
+          return observation;
+        },
+        async inspect(request) {
+          calls.push({ kind: "inspect", id: request.sessionId });
+          options.onInspect?.(() => { nativeOwnerId = "changed-native-owner"; });
+          return sessions.get(request.sessionId) ?? { state: "unknown" };
+        },
+        async cancel(request) { calls.push({ kind: "cancel", id: request.sessionId }); },
+      },
+    },
+  };
+  let runtime = await createNativeRuntime(nativeOptions);
+  t.after(async () => {
+    await runtime.close();
+    await storage.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  return {
+    get runtime() { return runtime; }, actor, calls, sessions,
+    changeOwner() { nativeOwnerId = "changed-native-owner"; },
+    async reopen() {
+      await runtime.close();
+      runtime = await createNativeRuntime(nativeOptions);
+    },
+    async call(operation, args, principal = actor, method = "capability_call") {
+      return runtime.core.dispatch(method, { operation, version: 1, arguments: args }, principal);
+    },
+  };
+}
+
+test("public Core restores exact host-pinned synthetic trees and reconnects owned handles", async t => {
+  const f = await publicAgentFixture(t);
+  const spawned = await f.call("agent.runtime.spawn", spawnArgs());
+  assert.ok(spawned.result, JSON.stringify(spawned));
+  const reconnect = { opId: randomUUID(), id: spawned.result.session.id, expectedRevision: spawned.result.session.revision };
+  const connected = await f.call("agent.runtime.reconnect", reconnect);
+  const args = { opId: randomUUID(), snapshotId: syntheticSnapshot.snapshotId, digest: snapshotDigest };
+  const restored = await f.call("agent.runtime.restore", args);
+  assert.ok(connected.result && restored.result, JSON.stringify({ connected, restored }));
+  assert.equal(connected.result.id, reconnect.id);
+  assert.equal(restored.result.receipt.ids.length, syntheticSnapshot.nodes.length);
+  assert.deepEqual(restored.result.session.restoredFrom, { snapshotId: args.snapshotId, digest: args.digest });
+  const beforeReplay = f.calls.length;
+  const replay = await f.call("agent.runtime.restore", args);
+  assert.deepEqual(replay.result, restored.result);
+  assert.equal(f.calls.length, beforeReplay);
+  const reconnectReplay = await f.call("agent.runtime.reconnect", reconnect);
+  assert.equal(reconnectReplay.result.id, reconnect.id);
+  assert.equal(f.calls.length, beforeReplay);
+});
+
+test("public Agent restore/reconnect preserve actor permission, pins, ownership and exact revision", async t => {
+  const f = await publicAgentFixture(t);
+  const spawned = await f.call("agent.runtime.spawn", spawnArgs());
+  const reconnect = { opId: randomUUID(), id: spawned.result.session.id, expectedRevision: spawned.result.session.revision };
+  const restore = { opId: randomUUID(), snapshotId: syntheticSnapshot.snapshotId, digest: snapshotDigest };
+  const before = f.calls.length;
+  for (const [operation, args] of [["agent.runtime.reconnect", reconnect], ["agent.runtime.restore", restore]]) {
+    assert.equal((await f.call(operation, args, { ...f.actor, canWrite: false })).error.code, "ACCESS_DENIED");
+    assert.equal((await f.call(operation, args, f.actor, "capability_read")).error.code, "ACCESS_DENIED");
+    assert.equal((await f.call(operation, { ...args, ownerToken: {}, actorId: f.actor.id })).error.code, "INVALID_ARGUMENT");
+  }
+  const foreign = { id: "synthetic-foreign-actor", canWrite: true };
+  assert.equal((await f.call("agent.runtime.reconnect", reconnect, foreign)).error.code, "NOT_FOUND");
+  assert.equal((await f.call("agent.runtime.restore", restore, foreign)).error.code, "ACCESS_DENIED");
+  assert.equal((await f.call("agent.runtime.reconnect", { ...reconnect, expectedRevision: reconnect.expectedRevision - 1 })).error.code, "CONFLICT");
+  assert.equal((await f.call("agent.runtime.restore", { ...restore, digest: "0".repeat(64) })).error.code, "ACCESS_DENIED");
+  assert.equal((await f.call("agent.runtime.restore", { ...restore, opId: spawned.result.receipt.opId })).error.code, "CONFLICT");
+  assert.equal(f.calls.length, before);
+  const discovered = await f.runtime.core.dispatch("capabilities_search", { query: "agent.runtime", limit: 20 }, f.actor);
+  assert.ok(discovered.result, JSON.stringify(discovered));
+  for (const operation of ["agent.runtime.restore", "agent.runtime.reconnect"])
+    assert.ok(discovered.result.items.some(item => item.operation === operation));
+  const readOnly = await f.runtime.core.dispatch("capabilities_search", { query: "agent.runtime", limit: 20 }, { ...f.actor, canWrite: false });
+  assert.ok(readOnly.result.items.every(item => item.readOnly));
+  f.changeOwner();
+  assert.equal((await f.call("agent.runtime.reconnect", reconnect)).error.code, "NOT_FOUND");
+  assert.equal((await f.call("agent.runtime.restore", restore)).error.code, "ACCESS_DENIED");
+  assert.equal((await f.call("agent.runtime.spawn", { opId: randomUUID(), taskKey: tasks[1].key,
+    parentId: reconnect.id, expectedParentRevision: reconnect.expectedRevision })).error.code, "NOT_FOUND");
+  assert.equal(f.calls.length, before);
+});
+
+test("public reconnect and native reopen never replay an unknown spawn or restore receipt", async t => {
+  const f = await publicAgentFixture(t, { unknownSpawn: true });
+  const spawned = await f.call("agent.runtime.spawn", spawnArgs());
+  assert.equal(spawned.result.session.state, "spawn-unknown");
+  const reconnect = { opId: randomUUID(), id: spawned.result.session.id, expectedRevision: spawned.result.session.revision };
+  for (let index = 0; index < 2; index++) {
+    const result = await f.call("agent.runtime.reconnect", { ...reconnect, opId: randomUUID() });
+    assert.equal(result.result.state, "spawn-unknown");
+  }
+  const restore = { opId: randomUUID(), snapshotId: syntheticSnapshot.snapshotId, digest: snapshotDigest };
+  const restored = await f.call("agent.runtime.restore", restore);
+  assert.equal(restored.result.session.state, "spawn-unknown");
+  const beforeReplay = f.calls.length;
+  assert.equal((await f.call("agent.runtime.restore", restore)).result.session.id, restored.result.session.id);
+  assert.equal(f.calls.length, beforeReplay);
+  await f.reopen();
+  assert.equal(f.calls.length, beforeReplay);
+  assert.equal((await f.call("agent.runtime.restore", restore)).result.session.id, restored.result.session.id);
+  assert.equal(f.calls.length, beforeReplay);
+  const afterRestart = await f.call("agent.runtime.reconnect", { ...reconnect, opId: randomUUID() });
+  assert.equal(afterRestart.result.state, "spawn-unknown");
+  assert.equal(f.calls.filter(call => call.kind === "spawn" && call.id === reconnect.id).length, 1);
+  assert.equal(f.calls.filter(call => call.kind === "inspect").length, 3);
+});
+
+test("public reconnect fences a changed native source during host inspection", async t => {
+  const f = await publicAgentFixture(t, { onInspect: change => change() });
+  const spawned = await f.call("agent.runtime.spawn", spawnArgs());
+  const result = await f.call("agent.runtime.reconnect", {
+    opId: randomUUID(), id: spawned.result.session.id, expectedRevision: spawned.result.session.revision,
+  });
+  assert.equal(result.error.code, "ACCESS_DENIED", JSON.stringify(result));
+  assert.equal(result.error.effect, "unknown");
+  assert.equal(f.calls.filter(call => call.kind === "spawn").length, 1);
+  assert.equal((await f.call("agent.runtime.get", { id: spawned.result.session.id }, f.actor, "capability_read")).error.code, "NOT_FOUND");
+});
+
 test("schema-only contracts reject identity, prompts, grants, magic codes and completion reports", () => {
   assert.equal(agentRuntimeDefinitions.length, 6);
   for (const extra of [

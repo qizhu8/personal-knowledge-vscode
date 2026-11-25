@@ -28,14 +28,16 @@ test("runtime historical source authentication preserves exact protected generat
   }), error => error.evidenceReason === "hash-changed");
 });
 
-test("current Linux candidate pins require explicit scope and cannot rewrite historical or forged native expectations", async () => {
+test("refreshed native pins match without qualification and candidate scope cannot authorize forged or historical substitutions", async () => {
   const metadata = JSON.parse(await readFile(new URL("../migration/runtime-process-provenance.json", import.meta.url), "utf8"));
   const pin = metadata.native.find(row => row.file === "src/runtime-process.ts");
   assert.ok(pin);
   const previous = process.env.PKM_TEST_QUALIFICATION;
   try {
     delete process.env.PKM_TEST_QUALIFICATION;
-    assert.deepEqual(await checkNativeRecords([pin]), [{ kind: "native", path: pin.file, reason: "hash-changed" }]);
+    assert.deepEqual(await checkNativeRecords([pin]), []);
+    assert.deepEqual(await checkNativeRecords([{ ...pin, sha256: "0".repeat(64) }]),
+      [{ kind: "native", path: pin.file, reason: "hash-changed" }]);
     process.env.PKM_TEST_QUALIFICATION = "linux-candidate";
     assert.deepEqual(await checkNativeRecords([pin]), []);
     assert.deepEqual(await checkNativeRecords([{ ...pin, sha256: "0".repeat(64) }]),

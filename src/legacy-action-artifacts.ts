@@ -7,6 +7,10 @@ import { CoreError, type Actor } from "./contracts.js";
 import { exactRunnableArtifactBuiltin, originalDefinitionValue } from "./domain/action-compiler-validation.js";
 import type { Storage } from "./storage.js";
 import { authorizeNestedArtifact, readNestedActionPlan } from "./action-program-nested-artifacts.js";
+import { actionArtifactWasReleased } from "./action-artifact-gc-records.js";
+import { assertOriginalMcpPrivacy, readOriginalMcpJournal } from "./original-mcp-root-custody.js";
+import { originalMcpNativeHostReceiptSchema, originalMcpNativeHostReceiptTable,
+  verifyOriginalMcpNativeHostReceiptDatabase } from "./original-mcp-native-host-receipt.js";
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const grantSchema = z.strictObject({
@@ -20,13 +24,18 @@ type Grant = z.infer<typeof grantSchema>;
 const borrowedArtifactSchema = z.strictObject({
   artifactId: z.string().regex(/^artifact_[a-f0-9]{32}$/), sourceGrant: digest, digest,
 });
-const managedArtifactSchema = z.strictObject({
+const managedArtifactBase = z.strictObject({
   artifactId: borrowedArtifactSchema.shape.artifactId, kind: z.literal("managed"),
   actorId: z.literal("mcp:external"), workspaceId: z.string().min(1), ownerRunId: z.string().min(1),
   rootRunId: z.string().min(1).optional(),
   executableDigest: digest, sourceArtifactId: borrowedArtifactSchema.shape.artifactId,
-  digest, size: z.number().int().min(0).max(32 * 1024 * 1024), bytes: z.string().max(44_739_244),
+  digest, size: z.number().int().min(0).max(32 * 1024 * 1024),
 });
+export const nativeActionManagedArtifact = managedArtifactBase.extend({ storage: z.literal("native-blob/v1") });
+const managedArtifactSchema = z.union([
+  managedArtifactBase.extend({ bytes: z.string().max(44_739_244) }),
+  nativeActionManagedArtifact,
+]);
 const artifactSchema = z.union([borrowedArtifactSchema, managedArtifactSchema]);
 const intentSchema = z.strictObject({
   operationId: z.string().uuid(), workspaceId: z.string().min(1), actorId: z.literal("mcp:external"),
@@ -45,6 +54,17 @@ CREATE TRIGGER legacy_action_artifacts_no_update BEFORE UPDATE ON legacy_action_
 CREATE TRIGGER legacy_action_artifacts_no_delete BEFORE DELETE ON legacy_action_artifacts BEGIN SELECT RAISE(ABORT,'immutable Action artifact'); END;
 CREATE TRIGGER legacy_action_artifact_receipts_no_update BEFORE UPDATE ON legacy_action_artifact_receipts BEGIN SELECT RAISE(ABORT,'immutable Action artifact receipt'); END;
 CREATE TRIGGER legacy_action_artifact_receipts_no_delete BEFORE DELETE ON legacy_action_artifact_receipts BEGIN SELECT RAISE(ABORT,'immutable Action artifact receipt'); END;`;
+export const legacyActionArtifactDdl = ddl;
+export const nativeActionManagedBlobDdl = `CREATE TABLE native_action_managed_blobs(artifact_id TEXT PRIMARY KEY,actor_id TEXT NOT NULL,bytes TEXT NOT NULL,digest TEXT NOT NULL,size INTEGER NOT NULL);
+CREATE TRIGGER native_action_managed_blobs_no_update BEFORE UPDATE ON native_action_managed_blobs BEGIN SELECT RAISE(ABORT,'immutable native Action payload'); END;
+CREATE TRIGGER native_action_managed_blobs_release_only BEFORE DELETE ON native_action_managed_blobs WHEN NOT EXISTS (
+SELECT 1 FROM action_runtime_receipts r,json_each(r.result,'$.releasedArtifacts') a
+WHERE json_extract(r.result,'$.schema')='pkm.native-action-gc/v1' AND r.actor_id=OLD.actor_id
+AND json_extract(a.value,'$.artifactId')=OLD.artifact_id AND json_extract(a.value,'$.digest')=OLD.digest)
+BEGIN SELECT RAISE(ABORT,'native Action payload requires owned release receipt'); END;`;
+export const legacyActionPackagePublicationDdl = `CREATE TABLE legacy_action_package_publications(operation_id TEXT NOT NULL,stage TEXT NOT NULL,payload TEXT NOT NULL,payload_sha256 TEXT NOT NULL,PRIMARY KEY(operation_id,stage));
+CREATE TRIGGER legacy_action_package_publications_no_update BEFORE UPDATE ON legacy_action_package_publications BEGIN SELECT RAISE(ABORT,'immutable Action package publication'); END;
+CREATE TRIGGER legacy_action_package_publications_no_delete BEFORE DELETE ON legacy_action_package_publications BEGIN SELECT RAISE(ABORT,'immutable Action package publication'); END;`;
 const sha = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const encode = (value: unknown) => JSON.stringify(value);
 const fail = (code: string, message: string): never => { throw new CoreError(code, message); };
@@ -132,13 +152,28 @@ function transaction<T>(storage: Storage, db: DatabaseSync, work: () => T): T {
   catch (error) { if (db.isTransaction) db.exec("ROLLBACK"); throw error; }
 }
 
+function originalArtifactNamespace(db: DatabaseSync, workspaceId: string) {
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(originalMcpNativeHostReceiptTable))
+    return false;
+  const rows = db.prepare(`SELECT receipt_sha256,payload FROM ${originalMcpNativeHostReceiptTable} LIMIT 4097`).all();
+  if (!rows.length || rows.length > 4096) fail("RECOVERY_CONFLICT", "Original artifact namespace requires bounded native host metadata.");
+  for (const row of rows) {
+    const receipt = originalMcpNativeHostReceiptSchema.parse(JSON.parse(String(row.payload)));
+    const journal = readOriginalMcpJournal(receipt.root);
+    if (!journal || journal.workspaceId !== workspaceId || !assertOriginalMcpPrivacy(receipt.root))
+      return fail("RECOVERY_CONFLICT", "Original artifact namespace lost its exact root/custody binding.");
+    verifyOriginalMcpNativeHostReceiptDatabase(db, journal, String(row.receipt_sha256));
+  }
+  return true;
+}
 export function verifyLegacyActionArtifacts(db: DatabaseSync, workspaceId: string, allowPending = false): void {
   const version = Number(db.prepare("PRAGMA user_version").get()?.user_version), present = schema(db);
   if (!present) {
     if (version === 27) fail("RECOVERY_CONFLICT", "Schema27 requires the original Action artifact authority.");
     return;
   }
-  if (![27, 28].includes(version)) fail("RECOVERY_CONFLICT", "Original Action artifact authority requires downgrade-fenced schema27 or newer.");
+  if (![27, 28].includes(version) && !(version === 23 && originalArtifactNamespace(db, workspaceId)))
+    fail("RECOVERY_CONFLICT", "Action artifacts require downgrade-fenced native storage or exact original-root metadata.");
   for (const row of db.prepare("SELECT id FROM legacy_action_artifact_grants").all())
     storedGrant(db, String(row.id), workspaceId);
   for (const row of db.prepare("SELECT id,payload,payload_sha256 FROM legacy_action_artifacts").all()) {
@@ -157,7 +192,7 @@ export function verifyLegacyActionArtifacts(db: DatabaseSync, workspaceId: strin
     const receipt = intentSchema.parse(JSON.parse(String(row.payload)));
     if (receipt.operationId !== row.operation_id || receipt.workspaceId !== workspaceId || !receipt.filePin
       || storedGrant(db, receipt.destinationGrant, workspaceId).kind !== "destination"
-      || artifact(db, workspaceId, receipt.artifactId).value.digest !== receipt.digest)
+      || artifact(db, workspaceId, receipt.artifactId, false, undefined, true).value.digest !== receipt.digest)
       fail("RECOVERY_CONFLICT", "Action artifact receipt binding changed.");
   }
   const pending = db.prepare("SELECT payload,payload_sha256 FROM legacy_action_artifact_intent WHERE singleton=1").get();
@@ -169,6 +204,8 @@ export function verifyLegacyActionArtifacts(db: DatabaseSync, workspaceId: strin
       fail("RECOVERY_CONFLICT", "Action artifact intent binding changed.");
     if (!allowPending) fail("RECOVERY_REQUIRED", "Uncertain Action artifact publication requires explicit native reconciliation.");
   }
+  if (!allowPending && [...verifyLegacyActionPackagePublications(db, workspaceId).values()].some(history => history.at(-1)?.stage !== "written"))
+    fail("RECOVERY_REQUIRED", "Uncertain Action package publication requires explicit native reconciliation.");
 }
 
 export async function admitLegacyActionArtifactPath(storage: Storage, actor: Actor, request: {
@@ -176,6 +213,7 @@ export async function admitLegacyActionArtifactPath(storage: Storage, actor: Act
   authorize: (binding: Readonly<{ workspaceId: string; workspaceRoot: string; workspaceRootPin: string;
     actorId: string; authorityId: string; kind: "source" | "destination"; selectedRoot: string;
     path: string; expectedSha256: string | null }>) => boolean;
+  prepareCurrent?: () => Promise<void>;
 }) {
   actorCheck(actor);
   const workspaceRoot = storage.workspaceRoot(), workspaceId = await storage.workspaceId();
@@ -191,7 +229,8 @@ export async function admitLegacyActionArtifactPath(storage: Storage, actor: Act
     || request.kind === "destination" && request.expectedSha256 !== undefined
     || request.authorize(Object.freeze(proposed)) !== true)
     fail("ACCESS_DENIED", "Explicit exact native Action artifact path approval is required.");
-  return storage.withWorkspaceExclusive(() => {
+  return storage.withWorkspaceExclusive(async () => {
+    await request.prepareCurrent?.();
     storage.assertWorkspaceLease();
     canonicalDirectory(request.selectedRoot);
     canonicalDirectory(dirname(request.path));
@@ -216,7 +255,8 @@ export async function admitLegacyActionArtifactPath(storage: Storage, actor: Act
         if (!schema(db)) {
           if (version === 27) fail("RECOVERY_CONFLICT", "Schema27 artifact authority is missing.");
           db.exec(ddl);
-          db.exec(`PRAGMA user_version=${Math.max(27, version)}`);
+          if (!(version === 23 && originalArtifactNamespace(db, workspaceId)))
+            db.exec(`PRAGMA user_version=${Math.max(27, version)}`);
         }
         verifyLegacyActionArtifacts(db, workspaceId);
         db.prepare("INSERT OR IGNORE INTO legacy_action_artifact_grants VALUES(?,?)").run(id, payload);
@@ -238,14 +278,17 @@ function findGrant(db: DatabaseSync, workspaceId: string, root: string, kind: Gr
   currentGrant(found[0]!.grant, root);
   return found[0]!;
 }
-function artifact(db: DatabaseSync, workspaceId: string, id: string, materialize = true, activeParent?: string) {
+function artifact(db: DatabaseSync, workspaceId: string, id: string, materialize = true, activeParent?: string, historical = false) {
   const row = db.prepare("SELECT payload,payload_sha256 FROM legacy_action_artifacts WHERE id=?").get(id);
   if (!row || sha(String(row.payload)) !== row.payload_sha256)
     return fail("NOT_FOUND", "Original Action artifact was not found.");
-  const value = artifactSchema.parse(JSON.parse(String(row.payload)));
+  const value = (() => {
+    try { return artifactSchema.parse(JSON.parse(String(row.payload))); }
+    catch { return fail("RECOVERY_CONFLICT", "Action artifact metadata violates its closed custody schema."); }
+  })();
   if (value.artifactId !== id) fail("RECOVERY_CONFLICT", "Action artifact identity changed.");
   if ("kind" in value) {
-    const bytes = verifyManaged(db, workspaceId, value, true, materialize, activeParent);
+    const bytes = verifyManaged(db, workspaceId, value, true, materialize, activeParent, historical);
     return { value, bytes };
   }
   const grant = storedGrant(db, value.sourceGrant, workspaceId);
@@ -255,7 +298,8 @@ function artifact(db: DatabaseSync, workspaceId: string, id: string, materialize
 }
 
 function verifyManaged(db: DatabaseSync, workspaceId: string, value: z.infer<typeof managedArtifactSchema>,
-  published: boolean, materialize = true, activeParent?: string): Buffer | undefined {
+  published: boolean, materialize = true, activeParent?: string, historical = false): Buffer | undefined {
+  if (historical && materialize) fail("RECOVERY_CONFLICT", "Historical artifact metadata cannot materialize payloads.");
   if (value.workspaceId !== workspaceId) fail("RECOVERY_CONFLICT", "Managed Action artifact workspace changed.");
   const row = db.prepare("SELECT snapshot FROM action_runtime_runs WHERE actor_id=? AND run_id=?")
     .get(value.actorId, value.ownerRunId);
@@ -278,12 +322,26 @@ function verifyManaged(db: DatabaseSync, workspaceId: string, value: z.infer<typ
   if ((published || run.state === "succeeded") && (run.state !== "succeeded" || run.nodes?.length !== 1
     || run.nodes[0]?.outputs?.artifact_id !== value.artifactId))
     fail("ACCESS_DENIED", "Managed Action artifact has not been published by its successful owner.");
-  if (value.rootRunId && published)
+  if (value.rootRunId && published && !historical)
     authorizeNestedArtifact(db, workspaceId, value.actorId, value.ownerRunId, value.rootRunId,
       value.artifactId, value.sourceArtifactId, activeParent);
+  const released = actionArtifactWasReleased(db, workspaceId, value.artifactId);
+  if (released) {
+    if (published && !historical) fail("ACCESS_DENIED", "The owned Action artifact reference was explicitly released.");
+    return undefined;
+  }
   if (!materialize) return undefined;
-  const bytes = Buffer.from(value.bytes, "base64");
-  if (bytes.length !== value.size || bytes.toString("base64") !== value.bytes || sha(bytes) !== value.digest)
+  let encoded: string;
+  if ("bytes" in value) encoded = value.bytes;
+  else {
+    verifyNativeActionManagedBlobs(db, workspaceId);
+    const blob = db.prepare("SELECT actor_id,bytes,digest,size FROM native_action_managed_blobs WHERE artifact_id=?").get(value.artifactId);
+    if (!blob || blob.actor_id !== value.actorId || blob.digest !== value.digest || blob.size !== value.size)
+      return fail("RECOVERY_CONFLICT", "Managed Action blob lost its exact immutable owner binding.");
+    encoded = String(blob.bytes);
+  }
+  const bytes = Buffer.from(encoded, "base64");
+  if (bytes.length !== value.size || bytes.toString("base64") !== encoded || sha(bytes) !== value.digest)
     fail("RECOVERY_CONFLICT", "Managed Action artifact bytes changed.");
   return bytes;
 }
@@ -294,6 +352,7 @@ export function inspectActionArtifact(db: DatabaseSync, root: string, workspaceI
   if (!borrowedArtifactSchema.shape.artifactId.safeParse(id).success || !schema(db))
     return fail("NOT_FOUND", "Original Action artifact was not found.");
   const item = artifact(db, workspaceId, id, false);
+  if (actionArtifactWasReleased(db, workspaceId, id)) fail("ACCESS_DENIED", "The Action artifact reference was explicitly released.");
   if ("grant" in item && item.grant) {
     if (item.grant.authorityId.startsWith("pkm-action-picker:") && authorizePicked?.(item.grant.authorityId) !== true)
       return fail("ACCESS_DENIED", "The selected artifact grant requires its original live trust epoch.");
@@ -347,6 +406,46 @@ function artifactBytes(db: DatabaseSync, root: string, workspaceId: string, id: 
   return item.bytes;
 }
 
+export function verifyNativeActionManagedBlobs(db: DatabaseSync, workspaceId: string) {
+  const query = "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name LIKE 'native_action_managed_blobs%' ORDER BY name";
+  const actual = db.prepare(query).all();
+  if (!actual.length) return false;
+  const expected = new (db.constructor as { new(path: string): DatabaseSync })(":memory:");
+  try {
+    expected.exec(nativeActionManagedBlobDdl);
+    if (encode(actual) !== encode(expected.prepare(query).all())) fail("RECOVERY_CONFLICT", "Native Action blob schema changed.");
+  } finally { expected.close(); }
+  for (const row of db.prepare("SELECT artifact_id,actor_id,bytes,digest,size FROM native_action_managed_blobs").all()) {
+    const metadata = db.prepare("SELECT payload,payload_sha256 FROM legacy_action_artifacts WHERE id=?").get(row.artifact_id);
+    if (!metadata || sha(String(metadata.payload)) !== metadata.payload_sha256)
+      return fail("RECOVERY_CONFLICT", "Native Action blob has no immutable metadata.");
+    const value = managedArtifactSchema.parse(JSON.parse(String(metadata.payload)));
+    const bytes = Buffer.from(String(row.bytes), "base64");
+    if (!("storage" in value) || value.workspaceId !== workspaceId || value.artifactId !== row.artifact_id
+      || value.actorId !== row.actor_id || value.digest !== row.digest || value.size !== row.size
+      || bytes.length !== value.size || bytes.toString("base64") !== row.bytes || sha(bytes) !== value.digest
+      || actionArtifactWasReleased(db, workspaceId, value.artifactId))
+      fail("RECOVERY_CONFLICT", "Native Action blob ownership or bytes changed.");
+  }
+  return true;
+}
+export function readNativeManagedActionArtifacts(db: DatabaseSync, workspaceId: string) {
+  if (!schema(db)) return [];
+  verifyLegacyActionArtifacts(db, workspaceId, true);
+  return db.prepare("SELECT payload FROM legacy_action_artifacts").all().flatMap(row => {
+    const value = artifactSchema.parse(JSON.parse(String(row.payload)));
+    return "kind" in value ? [value] : [];
+  });
+}
+export function collectNativeManagedActionPayload(db: DatabaseSync, workspaceId: string, artifactId: string) {
+  if (!actionArtifactWasReleased(db, workspaceId, artifactId)) fail("ACCESS_DENIED", "Owned release receipt is required before payload collection.");
+  const row = db.prepare("SELECT payload FROM legacy_action_artifacts WHERE id=?").get(artifactId);
+  const value = row && managedArtifactSchema.parse(JSON.parse(String(row.payload)));
+  if (!value || value.workspaceId !== workspaceId) return fail("RECOVERY_CONFLICT", "Managed payload collection lost its owner.");
+  if ("storage" in value) db.prepare("DELETE FROM native_action_managed_blobs WHERE artifact_id=? AND actor_id=?")
+    .run(artifactId, value.actorId);
+}
+
 export function copyActionArtifact(db: DatabaseSync, root: string, workspaceId: string, actor: Actor,
   runId: string, executableDigest: string, sourceId: string, assertOwner: () => void,
   authorizePicked?: (authorityId: string) => boolean): { artifact_id: string } {
@@ -359,7 +458,9 @@ export function copyActionArtifact(db: DatabaseSync, root: string, workspaceId: 
     const bytes = artifactBytes(db, root, workspaceId, sourceId, authorizePicked);
     if (bytes.length !== source.size || sha(bytes) !== source.digest)
       fail("SOURCE_CHANGED", "Action artifact input differs from its approved identity.");
-    const used = Number(db.prepare("SELECT coalesce(sum(length(payload)),0) AS size FROM legacy_action_artifacts").get()?.size);
+    if (!verifyNativeActionManagedBlobs(db, workspaceId)) db.exec(nativeActionManagedBlobDdl);
+    const used = Number(db.prepare("SELECT coalesce(sum(length(payload)),0) AS size FROM legacy_action_artifacts").get()?.size)
+      + Number(db.prepare("SELECT coalesce(sum(length(bytes)),0) AS size FROM native_action_managed_blobs").get()?.size);
     const nested = readNestedActionPlan(db, actor.id, runId);
     if (nested && (nested.workspaceId !== workspaceId || nested.sourceId !== sourceId))
       fail("RECOVERY_CONFLICT", "Nested Action artifact source or workspace changed.");
@@ -367,12 +468,12 @@ export function copyActionArtifact(db: DatabaseSync, root: string, workspaceId: 
       artifactId: `artifact_${randomUUID().replaceAll("-", "")}`, kind: "managed", actorId: actor.id,
       workspaceId, ownerRunId: runId, executableDigest, sourceArtifactId: sourceId,
       ...(nested ? { rootRunId: nested.parentRunId } : {}),
-      digest: source.digest, size: bytes.length, bytes: bytes.toString("base64"),
+      digest: source.digest, size: bytes.length, storage: "native-blob/v1",
     });
     const payload = encode(value);
-    if (!Number.isSafeInteger(used) || used + Buffer.byteLength(payload) > managedBudget)
+    if (!Number.isSafeInteger(used) || used + Buffer.byteLength(payload) + bytes.toString("base64").length > managedBudget)
       fail("RESOURCE_LIMIT", "Managed Action artifact workspace quota exceeded.");
-    verifyManaged(db, workspaceId, value, false);
+    verifyManaged(db, workspaceId, value, false, false);
     const owner = db.prepare("SELECT snapshot FROM action_runtime_runs WHERE actor_id=? AND run_id=?").get(actor.id, runId);
     const run = JSON.parse(String(owner?.snapshot)) as { state?: unknown; cancelRequested?: unknown; nodes?: Array<{ nodeId?: unknown; state?: unknown }> };
     if (run.state !== "running" || run.cancelRequested || run.nodes?.length !== 1
@@ -380,6 +481,8 @@ export function copyActionArtifact(db: DatabaseSync, root: string, workspaceId: 
       fail("ACCESS_DENIED", "Artifact production requires a live owned Action node.");
     assertOwner();
     db.prepare("INSERT INTO legacy_action_artifacts VALUES(?,?,?)").run(value.artifactId, payload, sha(payload));
+    db.prepare("INSERT INTO native_action_managed_blobs VALUES(?,?,?,?,?)")
+      .run(value.artifactId, actor.id, bytes.toString("base64"), value.digest, bytes.length);
     assertOwner();
     db.exec("COMMIT");
     return { artifact_id: value.artifactId };
@@ -525,6 +628,100 @@ export async function reconcileLegacyActionArtifact(storage: Storage, actor: Act
       withParent(destination.path, destination.parentPin, (_path, parent) => fsyncSync(parent));
       commitIntent(storage, db, intent);
       return { reconciled: true };
+    } finally { db.close(); }
+  });
+}
+
+const packagePublication = z.strictObject({ operationId: z.string().uuid(), stage: z.enum(["prepared", "pinned", "written"]),
+  workspaceId: z.string(), actorId: z.literal("mcp:external"), destinationGrant: digest, path: z.string(),
+  digest, size: z.number().safe().int().min(0).max(maxBytes), filePin: z.string().nullable() });
+export function verifyLegacyActionPackagePublications(db: DatabaseSync, workspaceId: string) {
+  const query = "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name LIKE 'legacy_action_package_publications%' ORDER BY name";
+  const actual = db.prepare(query).all(), histories = new Map<string, z.infer<typeof packagePublication>[]>();
+  if (!actual.length) return histories;
+  const expected = new (db.constructor as { new(path: string): DatabaseSync })(":memory:");
+  try {
+    expected.exec(legacyActionPackagePublicationDdl);
+    if (encode(actual) !== encode(expected.prepare(query).all())) fail("RECOVERY_CONFLICT", "Package publication schema changed.");
+  } finally { expected.close(); }
+  for (const row of db.prepare("SELECT operation_id,stage,payload,payload_sha256 FROM legacy_action_package_publications ORDER BY rowid").all()) {
+    if (sha(String(row.payload)) !== row.payload_sha256) fail("RECOVERY_CONFLICT", "Package publication history changed.");
+    const value = packagePublication.parse(JSON.parse(String(row.payload))), history = histories.get(value.operationId) ?? [];
+    if (value.operationId !== row.operation_id || value.stage !== row.stage || value.workspaceId !== workspaceId
+      || value.stage !== ["prepared", "pinned", "written"][history.length]
+      || value.stage === "prepared" && value.filePin !== null || value.stage !== "prepared" && value.filePin === null
+      || history[0] && ["path", "digest", "size", "destinationGrant"].some(key =>
+        value[key as keyof typeof value] !== history[0]![key as keyof typeof value])
+      || history[1] && value.filePin !== history[1].filePin)
+      fail("RECOVERY_CONFLICT", "Package publication binding changed.");
+    const grant = storedGrant(db, value.destinationGrant, workspaceId);
+    if (grant.path !== value.path || grant.kind !== "destination")
+      fail("RECOVERY_CONFLICT", "Package destination custody changed.");
+    history.push(value); histories.set(value.operationId, history);
+  }
+  if (histories.size > 1000) fail("RESOURCE_LIMIT", "Package publication receipt budget exceeded.");
+  return histories;
+}
+
+/** A package is not an Action artifact or Run output. Reuse only independently admitted destination custody. */
+export async function publishLegacyActionPackage(storage: Storage, actor: Actor, destinationPath: string, bytes: Buffer,
+  assertCurrent: () => void, prepareCurrent?: () => Promise<void>) {
+  actorCheck(actor);
+  if (bytes.length > maxBytes) fail("RESOURCE_LIMIT", "Action package exceeds its bounded publication budget.");
+  const workspaceId = await storage.workspaceId(), root = storage.workspaceRoot();
+  return storage.withWorkspaceExclusive(async () => {
+    await prepareCurrent?.();
+    assertCurrent(); storage.assertWorkspaceLease();
+    const db = storage.connectNative();
+    try {
+      if (!schema(db)) fail("ACCESS_DENIED", "An independently admitted package destination is required.");
+      verifyLegacyActionArtifacts(db, workspaceId);
+      const destination = findGrant(db, workspaceId, root, "destination", destinationPath);
+      if (destination.grant.authorityId.startsWith("pkm-action-picker:"))
+        fail("ACCESS_DENIED", "Artifact-bound picker grants cannot publish ModuleSets.");
+      currentGrant(destination.grant, root);
+      if (lstatSync(destinationPath, { throwIfNoEntry: false })) fail("CONFLICT", "Package export never overwrites or replays a destination.");
+      const ddl = legacyActionPackagePublicationDdl;
+      const expected = new (db.constructor as { new(path: string): DatabaseSync })(":memory:");
+      try {
+        expected.exec(ddl);
+        const query = "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name LIKE 'legacy_action_package_publications%' ORDER BY name";
+        const actual = db.prepare(query).all();
+        if (actual.length && encode(actual) !== encode(expected.prepare(query).all()))
+          fail("RECOVERY_CONFLICT", "Package publication schema changed.");
+        if (!actual.length) transaction(storage, db, () => db.exec(ddl));
+      } finally { expected.close(); }
+      const histories = verifyLegacyActionPackagePublications(db, workspaceId);
+      if (histories.size >= 1000) fail("RESOURCE_LIMIT", "Package publication receipt budget exceeded.");
+      for (const history of histories.values()) if (history.at(-1)!.stage !== "written")
+        fail("RECOVERY_REQUIRED", "An uncertain package publication must be reconciled; it cannot be replayed.");
+      const operationId = randomUUID(), packageDigest = sha(bytes);
+      const save = (stage: string, filePin: string | null) => transaction(storage, db, () => {
+        assertCurrent();
+        const payload = encode({ operationId, stage, workspaceId, actorId: actor.id, destinationGrant: destination.id,
+          path: destinationPath, digest: packageDigest, size: bytes.length, filePin });
+        db.prepare("INSERT INTO legacy_action_package_publications VALUES(?,?,?,?)").run(operationId, stage, payload, sha(payload));
+      });
+      save("prepared", null);
+      withParent(destinationPath, destination.grant.parentPin, (anchored, parent) => {
+        assertCurrent(); currentGrant(destination.grant, root);
+        const fd = openSync(anchored, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+        try {
+          const id = inode(fstatSync(fd));
+          if (inode(lstatSync(anchored)) !== id || fstatSync(fd).nlink !== 1)
+            fail("RECOVERY_CONFLICT", "Package publication identity changed.");
+          save("pinned", id);
+          writeFileSync(fd, bytes); fsyncSync(fd);
+          if (inode(fstatSync(fd)) !== id || inode(lstatSync(anchored)) !== id || fstatSync(fd).nlink !== 1)
+            fail("RECOVERY_CONFLICT", "Package destination changed during publication.");
+          fsyncSync(parent);
+          assertCurrent();
+          const written = exactFile(destinationPath, destination.grant.parentPin).bytes;
+          if (!written.equals(bytes)) fail("RECOVERY_CONFLICT", "Package output differs from approved source.");
+          save("written", id);
+        } finally { closeSync(fd); }
+      });
+      return { ok: true, path: destinationPath, digest: packageDigest };
     } finally { db.close(); }
   });
 }

@@ -3,13 +3,19 @@ import { constants, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { RenameNoReplaceError, renameNoReplaceSync } from "./rename-no-replace.js";
 import { chmod, open, lstat, mkdir, readdir, realpath, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { coreDatabaseFile, coreDatabaseSidecarFiles, coreDatabasePath, codingProcessDatabaseFile,
+  codingProcessDatabasePath, codingProcessDatabaseFiles, workspaceStoragePaths,
+  serverDataDirectory, managedRuntimeDirectory, storageLayoutMarker, workspaceRootForDatabase,
+  separatedStorageSchema } from "./workspace-storage-paths.js";
 import { DatabaseSync } from "node:sqlite";
 import { inspectNativeSubscriptionBundles } from "./host-composition-subscription-bundle.js";
 import { inspectLegacyControlRecovery } from "./legacy-control-import.js";
 import { validateLegacyRecipeTrashJournalSchema } from "./legacy-recipe-trash.js";
 import { rebindMigrationTrashBackup } from "./migration-runtime.js";
 import { readLegacyStateReceipt, verifyBoundLegacyStateBytes, verifyNativeSubscriptionIdentity } from "./host-composition-legacy-state.js";
-import { verifyLegacyRetrievalModels } from "./legacy-retrieval-model.js";
+import { verifyLegacyRetrievalModels, captureLegacyRetrievalModelReconstruction, parseModelReconstructionManifest,
+  verifyLegacyRetrievalModelReconstruction, reconstructLegacyRetrievalModels,
+  type ModelReconstructionManifest } from "./legacy-retrieval-model.js";
 import { verifyLegacyKnowledgeRecovery } from "./legacy-knowledge-recovery.js";
 import { verifyLegacyKnowledgeSnapshots } from "./legacy-knowledge-snapshots.js";
 import { verifyLegacyActionArtifacts } from "./legacy-action-artifacts.js";
@@ -54,6 +60,8 @@ import {
 import { qualifyLegacyTrashSnapshotScope, type LegacyTrashSnapshotScope } from "./legacy-trash-import.js";
 import { isArchivedCodePath, isLegacyCodePath, isLegacyLibraryPath } from "./legacy-library.js";
 import { mtimeNanosecondsPattern, restoreFileMtimes } from "./file-mtime.js";
+import { protectWorkspaceGit } from "./workspace-git-protection.js";
+import { inspectWorkspaceRuntimeControls, acquireWorkspaceRuntimeControlSnapshot } from "./workspace-runtime-control.js";
 
 const manifestName = ".pkm-workspace-backup.json";
 const workspaceMarker = ".pkm-next-workspace";
@@ -64,7 +72,7 @@ const currentDatabaseVersion = 23;
 const supportedDatabaseVersions = new Set([12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]);
 const allowedDirectories = new Set(["notes", "skills", "papers", "prompts", "scripts", "actions", "components",
   "packages", "boards", "project", "recipes", "subscriptions", "agent-snapshot-reads", "recipe-usage-reads",
-  "knowledge-read-config", "legacy-import-evidence", "legacy-code-archive", ".pkm", ".pkm-action-sources"]);
+  "knowledge-read-config", "legacy-import-evidence", "legacy-code-archive", ".pkm", ".pkm-action-sources", "runtime-control"]);
 for (const root of ["_feedback", "_proposals"]) allowedDirectories.add(root);
 const preservesSourceMtime = (path: string) => /^(notes|skills|papers)\/.+\.md$/i.test(path)
   || /^recipe-usage-reads\/\.pkm\/state\/recipe-runs\/recipe_run_[^/]*\.json$/.test(path);
@@ -167,6 +175,8 @@ export interface WorkspaceBackupOptions {
   classificationBackup?: NativeClassificationBackupAuthority;
   skillSourceBackup?: NativeSkillSourceBackupAuthority;
   subscriptionIdentity?: NativeSubscriptionIdentityPolicy;
+  /** Restore-only, explicit local exact-content model sources. Never persisted in the archive. */
+  modelReconstructionSources?: readonly { packageId: string; sourceRoot: string }[];
   legacyTrash?: {
     actorId: string;
     trustedImportPlanSha256: string;
@@ -224,6 +234,7 @@ export interface WorkspaceBackupManifest {
   totalBytes: number;
   classification?: ClassificationBackupPin;
   skillSource?: SkillSourceBackupPin;
+  modelReconstruction?: ModelReconstructionManifest;
 }
 
 export interface WorkspaceBackupResult {
@@ -268,7 +279,7 @@ async function assertLegacyTrashHost(host: LegacyTrashNativeHost, root: string, 
     throw new WorkspaceBackupError("AUTHORITY_REQUIRED", "Trash backup host is not bound to the exact root, DB, workspace, source plan, and snapshot scope.");
   }
   const main = host.database.prepare("PRAGMA database_list").all().find(row => row.name === "main");
-  if (!main?.file || await realpath(String(main.file)) !== join(root, "core.sqlite")) {
+  if (!main?.file || await realpath(String(main.file)) !== coreDatabasePath(root)) {
     throw new WorkspaceBackupError("AUTHORITY_REQUIRED", "Trash backup host database is not the selected workspace database.");
   }
 }
@@ -405,8 +416,10 @@ function snapshotModePath(path: string) {
 async function readPinnedFile(root: string, path: string, limit: number, snapshotModes = false): Promise<{ bytes: Buffer; pin: FilePin }> {
   const preserveMode = isLegacyLibraryPath(path) && !isLegacyCodePath(path) || isArchivedCodePath(path)
     || snapshotModes && snapshotModePath(path);
-  const fullPath = join(root, ...path.split("/"));
-  await assertNoSymlinkParents(root, path);
+  const physicalPath = path.startsWith("runtime-control/") && workspaceStoragePaths(root).layout === "separated"
+    ? `${serverDataDirectory}/${path}` : path;
+  const fullPath = join(root, ...physicalPath.split("/"));
+  await assertNoSymlinkParents(root, physicalPath);
   let before;
   try { before = await lstat(fullPath); }
   catch (error) {
@@ -430,7 +443,7 @@ async function readPinnedFile(root: string, path: string, limit: number, snapsho
     const bytes = await handle.readFile();
     const after = await handle.stat();
     const afterExact = await handle.stat({ bigint: true });
-    await assertNoSymlinkParents(root, path);
+    await assertNoSymlinkParents(root, physicalPath);
     const pathAfter = await lstat(fullPath);
     if (bytes.length !== before.size || after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size
       || openedExact.mtimeNs !== afterExact.mtimeNs || openedExact.ctimeNs !== afterExact.ctimeNs
@@ -449,6 +462,7 @@ async function readPinnedFile(root: string, path: string, limit: number, snapsho
 async function listFiles(root: string, limits: WorkspaceBackupLimits): Promise<{ files: string[]; directories: string[] }> {
   const paths: string[] = [];
   const directories: string[] = [];
+  const storagePaths = workspaceStoragePaths(root);
   async function visit(directory: string, prefix: string, depth: number): Promise<void> {
     const pending = [{ directory, prefix, depth }];
     while (pending.length) {
@@ -463,14 +477,29 @@ async function listFiles(root: string, limits: WorkspaceBackupLimits): Promise<{
         if (stat.isSymbolicLink()) throw new WorkspaceBackupError("UNSAFE_ENTRY", `Workspace symlinks are not supported: ${path}`);
         if (stat.isDirectory()) { directories.push(path); pending.push({ directory: full, prefix: path, depth: current.depth + 1 }); continue; }
         if (!stat.isFile()) throw new WorkspaceBackupError("UNSAFE_ENTRY", `Workspace contains a non-regular entry: ${path}`);
-        if (path === "core.sqlite-wal" || path === "core.sqlite-shm") continue;
+        if (coreDatabaseSidecarFiles.includes(path)) continue;
         paths.push(path);
         if (paths.length > limits.maxFiles) throw new WorkspaceBackupError("QUOTA_EXCEEDED", "Workspace file count exceeds the backup limit.");
       }
     }
   }
+  for (const file of inspectWorkspaceRuntimeControls(root, true)) {
+    const path = `runtime-control/${file}`;
+    paths.push(path);
+    for (let parts = path.split("/").slice(0, -1); parts.length; parts = parts.slice(0, -1)) {
+      const directory = parts.join("/");
+      if (!directories.includes(directory)) directories.push(directory);
+    }
+  }
   for (const name of await readdir(root)) {
-    if (name === "core.sqlite-wal" || name === "core.sqlite-shm") continue;
+    if (coreDatabaseSidecarFiles.includes(name) || codingProcessDatabaseFiles.slice(1).includes(name)) continue;
+    if (name === managedRuntimeDirectory || name === storageLayoutMarker || name === ".gitignore" || name === ".git") continue;
+    if (name === "runtime-control") continue;
+    if (name === serverDataDirectory && storagePaths.layout === "separated") {
+      paths.push(coreDatabaseFile);
+      if ((await readdir(storagePaths.serverData)).includes(codingProcessDatabaseFile)) paths.push(codingProcessDatabaseFile);
+      continue;
+    }
     if (process.platform === "linux" && name === ".pkm-next-writer-fenced.json") {
       await assertLinuxRootOwnerMarker(root);
       continue;
@@ -498,21 +527,21 @@ async function listFiles(root: string, limits: WorkspaceBackupLimits): Promise<{
       }
       continue;
     }
-    if (name === workspaceMarker || name === legacyTrashMarker || name === "core.sqlite" || allowedDirectories.has(name)) {
+    if (name === workspaceMarker || name === legacyTrashMarker || name === coreDatabaseFile || name === codingProcessDatabaseFile || allowedDirectories.has(name)) {
       const stat = await lstat(join(root, name));
       if (stat.isSymbolicLink()) throw new WorkspaceBackupError("UNSAFE_ENTRY", `Workspace symlinks are not supported: ${name}`);
       if (allowedDirectories.has(name) && stat.isDirectory()) {
         directories.push(name);
         await visit(join(root, name), name, 1);
       }
-      else if ((name === workspaceMarker || name === legacyTrashMarker || name === "core.sqlite") && stat.isFile()) paths.push(name);
+      else if ((name === workspaceMarker || name === legacyTrashMarker || name === coreDatabaseFile || name === codingProcessDatabaseFile) && stat.isFile()) paths.push(name);
       else if (allowedDirectories.has(name) && !stat.isDirectory()) throw new WorkspaceBackupError("UNSAFE_ENTRY", `Workspace directory is invalid: ${name}`);
-      else if ((name === workspaceMarker || name === legacyTrashMarker || name === "core.sqlite") && !stat.isFile()) throw new WorkspaceBackupError("UNSAFE_ENTRY", `Workspace file is invalid: ${name}`);
+      else if ((name === workspaceMarker || name === legacyTrashMarker || name === coreDatabaseFile || name === codingProcessDatabaseFile) && !stat.isFile()) throw new WorkspaceBackupError("UNSAFE_ENTRY", `Workspace file is invalid: ${name}`);
     } else {
       throw new WorkspaceBackupError("UNSAFE_ENTRY", `Workspace contains an unrecognized entry: ${name}`);
     }
   }
-  if (!paths.includes(workspaceMarker) || !paths.includes("core.sqlite")) {
+  if (!paths.includes(workspaceMarker) || !paths.includes(coreDatabaseFile)) {
     throw new WorkspaceBackupError("INVALID_WORKSPACE", "Workspace marker or SQLite database is missing.");
   }
   return { files: paths.sort(), directories: directories.sort() };
@@ -537,7 +566,7 @@ export function assertWorkspaceBackupQuiescent(database: DatabaseSync, validated
   if (tables.some(table => /^legacy_memory_erasure_(?:schema|state|operations)$/.test(table.name))) {
     const main = database.prepare("PRAGMA database_list").all().find(row => row.name === "main");
     if (!main?.file) throw new WorkspaceBackupError("AUTHORITY_REQUIRED", "Memory ledger requires a pinned workspace identity.");
-    const workspaceId = JSON.parse(readFileSync(join(String(main.file), "..", workspaceMarker), "utf8")).id;
+    const workspaceId = JSON.parse(readFileSync(join(workspaceRootForDatabase(String(main.file)), workspaceMarker), "utf8")).id;
     if (validateLegacyMemoryErasureLedger(database, workspaceId).state !== "uninitialized" && memoryValidation !== pairedMemoryValidation)
       throw new WorkspaceBackupError("AUTHORITY_REQUIRED", "Memory-erasure backups require an external trusted epoch restore gate.");
   }
@@ -656,7 +685,7 @@ function directoryPinSync(path: string): { dev: string; ino: string } {
 
 function assertRestoreDatabaseOwner(database: DatabaseSync, stage: string): void {
   const main = database.prepare("PRAGMA database_list").all().find(item => item.name === "main");
-  if (database.isTransaction || !main?.file || resolve(String(main.file)) !== join(stage, "core.sqlite"))
+  if (database.isTransaction || !main?.file || resolve(String(main.file)) !== coreDatabasePath(stage))
     throw new WorkspaceBackupError("TRANSACTION_BOUNDARY", "Restore SQLite writes require the idle database owned by this staging directory.");
 }
 
@@ -673,7 +702,7 @@ function validateManifest(value: unknown, limits: WorkspaceBackupLimits): Worksp
   const invalid = (): never => { throw new WorkspaceBackupError("INVALID_MANIFEST", "Backup manifest is malformed or unsupported."); };
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
   const item = value as Record<string, unknown>;
-  const keys = Object.keys(item).filter(key => key !== "archivedDirectoryModes").sort().join(",");
+  const keys = Object.keys(item).filter(key => key !== "archivedDirectoryModes" && key !== "modelReconstruction").sort().join(",");
   if (!["databaseUserVersion,directories,files,schema,totalBytes,workspaceId,workspaceSchema",
     "classification,databaseUserVersion,directories,files,schema,totalBytes,workspaceId,workspaceSchema",
     "databaseUserVersion,directories,files,schema,skillSource,totalBytes,workspaceId,workspaceSchema",
@@ -699,8 +728,8 @@ function validateManifest(value: unknown, limits: WorkspaceBackupLimits): Worksp
       || !Number.isSafeInteger(file.mode) || file.mode < 0 || file.mode > 0o777)) invalid();
     if ("mtimeNs" in file && (!preservesSourceMtime(path)
       || typeof file.mtimeNs !== "string" || !mtimeNanosecondsPattern.test(file.mtimeNs))) invalid();
-    if (seen.has(path) || path === manifestName || path === "core.sqlite-wal" || path === "core.sqlite-shm"
-      || !(path === workspaceMarker || path === "core.sqlite" || [...allowedDirectories].some(area => path.startsWith(`${area}/`)))) invalid();
+    if (seen.has(path) || path === manifestName || coreDatabaseSidecarFiles.includes(path)
+      || !(path === workspaceMarker || path === coreDatabaseFile || path === codingProcessDatabaseFile || [...allowedDirectories].some(area => path.startsWith(`${area}/`)))) invalid();
     seen.add(path);
     total += Number(file.size);
     if (total > limits.maxTotalBytes) throw new WorkspaceBackupError("QUOTA_EXCEEDED", "Backup bytes exceed the configured total limit.");
@@ -745,7 +774,7 @@ function validateManifest(value: unknown, limits: WorkspaceBackupLimits): Worksp
       if (!seenDirectories.has(parts.slice(0, index).join("/"))) invalid();
     }
   }
-  if (total !== item.totalBytes || !seen.has(workspaceMarker) || !seen.has("core.sqlite")
+  if (total !== item.totalBytes || !seen.has(workspaceMarker) || !seen.has(coreDatabaseFile)
     || files.some((file, index) => index > 0 && files[index - 1].path >= file.path)) invalid();
   let classification: ClassificationBackupPin | undefined;
   if (item.classification !== undefined) {
@@ -773,6 +802,9 @@ function validateManifest(value: unknown, limits: WorkspaceBackupLimits): Worksp
     ...(classification ? { classification } : {}),
     ...(item.skillSource !== undefined ? {
       skillSource: parseSkillSourceBackupPin(item.skillSource, item.workspaceId as string),
+    } : {}),
+    ...(item.modelReconstruction !== undefined ? {
+      modelReconstruction: parseModelReconstructionManifest(item.modelReconstruction),
     } : {}),
   };
 }
@@ -818,9 +850,22 @@ async function verifyBackup(path: string, limits: WorkspaceBackupLimits, classif
       throw new WorkspaceBackupError("HASH_MISMATCH", `Backup file verification failed: ${file.path}`);
     }
   }
+  if (manifest.files.some(file => file.path === codingProcessDatabaseFile)) {
+    const processDb = new DatabaseSync(codingProcessDatabasePath(root), { readOnly: true });
+    try {
+      if (Number(processDb.prepare("PRAGMA user_version").get()?.user_version) !== 1
+        || processDb.prepare("PRAGMA integrity_check").get()?.integrity_check !== "ok")
+        throw new WorkspaceBackupError("INVALID_BACKUP", "Coding process snapshot is not a valid durable journal.");
+    } finally { processDb.close(); }
+    for (const suffix of ["-wal", "-shm", "-journal"]) {
+      try { await lstat(`${codingProcessDatabasePath(root)}${suffix}`); throw new WorkspaceBackupError("INVALID_BACKUP", "Coding process snapshot must be standalone."); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    }
+  }
   const marker = await readPinnedFile(root, workspaceMarker, limits.maxFileBytes);
   validateMarker(marker.bytes, manifest.workspaceId);
-  const db = new DatabaseSync(join(root, "core.sqlite"), { readOnly: true });
+  inspectWorkspaceRuntimeControls(root, true);
+  const db = new DatabaseSync(coreDatabasePath(root), { readOnly: true });
   let hasLegacyTrashReceipt = false;
   let classificationLayout: ReturnType<typeof scanNativeClassification>["entries"] | undefined;
   try {
@@ -871,7 +916,9 @@ async function verifyBackup(path: string, limits: WorkspaceBackupLimits, classif
     if (version >= 18) await verifyInlineNoteWorkspace(db, root);
     if (version >= 19) verifyBatch15SkillWorkspace(db, root, !!skillSource);
     verifyProjectEnvelopeAdoption(db, manifest.workspaceId);
-    verifyLegacyRetrievalModels(db, root);
+    if (manifest.modelReconstruction)
+      verifyLegacyRetrievalModelReconstruction(db, root, manifest.modelReconstruction);
+    else verifyLegacyRetrievalModels(db, root);
     verifyLegacyKnowledgeRecovery(db, root);
     verifyLegacyKnowledgeSnapshots(db, root, false,
       new Map(manifest.files.flatMap(file => file.mode === undefined ? [] : [[file.path, file.mode] as const])));
@@ -893,7 +940,7 @@ async function verifyBackup(path: string, limits: WorkspaceBackupLimits, classif
     }
   } finally { db.close(); }
   for (const suffix of ["-wal", "-shm"]) {
-    try { await lstat(join(root, `core.sqlite${suffix}`)); throw new WorkspaceBackupError("INVALID_BACKUP", "Backup SQLite snapshot must not depend on WAL sidecars."); }
+    try { await lstat(`${coreDatabasePath(root)}${suffix}`); throw new WorkspaceBackupError("INVALID_BACKUP", "Backup SQLite snapshot must not depend on WAL sidecars."); }
     catch (error) {
       if (error instanceof WorkspaceBackupError) throw error;
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -991,9 +1038,12 @@ export async function createWorkspaceBackup(
     await schedulerQuiescence?.release();
     throw new WorkspaceBackupError("QUIESCENCE_REQUIRED", "Host returned an invalid quiescence lease.");
   }
+  let runtimeControls: Awaited<ReturnType<typeof acquireWorkspaceRuntimeControlSnapshot>> | undefined;
   try {
+    runtimeControls = await acquireWorkspaceRuntimeControlSnapshot(sourceRoot);
     return await storage.withWorkspaceExclusive(async () => {
       quiescence.assertHeld();
+      runtimeControls!.assertHeld();
       schedulerQuiescence?.assertHeld();
       storage.assertWorkspaceLease();
       const workspaceId = await storage.workspaceId();
@@ -1006,7 +1056,7 @@ export async function createWorkspaceBackup(
       let dataVersion: number;
       try {
         const main = sourceDb.prepare("PRAGMA database_list").all().find(row => row.name === "main");
-        if (!main || !main.file || await realpath(String(main.file)) !== join(sourceRoot, "core.sqlite")) {
+        if (!main || !main.file || await realpath(String(main.file)) !== coreDatabasePath(sourceRoot)) {
           throw new WorkspaceBackupError("INVALID_WORKSPACE", "Backup must use the source workspace's initialized database.");
         }
         const skillSourcePin = captureSkillSourceBackup(sourceDb, sourceRoot, workspaceId, target, options.skillSourceBackup);
@@ -1073,7 +1123,10 @@ export async function createWorkspaceBackup(
         await verifyInlineNoteWorkspace(sourceDb, sourceRoot);
         verifyBatch15SkillWorkspace(sourceDb, sourceRoot, !!skillSource);
         verifyProjectEnvelopeAdoption(sourceDb, workspaceId);
-        verifyLegacyRetrievalModels(sourceDb, sourceRoot);
+        const modelPin = workspaceStoragePaths(sourceRoot).layout === "separated"
+          ? captureLegacyRetrievalModelReconstruction(sourceDb, sourceRoot) : undefined;
+        if (!modelPin) verifyLegacyRetrievalModels(sourceDb, sourceRoot);
+        const modelReconstruction = modelPin?.packages.length ? modelPin : undefined;
         verifyLegacyKnowledgeRecovery(sourceDb, sourceRoot);
         verifyLegacyKnowledgeSnapshots(sourceDb, sourceRoot);
         verifyLegacyActionArtifacts(sourceDb, workspaceId);
@@ -1082,7 +1135,7 @@ export async function createWorkspaceBackup(
         assertPortalRecoveryClear(sourceDb);
         dataVersion = Number(sourceDb.prepare("PRAGMA data_version").get()?.data_version);
         const pins: FilePin[] = [];
-        for (const path of paths.filter(path => path !== "core.sqlite")) {
+        for (const path of paths.filter(path => path !== coreDatabaseFile && path !== codingProcessDatabaseFile)) {
           const pinned = await readPinnedFile(sourceRoot, path, limits.maxFileBytes,
             [25, 26, 27, 28].includes(Number(sourceDb.prepare("PRAGMA user_version").get()?.user_version)));
           pins.push(pinned.pin);
@@ -1097,9 +1150,26 @@ export async function createWorkspaceBackup(
         if (Number(sourceDb.prepare("PRAGMA data_version").get()?.data_version) !== dataVersion) {
           throw new WorkspaceBackupError("SOURCE_CHANGED", "Workspace database changed after its source pin was acquired.");
         }
-        const snapshotPath = join(stage, "core.sqlite");
+        const snapshotPath = coreDatabasePath(stage);
         const sqlPath = snapshotPath.replaceAll("'", "''");
         sourceDb.exec(`VACUUM INTO '${sqlPath}'`);
+        if (paths.includes(codingProcessDatabaseFile)) {
+          const processPath = codingProcessDatabasePath(sourceRoot);
+          const processStat = await lstat(processPath);
+          if (!processStat.isFile() || processStat.isSymbolicLink() || processStat.nlink !== 1)
+            throw new WorkspaceBackupError("UNSAFE_ENTRY", "Coding process journal must be an unlinked regular file.");
+          const processDb = new DatabaseSync(processPath, { readOnly: true });
+          try {
+            const version = Number(processDb.prepare("PRAGMA data_version").get()?.data_version);
+            if (Number(processDb.prepare("PRAGMA user_version").get()?.user_version) !== 1)
+              throw new WorkspaceBackupError("INVALID_WORKSPACE", "Unsupported coding process journal version.");
+            processDb.exec(`VACUUM INTO '${codingProcessDatabasePath(stage).replaceAll("'", "''")}'`);
+            if (Number(processDb.prepare("PRAGMA data_version").get()?.data_version) !== version)
+              throw new WorkspaceBackupError("SOURCE_CHANGED", "Coding process journal changed during its quiescent snapshot.");
+          } finally { processDb.close(); }
+          await chmod(codingProcessDatabasePath(stage), 0o600);
+          await syncFile(codingProcessDatabasePath(stage));
+        }
         const snapshotBefore = await lstat(snapshotPath);
         if (!snapshotBefore.isFile() || snapshotBefore.isSymbolicLink() || snapshotBefore.nlink !== 1)
           throw new WorkspaceBackupError("UNSAFE_ENTRY", "SQLite archive must be an unlinked regular file.");
@@ -1116,7 +1186,7 @@ export async function createWorkspaceBackup(
             || process.platform !== "win32" && ((after.mode & 0o777) !== 0o600 || (current.mode & 0o777) !== 0o600))
             throw new WorkspaceBackupError("SOURCE_CHANGED", "SQLite archive lost its private file identity or mode.");
         } finally { await snapshotHandle.close(); }
-        const snapshot = new DatabaseSync(join(stage, "core.sqlite"));
+        const snapshot = new DatabaseSync(coreDatabasePath(stage));
         const databaseUserVersion = Number(snapshot.prepare("PRAGMA user_version").get()?.user_version);
         try {
           if (![currentDatabaseVersion, 24, 25, 26, 27, 28].includes(databaseUserVersion)) throw new WorkspaceBackupError("SCHEMA_MISMATCH", "Workspace database schema version is unsupported.");
@@ -1136,7 +1206,7 @@ export async function createWorkspaceBackup(
           || process.platform !== "win32" && (closedSnapshot.mode & 0o777) !== 0o600)
           throw new WorkspaceBackupError("SOURCE_CHANGED", "Closed SQLite archive lost its private file identity or mode.");
         const sidecars = await Promise.all(["-wal", "-shm"].map(async suffix => {
-          try { await lstat(`${join(stage, "core.sqlite")}${suffix}`); return true; }
+          try { await lstat(`${coreDatabasePath(stage)}${suffix}`); return true; }
           catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
         }));
         if (sidecars.some(Boolean)) throw new WorkspaceBackupError("DATABASE_BUSY", "SQLite snapshot still depends on WAL sidecars.");
@@ -1150,7 +1220,7 @@ export async function createWorkspaceBackup(
         const files: WorkspaceBackupManifest["files"] = [];
         let totalBytes = 0;
         for (const pin of pins) {
-          quiescence.assertHeld(); schedulerQuiescence?.assertHeld(); storage.assertWorkspaceLease();
+          quiescence.assertHeld(); runtimeControls!.assertHeld(); schedulerQuiescence?.assertHeld(); storage.assertWorkspaceLease();
           const { bytes, pin: afterPin } = await readPinnedFile(sourceRoot, pin.path, limits.maxFileBytes,
             [25, 26, 27, 28].includes(Number(sourceDb.prepare("PRAGMA user_version").get()?.user_version)));
           if (afterPin.sha256 !== pin.sha256 || afterPin.ino !== pin.ino || afterPin.dev !== pin.dev || afterPin.mtimeNs !== pin.mtimeNs
@@ -1180,10 +1250,15 @@ export async function createWorkspaceBackup(
         }
         const markerAfter = pins.find(pin => pin.path === workspaceMarker)!;
         if (markerAfter.sha256 !== markerPin.sha256) throw new WorkspaceBackupError("SOURCE_CHANGED", "Workspace identity changed during backup.");
-        const snapshotFile = await readPinnedFile(stage, "core.sqlite", limits.maxFileBytes);
+        const snapshotFile = await readPinnedFile(stage, coreDatabaseFile, limits.maxFileBytes);
         const snapshotBytes = snapshotFile.bytes;
-        files.push({ path: "core.sqlite", size: snapshotBytes.length, sha256: digest(snapshotBytes) });
+        files.push({ path: coreDatabaseFile, size: snapshotBytes.length, sha256: digest(snapshotBytes) });
         totalBytes += snapshotBytes.length;
+        if (paths.includes(codingProcessDatabaseFile)) {
+          const processSnapshot = await readPinnedFile(stage, codingProcessDatabaseFile, limits.maxFileBytes);
+          files.push({ path: codingProcessDatabaseFile, size: processSnapshot.bytes.length, sha256: digest(processSnapshot.bytes) });
+          totalBytes += processSnapshot.bytes.length;
+        }
         if (totalBytes > limits.maxTotalBytes) throw new WorkspaceBackupError("QUOTA_EXCEEDED", "Workspace bytes exceed the backup limit.");
         files.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
         const manifest: WorkspaceBackupManifest = {
@@ -1194,6 +1269,7 @@ export async function createWorkspaceBackup(
           } : {}),
           ...(classified ? { classification: classified.pin } : {}),
           ...(skillSource ? { skillSource: skillSource.pin } : {}),
+          ...(modelReconstruction ? { modelReconstruction } : {}),
         };
         const bytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
         const manifestPath = join(stage, manifestName);
@@ -1241,7 +1317,7 @@ export async function createWorkspaceBackup(
         const finalStage = await verifyBackup(stage, limits, classified, skillSource, subscriptionIdentity);
         if (finalStage.manifestSha256 !== digest(bytes))
           throw new WorkspaceBackupError("SOURCE_CHANGED", "Backup stage changed before publication.");
-        quiescence.assertHeld(); schedulerQuiescence?.assertHeld(); storage.assertWorkspaceLease();
+        quiescence.assertHeld(); runtimeControls!.assertHeld(); schedulerQuiescence?.assertHeld(); storage.assertWorkspaceLease();
         const stageRoot = await realpath(stage);
         if (options.nativePublishNoReplace) await options.nativePublishNoReplace(stageRoot, target);
         else publishNoReplace(stageRoot, target, executable);
@@ -1255,8 +1331,11 @@ export async function createWorkspaceBackup(
       } finally { if (!options.database) sourceDb.close(); }
     });
   } finally {
-    try { await quiescence.release(); }
-    finally { await schedulerQuiescence?.release(); }
+    try { await runtimeControls?.release(); }
+    finally {
+      try { await quiescence.release(); }
+      finally { await schedulerQuiescence?.release(); }
+    }
   }
 }
 
@@ -1264,7 +1343,8 @@ export async function restoreWorkspaceBackup(
   backupPath: string,
   destination: string,
   options: Pick<WorkspaceBackupOptions, "limits" | "pythonExecutable" | "legacyTrash" | "nativePublishNoReplace"
-    | "nativeRestoreAuthority" | "classificationBackup" | "skillSourceBackup" | "subscriptionIdentity"> = {},
+    | "nativeRestoreAuthority" | "classificationBackup" | "skillSourceBackup" | "subscriptionIdentity"
+    | "modelReconstructionSources"> = {},
 ): Promise<WorkspaceRestoreResult> {
   const limits = limitsFor(options.limits);
   if (!isAbsolute(backupPath)) throw new WorkspaceBackupError("INVALID_PATH", "Provide an absolute backup path.");
@@ -1292,6 +1372,19 @@ export async function restoreWorkspaceBackup(
   if (backup.manifest.workspaceId !== initialManifest.workspaceId
     || backup.manifestSha256 !== digest(initialManifestBytes))
     throw new WorkspaceBackupError("SOURCE_CHANGED", "Backup manifest identity changed during validation.");
+  if (backup.manifest.modelReconstruction) {
+    const packages = backup.manifest.modelReconstruction.packages;
+    if (!Array.isArray(options.modelReconstructionSources)
+      || options.modelReconstructionSources.length !== packages.length
+      || new Set(options.modelReconstructionSources.map(source => source.packageId)).size !== packages.length
+      || packages.some(model => !options.modelReconstructionSources!.some(source => source.packageId === model.packageId)))
+      throw new WorkspaceBackupError("RECOVERY_AUTHORITY_REQUIRED",
+        `Restore requires explicit exact-hash local modelReconstructionSources for packages: ${packages.map(model => model.packageId).join(", ")}. No models are downloaded or selections cleared.`);
+    if (packages.reduce((sum, model) => sum + model.totalBytes, backup.manifest.totalBytes) > limits.maxTotalBytes)
+      throw new WorkspaceBackupError("QUOTA_EXCEEDED", "Archive and reconstructed model bytes exceed maxTotalBytes; explicitly raise the restore limit.");
+  } else if (options.modelReconstructionSources?.length) {
+    throw new WorkspaceBackupError("INVALID_MANIFEST", "Model reconstruction sources were supplied for a backup with no reconstruction manifest.");
+  }
   const hasLegacyTrashReceipt = backup.hasLegacyTrashReceipt;
   if (hasLegacyTrashReceipt && (!options.legacyTrash
     || options.legacyTrash.expectedManifestSha256 !== backup.manifestSha256)) {
@@ -1430,12 +1523,17 @@ export async function restoreWorkspaceBackup(
   let retainSkillSourceStage = false;
   let skillPublishRequest: NativeSkillSourceRestoreRequest | undefined;
   return withStagingDirectory(parent, "pkm-restore", async stage => {
-    for (const directory of backup.manifest.directories) await ensureDirectoryPath(stage, directory);
+    const separatedRestore = !!backup.manifest.modelReconstruction || backup.manifest.directories.includes("runtime-control");
+    const restoredRelativePath = (path: string) => separatedRestore
+      && ([coreDatabaseFile, codingProcessDatabaseFile].includes(path) || path === "runtime-control" || path.startsWith("runtime-control/"))
+      ? `${serverDataDirectory}/${path}` : path;
+    for (const directory of backup.manifest.directories) await ensureDirectoryPath(stage, restoredRelativePath(directory));
     for (const item of backup.manifest.files) {
       const { bytes } = await readPinnedFile(backupRootPath, item.path, limits.maxFileBytes);
       if (bytes.length !== item.size || digest(bytes) !== item.sha256) throw new WorkspaceBackupError("HASH_MISMATCH", `Backup changed during restore: ${item.path}`);
-      await ensureBackupDirectoryTree(stage, item.path);
-      const output = join(stage, ...item.path.split("/"));
+      const restoredPath = restoredRelativePath(item.path);
+      await ensureBackupDirectoryTree(stage, restoredPath);
+      const output = join(stage, ...restoredPath.split("/"));
       const handle = await open(output, "wx", 0o600);
       try {
         await handle.writeFile(bytes);
@@ -1443,16 +1541,25 @@ export async function restoreWorkspaceBackup(
         await handle.sync();
       } finally { await handle.close(); }
     }
+    if (separatedRestore) {
+      const control = await open(join(stage, storageLayoutMarker), "wx", 0o600);
+      try {
+        await control.writeFile(JSON.stringify({ schema: separatedStorageSchema,
+          workspaceId: backup.manifest.workspaceId, layout: "separated" }));
+        await control.sync();
+      } finally { await control.close(); }
+      protectWorkspaceGit(stage);
+    }
     for (const entry of [...(backup.manifest.archivedDirectoryModes ?? [])].reverse())
       await chmod(join(stage, entry.path), entry.mode);
     restoreFileMtimes(stage, backup.manifest.files.flatMap(file =>
-      file.mtimeNs === undefined ? [] : [{ path: file.path, mtimeNs: file.mtimeNs }]), executable);
+      file.mtimeNs === undefined ? [] : [{ path: restoredRelativePath(file.path), mtimeNs: file.mtimeNs }]), executable);
     if (backup.classificationLayout) {
       await restoreClassificationModes(join(stage, ...classificationPin!.request.sourceRelative.split("/")), backup.classificationLayout);
     }
     const stageMarker = await readPinnedFile(stage, workspaceMarker, limits.maxFileBytes);
     validateMarker(stageMarker.bytes, backup.manifest.workspaceId);
-    const stageDb = new DatabaseSync(join(stage, "core.sqlite"));
+    const stageDb = new DatabaseSync(coreDatabasePath(stage));
     try {
       if (Number(stageDb.prepare("PRAGMA user_version").get()?.user_version) !== backup.manifest.databaseUserVersion
         || stageDb.prepare("PRAGMA integrity_check").get()?.integrity_check !== "ok") {
@@ -1475,6 +1582,19 @@ export async function restoreWorkspaceBackup(
         if (backup.manifest.databaseUserVersion >= 19) verifyBatch15SkillWorkspace(stageDb, stage, !!skillSource);
       }
       verifyProjectEnvelopeAdoption(stageDb, backup.manifest.workspaceId);
+      if (backup.manifest.modelReconstruction) {
+        if (process.platform !== "linux")
+          throw new WorkspaceBackupError("RECOVERY_AUTHORITY_REQUIRED", "Exact-content model reconstruction currently requires the real Linux stage writer fence.");
+        await assertRestoreAuthority();
+        const modelFence = await acquireLinuxRootWriterFence(stage, 250);
+        try {
+          reconstructLegacyRetrievalModels(stageDb, stage, backup.manifest.modelReconstruction,
+            options.modelReconstructionSources!, { assertWorkspaceLease: () => modelFence.assertHeld(),
+              limits: { maxTotalBytes: limits.maxTotalBytes - backup.manifest.totalBytes } });
+          modelFence.assertHeld();
+          await assertRestoreAuthority();
+        } finally { await modelFence.release(); }
+      }
       verifyLegacyRetrievalModels(stageDb, stage);
       verifyLegacyKnowledgeRecovery(stageDb, stage);
       verifyLegacyKnowledgeSnapshots(stageDb, stage);
@@ -1596,14 +1716,14 @@ export async function restoreWorkspaceBackup(
       backup.manifestSha256, options.legacyTrash);
     try { await validateWorkspace(stage); }
     catch { throw new WorkspaceBackupError("INVALID_BACKUP", "Restored workspace layout failed validation."); }
-    for (const file of backup.manifest.files) await syncFile(join(stage, ...file.path.split("/")));
+    for (const file of backup.manifest.files) await syncFile(join(stage, ...restoredRelativePath(file.path).split("/")));
     await syncDirectoryTree(stage);
     const finalBackup = await verifyBackup(backupRootPath, limits, classified, skillSource, subscriptionIdentity);
     if (finalBackup.manifestSha256 !== backup.manifestSha256) throw new WorkspaceBackupError("SOURCE_CHANGED", "Backup changed while it was being restored.");
     await assertRestoreAuthority();
     const stagePublishPath = await realpath(stage);
     if (skillSource && skillRestoreBase) {
-      const adoptionDb = new DatabaseSync(join(stage, "core.sqlite"));
+      const adoptionDb = new DatabaseSync(coreDatabasePath(stage));
       try {
         assertRestoreDatabaseOwner(adoptionDb, stage);
         const adoption = prepareSkillSourceAdoption(adoptionDb, stage, target, skillSource.pin, skillSource.policy);
@@ -1619,7 +1739,7 @@ export async function restoreWorkspaceBackup(
         verifyAdoptedSkillSourceBackup(adoptionDb, stage, skillSource.pin, adoption,
           adopted.snapshotDigest, adopted.adoptionHead, skillSource.policy);
       } finally { adoptionDb.close(); }
-      await syncFile(join(stage, "core.sqlite"));
+      await syncFile(coreDatabasePath(stage));
       await syncDirectoryTree(stage);
     }
     const assertPublicationAuthority = async () => {
@@ -1633,7 +1753,7 @@ export async function restoreWorkspaceBackup(
         const stageRoot = join(stage, ...classificationPin.request.sourceRelative.split("/"));
         const currentStageRootPin = await directoryPin(stageRoot);
         const currentStageParentPin = await directoryPin(dirname(stageRoot));
-        const publishDb = new DatabaseSync(join(stage, "core.sqlite"), { readOnly: true });
+        const publishDb = new DatabaseSync(coreDatabasePath(stage), { readOnly: true });
         try {
           assertRestoreDatabaseOwner(publishDb, stage);
           let checked;
@@ -1672,7 +1792,7 @@ export async function restoreWorkspaceBackup(
         checkClassificationSourceAuthority();
         classificationPolicy.assertFixtureOwnership();
         if (classificationPolicy.originalCompatible) {
-          const finalDb = new DatabaseSync(join(stage, "core.sqlite"), { readOnly: true });
+          const finalDb = new DatabaseSync(coreDatabasePath(stage), { readOnly: true });
           try {
             const checked = verifyOriginalClassificationBackupHistory(finalDb, backup.manifest.workspaceId, stageRoot, classificationPolicy);
             if (checked.scan.layoutSha256 !== classificationPin.request.layoutSha256
@@ -1693,7 +1813,7 @@ export async function restoreWorkspaceBackup(
         }
       }
       if (skillSource && skillPublishRequest?.adoption && skillPublishRequest.adoptedSnapshotDigest && skillPublishRequest.adoptedHead) {
-        const publishDb = new DatabaseSync(join(stage, "core.sqlite"), { readOnly: true });
+        const publishDb = new DatabaseSync(coreDatabasePath(stage), { readOnly: true });
         try {
           verifyAdoptedSkillSourceBackup(publishDb, stage, skillSource.pin, skillPublishRequest.adoption,
             skillPublishRequest.adoptedSnapshotDigest, skillPublishRequest.adoptedHead, skillSource.policy);
@@ -1711,8 +1831,12 @@ export async function restoreWorkspaceBackup(
           if (error instanceof WorkspaceBackupError || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
       }
-      const identityPublishDb = new DatabaseSync(join(stage, "core.sqlite"), { readOnly: true });
+      const identityPublishDb = new DatabaseSync(coreDatabasePath(stage), { readOnly: true });
       try {
+        if (backup.manifest.modelReconstruction) {
+          verifyLegacyRetrievalModelReconstruction(identityPublishDb, stage, backup.manifest.modelReconstruction);
+          verifyLegacyRetrievalModels(identityPublishDb, stage);
+        }
         await verifyNativeSubscriptionIdentity(identityPublishDb, stage, backup.manifest.workspaceId,
           options.subscriptionIdentity, "restore", target);
       } finally { identityPublishDb.close(); }
@@ -1740,7 +1864,7 @@ export async function restoreWorkspaceBackup(
       if (JSON.stringify(await directoryPin(target)) !== JSON.stringify(skillPublishRequest.stagePin)
         || JSON.stringify(await directoryPin(parent)) !== JSON.stringify(skillPublishRequest.destinationParentPin))
         throw new WorkspaceBackupError("SOURCE_CHANGED", "Canonical Skill source publication identity changed.");
-      const publishedDb = new DatabaseSync(join(target, "core.sqlite"), { readOnly: true });
+      const publishedDb = new DatabaseSync(coreDatabasePath(target), { readOnly: true });
       try {
         verifyPublishedSkillSourceBackup(publishedDb, target, skillSource.pin, skillPublishRequest.adoption,
           skillPublishRequest.adoptedSnapshotDigest, skillPublishRequest.adoptedHead, skillSource.policy);

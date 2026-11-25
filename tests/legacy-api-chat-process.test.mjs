@@ -12,7 +12,7 @@ import { createNativeRuntime } from "../dist/native-runtime.js";
 import { createLegacyManagedChatLocalModel } from "../dist/legacy-api-chat-managed-provider.js";
 import { LegacyApiChatProcesses } from "../dist/legacy-api-chat-process.js";
 import { RuntimeProcessService } from "../dist/runtime-process.js";
-import { ChatTurnService } from "../dist/chat-turn.js";
+import { chatTurnFixture } from "./chat-turn-fixtures.mjs";
 import { LegacyManagedApiChatRuntime } from "../dist/legacy-api-chat-managed-runtime.js";
 import { createLegacyChatProcessApprovalBridge } from "../dist/legacy-api-chat-process-approval.js";
 import { startLegacyApiChatUiHost } from "../dist/legacy-api-chat-ui-host.js";
@@ -37,18 +37,29 @@ test("failed process drain keeps capture open and retry cannot report a false cl
   assert.equal(capturesClosed, 1);
 });
 
-test("failed turn drain remains fatal and does not close managed storage on retry", async () => {
-  const turns = Object.create(ChatTurnService.prototype);
-  turns.active = new Map([["active", {
+test("failed turn drain remains fatal and does not close managed storage on retry", async t => {
+  const fixture = chatTurnFixture(), turns = fixture.service;
+  t.after(() => fixture.db.close());
+  turns.active.set("active", {
     controller: new AbortController(), done: Promise.reject(new Error("Turn persistence failed."))
-  }]]);
+  });
   const managed = Object.create(LegacyManagedApiChatRuntime.prototype);
   managed.turns = turns;
-  let closed = 0;
-  managed.db = { close() { closed++; } };
+  let closed = 0, released = 0;
+  managed.actor = "synthetic-fatal-owner"; managed.instanceId = "synthetic-fatal-instance";
+  managed.transaction = fn => fn();
+  managed.db = {
+    prepare(sql) {
+      assert.match(sql, /^DELETE FROM legacy_managed_chat_owner/);
+      return { run() { released++; } };
+    },
+    close() { closed++; },
+  };
   await assert.rejects(managed.close(), /Turn persistence failed/);
+  assert.equal(released, 0);
   turns.active.clear();
   await assert.rejects(managed.close(), /Turn persistence failed/);
+  assert.equal(released, 0);
   assert.equal(closed, 0);
 });
 
@@ -302,20 +313,44 @@ process.stderr.write("!");
   await assert.rejects(execute("process_output", { handle: crash.handle, stream: "stdout", start: 0, length: 100 },
     { ...scope, ...another }), /authority/);
   const owned = [0, 1, 2].map(n => Number(readFileSync(join(directory, `pid-${n}`))));
-  const owner = database.prepare("SELECT scope FROM legacy_chat_process_bindings WHERE handle=?").get(handle).scope;
+  const ownedRow = database.prepare("SELECT scope,job_id FROM legacy_chat_process_bindings WHERE handle=?").get(handle);
+  const owner = ownedRow.scope, ownedTask = processes.runtime.tasks.get(ownedRow.job_id);
+  const ownedGroup = ownedTask.group, groupDone = ownedGroup.done;
+  let releaseTerminal;
+  const terminalGate = new Promise(resolve => { releaseTerminal = resolve; });
+  // Payload exit can precede the guardian-close callback that persists the terminal receipt.
+  ownedGroup.done = groupDone.then(async result => { await terminalGate; return result; });
   const unknown = `process_${"e".repeat(64)}`;
   database.prepare("INSERT INTO legacy_chat_process_bindings VALUES(?,?,?,?,NULL,?)")
     .run(owner, unknown, "{}", randomUUID(), Date.now() - 1000);
   const stop = { method: "task-control", input: { ...identity, kind: "cancel",
     operationId: randomUUID(), expectedRevision: state.revision } };
-  const partial = await rpc(stop);
-  assert.equal(partial.status, 409);
-  assert.match(partial.error, /could not be cancelled/);
-  assert.match(partial.error, new RegExp(crash.handle));
-  await until(() => owned.every(pid => {
-    try { return readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\) /, "")[0] === "Z"; }
-    catch (error) { if (error.code === "ENOENT" || error.code === "ESRCH") return true; throw error; }
-  }), 3000);
+  try {
+    const partial = await rpc(stop);
+    assert.equal(partial.status, 409);
+    assert.match(partial.error, /could not be cancelled/);
+    assert.match(partial.error, new RegExp(crash.handle));
+    await until(() => owned.every(pid => {
+      try { return readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\) /, "")[0] === "Z"; }
+      catch (error) { if (error.code === "ENOENT" || error.code === "ESRCH") return true; throw error; }
+    }), 3000);
+    const exited = await groupDone;
+    assert.equal(exited.error, undefined);
+    assert(ownedGroup.child.exitCode !== null || ownedGroup.child.signalCode !== null);
+    const pending = processes.runtime.status(owner, ownedRow.job_id);
+    assert.equal(pending.state, "RUNNING");
+    assert.equal(pending.reason, "cancel");
+    assert.equal(pending.finishedAt, null);
+  } finally { releaseTerminal(); }
+  const stopped = await processes.runtime.wait(owner, ownedRow.job_id);
+  assert.equal(stopped.state, "CANCELLED");
+  assert.equal(stopped.reason, "cancel");
+  assert.equal(stopped.effect, "unknown");
+  assert.equal(typeof stopped.finishedAt, "number");
+  assert.equal(processes.runtime.tasks.has(ownedRow.job_id), false);
+  const persisted = JSON.parse(database.prepare("SELECT record_json FROM runtime_process_jobs WHERE job_id=?")
+    .get(ownedRow.job_id).record_json);
+  assert.deepEqual(persisted, stopped);
   assert.equal((await ok(control("status"))).state, "cancelled");
   database.prepare("DELETE FROM legacy_chat_process_bindings WHERE scope=? AND handle=?").run(owner, unknown);
   const retry = await rpc(stop);
@@ -324,6 +359,9 @@ process.stderr.write("!");
   state = (await ok({ method: "history", ...identity })).taskControl;
   assert.equal(state.stopped, true);
   await ui.close(); ui = undefined;
+  assert.equal(processes.runtime.diagnostics().activeJobs, 0);
+  assert.equal(processes.runtime.diagnostics().running, 0);
+  assert.equal(processes.runtime.diagnostics().queued, 0);
   processes = new LegacyApiChatProcesses(processOptions);
   assert.equal(JSON.parse((await execute("process_get", { handle: crash.handle })).content).state, "unknown");
   assert.equal(JSON.parse((await execute("run_process", crashArgs)).content).state, "unknown");

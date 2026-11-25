@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { knowledgeArea, resourcePath } from "./document-path.js";
+import { trashCustodyArea } from "./opaque-trash-contracts.js";
 
 export const trashLifecycleLayout = Object.freeze({
   version: "pkm.trash-lifecycle/v1",
@@ -19,11 +20,11 @@ export const trashLifecyclePin = z.strictObject({
 export const trashEntryId = z.union([z.string().uuid(), z.string().regex(/^[0-9]+-[a-f0-9]{10}$/)]);
 const receipt = z.strictObject({
   operationId: z.string().uuid(), action: z.enum(["trash", "restore"]),
-  entryId: trashEntryId, area: knowledgeArea, path: resourcePath,
+  entryId: trashEntryId, area: trashCustodyArea, path: resourcePath,
 });
 const input = z.strictObject({
-  operationId: z.string().uuid(), area: knowledgeArea, path: resourcePath,
-  kind: z.enum(["document", "folder"]), expectedTreeSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  operationId: z.string().uuid(), area: trashCustodyArea, path: resourcePath,
+  kind: z.enum(["document", "folder", "opaque"]), expectedTreeSha256: z.string().regex(/^[a-f0-9]{64}$/),
   expectedScanRevision: z.string().regex(/^[a-f0-9]{64}$/),
   entryIdFormat: z.literal("original").optional(),
 });

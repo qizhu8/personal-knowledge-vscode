@@ -1,17 +1,24 @@
 import { z } from "zod";
+import { nativeActionModuleSnapshot } from "./action-module-bytes.js";
+
+export const checkpointResponse = z.strictObject({
+  run_id: z.string(), checkpoint_id: z.string(), resume_token: z.string(), proposal_digest: z.string(),
+  answer: z.record(z.string(), z.json()), event_key: z.string().min(1).max(200),
+});
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const identity = z.string().regex(/^[A-Za-z][A-Za-z0-9._-]{0,127}$/);
-const source = z.discriminatedUnion("kind", [
+const source = z.union([
   z.strictObject({ kind: z.literal("inline"), definition: z.json() }),
   z.strictObject({
     kind: z.literal("moduleSet"), manifest: z.json(), files: z.record(z.string(), z.string()),
     enabled: z.boolean().optional(),
   }),
+  nativeActionModuleSnapshot,
 ]);
 const node = z.strictObject({
   nodeId: identity,
-  state: z.enum(["pending", "running", "succeeded", "failed", "skipped", "cancelled", "unknown"]),
+  state: z.enum(["pending", "running", "waiting", "succeeded", "failed", "skipped", "cancelled", "unknown"]),
   reason: z.enum(["ACTION_EFFECT_CONSENT_REQUIRED", "ACTION_RESULT_PROTOCOL_INVALID",
     "ACTION_RESULT_PROTOCOL_OVERSIZED", "ACTION_RESULT_REPORTED_FAILURE", "ACTION_RESULT_REPORTED_BLOCKED",
     "ACTION_RESULT_ARTIFACT_UNSUPPORTED", "ACTION_COMPONENT_UNSUPPORTED", "ACTION_ARTIFACT_INPUT_UNAVAILABLE", "ACTION_ARTIFACT_QUOTA_EXCEEDED",
@@ -33,7 +40,7 @@ const cancel = z.strictObject({
 const view = z.strictObject({
   schema: z.literal("pkm.action.runtime.run/v1"),
   runId: identity, version: z.number().safe().int().positive(),
-  state: z.enum(["ready", "running", "succeeded", "failed", "cancelled", "cancelling", "unknown"]),
+  state: z.enum(["ready", "running", "waiting", "succeeded", "failed", "cancelled", "cancelling", "unknown"]),
   actionId: z.string(), actionVersion: z.number().int(), definitionDigest: digest,
   source: z.json(), deadline: z.number().safe().int(), nodes: z.array(node),
   execution: z.literal("native-action-plan"),
@@ -47,11 +54,11 @@ const eventPage = z.strictObject({
     sequence: z.number().int().positive(), kind: z.enum([
       "created", "run-started", "node-started", "node-succeeded", "node-failed",
       "node-skipped", "node-cancelled", "node-unknown", "run-succeeded", "run-failed",
-      "run-cancelled", "run-unknown", "cancel-requested",
+      "run-cancelled", "run-unknown", "run-reconciled", "cancel-requested", "checkpoint-created", "checkpoint-resolved", "checkpoint-expired",
     ]),
     version: z.number().int().positive(), at: z.number().safe().int(),
     nodeId: identity.optional(),
-    state: z.enum(["ready", "running", "succeeded", "failed", "cancelled", "cancelling", "unknown", "pending", "skipped"]),
+    state: z.enum(["ready", "running", "waiting", "succeeded", "failed", "cancelled", "cancelling", "unknown", "pending", "skipped"]),
   })).max(100),
   oldestSequence: z.number().int().nonnegative(), latestSequence: z.number().int().nonnegative(), gap: z.boolean(),
 });

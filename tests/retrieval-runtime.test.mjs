@@ -241,10 +241,30 @@ test("explicit model upgrade rebuilds and CAS replaces old model without queryin
     const next = await nextRuntime.stage(scope);
     nextRuntime.qualify(scope, next.indexId);
     nextRuntime.activate(scope, next.indexId, old.indexId);
+    assert.equal(f.db.prepare("SELECT count(*) AS n FROM retrieval_runtime_indexes").get().n, 1);
+    assert.equal(f.db.prepare("SELECT index_id FROM retrieval_runtime_retirements").get().index_id, old.indexId);
     const result = await nextRuntime.search(scope, { query: "north" });
     assert.equal(result.model.revision, "fixed-2");
     assert.equal(result.hits[0].similarity, 1);
     await assert.rejects(f.runtime.search(scope, { query: "north" }), error("CONFLICT"));
+  } finally { f.db.close(); }
+});
+
+test("derived reset is scoped, CAS guarded and preserves immutable retirement receipts", async () => {
+  const f = fixture();
+  try {
+    f.set([source("a", "north")]);
+    const first = await activate(f);
+    const otherScope = { ...scope, actor: "other" };
+    const other = await activate(f, otherScope);
+    assert.throws(() => f.runtime.resetDerived(scope, "stale"), error("CONFLICT"));
+    f.runtime.resetDerived(scope, first.indexId);
+    assert.deepEqual(f.runtime.availability(scope), { available: false });
+    assert.equal((await f.runtime.search(otherScope, { query: "north" })).indexId, other.indexId);
+    assert.equal(f.db.prepare("SELECT index_id FROM retrieval_runtime_retirements").get().index_id, first.indexId);
+    assert.throws(() => f.db.exec("DELETE FROM retrieval_runtime_retirements"), /immutable/);
+    const rebuilt = await activate(f);
+    assert.notEqual(rebuilt.indexId, first.indexId);
   } finally { f.db.close(); }
 });
 

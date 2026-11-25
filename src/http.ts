@@ -18,10 +18,14 @@ async function body(req: IncomingMessage, maximum = Number.POSITIVE_INFINITY): P
 }
 export async function startHttp(core: Core, token: string, actor: Actor, port = 0,
   human?: { handle(req: IncomingMessage, res: import("node:http").ServerResponse, body: () => Promise<unknown>): Promise<boolean> },
-  recipe?: { handle(req: IncomingMessage, res: import("node:http").ServerResponse, body: () => Promise<unknown>): Promise<void> }) {
+  recipe?: { handle(req: IncomingMessage, res: import("node:http").ServerResponse, body: () => Promise<unknown>): Promise<void> },
+  lifecycle?: { activity(): { active: number; uncertain: number } }) {
   if (token.length < 32) throw new CoreError("INVALID_CONFIGURATION", "PKM_NEXT_TOKEN must contain at least 32 characters.");
   const { assets, headers: staticHeaders } = await loadBrowserAssets();
   let active = 0;
+  const instanceId = randomUUID();
+  let accepting = true;
+  const drained = new Set<() => void>();
   const server = createServer(async (req, res) => {
     const reply = (status: number, value: Record<string, unknown>) => {
       res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
@@ -46,16 +50,34 @@ export async function startHttp(core: Core, token: string, actor: Actor, port = 
     if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
       reply(401, { error: { code: "UNAUTHORIZED", message: "Bearer token required.", effect: "not-committed" } }); return;
     }
+    if (req.method === "GET" && req.url === "/service/status") {
+      try {
+        reply(200, { service: { schema: "pkm.core-http-status/v1", instanceId,
+          phase: accepting ? "accepting" : "draining", inFlight: active,
+          backgroundChat: lifecycle?.activity() ?? null,
+          protocols: { coreHttp: true, mcp: false }, automaticReplay: false },
+          identity: await core.dispatch("server_info", {}, actor) });
+      } catch {
+        reply(503, { error: { code: "NOT_AVAILABLE", message: "Core identity is unavailable.", effect: "not-committed" } });
+      }
+      return;
+    }
     const recipeRoute = !!recipe && /^\/api\/(?:recipe|validate)$/.test(req.url || "");
     if (!recipeRoute && (req.method !== "POST" || !/^\/v1\/[a-z_]+$/.test(req.url || ""))) {
       reply(404, { error: { code: "NOT_FOUND", message: "Use POST /v1/<method>.", effect: "not-committed" } }); return;
     }
+    if (!accepting) {
+      reply(503, { error: { code: "BUSY", message: "HTTP service is draining.", effect: "not-committed" } }); return;
+    }
     if (active >= 32) { reply(503, { error: { code: "BUSY", message: "HTTP admission limit reached.", effect: "not-committed" } }); return; }
     active++;
+    let dispatched = false;
     try {
       if (!(recipeRoute && req.method === "GET") && req.headers["content-type"]?.split(";")[0].trim() !== "application/json") throw new CoreError("INVALID_ARGUMENT", "Content-Type must be application/json.");
-      if (recipeRoute) { await recipe!.handle(req, res, () => body(req, 1048576)); return; }
-      const result = await core.dispatch(req.url!.slice(4), await body(req), actor);
+      if (recipeRoute) { dispatched = true; await recipe!.handle(req, res, () => body(req, 1048576)); return; }
+      const input = await body(req);
+      dispatched = true;
+      const result = await core.dispatch(req.url!.slice(4), input, actor);
       const status = result.error ? ({
         ACCESS_DENIED: 403, NOT_FOUND: 404, CONFLICT: 409, BUSY: 503, STORAGE_UNAVAILABLE: 503,
         STORAGE_ERROR: 500, INTERNAL: 500, INVALID_RESULT: 500,
@@ -67,12 +89,15 @@ export async function startHttp(core: Core, token: string, actor: Actor, port = 
       reply(status, result);
     } catch (error) {
       if (!(error instanceof CoreError)) console.error("PKM next HTTP:", error);
-      reply(400, { error: {
+      reply(dispatched ? 500 : 400, { error: {
         code: error instanceof CoreError ? error.code : "REQUEST_ERROR",
         message: error instanceof CoreError ? error.message : "Request failed; inspect server diagnostics.",
-        effect: "not-committed",
+        effect: error instanceof CoreError ? error.effect : dispatched ? "unknown" : "not-committed",
       } });
-    } finally { active--; }
+    } finally {
+      active--;
+      if (!active) { for (const ready of drained) ready(); drained.clear(); }
+    }
   });
   server.requestTimeout = 10000;
   server.headersTimeout = 10000;
@@ -82,5 +107,15 @@ export async function startHttp(core: Core, token: string, actor: Actor, port = 
     server.once("error", reject);
     server.listen(port, "127.0.0.1", resolve);
   });
-  return { server, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+  return { server, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    async quiesce() {
+      accepting = false;
+      if (active) await new Promise<void>(ready => drained.add(ready));
+      const background = lifecycle?.activity();
+      if (background && (background.active || background.uncertain)) {
+        accepting = true;
+        throw new CoreError("BUSY", "Active or uncertain background Chat work blocks handoff; reconcile it on the existing host.");
+      }
+      return { instanceId, phase: "transport-drained" as const, inFlight: active };
+    } };
 }

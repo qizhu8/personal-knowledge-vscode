@@ -7,6 +7,7 @@ import { memoryContent, memoryEvent, memoryRecord, memoryText, type MemoryRecord
 import { readKnowledgeMetadata } from "./metadata.js";
 import { projectMemoryPreview } from "./domain/memory-search.js";
 import { assertMemoryScopeActor, continuityScope } from "./memory-scope-continuity.js";
+import { originalMemoryStore, scanOriginalMemoryDocuments } from "./original-mcp-memory-store.js";
 
 const prefix = "System/Memory/";
 const version = memoryContent.extend({
@@ -38,7 +39,8 @@ export function assertMemoryReceiptScope(root: string, actorId: string, result: 
   if (parsed.data.scope !== memoryScope(root)) {
     throw new CoreError("NOT_AVAILABLE", "Explicit memory receipt is not available in this repository scope.");
   }
-  const document = scanMarkdown(root).find(item => item.record.id === parsed.data.id);
+  const document = (originalMemoryStore(root) ? scanOriginalMemoryDocuments(root) : scanMarkdown(root))
+    .find(item => item.record.id === parsed.data.id);
   if (document && readKnowledgeMetadata(document).metadata.memoryImport
     && continuityScope(root) !== parsed.data.scope)
     throw new CoreError("NOT_AVAILABLE", "Imported Memory receipts require a fresh exact host session.");
@@ -71,7 +73,7 @@ function stateOf(document: MarkdownRecord) {
   }
   return state;
 }
-export function encodeImportedMemoryDocument(stateInput: ExplicitMemoryState, provenanceInput: unknown): MarkdownRecord {
+export function encodeImportedMemoryDocument(stateInput: ExplicitMemoryState, provenanceInput: unknown, knowledgeId?: string): MarkdownRecord {
   const state = explicitMemoryStateSchema.parse(stateInput);
   const provenance = memoryImportProvenanceSchema.parse(provenanceInput);
   const current = state.versions.at(-1)!;
@@ -79,6 +81,7 @@ export function encodeImportedMemoryDocument(stateInput: ExplicitMemoryState, pr
   const initial = decodeMarkdown(state.id, encodeMarkdown(state.id, "Explicit memory", current.content,
     current.revision, false, undefined, path), path);
   const metadata = initial.metadata.clone();
+  if (knowledgeId !== undefined) metadata.set("knowledgeId", knowledgeId);
   metadata.set("memory", state);
   metadata.set("memoryImport", provenance);
   const raw = encodeMarkdown(state.id, "Explicit memory", current.content, current.revision, false,
@@ -112,7 +115,8 @@ export function memoryIntentResult(root: string, document: MarkdownRecord, opera
 export function planMemory(root: string, documents: MarkdownRecord[], request: StorageRequest):
   { result: unknown } | { write: { id: string; path: string; raw: string; before: string | null }; result: MemoryRecord } {
   assertMemoryScopeActor(root, request.actorId);
-  const collection = documents.filter(item => item.record.area === "notes" && item.record.path.startsWith(prefix));
+  const collection = originalMemoryStore(root) ? scanOriginalMemoryDocuments(root)
+    : documents.filter(item => item.record.area === "notes" && item.record.path.startsWith(prefix));
   const memories = collection.map(document => ({ document, state: stateOf(document) }));
   const sequences = new Set<number>();
   for (const { state } of memories) for (const item of state.versions) {
@@ -147,7 +151,7 @@ export function planMemory(root: string, documents: MarkdownRecord[], request: S
   if (operation === "memory.record.propose") {
     if (collection.length === 4096) throw new CoreError("BUSY", "Explicit-memory record limit reached; no proposal was committed.");
     const id = `explicit-${sha256(`${scope}\0${operationId}`)}`;
-    if (documents.some(item => item.record.id === id || item.record.area === "notes" && item.record.path === `${prefix}${id}.md`)) {
+    if ([...documents, ...collection].some(item => item.record.id === id || item.record.area === "notes" && item.record.path === `${prefix}${id}.md`)) {
       throw new CoreError("CONFLICT", "Explicit-memory proposal identity/path already exists.");
     }
     const content = memoryContent.parse({ content: args.content, sources: args.sources });

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
@@ -90,6 +91,54 @@ test("read-only CLI inspection needs no acknowledgement and legacy Storage.open 
   await assert.rejects(Storage.open(f.root), { code: "INVALID_WORKSPACE" });
   await assert.rejects(lstat(join(f.root, ".pkm-next-workspace")), { code: "ENOENT" });
   await assert.rejects(lstat(join(f.root, "core.sqlite")), { code: "ENOENT" });
+  assert.deepEqual(await snapshot(f.root), before);
+});
+
+test("cold CLI preflight refuses live writers before inventory and leaves the original root and writer untouched", {
+  timeout: 30000,
+}, async t => {
+  if (process.platform !== "linux") { t.skip("Linux writer inventory is required."); return; }
+  const f = await fixture(t);
+  const writer = spawn(process.execPath, ["-e",
+    "process.stdout.write('ready'); process.stdin.on('end', () => process.exit(0)); process.stdin.resume();",
+    "--", "--type=extensionHost"], { stdio: ["pipe", "pipe", "pipe"] });
+  t.after(async () => {
+    if (writer.exitCode !== null || writer.signalCode !== null) return;
+    const closed = once(writer, "close");
+    writer.stdin.end();
+    await closed;
+  });
+  await once(writer.stdout, "data");
+  const before = await snapshot(f.root);
+  const result = spawnSync(process.execPath, [resolve(testsRoot, "../dist/cli.js"),
+    "inspect-legacy-root", "--root", f.root, "--check-writers"], { encoding: "utf8", timeout: 15000 });
+  assert.equal(result.status, 1, result.stderr);
+  const { preflight } = JSON.parse(result.stdout);
+  assert.equal(preflight.schema, "pkm.legacy-root-cold-preflight/v1");
+  assert.equal(preflight.sourceRoot, f.root);
+  assert.equal(preflight.ready, false);
+  assert.equal(preflight.inspection, null, "A busy root must not start a full content inventory.");
+  assert(preflight.writerQuiescence.blockers.some(blocker =>
+    blocker.pid === writer.pid && blocker.kind === "vscode-extension-host"));
+  assert(preflight.blockers.some(blocker => blocker.code === "legacy-writers-active"));
+  assert.equal(writer.exitCode, null, "The preflight must not terminate existing writers.");
+  assert.deepEqual(await snapshot(f.root), before);
+});
+
+test("cold CLI preflight does not authorize cutover after a clear writer inventory", {
+  skip: process.platform !== "linux" || !process.env.PKM_TEST_WORKSPACE,
+}, async t => {
+  const f = await fixture(t);
+  const before = await snapshot(f.root);
+  const result = spawnSync(process.execPath, [resolve(testsRoot, "../dist/cli.js"),
+    "inspect-legacy-root", "--root", f.root, "--check-writers"], { encoding: "utf8", timeout: 15000 });
+  assert.equal(result.status, 1, result.stderr);
+  const { preflight } = JSON.parse(result.stdout);
+  assert.equal(preflight.writerQuiescence.blockers.length, 0,
+    "This test requires the framework's private process namespace.");
+  assert.equal(preflight.ready, false);
+  assert.equal(preflight.inspection.inventoryPlan.ready, true);
+  assert(preflight.blockers.some(blocker => blocker.code === "recovery-and-rollback-unqualified"));
   assert.deepEqual(await snapshot(f.root), before);
 });
 

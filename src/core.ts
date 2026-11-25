@@ -10,6 +10,9 @@ import { boundedChatJson } from "./chat-session-contracts.js";
 import { withLegacyReadPreflight, type LegacyReadSnapshot } from "./legacy-read-race.js";
 import { recipeProtocolOperations } from "./recipe-public-contracts.js";
 import { legacyRecipeLazyOperations } from "./legacy-recipe-lazy-contracts.js";
+import { managedChatTaskAvailable, currentManagedChatTaskGrant } from "./managed-chat-task-scope.js";
+import type { ManagedTaskOperation } from "./managed-chat-task-contracts.js";
+import { mutationReceiptPin, mutationReceiptResult } from "./mutation-receipt-contracts.js";
 
 const nativeMemoryOperations = new Set(["memory.record.confirm", "memory.record.revise", "memory.record.revoke"]);
 const integratedNative = (id: string) => id.startsWith("manager.") || id.startsWith("action.runtime.") || id.startsWith("channel.runtime.") || id.startsWith("portal.lifecycle.") || /^knowledge\.(?:note|skill|research)\.(?:create|update)$/.test(id)
@@ -26,18 +29,23 @@ const guardedKnowledgeReads = new Set([
 ]);
 const envelopeResult = z.record(z.string(), z.unknown());
 
-const catalog = definitions.map(definition => ({
-  operation: definition.id, version: 1, description: definition.description, readOnly: definition.readOnly,
-  inputSchema: z.toJSONSchema(definition.input, { io: "input" }), outputSchema: z.toJSONSchema(definition.output),
-  authorization: "nativeOnly" in definition && definition.nativeOnly ? "Native human exact-record decision; never HTTP/MCP"
-    : !definition.readOnly && (/^recipe\.(runtime|library)\./.test(definition.id) || legacyRecipeLazyOperations.has(definition.id))
-      ? "Separately composed fresh exact native host decision; bearer and recipeProtocol scope confer no execution permission"
-    : definition.readOnly ? "Authenticated workspace read" : "Authenticated workspace write",
-  idempotency: definition.readOnly ? "read"
-    : definition.id.startsWith("plugin.runtime.") || /^recipe\.(runtime|library)\./.test(definition.id) || legacyRecipeLazyOperations.has(definition.id)
-      ? "explicit-consent-no-automatic-retry" : "durable-operation-id",
-}));
-const catalogRevision = createHash("sha256").update(JSON.stringify(catalog)).digest("hex");
+function createCatalog() {
+  const catalog = definitions.map(definition => ({
+    operation: definition.id, version: 1, description: definition.description, readOnly: definition.readOnly,
+    inputSchema: z.toJSONSchema(definition.input, { io: "input" }), outputSchema: z.toJSONSchema(definition.output),
+    authorization: "nativeOnly" in definition && definition.nativeOnly ? "Native human exact-record decision; never HTTP/MCP"
+      : !definition.readOnly && (/^recipe\.(runtime|library)\./.test(definition.id) || legacyRecipeLazyOperations.has(definition.id))
+        ? "Separately composed fresh exact native host decision; bearer and recipeProtocol scope confer no execution permission"
+      : definition.readOnly ? "Authenticated workspace read" : "Authenticated workspace write",
+    idempotency: definition.readOnly ? "read"
+      : definition.id.startsWith("plugin.runtime.") || /^recipe\.(runtime|library)\./.test(definition.id) || legacyRecipeLazyOperations.has(definition.id)
+        ? "explicit-consent-no-automatic-retry" : "durable-operation-id",
+  }));
+  return { catalog, catalogRevision: createHash("sha256").update(JSON.stringify(catalog)).digest("hex") };
+}
+// Storage workers import shared contracts but do not serve discovery schemas.
+let sharedCatalog: ReturnType<typeof createCatalog> | undefined;
+const discoveryCatalog = () => sharedCatalog ??= createCatalog();
 export const methods = {
   server_info: { description: "Read this experimental server's protocol, limits and isolation boundary.", schema: z.strictObject({}), readOnly: true },
   capabilities_search: { description: "Browse/search the authorized catalog; returns summaries. Pin revision when paging.", schema: discovery, readOnly: true },
@@ -64,6 +72,8 @@ export class Core {
   private available(operation: string, actor?: Readonly<Actor>) {
     const definition = definitions.find(item => item.id === operation);
     if (!definition) return false;
+    if (operation === "operation.receipt.get" && typeof this.storage.readBrowserMutationReceipt !== "function") return false;
+    if (operation.startsWith("chat.task.")) return managedChatTaskAvailable(this.storage, operation, actor);
     if (actor?.recipeProtocol && !recipeProtocolOperations.has(operation)) return false;
     if (this.options.recipeApi?.owns(operation)) return this.options.recipeApi.available(operation, actor);
     if (/^recipe\.(runtime|library|compat)\./.test(operation) || operation.startsWith("mcp.tool.recipe_")) return false;
@@ -87,6 +97,7 @@ export class Core {
     try {
       this.options.assertAdmission?.(Object.freeze({ method, input, actor: Object.freeze({ ...actor }) }));
       if (!Object.hasOwn(methods, method)) throw new CoreError("NOT_FOUND", "Unknown API method.");
+      const { catalog, catalogRevision } = discoveryCatalog();
       if (method === "server_info") {
         parse(methods.server_info.schema, input);
         const pluginStatus = await this.plugins.read("plugin.runtime.status", { pluginId: "teams" }) as { available: boolean };
@@ -139,9 +150,37 @@ export class Core {
       const request = { operation: definition.id, args: validated, actorId: actor.id,
         ...(actor.boardWorker ? { boardWorker: actor.boardWorker } : {}),
         ...(definition.id.startsWith("collaboration.state.") ? { collaborationKind: actor.collaborationKind ?? "agent" } : {}) };
+      const recipeDispatch = this.options.recipeApi?.available(definition.id) === true;
+      const nativeDispatch = this.options.nativeRuntime && ((definition.id === "project.legacy.command" && this.options.nativeRuntime.available(definition.id, actor))
+        || definition.id.startsWith("agent.snapshot.") || (definition.id.startsWith("subscription.") && definition.readOnly)
+        || integratedNative(definition.id) || definition.id.startsWith("chat.turn.")
+        || definition.id.startsWith("workflow.executor.") || definition.id.startsWith("agent.runtime.")
+        || definition.id.startsWith("knowledge.folder.lifecycle.") || definition.id === "knowledge.folder.move"
+        || definition.id === "knowledge.folder.promote-delete"
+        || definition.id.startsWith("sync.apply.") || definition.id === "sync.apply"
+        || definition.id.startsWith("retrieval.runtime.") || definition.id === "subscription.materialize.apply");
+      if (!definition.readOnly && typeof this.storage.bindBrowserMutationPin === "function"
+        && z.uuid().safeParse(validated.operationId ?? validated.operation_id).success) {
+        const bodySha256 = createHash("sha256").update(JSON.stringify({
+          operation: definition.id, version: 1, arguments: args.arguments,
+        })).digest("hex");
+        const worker = !recipeDispatch && !nativeDispatch && !nativeMemoryOperations.has(definition.id)
+          && !definition.id.startsWith("chat.task.") && !definition.id.startsWith("plugin.runtime.");
+        // Native recovery and authorization own their admission; an unproven
+        // receipt mapping cannot resolve a browser pin and must not write first.
+        if (worker) await this.storage.bindBrowserMutationPin(request, bodySha256);
+      }
       const perform = async (): Promise<unknown> => {
-        if (this.options.recipeApi?.available(definition.id))
-          return this.options.recipeApi.dispatch(definition.id, validated, actor);
+        if (definition.id === "operation.receipt.get") {
+          const pin = mutationReceiptPin.parse(validated);
+          const receipt = await this.storage.readBrowserMutationReceipt({ ...pin, actorId: actor.id });
+          return mutationReceiptResult.parse({ schema: "pkm.operation.receipt/v1", ...receipt });
+        }
+        if (definition.id.startsWith("chat.task."))
+          return this.storage.requestManagedChatTask(currentManagedChatTaskGrant(this.storage, definition.id, actor),
+            definition.id as ManagedTaskOperation, validated);
+        if (recipeDispatch)
+          return this.options.recipeApi!.dispatch(definition.id, validated, actor);
         if (definition.id.startsWith("plugin.runtime.")) {
           const performPlugin = async () => {
             const pluginActor = Object.freeze({ id: actor.id, trusted: true });
@@ -183,15 +222,8 @@ export class Core {
           if (!decision.success) throw new CoreError("INVALID_RESULT", "Native memory authorizer returned an invalid decision.");
           return this.storage.request({ ...request, memoryDecision: { ...decision.data, documentSha256: review.data.documentSha256 } });
         }
-        if (this.options.nativeRuntime && ((definition.id === "project.legacy.command" && this.options.nativeRuntime.available(definition.id, actor))
-          || definition.id.startsWith("agent.snapshot.") || (definition.id.startsWith("subscription.") && definition.readOnly)
-          || integratedNative(definition.id) || definition.id.startsWith("chat.turn.")
-          || definition.id.startsWith("workflow.executor.") || definition.id.startsWith("agent.runtime.")
-          || definition.id.startsWith("knowledge.folder.lifecycle.") || definition.id === "knowledge.folder.move"
-          || definition.id === "knowledge.folder.promote-delete"
-          || definition.id.startsWith("sync.apply.") || definition.id === "sync.apply"
-          || definition.id.startsWith("retrieval.runtime.") || definition.id === "subscription.materialize.apply")) {
-          return this.options.nativeRuntime.dispatch(definition.id, validated, actor);
+        if (nativeDispatch) {
+          return this.options.nativeRuntime!.dispatch(definition.id, validated, actor);
         }
         return this.storage.request(request);
       };

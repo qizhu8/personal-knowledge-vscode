@@ -3,7 +3,7 @@ import { lstatSync } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import type { DatabaseSync } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
 import { CoreError, type Actor } from "./contracts.js";
 import type { Storage } from "./storage.js";
 import { scanMarkdown } from "./markdown.js";
@@ -21,6 +21,8 @@ import { readLegacyStateReceipt, verifyBoundLegacyStateBytes } from "./host-comp
 import { verifyLegacyRetrievalModels } from "./legacy-retrieval-model.js";
 import { authorizeLegacyRetrievalFeedback, legacyLearningStateSchema, publishLegacyRetrievalLearning,
   readLegacyRetrievalLearning } from "./legacy-retrieval-learning.js";
+import { readOriginalMcpJournal, requireOriginalMcpScriptCustody } from "./original-mcp-root-custody.js";
+import { verifyOriginalMcpPublicScriptCustody } from "./original-mcp-root.js";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 export const LEGACY_RETRIEVAL_ENGINE_SHA256 = "332e434272a3cc88410eb50c7e4bfc3e3f69c5bf1e13f7f9a799087c37124f89";
@@ -43,6 +45,29 @@ CREATE TRIGGER IF NOT EXISTS legacy_retrieval_corpus_no_update BEFORE UPDATE ON 
 BEGIN SELECT RAISE(ABORT,'retrieval generation is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS legacy_retrieval_corpus_no_delete BEFORE DELETE ON legacy_retrieval_corpus
 BEGIN SELECT RAISE(ABORT,'retrieval generation is immutable'); END;`;
+
+let corpusSchemaReference: string | undefined;
+/** Cold/read-only verification; never initialize schema or require a current corpus after later public edits. */
+export function verifyLegacyRetrievalCorpus(database: DatabaseSync) {
+  const sql = "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE tbl_name='legacy_retrieval_corpus' ORDER BY name";
+  const schema = database.prepare(sql).all();
+  if (!schema.length) return undefined;
+  if (corpusSchemaReference === undefined) {
+    const reference = new DatabaseSync(":memory:");
+    try { reference.exec(ddl); corpusSchemaReference = JSON.stringify(reference.prepare(sql).all()); }
+    finally { reference.close(); }
+  }
+  if (JSON.stringify(schema) !== corpusSchemaReference)
+    throw new CoreError("INVALID_WORKSPACE", "Original retrieval generation schema or immutability changed.");
+  let generation = 0, latest: z.infer<typeof rowSchema> | undefined;
+  for (const raw of database.prepare("SELECT * FROM legacy_retrieval_corpus ORDER BY generation").iterate()) {
+    const row = rowSchema.parse(raw);
+    if (row.generation !== ++generation)
+      throw new CoreError("INVALID_WORKSPACE", "Original retrieval generation chain is incomplete.");
+    latest = row;
+  }
+  return latest;
+}
 
 function inspect(database: DatabaseSync) {
   const exists = database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_retrieval_corpus'").get();
@@ -133,7 +158,8 @@ export function legacyRetrievalSources(storage: Storage, database: DatabaseSync,
         implementation: asArray(fm.implementation), assumptions: asArray(fm.assumptions), cites: normalizeCites(fm.cites) });
     }
   }
-  const scriptFiles = legacyKnowledgeTree(root, "scripts");
+  const scriptFiles = readOriginalMcpJournal(root)?.plan.schema === "pkm.original-mcp-custody/v1"
+    ? [] : legacyKnowledgeTree(root, "scripts");
   const identities = new Map<string, z.infer<typeof legacyScriptIdentitySchema>>();
   for (const file of scriptFiles.filter(file => !file.directory && basename(file.path).startsWith(".") && file.path.endsWith(".pkm.json"))) {
     if (file.raw === undefined) throw new CoreError("INVALID_DATA", "Script identity must be valid UTF-8.");
@@ -161,7 +187,7 @@ export function legacyRetrievalSources(storage: Storage, database: DatabaseSync,
     scripts.push({ path: file.path, file: basename(file.path), category: dirname(file.path) === "." ? "(root)" : dirname(file.path),
       content: file.raw, lang: languages(file.path, file.raw), extension: extname(file.path), knowledgeId: identity?.knowledgeId ?? legacyId });
   }
-  const recipes = readProjectRecipeSnapshot(root);
+  const recipes = readProjectRecipeSnapshot(root, { publication: true });
   const sources = { skills, notes, papers, scripts, recipes: recipes.recipes, subscriptionGroups: subscription?.groups ?? [],
     readSubscription(key: string) {
       if (subscription) return subscription.read(key);
@@ -190,6 +216,17 @@ export async function legacyIndexedKnowledgeRead(storage: Storage, args: z.infer
       if (binding?.plan.statePlan?.subscriptionIdentity && !authorizeSubscriptions)
         throw new CoreError("ACCESS_DENIED", "Imported subscriber identity requires its native fixed-actor read authority.");
       await verifyBoundLegacyStateBytes(database, storage.workspaceRoot(), workspaceId);
+      const original = readOriginalMcpJournal(storage.workspaceRoot());
+      if (["get_script", "search_scripts"].includes(args.tool)
+        || args.tool === "get_knowledge" && /^(?:pkm:\/\/scripts?\/|script_)/.test(String(args.arguments.id ?? ""))
+        || args.tool === "search_knowledge" && Array.isArray(args.arguments.content_type_filter)
+          && args.arguments.content_type_filter.includes("script"))
+        requireOriginalMcpScriptCustody(storage.workspaceRoot());
+      const verifyScripts = async () => {
+        if (original?.plan.schema === "pkm.original-mcp-custody/v2")
+          await verifyOriginalMcpPublicScriptCustody(storage.workspaceRoot());
+      };
+      await verifyScripts();
       const models = verifyLegacyRetrievalModels(database, storage.workspaceRoot()), model = models.active;
       const learning = readLegacyRetrievalLearning(database, { workspaceId, actorId: actor.id });
       const latest = inspect(database), before = legacyRetrievalSources(storage, database, await legacyRetrievalSubscriptions(storage.workspaceRoot()));
@@ -208,15 +245,18 @@ export async function legacyIndexedKnowledgeRead(storage: Storage, args: z.infer
           ...args, ...before, retrievalSnapshot: { ...before.snapshot, generation }, retrievalModel: model,
           learningState: learning.state,
         };
+      await verifyScripts();
       const staged = z.strictObject({ value: z.json(), text: z.string(), learningState: legacyLearningStateSchema.optional() })
         .parse(await (execute ? execute(input) : runLegacyMcpPython(
         fileURLToPath(new URL("../compat/legacy-knowledge-mcp.py", import.meta.url)), [], input)));
       const result = { value: staged.value, text: staged.text };
       storage.assertWorkspaceLease();
+      await verifyScripts();
       const after = legacyRetrievalSources(storage, database, await legacyRetrievalSubscriptions(storage.workspaceRoot()));
       await verifyBoundLegacyStateBytes(database, storage.workspaceRoot(), workspaceId);
       if (JSON.stringify(verifyLegacyRetrievalModels(database, storage.workspaceRoot()).selection) !== JSON.stringify(models.selection))
         throw new CoreError("CONFLICT", "Native local-model selection changed during retrieval.");
+      await verifyScripts();
       if (before.sourceDigest !== after.sourceDigest || JSON.stringify(before.files) !== JSON.stringify(after.files))
         throw new CoreError("CONFLICT", "Indexed sources changed during retrieval; no generation was published.");
       database.exec("BEGIN IMMEDIATE");

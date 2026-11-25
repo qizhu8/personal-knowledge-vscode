@@ -8,6 +8,7 @@ import { validateLegacyMemoryErasureLedger } from "./legacy-memory-erasure.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { inspectLegacyClassificationCommand } from "./legacy-classification-command.js";
+import { workspaceRootForDatabase } from "./workspace-storage-paths.js";
 
 /**
  * Until native ownership and restore authority are composed, unknown Batch16
@@ -44,7 +45,7 @@ export function assertBatch16UnintegratedClear(database: DatabaseSync, allowMemo
       const main = database.prepare("PRAGMA database_list").all().find(row => row.name === "main");
       if (main?.file) {
         const path = String(main.file);
-        id = JSON.parse(readFileSync(join(path, "..", ".pkm-next-workspace"), "utf8")).id;
+        id = JSON.parse(readFileSync(join(workspaceRootForDatabase(path), ".pkm-next-workspace"), "utf8")).id;
       }
     }
     if (!id) {

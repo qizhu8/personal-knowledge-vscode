@@ -7,6 +7,7 @@ import {
 import {
   freezeToolJson, redactToolOutput, toolArgumentsDigest, toolCanonicalJson, toolCatalogDigest, validateToolCatalogPage,
 } from "./domain/tool-gateway-projection.js";
+import { managedChatTaskToolAllowed } from "./managed-chat-task-scope.js";
 export { toolApprovalDigest, toolArgumentsDigest, toolCanonicalJson, toolResultContent } from "./domain/tool-gateway-projection.js";
 export type {
   ToolGatewayOptions, ToolGatewayResult, ToolApprovalBinding, ToolApprovalVerifier, ToolGatewayBinding,
@@ -55,6 +56,7 @@ export class ToolGateway {
   private count = 0;
   private readonly mutations = new Map<string, string>();
   private readonly usedOperations = new Set<string>();
+  private readonly outstanding = new Set<Promise<unknown>>();
   private readonly dispatcher: ToolGatewayOptions["dispatcher"];
   private readonly authorize: ToolGatewayOptions["authorize"];
   private readonly verifyApproval: ToolGatewayOptions["verifyApproval"];
@@ -80,9 +82,10 @@ export class ToolGateway {
     this.installed = catalog.map(binding => {
       const definition = definitionFor(binding.operation);
       if (!definition || unavailable.has(binding.operation) || nativeControl(binding.operation)
-        || ("nativeOnly" in definition && definition.nativeOnly)
+        || ("nativeOnly" in definition && definition.nativeOnly
+          && !managedChatTaskToolAllowed(binding.operation, this.actor.id, this.context))
         || !/^[a-zA-Z][a-zA-Z0-9_.-]{0,199}$/.test(binding.name))
-        throw new CoreError("NOT_AVAILABLE", "Only registered non-native Core tools can be bound.");
+        throw new CoreError("NOT_AVAILABLE", "Only registered Core tools with their actual native scope can be bound.");
       // Mutations always require exact native approval, even when a binding says otherwise.
       return Object.freeze({ name: binding.name, operation: binding.operation,
         approvalRequired: !definition.readOnly || binding.approvalRequired === true, definition });
@@ -153,6 +156,9 @@ export class ToolGateway {
     return { request, item, binding };
   }
 
+  activity() { return this.outstanding.size; }
+  async retired() { await Promise.allSettled([...this.outstanding]); }
+
   async execute(input: unknown, options: { signal: AbortSignal }): Promise<ToolGatewayResult> {
     let name = "unavailable", operation = "unavailable";
     let readOnly = false, started = false, committed = false;
@@ -170,7 +176,10 @@ export class ToolGateway {
       return new Promise<T>((resolve, reject) => {
         const abort = () => reject(signal.reason);
         signal.addEventListener("abort", abort, { once: true });
-        Promise.resolve().then(() => { check(); return work(); }).then(resolve, reject)
+        const pending = Promise.resolve().then(() => { check(); return work(); });
+        this.outstanding.add(pending);
+        void pending.then(() => this.outstanding.delete(pending), () => this.outstanding.delete(pending));
+        pending.then(resolve, reject)
           .finally(() => signal.removeEventListener("abort", abort));
       });
     };

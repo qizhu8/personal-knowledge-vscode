@@ -1,10 +1,32 @@
 import { parentPort, workerData } from "node:worker_threads";
+import { coreDatabasePath } from "./workspace-storage-paths.js";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { CoreError, type StorageRequest } from "./contracts.js";
+import { initializeBrowserMutationPins, storageMutationFingerprint, bindBrowserMutationPin, readBrowserMutationReceipt,
+  type BrowserMutationReceiptControl } from "./browser-mutation-receipt.js";
+import { ExperimentalTodoGenesisFault, assertExperimentalTodoGenesisFaultControl,
+  type ExperimentalTodoGenesisFaultControl } from "./original-mcp-todo-genesis-fault.js";
+import { ORIGINAL_MCP_TODO_GENESIS_DDL, assertNoPendingOriginalMcpTodoGenesis,
+  prepareOriginalMcpTodoGenesisIntent, finalizeOriginalMcpTodoGenesis,
+  type OriginalMcpTodoGenesisAdmission } from "./original-mcp-todo-genesis.js";
+import { receiveOriginalMcpTodoGenesisSourceControl,
+  type OriginalMcpTodoGenesisSourceControl } from "./original-mcp-todo-genesis-source.js";
+import { STORAGE_OWNER_DDL } from "./storage-owner-schema.js";
+import { capturePlainWorkspaceControls, parseWorkspaceIdentity, validateWorkspace, type PlainWorkspaceControls } from "./workspace-validation.js";
+import { classifyStorageStartup } from "./storage-startup-classification.js";
+import { openFreshNoteIndex } from "./fresh-note-index-storage.js";
+import type { FreshNoteGuardPhase, FreshNoteQueryModel, FreshNoteSource, FreshRootScan } from "./fresh-note-query-contracts.js";
+import type { LegacyNotesReadQuery, LegacyNotesReadResult } from "./storage.js";
 import { atomicMarkdownWrite, decodeMarkdown, encodeMarkdown, readMarkdown, scanMarkdown, sha256, type MarkdownRecord } from "./markdown.js";
 import { atomicBoardWrite, planTodo, scanBoards } from "./boards.js";
+import { OriginalTodoAssignmentGate, originalTodoAssignmentRequest,
+  type OriginalTodoAssignmentAdmission } from "./original-mcp-todo-assignment-gate.js";
+import { OriginalTodoRoleGate, originalTodoRoleStorageRequest, originalTodoRoleOperationId,
+  ORIGINAL_TODO_HUMAN_OPERATION, type OriginalTodoRoleAdmission } from "./original-mcp-todo-role-gate.js";
+import { originalSdkTodoRoleEvidenceId } from "./original-mcp-sdk-todo-role-provenance.js";
+import { commandTodoBoard } from "./domain/todo-board.js";
 import { prepareNativeBoardLifecycle, recoverNativeBoardLifecycle } from "./native-board-lifecycle.js";
 import { assertNativeBoardWriteTarget, boardLifecycleFingerprint, nativeBoardLifecycleInput, NATIVE_BOARD_LIFECYCLE_OPERATION,
   type NativeBoardLifecycleInput } from "./native-board-lifecycle-state.js";
@@ -17,7 +39,12 @@ import { readResearch } from "./research.js";
 import { researchDefinitions } from "./research-contracts.js";
 import { memoryDefinitions } from "./memory-contracts.js";
 import { memoryTemporaryId, planMemory, memoryIntentResult, assertMemoryReceiptScope } from "./memory.js";
-import { activateReadoptedMemoryScope, deactivateMemoryScopeContinuity,
+import { activateOriginalMcpTodoSession, activateOriginalMcpTodoWorker, deactivateOriginalMcpTodoSession,
+  assertOriginalMcpTodoSession, originalMcpDomainFile, originalMcpDomainHash, type OriginalMcpTodoSession } from "./original-mcp-domain-state.js";
+import { originalMemoryStore, readOriginalMemoryDocument } from "./original-mcp-memory-store.js";
+import { atomicFileWrite } from "./file-write.js";
+import { assertMemoryScopeActor } from "./memory-scope-continuity.js";
+import { activateReadoptedMemoryScope, bindMemoryScopeRevocation, deactivateMemoryScopeContinuity,
   type MemoryScopeContinuityRequest } from "./memory-scope-continuity.js";
 import { skillDefinitions } from "./skill-contracts.js";
 import { readSkills } from "./skills.js";
@@ -45,6 +72,9 @@ import { projectMutationDefinitions } from "./project-mutations-contracts.js";
 import { applyProjectMutation, deserializeProjectMutationPlan, planProjectMutation, readProjectMutationPin, recoverProjectMutation, serializeProjectMutationPlan } from "./project-mutations.js";
 import { chatSessionDefinitions, CHAT_SESSION_LIMITS, type ChatSessionOperation } from "./chat-session-contracts.js";
 import { initializeChatSessionSchema, createChatSessionStore } from "./chat-session-store.js";
+import { initializeManagedChatTasks, createManagedChatTaskStore } from "./managed-chat-task-store.js";
+import { managedTaskDefinitions } from "./managed-chat-task-contracts.js";
+import { assertManagedTaskAdmission, type ManagedTaskWorkerRequest } from "./managed-chat-task-admission.js";
 import { workflowRuntimeDefinitions, type WorkflowRuntimeRequest } from "./workflow-runtime-contracts.js";
 import { initializeWorkflowRuntime, readWorkflowRuntime, mutateWorkflowRuntime } from "./workflow-runtime.js";
 import { syncPlanDefinitions, type SyncPlanCreate, type SyncPlanDecision } from "./sync-plan-contracts.js";
@@ -105,6 +135,8 @@ import {
 } from "./legacy-classification-native.js";
 import { LEGACY_MEMORY_ERASURE_DDL, validateLegacyMemoryErasureLedger } from "./legacy-memory-erasure.js";
 import { LEGACY_CLASSIFICATION_COMMAND_DDL, verifyLegacyClassificationCommandSchema } from "./legacy-classification-command.js";
+import { verifyOriginalRecoveryState, type OriginalRecoveryWorkerAdmission } from "./original-knowledge-recovery-state.js";
+import { executeOriginalRecoveryWorker } from "./original-knowledge-recovery-worker.js";
 import { nativeTodoUserDdl, nativeTodoUserInput, nativeTodoUiChats, planNativeTodoUser, nativeTodoUserFingerprint,
   prepareNativeTodoUserIntent, assertNativeTodoUserPending, NATIVE_TODO_USER_OPERATION,
   type NativeTodoUserInput, type NativeTodoUiChat } from "./native-todo-user-ui.js";
@@ -115,8 +147,12 @@ const workerConfiguration = workerData && typeof workerData === "object" ? worke
 const root = typeof workerData === "string" ? workerData : String(workerConfiguration?.root);
 const adoptionPrivacySha256 = typeof workerConfiguration?.adoptionPrivacySha256 === "string"
   ? workerConfiguration.adoptionPrivacySha256 : undefined;
-const db = new DatabaseSync(join(root, "core.sqlite"));
+const db = new DatabaseSync(coreDatabasePath(root));
+const workerWorkspaceId = parseWorkspaceIdentity(readFileSync(join(root, ".pkm-next-workspace"), "utf8")).id;
+const workerRootStat = lstatSync(root, { bigint: true });
+const workerRootPin = `${workerRootStat.dev}:${workerRootStat.ino}`;
 const databaseVersion = Number(db.prepare("PRAGMA user_version").get()!.user_version);
+verifyOriginalRecoveryState(db, root, true);
 verifyLegacyKnowledgeRecovery(db, root, true);
 try { verifyLegacyKnowledgeSnapshots(db, root, true); }
 catch (error) {
@@ -201,8 +237,10 @@ initializeLegacyStateReceiptSchema(db);
 initializePortalLifecycleSchema(db);
 initializeLegacyExtensionJournal(db);
 initializeChatSessionSchema(db);
+initializeManagedChatTasks(db);
 initializeWorkflowRuntime(db);
 initializeSyncPlanStore(db);
+initializeBrowserMutationPins(db);
 db.exec(COLLABORATION_STATE_DDL);
 new ExecutionStateStore(db).initialize();
 db.exec(RUNTIME_PROCESS_DDL);
@@ -220,14 +258,12 @@ initializeMigrationRuntime(db);
 initializeLegacyTrashImport(db);
 initializeLegacyRecipeTrashJournal(db);
 initializeLegacyNoteWorkItemsSchema(db);
+db.exec(ORIGINAL_MCP_TODO_GENESIS_DDL);
 initializeLegacySnapshotRestoreSchema(db);
 db.exec(LEGACY_INLINE_NOTE_JOURNAL_DDL);
 db.exec(LEGACY_SHARED_SOURCE_RECEIPT_DDL);
 db.exec(ACTION_RUNTIME_DDL);
-db.exec(`CREATE TABLE IF NOT EXISTS native_runtime_owner (
-  singleton INTEGER PRIMARY KEY CHECK(singleton=1), owner_id TEXT NOT NULL,
-  fence INTEGER NOT NULL CHECK(fence>0), lease_until INTEGER NOT NULL
-)`);
+db.exec(STORAGE_OWNER_DDL);
 initializeNativeLegacySkillJournal(db);
 initializeNativeLegacySkillSourceJournal(db);
 db.exec(BATCH15_SKILL_HISTORY_DDL);
@@ -239,10 +275,20 @@ db.exec(LEGACY_MEMORY_ERASURE_DDL);
 db.exec(`PRAGMA user_version=${Math.max(23, databaseVersion)}; COMMIT;`);
 const uploads = createUploads(db, root);
 const chatSessions = createChatSessionStore(db);
+const managedTasks = createManagedChatTaskStore(db, root);
+const originalAssignments = new OriginalTodoAssignmentGate(root, db, (actorId, id) =>
+  chatSessions.execute({ operation: "chat.session.get", args: { id } }, actorId) as { id: string; revision: number; archivedAt?: string });
+const originalRoles = new OriginalTodoRoleGate(root, db, id =>
+  chatSessions.execute({ operation: "chat.session.get", args: { id } }, "mcp:external") as { id: string; revision: number; archivedAt?: string });
 const syncPlans = new SyncPlanStore(db);
 const collaboration = new CollaborationStateStore(db, { initializeSchema: false });
 type IndexedDocument = Pick<MarkdownRecord["record"], "id" | "title" | "revision" | "deleted" | "sha256" | "path" | "area">;
 let indexedDocuments: IndexedDocument[] | undefined;
+function insertDocumentIndex(documents: Iterable<IndexedDocument>): void {
+  const insert = db.prepare("INSERT INTO documents(id,title,revision,deleted,sha256,path,area) VALUES(?,?,?,?,?,?,?)");
+  for (const record of documents)
+    insert.run(record.id, record.title, record.revision, record.deleted ? 1 : 0, record.sha256, record.path, record.area);
+}
 function reconcileIndex(): MarkdownRecord[] {
   const documents = scanMarkdown(root);
   if (indexedDocuments?.length === documents.length
@@ -253,8 +299,7 @@ function reconcileIndex(): MarkdownRecord[] {
         && record.sha256 === previous.sha256 && record.path === previous.path && record.area === previous.area;
     })) return documents;
   db.prepare("DELETE FROM documents").run();
-  const insert = db.prepare("INSERT INTO documents(id,title,revision,deleted,sha256,path,area) VALUES(?,?,?,?,?,?,?)");
-  for (const { record } of documents) insert.run(record.id, record.title, record.revision, record.deleted ? 1 : 0, record.sha256, record.path, record.area);
+  insertDocumentIndex(documents.map(({ record }) => record));
   indexedDocuments = documents.map(({ record }) => ({
     id: record.id, title: record.title, revision: record.revision, deleted: record.deleted,
     sha256: record.sha256, path: record.path, area: record.area,
@@ -318,6 +363,10 @@ function assertLegacyNoteRecoveryEnvelope(operationId?: string) {
   }
 }
 function recoverPending(legacyNoteOperationId?: string) {
+  verifyOriginalRecoveryState(db, root);
+  assertNoPendingOriginalMcpTodoGenesis(db);
+  const assignmentPending = db.prepare("SELECT * FROM pending_todo WHERE singleton=1").get();
+  if (assignmentPending) originalAssignments.pending(assignmentPending, activeRuntimeOwner ?? {});
   inspectLegacyTodoBoardCreateIntent(db, root);
   assertLegacyNoteRecoveryEnvelope(legacyNoteOperationId);
   const documentLifecycle = db.prepare("SELECT * FROM pending_document_lifecycle WHERE singleton=1").get();
@@ -355,10 +404,16 @@ function recoverPending(legacyNoteOperationId?: string) {
   uploads.recover();
   const todo = db.prepare("SELECT * FROM pending_todo WHERE singleton=1").get();
   if (todo) {
+    originalRoles.withinPending(todo, activeRuntimeOwner ?? {}, checkRole => {
     assertNativeTodoUserPending(db, todo);
     const slug = String(todo.board_slug), raw = String(todo.after_json);
+    assertOriginalMcpTodoSession(root, String(todo.actor_id), db, slug);
+    originalAssignments.pending(todo, activeRuntimeOwner ?? {});
     recoverLegacyTodoBoardCreate(db, root);
-    if (scanBoards(root, db).get(slug)?.raw !== raw) atomicBoardWrite(root, slug, raw, todo.before_sha256 === null ? null : String(todo.before_sha256));
+    checkRole();
+    if (scanBoards(root, db).get(slug)?.raw !== raw) atomicBoardWrite(root, slug, raw, todo.before_sha256 === null ? null : String(todo.before_sha256), db);
+    checkRole();
+    originalAssignments.pending(todo, activeRuntimeOwner ?? {});
     db.prepare("INSERT INTO receipts VALUES(?,?,?,?,?,?)").run(
       String(todo.operation_id), String(todo.fingerprint), String(todo.result),
       String(todo.actor_id), todo.operation === LEGACY_TODO_BOARD_CREATE_PENDING_OPERATION ? "todo.board.create" : String(todo.operation), new Date().toISOString(),
@@ -392,6 +447,7 @@ function recoverPending(legacyNoteOperationId?: string) {
       );
     }
     db.prepare("DELETE FROM pending_todo WHERE singleton=1").run();
+    });
   }
   const pending = db.prepare("SELECT * FROM pending_write WHERE singleton=1").get();
   if (!pending) return;
@@ -402,13 +458,19 @@ function recoverPending(legacyNoteOperationId?: string) {
   const area = parsedArea.data;
   const after = decodeMarkdown(id, raw, path, area);
   const memory = String(pending.operation).startsWith("memory.record.");
+  const privateMemory = memory && originalMemoryStore(root);
+  if (privateMemory) assertMemoryScopeActor(root, String(pending.actor_id));
   if (memory && (area !== "notes" || pending.result === null
     || JSON.stringify(memoryIntentResult(root, after, String(pending.operation), String(pending.operation_id))) !== String(pending.result))) {
     throw new CoreError("INVALID_WORKSPACE", "Pending memory state/result disagrees; preserve the journal for reconciliation.");
   }
-  const current = readMarkdown(root, id, path, area);
-  if (current?.record.sha256 !== after.record.sha256) atomicMarkdownWrite(root, id, raw, pending.before_sha256 === null ? null : String(pending.before_sha256), path, area,
-    memory ? memoryTemporaryId(String(pending.operation_id)) : String(pending.operation_id));
+  const current = privateMemory ? readOriginalMemoryDocument(root, id, path) : readMarkdown(root, id, path, area);
+  if (current?.record.sha256 !== after.record.sha256) {
+    if (privateMemory) atomicFileWrite(originalMcpDomainFile(root, "memory", id), raw,
+      pending.before_sha256 === null ? null : String(pending.before_sha256), memoryTemporaryId(String(pending.operation_id)));
+    else atomicMarkdownWrite(root, id, raw, pending.before_sha256 === null ? null : String(pending.before_sha256), path, area,
+      memory ? memoryTemporaryId(String(pending.operation_id)) : String(pending.operation_id));
+  }
   db.prepare("INSERT INTO receipts VALUES(?,?,?,?,?,?)").run(
     String(pending.operation_id), String(pending.fingerprint), memory ? String(pending.result) : JSON.stringify(after.record),
     String(pending.actor_id), String(pending.operation), new Date().toISOString(),
@@ -520,8 +582,7 @@ function executeBatch04(request: StorageRequest): unknown {
     }
     catch (error) { if (db.isTransaction) db.exec("ROLLBACK"); throw error; }
   }
-  const fingerprint = syncPlanHash({ operation, actorId, args,
-    ...(operation.startsWith("collaboration.state.") ? { collaborationKind: request.collaborationKind ?? "agent" } : {}) });
+  const fingerprint = storageMutationFingerprint({ operation, actorId, args, collaborationKind: request.collaborationKind }, "batch04");
   return transaction(() => {
     recoverPending();
     const prior = db.prepare("SELECT fingerprint,result FROM receipts WHERE operation_id=?").get(String(args.operationId));
@@ -535,8 +596,44 @@ function executeBatch04(request: StorageRequest): unknown {
     return result;
   });
 }
+function executeManagedTask(request: ManagedTaskWorkerRequest, owner: { ownerId?: string; fence?: number }) {
+  const definition = managedTaskDefinitions.find(item => item.id === request.operation);
+  if (!definition) throw new CoreError("NOT_FOUND", "Unknown canonical Task operation.");
+  const args = definition.input.parse(request.args), actorId = request.admission.guard.actorId;
+  const fingerprint = syncPlanHash({ operation: request.operation, args, actorId,
+    taskId: request.admission.guard.taskId, attemptId: request.admission.guard.attemptId,
+    requestId: request.admission.guard.requestId });
+  const result = transaction(() => {
+    recoverPending();
+    managedTasks.guard(request.admission, owner, request.operation, args);
+    if (!definition.readOnly) {
+      const prior = db.prepare("SELECT fingerprint,result FROM receipts WHERE operation_id=?").get(String((args as Record<string, unknown>).operationId));
+      if (prior) {
+        if (prior.fingerprint !== fingerprint) throw new CoreError("CONFLICT", "The operationId belongs to another Task request or actor.");
+        assertManagedTaskAdmission(db, root, request.admission, owner, request.operation);
+        return JSON.parse(String(prior.result));
+      }
+    }
+    let value: unknown;
+    try { value = managedTasks.execute(request.operation, args, request.admission); }
+    catch (error) {
+      if (error instanceof CoreError || !(error instanceof Error) || /SQLITE_|database is locked|database is busy/.test(error.message)) throw error;
+      throw new CoreError("INVALID_ARGUMENT", error.message);
+    }
+    if (!definition.output.safeParse(value).success)
+      throw new CoreError("INVALID_RESULT", "Canonical Task result violated its contract; the transaction was rolled back.");
+    if (!definition.readOnly) db.prepare("INSERT INTO receipts VALUES(?,?,?,?,?,?)")
+      .run(String((args as Record<string, unknown>).operationId), fingerprint, JSON.stringify(value), actorId, request.operation, new Date().toISOString());
+    assertManagedTaskAdmission(db, root, request.admission, owner, request.operation);
+    return value;
+  });
+  if (request.operation === "chat.task.cancel") Atomics.store(new Int32Array(request.admission.attemptRevocation), 0, 1);
+  return result;
+}
 function execute(request: StorageRequest, legacyNoteOperationId?: string): unknown {
   const { operation, args, actorId, collaborationKind } = request;
+  if (operation.startsWith("chat.task."))
+    throw new CoreError("NATIVE_AUTHORITY_REQUIRED", "Generic requests cannot synthesize managed Task native admission.");
   assertLegacyNoteIntentRequest(request, legacyNoteOperationId);
   if ([...chatSessionDefinitions, ...workflowRuntimeDefinitions, ...syncPlanDefinitions,
     ...collaborationStateDefinitions, ...actionCompilerDefinitions].some(item => item.id === operation))
@@ -547,7 +644,7 @@ function execute(request: StorageRequest, legacyNoteOperationId?: string): unkno
   if (resourceLifecycleDefinitions.some(item => item.id === operation)) return executeResourceLifecycle({ operation, args, actorId });
   if (operation.startsWith("knowledge.upload.")) return executeUpload({ operation, args, actorId });
   if (operation.startsWith("todo.")) return executeTodo(request, legacyNoteOperationId);
-  const fingerprint = sha256(JSON.stringify({ operation, actorId, args }));
+  const fingerprint = storageMutationFingerprint({ operation, actorId, args });
   const mutation = !["knowledge.document.get", "knowledge.document.list", "knowledge.metadata.get", "knowledge.asset.list", "knowledge.asset.get", "knowledge.mutation.scan",
     ...researchDefinitions.map(item => item.id), ...skillDefinitions.map(item => item.id), ...libraryDefinitions.map(item => item.id), ...noteDefinitions.map(item => item.id),
     ...searchDefinitions.map(item => item.id), ...linksDefinitions.map(item => item.id), ...skillRoutingDefinitions.map(item => item.id),
@@ -654,7 +751,7 @@ function execute(request: StorageRequest, legacyNoteOperationId?: string): unkno
 
 function executeProjectMutation(request: StorageRequest): unknown {
   const { operation, args, actorId } = request;
-  const fingerprint = sha256(JSON.stringify({ operation, actorId, args }));
+  const fingerprint = storageMutationFingerprint({ operation, actorId, args });
   const prepared = transaction(() => {
     recoverPending();
     if (operation === "project.mutation.pin") return { result: readProjectMutationPin(root, { operation, args, actorId }) };
@@ -691,7 +788,7 @@ function executeProjectMutation(request: StorageRequest): unknown {
 function executeLegacyProjectCommand(request: StorageRequest): unknown {
   const { actorId } = request, args = legacyProjectInvocationSchema.parse(request.args);
   const workspaceId = String(JSON.parse(readFileSync(join(root, ".pkm-next-workspace"), "utf8")).id);
-  const fingerprint = sha256(JSON.stringify({ operation: request.operation, actorId, args }));
+  const fingerprint = storageMutationFingerprint({ operation: request.operation, actorId, args });
   const prepared = transaction(() => {
     inspectLegacyControlRecovery(db, workspaceId);
     for (const table of ["pending_write", "pending_todo", "pending_asset", "pending_resource", "pending_document_lifecycle",
@@ -727,7 +824,7 @@ function executeLegacyProjectCommand(request: StorageRequest): unknown {
 
 function executeDocumentLifecycle(request: StorageRequest): unknown {
   const { operation, args, actorId } = request;
-  const fingerprint = sha256(JSON.stringify({ operation, actorId, args }));
+  const fingerprint = storageMutationFingerprint({ operation, actorId, args });
   const prepared = transaction(() => {
     recoverPending();
     if (operation === "knowledge.document.lifecycle.preview") return { result: readDocumentLifecycle(root, reconcileIndex(), request) };
@@ -760,7 +857,7 @@ function executeDocumentLifecycle(request: StorageRequest): unknown {
 function executeResourceLifecycle(request: StorageRequest): unknown {
   const { operation, args, actorId } = request;
   const readOnly = operation === "knowledge.asset.lifecycle.preview";
-  const fingerprint = sha256(JSON.stringify({ operation, actorId, args }));
+  const fingerprint = storageMutationFingerprint({ operation, actorId, args });
   const prepared = transaction(() => {
     recoverPending();
     if (readOnly) return { result: readResourceLifecycle(root, reconcileIndex(), request) };
@@ -792,7 +889,7 @@ function executeResourceLifecycle(request: StorageRequest): unknown {
 function executeUpload(request: StorageRequest): unknown {
   const { operation, args, actorId } = request;
   const readOnly = operation === "knowledge.upload.get" || operation === "knowledge.upload.list";
-  const fingerprint = sha256(JSON.stringify({ operation, actorId, args }));
+  const fingerprint = storageMutationFingerprint({ operation, actorId, args });
   const prepared = transaction(() => {
     recoverPending();
     if (!readOnly) {
@@ -890,24 +987,82 @@ function executeNativeTodoUser(input: NativeTodoUserInput, chats: NativeTodoUiCh
   }
 }
 
-function executeTodo(request: StorageRequest, legacyNoteOperationId?: string, originalNoteCreate?: LegacyTodoBoardCreateArguments): unknown {
+function executeOriginalTodoGenesis(request: StorageRequest, admission: OriginalMcpTodoGenesisAdmission,
+  experimentalFault?: ExperimentalTodoGenesisFaultControl): unknown {
+  if (experimentalFault) assertExperimentalTodoGenesisFaultControl(root, admission, experimentalFault);
+  if (admission.plan.request.phase === "recover")
+    return transaction(() => finalizeOriginalMcpTodoGenesis(root, db, request, admission));
+  const prepared = transaction(() => {
+    recoverPending();
+    return prepareOriginalMcpTodoGenesisIntent(root, db, request, admission);
+  });
+  if ("result" in prepared) return prepared.result;
+  try { return transaction(() => finalizeOriginalMcpTodoGenesis(root, db, request, admission, experimentalFault)); }
+  catch (error) {
+    if (error instanceof ExperimentalTodoGenesisFault) {
+      console.error("PKM owned Todo publication checkpoint:", error.checkpoint);
+      throw error;
+    }
+    throw Object.assign(new CoreError(error instanceof CoreError ? error.code : "STORAGE_ERROR",
+      "Todo genesis intent is durable; fresh exact native recovery review is required.", "unknown"), { cause: error });
+  }
+}
+function executeTodo(request: StorageRequest, legacyNoteOperationId?: string, originalNoteCreate?: LegacyTodoBoardCreateArguments,
+  assignment?: OriginalTodoAssignmentAdmission, role?: OriginalTodoRoleAdmission): unknown {
   const definition = todoDefinitions.find(item => item.id === request.operation);
   if (!definition) throw new CoreError("NOT_FOUND", "Unknown Todo operation.");
-  const fingerprint = originalNoteCreate ? legacyTodoBoardCreateFingerprint(request, originalNoteCreate) : sha256(JSON.stringify(request));
+  const fingerprint = originalNoteCreate ? legacyTodoBoardCreateFingerprint(request, originalNoteCreate) : storageMutationFingerprint(request, "todo");
   const prepared = transaction(() => {
+    originalRoles.assertRequest(request, role, activeRuntimeOwner ?? {});
+    originalAssignments.assertRequest(request, assignment, activeRuntimeOwner ?? {});
     assertLegacyNoteIntentRequest(request, legacyNoteOperationId);
     recoverPending(legacyNoteOperationId);
     if (!definition.readOnly) {
       const receipt = db.prepare("SELECT fingerprint,result FROM receipts WHERE operation_id=?").get(String(request.args.operationId));
       if (receipt) {
         if (receipt.fingerprint !== fingerprint) throw new CoreError("CONFLICT", "operationId belongs to a different request or actor.");
+        if (assignment) originalAssignments.receipt(assignment, request, fingerprint);
+        if (role) originalRoles.receipt(role, request, fingerprint);
         return { result: JSON.parse(String(receipt.result)) };
       }
     }
     if (request.operation === "todo.board.create") assertNativeBoardWriteTarget(root, `${String(request.args.board_slug)}.md`, db);
-    const plan = planTodo(root, request, () => listTodoChats(request.actorId), db);
-    if (!plan.write) return { result: plan.result };
+    const preparePlan = () => {
+      if (role) {
+        const board = scanBoards(root, db).get(String(request.args.board_slug));
+        if (!board) throw new CoreError("NOT_FOUND", "The exact role Board is unavailable.");
+        originalRoles.snapshot(role, sha256(board.raw));
+        if (role.kind === "tool" && ["todo.workitem.submit", "todo.workitem.comment"].includes(request.operation))
+          originalRoles.evidence(role, request.operation === "todo.workitem.submit" ? "WIP" : "Done");
+      }
+      return planTodo(root, request, () => listTodoChats(request.actorId), db);
+    };
+    const plan = role ? originalRoles.within(role, activeRuntimeOwner ?? {}, preparePlan) : preparePlan();
+    if (!plan.write) {
+      if (role?.kind === "tool") {
+        const item = plan.result.item as Record<string, unknown>;
+        const evidence = "provider" in role.callback ? {
+          sdk_role_evidence: {
+            id: originalSdkTodoRoleEvidenceId(role.callback), decisionId: role.grant.decision.decisionId,
+            requestId: role.callback.requestId, sdkSessionId: role.callback.sdkSessionId,
+            sendingBoundaryId: role.callback.sendingBoundaryId, toolReceiptId: role.callback.toolReceiptId,
+          },
+        } : { native_role_evidence: {
+          id: `native-todo-evidence:${role.callback.callId}`, decisionId: role.grant.decision.decisionId,
+          requestId: role.callback.requestId, inferenceId: role.callback.inferenceId,
+        } };
+        const result = { ...plan.result, item: { ...item, ...evidence } };
+        originalRoles.persist(role, request, fingerprint, String(plan.result.digest), String(plan.result.digest), JSON.stringify(result));
+        return { result };
+      }
+      return { result: plan.result };
+    }
     if (originalNoteCreate) prepareLegacyTodoBoardCreate(db, root, request, originalNoteCreate, plan.write.raw, fingerprint);
+    if (assignment) {
+      definition.output.parse(plan.result);
+      originalAssignments.persist(assignment, request, fingerprint, plan.write.raw, JSON.stringify(plan.result));
+    }
+    if (role) originalRoles.persist(role, request, fingerprint, plan.write.before!, sha256(plan.write.raw), JSON.stringify(plan.result));
     db.prepare("INSERT INTO pending_todo VALUES(1,?,?,?,?,?,?,?,?)").run(
       String(request.args.operationId), fingerprint, request.actorId, originalNoteCreate ? LEGACY_TODO_BOARD_CREATE_PENDING_OPERATION : request.operation,
       plan.write.slug, plan.write.before, plan.write.raw, JSON.stringify(plan.result),
@@ -917,6 +1072,8 @@ function executeTodo(request: StorageRequest, legacyNoteOperationId?: string, or
   if ("result" in prepared) return prepared.result;
   try {
     return transaction(() => {
+      if (role) originalRoles.check(role, activeRuntimeOwner ?? {});
+      originalAssignments.assertRequest(request, assignment, activeRuntimeOwner ?? {});
       recoverPending(legacyNoteOperationId);
       const receipt = db.prepare("SELECT result FROM receipts WHERE operation_id=?").get(String(request.args.operationId));
       if (!receipt) throw new CoreError("STORAGE_ERROR", "Committed Todo intent has no receipt.", "unknown");
@@ -927,12 +1084,50 @@ function executeTodo(request: StorageRequest, legacyNoteOperationId?: string, or
       `Todo intent committed; retry only the same operationId. ${error instanceof Error ? error.message : String(error)}`, "unknown");
   }
 }
+function executeOriginalTodoHuman(data: Extract<OriginalTodoRoleAdmission, { kind: "human" }>): unknown {
+    const request = originalTodoRoleStorageRequest(data), fingerprint = sha256(JSON.stringify(request));
+    const prepared = transaction(() => {
+      originalRoles.check(data, activeRuntimeOwner ?? {});
+      recoverPending();
+      const receipt = db.prepare("SELECT * FROM receipts WHERE operation_id=?").get(String(request.args.operationId));
+      if (receipt) {
+        originalRoles.receipt(data, request, fingerprint);
+        if (receipt.actor_id !== "user:local" || receipt.operation !== ORIGINAL_TODO_HUMAN_OPERATION || receipt.fingerprint !== fingerprint)
+          throw new CoreError("CONFLICT", "The human decision operationId belongs to another effect.");
+        return { result: JSON.parse(String(receipt.result)) };
+      }
+      return originalRoles.within(data, activeRuntimeOwner ?? {}, () => {
+        const board = scanBoards(root, db).get(data.payload.request.boardSlug);
+        if (!board) throw new CoreError("NOT_FOUND", "The exact acceptance Board is unavailable.");
+        originalRoles.snapshot(data, sha256(board.raw));
+        const target = planTodo(root, { operation: "todo.workitem.get", actorId: "mcp:external",
+          args: { board_slug: data.payload.request.boardSlug, id: data.payload.request.workItemId } }, undefined, db);
+        if (originalMcpDomainHash(target.result.item) !== data.payload.request.itemSha256)
+          throw new CoreError("NATIVE_AUTHORITY_REQUIRED", "The reviewed human target changed.");
+        const raw = commandTodoBoard(board.raw, data.payload.request.boardDigest, {
+          action: "accept", id: data.payload.request.workItemId, reason: data.decision.reason,
+        }, { id: "user:local", role: "user" });
+        const snapshot = readTodoBoard(raw), result = { actorId: "user:local", board_slug: data.payload.request.boardSlug,
+          digest: snapshot.digest, item: snapshot.items.find(item => item.id === data.payload.request.workItemId) };
+        originalRoles.persist(data, request, fingerprint, data.payload.request.boardDigest, snapshot.digest, JSON.stringify(result));
+        db.prepare("INSERT INTO pending_todo VALUES(1,?,?,?,?,?,?,?,?)").run(originalTodoRoleOperationId(data),
+          fingerprint, request.actorId, request.operation, data.payload.request.boardSlug, data.payload.request.boardDigest, raw, JSON.stringify(result));
+        return { pending: true };
+      });
+    });
+    if ("result" in prepared) return prepared.result;
+    return transaction(() => {
+      originalRoles.check(data, activeRuntimeOwner ?? {});
+      recoverPending();
+      return JSON.parse(String(db.prepare("SELECT result FROM receipts WHERE operation_id=?").get(originalTodoRoleOperationId(data))!.result));
+    });
+}
 
 function executeMemory(request: StorageRequest): unknown {
   const { operation, args, actorId } = request;
   const definition = memoryDefinitions.find(item => item.id === operation);
   if (!definition) throw new CoreError("NOT_FOUND", "Unknown memory operation.");
-  const fingerprint = sha256(JSON.stringify({ operation, actorId, args }));
+  const fingerprint = storageMutationFingerprint({ operation, actorId, args });
   const prepared = transaction(() => {
     recoverPending();
     if (!definition.readOnly) {
@@ -968,6 +1163,9 @@ function executeMemory(request: StorageRequest): unknown {
 }
 
 function recoverWorkspace() {
+  const assignmentPending = db.prepare("SELECT * FROM pending_todo WHERE singleton=1").get();
+  if (assignmentPending) originalAssignments.pending(assignmentPending, activeRuntimeOwner ?? {});
+  if (assignmentPending) transaction(() => originalRoles.withinPending(assignmentPending, activeRuntimeOwner ?? {}, () => undefined));
   verifyLegacyKnowledgeRecovery(db, root);
   verifyLegacyKnowledgeSnapshots(db, root);
   verifyLegacyActionArtifacts(db, String(JSON.parse(readFileSync(join(root, ".pkm-next-workspace"), "utf8")).id));
@@ -992,23 +1190,270 @@ function assertWorkerOwner(candidate?: { ownerId?: string; fence?: number }) {
     throw new CoreError("STORAGE_UNAVAILABLE", "Workspace ownership lease is absent, expired, or fenced.", "unknown");
   }
 }
-parentPort!.on("message", async ({ id, request, close, recover, runtimeOwner, legacyNoteOperationId, originalNoteCreate, nativeTodoUser, nativeBoardLifecycle, memoryScope }: {
+let freshNoteModel: FreshNoteQueryModel | undefined;
+let freshNoteIndex: ReturnType<typeof openFreshNoteIndex> | undefined;
+let freshReadRunning = false;
+let activeFreshRead: {
+  controls: PlainWorkspaceControls;
+  owner: { ownerId?: string; fence?: number };
+  bootstrap: boolean;
+  index?: IndexedDocument[];
+} | undefined;
+function assertFreshReadPhase(phase: FreshNoteGuardPhase) {
+  const context = activeFreshRead;
+  if (!context || phase === "initialize" && !context.bootstrap)
+    throw new CoreError("ACCESS_DENIED", "Fresh Note cache has no current private worker scope.");
+  assertWorkerOwner(context.owner);
+  freshNoteIndex?.assertHeld();
+  const controls = capturePlainWorkspaceControls(root);
+  if (!controls || controls.workspaceId !== workerWorkspaceId || controls.rootPin !== workerRootPin
+    || controls.digest !== context.controls.digest)
+    throw new CoreError("CONFLICT", "Workspace controls changed during the fresh Note query.");
+  const state = classifyStorageStartup(root, db);
+  if (state.kind !== "plain")
+    throw new CoreError("RECOVERY_REQUIRED", "Native workspace state blocks the fresh Note query.", "unknown");
+  return { workspaceId: workerWorkspaceId, rootPin: workerRootPin };
+}
+function reconcileFreshNoteIndex(scan: FreshRootScan, delta: {
+  readonly rebuild: boolean; readonly changed: readonly FreshNoteSource[]; readonly removed: readonly FreshNoteSource[];
+}): undefined {
+  if (!activeFreshRead || !db.isTransaction) throw new CoreError("TRANSACTION_BOUNDARY", "Fresh root index reconciliation requires its model transaction.");
+  if (delta.rebuild) db.prepare("DELETE FROM documents").run();
+  else {
+    const remove = db.prepare("DELETE FROM documents WHERE area=? AND path=?");
+    for (const source of [...delta.removed, ...delta.changed]) remove.run(source.area, source.path);
+  }
+  insertDocumentIndex(delta.rebuild ? scan.sources.values() : delta.changed);
+  activeFreshRead.index = [...scan.sources.values()].map(source => ({
+    id: source.id, title: source.title, revision: source.revision, deleted: source.deleted,
+    sha256: source.sha256, path: source.path, area: source.area,
+  }));
+}
+async function readFreshLegacyNotes(query: LegacyNotesReadQuery, candidate?: { ownerId?: string; fence?: number }): Promise<LegacyNotesReadResult> {
+  if (freshReadRunning) throw new CoreError("BUSY", "A private fresh Note read is already active.");
+  if (!query || !["list", "legacy-lexical"].includes(query.kind))
+    throw new CoreError("INVALID_ARGUMENT", "Unknown private fresh Note query.");
+  freshReadRunning = true;
+  try {
+    assertWorkerOwner(candidate);
+    await validateWorkspace(root);
+    const controls = capturePlainWorkspaceControls(root);
+    if (!controls) return { kind: "canonical-required", reason: "layout" };
+    if (controls.workspaceId !== workerWorkspaceId || controls.rootPin !== workerRootPin)
+      throw new CoreError("STORAGE_UNAVAILABLE", "The worker workspace identity changed.", "unknown");
+    const eligibility = classifyStorageStartup(root, db);
+    if (eligibility.kind !== "plain") return { kind: "canonical-required", reason: eligibility.reason };
+    const { initializeFreshNoteQuerySchema, createFreshNoteQueryModel } = await import("./fresh-note-query-model.js");
+    const { createFreshRootScanner } = await import("./markdown-read.js");
+    activeFreshRead = { controls, owner: candidate!, bootstrap: true };
+    if (!freshNoteModel) {
+      const guard = { assert: assertFreshReadPhase };
+      freshNoteIndex ??= openFreshNoteIndex(root, db);
+      activeFreshRead.controls = capturePlainWorkspaceControls(root)!;
+      initializeFreshNoteQuerySchema(freshNoteIndex.database, guard);
+      freshNoteModel = createFreshNoteQueryModel({ database: freshNoteIndex.database, scanner: createFreshRootScanner(root), guard,
+        reconcileRootIndex: reconcileFreshNoteIndex,
+        ...(freshNoteIndex.separate ? { externalDatabaseVersion: () => Number(db.prepare("PRAGMA data_version").get()?.data_version) } : {}) });
+    }
+    activeFreshRead.bootstrap = false;
+    // documents remains in the durable transaction domain for document/recovery invariants.
+    // The disposable query projection may commit first: any failure discards its in-memory generation.
+    const separate = freshNoteIndex!.separate;
+    if (separate) db.exec("BEGIN IMMEDIATE");
+    let result, modelCommitted = false;
+    try {
+      result = freshNoteModel.executeFresh(query);
+      modelCommitted = true;
+      if (separate) db.exec("COMMIT");
+    } catch (error) {
+      if (separate && db.isTransaction) db.exec("ROLLBACK");
+      if (separate && modelCommitted) {
+        freshNoteModel.close();
+        freshNoteModel = undefined;
+      }
+      throw error;
+    }
+    if (activeFreshRead.index) indexedDocuments = activeFreshRead.index;
+    assertFreshReadPhase("after-query");
+    const expectedControls = activeFreshRead.controls;
+    activeFreshRead = undefined;
+    await validateWorkspace(root);
+    assertWorkerOwner(candidate);
+    const after = capturePlainWorkspaceControls(root);
+    if (!after || after.digest !== expectedControls.digest)
+      throw new CoreError("CONFLICT", "Workspace controls changed after the fresh Note query.");
+    return { kind: "fresh", ...result };
+  } catch (error) {
+    indexedDocuments = undefined;
+    throw error;
+  } finally { activeFreshRead = undefined; freshReadRunning = false; }
+}
+parentPort!.on("message", async ({ id, request, close, recover, runtimeOwner, legacyNoteOperationId, originalNoteCreate, nativeTodoUser, nativeBoardLifecycle, memoryScope, freshLegacyNotes, originalTodoSession, originalTodoWorkerReceiptSha256, originalTodoAssignment, managedChatTask, originalTodoGenesis, originalTodoGenesisSource, experimentalTodoGenesisFault, originalTodoRole, originalRecovery, mutationReceipt }: {
   id: number; request?: StorageRequest; close?: boolean; recover?: boolean; runtimeOwner?: { ownerId?: string; fence?: number };
   legacyNoteOperationId?: string;
   originalNoteCreate?: LegacyTodoBoardCreateArguments;
   nativeTodoUser?: { input: NativeTodoUserInput; chats: NativeTodoUiChat[] };
   nativeBoardLifecycle?: NativeBoardLifecycleInput;
-  memoryScope?: { request: MemoryScopeContinuityRequest; approval: { decisionId: string; actorId: string; expiresAtMs: number } }
+  memoryScope?: { request: MemoryScopeContinuityRequest; approval: { decisionId: string; actorId: string; expiresAtMs: number }; revocation?: SharedArrayBuffer }
     | { revoke: true };
+  freshLegacyNotes?: LegacyNotesReadQuery;
+  originalTodoSession?: OriginalMcpTodoSession;
+  originalTodoWorkerReceiptSha256?: string;
+  originalTodoAssignment?: OriginalTodoAssignmentAdmission;
+  managedChatTask?: ManagedTaskWorkerRequest;
+  originalTodoGenesis?: OriginalMcpTodoGenesisAdmission;
+  originalTodoGenesisSource?: OriginalMcpTodoGenesisSourceControl;
+  experimentalTodoGenesisFault?: ExperimentalTodoGenesisFaultControl;
+  originalTodoRole?: OriginalTodoRoleAdmission;
+  originalRecovery?: OriginalRecoveryWorkerAdmission;
+  mutationReceipt?: BrowserMutationReceiptControl;
 }) => {
-  if (close) { db.close(); parentPort!.close(); return; }
+  if (mutationReceipt) {
+    try {
+      if (request || close || recover || legacyNoteOperationId || originalNoteCreate || nativeTodoUser || nativeBoardLifecycle
+        || memoryScope || freshLegacyNotes || originalTodoSession || originalTodoWorkerReceiptSha256 || originalTodoAssignment
+        || managedChatTask || originalTodoGenesis || originalTodoGenesisSource || experimentalTodoGenesisFault || originalTodoRole || originalRecovery)
+        throw new CoreError("ACCESS_DENIED", "Mutation receipt controls require their exclusive private worker channel.");
+      assertWorkerOwner(runtimeOwner);
+      db.exec("bind" in mutationReceipt ? "BEGIN IMMEDIATE" : "BEGIN");
+      try {
+        let result;
+        if ("bind" in mutationReceipt) {
+          const { request: bound, bodySha256, receiptMode } = mutationReceipt.bind;
+          if (receiptMode !== "worker" && receiptMode !== "unknown")
+            throw new CoreError("INVALID_ARGUMENT", "Unknown mutation receipt dispatch context.");
+          const batch04 = [...chatSessionDefinitions, ...workflowRuntimeDefinitions, ...syncPlanDefinitions,
+            ...collaborationStateDefinitions, ...actionCompilerDefinitions].some(item => item.id === bound.operation);
+          bindBrowserMutationPin(db, bound, bodySha256, receiptMode === "unknown" ? null
+            : storageMutationFingerprint(bound, batch04 ? "batch04" : bound.operation.startsWith("todo.") ? "todo" : "standard"));
+          result = true;
+        } else result = readBrowserMutationReceipt(db, mutationReceipt.read);
+        assertWorkerOwner(runtimeOwner);
+        db.exec("COMMIT");
+        parentPort!.postMessage({ id, result });
+      } catch (error) {
+        if (db.isTransaction) db.exec("ROLLBACK");
+        throw error;
+      }
+    } catch (error) {
+      parentPort!.postMessage({ id, error: { code: error instanceof CoreError ? error.code : "INVALID_ARGUMENT",
+        message: error instanceof CoreError ? error.message : "Mutation receipt lookup or binding was refused.", effect: "unknown" } });
+    }
+    return;
+  }
+  if (originalRecovery) {
+    try {
+      if (request || close || recover || legacyNoteOperationId || originalNoteCreate || nativeTodoUser || nativeBoardLifecycle
+        || memoryScope || freshLegacyNotes || originalTodoSession || originalTodoWorkerReceiptSha256 || originalTodoAssignment
+        || managedChatTask || originalTodoGenesis || originalTodoGenesisSource || experimentalTodoGenesisFault || originalTodoRole)
+        throw new CoreError("ACCESS_DENIED", "Recovery cannot accompany another actor/Role/domain request.");
+      assertWorkerOwner(runtimeOwner);
+      verifyLegacyKnowledgeRecovery(db, root);
+      verifyLegacyKnowledgeSnapshots(db, root);
+      assertBatch16UnintegratedClear(db);
+      const result = executeOriginalRecoveryWorker(db, root, originalRecovery, runtimeOwner ?? {});
+      parentPort!.postMessage({ id, result });
+    } catch (error) {
+      parentPort!.postMessage({ id, error: { code: error instanceof CoreError ? error.code : "RECOVERY_REQUIRED",
+        message: error instanceof Error ? error.message : "Recovery failed.", effect: error instanceof CoreError ? error.effect : "unknown" } });
+    }
+    return;
+  }
+  if (!close) {
+    try { verifyOriginalRecoveryState(db, root); }
+    catch (error) {
+      parentPort!.postMessage({ id, error: { code: "RECOVERY_REQUIRED",
+        message: error instanceof Error ? error.message : "Recovery requires inspection.", effect: "unknown" } }); return;
+    }
+  }
+  if (originalTodoRole && (request || close || recover || memoryScope || freshLegacyNotes || legacyNoteOperationId
+    || originalNoteCreate || nativeTodoUser || nativeBoardLifecycle || originalTodoSession || originalTodoWorkerReceiptSha256
+    || originalTodoAssignment || managedChatTask || originalTodoGenesis || originalTodoGenesisSource || experimentalTodoGenesisFault)) {
+    parentPort!.postMessage({ id, error: { code: "ACCESS_DENIED", message: "Todo roles use their exclusive private Owner channel.", effect: "not-committed" } });
+    return;
+  }
+  if (experimentalTodoGenesisFault && (!originalTodoGenesis || originalTodoGenesis.plan.request.phase !== "create"
+    || !request || close || recover || memoryScope || freshLegacyNotes || legacyNoteOperationId || originalNoteCreate
+    || nativeTodoUser || nativeBoardLifecycle || originalTodoSession || originalTodoWorkerReceiptSha256
+    || originalTodoAssignment || managedChatTask || originalTodoGenesisSource)) {
+    parentPort!.postMessage({ id, error: { code: "ACCESS_DENIED", message: "Owned Todo interruption requires its exact private creation envelope.", effect: "not-committed" } });
+    return;
+  }
+  if (originalTodoGenesisSource) {
+    try {
+      assertWorkerOwner(runtimeOwner);
+      if (request || close || recover || memoryScope || freshLegacyNotes || legacyNoteOperationId || originalNoteCreate
+        || nativeTodoUser || nativeBoardLifecycle || originalTodoSession || originalTodoWorkerReceiptSha256
+        || originalTodoAssignment || managedChatTask || originalTodoGenesis)
+        throw new CoreError("ACCESS_DENIED", "Genesis source authority uses only the trusted Owner control channel.");
+      receiveOriginalMcpTodoGenesisSourceControl(root, db, originalTodoGenesisSource, runtimeOwner ?? {});
+      assertWorkerOwner(runtimeOwner);
+      parentPort!.postMessage({ id, result: true });
+    } catch (error) {
+      parentPort!.postMessage({ id, error: { code: error instanceof CoreError ? error.code : "NATIVE_AUTHORITY_REQUIRED",
+        message: "Exact genesis source control was refused.", effect: "not-committed" } });
+    }
+    return;
+  }
+  if (originalTodoGenesis && (!request || close || recover || memoryScope || freshLegacyNotes || legacyNoteOperationId
+    || originalNoteCreate || nativeTodoUser || nativeBoardLifecycle || originalTodoSession
+    || originalTodoWorkerReceiptSha256 || originalTodoAssignment || managedChatTask)) {
+    parentPort!.postMessage({ id, error: { code: "ACCESS_DENIED", message: "Todo genesis uses its exact private Core channel.", effect: "not-committed" } });
+    return;
+  }
+  if (managedChatTask && (request || close || recover || memoryScope || freshLegacyNotes || legacyNoteOperationId
+    || originalNoteCreate || nativeTodoUser || nativeBoardLifecycle || originalTodoSession || originalTodoWorkerReceiptSha256 || originalTodoAssignment)) {
+    parentPort!.postMessage({ id, error: { code: "ACCESS_DENIED", message: "Managed Task admission uses its exclusive private channel.", effect: "not-committed" } });
+    return;
+  }
+  if (originalTodoAssignment && (request || close || recover || memoryScope || freshLegacyNotes || legacyNoteOperationId
+    || originalNoteCreate || nativeTodoUser || nativeBoardLifecycle || originalTodoSession || originalTodoWorkerReceiptSha256)) {
+    parentPort!.postMessage({ id, error: { code: "ACCESS_DENIED", message: "Private original assignment must use its exclusive typed channel.", effect: "not-committed" } });
+    return;
+  }
+  if (originalTodoSession || originalTodoWorkerReceiptSha256) {
+    try {
+      assertWorkerOwner(runtimeOwner);
+      if (request || close || recover || memoryScope || freshLegacyNotes || legacyNoteOperationId || originalNoteCreate || nativeTodoUser || nativeBoardLifecycle
+        || originalTodoSession && originalTodoWorkerReceiptSha256 || originalTodoAssignment)
+        throw new CoreError("ACCESS_DENIED", "Native Todo admission cannot accompany a generic operation.");
+      if (originalTodoSession) activateOriginalMcpTodoSession(root, originalTodoSession, db);
+      else activateOriginalMcpTodoWorker(root, originalTodoWorkerReceiptSha256!, db);
+      assertWorkerOwner(runtimeOwner);
+      parentPort!.postMessage({ id, result: true });
+    } catch (error) {
+      deactivateOriginalMcpTodoSession(root);
+      parentPort!.postMessage({ id, error: { code: error instanceof CoreError ? error.code : "NOT_AVAILABLE",
+        message: error instanceof Error ? error.message : String(error), effect: "not-committed" } });
+    }
+    return;
+  }
+  if (freshLegacyNotes) {
+    try {
+      if (request || close || recover || memoryScope || legacyNoteOperationId || originalNoteCreate || nativeTodoUser || nativeBoardLifecycle)
+        throw new CoreError("ACCESS_DENIED", "Private fresh Note reads cannot accompany another worker operation.");
+      const result = await readFreshLegacyNotes(freshLegacyNotes, runtimeOwner);
+      parentPort!.postMessage({ id, result });
+    } catch (error) {
+      parentPort!.postMessage({ id, error: {
+        code: error instanceof CoreError ? error.code : "STORAGE_ERROR",
+        message: error instanceof Error ? error.message : String(error),
+        effect: error instanceof CoreError ? error.effect : "unknown",
+      } });
+    }
+    return;
+  }
+  if (close) { freshNoteModel?.close(); freshNoteIndex?.close(); db.close(); parentPort!.close(); return; }
   if (memoryScope) {
     try {
       assertWorkerOwner(runtimeOwner);
       if (request || recover || legacyNoteOperationId || originalNoteCreate || nativeTodoUser || nativeBoardLifecycle)
         throw new CoreError("ACCESS_DENIED", "Native Memory scope admission cannot accompany a generic request.");
       if ("revoke" in memoryScope) deactivateMemoryScopeContinuity(root);
-      else activateReadoptedMemoryScope(root, memoryScope.request, memoryScope.approval);
+      else {
+        activateReadoptedMemoryScope(root, memoryScope.request, memoryScope.approval);
+        bindMemoryScopeRevocation(root, memoryScope.revocation);
+      }
       assertWorkerOwner(runtimeOwner);
       parentPort!.postMessage({ id, result: true });
     } catch (error) {
@@ -1030,6 +1475,22 @@ parentPort!.on("message", async ({ id, request, close, recover, runtimeOwner, le
   activeRuntimeOwner = runtimeOwner;
   try {
     assertWorkerOwner(runtimeOwner);
+    const role = originalTodoRole ? transaction(() => originalRoles.admit(originalTodoRole, runtimeOwner ?? {})) : undefined;
+    if (role) request = originalTodoRoleStorageRequest(role);
+    if (managedChatTask) request = { operation: managedChatTask.operation, args: managedChatTask.args,
+      actorId: managedChatTask.admission.guard.actorId };
+    let assignment: OriginalTodoAssignmentAdmission | undefined;
+    if (originalTodoAssignment) {
+      if (request || close || recover || memoryScope || freshLegacyNotes || legacyNoteOperationId || originalNoteCreate || nativeTodoUser || nativeBoardLifecycle)
+        throw new CoreError("ACCESS_DENIED", "Private original assignment cannot accompany a generic worker request.");
+      assignment = transaction(() => originalAssignments.admit(originalTodoAssignment, runtimeOwner ?? {}));
+      request = originalTodoAssignmentRequest(assignment);
+    }
+    if (request) originalAssignments.assertRequest(request, assignment, runtimeOwner ?? {});
+    if (request) originalRoles.assertRequest(request, role, runtimeOwner ?? {});
+    const assignmentPending = db.prepare("SELECT * FROM pending_todo WHERE singleton=1").get();
+    if (assignmentPending) originalAssignments.pending(assignmentPending, runtimeOwner ?? {});
+    if (assignmentPending) transaction(() => originalRoles.withinPending(assignmentPending, runtimeOwner ?? {}, () => undefined));
     verifyLegacyKnowledgeRecovery(db, root);
     verifyLegacyKnowledgeSnapshots(db, root);
     verifyLegacyActionArtifacts(db, String(JSON.parse(readFileSync(join(root, ".pkm-next-workspace"), "utf8")).id));
@@ -1055,7 +1516,10 @@ parentPort!.on("message", async ({ id, request, close, recover, runtimeOwner, le
     }
     let result: unknown;
     if (!request) throw new CoreError("INVALID_ARGUMENT", "Missing storage request.");
-    if (nativeBoardLifecycle) {
+    const operation = request.operation;
+    if (managedChatTask) {
+      result = executeManagedTask(managedChatTask, runtimeOwner ?? {});
+    } else if (nativeBoardLifecycle) {
       if (request.operation !== NATIVE_BOARD_LIFECYCLE_OPERATION || request.actorId !== "user:local"
         || canonicalJson(request.args) !== canonicalJson(nativeBoardLifecycle) || nativeTodoUser || originalNoteCreate || legacyNoteOperationId)
         throw new CoreError("ACCESS_DENIED", "Board file lifecycle requires its dedicated trusted user channel.");
@@ -1084,12 +1548,15 @@ parentPort!.on("message", async ({ id, request, close, recover, runtimeOwner, le
         || canonicalJson(request.args) !== canonicalJson(nativeTodoUser.input) || originalNoteCreate || legacyNoteOperationId)
         throw new CoreError("ACCESS_DENIED", "Trusted Todo user channel cannot be synthesized by a generic request.");
       result = executeNativeTodoUser(nativeTodoUser.input, nativeTodoUser.chats);
-    } else if (subscriptionReadDefinitions.some(item => item.id === request.operation)
-      || agentSnapshotReadDefinitions.some(item => item.id === request.operation)) {
+    } else if (subscriptionReadDefinitions.some(item => item.id === operation)
+      || agentSnapshotReadDefinitions.some(item => item.id === operation)) {
       transaction(() => { recoverPending(); });
-      result = subscriptionReadDefinitions.some(item => item.id === request.operation)
+      result = subscriptionReadDefinitions.some(item => item.id === operation)
         ? await readSubscriptions(root, request) : await readAgentSnapshots(root, request);
-    } else result = originalNoteCreate ? executeTodo(request, legacyNoteOperationId, originalNoteCreate)
+    } else result = role ? role.kind === "human" ? executeOriginalTodoHuman(role) : executeTodo(request, undefined, undefined, undefined, role)
+      : originalTodoGenesis ? executeOriginalTodoGenesis(request, originalTodoGenesis, experimentalTodoGenesisFault)
+      : assignment ? executeTodo(request, undefined, undefined, assignment)
+      : originalNoteCreate ? executeTodo(request, legacyNoteOperationId, originalNoteCreate)
       : request.operation.startsWith("memory.record.") ? executeMemory(request) : execute(request, legacyNoteOperationId);
     parentPort!.postMessage({ id, result });
   }
@@ -1118,6 +1585,7 @@ parentPort!.on("message", async ({ id, request, close, recover, runtimeOwner, le
     parentPort!.postMessage({ id, error: {
       code: error instanceof CoreError ? error.code : busy ? "BUSY" : "STORAGE_ERROR",
       message: error instanceof Error ? error.message : String(error),
+      ...(error instanceof ExperimentalTodoGenesisFault ? { experimentalTodoGenesisCheckpoint: error.checkpoint } : {}),
       effect: provenNoteRejection ? "not-committed"
         : pending || !(error instanceof CoreError || busy) ? "unknown" : error instanceof CoreError ? error.effect : "not-committed",
     } });

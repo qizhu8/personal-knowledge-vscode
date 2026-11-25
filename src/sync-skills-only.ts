@@ -13,29 +13,35 @@ export function projectSkillsOnlySyncInput(raw: unknown, selected: (member: Sync
   input: SyncPlanInput;
   sourcePins: { base: string; local: string; remote: string };
 } {
+  return projectSelectedSyncInput(raw, member => member.type === "skills" && selected(member));
+}
+
+/** Exact current native selection; unselected entities remain remote on all three sides. */
+export function projectSelectedSyncInput(raw: unknown,
+  selected: (member: SyncManifest["files"][number] | SyncManifest["deletions"][number]) => boolean): {
+    input: SyncPlanInput; sourcePins: { base: string; local: string; remote: string };
+  } {
   const original = syncPlanInputSchema.parse(raw);
   planSync(original);
   const remote = original.remote.manifest;
   const selections = new Map<string, boolean>();
   for (const snapshot of [original.base, original.local, original.remote]) {
     for (const member of [...snapshot.manifest.files, ...snapshot.manifest.deletions]) {
-      if (member.type !== "skills") continue;
-      const choice = selected(member), prior = selections.get(member.itemId);
+      const identity = JSON.stringify([member.type, member.itemId]);
+      const choice = selected(member), prior = selections.get(identity);
       if (prior !== undefined && prior !== choice)
         throw new Error("Skills selection changed across versions of an entity; review is required.");
-      selections.set(member.itemId, choice);
+      selections.set(identity, choice);
     }
   }
-  const included = (member: { itemId: string }) => selections.get(member.itemId) === true;
+  const included = (member: { type: string; itemId: string }) => selections.get(JSON.stringify([member.type, member.itemId])) === true;
   function project(manifest: SyncManifest): SyncManifest {
     const required = [...new Set([...manifest.capabilities.required, ...remote.capabilities.required])];
     return {
       ...manifest,
       capabilities: { ...manifest.capabilities, required },
-      files: [...manifest.files.filter(file => file.type === "skills" && included(file)),
-        ...remote.files.filter(file => file.type !== "skills" || !included(file))],
-      deletions: [...manifest.deletions.filter(file => file.type === "skills" && included(file)),
-        ...remote.deletions.filter(file => file.type !== "skills" || !included(file))],
+      files: [...manifest.files.filter(included), ...remote.files.filter(file => !included(file))],
+      deletions: [...manifest.deletions.filter(included), ...remote.deletions.filter(file => !included(file))],
     };
   }
   const base = project(original.base.manifest);

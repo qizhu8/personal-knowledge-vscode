@@ -48,7 +48,7 @@
     "databaseSchema": 23,
     "memoryEngineSchema": 2,
     "operationVersion": 1,
-    "composedCanonicalOperationCount": 244,
+    "composedCanonicalOperationCount": 257,
     "batch13AddedPublicOperations": [
       {
         "id": "legacy.note.workitems.read",
@@ -292,9 +292,74 @@
         "id": "recipe.runtime.cancel",
         "version": 1,
         "readOnly": false
+      },
+      {
+        "id": "operation.receipt.get",
+        "version": 1,
+        "readOnly": true
+      },
+      {
+        "id": "chat.task.adopt",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "chat.task.action_started",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "chat.task.start",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "chat.task.attempt.start",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "chat.task.attempt.bind",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "chat.task.attempt.finish",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "chat.task.cancel",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "chat.task.get",
+        "version": 1,
+        "readOnly": true
+      },
+      {
+        "id": "chat.task.report_work",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "chat.task.record_harness",
+        "version": 1,
+        "readOnly": false
+      },
+      {
+        "id": "chat.turn.list",
+        "version": 1,
+        "readOnly": true
+      },
+      {
+        "id": "workflow.executor.outputs",
+        "version": 1,
+        "readOnly": true
       }
     ],
-    "currentRegistryLimits": "Mapping current Recipe and historical remote-read operations adds exact signed parity obligations only. All remain unaccepted candidates; mapping grants no execution authority, independent qualification, workstream acceptance or cutover.",
+    "currentRegistryLimits": "Mapping current Recipe, historical remote-read, actor-private receipt lookup, Chat/Task and Workflow output operations adds exact signed parity obligations only. All remain unaccepted candidates; mapping grants no execution authority, independent qualification, workstream acceptance or cutover.",
     "batch21Limits": "This native-composed writer is explicitly mapped to the skills workstream only to require its own signed parity evidence; it remains an unaccepted candidate. Removal requires the native-owned disposable fixture, exact actor/workspace/package source and target bindings, owner/epoch and plan approvals, ordered source/projection history and durable anchors. It removes only an existing managed lineage; mixed source/projection history is denied. Unknown partial unlink, directory removal or post-commit anchor outcomes require exact native recovery and are never startup-applied. Unix no-follow bounded UTF-8 handling is covered only in bounded fixtures. Install and remove history remains separate from the older projection journal; unrelated storage/direct-native effects require composed authority. This does not qualify hostile external-writer exclusion, OS-level locking, production authority, power-loss durability, or cutover.",
     "batch22Limits": "This native-composed bridge is explicitly mapped to the skills workstream only to require its own signed parity evidence; it remains an unaccepted candidate. It bridges only a strictly pinned, already-installed old Skill-source head into sequence-one native source history, retaining the immutable legacy genesis and old receipts. Independent approveBridge, verifyBridge and reconcileBridgeAnchor callbacks are required outside SQLite transactions. A removed legacy head must first be reinstalled by the old writer; direct removed-genesis bridging and broader legacy/all-target qualification are unsupported. Recognized bundled leaves remain rejected; custom-source preservation is bounded to the exercised case. Existing source/projection snapshots and database schema are unchanged. This does not qualify hostile external-writer exclusion, OS-level locking, production authority, power-loss durability, workstream acceptance, or cutover.",
     "batch20Limits": "This native-composed writer is explicitly mapped to the skills workstream only to require its own signed parity evidence; it remains an unaccepted candidate. Exclusive native-owned disposable fixtures require independent exact actor/workspace/package source and target bindings, owner/epoch and plan approvals, source history and durable anchors. Actual original-writer Core HTTP/MCP install, coordinated backup and fresh atomic restore/adoption, old retry/new install, rebackup and rerestore are bounded fixture tests. Source and older projection journals cannot coexist; unrelated storage/direct-native effects require composed authority. This does not qualify a general installer, multiple targets, hostile external-writer exclusion, OS-level locking, production authority, power-loss durability or cutover.",
@@ -1111,6 +1176,7 @@
         "knowledge.document.get",
         "knowledge.document.create",
         "knowledge.document.update",
+        "operation.receipt.get",
         "knowledge.document.trash",
         "knowledge.document.restore",
         "project.legacy.command",
@@ -1304,7 +1370,18 @@
         "chat.turn.start",
         "chat.turn.get",
         "chat.turn.events",
-        "chat.turn.cancel"
+        "chat.turn.cancel",
+        "chat.turn.list",
+        "chat.task.adopt",
+        "chat.task.action_started",
+        "chat.task.start",
+        "chat.task.attempt.start",
+        "chat.task.attempt.bind",
+        "chat.task.attempt.finish",
+        "chat.task.cancel",
+        "chat.task.get",
+        "chat.task.report_work",
+        "chat.task.record_harness"
       ],
       "scenarios": [
         "chat.configured-provider-real-socket",
@@ -1410,6 +1487,7 @@
         "workflow.executor.create",
         "workflow.executor.get",
         "workflow.executor.cancel",
+        "workflow.executor.outputs",
         "mcp.tool.recipe_run_start",
         "mcp.tool.recipe_run_get",
         "mcp.tool.recipe_run_next",

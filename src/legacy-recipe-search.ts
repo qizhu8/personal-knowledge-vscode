@@ -16,7 +16,7 @@ const order = (a: string, b: string) => {
   }
   return left.length - right.length;
 };
-function summary(recipe: ProjectRecipeRecord, score = 0) {
+export function originalLocalRecipeSummary(recipe: ProjectRecipeRecord, score = 0) {
   const metadata = recipe.metadata, methodology = object(recipe.methodology);
   return { recipe_id: recipe.recipeId, name: recipe.name, description: recipe.description || "",
     category: recipe.category || "", metadata: {
@@ -31,6 +31,7 @@ function summary(recipe: ProjectRecipeRecord, score = 0) {
       digest: recipe.methodologyDigest ?? null,
     } : null, node_count: array(object(object(recipe.definition).spec).nodes).length, score };
 }
+const summary = originalLocalRecipeSummary;
 
 /** Original local metadata/family fallback algorithm; no subscribed-catalog authority is inferred. */
 export function searchLocalRecipes(recipes: ProjectRecipeRecord[], input: {

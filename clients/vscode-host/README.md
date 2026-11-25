@@ -6,7 +6,7 @@ Core discovery (`name`/`serverId`) and the native, Note and compact MCP adapters
 responses use `pkm-v5`. The native VS Code MCP provider ID and definition label
 are also `pkm-v5`, distinct from the existing production `pkm` provider.
 
-On VS Code versions with the native MCP API, the provider publishes a definition
+On VS Code versions with the native MCP API, the default provider publishes a definition
 only when **user-level** `pkm.nextHost.managedRoot` explicitly selects an already
 provisioned isolated managed generation. It uses the existing verified isolated
 launcher; no account binding or user/workspace MCP configuration is written.
@@ -15,6 +15,483 @@ Workspace configuration is ignored. Changes to `managedRoot` or
 VS Code to rediscover servers; no reload is required. Definitions are also
 revalidated at resolve time, and changed/forged definitions are rejected.
 The same-root coordinator excludes this provider while enabled.
+
+### Independent SDK model bridge
+
+The source bridge keeps `vscode.lm` unchanged and adds an independent
+`copilot-sdk` catalogue, selection and execution lane on the same authenticated
+Chat IPC. SDK prompt measurements are UTF-8 bytes, **not native token counts**.
+Actual HTTP requests, WebSocket connections and WebSocket messages wait for
+current Core durability and separate native-human sending approval. These
+records are sending boundaries, not `beforeInference` evidence. SDK usage is
+provider-reported; absent usage/cost remains unknown. Canonical tools still
+require their own current source, actor and effect approval.
+
+`OriginalSdkHostControl` must supply the actual SDK module, independently
+verified live runtime admission, approved current-user account accessor and
+an explicit absolute runtime path/private working directories. There is no
+default SDK bootstrap, automatic login, shared-runtime takeover, native-model
+fallback or grant copied from the Host. The root-only composition facade uses
+the public constructor's `requestHandler`, then the same retained
+`streamCopilotSdkChat` executor. Summary sessions receive fresh IDs only after
+awaited retirement of the prior session. SDK code never generates human
+approval. Existing Todo role admission still requires native inference
+provenance for its unchanged native variant. The separate SDK role variant
+uses actual session, sending-boundary and canonical tool-receipt identity;
+its child Chat actor comes only from the original same-Chat signed role grant.
+The worker gate/receipt projection keeps its narrowly scoped SDK branch
+separate; SDK does not invent `inferenceId`/`round` or produce human acceptance.
+
+The normal `@github/copilot-sdk@1.0.34` public declarations/JavaScript support
+the handler API; deprecation is not a reason to replace it blindly. Its
+`start()` ignores the enrollment response's `success` field, so the facade
+also verifies that result through the public RPC. This acknowledgment alone
+does **not** qualify the installed Host runtime. In-memory tests execute the
+genuine handler's cancellation path without starting a runtime or sending a
+model request; lifecycle/transport doubles are not runtime proof.
+
+All product SDK imports here are type-only: the actual module/runtime comes
+from the admitted Host port. The npm SDK is therefore a development
+type/test dependency, not a reason to embed another optional platform CLI
+in Core's production payload. Parent-owned packaging must use normal
+dependency placement/staging, not strip required SDK files manually, and
+export the existing retained SDK executor/prompt/model-conversion functions.
+Official account/Auto/role activation still requires the current Host
+attachment wiring and independent private-profile acceptance; Recovery VSIX
+evidence does not qualify this bridge.
+
+`createOriginalMcpNativeSdkHostControl` now owns the selected-module/runtime
+validation and Linux egress owner. It requires readonly module/runtime/launcher mounts,
+explicit private HOME/XDG/work/scratch paths and a clean approved environment;
+credential, proxy, config, skill and instruction auto-inheritance is not
+accepted. The product launcher is `original-mcp-native-sdk-supervisor.py`,
+not the test isolation helper. The public SDK constructor launches the
+pinned interpreter/supervisor using `RuntimeConnection.forStdio` arguments;
+the genuine SDK module and awaited forwarder remain in the Host namespace.
+
+The supervisor closes extra inherited descriptors, creates separate
+user/network/PID/mount namespaces, drops capabilities, sets `no_new_privs`,
+and installs an inherited seccomp filter blocking namespace/mount escape,
+UNIX/vsock proxy sockets, FD theft/ptrace and io_uring bypasses. The fresh
+network has no external or Host-loopback route. A private control channel
+admits the CLI only after the Host verifies actual process ancestry,
+namespace handles, capabilities/filter state, immutable pins and blocked
+network probes. PID-namespace teardown and owned reaping cover descendants.
+The managed-child close callback is registered before launch. Missing Linux
+namespace/filter/interpreter/readonly-mount support fails closed; no sudo,
+system firewall changes, inherited credential socket or uncontained fallback.
+Abort and manual close share one drain operation. Cleanup errors retain their
+original causes, latch the owner closed, notify the Host diagnostic port and
+remain visible through later `assertCurrent`/`close`. Registration/listeners
+detach once even after failure. Partial reservations remove only their pinned
+owned directory/server/namespace handles. Control frames are serialized and
+bounded; malformed or duplicate frames terminate the owned client rather than
+leaving a failed-but-live lease.
+
+Its actual SDK `1.0.34` / runtime `1.0.112` (protocol 3) observations demonstrate
+startup registration, kernel-blocked CLI egress, and awaited local HTTP/WSS
+connection/message paths across two fully settled synthetic prompts each.
+Synthetic TLS response fixtures are transport evidence only, not real
+model/role/human success. No official account or production endpoint is used;
+per-process synthetic TLS trust does not modify system trust.
+
+The public API's registration success alone still proves no no-bypass
+capability. The supported Linux factory instead requires enforced child
+egress on every real client launch and current kernel-bound lease checks;
+without that owner it remains `NATIVE_SDK_NO_UNINTERCEPTED_SENDING_PROOF`.
+Unknown/replacement admission objects cannot enable SDK. `sdk.status`
+reports unsupported configuration separately from the unchanged native LM
+catalogue. No bounded-run downgrade is offered.
+
+Official catalogue discovery is a separate unresolved boundary:
+`client.rpc.models.list()` sends a CLI control RPC, not a model-layer handler
+request. `onListModels` applies only to `client.listModels()` and does not
+silently intercept that RPC. A bounded genuine-runtime probe with a synthetic
+invalid credential rejected without entering any model-sending hook. This is
+not official account/model-list evidence. Until an actual current-account
+Host catalogue path is qualified, the native bridge reports
+`NATIVE_SDK_CATALOGUE_CONTROL_EGRESS_UNSUPPORTED` before account/model work;
+it advertises no fabricated Auto model, silently substituted LM or unrestricted
+CLI networking. The supported Linux transport boundary is not a full SDK route.
+
+`selectOriginalMcpNativeSdkProvider` is the VS Code-only local UI adapter. It
+selects exact readonly public SDK/runtime files, interpreter and a private
+profile parent; it creates fresh private HOME/XDG/work/scratch directories.
+Only an already-authorized silent native GitHub session is offered for explicit
+account consent. Every later accessor rechecks the same account/session; no
+new login, session preference change or credential file is used. It returns an
+opaque one-use selection, not JSON model authority.
+`createOriginalMcpNativeSdkProviderFromSelection` binds that selection to the
+Parent-owned current attachment, managed-child registry, diagnostics and
+destination/approval ports. Parent must retain its returned `close` resource.
+Unknown cleanup preserves a consumed private profile for reconciliation rather
+than deleting a possibly live child's files. Neither descriptor API registers
+commands, broadens Core authority or claims official SDK catalogue success.
+
+The observed WebSocket connect and `response.create` message share their
+request/session/invocation context. They are distinct boundary kinds.
+`agentInvocationId` is documented as stable across physical retries, while
+the public context and observed message expose no distinct logical message
+ID. Actual second settled prompts reuse a WSS connection/request ID but
+receive distinct runtime invocation IDs, so the existing replay guard admits
+those continuations. Repeating a logical sending identity remains refused; multiple
+distinct messages under the same identity are unqualified, not silently
+accepted by inventing round/sequence IDs or using changing payload hashes.
+
+Bounded repro (no emission):
+`PKM_SDK_PARENT_NETNS=$(readlink /proc/self/ns/net) python3 tests/framework/isolate.py node --test tests/original-mcp-native-sdk-runtime-conformance.test.mjs`
+
+### Explicit cold-started original-library enrollment
+
+The separate original-library route is an offline opt-in, not automatic
+adoption. Only after qualified backup, native owner and broker setup may the
+operator publish `original-mcp-enrollment.json` in this extension's own private
+global storage directory. Its exact fields are `schema` =
+`pkm.original-mcp-enrollment/v1`, `descriptorPath`, `descriptorSha256` and
+`profileSha256`. It contains no token. The profile digest comes from
+`originalMcpProfileBinding` and binds this extension's canonical owned private
+storage directory and device/inode identity. It does not attest or migrate the
+old extension's SecretStorage/keyring.
+
+The broker descriptor is verified with its independently retained SHA and
+profile binding; native MCP launches only its pinned Node/relay paths, never
+token-bearing command arguments. This route refuses a concurrent old
+`Uone.personal-knowledge` extension, `managedRoot` selection or enabled
+same-root coordinator. The current-profile route additionally requires every
+operation in the independently captured full original catalog, with writable
+admission; it refuses a knowledge-only, partial or read-only descriptor.
+Matching this catalog is necessary, not proof of automation/Chat/runtime
+parity: actual native authorities and end-to-end behavior must also pass
+cutover qualification.
+
+The selected credential strategy keeps this independent extension ID. Old
+`uone.personal-knowledge` SecretStorage is not read, copied or replaced.
+The source-only **Enroll Separate Native Identity** command creates an
+Ed25519 identity in the new extension's SecretStorage after native consent.
+Only the public profile-bound record is written to
+`original-mcp-native-identity.json`. Each candidate key has its own slot:
+concurrent enrollment cannot replace the winning identity's private key.
+Missing enrolled keys fail rather than silently rotate.
+
+The public record must be independently pinned in an offline plan. Fresh
+attachment challenges bind the root, workspace, plan, catalog, profile,
+installed build and native activation; signatures are one-use and expire.
+This authenticates a producer only, not model/tool/effect permission.
+`node installed-test.mjs --native-identity` verifies actual Production-mode
+VSIX enrollment through a real native modal, then reloads the window and
+recovers the same key from a different extension-host process. It uses a
+private profile/network/display and a **basic test-only password store**:
+this is not qualification of the actual profile or its OS keyring.
+The installed test also verifies actual native attachment consent/signing to
+a separate Node broker and liveness beyond its heartbeat deadline. This is
+identity authentication only. Per-request native RPC, model/tool/domain
+authority and full business activation remain separate gates.
+No actual user-profile credentials have been changed by this source work or
+these disposable-profile tests.
+
+The separate frozen `original-mcp-native-bootstrap.json` pointer permits only
+native attachment. Its schema is `pkm.original-mcp-native-bootstrap/v1`, with
+`descriptorPath`, `descriptorSha256` and `profileSha256`. It cannot substitute
+for business MCP enrollment or hot-publish a business endpoint.
+
+The source native attachment client starts only when that pinned bootstrap
+was present at activation, or through **Attach Native Producer**. It checks
+the exact Root/profile/plan/catalog/build challenge, signs after native
+consent, and answers bounded liveness probes. An authenticated socket is
+explicitly `businessReady:false`, not a model/tool/domain grant. Changed
+bindings or attempted premature business publication close the connection.
+No Root is opened by this client and failed attachment is not auto-replayed.
+
+The client advertises only implemented request handlers. Fresh native
+admission permits public reads for the exact current binding; writes and
+tool reviews require their own native decision. Shared strict parsers bind
+the activation/epoch, Root/profile/plan/catalog and full request digest.
+Cancellation invalidates a later native click. Public read classification is
+checked against the shipped canonical contract, never trusted from the
+request's `readOnly` field. `model.approve` accepts only an exact, pending
+VS Code inference from the separately enabled model channel, once. It cannot
+authorize standalone or HTTP model requests.
+
+The optional 25th method, `knowledge.trash.approve`, has separate action-specific
+default-Deny decisions for scoped public Note Trash listing, move and restore.
+Ordinary Host/public/model approval is not Trash authority. Each result binds
+the exact current native session, operation and complete request digest with a
+maximum 120-second expiry; cancellation invalidates late clicks. The original
+deletion aliases are unchanged, and canonical list/restore are not advertised
+as new original MCP aliases.
+
+This producer registration is not successful native Trash migration proof.
+Receipt-linked original custody, startup/recovery, pre-existing buckets,
+physical effects and installed B1/fresh-B0 require independent validation.
+Old original buckets remain read-only in the current bounded Source increment.
+
+### Installed Todo exact-source lifecycle
+
+`--native-todo-lifecycle` runs the separate `installed-native-todo-lifecycle.mjs`
+acceptance leaf; no new production MCP alias is registered. Parent supplies
+the exact installed package and branded cold fixture, configures
+`installedNativeTodoLifecyclePrivacyPolicy`, calls
+`prepareInstalledNativeTodoLifecycleFixture({ installed, componentFixture,
+legacyVsix, python })` before B0/admission, then
+`verifyInstalledNativeTodoLifecycle({ root, installed, component, sourceFixture,
+payloadBuildId, python, env, port, timeoutMs })` with the actual component.
+
+The component exposes only `revokeTodoGenesisSource(boardSlug)` and
+`activateTodoGenesisSource(boardSlug, { signal? })` for this slice. Activation
+derives its signed Host/Root/session, uses existing method26
+`phase: "activate-source"`, and returns an opaque, one-Board capsule—not
+serializable authority. Durable receipts never grant live access.
+
+The new UI observer uses default-focused Deny/Enter and a separate handshake
+for each create/activation cancellation: actual rendered modal ready,
+transport settled with `NATIVE_REQUEST_CANCELLED`, then affirmative choice on
+the same retained DOM node. Parent closes the component and editor, calls
+`pinInstalledNativeTodoLifecycleStopped(sourceFixture, component)` before
+B1/retirement, then uses `verifyInstalledNativeTodoLifecycleB1` and
+`verifyInstalledNativeTodoLifecycleRestored` with `{ retirement, b1, restored }`
+as applicable. No archived SQLite is reopened. Source/headless mechanics tests
+are not installed acceptance; recovery, workers, reviewers and human
+acceptance remain outside this leaf.
+
+The installed run now qualifies exact-source revoke/renew, both create and
+activation transport cancellations with same-modal late choices, and
+stopped-image B1/fresh-B0 preservation. It has six PUBLIC and five GENESIS
+dialogs, four canonical receipts, clean editor/UI exits and profile removal.
+Preparation keeps the lifecycle oracle inside its own isolated release root.
+Unchanged controls are checked against the post-prelude bytes; the independent
+original B0 baseline is retained separately for restoration.
+
+`--native-todo-recovery` separately qualifies the bounded empty-Board pending
+creation checkpoint: intent and Note/backing durable, canonical/index/source/
+receipt absent. The experimental callback is fixture-bound and owner-side;
+its one-use worker control grants no business authority. Fresh deny and
+approve editor epochs use the same original UUID/custody/B0, completing one
+creation receipt/source row. Stopped-image B1 and fresh-B0 checks do not reopen
+archived SQLite. Any sidecars already captured by B1 must match that exact
+image and payload; WAL must be empty, and new sidecars are refused. This is
+not arbitrary crash recovery, worker/human authority or production cutover.
+
+The isolated installed-native test also covers admission, pre-admission
+denial, scoped reads, explicit write denial/approval, cancellation while a
+real native modal is visible, and ignoring its later approval click.
+Those are native permission-RPC tests, not actual business mutation or
+full151 qualification.
+
+**Re-enroll Native Model Credential** uses a masked native input and writes
+only a profile-specific slot in the new extension's SecretStorage. Its logical
+`personalKnowledge.aiApiKey` lookup returns presence only after native
+profile validation; arbitrary secret lookups are rejected. Keys are not
+returned in command results or written to profile files. This source command
+does not supply a model transport or approve model requests.
+
+**Enable Native VS Code Models** explicitly enables the separate fixed
+`models.catalogue/select/count/stream` and `execution.run` lane after native
+consent. Native model selection and execution each require another native
+confirmation. The actual model objects remain in the extension host; there
+is no HTTP fallback, guessed provider limit or arbitrary method execution.
+Large requests use bounded, hashed, acknowledged chunks rather than schema
+truncation. Inference and tool callbacks must return to the owning Core.
+That Core still needs its exact source/domain/permission and durable receipts.
+
+The existing retained native Chat loop supplies original hard-round limits
+and a final tool-free summary. Registry changes revoke selections. Initial
+provider discovery can itself change the registry, so only that read is
+retried, at most three times; inference is never automatically replayed.
+Model-channel shutdown closes the socket independently of channel disposal,
+avoiding a recursive cleanup wait.
+
+`node installed-test.mjs --native-identity --native-models` exercises the real
+Production-installed VS Code API, native consent, authenticated Node IPC,
+token counting, streaming, and 31 tool rounds followed by a tool-free summary.
+It registers a **synthetic deterministic local provider**, not a remote model
+or the user's Copilot. This proves native API/transport/loop integration only,
+not actual-profile credentials, canonical business effects or full151 parity.
+
+The test-only `--native-model-token-persistence sync|buffered` option requires
+`--native-models --native-model-rounds 48`. Both arms must use the same sealed
+VSIX and unchanged resource, 1-second headroom and 2-second heartbeat limits.
+Only per-token counter-file writes differ; serialization and non-token writes
+remain. One post-settlement true-counter flush is acknowledged before assertions.
+Missing or budget-blocked flush remains a failure, not a stale counter fallback.
+Default 31-round behavior is unchanged; a buffered result never qualifies the
+original synchronous gate.
+
+The tokenizer producer now yields to the event loop after each16 completed
+native counts, preserving every count, approval, cancellation and limit.
+A fresh synchronous48-round installed profile passed the existing resource/
+headroom criteria, terminal log coverage, native UI controls and clean removal.
+This is bounded synthetic-provider acceptance, not a historical OOM diagnosis
+or long-running/remote-provider stability guarantee.
+
+### Basic Skill acceptance
+
+`node installed-test.mjs --vsix CANDIDATE.vsix --native-identity --cold-component
+--native-skill-basic --legacy-vsix ORIGINAL.vsix --evidence REPORT.json` runs a
+disposable original-root Skill sequence: create/read/update/read, same-name
+upsert/read, list and lexical retrieval of the new marker. The cold component
+exposes the existing read-only `list_skills`/`search_skills` handlers for this
+test; it creates no new business executor or permission.
+
+The real native producer keeps its existing classification: approved Host
+admission permits public reads; mutations require exact independent native
+decisions. The profile verifies three durable Skill receipts with one stable
+ID and revisions 1/2/3, exact updated bytes and all receipts at B1, and absence
+of the created Skill after fresh B0 restoration. It requires complete editor/
+reader/owner/coordinator shutdown and actual profile cleanup.
+
+This does not qualify semantic retrieval or replacement of an occupied file
+with another identity. The separate compatibility MCP case in
+`tests/compatibility-mcp.test.mjs` verifies the direct Skill module wrappers,
+partial-field preservation, same-name overwrite, lexical search, wrong-read-lane
+denial and persistence after actual gateway reconnect. A gateway/catalog check
+alone is not a Skill write-permission or full migration proof.
+
+In a development checkout, the module acceptance tests share
+`tests/compatibility-mcp-fixture.mjs` (not shipped inside the host VSIX).
+Its optional setup hook runs only inside the newly owned disposable library,
+before original server generation/staging. Script tests may prepare/edit their
+controlled external fixtures; this does not create a Script write API.
+Extracting this helper preserved all fourteen actual compatibility cases.
+Owned sidecar workers register through `retainCleanup`; MCP clients close and
+workers must exit before the shared fixture is removed. A separate late
+`t.after` hook is insufficient because those hooks run in registration order.
+
+### Script custody correction
+
+The old original-root policy records `scripts` only as an auxiliary directory
+name, not file membership/identity/hash entries. A native regression proved
+that post-seal public edits could be reindexed without a new confirmation.
+Therefore that policy must not be described as immutable Script custody.
+
+The approved replacement is **frozen-root**: versioned Script B0/custody and
+admitted public membership/pin checks before indexing, with revalidation after
+asynchronous work. External changes require explicit operator recapture/
+confirmation; old auxiliary-only plans must not be silently reinterpreted.
+
+The isolated `--native-script` scenario requires `--native-identity`,
+`--cold-component` and a pinned `--legacy-vsix`. It uses separate denied and
+approved editor lifetimes, a genuine in-memory denial witness and independent
+driver/UI markers. The optional `--held-old-script-parser-vsix` and
+`--held-old-script-parser-sha256` must be supplied together; absence means no
+old-package proof is claimed. This read-only profile does not run the ordinary
+Note/Skill write prelude. The isolated installed run now verifies distinct
+deny/approve editor epochs, exact public get/search, private exclusion,
+generation 1, unchanged business receipts, stopped-image B1 and fresh-B0
+restoration. Both editor/UI segments exit 0 and the private profile is removed.
+The actual HOME need not be private; the recovery base and branded fixtures
+must be. Helper/syntax tests alone still prove none of these installed effects.
+Script execution, external recapture and actual old-v1 owner serving remain
+unqualified.
+
+The `--native-note-paper-basic` profile qualifies PUBLIC Note/Paper
+create/read/update/list/lexical search with 29 acknowledged stages,
+13 independent PUBLIC choices, four canonical receipts and B1/fresh-B0.
+Admitted-Root Note inventory filters private subtrees before byte reads;
+the unrestricted compatibility inventory is not used for that public lane.
+Original raw Markdown writes do not assign identity/revision, so native
+stable-ID/revision increments are evidenced separately rather than claimed
+as Original raw-writer parity. Paper offline lexical search remains
+metadata-only; body-only queries are empty. Semantic/PDF/network and
+read-only-actor/stale-CAS caller lanes are not qualified by this profile.
+
+The separate `--native-research-basic` profile is wired for exact Research
+stable-ID/slug reads, metadata lists, offline lexical search and local citation
+graphs. `list_research` has no pagination; `paper_graph` retains its independent
+PUBLIC approval. The fresh installed profile passed 16 acknowledged stages,
+four graph choices, typed stopped B1 and exact fresh-B0 restoration with
+clean editor/uninstall/profile removal. Paper-profile evidence does not
+qualify these four aliases; semantic/network retrieval and full cutover remain
+unqualified.
+
+The separate `--native-knowledge-recovery` profile has qualified zero-write
+evidence preview and normal repair of one already-registered PUBLIC, unshared,
+asset-free baseline Note at its retained Original `0644` mode. Seven stages
+use actual evidence pickers and independent Source/PUBLIC/repair decisions.
+Wrong plan hashes and occupied paths refuse without effects; successful repair
+preserves raw identity/revision, bytes and index lineage with exact audit/custody
+receipts, stopped B1 and fresh-B0 closure. Unknown owners, private resources,
+attachments, unsupported mode provenance, multi-owner and arbitrary crash/Root
+recovery remain unqualified. No existing file is overwritten.
+
+The separate `--native-action-pure` profile passed eight no-review stages:
+the complete Original template catalogue, bounded invalid-definition schema
+diagnostics and closed basic-component graphs. Valid-definition registry checks,
+Action-referencing graphs and capabilities that require private runtime state
+remain denied. Knowledge/business state is unchanged and stopped B1/fresh-B0
+closure is verified. Only templates are a complete operation; these checks do
+not qualify Action execution, source admission, Cosmos or credentials.
+This Source change is still being implemented. Public serving/indexing must
+not read private Script bytes; separately authorized offline backup is not a
+public/private-reading grant. Original/A unsealed refresh remains separate.
+No Script write or execution API is added.
+
+### Installed public Note Trash acceptance
+
+The separate `--native-skill-paper-trash` profile has qualified post-admission
+PUBLIC Skill/Paper deletion and receipt-linked restore for unshared owned
+pairs. Note v1 remains unchanged; Skill/Paper requests use strict v2.
+The verified run has 23 acknowledged stages, nine PUBLIC and twelve target
+choices, four canonical receipts/successors, raw identity/revision/pair/history
+preservation, stopped-image B1 and fresh-B0 restoration. `list_papers` retains
+its Original non-read-only contract and requires a separate PUBLIC choice;
+it is a verification call, not full Paper-list qualification.
+
+An optional `--held-old-trash-parser-vsix` / `--held-old-trash-parser-sha256`
+pair performs actual sealed-v1 schema refusal of receipt/UI-linked v2 packets.
+Absence is explicitly unperformed; a Note-v1 DTO control is schema-only, not
+old-owner serving. Old bucket restore, generic native file-trash, destination
+collision and installed interrupted Skill/Paper recovery remain separate
+unqualified gates.
+
+The separate `--native-trash-lifecycle` profile has qualified actual
+transport cancellation/late-choice refusal, canonical restore collision and
+one-use injected partial-move recovery through fresh deny/approve editors.
+It requires the same isolated identity, cold component and pinned original
+package as the fresh Trash profile. The fault callback is available only on
+the branded component API, never through MCP arguments. Helper mechanics are
+not installed fault/recovery qualification by themselves. The installed
+profile verifies all three epochs, unchanged prior/private controls,
+receipt-linked B1/fresh-B0 and clean editor/UI exits. Original old-bucket
+restore and Skill/Paper deletion remain separate unqualified gates.
+
+The `--native-todo-genesis` profile has passed bounded installed acceptance. It prepares
+an empty public category in a branded cold fixture, exercises independent
+PUBLIC/genesis approvals and basic Original-shaped Board/WorkItem calls,
+then verifies paired source bytes, the stopped B1 image and fresh-B0 absence
+of the Board and native grants. The verified run has eight PUBLIC and two
+GENESIS dialogs, five canonical receipts, twelve invoked Original aliases,
+clean editor/UI exits and private-profile removal. Original contracts come from the exact
+installed catalog; the canonical Todo/Memory discovery registry is not
+misrepresented as Original-ID discovery. This does not qualify worker/human
+acceptance, source renewal or pending-genesis recovery.
+
+`node installed-test.mjs --vsix CANDIDATE.vsix --native-identity --cold-component
+--native-trash --legacy-vsix ORIGINAL.vsix --evidence REPORT.json` runs the
+bounded post-admission Note/owned-pair lifecycle. It requires three original
+public choices and eight independent Trash choices, including focused-default
+Enter denials, Escape dismissal, stale source refusal and exact restore-UUID
+replay without another effect/review.
+
+The parent qualified two real runs: exact raw identity/revision/pair/history,
+two mutation receipts and two custody successors, unchanged private/prior
+read-only buckets, B1 receipts/data and fresh B0 without native DB/grants.
+Complete editor/reader/owner/coordinator exit and profile cleanup are required.
+This does not qualify transport cancellation, destination collision, pending
+recovery, old pre-admission bucket restore or Skill/Paper deletion.
+
+The full native facade defaults to the hybrid module-tool surface documented
+in the root README: common Note/Skill/Paper content actions, Script reads and
+retrieval can be called directly; the discovery/execution gateways remain.
+The profile route must not assume that `tools/list` contains exactly nine
+entries. Additional direct tools do not replace or weaken any canonical
+operation or native approval.
+
+Enrollment is frozen per activation. Adding/changing/removing it while the
+host is live requires reload and fails closed; it never hot-falls back to an
+old engine or another root. It does not revoke already attached broker clients;
+global maintenance and shutdown belong to the authenticated broker. The host
+never starts a new original RootOwner or adopts a root. Profile enrollment is
+not cold-shutdown proof or permission to bypass the existing writer checks.
 
 For side-by-side installation/comparison, keep old `pkm` installed and use owned
 nonproduction profiles and separate disposable data roots. The host's existing

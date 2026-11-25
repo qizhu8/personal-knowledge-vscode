@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
+import { workspaceRootForDatabase } from "./workspace-storage-paths.js";
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { canonicalJson } from "./domain/project-recipes-workflow-contracts.js";
@@ -399,7 +400,7 @@ function workspaceRoot(database: DatabaseSync): string {
   const rows = database.prepare("PRAGMA database_list").all() as Array<{ name: string; file: string }>;
   const main = rows.find(row => row.name === "main");
   if (!main?.file) throw new LegacyControlImportError("CONTROL_STORAGE_CORRUPT", "Workspace database has no stable file path.");
-  return dirname(resolve(main.file));
+  return workspaceRootForDatabase(main.file);
 }
 
 function projectRecipeEntries(root: string): Array<{ source: string; kind: string; size?: number }> {

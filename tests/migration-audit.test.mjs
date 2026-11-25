@@ -52,6 +52,11 @@ test("isolated import reconciliation detects missing and changed data; post-writ
   const snapshot = (await run(audit, "snapshot", "--root", target, ack)).stdout;
   await writeFile(baseline, snapshot);
   assert.equal(JSON.parse((await run(audit, "diff", "--root", target, "--baseline", baseline, ack)).stdout).status, "unchanged");
+  const coldDelivery = join(parent, "cold-consistent");
+  const coldReceipt = JSON.parse((await run(audit, "deliver-consistent", "--root", target, "--baseline", baseline,
+    "--destination", coldDelivery, "--python", python, ack)).stdout);
+  assert.equal(JSON.parse((await run(audit, "verify-consistent", "--destination", coldDelivery,
+    "--manifest-sha256", coldReceipt.manifestSha256, "--python", python, ack)).stdout).status, "verified");
   const backup = join(parent, "backup"), restored = join(parent, "restored");
   await run(cli, "backup", "--data", target, "--destination", backup);
   const writer = `
@@ -87,11 +92,17 @@ test("isolated import reconciliation detects missing and changed data; post-writ
     return true;
   });
   const consistent = join(parent, "consistent");
+  const runtimeHistory = JSON.stringify({ schema: "pkm.managed-runtime-history/v1",
+    transitions: [{ sequence: 1, from: null, to: randomUUID(), phase: "switched" }], retired: [] });
+  await writeFile(join(target, "runtime-control/managed-runtime-history.json"), runtimeHistory, { mode: 0o600 });
   const consistentResult = JSON.parse((await run(audit, "deliver-consistent", "--root", target, "--baseline", baseline,
     "--destination", consistent, "--python", python, ack)).stdout);
   assert(consistentResult.changes >= 3);
   assert.equal(JSON.parse((await run(audit, "verify-consistent", "--destination", consistent,
     "--manifest-sha256", consistentResult.manifestSha256, "--python", python, ack)).stdout).status, "verified");
+  assert.equal(await readFile(join(consistent, "backup/runtime-control/managed-runtime-history.json"), "utf8"), runtimeHistory);
+  for (const path of [".managed-runtime-history.guard", "shared-manager/shared-manager.guard"])
+    await assert.rejects(readFile(join(consistent, "backup/runtime-control", path)), { code: "ENOENT" });
   if (process.platform === "linux") {
     const manifest = JSON.parse(await readFile(join(consistent, "manifest.json"), "utf8"));
     const marker = manifest.source.entries.find(entry => entry.path === ".pkm-next-writer-fenced.json");

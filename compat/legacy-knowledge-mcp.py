@@ -31,6 +31,7 @@ _retrieval_module = None
 
 class SnapshotPath:
     files = {}
+    directories = set()
     writes = []
 
     def __init__(self, path):
@@ -60,9 +61,7 @@ class SnapshotPath:
         return str(self.path) in self.files or self.is_dir()
 
     def is_dir(self):
-        row = self.files.get(str(self.path))
-        return bool(row and row.get("directory")) or any(
-            name.startswith(str(self.path) + "/") for name in self.files)
+        return str(self.path) in self.directories
 
     def is_file(self):
         row = self.files.get(str(self.path))
@@ -176,7 +175,14 @@ def execute(request):
         setattr(captured, name, function)
     SnapshotPath.files = {
         str(ROOT / file["area"] / file["path"]): file for file in request["files"]}
+    SnapshotPath.directories = {
+        str(parent) for name in SnapshotPath.files for parent in PurePosixPath(name).parents}
+    SnapshotPath.directories.update(
+        name for name, row in SnapshotPath.files.items() if row.get("directory"))
     SnapshotPath.writes = []
+    if tool == "get_note" and request.get("noteReadDependencies") is True:
+        metadata, _body = captured._parse(request["files"][0]["raw"])
+        return {"todoBoard": metadata.get("documentKind") == "todo-board"}
     if tool == "recipe_run_get":
         recipe_runs.store = SnapshotPath(ROOT / "recipe-usage-reads")
         inspect.signature(recipe_runs.recipe_run_get).bind(**request["arguments"])

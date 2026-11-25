@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { initialize, Storage } from "../dist/storage.js";
 import { acquireLinuxRootWriterFence } from "../dist/linux-root-writer-fence.js";
+import { RootOwner } from "../dist/root-owner.js";
 
 async function fixture(t) {
   const directory = resolve(".migration-test-work", `storage-fence-${randomUUID()}`);
@@ -54,6 +55,29 @@ test("scheduler shutdown failure does not release the database fence", { skip: p
   await assert.rejects(acquireLinuxRootWriterFence(root, 100), /fence/);
   stopped = true;
   await store.close();
+  const next = await acquireLinuxRootWriterFence(root, 1000);
+  await next.release();
+});
+
+test("owner close rejects new Storage requests synchronously while an admitted read still drains", { skip: process.platform !== "linux" }, async t => {
+  const root = await fixture(t);
+  const owner = await RootOwner.open(root), { storage } = await owner.ensureFull();
+  let entered, finish;
+  const started = new Promise(resolveStarted => { entered = resolveStarted; });
+  const gate = new Promise(resolveFinish => { finish = resolveFinish; });
+  const running = owner.withReadScope(async scope => {
+    entered();
+    await gate;
+    scope.assertHeld();
+  });
+  await started;
+  const closing = owner.close();
+  try {
+    await assert.rejects(storage.request({ operation: "knowledge.document.list", args: {}, actorId: "mcp:external" }),
+      { code: "STORAGE_UNAVAILABLE" });
+    storage.assertWorkspaceLease();
+    await assert.rejects(acquireLinuxRootWriterFence(root, 100), /fence/);
+  } finally { finish(); await Promise.all([running, closing]); }
   const next = await acquireLinuxRootWriterFence(root, 1000);
   await next.release();
 });

@@ -84,6 +84,21 @@ function messages(value: unknown, managed = false): Json[] {
     return message;
   });
 }
+/** Pure per-record validation; the large source protocol supplies its own explicit streaming envelope. */
+export function validateLegacyApiChatMessage(value: unknown): Json {
+  return messages([value], true)[0]!;
+}
+export function validateLegacyApiChatMetadata(value: unknown, namespace: string, id: string): Json {
+  const metadata = object(value);
+  if (!/^[a-f0-9]{16}$/.test(namespace) || !uuid.test(id) || Object.keys(metadata).some(key => !chatFields.has(key))
+    || metadata.id !== id || metadata.workspaceNamespace !== namespace || ![1, 2].includes(metadata.version)
+    || typeof metadata.title !== "string" || metadata.title.length > 4096
+    || !Number.isFinite(Date.parse(metadata.createdAt)) || !Number.isFinite(Date.parse(metadata.updatedAt))
+    || !Array.isArray(metadata.context) || typeof metadata.includeHistory !== "boolean")
+    fail("Unsupported original API Chat metadata identity/schema.");
+  validateLegacyApiChatImages(metadata.images);
+  return metadata;
+}
 
 /** Closed original API Chat state only. Unknown state siblings remain the adoption core's responsibility. */
 export function inspectLegacyApiChatArchive(root: string): LegacyApiChatArchive | undefined {

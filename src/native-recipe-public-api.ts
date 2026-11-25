@@ -126,9 +126,7 @@ export class NativeRecipePublicApi {
         .filter(operation => operation !== "mcp.tool.recipe_run_submit_input" || this.options.lazy!.humanGatesEnabled());
       return { ...capabilities, legacyRecipeToolsNotProvided: capabilities.legacyRecipeToolsNotProvided
         .filter((name: string) => !operations.includes(`mcp.tool.${name}`)),
-        controlledLazy: { operations, autonomous: false,
-          nodeKinds: ["pkm.step.command/v1", ...(this.options.lazy.externalReportsEnabled() ? ["pkm.step.noop/v1"] : []),
-            ...(this.options.lazy.humanGatesEnabled() ? ["pkm.gate.human/v1"] : [])],
+        controlledLazy: { operations, ...this.options.lazy.controlledCapabilities(),
           controls: ["single", ...(this.options.lazy.staticBranchesEnabled() ? ["branch"] : [])],
           externalReports: this.options.lazy.externalReportsEnabled()
             ? { resultAuthority: "external-caller-reported", automaticAgentExecution: false,

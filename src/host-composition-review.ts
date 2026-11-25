@@ -26,7 +26,7 @@ export async function startTerminalReview(review: StandaloneHumanReview, evidenc
 
 export function createBrowserReview(review: StandaloneHumanReview, evidence: object) {
   let enrollment: string | undefined = randomBytes(32).toString("hex");
-  const expiresAt = Date.now() + 120_000;
+  let expiresAt = Date.now() + 120_000;
   const sessions = new Map<string, { capability: object; expiresAt: number }>();
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Native review desk</title><link rel="stylesheet" href="/human-review.css"></head><body><form id="bind"><label>One-use native enrollment code <input id="code" type="password" autocomplete="off"></label><button>Bind human session</button></form><dialog id="review-modal" aria-label="Exact native human operation review"><main id="desk"></main></dialog><script type="module" src="/human-review-host.mjs"></script></body></html>`;
   const script = `import {createHumanReviewComponent} from '/human-review.mjs';
@@ -72,5 +72,7 @@ document.getElementById('bind').addEventListener('submit',async e=>{e.preventDef
     } catch { reply(403, { error: "Native review unavailable or stale." }); }
     return true;
   }
-  return { code, handle, close() { enrollment = undefined; for (const session of sessions.values()) review.closeSession(session.capability); sessions.clear(); } };
+  return { code, handle,
+    renewEnrollment() { enrollment = randomBytes(32).toString("hex"); expiresAt = Date.now() + 120_000; return enrollment; },
+    close() { enrollment = undefined; for (const session of sessions.values()) review.closeSession(session.capability); sessions.clear(); } };
 }

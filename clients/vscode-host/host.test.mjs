@@ -251,6 +251,63 @@ test("host reports unsupported native MCP APIs in standard output and native err
   } finally { fake.context.subscriptions.forEach(item => item.dispose()); }
 });
 
+for (const backendKind of ["native-public-mcp", "standalone-core"])
+test(`shared ${backendKind} generation setting requests separate approved handoff without replacing the live MCP definition`, async t => {
+  const serviceId = randomUUID(), first = randomUUID(), second = randomUUID(), requests = [];
+  let generation = first;
+  const http = createServer(async (req, res) => {
+    let text = "";
+    for await (const chunk of req) text += chunk;
+    const body = text ? JSON.parse(text) : undefined;
+    requests.push({ path: req.url, body, authorization: req.headers.authorization,
+      serviceId: req.headers["x-pkm-service-id"] });
+    res.setHeader("Content-Type", "application/json");
+    if (req.url === "/manage/approve") res.end(JSON.stringify({ approvalId: "exact-management-approval" }));
+    else {
+      if (req.url === "/manage/switch") generation = body.generation;
+      const core = backendKind === "standalone-core";
+      res.end(JSON.stringify({ serviceId, generation, phase: "accepting", backendKind,
+        scope: core ? "isolated-standalone-core/v1" : "isolated-native-knowledge/v1",
+        protocols: { mcp: core ? "canonical-core" : "native-compact", coreHttp: core, browserChat: core } }));
+    }
+  });
+  await new Promise(ready => http.listen(0, "127.0.0.1", ready));
+  t.after(() => new Promise(ready => http.close(ready)));
+  const fake = fakeVscode();
+  fake.global.sharedServer = { enabled: true, origin: `http://127.0.0.1:${http.address().port}`, serviceId, generation: first, backendKind };
+  activate(fake);
+  t.after(() => fake.context.subscriptions.forEach(item => item.dispose()));
+  fake.setInput("separate-business-secret".repeat(3));
+  await fake.commands.get("pkm.nextHost.setSharedToken")();
+  fake.setInput("separate-management-secret".repeat(3));
+  await fake.commands.get("pkm.nextHost.setSharedManagementToken")();
+  const provider = fake.providers.get("pkm-v5");
+  const [definition] = await provider.provideMcpServerDefinitions();
+  assert(definition.args[0].endsWith("shared-managed-relay.js"));
+  assert(!JSON.stringify(definition).includes("separate-management-secret"));
+  let refreshes = 0;
+  const event = provider.onDidChangeMcpServerDefinitions(() => { refreshes++; });
+  fake.confirmations.push("Approve");
+  fake.global.sharedServer = { ...fake.global.sharedServer, generation: second };
+  fake.configurationChanged("pkm.nextHost.sharedServer");
+  await waitFor(() => requests.some(request => request.path === "/manage/switch"));
+  assert.equal(generation, second);
+  assert.equal(refreshes, 0, "Compatible backend handoff is not a provider restart masquerading as hot switching.");
+  assert.equal(await provider.resolveMcpServerDefinition(definition), definition);
+  const approval = requests.find(request => request.path === "/manage/approve");
+  assert.equal(approval.authorization, `Bearer ${"separate-management-secret".repeat(3)}`);
+  assert.equal(approval.serviceId, serviceId);
+  assert.equal(approval.body.generation, second);
+  assert(fake.warnings.some(message => /All enrolled clients/.test(message)));
+  fake.confirmations.push("Approve");
+  await fake.commands.get("pkm.nextHost.sharedRevokeAccess")();
+  const revoked = requests.find(request => request.path === "/manage/revoke-access");
+  assert.equal(revoked.authorization, `Bearer ${"separate-management-secret".repeat(3)}`);
+  assert.equal(revoked.body.acknowledge, "revoke-current-business-credential");
+  assert.equal(refreshes, 0, "Revocation does not reconnect stale SDK clients with implicit replacement authority.");
+  event.dispose();
+});
+
 test("active coordinator is off by default, ignores workspace enablement and requires reload for global changes", async t => {
   const fake = fakeVscode();
   fake.workspace.productionCoordinator = { enabled: true, root: "/untrusted-workspace-root" };

@@ -55,6 +55,24 @@ def poll(run_id, predicate):
     raise AssertionError(value)
 
 
+if len(sys.argv) > 3 and sys.argv[3] == "autonomous":
+    trace = {}
+    for name, maximum in (("complete", 100), ("node_bound", 1)):
+        args = {"recipe_id": evidence["recipeId"], "command_id": "autonomous-" + name,
+                "inputs_json": '{"mode":"complete"}', "autonomous": True,
+                "max_auto_nodes": maximum}
+        trace[name + "_start"] = call("recipe_run_start", **args)
+        assert trace[name + "_start"]["ok"], trace[name + "_start"]
+        trace[name] = poll(trace[name + "_start"]["run_id"], lambda value: value["status"] != "running")
+        trace[name + "_replay"] = call("recipe_run_start", **args)
+    assert trace["complete"]["status"] == "completed", trace
+    assert trace["complete"]["automation"]["startedNodes"] == 2, trace
+    assert trace["node_bound"]["automation"]["stopReason"] == "automation-budget-exceeded", trace
+    assert effects() == 3
+    print(json.dumps({"trace": trace, "actual_effects": effects(),
+                      "actual_original_compiler_and_worker": True}))
+    sys.exit(0)
+
 trace = {"get_originally_misannotated_read_only": registration.options["recipe_run_get"]}
 trace["revision_mismatch"] = call(
     "recipe_run_start", recipe_id=evidence["recipeId"], command_id="invalid-source-revision",

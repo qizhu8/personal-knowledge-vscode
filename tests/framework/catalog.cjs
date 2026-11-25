@@ -222,7 +222,13 @@ function createCatalog(repositoryRoot) {
       id: file, file, role, language, domain: domain(file, evidence.imports), layer,
       sha256: createHash("sha256").update(fs.readFileSync(path.join(repositoryRoot, file))).digest("hex"),
       capabilities: caps, evidence, nodeModules, fixtures,
-      timeoutMs: file === "tests/legacy-read-race.test.mjs" ? 5 * 60 * 1000
+      // The lifecycle UI requires two genuine 65-second review waits; the 120-second default cannot complete it.
+      // Managed migration's measured whole-file runtime also exceeds 120 seconds.
+      timeoutMs: ["tests/legacy-read-race.test.mjs", "tests/shared-managed-server.test.mjs",
+        "tests/managed-migration.test.mjs",
+        "clients/vscode-host/installed-native-private-resource-lifecycle-ui.test.mjs"].includes(file) ? 5 * 60 * 1000
+        // Two canonical fixture builds plus distinct-code lifecycle/cleanup measured 355.88 seconds.
+        : file === "tests/shared-managed-server-distinct-code.test.mjs" ? 10 * 60 * 1000
         : ["native", "qualification"].includes(layer) ? 30 * 60 * 1000
         : layer === "browser" || caps.includes("model-runtime") ? 10 * 60 * 1000 : 120000,
     };

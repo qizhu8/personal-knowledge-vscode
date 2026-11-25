@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { planLegacyImport, recoverLegacyImportOutcome } from "../dist/legacy-import.js";
 import { assertLinuxRootOwnerMarker } from "../dist/linux-root-writer-fence.js";
+import { inspectWorkspaceRuntimeControls } from "../dist/workspace-runtime-control.js";
 
 const ack = "--acknowledge-quiescent-disposable-copy";
 const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
@@ -271,6 +272,15 @@ async function assertSingleDatabase(root, entries) {
   }
 }
 
+function portableRuntimeControlPaths(root) {
+  const paths = new Set();
+  for (const file of inspectWorkspaceRuntimeControls(root, true)) {
+    const parts = ["runtime-control", ...file.split("/")];
+    for (let count = 1; count <= parts.length; count++) paths.add(parts.slice(0, count).join("/"));
+  }
+  return paths;
+}
+
 async function consistentDelivery(root, baselinePath, destination, python) {
   await realDirectory(root);
   if (!isAbsolute(destination) || resolve(destination) !== destination
@@ -279,6 +289,7 @@ async function consistentDelivery(root, baselinePath, destination, python) {
   if (within(root, destination) || within(destination, root) || within(destination, baselinePath) || within(root, baselinePath))
     throw new Error("Destination, baseline and source must not overlap.");
   const baseline = await readSnapshot(baselinePath);
+  const beforeControls = portableRuntimeControlPaths(root);
   const before = await inventory(root);
   changesBetween(baseline, before);
   await assertSingleDatabase(root, before.entries);
@@ -290,17 +301,22 @@ async function consistentDelivery(root, baselinePath, destination, python) {
   const receipt = JSON.parse(stdout).backup;
   if (!receipt || receipt.backupPath !== backup || !/^[a-f0-9]{64}$/.test(receipt.manifestSha256))
     throw new Error("Backup receipt is invalid; incomplete delivery retained.");
+  const sourceControls = portableRuntimeControlPaths(root);
   const source = await inventory(root), captured = await inventory(backup);
   await assertSingleDatabase(root, source.entries);
   const changes = changesBetween(baseline, source);
-  const stable = entries => entries.filter(item => !["core.sqlite", "core.sqlite-wal", "core.sqlite-shm"].includes(item.path))
+  const stable = (entries, controlPaths) => entries
+    .filter(item => !["core.sqlite", "core.sqlite-wal", "core.sqlite-shm"].includes(item.path))
+    .filter(item => !controlPaths || !(item.path === "runtime-control" || item.path.startsWith("runtime-control/"))
+      || controlPaths.has(item.path))
     .map(item => item.kind === "directory" ? { path: item.path, kind: item.kind }
       : { path: item.path, kind: item.kind, size: item.size, sha256: item.sha256 });
-  if (JSON.stringify(stable(before.entries)) !== JSON.stringify(stable(source.entries)))
+  if (JSON.stringify(stable(before.entries, beforeControls)) !== JSON.stringify(stable(source.entries, sourceControls)))
     throw new Error("Workspace files changed during backup; incomplete delivery retained.");
   await assertLinuxRootOwnerMarker(root);
-  const expectedFiles = stable(source.entries).filter(item =>
-    process.platform !== "linux" || item.path !== ".pkm-next-writer-fenced.json");
+  const expectedFiles = stable(source.entries, sourceControls).filter(item =>
+    item.path !== ".gitignore" && item.path !== ".git" && !item.path.startsWith(".git/")
+    && (process.platform !== "linux" || item.path !== ".pkm-next-writer-fenced.json"));
   const capturedFiles = stable(captured.entries).filter(item => item.path !== ".pkm-workspace-backup.json");
   if (JSON.stringify(expectedFiles) !== JSON.stringify(capturedFiles))
     throw new Error("Backup omits or changes workspace files; incomplete delivery retained.");
@@ -309,7 +325,7 @@ async function consistentDelivery(root, baselinePath, destination, python) {
     throw new Error("Backup manifest digest differs from receipt.");
   const manifest = { schema: "pkm.disposable-consistent-delivery/v1", baseline, source, changes,
     backupReceipt: receipt, backupInventory: captured,
-    scope: "Host backup with SQLite snapshot and bounded workspace files; validated Linux root-bound fence marker is not copied. External state and authority are not established." };
+    scope: "Host backup with SQLite snapshot and bounded workspace files; root Git metadata, validated ephemeral runtime-control guards and the validated Linux root-bound fence marker are not copied. External state and authority are not established." };
   const bytes = Buffer.from(JSON.stringify(manifest));
   const file = await open(join(destination, "manifest.json"), "wx", 0o600);
   try { await file.writeFile(bytes); await file.sync(); } finally { await file.close(); }

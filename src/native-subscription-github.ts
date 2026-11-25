@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { CoreError } from "./contracts.js";
+import { CoreError } from "./host-composition-legacy-batch15-errors.js";
 import { nativeSubscriptionChangeSha256, type GitHubRefreshChange } from "./native-subscription-priority.js";
 
 type File = { path: string; sha256: string; size: number; bytes?: Uint8Array };

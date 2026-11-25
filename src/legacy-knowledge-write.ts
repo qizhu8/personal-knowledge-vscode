@@ -3,9 +3,13 @@ import { z } from "zod";
 import type { Actor } from "./contracts.js";
 import type { Core } from "./core.js";
 import type { Storage } from "./storage.js";
-import { documentPath } from "./document-path.js";
+import { documentPath, knowledgeArea } from "./document-path.js";
 import { scanMarkdown } from "./markdown.js";
 import { knowledgeMutationScanRevision } from "./knowledge-mutations.js";
+import { originalMcpPrivateTopLevels, readOriginalMcpJournal } from "./original-mcp-root-custody.js";
+import { originalMcpPublicRequestActive } from "./original-mcp-native-host.js";
+import { assertNoNewPrivateResourceReferences, documentHasLegacyAssetReferences } from "./document-legacy-assets.js";
+import { withApprovedPrivateResourcesForMutation } from "./private-resource-publication-native.js";
 
 const nullableText = z.string().nullable().optional();
 const nullableTags = z.array(z.string()).nullable().optional();
@@ -45,6 +49,14 @@ export async function legacyKnowledgeWrite(core: Core, storage: Storage, actor: 
   const kind = request.tool.endsWith("note") ? "note" : request.tool.endsWith("skill") ? "skill" : "research";
   const area = kind === "note" ? "notes" : kind === "skill" ? "skills" : "papers";
   const creating = request.tool.startsWith("add_");
+  const original = readOriginalMcpJournal(storage.workspaceRoot());
+  const denied = originalMcpPrivateTopLevels(storage.workspaceRoot(), area);
+  const retainedPrivateClosure = original && knowledgeArea.options.some(area =>
+    originalMcpPrivateTopLevels(storage.workspaceRoot(), area).size > 0);
+  const assertDestination = (path: string) => {
+    if (original && (path.split("/")[0] === ".trash" || denied.has(path.split("/")[0]!)))
+      throw new Error("ACCESS_DENIED: Original private and Trash paths remain immutable archive-only content.");
+  };
   const pinned = await storage.withWorkspaceExclusive(() => {
     storage.assertWorkspaceLease();
     const records = scanMarkdown(storage.workspaceRoot());
@@ -53,6 +65,12 @@ export async function legacyKnowledgeWrite(core: Core, storage: Storage, actor: 
       : record.record.path === `${parsed.slug}.md`));
     if (matches.length > 1) throw new Error("CONFLICT: Skill name is ambiguous; no original-compatible mutation was applied.");
     let existing: (typeof matches)[number] | undefined = matches[0];
+    if (creating && kind === "skill" && !existing) {
+      const category = safeCategory(parsed.category);
+      const destination = `${category ? `${category}/` : ""}${safeName(String(parsed.name))}.md`;
+      assertDestination(destination);
+      existing = records.find(record => record.record.area === area && record.record.path === destination);
+    }
     if (creating && kind !== "skill") {
       const category = safeCategory(parsed.category);
       const key = `${category ? `${category}/` : ""}${String(parsed.title)}`;
@@ -72,8 +90,15 @@ export async function legacyKnowledgeWrite(core: Core, storage: Storage, actor: 
       const currentCategory = existing.record.path.includes("/") ? existing.record.path.slice(0, existing.record.path.lastIndexOf("/")) : "";
       const desiredName = String(args[kind === "skill" ? "name" : "title"] ?? currentName);
       const category = safeCategory(args.category ?? currentCategory);
-      const target = `${category ? `${category}/` : ""}${safeName(desiredName)}.md`;
+      const renamed = desiredName !== String(currentName) || category !== currentCategory;
+      const target = original && !renamed ? existing.record.path
+        : `${category ? `${category}/` : ""}${safeName(desiredName)}.md`;
+      assertDestination(target);
       if (target !== existing.record.path) {
+        if ((retainedPrivateClosure || documentHasLegacyAssetReferences(existing.raw)
+          || typeof args.content === "string" && documentHasLegacyAssetReferences(args.content))
+          && !originalMcpPublicRequestActive(storage, request.tool, request.arguments))
+          throw new Error("NATIVE_AUTHORITY_REQUIRED: Moves with retained private or legacy asset sources require this request's fresh native public approval.");
         if (!documentPath.safeParse(target).success) throw new Error("INVALID_ARGUMENT: Original move destination is not portable.");
         args.moveTo = target;
         args.category = category;
@@ -86,19 +111,27 @@ export async function legacyKnowledgeWrite(core: Core, storage: Storage, actor: 
       const category = safeCategory(args.category);
       args.category = category;
       const path = `${category ? `${category}/` : ""}${safeName(name)}.md`;
+      assertDestination(path);
       if (!documentPath.safeParse(path).success)
         throw new Error("INVALID_ARGUMENT: Original destination is not portable.");
       const occupied = records.find(record => record.record.area === area && record.record.path === path);
       if (occupied && kind !== "skill") return { error: `${kind === "note" ? "Note" : "Paper"} '${path.slice(0, -3)}' already exists. Use update_${kind === "note" ? "note" : "paper"} instead.` };
-      if (occupied) throw new Error("NOT_AVAILABLE: Original overwrite lifecycle is not wired; no files were changed.");
+      if (occupied) throw new Error("CONFLICT: Original destination identity changed; no files were changed.");
+    }
+    if (typeof args.content === "string") {
+      const sourcePath = existing?.record.path
+        ?? `${safeCategory(args.category) ? `${safeCategory(args.category)}/` : ""}${safeName(String(kind === "skill" ? args.name : args.title))}.md`;
+      assertNoNewPrivateResourceReferences(storage.workspaceRoot(), area, sourcePath, existing?.raw, args.content);
     }
     return { operation: `knowledge.${kind}.${updating ? "update" : "create"}`,
       args: { ...args, operationId: randomUUID(), expectedScanRevision: knowledgeMutationScanRevision(records) } };
   });
   if ("error" in pinned) return { text: JSON.stringify({ error: pinned.error }) };
-  const response = await core.dispatch("capability_call", {
+  const response = await withApprovedPrivateResourcesForMutation(storage, request, {
+    operation: pinned.operation, actorId: actor.id, args: pinned.args,
+  }, () => core.dispatch("capability_call", {
     operation: pinned.operation, version: 1, arguments: pinned.args,
-  }, actor);
+  }, actor));
   if (response.error) throw new Error(`${response.error.code}: ${response.error.message}`);
   const result = response.result as { path: string };
   return { text: JSON.stringify(kind === "skill" ? { ok: true, name: parsed.name }

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { coreDatabasePath } from "./workspace-storage-paths.js";
 import {
   closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync,
   renameSync, rmdirSync, unlinkSync, writeFileSync,
@@ -117,7 +118,7 @@ function assertRootBinding(database: DatabaseSync, root: string, workspaceId: st
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) fail("ROOT_BINDING", "Workspace root is not a real directory.");
   const databases = database.prepare("PRAGMA database_list").all() as Array<{ name: string; file: string }>;
   const main = databases.find(row => row.name === "main");
-  if (!main?.file || resolve(dirname(main.file)) !== absoluteRoot || resolve(main.file) !== join(absoluteRoot, "core.sqlite")) {
+  if (!main?.file || resolve(main.file) !== coreDatabasePath(absoluteRoot)) {
     fail("ROOT_BINDING", "SQLite database is not bound to the workspace root.");
   }
   const markerPath = inside(root, ".pkm-next-workspace");

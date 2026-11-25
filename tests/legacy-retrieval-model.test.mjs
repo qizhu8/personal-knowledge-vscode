@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile, readdir, rename, symlink, link, cp } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { writeFileSync } from "node:fs";
@@ -20,6 +20,7 @@ import { persistLegacyRetrievalLearningGenesis, readLegacyRetrievalLearning,
   verifyLegacyRetrievalLearning } from "../dist/legacy-retrieval-learning.js";
 import { planLegacyImport, importLegacyWorkspace } from "../dist/legacy-import.js";
 import { inspectLegacyRetrievalHistory } from "../dist/legacy-retrieval-history-import.js";
+import { migrateWorkspaceStorage } from "../dist/workspace-storage-migration.js";
 
 const root = resolve(import.meta.dirname, ".."), actor = { id: "mcp:external", canWrite: true };
 async function fixture(t) {
@@ -87,6 +88,126 @@ test("actual random offline BERT package admits exact original manifest and exec
     assert(!state.includes("model evidence"));
     assert(!JSON.stringify(database.prepare("SELECT * FROM legacy_original_learning_receipts").all()).includes(f.model.root));
   } finally { database.close(); }
+});
+
+test("retired original model can only return through verified source readmission without replacing durable admission", { timeout: 120_000 }, async t => {
+  const f = await fixture(t);
+  await f.admit();
+  const db = f.storage.connectNative();
+  try {
+    const admission = db.prepare("SELECT * FROM legacy_retrieval_models").get();
+    await f.select({ packageId: null });
+    assert.deepEqual(await readdir(join(f.data, "packages/retrieval-models")), []);
+    await assert.rejects(f.select(), /readmission/);
+    await f.admit();
+    assert.equal(verifyLegacyRetrievalModels(db, f.data).active.packageId, f.model.packageId);
+    assert.deepEqual(db.prepare("SELECT * FROM legacy_retrieval_models").get(), admission);
+    assert.deepEqual(db.prepare("SELECT action FROM legacy_retrieval_model_lifecycle ORDER BY sequence").all().map(row => row.action),
+      ["retire", "restore"]);
+    assert.equal((await f.read("search_knowledge", { query: "evidence", route: "semantic" })).model_invoked, true);
+  } finally { db.close(); }
+});
+
+test("process death after candidate copy but before selection recovers only the receipted candidate and permits readmission", { timeout: 120_000 }, async t => {
+  const f = await fixture(t);
+  await f.close();
+  const childFile = join(f.parent, "candidate-crash.mjs");
+  await writeFile(childFile, `
+    const [root,storageModule,modelModule,sourceRoot,packageId]=process.argv.slice(2);
+    const {Storage}=await import(storageModule);
+    const {admitLegacyRetrievalModel}=await import(modelModule);
+    const storage=await Storage.open(root);
+    let checks=0;
+    await admitLegacyRetrievalModel(storage,{id:"crash-owner",canWrite:true},{
+      sourceRoot,packageId,authorityId:"explicit-crash-test",
+      authorize(){if(++checks===2)process.exit(77);return true;}
+    });
+
+  `);
+  const child = spawnSync(process.execPath, [childFile, f.data, new URL("../dist/storage.js", import.meta.url).href,
+  new URL("../dist/legacy-retrieval-model.js", import.meta.url).href, f.model.root, f.model.packageId],
+  { encoding: "utf8", timeout: 60_000 });
+  assert.equal(child.status, 77, child.stderr);
+  assert.equal((await readdir(join(f.data, "packages/retrieval-models"))).filter(name => name.startsWith(".stage-")).length, 1);
+  const storage = await Storage.open(f.data);
+  try {
+    assert.deepEqual(await readdir(join(f.data, "packages/retrieval-models")), []);
+    const db = storage.connectNative();
+    try {
+      assert.equal(db.prepare("SELECT count(*) AS n FROM legacy_retrieval_model_candidates").get().n, 1);
+      assert.equal(verifyLegacyRetrievalModels(db, f.data).active, undefined);
+    } finally { db.close(); }
+    const admitted = await admitLegacyRetrievalModel(storage, actor, {
+      sourceRoot: f.model.root, packageId: f.model.packageId, authorityId: "explicit-readmission", authorize: () => true,
+    });
+    assert.equal(admitted.packageId, f.model.packageId);
+  } finally { await storage.close(); }
+});
+
+test("durable-only separated backup reconstructs exact local model bytes with selection/provenance unchanged and refuses absent/wrong/tampered sources", { timeout: 120_000 }, async t => {
+  const f = await fixture(t);
+  const admitted = await f.admit({ learningEnabled: true });
+  await f.read("search_knowledge", { query: "evidence", route: "semantic" });
+  const before = await readFile(join(admitted.root, "manifest.json"));
+  await f.close();
+  await migrateWorkspaceStorage(f.data);
+  const storage = await Storage.open(f.data), native = await createNativeRuntime({ storage });
+  try {
+    const db = storage.connectNative();
+    const tables = ["legacy_retrieval_models", "legacy_retrieval_model_selections", "legacy_retrieval_model_lifecycle",
+      "legacy_retrieval_model_candidates", "legacy_original_learning_heads", "legacy_original_learning_receipts", "legacy_retrieval_corpus"];
+    const snapshot = database => Object.fromEntries(tables.map(table => [table, database.prepare(`SELECT * FROM ${table}`).all()]));
+    let durable;
+    try {
+      const state = verifyLegacyRetrievalModels(db, f.data);
+      assert.equal(state.active.packageId, f.model.packageId);
+      assert.equal(state.active.root, join(f.data, "runtime/retrieval-models", f.model.packageId));
+      assert.deepEqual(await readFile(join(state.active.root, "manifest.json")), before);
+      durable = snapshot(db);
+    } finally { db.close(); }
+    const backup = join(f.parent, "durable-backup");
+    await createWorkspaceBackup(storage, backup, {
+      acquireQuiescence: native.acquireWorkspaceQuiescence,
+    });
+    const manifestPath = join(backup, ".pkm-workspace-backup.json");
+    const manifestBytes = await readFile(manifestPath), manifest = JSON.parse(manifestBytes);
+    assert.equal(manifest.modelReconstruction.packages[0].packageId, f.model.packageId);
+    assert.equal(JSON.stringify(manifest.modelReconstruction).includes(f.model.root), false);
+    assert(!manifest.files.some(file => file.path.startsWith("runtime/") || file.path.startsWith("packages/retrieval-models/")));
+    await assert.rejects(restoreWorkspaceBackup(backup, join(f.parent, "missing-model-source"), {
+      nativeRestoreAuthority,
+    }), /modelReconstructionSources/);
+    const wrongSource = join(f.parent, "wrong-local-source", f.model.packageId);
+    await cp(f.model.root, wrongSource, { recursive: true });
+    await writeFile(join(wrongSource, "model/config.json"), "{}");
+    await assert.rejects(restoreWorkspaceBackup(backup, join(f.parent, "wrong-model-source"), {
+      nativeRestoreAuthority, modelReconstructionSources: [{ packageId: f.model.packageId, sourceRoot: wrongSource }],
+    }), /source|inventory|hash|manifest/i);
+    manifest.modelReconstruction.packages[0].manifestSha256 = "0".repeat(64);
+    const forgedBody = { ...manifest.modelReconstruction }; delete forgedBody.sha256;
+    manifest.modelReconstruction.sha256 = createHash("sha256").update(JSON.stringify(forgedBody)).digest("hex");
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    await assert.rejects(restoreWorkspaceBackup(backup, join(f.parent, "tampered-model-pin"), {
+      nativeRestoreAuthority, modelReconstructionSources: [{ packageId: f.model.packageId, sourceRoot: f.model.root }],
+    }), /digest|manifest/i);
+    await writeFile(manifestPath, manifestBytes);
+    const restoredRoot = join(f.parent, "exact-model-restored");
+    await restoreWorkspaceBackup(backup, restoredRoot, {
+      nativeRestoreAuthority, modelReconstructionSources: [{ packageId: f.model.packageId, sourceRoot: f.model.root }],
+    });
+    const restored = await Storage.open(restoredRoot), restoredDb = restored.connectNative();
+    const worker = new LegacyMcpPythonWorker(join(root, "compat/legacy-knowledge-mcp.py"));
+    try {
+      assert.deepEqual(snapshot(restoredDb), durable);
+      const state = verifyLegacyRetrievalModels(restoredDb, restoredRoot);
+      assert.equal(state.active.packageId, f.model.packageId);
+      assert.equal(state.active.root, join(restoredRoot, "runtime/retrieval-models", f.model.packageId));
+      const result = await legacyIndexedKnowledgeRead(restored, {
+        tool: "search_knowledge", arguments: { query: "evidence", route: "semantic" },
+      }, undefined, input => worker.execute(input), actor);
+      assert.equal(result.value.model_invoked, true);
+    } finally { await worker.close(); restoredDb.close(); await restored.close(); }
+  } finally { await native.close(); await storage.close(); }
 });
 
 test("all ten original portable architectures execute real offline operators with independent original ranking, scoped filtering and receipt selection CAS", { timeout: 180_000 }, async t => {
@@ -434,6 +555,98 @@ test("model execution never publishes source/model-raced receipts and corrupt na
   } finally { await native.close(); }
   await f.close();
   await assert.rejects(Storage.open(f.data), /head differs/);
+});
+
+async function replacementSource(f) {
+  const replacementManifest = { ...JSON.parse(await readFile(join(f.model.root, "manifest.json"), "utf8")),
+    name: "Exact offline replacement with a new section operator", architecture: "dense-section" };
+  const packageId = execFileSync("python3", ["-c",
+    "import hashlib,json,sys;print(hashlib.sha256(json.dumps(json.load(sys.stdin),sort_keys=True,ensure_ascii=False,allow_nan=False).encode()).hexdigest())"],
+  { input: JSON.stringify(replacementManifest), encoding: "utf8" }).trim();
+  const sourceRoot = join(f.parent, packageId);
+  await cp(f.model.root, sourceRoot, { recursive: true });
+  await writeFile(join(sourceRoot, "manifest.json"), JSON.stringify(replacementManifest));
+  return { packageId, sourceRoot };
+}
+
+test("real in-flight old-model reader finishes before model replacement can retire its package bytes", { timeout: 120_000 }, async t => {
+  const f = await fixture(t);
+  const old = await f.admit({ learningEnabled: true });
+  const { packageId, sourceRoot } = await replacementSource(f);
+  let entered, release;
+  const readerEntered = new Promise(resolve => { entered = resolve; });
+  const readerRelease = new Promise(resolve => { release = resolve; });
+  let oldPin;
+  const oldRead = legacyIndexedKnowledgeRead(f.storage, {
+    tool: "search_knowledge", arguments: { query: "old evidence", route: "semantic" },
+  }, undefined, async input => {
+    oldPin = input.retrievalModel.packageId;
+    await f.worker.execute(input);
+    entered(); await readerRelease;
+    return f.worker.execute(input);
+  }, actor);
+  await readerEntered;
+  let committed = false;
+  const replacement = admitLegacyRetrievalModel(f.storage, actor, {
+    sourceRoot, packageId, authorityId: "explicit-live-reader-replacement", authorize: () => true,
+    learningEnabled: true,
+  }).then(value => { committed = true; return value; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(committed, false);
+  assert.deepEqual(await readFile(join(old.root, "manifest.json")), await readFile(join(f.model.root, "manifest.json")));
+  release();
+  const oldResult = await oldRead;
+  assert.equal(oldResult.value.model_invoked, true);
+  assert.equal(oldPin, f.model.packageId);
+  await replacement;
+  assert.deepEqual(await readdir(join(f.data, "packages/retrieval-models")), [packageId]);
+  const status = await f.read("retrieval_status");
+  assert.equal(status.solution.active_package_id, packageId);
+});
+
+test("real model replacement queued behind an old reader and concurrent corpus edit cannot publish a stale model/index pair", { timeout: 120_000 }, async t => {
+  const f = await fixture(t);
+  await f.admit({ learningEnabled: true });
+  const { packageId, sourceRoot } = await replacementSource(f);
+  let entered, release;
+  const readerEntered = new Promise(resolve => { entered = resolve; });
+  const readerRelease = new Promise(resolve => { release = resolve; });
+  const oldRead = legacyIndexedKnowledgeRead(f.storage, {
+    tool: "search_knowledge", arguments: { query: "old evidence", route: "semantic" },
+  }, undefined, async input => {
+    const result = await f.worker.execute(input);
+    entered(); await readerRelease;
+    return result;
+  }, actor);
+  const rejectedOldRead = assert.rejects(oldRead, /sources changed/);
+  await readerEntered;
+  let replacementCommitted = false;
+  const replacement = admitLegacyRetrievalModel(f.storage, actor, {
+    sourceRoot, packageId, authorityId: "explicit-concurrent-replacement", authorize: () => true,
+    learningEnabled: true,
+  }).then(value => { replacementCommitted = true; return value; });
+  await writeFile(join(f.data, "notes/Evidence.md"),
+    "---\ntitle: Successor corpus\n---\nsuccessor-corpus-token unique replacement evidence.\n");
+  assert.equal(replacementCommitted, false, "Replacement must wait for the old reader's workspace lease.");
+  release();
+  await rejectedOldRead;
+  await replacement;
+  const db = f.storage.connectNative();
+  try {
+    assert.equal(db.prepare("SELECT count(*) AS n FROM legacy_retrieval_corpus").get().n, 0,
+      "The old model/corpus pair must publish no index generation.");
+    assert.equal(db.prepare("SELECT 1 FROM sqlite_master WHERE name='legacy_original_learning_heads'").get(), undefined);
+    assert.equal(verifyLegacyRetrievalModels(db, f.data).active.packageId, packageId);
+    let executed;
+    const result = await legacyIndexedKnowledgeRead(f.storage, {
+      tool: "search_knowledge", arguments: { query: "successor unique evidence", route: "semantic" },
+    }, undefined, input => { executed = input; return f.worker.execute(input); }, actor);
+    assert.equal(result.value.model_invoked, true);
+    assert.equal(executed.retrievalModel.packageId, packageId);
+    assert.match(JSON.stringify(executed.retrievalSnapshot.documents), /successor-corpus-token/);
+    assert.equal(db.prepare("SELECT count(*) AS n FROM legacy_retrieval_corpus").get().n, 1);
+    assert.deepEqual(await readdir(join(f.data, "packages/retrieval-models")), [packageId]);
+  } finally { db.close(); }
 });
 
 test("exact original historical learner genesis preserves salt/user authority without manufacturing feedback envelopes and continues native model calls", { timeout: 120_000 }, async t => {

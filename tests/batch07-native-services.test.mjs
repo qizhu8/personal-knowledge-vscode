@@ -295,7 +295,9 @@ test("native snapshot refuses actually active Manager/Chat tasks and durable fut
       reviewer: async request => ({ actorId: request.actorId, decisionId: randomUUID(), decision: "reject" }),
       hostServices: { authorizeBackup: () => true } });
     chatting.addCleanup(release);
-    const input = chatTurnInput({ deadlineMs: 15000 });
+    const input = chatTurnInput({ deadlineMs: 15000, expectedSessionRevision: 1 });
+    assert.ok((await chatting.call("chat.session.create", { id: input.sessionId, title: "Active Chat",
+      operationId: randomUUID(), expectedRevision: 0 })).result);
     assert.ok((await chatting.call("chat.turn.start", input)).result);
     await until(() => opened);
     await assert.rejects(chatting.runtime.services.hostServices.backup(`${chatting.root}-chat-backup`),

@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
+import { coreDatabasePath } from "./workspace-storage-paths.js";
 import { lstat, realpath } from "node:fs/promises";
 import { lstatSync, realpathSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import type { Storage } from "./storage.js";
 import type { ChatMemoryWorker } from "./compute/chat-memory-worker.js";
@@ -392,7 +393,7 @@ function validateCommittedReplay(database: DatabaseSync, hooks: LegacyMemoryEras
 function assertWorkspaceDatabase(storage: Storage, database: DatabaseSync, root: string): void {
   storage.assertWorkspaceLease();
   const main = database.prepare("PRAGMA database_list").all().find(row => row.name === "main");
-  if (!main?.file || resolve(String(main.file)) !== join(root, "core.sqlite")) {
+  if (!main?.file || resolve(String(main.file)) !== coreDatabasePath(root)) {
     throw new LegacyMemoryErasureError("WORKSPACE_MISMATCH", "Native erasure ledger is not in the leased workspace database.");
   }
   const version = Number(database.prepare("PRAGMA user_version").get()?.user_version);
@@ -1108,7 +1109,7 @@ export class LegacyMemoryErasureService {
     const runtimeInsideWorkspace = runtimeRelativeToRoot === "" ||
       runtimeRelativeToRoot !== ".." && !runtimeRelativeToRoot.startsWith(`..${sep}`) && !isAbsolute(runtimeRelativeToRoot);
     if (!isAbsolute(this.engine.runtimeDirectory) || !isAbsolute(this.engine.database)
-      || dirname(databasePath) !== runtimeDirectory || databasePath === join(root, "core.sqlite")
+      || dirname(databasePath) !== runtimeDirectory || databasePath === coreDatabasePath(root)
       || runtimeInsideWorkspace && this.engine.assertNativeAdoption?.(root, workspaceId) !== true) {
       throw new LegacyMemoryErasureError("ENGINE_MISMATCH", "Memory engine must use its dedicated external runtime database.");
     }

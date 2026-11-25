@@ -230,10 +230,15 @@ test("cancel before dispatch and hung connect ignore-abort still interrupt promp
   const h = harness([]);
   await failure(h.service, "cancelled", request({ signal: cancelled.signal }), "not-sent");
   assert.equal(h.calls.length, 0);
-  const hung = harness(() => new Promise(() => {}), { idleTimeoutMs: 15 });
+  let release;
+  const hung = harness(() => new Promise(resolve => { release = resolve; }), { idleTimeoutMs: 15 });
   await failure(hung.service, "timeout");
   assert.equal(hung.calls[0].signal.aborted, true);
   assert.equal(hung.calls.length, 1);
+  assert.equal(hung.service.activity(), 1);
+  release(stream([chunk({ content: "late ignored result" }), stop, done]));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(hung.service.activity(), 0);
 });
 
 test("cancel stalled reader and explicit consumer return release underlying stream", async () => {

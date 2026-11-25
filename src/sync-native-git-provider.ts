@@ -6,6 +6,7 @@ import { LegacyGitLease, type LegacyGitLeaseOptions } from "./legacy-github-git-
 import { syncTransportPolicySchema, type SyncTransportPolicy, type SyncTransportPublication } from "./sync-transport-contracts.js";
 import type { SyncTransportStore } from "./sync-transport-store.js";
 import { syncPlanHash } from "./sync-plan.js";
+import { githubSyncIgnoredPath } from "./sync-storage-boundary.js";
 
 /** Git object operations for the existing verified Sync planner; never exposes a remote URL to callers. */
 export class SyncNativeGitProvider {
@@ -82,6 +83,8 @@ export class SyncNativeGitProvider {
     }
     if (method === "POST" && route === "/git/trees") {
       const value = body as { base_tree: string; tree: Array<{ path: string; mode: string; sha: string | null }> };
+      if (value.tree.some(entry => githubSyncIgnoredPath(entry.path)))
+        throw new Error("User Knowledge Sync cannot publish server-data, runtime or private control paths.");
       const index = join(this.options.gitDir, `pkm-index-${randomUUID()}`);
       try {
         const env = { GIT_INDEX_FILE: index };

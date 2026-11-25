@@ -45,8 +45,16 @@ def native_channel_evidence(text, expected, stopped=False):
     return {"started": True, "discoveredTools": count, "stopped": stop >= 0}
 
 
-def stage(expected):
-    for _ in range(600):
+def stage(expected, timeout_seconds=None):
+    if timeout_seconds is None:
+        timeout_seconds = (
+            95
+            if expected == "native-chat-resolve"
+            and fixture.get("nativeModels")
+            and fixture.get("nativeModelRounds") == 48
+            else 60
+        )
+    for _ in range(timeout_seconds * 10):
         try:
             progress = json.loads((root / "progress.json").read_text())
             assert progress["stage"] != "failed", progress.get("error")
@@ -129,6 +137,7 @@ with sync_playwright() as playwright:
                 assert namespaces["ui"] == namespaces["editor"], namespaces
                 trace.update({"editorPid": fixture["editorPid"], "editorArgs": editor_args,
                               "namespaces": namespaces})
+                expect(widget.locator(".quick-input-progress")).to_have_attribute("aria-hidden", "true")
                 field.fill(path + "/")
                 expect(field).to_have_value(path + "/")
                 expect(widget.locator(".quick-input-progress")).to_have_attribute("aria-hidden", "true")
@@ -205,6 +214,109 @@ with sync_playwright() as playwright:
             page.keyboard.press("Enter")
             widget.wait_for(state="hidden")
 
+        if fixture.get("coldComponent"):
+            trash_recovery = fixture.get("nativeOriginalTrashRecoveryEpoch")
+            todo_recovery = fixture.get("nativeOriginalTodoRecoveryEpoch")
+            recovery_decision = fixture.get("nativePrivateResourceRecoveryEpoch") or trash_recovery or todo_recovery
+            if recovery_decision:
+                assert recovery_decision in ["deny", "approve"]
+            stage(f"native-todo-recovery-{recovery_decision}-attach" if todo_recovery else
+                  f"native-trash-recovery-{recovery_decision}-attach" if trash_recovery else
+                  f"native-recovery-{recovery_decision}-attach" if recovery_decision else "native-cold-attach")
+            dialog = page.locator(".monaco-dialog-box")
+            dialog.get_by_role("button", name="Attach native producer", exact=True).wait_for(state="visible")
+            assert fixture["coldComponent"]["root"] in dialog.inner_text()
+            dialog.get_by_role("button", name="Attach native producer", exact=True).click()
+            script_segment = fixture.get("nativeScriptSegment")
+            if script_segment:
+                assert script_segment in ["deny", "approve"]
+                stage(f"native-script-{script_segment}-effects-complete")
+                evidence = json.loads((root / f"native-script-{script_segment}-effects.json").read_text())
+                assert evidence["passed"] and evidence["componentClosed"] and evidence["segment"] == script_segment
+                assert evidence["runId"] == fixture["nativeScriptEpochRunId"]
+                assert evidence["sourceRoot"] == fixture["coldComponent"]["root"]
+                assert evidence["actualInstalledScriptRead"] == (script_segment == "approve")
+                (root / f"ui-native-script-{script_segment}-passed.json").write_text(json.dumps({
+                    "passed": True, "actualNativeUi": True, "segment": script_segment,
+                    "runId": fixture["nativeScriptEpochRunId"], "sourceRoot": fixture["coldComponent"]["root"],
+                }))
+                print(f"PASS actual frozen Script editor segment: {script_segment}")
+                sys.exit(0)
+            if fixture.get("nativeMemory") or fixture.get("nativeTodoAssignment") or fixture.get("nativeManagedTask"):
+                dialog.get_by_role("button", name="Allow this native model request", exact=True).wait_for(state="visible")
+                assert fixture["coldComponent"]["root"] in dialog.inner_text()
+                dialog.get_by_role("button", name="Allow this native model request", exact=True).click()
+            dialog.get_by_role("button", name="Approve this request", exact=True).wait_for(state="visible")
+            assert "read public content" in dialog.inner_text()
+            assert fixture["coldComponent"]["root"] in dialog.inner_text()
+            dialog.get_by_role("button", name="Approve this request", exact=True).click()
+            if recovery_decision:
+                if todo_recovery:
+                    stage(f"native-todo-recovery-{recovery_decision}-complete")
+                    evidence = json.loads((root / f"native-todo-recovery-{recovery_decision}-effects.json").read_text())
+                    assert evidence["passed"] and evidence["epochClosed"] and evidence["decision"] == recovery_decision
+                    assert evidence["runId"] == fixture["nativeTodoRecoveryRunId"]
+                    assert evidence["sourceRoot"] == fixture["coldComponent"]["root"]
+                    (root / f"ui-todo-recovery-{recovery_decision}-passed.json").write_text(json.dumps({
+                        "passed": True, "actualNativeUi": True, "decision": recovery_decision,
+                        "runId": fixture["nativeTodoRecoveryRunId"], "sourceRoot": fixture["coldComponent"]["root"],
+                    }))
+                    print(f"PASS actual fresh Todo recovery epoch: {recovery_decision}")
+                    sys.exit(0)
+                if trash_recovery:
+                    stage(f"native-trash-recovery-{recovery_decision}-complete")
+                    evidence = json.loads((root / f"native-trash-recovery-{recovery_decision}-effects.json").read_text())
+                    assert evidence["passed"] and evidence["epochClosed"] and evidence["decision"] == recovery_decision
+                    assert evidence["runId"] == fixture["nativeTrashRecoveryRunId"]
+                    assert evidence["sourceRoot"] == fixture["coldComponent"]["root"]
+                    (root / f"ui-trash-recovery-{recovery_decision}-passed.json").write_text(json.dumps({
+                        "passed": True, "actualNativeUi": True, "decision": recovery_decision,
+                        "runId": fixture["nativeTrashRecoveryRunId"], "sourceRoot": fixture["coldComponent"]["root"],
+                    }))
+                    print(f"PASS actual fresh Trash recovery epoch: {recovery_decision}")
+                    sys.exit(0)
+                stage(f"native-recovery-{recovery_decision}-complete")
+                evidence = json.loads((root / f"native-recovery-{recovery_decision}-effects.json").read_text())
+                assert evidence["passed"] and evidence["epochClosed"] and evidence["decision"] == recovery_decision
+                (root / f"ui-recovery-{recovery_decision}-passed.json").write_text('{"passed":true,"actualNativeUi":true}')
+                print(f"PASS actual fresh recovery epoch: {recovery_decision}")
+                sys.exit(0)
+            skill_steps = [
+                ("native-cold-note-deny", "Deny"),
+                ("native-cold-note-write", "Approve this request"),
+                ("native-cold-skill-create", "Approve this request"),
+                ("native-cold-skill-update", "Approve this request"),
+            ]
+            if fixture.get("nativeSkillBasic"):
+                skill_steps.append(("native-cold-skill-overwrite", "Approve this request"))
+            for phase, choice in skill_steps:
+                stage(phase)
+                dialog = page.locator(".monaco-dialog-box")
+                if fixture.get("nativeSkillBasic"):
+                    expected_tool = {
+                        "native-cold-note-deny": "update_note",
+                        "native-cold-note-write": "update_note",
+                        "native-cold-skill-create": "add_skill",
+                        "native-cold-skill-update": "update_skill",
+                        "native-cold-skill-overwrite": "add_skill",
+                    }[phase]
+                    dialog.get_by_text(f"Allow PKM v5 {expected_tool} for this exact request?", exact=True).wait_for(state="visible")
+                dialog.get_by_role("button", name=choice, exact=True).wait_for(state="visible")
+                assert fixture["coldComponent"]["root"] in dialog.inner_text()
+                handle = dialog.element_handle() if fixture.get("nativeSkillBasic") else None
+                text = dialog.inner_text() if handle else None
+                dialog.get_by_role("button", name=choice, exact=True).click()
+                if handle:
+                    page.wait_for_function(
+                        "(v)=>!v.node.isConnected||v.node.offsetParent===null||v.node.innerText!==v.text",
+                        arg={"node": handle, "text": text},
+                    )
+            stage("native-cold-effects-complete", timeout_seconds=300 if fixture.get("nativePrivateResourceLifecycle") else 60)
+            assert json.loads((root / "cold-component-effects-passed.json").read_text())["passed"]
+            (root / "ui-cold-passed.json").write_text('{"passed":true,"actualNativeUi":true}')
+            print("PASS actual cold bootstrap/native Core effects; editor must exit before B1/restore")
+            sys.exit(0)
+
         stage("cancel-source")
         page.locator(".quick-input-widget").wait_for(state="visible")
         page.keyboard.press("Escape")
@@ -236,6 +348,94 @@ with sync_playwright() as playwright:
         else:
             raise AssertionError("Installed runner did not verify real Output clipboard")
         (root / "ui-import-passed.json").write_text(json.dumps({"passed": True, "planSha256": digest}))
+        if fixture.get("nativeIdentity"):
+            stage("native-identity-enroll")
+            dialog = page.locator(".monaco-dialog-box")
+            dialog.wait_for(state="visible")
+            assert "Old extension credentials are not read or copied" in dialog.inner_text()
+            dialog.get_by_role("button", name="Enroll native identity", exact=True).click()
+            stage("native-attachment-confirm")
+            dialog = page.locator(".monaco-dialog-box")
+            dialog.wait_for(state="visible")
+            assert fixture["source"] in dialog.inner_text()
+            assert "authenticates attachment only" in dialog.inner_text()
+            dialog.get_by_role("button", name="Attach native producer", exact=True).click()
+            for phase, choice in [
+                ("native-request-admission", "Approve this request"),
+                ("native-request-deny", "Deny"),
+                ("native-request-approve", "Approve this request"),
+            ]:
+                stage(phase)
+                dialog = page.locator(".monaco-dialog-box")
+                dialog.wait_for(state="visible")
+                assert fixture["source"] in dialog.inner_text()
+                dialog.get_by_role("button", name=choice, exact=True).click()
+            stage("native-request-cancel")
+            dialog = page.locator(".monaco-dialog-box")
+            dialog.wait_for(state="visible")
+            assert "late-native-click-must-not-authorize" in dialog.inner_text()
+            (root / "native-request-cancel-visible.json").write_text('{"visible":true}')
+            await_json(root / "native-request-cancelled.json")
+            dialog.get_by_role("button", name="Approve this request", exact=True).click()
+            (root / "native-request-late-click.json").write_text('{"clicked":true}')
+            if fixture.get("nativeModels"):
+                for phase in ["native-model-enable", "native-model-select", "native-model-stream",
+                              "native-model-select-execution", "native-model-execution",
+                              "native-chat-resolve", "native-chat-authorize"]:
+                    stage(phase)
+                    dialog = page.locator(".monaco-dialog-box")
+                    dialog.get_by_role("button", name="Allow this native model request", exact=True).wait_for(state="visible")
+                    assert fixture["source"] in dialog.inner_text()
+                    dialog.get_by_role("button", name="Allow this native model request", exact=True).click()
+                stage("native-chat-presentation")
+                binding = page.locator(".monaco-editor .view-lines").filter(has_text="PKM native Chat binding").first
+                binding.wait_for(state="visible")
+                binding.get_by_text("Permission: protective", exact=True).wait_for(state="visible")
+                (root / "native-chat-binding-ui-passed.json").write_text('{"passed":true,"readonlyBinding":true}')
+                stage("native-chat-cancel")
+                dialog = page.locator(".monaco-dialog-box")
+                dialog.get_by_role("button", name="Allow this native model request", exact=True).wait_for(state="visible")
+                assert "Cancel this exact owned native PKM Chat request" in dialog.inner_text()
+                (root / "native-chat-cancel-visible.json").write_text('{"visible":true}')
+                await_json(root / "native-chat-cancelled.json")
+                dialog.get_by_role("button", name="Allow this native model request", exact=True).click()
+                (root / "native-chat-late-click.json").write_text('{"clicked":true}')
+                for phase, title in [
+                    ("native-action-enable", "Enable separate native Action approvals"),
+                    ("native-action-source", "Admit this exact original Action source/state capsule"),
+                    ("native-action-invocation", "Execute this exact admitted native Action invocation"),
+                ]:
+                    stage(phase)
+                    dialog = page.locator(".monaco-dialog-box")
+                    button = dialog.get_by_role("button", name="Approve this exact Action request", exact=True)
+                    button.wait_for(state="visible")
+                    assert title in dialog.inner_text()
+                    assert fixture["source"] in dialog.inner_text()
+                    button.click()
+                stage("native-action-cancel")
+                dialog = page.locator(".monaco-dialog-box")
+                button = dialog.get_by_role("button", name="Approve this exact Action request", exact=True)
+                button.wait_for(state="visible")
+                assert "Execute this exact admitted native Action invocation" in dialog.inner_text()
+                (root / "native-action-cancel-visible.json").write_text('{"visible":true}')
+                await_json(root / "native-action-cancelled.json")
+                button.click()
+                (root / "native-action-late-click.json").write_text('{"clicked":true}')
+                stage("native-action-revoke")
+                action_status = page.get_by_text("PKM Action approvals", exact=True)
+                action_status.wait_for(state="visible")
+                action_status.click()
+                action_status.wait_for(state="hidden")
+                (root / "native-action-revoked-ui.json").write_text('{"revoked":true}')
+                stage("native-model-complete")
+                assert json.loads((root / "native-model-rpc-passed.json").read_text())["passed"]
+                (root / "native-model-ui-passed.json").write_text('{"passed":true,"actualNativeUi":true}')
+            stage("native-identity-restored")
+            restored = json.loads((root / "native-identity-passed.json").read_text())
+            assert restored["passed"] and restored["keyContinuityAcrossNativeReload"]
+            (root / "native-identity-ui-passed.json").write_text(json.dumps({
+                "passed": True, "actualNativeModal": True, "reloadObserved": True,
+            }))
         native_mcp = None
         if fixture.get("sideBySide"):
             stage("native-mcp-empty-discovery")

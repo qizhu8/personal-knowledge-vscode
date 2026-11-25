@@ -9,6 +9,7 @@ import { constants, lstatSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { chmod, lstat, mkdir, open, readFile, readdir, realpath, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { coreDatabaseAuxiliaryFiles, coreDatabaseFile, coreDatabaseFiles, coreDatabasePath } from "./workspace-storage-paths.js";
 import { pathToFileURL } from "node:url";
 import { Storage } from "./storage.js";
 import { LegacyImportError, planLegacyImport, type LegacyImportPlan, type LegacyImportLimits } from "./legacy-import.js";
@@ -390,7 +391,7 @@ function verifyManagedWriterSession(root: string, plan: LegacyImportPlan, entrie
 }
 
 async function actualSourcePaths(root: string, includeManaged: boolean, additions = new Set<string>(), archiveName?: string): Promise<string[]> {
-  const managed = new Set([workspaceMarker, journalName, commitName, writerMarkerName, "core.sqlite", "core.sqlite-wal", "core.sqlite-shm"]);
+  const managed = new Set([workspaceMarker, journalName, commitName, writerMarkerName, ...coreDatabaseFiles]);
   const result: string[] = [];
   async function walk(directory: string, prefix = ""): Promise<void> {
     const before = await lstat(directory, { bigint: true });
@@ -761,7 +762,7 @@ async function prepareLocked(
   } catch {
     throw new LegacyImportError("IMPORT_BLOCKED", "The existing root must already contain a real notes directory; adoption will not create or relocate it.");
   }
-  for (const name of [workspaceMarker, "core.sqlite", "core.sqlite-wal", "core.sqlite-shm", commitName]) {
+  for (const name of [workspaceMarker, ...coreDatabaseFiles, commitName]) {
     try {
       await lstat(join(root, name));
       throw new LegacyImportError("INVALID_WORKSPACE", "A legacy root with existing Next state cannot be newly adopted.");
@@ -1079,8 +1080,8 @@ export async function rollbackPreparedLegacyRootAdoptionExperimental(
     }
     const assertNoPublishedState = async () => {
       const ownedMarker = join(canonicalRoot, writerMarkerName);
-      for (const path of [join(canonicalRoot, commitName), join(canonicalRoot, "core.sqlite"),
-        join(canonicalRoot, "core.sqlite-wal"), join(canonicalRoot, "core.sqlite-shm"), ownedMarker]) {
+      for (const path of [join(canonicalRoot, commitName),
+        ...coreDatabaseFiles.map(name => join(canonicalRoot, name)), ownedMarker]) {
         try {
           await lstat(path);
           throw new LegacyImportError("RECOVERY_REQUIRED", "Published or initialized Next state cannot be rolled back by the prepared-only protocol.");
@@ -1258,7 +1259,7 @@ async function readPostCommitArchive(path: string, root: string, workspaceId: st
       || !/^[a-f0-9]{64}$/.test(record.baselineSha256) || typeof manifestSha256 !== "string"
       || !/^[a-f0-9]{64}$/.test(manifestSha256) || jsonSha256(body) !== manifestSha256
       || !Array.isArray(record.files) || record.files.length !== 5) throw new Error("invalid archive binding");
-    const names = [workspaceMarker, journalName, commitName, "core.sqlite", "writer-fenced.json"];
+    const names = [workspaceMarker, journalName, commitName, coreDatabaseFile, "writer-fenced.json"];
     if (record.files.some((item: unknown) => {
       if (!item || typeof item !== "object" || Array.isArray(item)) return true;
       const file = item as Record<string, unknown>;
@@ -1336,7 +1337,7 @@ export async function rollbackCommittedLegacyRootAdoptionExperimental(
       const receipt = JSON.parse(await readFile(join(canonicalRoot, commitName), "utf8")) as Record<string, unknown>;
       if (typeof receipt.rollbackBaselineSha256 !== "string" || !/^[a-f0-9]{64}$/.test(receipt.rollbackBaselineSha256))
         throw new LegacyImportError("RECOVERY_REQUIRED", "This commit has no post-commit rollback baseline.");
-      for (const name of ["core.sqlite-wal", "core.sqlite-shm", "core.sqlite-journal"]) {
+      for (const name of coreDatabaseAuxiliaryFiles) {
         try { await lstat(join(canonicalRoot, name)); throw new LegacyImportError("RECOVERY_REQUIRED", "SQLite sidecars require separate recovery before rollback."); }
         catch (error) {
           if (error instanceof LegacyImportError) throw error;
@@ -1345,8 +1346,8 @@ export async function rollbackCommittedLegacyRootAdoptionExperimental(
       }
       await verifySourceEntries(canonicalRoot, journal);
       await assertQuiescent();
-      const databaseBefore = await postCommitFile(canonicalRoot, "core.sqlite");
-      const databaseUrl = pathToFileURL(join(canonicalRoot, "core.sqlite"));
+      const databaseBefore = await postCommitFile(canonicalRoot, coreDatabaseFile);
+      const databaseUrl = pathToFileURL(coreDatabasePath(canonicalRoot));
       databaseUrl.search = "?immutable=1";
       const database = new DatabaseSync(databaseUrl, { readOnly: true });
       try {
@@ -1354,9 +1355,9 @@ export async function rollbackCommittedLegacyRootAdoptionExperimental(
           throw new LegacyImportError("SOURCE_CHANGED", "Next database changed after adoption; rollback preserves it for reconciliation.");
       } finally { database.close(); }
       const files: PostCommitArchiveFile[] = [];
-      for (const name of [workspaceMarker, journalName, commitName, "core.sqlite"])
+      for (const name of [workspaceMarker, journalName, commitName, coreDatabaseFile])
         files.push(await postCommitFile(canonicalRoot, name));
-      if (!isDeepStrictEqual(databaseBefore, files.find(file => file.name === "core.sqlite")))
+      if (!isDeepStrictEqual(databaseBefore, files.find(file => file.name === coreDatabaseFile)))
         throw new LegacyImportError("SOURCE_CHANGED", "Next database changed while its rollback baseline was inspected.");
       files.push({ ...await postCommitFile(locks, writerMarkerName), name: "writer-fenced.json" });
       const ownerValue = JSON.parse(await readFile(owner, "utf8")) as Record<string, unknown>;
@@ -1410,7 +1411,7 @@ export async function rollbackCommittedLegacyRootAdoptionExperimental(
       catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return false; throw error; }
     };
     const assertNoSqliteSidecars = async () => {
-      for (const name of ["core.sqlite-wal", "core.sqlite-shm", "core.sqlite-journal"])
+      for (const name of coreDatabaseAuxiliaryFiles)
         if (await exists(join(canonicalRoot, name)))
           throw new LegacyImportError("RECOVERY_REQUIRED", "SQLite sidecars require separate recovery before rollback.");
     };
@@ -1440,7 +1441,7 @@ export async function rollbackCommittedLegacyRootAdoptionExperimental(
         await syncDirectory(canonicalRoot);
         options.experimentalRollbackCheckpoint?.("intent-published");
       }
-      for (const name of [journalName, commitName, "core.sqlite", "writer-fenced.json"]) {
+      for (const name of [journalName, commitName, coreDatabaseFile, "writer-fenced.json"]) {
         const expected = manifest.files.find(file => file.name === name)!;
         await verifyFiles();
         await assertNoSqliteSidecars();

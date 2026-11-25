@@ -178,8 +178,13 @@ test("original poll template creates the exact pinned pending proposal without e
         tool: "action_template_create", arguments: { ...args, parameters: { ...parameters, ...changed } },
       }));
     }
-    await assert.rejects(legacyActionWrite(storage, actor, { tool: "action_template_create",
-      arguments: { action_id: "example.azure", parameters: { template_id: "azuredevops-pipeline-status" } } }), /host-specific/);
+    const azure = await legacyActionWrite(storage, actor, { tool: "action_template_create",
+      arguments: { action_id: "example.azure", parameters: { template_id: "azuredevops-pipeline-status" } } });
+    assert.equal(azure.registered, false);
+    const proposals = await legacyActionRead(storage, actor, { tool: "action_proposals", arguments: {} });
+    const azureQuery = proposals.proposals.find(item => item.content_hash === azure.content_hash);
+    assert.equal(azureQuery.definition.implementations[0].result_protocol, "pkm.action.result/v1");
+    assert.match(azureQuery.definition.implementations[0].args[0], /legacy-action-azuredevops-query\.py$/);
     await assert.rejects(legacyActionWrite(storage, { ...actor, canWrite: false },
       { tool: "action_template_create", arguments: args }), /write permission/);
   } finally { await storage.close(); }

@@ -27,6 +27,7 @@ import { noteRecord } from "./note-contracts.js";
 import { skillRecord } from "./skill-contracts.js";
 import { projectRecipeDefinitions as registryDefinitions } from "./project-recipes-contracts.js";
 import { inspectLegacyUiRetiredState } from "./legacy-ui-retired-state.js";
+import { knowledgeReadPrivateTopLevels } from "./fresh-note-query-contracts.js";
 
 export { projectRecipeDefinitions } from "./project-recipes-contracts.js";
 
@@ -309,9 +310,11 @@ export function readProjectRecipes(
   }
 }
 
-export function readProjectRecipeSnapshot(root: string): { recipes: RecipeRecord[]; snapshotRevision: string } {
+export function readProjectRecipeSnapshot(root: string, options: { publication?: true } = {}): { recipes: RecipeRecord[]; snapshotRevision: string } {
   const snapshot = readSnapshot(root);
-  return { recipes: snapshot.recipes, snapshotRevision: snapshot.revision };
+  const privateCategories = options.publication ? knowledgeReadPrivateTopLevels(root, "recipes") : new Set<string>();
+  return { recipes: snapshot.recipes.filter(recipe =>
+    !privateCategories.has((recipe.category || UNCATEGORIZED_RECIPE_DIRECTORY).split("/")[0]!)), snapshotRevision: snapshot.revision };
 }
 
 export function buildProjectRecipeKnowledge(
@@ -354,9 +357,10 @@ export function buildProjectRecipeKnowledge(
       name: item.name, description: item.description || "", category: item.category || "",
       tags: parseTagArray(item.tags, `skills/${source.rel}`), content: item.content || "",
     };
-    addBundledKnowledge(records, required, {
-      knowledgeId, kind: "skill", contentHash: hashText(capturedCanonicalJson(document)), document,
-    });
+    for (const identity of new Set([knowledgeId, source.rel.replace(/\.md$/i, ""), item.knowledgeId].filter((id): id is string => !!id)))
+      addBundledKnowledge(records, required, {
+        knowledgeId: identity, kind: "skill", contentHash: hashText(capturedCanonicalJson(document)), document,
+      });
   }
   for (const source of knowledgeSnapshot(root, verifiedDocuments, "notes", "Note")) {
     const parsed = noteRecord.safeParse(projectNote(source));
@@ -366,9 +370,10 @@ export function buildProjectRecipeKnowledge(
       title: item.title, type: item.type || "general", category: item.category || "",
       tags: parseTagArray(item.tags, `notes/${source.rel}`), content: item.content || "",
     };
-    addBundledKnowledge(records, required, {
-      knowledgeId: item.slug, kind: "note", contentHash: hashText(capturedCanonicalJson(document)), document,
-    });
+    for (const identity of new Set([item.slug, source.rel.replace(/\.md$/i, ""), item.knowledgeId].filter((id): id is string => !!id)))
+      addBundledKnowledge(records, required, {
+        knowledgeId: identity, kind: "note", contentHash: hashText(capturedCanonicalJson(document)), document,
+      });
   }
   const missing = [...required.values()].filter(binding => !records.has(`${binding.kind}\0${binding.knowledgeId}`))
     .map(binding => `${binding.kind} ${binding.knowledgeId}`).sort();

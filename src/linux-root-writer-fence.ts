@@ -3,7 +3,7 @@ import { constants, lstatSync } from "node:fs";
 import { lstat, open, readFile, realpath, rename, unlink } from "node:fs/promises";
 import { spawn, type ChildProcess } from "node:child_process";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { CoreError } from "./contracts.js";
+import { CoreError } from "./host-composition-legacy-batch15-errors.js";
 import { renameNoReplaceSync } from "./rename-no-replace.js";
 
 const lockDirectoryName = ".pkm-next-root-adoption-locks";

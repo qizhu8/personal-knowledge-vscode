@@ -74,19 +74,19 @@
   "native": [
     {
       "file": "src/runtime-process.ts",
-      "sha256": "875b32e698608aaa7f8c5761a8ed1753559632b3d93e778b61b6e85b46e895a6"
+      "sha256": "61d86618a9cb64fc31ab09c05ef05bfc74acc86e228843bf7c25b6f11c0ea0db"
     },
     {
       "file": "src/runtime-process-store.ts",
-      "sha256": "5ca8f4b94b735149c21744cd4451c3b2a437f2d0187168731d242fdcb5d4ee0b"
+      "sha256": "759e086fd0dd926e6aca73a55a41699d00128dee34f98d6ca17a0ed518a81065"
     },
     {
       "file": "src/runtime-process-contracts.ts",
-      "sha256": "fc7bde0e38f9751f17ada10fe04fe70a3e45fe6ea3953f4231d192d0f5cb01b3"
+      "sha256": "b21d99181bd01b58640125a46eef7909b2e89323014631d64deefac495fa46b4"
     },
     {
       "file": "src/process-bridge.ts",
-      "sha256": "baf8576b0f8c028f85b6faae1cb21682435be8197d408d9e8fc8a22cc90466a0"
+      "sha256": "8edc0d275ad716bb9b73fda2e57c8cbeb83f4ad88dec192cddd4764c85ff951d"
     },
     {
       "file": "tests/runtime-process-fixtures.mjs",
@@ -94,7 +94,7 @@
     },
     {
       "file": "tests/runtime-process.test.mjs",
-      "sha256": "190639afcb1ed515040aadea9fcfee0fa7326b08caeb82bfceb6aee17dc8e709"
+      "sha256": "7e23aebe755f654c75a5411e66fa937d3f421bd0db9b870976d049e861aa47da"
     },
     {
       "file": "tests/runtime-process-restart.test.mjs",
@@ -102,7 +102,7 @@
     },
     {
       "file": "tests/process-bridge.test.mjs",
-      "sha256": "188c06e18d90dd7a732f6808e35aaecbb556e64ac9fdc57cd6d8cb5864bda9fb"
+      "sha256": "20f0ffb5736afa163ebca405ab0d76bcce79375195d011fbc7b1aac82795ee11"
     }
   ]
 }

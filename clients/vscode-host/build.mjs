@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 
 const require = createRequire(import.meta.url);
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -74,6 +74,8 @@ const helperBuild = await build({
 if (Object.keys(helperBuild.metafile.inputs).some(filename => retainedSource(filename)
   || filename.endsWith("/active-vscode-migration-host.ts")))
   throw new Error("The separate first-run helper must not embed active-host authority modules.");
+await copyFile(join(here, "original-mcp-native-sdk-supervisor.py"),
+  join(output, "original-mcp-native-sdk-supervisor.py"));
 const files = {};
 async function inventory(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {

@@ -1,5 +1,5 @@
 export { VscodeClient, ClientError } from "./client.ts";
-export type { Host, ServerBinding, ClientState, Document, DocumentPage, ChatTurn, ChatEvent,
+export type { Host, ServerBinding, ClientState, Document, DocumentPage, ChatSession, ChatTurn, ChatEvent,
   ManagerOverview, ManagerEvent, ManagerPage } from "./client.ts";
 export type { OperationKey, OperationInput } from "./contracts.ts";
 export { ChatActivity, ManagerActivity } from "./activity.ts";

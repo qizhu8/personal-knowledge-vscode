@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { watch } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Core } from "../dist/core.js";
@@ -586,7 +586,10 @@ async function main() {
     },
     cases: rows,
   };
-  if (reportPath) await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, { flag: "wx" });
+  if (reportPath) {
+    await mkdir(dirname(reportPath), { recursive: true, mode: 0o700 });
+    await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, { flag: "wx" });
+  }
 }
 
 main().catch(error => {

@@ -4,7 +4,8 @@ import {
 } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
-import { CoreError, type StorageRequest } from "./contracts.js";
+import { CoreError } from "./host-composition-legacy-batch15-errors.js";
+import type { StorageRequest } from "./contracts.js";
 import {
   folderLifecycleDefinitions, folderLifecycleDocumentPin, folderLifecycleEntryPath, folderLifecycleLimits as limits,
   type FolderLifecycleOperation, type FolderLifecyclePreview, type FolderLifecycleResult,

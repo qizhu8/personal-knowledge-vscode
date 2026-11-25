@@ -6,11 +6,34 @@ import { chmod, lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Storage } from "../dist/storage.js";
+import { Core } from "../dist/core.js";
 import { createNativeRuntime } from "../dist/native-runtime.js";
 import { inspectNativeClassificationHistory, scanNativeClassification, validateNativeClassificationHistoryLayout } from "../dist/legacy-classification-native.js";
 import { fixture, transports, actor, hash, fixturePublisher } from "./host-composition-legacy-batch15-captures.mjs";
 import { createWorkspaceBackup, restoreWorkspaceBackup } from "../dist/workspace-backup.js";
 import { nativeRestoreAuthority } from "./host-composition-legacy-batch16-restore-fixture.mjs";
+
+test("ordinary Core mutations cannot write receipts or effects through an unrecovered worker", async t => {
+  const f = await fixture(t);
+  await f.close();
+  const storage = await Storage.open(f.root, { deferRecovery: true });
+  const core = new Core(storage);
+  t.after(async () => { await core.closePlugins(); await storage.close(); });
+  const args = { operationId: randomUUID(), id: "unrecovered", title: "Blocked", content: "unchanged" };
+  const call = who => core.dispatch("capability_call", {
+    operation: "knowledge.document.create", version: 1, arguments: args,
+  }, who);
+  assert.equal((await call({ ...actor, canWrite: false })).error.code, "ACCESS_DENIED");
+  assert.equal((await call(actor)).error.code, "BUSY");
+  await assert.rejects(storage.request({ operation: "knowledge.document.create", actorId: actor.id, args }),
+    { code: "STORAGE_UNAVAILABLE" });
+  const db = storage.connectNative();
+  try {
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM browser_mutation_pins WHERE operation_id=?").get(args.operationId).n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM receipts WHERE operation_id=?").get(args.operationId).n, 0);
+  } finally { db.close(); }
+  await assert.rejects(readFile(join(f.root, "notes/unrecovered.md")), { code: "ENOENT" });
+});
 
 test("original writer bytes flow through authenticated strict classification HTTP/MCP with pinned recovery", async t => {
   const transactionOwners = new Set(), originalExec = DatabaseSync.prototype.exec;

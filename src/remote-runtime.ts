@@ -173,7 +173,7 @@ export function createRemoteRuntime(options: RemoteRuntimeOptions) {
       operationId: publication.operationId, stagedReceiptId: publication.stagedReceiptId,
     }, pin, syncTransportApplyStaging(db, plans, {
       sessionId: publication.sessionId, actorId: publication.actorId, input: session.input,
-    }), new Date(publication.message.slice("PKM sync ".length)));
+    }, { root: options.root, contentAuthority: options.sync?.contentAuthority }), new Date(publication.message.slice("PKM sync ".length)));
     if (JSON.stringify(recomputed) !== JSON.stringify(publication)
       || store.read(publication.operationId, publication.actorId)?.status.tree !== tree)
       throw new Error("Git publication differs from its native staged receipt.");
@@ -262,13 +262,28 @@ export function createRemoteRuntime(options: RemoteRuntimeOptions) {
       await authorize(actorId, "apply");
       id.parse(request.operationId); id.parse(request.sessionId);
       return options.exclusive(async () => {
-        const input = options.read(() => loadSession(actorId, request.sessionId).input);
+        const session = options.read(() => loadSession(actorId, request.sessionId));
+        const input = session.input;
         const fingerprint = syncPlanHash({ workspaceId: options.workspaceId, actorId, kind: "remote.sync.apply",
           operationId: request.operationId, sessionId: request.sessionId, input });
+        const completed = options.read(() => row(request.operationId));
+        if (completed?.state === "complete") {
+          if (completed.actor_id !== actorId || completed.kind !== "remote.sync.apply" || completed.fingerprint !== fingerprint)
+            throw new Error("Remote operation identity conflict");
+          return syncApplyReceiptSchema.parse(JSON.parse(completed.result_json!));
+        }
+        if (!transport) throw new SyncTransportError("DENIED");
+        const expectedPin = options.read(() => loadPin(actorId, session.pinId));
+        const currentPin = await network(undefined, signal => transport.readPin(undefined, signal));
+        if (currentPin.commit !== expectedPin.commit || currentPin.manifestHash !== expectedPin.manifestHash)
+          throw new SyncTransportError("STALE");
+        await authorize(actorId, "apply");
+        options.sync?.assertPublicationAuthority?.();
         const prior = options.transaction(() => reserve(request.operationId, actorId, "remote.sync.apply", fingerprint, { sessionId: request.sessionId }));
         if (prior.state === "complete") return JSON.parse(prior.result_json!) as SyncApplyReceipt;
         check();
         return applySyncPlan(plans, { sessionId: request.sessionId, actorId, input }, options.root, {
+          contentAuthority: options.sync?.contentAuthority,
           beforeCommit(receipt) {
             check(); options.reconcileIndex();
             db.prepare("UPDATE remote_runtime_intents SET state='complete',result_json=? WHERE operation_id=? AND fingerprint=?")
@@ -298,7 +313,8 @@ export function createRemoteRuntime(options: RemoteRuntimeOptions) {
           }
           const pin = loadPin(actorId, session.pinId);
           const plan = prepareSyncTransportPublication(db, plans, { ...request, actorId, input: session.input }, pin,
-            syncTransportApplyStaging(db, plans, { sessionId: request.sessionId, actorId, input: session.input }));
+            syncTransportApplyStaging(db, plans, { sessionId: request.sessionId, actorId, input: session.input },
+              { root: options.root, contentAuthority: options.sync?.contentAuthority }));
           return reserve(request.operationId, actorId, "remote.sync.publish", fingerprint, plan);
         });
         const publication = syncTransportPublicationSchema.parse(JSON.parse(journal.payload_json));

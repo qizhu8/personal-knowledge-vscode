@@ -11,9 +11,27 @@ if (args.length && (args.length !== 1 || !["--check", "--refresh-native"].includ
 }
 const nativeFiles = [
   "src/workflow-executor.ts", "src/workflow-executor-contracts.ts", "src/domain/workflow-executor-state.ts",
+  "src/domain/workflow-executor-bindings.ts", "src/domain/workflow-executor-cron.ts",
+  "src/domain/workflow-executor-limits.ts",
+  "src/domain/workflow-executor-original-loops.ts",
   "tests/workflow-executor.test.mjs", "tests/workflow-executor-fixtures.mjs",
   "tests/workflow-executor-restart-child.mjs",
 ];
+const runtimeControls = {
+  schema: "pkm.workflow.runtime-controls/v1",
+  qualified: ["explicit input/authoritative-node-output bindings", "dynamic count or collection repeat 1–64",
+    "dynamic eligible subset of declared branch outcomes", "typed bound run outputs",
+    "one explicitly consented future cron due-slot delivery", "current source/consent/output authority fences",
+    "explicit Original Recipe metadata semantics and declared inputs_json native-control opt-in",
+    "Original authored feedback bodies with exact invocation completion receipts",
+    "bounded actual host progress observations gated by exact known invocation completion clocks",
+    "trusted pinned subflow child intents on the same executor with shared tree budgets and descendant fences"],
+  limits: ["no implicit control bindings", "no unbounded recurring run generation",
+    "no missed-slot or unknown-effect replay", "no generic Core subflows or feedback bodies",
+    "no automatic subflow child claims or mixed native-control subflows"],
+  storage: "Existing bounded event journal and receipts; unchanged DDL and strict legacy Recipe records. Native controls use the existing explicit dispatch flag plus a versioned journal marker, preventing old native hosts from automatically scheduling them.",
+  originalCompatibility: "Genuine registered Original Recipe start/get/next/report executes non-loop nodes once; repeat/cron/output fields are metadata, dynamicCases uses explicitly reported declared outcomes, and no recurring producer is registered. Native source-authorized metadata mode preserves that behavior with disclosure. Required declared string workflowControls plus versioned envelope is a new native opt-in through unchanged inputs_json, not an invented historical binding rule.",
+};
 if (args[0] === "--check") {
   const record = JSON.parse(await readFile(resolve(server, "migration/workflow-executor-provenance.json"), "utf8"));
   const issues = await checkCaptureRecords(record.files, undefined, undefined, {
@@ -30,7 +48,9 @@ if (args[0] === "--check") {
 } else if (args[0] === "--refresh-native") {
   const path = resolve(server, "migration/workflow-executor-provenance.json");
   const record = JSON.parse(await readFile(path, "utf8"));
-  const issues = await checkCaptureRecords(record.files);
+  const issues = await checkCaptureRecords(record.files, undefined, undefined, {
+    dataset: "runtime-workflow-executor-historical",
+  });
   for (const dependency of record.dependencies) {
     if (createHash("sha256").update(await readFile(resolve(root, dependency.source))).digest("hex") !== dependency.sourceSha256) {
       issues.push({ kind: "dependency", path: dependency.source, reason: "hash-changed" });
@@ -40,6 +60,11 @@ if (args[0] === "--check") {
   record.native = await Promise.all(nativeFiles.map(async file => ({
     file, sha256: createHash("sha256").update(await readFile(resolve(server, file))).digest("hex"),
   })));
+  record.runtimeControls = runtimeControls;
+  record.unavailable = record.unavailable.filter(item => !["cron", "dynamic repeats/cases", "run output mapping", "subflows", "multi-node loop bodies"].includes(item));
+  if (!record.unavailable.includes("unbounded recurring cron")) record.unavailable.push("unbounded recurring cron");
+  for (const item of ["generic Core subflows", "generic Core multi-node loop bodies"])
+    if (!record.unavailable.includes(item)) record.unavailable.push(item);
   const bytes = JSON.stringify(record, null, 2) + "\n";
   if (bytes !== await readFile(path, "utf8")) await writeFile(path, bytes);
   console.log(`workflow-executor provenance: ${record.files.length} unchanged captures; ${record.native.length} refreshed native pins`);
@@ -101,8 +126,9 @@ emit("migration/workflow-executor-provenance.json", JSON.stringify({
   qualification: "bounded-native-injected-executor-not-full-scheduler-parity",
   transformation: "Original executor reducer and original regression suite with ESM import rewrite only. AST-selected original Action/Recipe reducers and real original regression methods are source evidence, not executed Python parity tests. Existing captured scheduler reducers govern offers, claims, leases, revocation and output authority. New SQLite executor uses explicit injected native adapters and exact host definition/source authorization; no public completion/result submission.",
   qualified: ["dependency DAG", "declared native branch verdicts", "fixed repeat", "bounded self-loop with native termination verdict", "failure and cancellation closure", "lease expiry fencing", "committed start intent", "no replay of interrupted running effects", "exact adapter/output-contract pins", "actor isolation", "definition/source pins"],
-  unavailable: ["cron", "multi-node loop bodies", "dynamic repeats/cases", "general expression evaluation", "subflows", "human gates", "automatic process/tool/model adapters", "run output mapping", "distributed effect rollback", "automatic effect retries", "exact safe reconciliation", "full original executor profile/attestation parity"],
+  unavailable: ["unbounded recurring cron", "generic Core multi-node loop bodies", "general expression evaluation", "generic Core subflows", "human gates", "automatic process/tool/model adapters", "distributed effect rollback", "automatic effect retries", "exact safe reconciliation", "full original executor profile/attestation parity"],
   files, dependencies, native,
+  runtimeControls,
 }, null, 2) + "\n");
 for (const [path, content] of outputs) {
   let actual;

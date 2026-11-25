@@ -10,7 +10,7 @@ import { compileWorkflowDefinitionV1 } from "../dist/domain/project-recipes-work
 import { NativeRecipePublicApi } from "../dist/native-recipe-public-api.js";
 import { WorkflowExecutor } from "../dist/workflow-executor.js";
 
-async function setup(t, config = { inputKind: "approval", prompt: "Approve synthetic operation?" }) {
+async function setup(t, config = { inputKind: "approval", prompt: "Approve synthetic operation?" }, autonomous = false) {
   const definition = { schema: "pkm.workflow.definition/v1", spec: {
     inputs: {}, outputs: {}, completion: { requiredNodes: ["gate"] },
     nodes: [{ nodeId: "gate", kind: "pkm.gate.human/v1", config, control: { mode: "single" }, dependsOn: [],
@@ -42,9 +42,9 @@ async function setup(t, config = { inputKind: "approval", prompt: "Approve synth
   open();
   t.after(() => { lazy.close(); database.close(); return rm(root, { recursive: true, force: true }); });
   const call = (name, args) => lazy.dispatch(`mcp.tool.recipe_run_${name}`, args, actor);
-  const started = await call("start", { recipe_id: recipe.recipeId, command_id: "gate-start" });
+  const started = await call("start", { recipe_id: recipe.recipeId, command_id: "gate-start", autonomous });
   assert.equal(started.ok, true, JSON.stringify(started));
-  const claimed = await call("next", { run_id: started.run_id, command_id: "gate-claim" });
+  const claimed = autonomous ? started : await call("next", { run_id: started.run_id, command_id: "gate-claim" });
   assert.equal(claimed.next_action.kind, "request_user_input", JSON.stringify(claimed));
   const input = {
     run_id: started.run_id, node_id: "gate", challenge_id: claimed.next_action.challenge_id,
@@ -77,6 +77,24 @@ test("human gate requires exact explicit input; agent reports, stale challenges 
   assert.equal((await env.call("submit_input", env.input)).replayed, true);
   assert.equal((await env.call("submit_input", { ...env.input, response_json: '{"approved":false}' })).ok, false);
   assert.equal((await env.call("submit_input", { ...env.input, command_id: "second-approval" })).ok, false);
+});
+
+test("autonomous scheduling exposes a human challenge without spending a command budget or minting user approval", async t => {
+  const env = await setup(t, undefined, true);
+  assert.equal(env.claimed.automation.status, "waiting");
+  assert.equal(env.claimed.automation.startedNodes, 0);
+  const actor = { ...env.actor, recipeProtocol: true }, operation = "mcp.tool.recipe_run_submit_input";
+  await assert.rejects(env.publicApi.dispatch(operation, env.input, actor), /Fresh separate host approval/);
+  const report = await env.call("report", { run_id: env.input.run_id, node_id: "gate", command_id: "automatic-not-user",
+    outcome: "succeeded", result_json: '{"approved":true}' });
+  assert.equal(report.ok, false);
+  const preview = await env.publicApi.previewLazy(env.binding, { operation, args: env.input });
+  await env.publicApi.approveLazy(env.binding, { operation, args: env.input, previewDigest: preview.previewDigest });
+  const result = await env.publicApi.dispatch(operation, env.input, actor);
+  assert.equal(result.status, "completed");
+  assert.equal(result.automation.status, "completed");
+  assert.equal(result.automation.startedNodes, 0);
+  assert.equal(result.current_result.completed_nodes[0].outcome, "approved");
 });
 
 test("waiting gate survives host restart without approving or losing its challenge; rejection is explicit", async t => {

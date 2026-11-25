@@ -280,7 +280,7 @@ test("recovery refuses a newer decision revision after an interrupted applicatio
   }
 });
 
-test("symlink traversal, canonical Todo Board, generic Todo and non-Markdown descriptors are rejected", () => {
+test("symlink traversal, canonical Todo Board, generic Todo and unowned Script descriptors are rejected", () => {
   const folder = workspace();
   const root = join(folder, "knowledge");
   const outside = join(folder, "outside");
@@ -317,7 +317,7 @@ test("symlink traversal, canonical Todo Board, generic Todo and non-Markdown des
         assert.throws(() => applySyncPlan(store, { sessionId, actorId: "fixture-owner", input }, root), /Symlink/);
       } else {
         assert.throws(() => serializeSyncApplyPlan(store, { sessionId, actorId: "fixture-owner", input }),
-          /Todo Board|Todo\/memory|restricted|Unsupported/);
+          /Todo Board|Todo\/memory|restricted|Unsupported|Script primary identity/);
       }
     }
     assert.throws(() => readFileSync(join(outside, "escape.md")), { code: "ENOENT" });

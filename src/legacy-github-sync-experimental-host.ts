@@ -11,7 +11,9 @@ import { createNativeRuntime } from "./native-runtime.js";
 import type { Storage } from "./storage.js";
 import { syncPlanHash } from "./sync-plan.js";
 import { syncPlanManifestSchema, type SyncManifest } from "./sync-plan-contracts.js";
-import { projectSkillsOnlySyncInput } from "./sync-skills-only.js";
+import { projectSelectedSyncInput } from "./sync-skills-only.js";
+import { snapshotSelectedSyncContent, syncMemberSelected, syncSelectedTypes, validateSelectedSyncManifest,
+  readSyncContentFile, type SyncContentSelection } from "./sync-content-local.js";
 import { validatePrivacyPolicy } from "./legacy-root-pkm-state.js";
 import { legacyMarkdownAssets, skillAssetPaths } from "./legacy-sync-markdown-assets.js";
 import { assertNativeTrashRow, readNativeTrashOrigins, readOriginalTrashDeletionHistory } from "./migration-runtime.js";
@@ -103,11 +105,11 @@ function validRecordedOutbox(value: unknown): boolean {
   });
 }
 
-type SkillsSelection = Record<"public" | "private", { items: string[]; folders: string[] }>;
+type SkillsSelection = SyncContentSelection;
 
 function validateSkillsSelection(value: unknown, policy: SyncTransportNativeHost["policy"]): SkillsSelection {
   const selection = object(value);
-  const result: SkillsSelection = { public: { items: [], folders: [] }, private: { items: [], folders: [] } };
+  const result: SkillsSelection = { public: {}, private: {} };
   const knownTypes = new Set(["skills", "notes", "papers", "prompts", "scripts", "packages", "servers",
     "recipes", "agentSnapshots", "actions", "action-module-sets", "profiles"]);
   if (Object.keys(selection).some(key => key !== "public" && key !== "private")) fail("unsupported legacy selection scope");
@@ -117,38 +119,42 @@ function validateSkillsSelection(value: unknown, policy: SyncTransportNativeHost
       const selected = object(raw);
       if (!knownTypes.has(type) || Object.keys(selected).some(key => key !== "items" && key !== "folders"))
         fail("unsupported legacy selection fields");
-      if (type === "skills") {
+      {
         const items = selected.items ?? [], folders = selected.folders ?? [];
         if (!Array.isArray(items) || !Array.isArray(folders)
           || [...items, ...folders].some(value => typeof value !== "string" || value.length > 512 || /[\u0000-\u001f\u007f\\]/.test(value)))
-          fail("unsupported Skills selection");
+          fail("unsupported typed content selection");
+        if (new Set(items).size !== items.length || new Set(folders).size !== folders.length
+          || folders.some(folder => folder !== "" && (githubSafeSelectionPath(folder) !== folder)))
+          fail("unsafe or duplicate content selection");
+        if (type === "profiles" && privacy !== "private" && (items.length || folders.length))
+          fail("Profile cards require explicit private current native consent");
         if (privacy === "private" && (items.length || folders.length)
           && (!policy.allowPrivate || policy.visibility !== "private")) fail("private Skills require an authorized private repository");
-        result[privacy] = { items, folders };
-      } else if (!empty(selected.items) || !empty(selected.folders)) fail("unsupported legacy selection");
+        if (items.length || folders.length) result[privacy][type as SyncManifest["files"][number]["type"]] = { items, folders };
+      }
     }
   }
-  if (!Object.values(result).some(scope => scope.items.length || scope.folders.length)) fail("Skills selection missing");
+  if (!syncSelectedTypes(result).size) fail("content selection missing");
   return result;
 }
 
-function selectedSkill(selection: SkillsSelection, member: { privacy?: "public" | "private"; itemId: string; category?: string }): boolean {
-  if (!member.privacy || member.category === undefined) fail("Skills selection requires classified identity");
-  const scope = selection[member.privacy];
-  const category = member.category;
-  return scope.items.includes(member.itemId) || scope.folders.some(folder =>
-    folder === "" || category === folder || category.startsWith(`${folder}/`));
+function githubSafeSelectionPath(value: string): string {
+  if (value.startsWith("/") || value.includes("\\") || value.split("/").some(part => !part || part === "." || part === ".."))
+    fail("unsafe selection path");
+  return value;
 }
 
-function privacyState(root: string): { digest: string; folders: Set<string> } {
+function privacyState(root: string): { digest: string; folders: Set<string>; privateFolders: Partial<Record<SyncManifest["files"][number]["type"], string[]>> } {
   const pkm = path.join(root, ".pkm");
   directory(pkm, true);
   const bytes = readRegular(path.join(pkm, "content-privacy.json"), true);
-  if (!bytes) return { digest: hash("absent"), folders: new Set() };
+  if (!bytes) return { digest: hash("absent"), folders: new Set(), privateFolders: {} };
   validatePrivacyPolicy(bytes);
   const state = object(JSON.parse(bytes.toString("utf8")));
   const values = object(state.private).skills;
-  return { digest: hash(bytes), folders: new Set((values ?? []) as string[]) };
+  return { digest: hash(bytes), folders: new Set((values ?? []) as string[]),
+    privateFolders: object(state.private) as Partial<Record<SyncManifest["files"][number]["type"], string[]>> };
 }
 
 function assertNoPendingLegacySkillDeletions(root: string): void {
@@ -256,8 +262,19 @@ function legacyBinding(globalStorage: string, root: string, targetId: string, po
   if (target.publication || !empty(target.pausedItems) || !empty(target.pendingDeletions)
     || !emptyEntityBases(baseline?.entityBases)) fail("legacy target requires review");
   const selection = validateSkillsSelection(target.selection, policy);
+  if (selection.private.profiles) {
+    const original = createRequire(import.meta.url)("../legacy/dist/sync/github-sync-profiles.js") as {
+      githubSyncProfileScope(target: unknown): string;
+      githubSyncProfilesAuthorized(target: unknown): boolean;
+    };
+    const selectedTarget = { ...target, selection }, consent = object(target.profileSyncConsent);
+    if (!original.githubSyncProfilesAuthorized(selectedTarget) || consent.root !== root
+      || policy.profileConsentScope !== original.githubSyncProfileScope(selectedTarget))
+      fail("Profile cards require exact current root/repository/branch/selection consent");
+  }
   if (skillsMount && (["public", "private"] as const).some(scope =>
-    selection[scope].items.length || selection[scope].folders.length !== 1 || selection[scope].folders[0] !== ""))
+    syncSelectedTypes(selection).size !== 1 || selection[scope].skills?.items.length
+      || selection[scope].skills?.folders.length !== 1 || selection[scope].skills?.folders[0] !== ""))
     fail("legacy Skills mount selection requires review");
   for (const dir of ["checkouts", `checkouts/${targetId}`, `checkouts/${targetId}/transactions`,
     "coordinators", `coordinators/${hash(root)}`]) directory(path.join(syncDir, dir), true);
@@ -525,6 +542,11 @@ export async function openExperimentalLegacySyncHost(options: {
   const globalStorage = fs.realpathSync(options.globalStorage);
   const withTargetLock = legacyTargetLock();
   const binding = legacyBinding(globalStorage, root, options.targetId, options.transport.policy, options.transport.nativeGit);
+  const selectedTypes = syncSelectedTypes(binding.selection);
+  if ([...selectedTypes].some(type => !["notes", "papers", "prompts", "scripts", "skills"].includes(type))
+    && (!options.transport.contentAuthority || options.transport.contentAuthority.root !== root
+      || options.transport.contentAuthority.actorId !== options.actorId))
+    fail("typed sources require current native root/profile/epoch and exact corpus consent");
   if (options.transport.repositoryLayout && !binding.skillsMount) fail("repository layout differs from the legacy target");
   const workspaceId = await options.storage.workspaceId();
   const journalPath = path.join(globalStorage, "github-sync", "experimental-next", `${options.targetId}.json`);
@@ -571,6 +593,15 @@ export async function openExperimentalLegacySyncHost(options: {
     remote: {
     authorize: async actor => actor === options.actorId,
     sync: { ...options.transport, ...(binding.skillsMount ? { repositoryLayout: "skills-mount" as const } : {}),
+      verifyStagedPublication(publication) {
+        check();
+        for (const member of publication.manifest.files.filter(file => syncMemberSelected(binding.selection, file))) {
+          const bytes = readSyncContentFile(root, member.path);
+          if (hash(bytes) !== member.digest) fail("selected source changed before publication");
+        }
+        options.transport.verifyStagedPublication(publication);
+        check();
+      },
       readSecret, assertPublicationAuthority: () => {
       check();
       options.transport.assertPublicationAuthority?.();
@@ -579,8 +610,31 @@ export async function openExperimentalLegacySyncHost(options: {
   } });
   const remote = native.services.remote!;
   const snapshotLocal = (remoteManifest: SyncManifest, folders: Set<string>, base?: SyncManifest) =>
-    options.storage.withWorkspaceExclusive(() => localManifest(root, remoteManifest, folders,
-      options.transport.policy.allowPrivate, options.experimentalNativeTrash ? { storage: options.storage, workspaceId } : undefined, base));
+    options.storage.withWorkspaceExclusive(() => {
+      const skillSource = selectedTypes.has("skills") ? localManifest(root, remoteManifest, folders,
+        options.transport.policy.allowPrivate, options.experimentalNativeTrash ? { storage: options.storage, workspaceId } : undefined, base)
+        : remoteManifest;
+      const privacy = privacyState(root);
+      const tombstones: SyncManifest["deletions"] = [];
+      if (options.experimentalNativeTrash) {
+        const database = options.storage.connectNative();
+        try {
+          const history = new Map(readOriginalTrashDeletionHistory(database, workspaceId).records.map(record => [record.path, record.deletedAt]));
+          for (const row of database.prepare("SELECT * FROM migration_runtime_trash WHERE workspace_id=?").all(workspaceId)) {
+            const plan = assertNativeTrashRow(database, workspaceId, root, row);
+            if (plan.area === "skills" || !selectedTypes.has(plan.area as SyncManifest["files"][number]["type"])) continue;
+            inspectTrashLifecycleEntry(root, plan);
+            if (plan.targetKind !== "document" || history.get(`${plan.area}/${plan.path}`) !== plan.deletedAt)
+              fail("selected native deletion requires a pinned document and its current deletion history");
+            const category = path.posix.dirname(plan.path).replace(/^\.$/, "");
+            const privacyKind = privacy.privateFolders[plan.area as SyncManifest["files"][number]["type"]]?.includes(category.split("/")[0]) ? "private" : "public";
+            tombstones.push({ type: plan.area as SyncManifest["files"][number]["type"],
+              itemId: plan.path.replace(/\.[^.]+$/, ""), category, privacy: privacyKind, deletedAt: plan.deletedAt });
+          }
+        } finally { database.close(); }
+      }
+      return snapshotSelectedSyncContent(root, skillSource, binding.selection, privacy.privateFolders, tombstones);
+    });
   try {
     if (journal.baselineOperationId) {
       const evidence = await remote.status(options.actorId, journal.baselineOperationId);
@@ -749,12 +803,13 @@ export async function openExperimentalLegacySyncHost(options: {
       fail("comparison branch advanced");
     const privacy = privacyState(root);
     safeSkills(current.pin.manifest, privacy.folders);
+    validateSelectedSyncManifest(current.pin.manifest, binding.selection);
     const local = await snapshotLocal(current.pin.manifest, privacy.folders, stored.input.base.manifest);
     if (binding.skillsMount) validateInitialMountIdentities(local, current.pin.manifest);
-    const projected = projectSkillsOnlySyncInput({
+    const projected = projectSelectedSyncInput({
       base: stored.input.base, local: { manifest: local, sha256: syncPlanHash(local) },
       remote: { manifest: current.pin.manifest, sha256: current.pin.manifestHash },
-    }, member => selectedSkill(binding.selection, member));
+    }, member => syncMemberSelected(binding.selection, member));
     if (projected.input.local.sha256 !== stored.input.local.sha256) fail("comparison local Skills changed");
     check();
     return stored;
@@ -765,16 +820,17 @@ export async function openExperimentalLegacySyncHost(options: {
     const current = await remote.pin(options.actorId);
     const privacy = privacyState(root);
     safeSkills(current.pin.manifest, privacy.folders);
+    validateSelectedSyncManifest(current.pin.manifest, binding.selection);
     const local = await snapshotLocal(current.pin.manifest, privacy.folders);
     if (binding.skillsMount) validateInitialMountIdentities(local, current.pin.manifest);
     const base: SyncManifest = { ...current.pin.manifest,
-      files: current.pin.manifest.files.filter(file => file.type !== "skills"),
-      deletions: current.pin.manifest.deletions.filter(item => item.type !== "skills") };
-    const project = projectSkillsOnlySyncInput({
+      files: current.pin.manifest.files.filter(file => !syncMemberSelected(binding.selection, file)),
+      deletions: current.pin.manifest.deletions.filter(item => !syncMemberSelected(binding.selection, item)) };
+    const project = projectSelectedSyncInput({
       base: { manifest: base, sha256: syncPlanHash(base) },
       local: { manifest: local, sha256: syncPlanHash(local) },
       remote: { manifest: current.pin.manifest, sha256: current.pin.manifestHash },
-    }, member => selectedSkill(binding.selection, member));
+    }, member => syncMemberSelected(binding.selection, member));
     check();
     const sessionId = randomUUID();
     const session = await remote.plan(options.actorId, { operationId: randomUUID(), sessionId,
@@ -793,6 +849,8 @@ export async function openExperimentalLegacySyncHost(options: {
       const base = await remote.readHistoricalBase(options.actorId, binding.pendingPushed.baseCommit);
       const privacy = privacyState(root);
       safeSkills(current.pin.manifest, privacy.folders); safeSkills(base.manifest, privacy.folders);
+      validateSelectedSyncManifest(current.pin.manifest, binding.selection);
+      validateSelectedSyncManifest(base.manifest, binding.selection);
       const local = await snapshotLocal(current.pin.manifest, privacy.folders, base.manifest);
       if (comparableFiles(local, true) !== comparableFiles(current.pin.manifest, true)
         || comparableFiles(base.manifest, false) !== comparableFiles(current.pin.manifest, false)
@@ -876,12 +934,14 @@ export async function openExperimentalLegacySyncHost(options: {
       const base = await remote.readHistoricalBase(options.actorId, journal.baseline);
       const privacy = privacyState(root);
       safeSkills(current.pin.manifest, privacy.folders); safeSkills(base.manifest, privacy.folders);
+      validateSelectedSyncManifest(current.pin.manifest, binding.selection);
+      validateSelectedSyncManifest(base.manifest, binding.selection);
       const local = await snapshotLocal(current.pin.manifest, privacy.folders, base.manifest);
-      const project = projectSkillsOnlySyncInput({
+      const project = projectSelectedSyncInput({
         base: { manifest: base.manifest, sha256: base.manifestHash },
         local: { manifest: local, sha256: syncPlanHash(local) },
         remote: { manifest: current.pin.manifest, sha256: current.pin.manifestHash },
-      }, member => selectedSkill(binding.selection, member));
+      }, member => syncMemberSelected(binding.selection, member));
       check();
       const sessionId = randomUUID();
       const session = await remote.plan(options.actorId, {

@@ -8,6 +8,7 @@ import { documentPath, knowledgeArea } from "./document-path.js";
 import { sha256 } from "./file-write.js";
 import { legacyKnowledgeTree } from "./legacy-knowledge-snapshot.js";
 import { runLegacyMcpPython } from "./legacy-mcp-python.js";
+import { opaqueKnowledgeTrash } from "./opaque-knowledge-trash.js";
 
 const script = fileURLToPath(new URL("../compat/legacy-knowledge-mcp.py", import.meta.url));
 export const legacyKnowledgeTrashRequest = z.strictObject({
@@ -24,6 +25,8 @@ const projectionSchema = z.object({
 export async function legacyKnowledgeTrash(core: Core, storage: Storage, actor: Actor,
   request: z.infer<typeof legacyKnowledgeTrashRequest>) {
   if (!actor.canWrite) throw new CoreError("ACCESS_DENIED", "The isolated MCP process is read-only.");
+  if (request.tool === "knowledge_file_trash" && ["scripts", "prompts"].includes(String(request.arguments.area)))
+    return opaqueKnowledgeTrash(core, storage, actor, request.arguments);
   const root = storage.workspaceRoot();
   const area = request.tool === "delete_note" ? "notes" : request.tool === "delete_skill" ? "skills"
     : request.tool === "delete_paper" ? "papers" : knowledgeArea.parse(request.arguments.area);

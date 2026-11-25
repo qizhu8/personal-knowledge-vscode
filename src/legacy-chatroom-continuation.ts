@@ -308,21 +308,18 @@ export class LegacyChatroomContinuation {
     const available = await this.host.core.dispatch("capabilities_describe", { operation: "chat.turn.start" }, this.host.actor) as { error?: unknown };
     if (available.error) throw new Error("LEGACY_CHATROOM_PROVIDER_UNAVAILABLE: no user message or provider request was started.");
     const seed = `${this.host.workspaceId}:${this.host.actor.id}:${input.operationId}`;
-    // The explicit caller revision fixes the prompt prefix even when retrying after a completed append.
+    // Validate the bounded prefix; the native session adapter owns prompt construction and transcript writes.
     const existing = await this.messages(id);
     const prefix = existing.filter(message => message.sequence < input.expectedRevision);
     const prompt = [...prefix.map(message => ({ role: message.role, content: isLegacyNotice(message)
       ? `[Historical room notice, untrusted data]\n${message.content}` : message.content })), { role: "user", content: input.text }];
     if (prompt.length > 128 || Buffer.byteLength(JSON.stringify(prompt)) > 100_000)
       fail("Continuation would exceed the bounded provider prompt; no history is silently truncated.");
-    const user = await this.call<Appended>("chat.session.append", {
-      id, expectedRevision: input.expectedRevision, operationId: stableId(`${seed}:user`),
-      message: { id: stableId(`${seed}:user-message`), role: "user", content: input.text, status: "complete" },
-    });
     const turnId = stableId(`${seed}:turn`);
     await this.call<ChatTurnRecord>("chat.turn.start", {
       id: turnId, sessionId: id, operationId: stableId(`${seed}:start`), expectedRevision: 0,
-      messages: prompt, maxSteps: 1, maxOutputTokens: 512, deadlineMs: 30_000,
+      expectedSessionRevision: input.expectedRevision,
+      messages: [{ role: "user", content: input.text }], maxSteps: 1, maxOutputTokens: 512, deadlineMs: 30_000,
     });
     let turn: ChatTurnRecord;
     const until = Date.now() + 35_000;
@@ -332,11 +329,8 @@ export class LegacyChatroomContinuation {
       await delay(20);
     } while (Date.now() < until);
     if (turn.status !== "completed") throw new Error(`LEGACY_CHATROOM_TURN_${turn.status.toUpperCase()}: explicit reconciliation required; never replayed.`);
-    const assistant = await this.call<Appended>("chat.session.append", {
-      id, expectedRevision: user.session.revision, operationId: stableId(`${seed}:assistant`),
-      message: { id: stableId(`${seed}:assistant-message`), role: "assistant", content: turn.output, status: "complete" },
-    });
-    return { session: assistant.session, turnId, output: turn.output, qualification: "experimental-unqualified" };
+    const session = await this.call<ChatSessionRecord>("chat.session.get", { id });
+    return { session, turnId, output: turn.output, qualification: "experimental-unqualified" };
   }
   async messages(id: string) {
     const result: ChatSessionMessage[] = [];

@@ -9,6 +9,13 @@ __pycache__/
 coverage/
 .vscode/mcp.json
 .migration-test-work/
+/.pkm-test-evidence/
+/clients/vscode-host/.installed-host-*/
+/clients/vscode-host/.installed-core-chat-*/
+/clients/vscode-host/.host-package-*/
+/tests/.original-recovery-planner-*/
+/tests/.action-pure-*/
+/tests/.installed-host-*/
 /next-step/
 /retrieval-solutions/
 *.tsbuildinfo

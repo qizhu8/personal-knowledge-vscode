@@ -1,47 +1,14 @@
-import { constants, accessSync, lstatSync, realpathSync, statSync, type BigIntStats } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { realpathSync, statSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { z } from "zod";
 import { RuntimeProcessService, RuntimeProcessStore } from "./runtime-process.js";
 import { WorkflowExecutor, type WorkflowStepAdapter } from "./workflow-executor.js";
 import { canonicalJson, compileWorkflowDefinitionV1 } from "./domain/project-recipes-workflow-contracts.js";
-
-const pinSchema = z.strictObject({
-  dev: z.string().regex(/^\d+$/), ino: z.string().regex(/^\d+$/), mode: z.string().regex(/^\d+$/),
-  size: z.string().regex(/^\d+$/), mtimeNs: z.string().regex(/^\d+$/), ctimeNs: z.string().regex(/^\d+$/),
-});
-export const hostPythonHandleSchema = z.strictObject({
-  schema: z.literal("pkm.host-python-environment/v1"),
-  workspaceId: z.uuid(), actorId: z.string().min(1).max(256).regex(/^[^\0\r\n]+$/),
-  environmentId: z.string().regex(/^[A-Za-z][A-Za-z0-9._-]{0,127}$/),
-  root: z.string().min(1), executable: z.string().min(1), target: z.string().min(1),
-  rootPin: pinSchema, entryPin: pinSchema, targetPin: pinSchema,
-});
-type Handle = z.infer<typeof hostPythonHandleSchema>;
+import { verifyHostPythonHandle } from "./host-python-environment.js";
+export { hostPythonHandleSchema, verifyHostPythonHandle } from "./host-python-environment.js";
 export const PYTHON_TRIAL_SCRIPT = "print(7)";
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
-
-/** Private native boundary, never a Core/MCP operation or a backup representation. */
-export function verifyHostPythonHandle(value: unknown, workspaceId: string, actorId: string): Handle {
-  const handle = hostPythonHandleSchema.parse(value);
-  if (handle.workspaceId !== workspaceId || handle.actorId !== actorId) throw new Error("Python workspace/actor binding rejected.");
-  for (const item of [handle.root, handle.executable, handle.target]) {
-    if (!isAbsolute(item) || resolve(item) !== item || item.includes("\0")) throw new Error("Python path is not canonical.");
-  }
-  if (realpathSync(handle.root) !== handle.root || !lstatSync(handle.root).isDirectory()
-    || realpathSync(dirname(handle.executable)) !== dirname(handle.executable)
-    || ![join(handle.root, "bin", "python"), join(handle.root, "Scripts", "python.exe")].includes(handle.executable)
-    || realpathSync(handle.executable) !== handle.target || realpathSync(handle.target) !== handle.target
-    || !statSync(handle.target).isFile()) throw new Error("Python interpreter/root mapping rejected.");
-  const same = (stat: BigIntStats, pin: z.infer<typeof pinSchema>) =>
-    (Object.keys(pin) as (keyof typeof pin)[]).every(key => String(stat[key]) === pin[key]);
-  if (!same(lstatSync(handle.root, { bigint: true }), handle.rootPin)
-    || !same(lstatSync(handle.executable, { bigint: true }), handle.entryPin)
-    || !same(statSync(handle.target, { bigint: true }), handle.targetPin)) throw new Error("Python environment changed; select it again.");
-  accessSync(handle.executable, constants.X_OK);
-  return handle;
-}
 
 export type HostPythonWorkflowResult = {
   workspaceId: string; actorId: string; environmentId: string; runId: string;

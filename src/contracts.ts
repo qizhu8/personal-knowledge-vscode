@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { originalNativeTrashListInputSchema, originalNativeTrashSelectionV3Schema } from "./original-native-trash-contracts.js";
 import { recipeTrashDefinitions } from "./host-composition-legacy-recipe-trash.js";
 import { todoDefinitions } from "./todo-definitions.js";
 import { documentPath, knowledgeArea, resourcePath } from "./document-path.js";
@@ -21,6 +22,7 @@ import { subscriptionBrokerDefinitions } from "./subscription-broker-contracts.j
 import { agentSnapshotReadDefinitions } from "./agent-snapshot-reads-contracts.js";
 import { projectMutationDefinitions, projectMutationReadDefinitions } from "./project-mutations-contracts.js";
 import { chatSessionDefinitions } from "./chat-session-contracts.js";
+import { managedTaskDefinitions } from "./managed-chat-task-contracts.js";
 import { workflowRuntimeDefinitions } from "./workflow-runtime-contracts.js";
 import { syncPlanDefinitions } from "./sync-plan-contracts.js";
 import { collaborationStateDefinitions } from "./collaboration-state-contracts.js";
@@ -52,29 +54,16 @@ import { legacyInlineNoteDefinitions } from "./legacy-inline-note-contracts.js";
 import { legacySnapshotRestoreDefinitions } from "./legacy-snapshot-restore-contracts.js";
 import { batch15Definitions } from "./host-composition-legacy-batch15-contracts.js";
 import { batch16Definitions } from "./host-composition-legacy-batch16-contracts.js";
+import { mutationReceiptDefinitions } from "./mutation-receipt-contracts.js";
 
 import { CoreError } from "./host-composition-legacy-batch15-errors.js";
+import { documentId, documentSchema, documentRevision as revision, documentDigest as digest } from "./document-read-contracts.js";
 export { CoreError };
-
-export const documentId = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/);
-const revision = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
-const digest = z.string().regex(/^[a-f0-9]{64}$/);
+export { documentId, documentSchema, type DocumentRecord } from "./document-read-contracts.js";
 const mutation = {
   operationId: z.string().uuid(),
   id: documentId,
 };
-export const documentSchema = z.strictObject({
-  id: documentId,
-  // Historical receipts retain their original response shape.
-  path: documentPath.optional(),
-  area: knowledgeArea.optional(),
-  title: z.string().min(1).max(500),
-  content: z.string(),
-  revision: revision.min(1),
-  deleted: z.boolean(),
-  sha256: digest,
-});
-export type DocumentRecord = z.infer<typeof documentSchema>;
 export const metadataSchema = z.record(z.string(), z.json());
 const diagnosticSchema = z.strictObject({ code: z.string(), pointer: z.string(), message: z.string() });
 const assetDigest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -92,6 +81,7 @@ export const uploadStatus = z.strictObject({
   : value.resource === undefined), "Upload lifecycle/result fields are inconsistent.");
 const uploadMutation = { operationId: z.string().uuid(), uploadId: z.string().uuid() };
 export const definitions = [
+  ...mutationReceiptDefinitions,
   ...batch16Definitions,
   ...batch15Definitions,
   ...managerRuntimeDefinitions, ...managerProgressDefinitions, ...managerArtifactDefinitions, ...actionRuntimeDefinitions,
@@ -111,11 +101,14 @@ export const definitions = [
   ...legacyTrashPurgeDefinitions,
   {
     id: "knowledge.trash.list", readOnly: true,
-    description: "List current adopted Trash entries. Restored and permanently deleted entries are excluded.",
-    input: z.strictObject({}),
-    output: z.strictObject({ items: z.array(adoptedTrashMetadataSchema.extend({
-      area: z.enum(legacyTrashImportAreas), runtimeEntryId: trashEntryId,
-    })).max(2048) }),
+    description: "List current adopted Trash entries, or an explicitly selected public Note entry set under fresh original-root native approval. Original roots reject an unscoped empty object.",
+    input: z.union([z.strictObject({}), originalNativeTrashListInputSchema]),
+    output: z.strictObject({ items: z.array(z.union([
+      adoptedTrashMetadataSchema.extend({ area: z.enum(legacyTrashImportAreas), runtimeEntryId: trashEntryId }),
+      originalNativeTrashSelectionV3Schema.shape.metadata.extend({
+        area: originalNativeTrashSelectionV3Schema.shape.area, runtimeEntryId: trashEntryId,
+      }),
+    ])).max(2048) }),
   },
   {
     id: "knowledge.trash.get", readOnly: true,
@@ -264,6 +257,7 @@ export const definitions = [
   ...projectMutationDefinitions,
   ...projectMutationReadDefinitions,
   ...chatSessionDefinitions,
+  ...managedTaskDefinitions,
   ...workflowRuntimeDefinitions,
   ...syncPlanDefinitions,
   ...collaborationStateDefinitions,

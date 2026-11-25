@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { coreDatabasePath } from "./workspace-storage-paths.js";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync } from "node:fs";
 import type { BigIntStats } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -262,7 +263,7 @@ export function readProtectedRefreshAtRoot(root: string): RefreshView | undefine
 }
 
 export function openProtectedRefresh(root: string): { read(): RefreshView | undefined; close(): void } {
-  const file = join(root, "core.sqlite");
+  const file = coreDatabasePath(root);
   if (!existsSync(file)) return { read: () => undefined, close: () => {} };
   const stat = lstatSync(file);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) return invalid();
@@ -325,7 +326,7 @@ async function withProtectedFixtureSession<T>(storage: Storage, profile: string,
     throw new CoreError("FORBIDDEN", "Subscription refresh requires its original host lock.");
   const authority = recovery && issueMembershipRecoveryAuthority(storage, profile, nonce, recovery.operationId, recovery.phase);
   return storage.withWorkspaceExclusive(async () => {
-    const db = new DatabaseSync(join(root, "core.sqlite"));
+    const db = new DatabaseSync(coreDatabasePath(root));
     try {
       db.exec("PRAGMA synchronous=FULL");
       const workspaceId = marker(root), receipt = readLegacyStateReceipt(db, workspaceId);

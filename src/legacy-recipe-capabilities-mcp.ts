@@ -3,6 +3,15 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { projectRecipeDefinitions } from "./project-recipes-contracts.js";
 import { workflowCompilerDefinitions } from "./workflow-compiler-contracts.js";
 
+export function controlledLegacyRecipeCapabilities(nodeKinds: string[], executionSemantics: string) {
+  return {
+    autonomous: true, maxAutoNodes: { minimum: 1, maximum: 1000 },
+    maxAutoSeconds: { minimum: 1, maximum: 3600 }, nodeKinds,
+    executionSemantics, loops: executionSemantics === "original-recipe-metadata/v1", autonomousLoops: false,
+    externalReportsRequireExplicitCaller: true, humanInputRequiresExplicitCaller: true,
+  };
+}
+
 const originalRecipeLifecycleTools = [
   "recipe_search",
   "recipe_create_from_skill",

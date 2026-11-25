@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import fs from "node:fs";
 import { existsSync, readFileSync } from "node:fs";
-import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { runInThisContext } from "node:vm";
 import test from "node:test";
@@ -14,14 +14,16 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createNativeLegacyTrashAccess, publishLegacyTrashWorkspaceImport } from "../dist/host-composition-legacy-trash.js";
 import { createNativeRuntime } from "../dist/native-runtime.js";
-import { planLegacyTrashImport } from "../dist/legacy-trash-import.js";
+import { planLegacyTrashImport, snapshotLegacyTrashTree } from "../dist/legacy-trash-import.js";
 import { createWorkspaceBackup, restoreWorkspaceBackup } from "../dist/workspace-backup.js";
 import { startHttp } from "../dist/http.js";
 import { startMcp } from "../dist/mcp.js";
 import { importLegacyWorkspace, planLegacyImport, recoverLegacyImportOutcome } from "../dist/legacy-import.js";
-import { Storage } from "../dist/storage.js";
+import { initialize, Storage } from "../dist/storage.js";
 import { fixture as originalProjectSource, hashes as sourceHashes } from "./batch09-original-control-fixtures.mjs";
 import { readLegacyProjectControl } from "../dist/legacy-control-import.js";
+import { workspaceStoragePaths } from "../dist/workspace-storage-paths.js";
+import { acquireSharedManagerControlGuard } from "../dist/shared-manager-control.js";
 
 const actor = { id: "batch11-trash-owner", canWrite: true };
 const originalId = "1717243800000-a1b2c3d4e5";
@@ -176,18 +178,104 @@ test("permanent adopted Trash delete/empty enforce HTTP/MCP policy and survive n
   const backupPath = join(parent, "backup"), restoredRoot = join(parent, "restored");
   const backupPolicy = { ...policy, actorId: actor.id, hostFactory };
   await runtime.close(); runtime = undefined;
+  const controlRoot = workspaceStoragePaths(destination).runtimeControl;
+  await mkdir(controlRoot, { mode: 0o700 });
+  const controlBytes = Buffer.from(JSON.stringify({
+    schema: "pkm.managed-runtime-history/v1", transitions: [], retired: [],
+  }));
+  await writeFile(join(controlRoot, "managed-runtime-history.json"), controlBytes, { mode: 0o600 });
   await createWorkspaceBackup(storage, backupPath, {
     acquireQuiescence: async () => ({ assertHeld() {}, release() {} }),
   }, { legacyTrash: backupPolicy });
+  assert.deepEqual(await readFile(join(backupPath, "runtime-control/managed-runtime-history.json")), controlBytes);
   const expectedManifestSha256 = hash(await readFile(join(backupPath, ".pkm-workspace-backup.json")));
   await stop();
   await restoreWorkspaceBackup(backupPath, restoredRoot, {
     nativeRestoreAuthority, legacyTrash: { ...backupPolicy, expectedManifestSha256 },
   });
+  assert.deepEqual(await readFile(join(workspaceStoragePaths(restoredRoot).runtimeControl,
+    "managed-runtime-history.json")), controlBytes);
   storage = await Storage.open(restoredRoot);
   runtime = await createNativeRuntime({ storage, legacyTrash: policy });
   assert.deepEqual((await invoke("capability_read", "knowledge.trash.list", {})).items, []);
   assert.equal((await invoke("capability_call", "knowledge.trash.delete.original", args)).count, 1);
+});
+
+test("native Trash inventory validates canonical controls even when excluded and refuses lookalikes and links", async t => {
+  const root = resolve("tests", `.trash-control-boundary-${randomUUID()}`);
+  await mkdir(root, { mode: 0o700 });
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const controls = join(root, "runtime-control"), history = join(controls, "managed-runtime-history.json");
+  await mkdir(controls, { mode: 0o700 });
+  await writeFile(history, JSON.stringify({
+    schema: "pkm.managed-runtime-history/v1", transitions: [], retired: [],
+  }), { mode: 0o600 });
+  const scope = { excludedRootNames: ["runtime-control"], excludedStateNames: [] };
+  assert.deepEqual((await snapshotLegacyTrashTree(root, true, scope)).inventory, []);
+  const children = require("node:child_process"), spawn = children.spawn, spawned = [];
+  let invalidReadiness = false;
+  children.spawn = (...args) => {
+    const child = spawn(...args);
+    spawned.push(child);
+    const emit = child.stdout.emit.bind(child.stdout);
+    child.stdout.emit = (event, ...values) => {
+      if (event !== "data") return emit(event, ...values);
+      if (invalidReadiness) return emit("data", Buffer.from("invalid"));
+      for (const byte of values[0]) emit("data", Buffer.from([byte]));
+      return true;
+    };
+    return child;
+  };
+  syncBuiltinESMExports();
+  const guardPath = join(controls, ".managed-runtime-history.guard");
+  try {
+    const guard = await acquireSharedManagerControlGuard(guardPath);
+    guard.assertHeld();
+    await guard.release();
+    invalidReadiness = true;
+    await assert.rejects(acquireSharedManagerControlGuard(guardPath), /Invalid manager guard readiness/);
+    assert(spawned.every(child => child.exitCode === 0), "failed readiness releases the actual Python kernel guard");
+  } finally {
+    children.spawn = spawn;
+    syncBuiltinESMExports();
+  }
+  const reacquired = await acquireSharedManagerControlGuard(guardPath);
+  await reacquired.release();
+  await assert.rejects(snapshotLegacyTrashTree(root), { code: "UNKNOWN_LAYOUT" });
+  await writeFile(join(controls, "unknown.json"), "{}", { mode: 0o600 });
+  await assert.rejects(snapshotLegacyTrashTree(root, true, scope), { code: "RECOVERY_REQUIRED" });
+  await rm(join(controls, "unknown.json"));
+  await writeFile(history, JSON.stringify({
+    schema: "pkm.managed-runtime-history/v1", transitions: [], retired: [], credential: "not-an-authorized-field",
+  }), { mode: 0o600 });
+  await assert.rejects(snapshotLegacyTrashTree(root, true, scope));
+  await writeFile(history, JSON.stringify({
+    schema: "pkm.managed-runtime-history/v1", transitions: [], retired: [],
+  }), { mode: 0o600 });
+  await chmod(history, 0o644);
+  await assert.rejects(snapshotLegacyTrashTree(root, true, scope), { code: "RECOVERY_REQUIRED" });
+  await chmod(history, 0o600);
+  await mkdir(join(root, "runtime-control-copy"), { mode: 0o700 });
+  await assert.rejects(snapshotLegacyTrashTree(root, true, scope), { code: "UNKNOWN_LAYOUT" });
+  await rm(join(root, "runtime-control-copy"), { recursive: true });
+  await rm(controls, { recursive: true });
+  await symlink(root, controls, "dir");
+  await assert.rejects(snapshotLegacyTrashTree(root, true, scope), { code: "RECOVERY_REQUIRED" });
+  const separated = await initialize(join(root, "separated"), { storageLayout: "separated" });
+  await snapshotLegacyTrashTree(separated, true, nativeScope);
+  const gitRules = await readFile(join(separated, ".gitignore"));
+  await writeFile(join(separated, ".gitignore"), "# user-owned rules\n", { mode: 0o600 });
+  await assert.rejects(snapshotLegacyTrashTree(separated, true, nativeScope), { code: "UNKNOWN_LAYOUT" });
+  await snapshotLegacyTrashTree(separated, true, {
+    ...nativeScope, excludedRootNames: [...nativeScope.excludedRootNames, ".gitignore"],
+  });
+  await writeFile(join(separated, ".gitignore"), gitRules);
+  await writeFile(join(separated, "server-data/unknown.json"), "{}", { mode: 0o600 });
+  await assert.rejects(snapshotLegacyTrashTree(separated, true, nativeScope), { code: "INVALID_WORKSPACE" });
+  await rm(join(separated, "server-data/unknown.json"));
+  await rm(join(separated, "server-data/core.sqlite"));
+  await symlink(history, join(separated, "server-data/core.sqlite"));
+  await assert.rejects(snapshotLegacyTrashTree(separated, true, nativeScope), { code: "UNSAFE_PATH" });
 });
 
 test("native startup recovers a partial Windows-style sharing failure only with the exact actor and current grant", { timeout: 60_000 }, async t => {

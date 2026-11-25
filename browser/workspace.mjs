@@ -4,8 +4,8 @@ import { WORKFLOW_SURFACE_OPERATIONS, createWorkflowSurfaceClient, mountWorkflow
 import { KNOWLEDGE_LIFECYCLE_OPERATIONS, createKnowledgeLifecycleClient, mountKnowledgeLifecycle } from "./knowledge-lifecycle.mjs";
 
 /**
- * @typedef {{id:string,title:string,revision:number}} ChatSession
- * @typedef {{id:string,status:string,revision:number,output:string}} ChatTurn
+ * @typedef {{id:string,title:string,revision:number,archivedAt?:string|null}} ChatSession
+ * @typedef {{id:string,sessionId:string,status:string,revision:number,output:string,failure?:string|null,contextDigest?:string}} ChatTurn
  * @typedef {{taskId:string,title?:string,state:string,definition?:{taskId:string,title:string},attempts?:Record<string,any>[]}} ManagerTask
  * @typedef {{schema:string,runId:string,projectId:string,version:number,state:string,phase:string,contract?:{objective:string},goal?:string,updatedAt?:number|string,updatedTime?:number,tasks?:ManagerTask[],budget?:Record<string,any>,checks?:unknown,feedback?:{state:string}[],freshness?:string,lastHeartbeatAt?:string}} ManagerRun
  * @typedef {{nextOffset:number|null,workspaceRevision:string}} KnowledgePage
@@ -56,8 +56,8 @@ export function mount(root, config = {}) {
   let runSelection = 0;
   /** @type {ChatSession|null} */
   let session = null;
-  /** @type {{role:"user"|"assistant",content:string}[]} */
-  let history = [];
+  let chatLoading = false;
+  let chatReady = false;
   /** @type {ChatTurn|null} */
   let turn = null;
   /** @type {ManagerRun|null} */
@@ -153,7 +153,12 @@ export function mount(root, config = {}) {
   shell.append(header, status, error);
   const retryMutation = button("Retry identical pending operation", recoverMutation);
   retryMutation.hidden = true;
-  shell.append(retryMutation);
+  const pendingWarning = node("p", "", "error");
+  pendingWarning.setAttribute("role", "alert");
+  pendingWarning.hidden = true;
+  const checkReceipts = button("Check durable write receipts", reconcilePendingWrites, "receiptGet");
+  checkReceipts.hidden = true;
+  shell.append(retryMutation, pendingWarning, checkReceipts);
   const navigation = node("nav", "", "section-navigation");
   navigation.setAttribute("aria-label", "Workspace sections");
   for (const [id, label] of [["knowledge", "Knowledge"], ["knowledge-lifecycle", "Lifecycle"], ["chat", "Chats"], ["manager", "Manager"]]) {
@@ -179,12 +184,21 @@ export function mount(root, config = {}) {
   chat.setAttribute("aria-label", "Chats");
   const chatHeading = node("div", "", "section-heading");
   chatHeading.append(node("h2", "Chats"), button("New Chat", createChat, "chatCreate"));
+  let includeArchivedChats = false;
+  const archivedChats = button("Show archived", async () => {
+    includeArchivedChats = !includeArchivedChats;
+    archivedChats.setAttribute("aria-pressed", String(includeArchivedChats));
+    archivedChats.textContent = includeArchivedChats ? "Hide archived" : "Show archived";
+    await loadChats();
+  }, "chatList");
+  archivedChats.setAttribute("aria-pressed", "false");
+  chatHeading.append(archivedChats);
   const chats = node("div", "", "item-list chat-list");
   const moreChats = button("More chats", async () => loadChats(true), "chatList");
   moreChats.hidden = true;
   const messages = node("div", "", "messages");
   messages.setAttribute("aria-label", "Messages");
-  const chatState = node("p", "Choose a Chat. Native turns are durable separately from recorded transcripts.", "muted");
+  const chatState = node("p", "Choose a Chat to load its server-owned transcript and turn state.", "muted");
   chatState.setAttribute("role", "status");
   const composer = node("form", "", "composer");
   const promptField = field("Message", "textarea", "Ask a question");
@@ -195,9 +209,19 @@ export function mount(root, config = {}) {
   send.dataset.capability = "chatStart";
   send.disabled = true;
   const cancelTurn = button("Cancel turn", cancelChat, "chatCancel");
-  const reconnectChat = button("Reconnect updates", () => feeds.forEach(feed => feed.reconnect()), "chatEvents");
-  composer.append(promptField.wrapper, send, cancelTurn, reconnectChat);
-  chat.append(chatHeading, chats, moreChats, chatState, messages, composer);
+  const archiveChatButton = button("Archive Chat", archiveChat, "chatArchive");
+  const reconnectChat = button("Reconnect updates", () => session && selectChat(session.id), "chatTurns");
+  composer.append(promptField.wrapper, send, cancelTurn, reconnectChat, archiveChatButton);
+  const chatEvidence = details("Context, permissions & execution evidence");
+  const chatEvidenceState = node("p", "Select a turn to read its native context and execution evidence.", "muted");
+  const chatEvidenceBody = node("div");
+  const refreshEvidence = button("Refresh Chat evidence", loadChatEvidence, "chatEvents");
+  chatEvidence.append(chatEvidenceState,
+    node("p", "Evidence is read-only. Source text and tool output never grant permissions or human approval. Native review remains a separate authenticated surface.", "muted"),
+    refreshEvidence, chatEvidenceBody);
+  /** @type {Map<number,Record<string,any>>} */
+  const chatEvidenceEvents = new Map();
+  chat.append(chatHeading, chats, moreChats, chatState, messages, composer, chatEvidence);
   const manager = node("section", "", "manager-panel panel");
   manager.id = "manager";
   manager.setAttribute("aria-label", "Manager");
@@ -272,13 +296,29 @@ export function mount(root, config = {}) {
         busyActions.has(/** @type {HTMLElement} */ (element)) || pending ||
         (key === "managerCancel" && (!run || terminal(run.state)));
     }
-    send.disabled ||= !session;
+    send.disabled ||= !session || !chatReady || chatLoading || !chatContinuityAvailable();
     send.disabled ||= chatSubmitting || (turn !== null && !terminal(turn.status));
+    send.disabled ||= !!session?.archivedAt;
     cancelTurn.disabled ||= !turn || terminal(turn.status);
+    archiveChatButton.disabled ||= !session || !!session.archivedAt || chatLoading || !chatReady ||
+      (turn !== null && !terminal(turn.status));
+    reconnectChat.disabled ||= !session || chatLoading;
+    refreshEvidence.disabled ||= !turn || chatLoading;
     feedback.disabled ||= !run || feedbackSubmitting;
     start.disabled ||= managerSubmitting;
     retryMutation.hidden = !connected || client.pendingMutations().length === 0;
-    retryMutation.disabled = busyActions.has(retryMutation);
+    retryMutation.disabled = busyActions.has(retryMutation) || !client.pendingMutations().some(key => client.canRetryMutation(key));
+    retryMutation.title = retryMutation.disabled
+      ? "Pending operations require the original workspace and actor, with no request still in flight." : "";
+    const recovery = client.mutationRecovery?.();
+    checkReceipts.hidden = !connected || !recovery || (!recovery.blocked && recovery.markers.length === 0);
+    checkReceipts.disabled ||= !!recovery?.blocked || !recovery?.markers.length;
+    pendingWarning.hidden = !connected || !recovery || (!recovery.blocked && recovery.markers.length === 0);
+    pendingWarning.textContent = recovery?.blocked
+      ? "Write safety journal unavailable or invalid. Writes are blocked; reads remain available. No operation was automatically replayed."
+      : recovery?.markers.length
+        ? `Unresolved write pins: ${recovery.markers.map(marker => `${marker.operation} · ${marker.operationId} · SHA-256 ${marker.bodySha256}`).join("; ")}. Reload preserves only these nonsecret pins, not request bodies. Replacement writes remain blocked. ${client.available("receiptGet") ? "Check durable write receipts explicitly. Only a matching committed receipt unlocks the operation." : "This server does not expose actor-private receipt lookup."} Pending or unknown: give these UUID and SHA-256 pins to the authenticated server manager/operator for native reconciliation, then check again. Do not clear browser storage or reset the workspace. No automatic replay.`
+        : "";
   }
   /** @param {string} key */
   function capabilityAvailable(key) {
@@ -301,7 +341,7 @@ export function mount(root, config = {}) {
   }
   /** @param {string} state */
   function terminal(state) {
-    return ["completed", "succeeded", "cancelled", "canceled", "failed", "unknown", "accepted"].includes(state);
+    return ["completed", "succeeded", "cancelled", "canceled", "failed", "interrupted", "unknown", "accepted"].includes(state);
   }
   /** @param {()=>unknown} action */
   async function execute(action) {
@@ -331,7 +371,9 @@ export function mount(root, config = {}) {
     client.disconnect();
     token.value = "";
     session = turn = run = knowledgePage = chatPage = null;
-    history = [];
+    chatSelection++;
+    chatLoading = false;
+    chatReady = false;
     feedbackTarget = null;
     results.clear();
     for (const element of [knowledgeItems, chats, messages, overviewBody, tasks, activityList, capabilityList]) element.replaceChildren();
@@ -410,7 +452,8 @@ export function mount(root, config = {}) {
   }
   async function loadChats(more = false) {
     const current = epoch;
-    const page = await client.call("chatList", { limit: 20, ...(more && chatPage?.nextCursor ? { cursor: chatPage.nextCursor } : {}) });
+    const page = await client.call("chatList", { limit: 20, includeArchived: includeArchivedChats,
+      ...(more && chatPage?.nextCursor ? { cursor: chatPage.nextCursor } : {}) });
     if (disposed || current !== epoch) return;
     if (!more) chats.replaceChildren();
     if (!Array.isArray(page.items)) throw new ProtocolError("INVALID_RESPONSE");
@@ -443,29 +486,138 @@ export function mount(root, config = {}) {
     chatFeed?.dispose();
     const selected = ++chatSelection;
     session = null;
+    turn = null;
+    chatLoading = true;
+    chatReady = false;
+    messages.replaceChildren();
+    chatEvidenceEvents.clear();
+    chatEvidenceBody.replaceChildren();
+    chatEvidenceState.textContent = "Reading server-owned turn evidence.";
+    chatState.textContent = "Loading server transcript and turns";
     updateActions();
     const current = epoch;
-    const record = await client.call("chatGet", { id });
-    if (disposed || current !== epoch || selected !== chatSelection) return;
-    session = /** @type {ChatSession} */ (record);
-    history = [];
-    turn = null;
-    messages.replaceChildren();
-    chatState.textContent = `${record.title} · ${client.available("chatStart") ? "ready" : "generation capability unavailable"}`;
+    try { await refreshChat(id, selected, current); }
+    finally {
+      if (current === epoch && selected === chatSelection) { chatLoading = false; updateActions(); }
+    }
+  }
+  function chatContinuityAvailable() {
+    return ["chatGet", "chatMessages", "chatTurns", "chatTurn", "chatEvents"].every(key => client.available(key));
+  }
+  /** @param {string} id @param {number} selected @param {number} current @param {number} [attempt] */
+  async function refreshChat(id, selected, current, attempt = 0) {
+    const active = () => !disposed && current === epoch && selected === chatSelection;
+    chatReady = false;
+    if (!chatContinuityAvailable()) {
+      if (active()) chatState.textContent = "Chat continuity capability unavailable · server transcript and turn reads are required.";
+      return;
+    }
+    const before = await client.call("chatGet", { id });
+    if (!active()) return;
+    /** @type {{role:string,content:unknown,status?:string}[]} */
+    const transcript = [];
+    /** @type {ChatTurn[]} */
+    const turns = [];
+    let after;
+    for (let count = 0; count < 100; count++) {
+      const page = await client.call("chatTurns", { sessionId: id, limit: 20, ...(after ? { after } : {}) });
+      if (!active()) return;
+      if (!Array.isArray(page.items) || (page.next !== null && (typeof page.next !== "string" || page.next === after)))
+        throw new ProtocolError("INVALID_RESPONSE");
+      turns.push(...page.items);
+      if (page.next === null) break;
+      after = page.next;
+      if (count === 99) throw new ProtocolError("TURN_PAGE_LIMIT");
+    }
     let cursor;
-    // Drain bounded transcript pages without silently pruning history.
+    // Read turns first so a terminal turn's atomically committed observation is included below.
     for (let count = 0; count < 100; count++) {
       const page = await client.call("chatMessages", { id, limit: 100, ...(cursor ? { cursor } : {}) });
-      if (disposed || current !== epoch || selected !== chatSelection || session?.id !== id) return;
-      for (const message of page.items) {
-        addMessage(message.role, message.content, message.status);
-        if (["user", "assistant"].includes(message.role)) history.push({ role: message.role, content: message.content });
-      }
+      if (!active()) return;
+      if (!Array.isArray(page.items)) throw new ProtocolError("INVALID_RESPONSE");
+      transcript.push(...page.items);
       if (!page.hasMore) break;
+      if (typeof page.nextCursor !== "string" || page.nextCursor === cursor) throw new ProtocolError("INVALID_CURSOR");
       cursor = page.nextCursor;
       if (count === 99) throw new ProtocolError("TRANSCRIPT_PAGE_LIMIT");
     }
+    const record = await client.call("chatGet", { id });
+    if (!active()) return;
+    if (before.revision !== record.revision) {
+      if (attempt >= 3) throw new ProtocolError("CHAT_CHANGED_RECONNECT_REQUIRED");
+      return refreshChat(id, selected, current, attempt + 1);
+    }
+    if (record.id !== id || !Number.isSafeInteger(record.revision) || record.revision < 1 ||
+        turns.some(item => item.sessionId !== id)) throw new ProtocolError("INVALID_RESPONSE");
+    session = /** @type {ChatSession} */ (record);
+    chatReady = true;
+    turn = turns.find(item => !terminal(item.status)) ?? turns.at(-1) ?? null;
+    messages.replaceChildren();
+    for (const message of transcript) addMessage(message.role, message.content, message.status);
+    chatState.textContent = `${record.title} · ${turn ? turnStatus(turn) :
+      client.available("chatStart") ? "ready" : "generation capability unavailable · model/provider not configured or authorized"}`;
+    if (turn && !terminal(turn.status)) watchTurn(turn);
+    else if (!client.available("chatStart")) chatState.textContent += " · generation capability unavailable";
+    if (record.archivedAt) chatState.textContent += " · archived · transcript is read-only";
+    await loadChatEvidence();
     updateActions();
+  }
+  /** @param {Record<string,any>[]} events */
+  function renderChatEvidence(events) {
+    for (const event of events) {
+      if (["start", "model-intent", "model-complete", "tool-intent", "approval", "tool-complete", "failed", "interrupted", "cancel", "complete"].includes(event.type)) {
+        chatEvidenceEvents.set(event.sequence, event);
+      }
+    }
+    chatEvidenceBody.replaceChildren();
+    if (turn) chatEvidenceBody.append(node("p", `Turn ${turn.id} · context digest ${text(turn.contextDigest ?? "not reported")}`, "muted"));
+    const observed = [...chatEvidenceEvents.values()].sort((a, b) => a.sequence - b.sequence);
+    for (const event of observed.slice(-100)) {
+      const item = details(`${event.sequence} · ${event.type}`);
+      item.append(renderText(document, event.data));
+      const resource = event.data?.evidence?.resource;
+      if (resource?.kind === "manager-run" && typeof resource.id === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(resource.id)) {
+        item.append(button(`Open Manager evidence · ${resource.id}`, async () => {
+          const snapshot = await client.call(managerReadKey(), { runId: resource.id });
+          await watchRun(normalizeRun(snapshot));
+          manager.scrollIntoView?.({ block: "start" });
+        }, "managerGet"));
+      }
+      chatEvidenceBody.append(item);
+    }
+    if (observed.length > 100) chatEvidenceBody.prepend(node("p", "Latest 100 evidence entries shown. Full immutable events remain available through chat.turn.events.", "muted"));
+  }
+  async function loadChatEvidence() {
+    if (!turn) { chatEvidenceState.textContent = "No accepted turn selected."; return; }
+    const id = turn.id, selected = chatSelection, current = epoch;
+    const active = () => !disposed && current === epoch && selected === chatSelection && turn?.id === id;
+    try {
+      let after = 0;
+      for (let count = 0; count < 32; count++) {
+        const page = await client.call("chatEvents", { id, after, limit: 100 });
+        if (!active()) return;
+        if (!Array.isArray(page.events)) throw new ProtocolError("INVALID_RESPONSE");
+        renderChatEvidence(page.events);
+        if (page.next === null) break;
+        if (!Number.isSafeInteger(page.next) || page.next <= after || count === 31) throw new ProtocolError("EVIDENCE_PAGE_LIMIT");
+        after = page.next;
+      }
+      let availability = "Runtime semantic retrieval capability unavailable; no fallback engine was substituted.";
+      if (client.available("retrievalAvailability")) {
+        const observed = await client.call("retrievalAvailability", {});
+        if (!active()) return;
+        availability = observed.available === true
+          ? `Runtime retrieval index ${text(observed.indexId)} · model ${text(observed.model?.id)} @ ${text(observed.model?.revision)}.`
+          : "Runtime semantic retrieval unavailable; no fallback engine was substituted.";
+      }
+      chatEvidenceState.textContent = `${availability} Runtime availability is not a claim that retrieval was injected into this turn; consult its recorded sessionContext and prompt digest.`;
+    } catch (failure) {
+      if (active()) chatEvidenceState.textContent = `Evidence unavailable · ${failure instanceof ProtocolError ? failure.code : "READ_FAILED"}. No evidence or authority was invented.`;
+    }
+  }
+  /** @param {ChatTurn} record */
+  function turnStatus(record) {
+    return `Turn ${record.status}${record.failure ? " · " + record.failure : ""}${record.status === "cancelled" ? " · in-flight effects may require inspection" : ""}`;
   }
   /** @param {string} role @param {unknown} content @param {string} [state] */
   function addMessage(role, content, state = "") {
@@ -485,34 +637,46 @@ export function mount(root, config = {}) {
       const content = promptField.input.value.trim();
       if (!content) throw new ProtocolError("MESSAGE_REQUIRED");
       const sessionId = session.id;
-      if (history.length >= 128) throw new ProtocolError("CHAT_CONTEXT_LIMIT_START_NEW_CHAT");
+      const selected = chatSelection;
       const current = epoch;
       const record = await client.call("chatStart", { id: crypto.randomUUID(), sessionId,
-        operationId: crypto.randomUUID(), expectedRevision: 0, messages: [...history, { role: "user", content }] });
-      if (disposed || current !== epoch || session?.id !== sessionId) return;
+        operationId: crypto.randomUUID(), expectedRevision: 0, expectedSessionRevision: session.revision,
+        messages: [{ role: "user", content }], maxSteps: 4, maxOutputTokens: 4096,
+        maxInputTokens: 65536, maxTotalOutputTokens: 16384, deadlineMs: 120000 });
+      if (disposed || current !== epoch || selected !== chatSelection || session?.id !== sessionId) return;
       promptField.input.value = "";
-      watchTurn(/** @type {ChatTurn} */ (record), content);
+      turn = /** @type {ChatTurn} */ (record);
+      chatLoading = true;
+      try { await refreshChat(sessionId, selected, current); }
+      finally { if (current === epoch && selected === chatSelection) chatLoading = false; }
     }).finally(() => { chatSubmitting = false; updateActions(); });
   });
-  /** @param {ChatTurn} record @param {string} content */
-  function watchTurn(record, content) {
+  /** @param {ChatTurn} record */
+  function watchTurn(record) {
       chatFeed?.dispose();
       turn = record;
-      history.push({ role: "user", content });
-      let recordedOutput = false;
-      addMessage("user", content);
+      const selected = chatSelection;
+      const current = epoch;
+      const active = () => !disposed && epoch === current && selected === chatSelection && turn?.id === record.id;
       const output = addMessage("assistant", record.output, record.status);
+      output.dataset.liveTurn = record.id;
       chatFeed = replaceFeed(chatFeed, new LiveFeed({
         intervalMs: config.intervalMs,
         read: async (after, signal) => {
           const [page, snapshot] = await Promise.all([client.call("chatEvents", { id: record.id, after, limit: 100 }, signal),
             client.call("chatTurn", { id: record.id }, signal)]);
-          if (!signal.aborted && turn?.id === record.id) {
+          if (snapshot.id !== record.id || snapshot.sessionId !== record.sessionId) throw new ProtocolError("INVALID_RESPONSE");
+          if (!signal.aborted && active()) {
             turn = /** @type {ChatTurn} */ (snapshot);
+            renderChatEvidence(page.events);
             output.replaceChildren(node("p", `assistant · ${snapshot.status}`, "eyebrow"), renderText(document, snapshot.output));
-            if (terminal(snapshot.status) && !recordedOutput) {
-              recordedOutput = true;
-              history.push({ role: "assistant", content: snapshot.output });
+            if (terminal(snapshot.status)) {
+              chatLoading = true;
+              updateActions();
+              try { await refreshChat(record.sessionId, selected, current); }
+              finally {
+                if (current === epoch && selected === chatSelection) { chatLoading = false; updateActions(); }
+              }
             }
             updateActions();
           }
@@ -520,12 +684,12 @@ export function mount(root, config = {}) {
           return { events: page.events, next, more: page.next !== null, terminal: terminal(snapshot.status) && page.next === null };
         },
         event: () => {},
-        status: value => { if (!disposed) chatState.textContent = `${value} · turn ${record.id} · live output, not an appended transcript`; },
+        status: value => { if (active()) chatState.textContent = `${turnStatus(/** @type {ChatTurn} */ (turn))} · ${value}`; },
       }));
       chatFeed.start();
   }
   async function recoverMutation() {
-    const key = client.pendingMutations()[0];
+    const key = client.pendingMutations().find(key => client.canRetryMutation(key));
     if (!key) return;
     const current = epoch;
     const recovered = await client.retryMutation(key);
@@ -535,17 +699,36 @@ export function mount(root, config = {}) {
       await loadChats();
       await selectChat(recovered.result.id);
     } else if (key === "chatStart") {
-      if (session?.id !== recovered.arguments.sessionId) await selectChat(recovered.arguments.sessionId);
-      watchTurn(/** @type {ChatTurn} */ (recovered.result), recovered.arguments.messages.at(-1).content);
+      if (session?.id === recovered.arguments.sessionId &&
+          promptField.input.value.trim() === recovered.arguments.messages[0].content) promptField.input.value = "";
+      await selectChat(recovered.arguments.sessionId);
     } else if (key === "chatCancel") {
-      turn = /** @type {ChatTurn} */ (recovered.result);
-      chatState.textContent = `Native turn state: ${turn.status}`;
+      await selectChat(recovered.result.sessionId);
+    } else if (key === "chatArchive") {
+      await loadChats();
+      await selectChat(recovered.result.id);
     } else if (key.startsWith("manager")) {
       const snapshot = key === "managerProgressFeedback"
         ? await client.call(managerReadKey(), { runId: recovered.arguments.runId }) : recovered.result;
       await watchRun(normalizeRun(snapshot));
     }
     status.textContent = "Identical operation receipt recovered · native state refreshed";
+  }
+  async function reconcilePendingWrites() {
+    const recovery = client.mutationRecovery(), current = epoch;
+    if (recovery.blocked) throw new ProtocolError("PENDING_JOURNAL_INVALID");
+    let committed = 0;
+    for (const marker of recovery.markers.slice(0, 8)) {
+      if (await client.reconcileMutation(marker.key) === "committed") committed++;
+      if (disposed || current !== epoch) return;
+    }
+    if (committed) {
+      if (client.available("knowledgeList")) await loadKnowledge();
+      if (client.available("chatList")) await loadChats();
+      if (session) await selectChat(session.id);
+      if (run) await watchRun(normalizeRun(await client.call(managerReadKey(), { runId: run.runId })));
+    }
+    status.textContent = `${committed} matching committed receipt(s) reconciled · native lists refreshed · ${client.mutationRecovery().markers.length} unresolved pin(s). Refresh selected resource details before editing. No replay.`;
   }
   async function cancelChat() {
     if (!turn || terminal(turn.status)) throw new ProtocolError("NO_ACTIVE_TURN");
@@ -554,7 +737,18 @@ export function mount(root, config = {}) {
     const cancelled = await client.call("chatCancel", { id, expectedRevision: turn.revision, operationId: crypto.randomUUID() });
     if (!disposed && current === epoch && turn?.id === id) {
       turn = /** @type {ChatTurn} */ (cancelled);
-      chatState.textContent = `Turn ${cancelled.status} · in-flight effects may require inspection`;
+      if (terminal(turn.status)) await selectChat(turn.sessionId);
+      else chatState.textContent = turnStatus(turn);
+    }
+  }
+  async function archiveChat() {
+    if (!session) throw new ProtocolError("CHAT_REQUIRED");
+    const id = session.id;
+    const current = epoch;
+    await client.call("chatArchive", { id, expectedRevision: session.revision, operationId: crypto.randomUUID() });
+    if (!disposed && current === epoch && session?.id === id) {
+      await loadChats();
+      await selectChat(id);
     }
   }
   /** @param {ManagerRun} snapshot */

@@ -2,8 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
-import { cp, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { cp, lstat, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { createServer, createConnection } from "node:net";
+import { relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readinessDigest, readinessRequirements } from "../scripts/readiness.mjs";
 
@@ -29,13 +30,25 @@ async function copyTestSources(source, destination, pinnedReports = false) {
     && (/\.(?:mjs|js|py|ts)$/.test(entry.name) || (pinnedReports && pinnedTestReports.has(entry.name))))
     .map(entry => cp(resolve(source, entry.name), resolve(destination, entry.name))));
 }
+async function copySourceTree(source, destination) {
+  await cp(source, destination, { recursive: true, filter: async path => {
+    const parts = relative(source, path).split(sep);
+    if (parts.some(part => part.startsWith(".") || ["node_modules", "__pycache__"].includes(part))) return false;
+    const entry = await lstat(path);
+    return entry.isDirectory() || entry.isFile() && !path.endsWith(".pyc");
+  } });
+}
 
 test("readiness fixture copies test source files, not ephemeral files or directories", async t => {
-  const directory = resolve(`.readiness-copy-${randomUUID()}`);
+  const directory = resolve(`.rc-${randomUUID().slice(0, 8)}`);
   const source = resolve(directory, "source"), destination = resolve(directory, "destination");
+  let server;
   await mkdir(resolve(source, ".markdown-changing"), { recursive: true });
   await mkdir(resolve(source, "chat-session-work-changing"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  t.after(async () => {
+    if (server?.listening) await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    await rm(directory, { recursive: true, force: true });
+  });
   await Promise.all([
     writeFile(resolve(source, "example.test.mjs"), "test source"),
     writeFile(resolve(source, "fixture.py"), "fixture"),
@@ -47,6 +60,30 @@ test("readiness fixture copies test source files, not ephemeral files or directo
   ]);
   await copyTestSources(source, destination, true);
   assert.deepEqual((await readdir(destination)).sort(), ["example.test.mjs", "fixture.py", "legacy-read-race.report.json"]);
+  const clients = resolve(directory, "clients"), copiedClients = resolve(directory, "copied-clients");
+  const host = resolve(clients, "vscode-host"), ephemeral = resolve(host, `.installed-host-${randomUUID()}`);
+  await mkdir(resolve(host, "src"), { recursive: true });
+  await mkdir(resolve(ephemeral, "t"), { recursive: true });
+  await Promise.all([
+    writeFile(resolve(host, "src/extension.ts"), "authored extension source"),
+    writeFile(resolve(host, "package.json"), '{"name":"authored-client"}'),
+    writeFile(resolve(ephemeral, "trace.test.mjs"), "ephemeral, not authored source"),
+  ]);
+  const socket = relative(process.cwd(), resolve(ephemeral, "t/s"));
+  server = createServer(connection => connection.end("live ephemeral host"));
+  await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socket, resolve); });
+  assert.equal((await lstat(socket)).isSocket(), true);
+  const response = await new Promise((resolve, reject) => {
+    const connection = createConnection(socket); let data = "";
+    connection.setEncoding("utf8").on("data", chunk => { data += chunk; })
+      .once("error", reject).once("end", () => resolve(data));
+  });
+  assert.equal(response, "live ephemeral host");
+  await copySourceTree(clients, copiedClients);
+  assert.deepEqual((await readdir(resolve(copiedClients, "vscode-host"))).sort(), ["package.json", "src"]);
+  assert.equal(await readFile(resolve(copiedClients, "vscode-host/src/extension.ts"), "utf8"), "authored extension source");
+  assert.equal(await readFile(resolve(copiedClients, "vscode-host/package.json"), "utf8"), '{"name":"authored-client"}');
+  assert.equal(server.listening, true);
 });
 
 test("operator evidence CLI preserves signatures, exact scope, fingerprints, artifacts and separate roles", async t => {
@@ -60,12 +97,12 @@ test("operator evidence CLI preserves signatures, exact scope, fingerprints, art
   const fixtureLegacy = resolve(fixture, "legacy");
   await mkdir(fixtureLegacy, { recursive: true });
   await Promise.all([
-    ...["src", "resources", "package.json"].map(path => cp(resolve(repository, path), resolve(fixtureLegacy, path), { recursive: true })),
+    ...["src", "resources", "package.json"].map(path => copySourceTree(resolve(repository, path), resolve(fixtureLegacy, path))),
     ...["dist/knowledge", "dist/runtime"].map(path =>
-      cp(resolve(repository, path), resolve(fixtureLegacy, path), { recursive: true })),
+      copySourceTree(resolve(repository, path), resolve(fixtureLegacy, path))),
     ...["src", "scripts", "browser", "clients", "compat", "compute", "dist", "migration", "experimental",
       "package.json", "package-lock.json", "tsconfig.json"].map(path =>
-      cp(resolve(packageRoot, path), resolve(fixture, path), { recursive: true })),
+      copySourceTree(resolve(packageRoot, path), resolve(fixture, path))),
     copyTestSources(resolve(repository, "tests"), resolve(fixtureLegacy, "tests")),
     copyTestSources(resolve(packageRoot, "tests"), resolve(fixture, "tests"), true),
   ]);

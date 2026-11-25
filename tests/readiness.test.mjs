@@ -131,7 +131,7 @@ test("dynamic legacy operations need an exact profile/source mapping; unknown ca
   assert.equal(evaluateReadiness(context).readyForCutoverReview, false);
 });
 
-test("all 244 current canonical native operations map to exact workstream obligations without accepting candidates", () => {
+test("all 257 current canonical native operations map to exact workstream obligations without accepting candidates", () => {
   const mapped = new Set(contract.workstreams.flatMap(item => item.contracts));
   const batch15 = [
     { id: "legacy.skill.router.inject", version: 1, readOnly: false },
@@ -192,6 +192,19 @@ test("all 244 current canonical native operations map to exact workstream obliga
     { id: "recipe.runtime.get", version: 1, readOnly: true },
     { id: "recipe.history.get", version: 1, readOnly: true },
     { id: "recipe.runtime.cancel", version: 1, readOnly: false },
+    { id: "operation.receipt.get", version: 1, readOnly: true },
+    { id: "chat.task.adopt", version: 1, readOnly: false },
+    { id: "chat.task.action_started", version: 1, readOnly: false },
+    { id: "chat.task.start", version: 1, readOnly: false },
+    { id: "chat.task.attempt.start", version: 1, readOnly: false },
+    { id: "chat.task.attempt.bind", version: 1, readOnly: false },
+    { id: "chat.task.attempt.finish", version: 1, readOnly: false },
+    { id: "chat.task.cancel", version: 1, readOnly: false },
+    { id: "chat.task.get", version: 1, readOnly: true },
+    { id: "chat.task.report_work", version: 1, readOnly: false },
+    { id: "chat.task.record_harness", version: 1, readOnly: false },
+    { id: "chat.turn.list", version: 1, readOnly: true },
+    { id: "workflow.executor.outputs", version: 1, readOnly: true },
   ];
   assert.deepEqual(contract.nativeCatalogMap.batch19AddedPublicOperations, batch19);
   assert.deepEqual(contract.nativeCatalogMap.batch20AddedPublicOperations, batch20);
@@ -207,7 +220,7 @@ test("all 244 current canonical native operations map to exact workstream obliga
     assert.equal(definition.readOnly, expected.readOnly);
   }
   assert.deepEqual([...definitions].map(item => item.id).sort(), [...mapped].sort());
-  assert.equal(definitions.length, 244);
+  assert.equal(definitions.length, 257);
   for (const id of ["knowledge.trash.delete.original", "knowledge.trash.empty.original"]) {
     assert(mapped.has(id));
     assert.equal(definitions.find(item => item.id === id).readOnly, false);

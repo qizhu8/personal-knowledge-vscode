@@ -4,6 +4,7 @@ import {
   managerProgressOverviewRequestSchema, managerProgressEventsRequestSchema,
   managerProgressFeedbackRequestSchema,
 } from "../../src/domain/manager-progress.ts";
+import { mutationReceiptPin } from "../../src/mutation-receipt-contracts.ts";
 
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
 const documentId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/);
@@ -14,6 +15,7 @@ const sha = z.string().regex(/^[a-f0-9]{64}$/);
 
 // These are a deliberately smaller surface than the server's catalog.
 export const operations = {
+  receiptGet: { operation: "operation.receipt.get", readOnly: true, input: mutationReceiptPin },
   knowledgeList: { operation: "knowledge.document.list", readOnly: true, input: z.strictObject({
     offset: number.max(1_000_000).optional(), limit: positive.max(100).optional(),
     workspaceRevision: sha.optional(), includeDeleted: z.boolean().optional(), area: z.enum(["notes", "skills", "papers"]).optional(),
@@ -30,20 +32,27 @@ export const operations = {
     id, operationId, expectedRevision: z.literal(0), title: z.string().trim().min(1).max(120),
   }) },
   chatGet: { operation: "chat.session.get", readOnly: true, input: z.strictObject({ id }) },
+  chatArchive: { operation: "chat.session.archive", readOnly: false, input: z.strictObject({
+    id, operationId, expectedRevision: positive,
+  }) },
   chatMessages: { operation: "chat.session.messages", readOnly: true, input: z.strictObject({
     id, limit: positive.max(100).optional(), cursor: z.string().min(1).max(1024).optional(),
     afterSequence: number.optional(),
   }).refine(v => !(v.cursor && v.afterSequence !== undefined)) },
   chatStart: { operation: "chat.turn.start", readOnly: false, input: z.strictObject({
-    id, sessionId: id, operationId, expectedRevision: z.literal(0),
-    messages: z.array(z.strictObject({ role: z.enum(["user", "assistant", "system"]), content: z.string().max(131072) })).min(1).max(128),
+    id, sessionId: id, operationId, expectedRevision: z.literal(0), expectedSessionRevision: positive,
+    messages: z.array(z.strictObject({ role: z.literal("user"), content: z.string().trim().min(1).max(100000) })).length(1),
     maxSteps: positive.max(8).optional(), maxOutputTokens: positive.max(8192).optional(),
     maxInputTokens: positive.max(262144).optional(), maxTotalOutputTokens: positive.max(32768).optional(),
     deadlineMs: positive.max(300000).optional(),
   }) },
   chatTurn: { operation: "chat.turn.get", readOnly: true, input: z.strictObject({ id }) },
+  chatTurns: { operation: "chat.turn.list", readOnly: true, input: z.strictObject({
+    sessionId: id, after: id.optional(), limit: positive.max(100).optional(),
+  }) },
   chatEvents: { operation: "chat.turn.events", readOnly: true, input: z.strictObject({ id, after: number, limit: positive.max(100).optional() }) },
   chatCancel: { operation: "chat.turn.cancel", readOnly: false, input: z.strictObject({ id, operationId, expectedRevision: positive }) },
+  retrievalAvailability: { operation: "retrieval.runtime.availability", readOnly: true, input: z.strictObject({}) },
   managerStart: { operation: "manager.runtime.start", readOnly: false, input: z.strictObject({
     operationId, runId: id, projectId: id,
     contract: managerCompletionContractSchema, budget: managerPlanBudgetSchema,

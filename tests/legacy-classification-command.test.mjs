@@ -615,8 +615,8 @@ test("schema-only leaf-first canonical registry is JSON exportable with one Core
       const {definitions,CoreError}=await import('./dist/contracts.js');
       const {CoreError:leafError}=await import('./dist/host-composition-legacy-batch15-errors.js');
       assert.equal(CoreError,leafError);
-      assert.equal(definitions.length,244);
-      assert.equal(new Set(definitions.map(d=>d.id)).size,244);
+      assert.equal(definitions.length,257);
+      assert.equal(new Set(definitions.map(d=>d.id)).size,257);
       const command=definitions.find(d=>d.id==='${operation}');
       assert.equal(command.readOnly,false);
       const exported=definitions.map(d=>({id:d.id,version:1,input:z.toJSONSchema(d.input,{unrepresentable:'any'}),output:z.toJSONSchema(d.output,{unrepresentable:'any'})}));

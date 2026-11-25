@@ -10,6 +10,10 @@ import type { TodoChat, TodoStore } from "./todo-store-contract.js";
 import { todoDefinitions } from "./todo-definitions.js";
 import type { DatabaseSync } from "node:sqlite";
 import { assertNativeBoardLifecycleFiles, nativeBoardLifecycleCatalog, resolveNativeBoardKey } from "./native-board-lifecycle-state.js";
+import { readOriginalMcpJournal } from "./original-mcp-root-custody.js";
+import { assertOriginalMcpTodoSession, originalMcpDomainDirectory,
+  authenticateOriginalMcpTodoWorker, verifyOriginalMcpDomainFiles, readOriginalMcpTodoManifest,
+  originalMcpTodoAuthorizedBoardKeys } from "./original-mcp-domain-state.js";
 
 export interface Board { slug: string; title: string; raw: string }
 function checkedSlug(slug: string, mutation = false) {
@@ -17,9 +21,12 @@ function checkedSlug(slug: string, mutation = false) {
     || slug.split("/").some(part => !part || part === "." || part === ".." || part.startsWith(".") || /[. ]$/.test(part) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))) throw new CoreError("INVALID_ARGUMENT", "Provide a safe Board slug; hidden paths, traversal and platform-reserved names/characters are forbidden.");
   if (mutation && slug.split("/")[0].toLowerCase() === "system") throw new CoreError("ACCESS_DENIED", "System Boards are read-only.");
 }
-function boardPath(root: string, slug: string, create: boolean) {
+function boardPath(root: string, slug: string, create: boolean, database?: DatabaseSync) {
   checkedSlug(slug, create);
-  let directory = join(root, "boards");
+  const original = readOriginalMcpJournal(root);
+  if (original && !readOriginalMcpTodoManifest(root, database).some(item => item.key === slug))
+    throw new CoreError("NOT_AVAILABLE", "This original Board has no exact native source/genesis receipt.");
+  let directory = join(root, original ? originalMcpDomainDirectory("todo") : "boards");
   for (const part of ["", ...slug.split("/")]) {
     directory = part ? join(directory, part) : directory;
     if (!existsSync(directory)) {
@@ -34,8 +41,10 @@ function boardPath(root: string, slug: string, create: boolean) {
 export const checkedBoardPath = boardPath;
 export function scanBoards(root: string, database?: DatabaseSync, includeTrashed = false): Map<string, Board> {
   const result = new Map<string, Board>();
-  const base = join(root, "boards");
+  const original = readOriginalMcpJournal(root);
+  const base = join(root, original ? originalMcpDomainDirectory("todo") : "boards");
   if (!existsSync(base)) return result;
+  if (original) verifyOriginalMcpDomainFiles(root, "todo", database);
   function walk(directory: string, slug: string) {
     const stat = lstatSync(directory);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new CoreError("INVALID_WORKSPACE", "Board directories cannot be symlinks.");
@@ -53,6 +62,15 @@ export function scanBoards(root: string, database?: DatabaseSync, includeTrashed
     }
   }
   walk(base, "");
+  if (original) {
+    const files = readOriginalMcpTodoManifest(root, database);
+    if ([...result.keys()].some(slug => !files.some(item => item.key === slug)))
+      throw new CoreError("NATIVE_AUTHORITY_REQUIRED", "Todo enumeration requires its exact source manifest and native database scope.");
+    for (const item of files) {
+      const board = result.get(item.key);
+      if (board) board.title = item.title!;
+    }
+  }
   const catalog = nativeBoardLifecycleCatalog(root, database);
   for (const [key, event] of catalog) {
     const board = result.get(key);
@@ -70,13 +88,15 @@ export function authenticateBoardWorker(root: string, slug: string, token: strin
   const board = scanBoards(root).get(slug);
   if (!board) throw new CoreError("NOT_FOUND", "Todo Board is no longer available.");
   const hash = createHash("sha256").update(token).digest("hex");
+  if (readOriginalMcpJournal(root))
+    return { id: authenticateOriginalMcpTodoWorker(root, slug, hash), boardWorker: { boardSlug: slug, digest: sha256(board.raw) } };
   const grant = Object.entries(todoBoardWorkers(board.raw)).find(([, candidate]) => candidate === hash);
   if (!grant) throw new CoreError("ACCESS_DENIED", "Worker token is invalid for this Board or has been rotated.");
   return { id: grant[0], boardWorker: { boardSlug: slug, digest: sha256(board.raw) } };
 }
-export function atomicBoardWrite(root: string, slug: string, raw: string, before: string | null) {
+export function atomicBoardWrite(root: string, slug: string, raw: string, before: string | null, database?: DatabaseSync) {
   readTodoBoard(raw);
-  const path = boardPath(root, slug, true);
+  const path = boardPath(root, slug, true, database);
   const digest = () => {
     if (!existsSync(path)) return null;
     const stat = lstatSync(path);
@@ -116,14 +136,20 @@ export function planTodo(root: string, request: StorageRequest, listChats?: () =
   result: Record<string, unknown>;
   write?: { slug: string; before: string | null; raw: string };
 } {
+  assertOriginalMcpTodoSession(root, request.actorId, database,
+    typeof request.args.board_slug === "string" ? request.args.board_slug : request.boardWorker?.boardSlug);
   if (typeof request.args.board_slug === "string")
     request = { ...request, args: { ...request.args, board_slug: resolveNativeBoardKey(root, request.args.board_slug, database) } };
-  const boards = scanBoards(root, database);
+  const allBoards = scanBoards(root, database);
+  const allowed = readOriginalMcpJournal(root) ? originalMcpTodoAuthorizedBoardKeys(root, request.actorId, database) : undefined;
+  const boards = allowed ? new Map([...allBoards].filter(([key]) => allowed.has(key))) : allBoards;
   if (request.boardWorker && (request.boardWorker.boardSlug !== request.args.board_slug
     || sha256(boards.get(request.boardWorker.boardSlug)?.raw ?? "") !== request.boardWorker.digest))
     throw new CoreError("ACCESS_DENIED", "Board worker authority changed before dispatch; authenticate again.");
   const definition = todoDefinitions.find(item => item.id === request.operation);
   if (!definition) throw new CoreError("NOT_FOUND", "Unknown Todo operation.");
+  if (readOriginalMcpJournal(root) && definition.transportName === "create_board")
+    throw new CoreError("NOT_AVAILABLE", "New original-root Boards require their own native Note/genesis publication admission.");
   const { operationId: _operationId, ...args } = request.args;
   let write: { slug: string; before: string | null; raw: string } | undefined;
   const store: TodoStore = {
@@ -141,6 +167,10 @@ export function planTodo(root: string, request: StorageRequest, listChats?: () =
       const board = boards.get(slug);
       if (!board) throw new CoreError("NOT_FOUND", "Board not found.");
       const raw = commandTodoBoard(board.raw, digest, command, actor);
+      if (allowed && readTodoBoard(raw).items.some(item => item.state === "WIP" && item.ownerId === request.actorId)
+        && [...allBoards.values()].some(other => !allowed.has(other.slug) && readTodoBoard(other.raw).items.some(item =>
+          !item.deletedAt && item.state === "WIP" && item.ownerId === request.actorId)))
+        throw new CoreError("NATIVE_AUTHORITY_REQUIRED", "Another source must be rebound before changing task focus.");
       assertBoardFocus(slug, readTodoBoard(board.raw).items, readTodoBoard(raw).items, boards);
       write = { slug, before: sha256(board.raw), raw };
       return readTodoBoard(raw);

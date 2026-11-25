@@ -86,6 +86,32 @@ for (const point of ["before-commit", "after-commit"]) test(`real SIGKILL ${poin
   assert.equal(child.signal, "SIGKILL", child.stderr);
   const reopened = env.open(), record = reopened.snapshot().recipes.find(row => row.recipeId === request.recipeId);
   assert.equal(!!record, point === "after-commit");
+  const check = new DatabaseSync(env.file);
+  try {
+    assert.equal(!!check.prepare("SELECT 1 FROM native_recipe_library_receipts WHERE operation_id=?")
+      .get("native-library-payload:" + request.operationId), point === "after-commit");
+  } finally { check.close(); }
   if (record) { assert.equal(record.revision, 1); assert.deepEqual(reopened.save(request), record); }
   else assert.equal(reopened.save(request).revision, 1);
+});
+test("payload witness failure rolls back both native definition and all receipts; old bare receipt replay never fabricates a witness", t => {
+  const env = setup(t), originalLibrary = env.open(), request = input(originalLibrary, originalLibrary.draft(original.recipes[0].recipeId));
+  originalLibrary.close();
+  const failing = new NativeRecipeLibrary({ database: new DatabaseSync(env.file), workspaceId: "workspace",
+    assertLease() {}, original: () => structuredClone(original), receiptWitness() { throw Error("Witness admission failed"); } });
+  try { assert.throws(() => failing.save(request), /Witness admission failed/); } finally { failing.close(); }
+  const db = new DatabaseSync(env.file);
+  try {
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM native_recipe_library_records").get().count, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM native_recipe_library_receipts").get().count, 0);
+  } finally { db.close(); }
+  const library = env.open(), record = library.save(request), edit = new DatabaseSync(env.file);
+  try { edit.prepare("DELETE FROM native_recipe_library_receipts WHERE operation_id=?").run("native-library-payload:" + request.operationId); }
+  finally { edit.close(); }
+  assert.deepEqual(library.save(request), record);
+  const check = new DatabaseSync(env.file);
+  try {
+    assert.equal(check.prepare("SELECT 1 FROM native_recipe_library_receipts WHERE operation_id=?")
+      .get("native-library-payload:" + request.operationId), undefined);
+  } finally { check.close(); }
 });

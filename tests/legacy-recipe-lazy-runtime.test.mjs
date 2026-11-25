@@ -42,6 +42,172 @@ function projection(response) {
   return result;
 }
 
+test("authenticated autonomous start drains the original bounded command chain without another next and retains exact receipts", { skip, timeout: 60000 }, async t => {
+  const { prepared, evidence } = fixture();
+  const oracle = spawnSync(process.env.PKM_TEST_PYTHON ?? "python3", ["-B",
+    path.resolve(import.meta.dirname, "../legacy/tests/next-trial-electron/legacy-lazy-contract-oracle.py"),
+    process.env.PKM_TEST_LEGACY_RECIPE_EXTENSION, prepared.fixture, "autonomous"],
+  { encoding: "utf8", timeout: 30000 });
+  assert.equal(oracle.status, 0, oracle.stderr + oracle.stdout);
+  const old = JSON.parse(oracle.stdout);
+  assert.equal(old.actual_effects, 3);
+  const before = capture(prepared.originalRoot);
+  const env = await open(prepared, { library: true, publicApi: true, lazy: true });
+  t.after(async () => { await env.close(); assert.deepEqual(capture(prepared.originalRoot), before);
+    fs.rmSync(prepared.base, { recursive: true, force: true }); });
+  const actor = { id: prepared.actorId, canWrite: true, recipeProtocol: true };
+  async function invoke(name, args) {
+    const operation = `mcp.tool.recipe_run_${name}`;
+    const preview = await env.publicRecipes.previewLazy(env.binding, { operation, args });
+    await env.publicRecipes.approveLazy(env.binding, { operation, args, previewDigest: preview.previewDigest });
+    const result = await env.runtime.core.dispatch("capability_call", { operation, version: 1, arguments: args }, actor);
+    assert(!result.error, JSON.stringify(result)); return result.result;
+  }
+  for (const [name, maximum] of [["complete", 100], ["node_bound", 1]]) {
+    const args = { recipe_id: evidence.recipeId, command_id: "autonomous-" + name,
+      inputs_json: '{"mode":"complete"}', autonomous: true, max_auto_nodes: maximum };
+    const started = await invoke("start", args);
+    assert.equal(started.ok, true, JSON.stringify(started));
+    assert.equal(started.automation.startedNodes, old.trace[name + "_start"].automation.startedNodes);
+    const expected = name === "complete" ? 2 : 1;
+    for (let i = 0; i < 500 && env.lazyTrusted.executions.length < (name === "complete" ? 2 : 3); i++) await wait(10);
+    await settled(env);
+    const result = await invoke("get", { run_id: started.run_id });
+    assert.equal(result.status, old.trace[name].status);
+    assert.equal(result.automation.status, old.trace[name].automation.status);
+    assert.equal(result.automation.startedNodes, expected);
+    assert.equal(result.automation.stopReason, old.trace[name].automation.stopReason);
+    const replay = await invoke("start", args);
+    assert.equal(replay.replayed, true); assert.equal(replay.version, started.version);
+    const conflict = await invoke("start", { ...args, max_auto_nodes: maximum + 1 });
+    assert.equal(conflict.ok, false); assert.match(conflict.error.message, /reused with different parameters/);
+    if (name === "node_bound") {
+      await invoke("next", { run_id: started.run_id, command_id: "budget-does-not-reset" });
+      await wait(50); assert.equal(env.lazyTrusted.executions.length, 3);
+    }
+  }
+  assert.equal(effects(evidence).length, 6);
+  assert(effects(evidence).every(effect => effect.literal === evidence.literal));
+  assert(!fs.existsSync(path.join(prepared.fixture, "workspace", "NEVER-CREATED")));
+});
+
+test("autonomous cancellation, deadline and restart never launch a dependent effect or reset a whole-run budget", { skip, timeout: 60000 }, async t => {
+  const { prepared, evidence } = fixture(), before = capture(prepared.originalRoot);
+  let env = await open(prepared, { library: true, publicApi: true, lazy: true });
+  t.after(async () => { await env.close(); assert.deepEqual(capture(prepared.originalRoot), before);
+    fs.rmSync(prepared.base, { recursive: true, force: true }); });
+  const actor = { id: prepared.actorId, canWrite: true };
+  const call = (name, args) => env.lazy.dispatch(`mcp.tool.recipe_run_${name}`, args, actor);
+  const start = (command, seconds = 300) => call("start", { recipe_id: evidence.recipeId, command_id: command,
+    inputs_json: '{"mode":"hold"}', autonomous: true, max_auto_seconds: seconds });
+  async function launched(count) {
+    for (let i = 0; i < 500 && effects(evidence).length < count; i++) await wait(10);
+    assert.equal(effects(evidence).length, count);
+  }
+  for (const [name, seconds, reason] of [["cancel", 300, "cancellation-requested"], ["deadline", 1, "cancellation-requested"]]) {
+    const started = await start("autonomous-" + name, seconds);
+    assert.equal(started.ok, true, JSON.stringify(started));
+    await launched(name === "cancel" ? 1 : 2);
+    if (seconds === 1) await wait(1100);
+    const args = { run_id: started.run_id, node_id: "first", command_id: name + "-cancel",
+      progress_json: '{"cancellationRequested":true}' };
+    assert.equal((await call("progress", args)).ok, true);
+    await settled(env);
+    const result = await call("get", { run_id: started.run_id });
+    assert.equal(result.automation.stopReason, reason);
+    assert.equal(result.automation.startedNodes, 1);
+    assert.equal(result.automation.cancellationRequested, true);
+    assert.equal(result.status, "failed");
+    assert.equal((await call("progress", args)).replayed, true);
+    await call("next", { run_id: started.run_id, command_id: name + "-next" });
+    assert.equal(effects(evidence).length, name === "cancel" ? 1 : 2);
+  }
+  const held = await start("autonomous-restart");
+  await launched(3);
+  await env.close(); env = await open(prepared, { library: true, publicApi: true, lazy: true });
+  const unknown = await call("get", { run_id: held.run_id });
+  assert.equal(unknown.next_action.state, "launch-outcome-unknown");
+  assert.equal(unknown.automation.status, "interrupted");
+  assert.equal(unknown.automation.stopReason, "host-restart-no-replay");
+  assert.equal(unknown.next_action.replay_allowed, false);
+  await call("next", { run_id: held.run_id, command_id: "restart-is-not-effect-permission" });
+  const replay = await start("autonomous-restart");
+  assert.equal(replay.replayed, true);
+  await wait(50); assert.equal(effects(evidence).length, 3);
+  for (const bounds of [{ max_auto_nodes: 0 }, { max_auto_nodes: 1001 }, { max_auto_seconds: 0 }, { max_auto_seconds: 3601 }]) {
+    const invalid = await call("start", { recipe_id: evidence.recipeId, command_id: randomUUID(), ...bounds });
+    assert.equal(invalid.ok, false);
+  }
+});
+
+test("autonomous completion rechecks exact source and adapter authority; known effects are retained and revoked outcomes are UNKNOWN", { skip, timeout: 60000 }, async t => {
+  const { prepared, evidence } = fixture(), before = capture(prepared.originalRoot);
+  const env = await open(prepared, { library: true, publicApi: true, lazy: true });
+  env.lazy.close();
+  const { LegacyRecipeLazyRuntime } = await load("legacy-recipe-lazy-runtime");
+  const { CoreError } = await load("contracts");
+  let sourceChanged = false, revoked = false, failed = false, release, entered;
+  const raw = env.lazyTrusted.adapters["pkm.step.command/v1"];
+  const adapter = { ...raw,
+    authorizeDefinition: binding => !revoked && raw.authorizeDefinition(binding),
+    authorizeData: binding => !revoked && raw.authorizeData(binding),
+    async execute(invocation, context) {
+      const result = await raw.execute(invocation, context);
+      entered?.();
+      await new Promise(resolve => { release = resolve; });
+      return failed ? { status: "failed", outputs: { result: { ...result.outputs.result, ok: false, error: "Controlled failure." } } } : result;
+    },
+  };
+  const lazy = new LegacyRecipeLazyRuntime(env.storage.connectNative(), {
+    actorId: prepared.actorId, root: prepared.root, bindingFingerprint: createHash("sha256").update(JSON.stringify(env.binding)).digest("hex"),
+    ownerId: randomUUID(), adapters: { "pkm.step.command/v1": adapter },
+    assertOwner: () => env.storage.assertWorkspaceLease(), resolveRecipe: env.authority.resolveRecipe,
+    catalog: async () => {
+      const catalog = await env.authority.catalog(env.binding);
+      if (sourceChanged) catalog.snapshotRevision = createHash("sha256").update("concurrent-source-edit").digest("hex");
+      return catalog;
+    }, requestCancel: env.lazyTrusted.requestCancel,
+  });
+  t.after(async () => { release?.(); lazy.close(); await env.close(); assert.deepEqual(capture(prepared.originalRoot), before);
+    fs.rmSync(prepared.base, { recursive: true, force: true }); });
+  const actor = { id: prepared.actorId, canWrite: true };
+  for (const [index, kind] of ["source", "adapter", "deadline", "failed"].entries()) {
+    sourceChanged = false; revoked = false; failed = false;
+    const effectDone = new Promise(resolve => { entered = resolve; });
+    const started = await lazy.dispatch("mcp.tool.recipe_run_start", { recipe_id: evidence.recipeId, command_id: "autonomous-" + kind,
+      inputs_json: '{"mode":"complete"}', autonomous: true, max_auto_seconds: kind === "deadline" ? 1 : 300 }, actor);
+    assert.equal(started.ok, true, JSON.stringify(started)); await effectDone;
+    if (kind === "source") sourceChanged = true;
+    else if (kind === "adapter") revoked = true;
+    else if (kind === "failed") failed = true;
+    else await wait(1100);
+    release();
+    let result;
+    for (let i = 0; i < 500; i++) {
+      try { result = await lazy.dispatch("mcp.tool.recipe_run_get", { run_id: started.run_id }, actor); }
+      catch (error) { assert.equal(error.code, "ACCESS_DENIED"); await wait(10); continue; }
+      if (["interrupted", "budget-exceeded", "failed"].includes(result.automation?.status)) break;
+      await wait(10);
+    }
+    assert.equal(result.automation.status, kind === "deadline" ? "budget-exceeded" : kind === "failed" ? "failed" : "interrupted", JSON.stringify(result));
+    assert.equal(result.automation.startedNodes, 1);
+    assert.equal(result.next_action.replay_allowed, false);
+    if (kind === "source") {
+      assert.equal(result.current_result.counts.succeeded, 1);
+      assert.equal(result.automation.stopReason, "authority-or-source-changed");
+    } else if (kind === "adapter") {
+      assert.equal(result.next_action.state, "launch-outcome-unknown");
+      assert.equal(result.current_result.counts.succeeded, 0);
+    } else {
+      assert.equal(result.status, "failed");
+      assert.equal(result.automation.stopReason, kind === "deadline" ? "automation-budget-exceeded" : "command-failed");
+    }
+    await lazy.dispatch("mcp.tool.recipe_run_next", { run_id: started.run_id, command_id: kind + "-no-replay" }, actor);
+    await wait(20); assert.equal(effects(evidence).length, index + 1);
+  }
+  await assert.rejects(lazy.dispatch("mcp.tool.recipe_run_get", { run_id: "missing" }, { ...actor, id: randomUUID() }), CoreError);
+});
+
 test("original real compiler/worker and Next durable executor match controlled lazy start/get/next receipts, side-effecting get and owned-child cancellation over real MCP + HTTP", { skip, timeout: 90000 }, async t => {
   const { prepared, evidence } = fixture();
   const oracle = spawnSync("python3", ["-B", path.resolve(import.meta.dirname, "../legacy/tests/next-trial-electron/legacy-lazy-contract-oracle.py"),

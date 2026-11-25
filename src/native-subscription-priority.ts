@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { CoreError } from "./contracts.js";
+import { CoreError } from "./host-composition-legacy-batch15-errors.js";
 import { membershipRequestSha256, type MembershipChange } from "./legacy-subscription-membership-change.js";
 import { resourcePath } from "./document-path.js";
 

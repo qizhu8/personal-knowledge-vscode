@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
@@ -9,6 +9,7 @@ import { operations } from "../clients/vscode/contracts.ts";
 import { managerRuntimeStart } from "../dist/manager-runtime-contracts.js";
 import { bindWebview } from "../clients/vscode/bridge.ts";
 import { managerActor, nativeWorkspace, syntheticManager, until, pin } from "./batch06-manager-fixtures.mjs";
+import { createSyntheticProvider } from "./chat-turn-native-fixtures.mjs";
 
 async function connect(t, fixture, actor = managerActor, transform) {
   const origin = await fixture.listen(actor);
@@ -42,6 +43,115 @@ const deferred = () => {
   return { promise, release };
 };
 const code = expected => error => error.code === expected && error.effect === "not-committed";
+
+test("actor-private typed receipt reads prove exact raw-wire pins without disclosing arguments or treating missing as noncommitted", async t => {
+  const fixture = await nativeWorkspace(t), first = await connect(t, fixture);
+  const body = { operation: "knowledge.document.create", version: 1, arguments: {
+    content: "Private receipt fixture content", title: "  Raw wire title  ", id: "receipt-fixture-doc", operationId: randomUUID(),
+  } };
+  const post = input => fetch(`${first.origin}/v1/capability_call`, {
+    method: "POST", headers: { authorization: `Bearer ${fixture.bearer}`, "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const created = await (await post(body)).json();
+  assert.equal(created.result.title, "Raw wire title");
+  const pin = { operationId: body.arguments.operationId, operation: body.operation,
+    bodySha256: createHash("sha256").update(JSON.stringify(body)).digest("hex") };
+  const receipt = await first.client.receiptGet(pin);
+  assert.equal(receipt.state, "committed");
+  assert.equal(receipt.actorId, managerActor.id);
+  assert.deepEqual(Object.keys(receipt).sort(), ["actorId", "bodySha256", "operation", "operationId", "receiptSha256", "schema", "state"]);
+  const foreign = await connect(t, fixture, { id: "receipt-foreign-reader", canWrite: false });
+  assert.equal((await foreign.client.receiptGet(pin)).state, "unknown");
+  for (const changed of [{ bodySha256: "b".repeat(64) }, { operationId: randomUUID() }, { operation: "knowledge.document.update" }])
+    assert.equal((await first.client.receiptGet({ ...pin, ...changed })).state, "unknown");
+
+  const chatInput = { id: randomUUID(), operationId: randomUUID(), expectedRevision: 0, title: "Receipt-owned Chat" };
+  await first.client.chatCreate(chatInput);
+  const chatBody = first.requests.find(item => item.method === "capability_call" && item.body.operation === "chat.session.create").body;
+  assert.equal((await first.client.receiptGet({ operationId: chatInput.operationId, operation: chatBody.operation,
+    bodySha256: createHash("sha256").update(JSON.stringify(chatBody)).digest("hex") })).state, "committed");
+
+  const held = deferred(), entered = deferred(), bind = fixture.storage.bindBrowserMutationPin.bind(fixture.storage);
+  const waiting = { ...body, arguments: { ...body.arguments, id: "receipt-fixture-held", operationId: randomUUID() } };
+  fixture.storage.bindBrowserMutationPin = async (...args) => {
+    await bind(...args);
+    if (args[0].args.operationId === waiting.arguments.operationId) { entered.release(); await held.promise; }
+  };
+  fixture.addCleanup(held.release);
+  const pending = post(waiting);
+  await entered.promise;
+  const waitingPin = { operationId: waiting.arguments.operationId, operation: waiting.operation,
+    bodySha256: createHash("sha256").update(JSON.stringify(waiting)).digest("hex") };
+  assert(["pending", "unknown"].includes((await first.client.receiptGet(waitingPin)).state));
+  held.release();
+  assert.equal((await pending).status, 200);
+  assert.equal((await first.client.receiptGet(waitingPin)).state, "committed");
+});
+
+test("typed Extension clients share server-owned Chat, reattach after disconnect, cancel and archive without replay", async t => {
+  const gate = deferred();
+  const provider = createSyntheticProvider({ onOpen: async () => { await gate.promise; } });
+  const fixture = await nativeWorkspace(t, { ...provider,
+    toolCatalog: [{ name: "create_document", operation: "knowledge.document.create" }],
+    reviewer: async request => ({ actorId: request.actorId, decisionId: randomUUID(), decision: "reject" }),
+  });
+  fixture.addCleanup(gate.release);
+  const first = await connect(t, fixture);
+  const second = await connect(t, fixture);
+  const sessionId = randomUUID();
+  const created = await first.client.chatCreate({ id: sessionId, title: "Shared durable Chat",
+    operationId: randomUUID(), expectedRevision: 0 });
+  const input = { id: randomUUID(), sessionId, operationId: randomUUID(), expectedRevision: 0,
+    expectedSessionRevision: created.revision, messages: [{ role: "user", content: "Durable Extension input" }] };
+  assert.throws(() => operations.chatStart.input.parse({ ...input, expectedSessionRevision: undefined }));
+  assert.throws(() => operations.chatStart.input.parse({ ...input, messages: [{ role: "system", content: "forged" }] }));
+  const accepted = await first.client.chatStart(input);
+  await until(() => provider.counts().modelCalls === 1);
+  first.client.disconnect();
+  const discovery = await second.client.chatTurns({ sessionId, limit: 20 });
+  assert.equal(discovery.items[0].id, accepted.id);
+  assert.equal(discovery.items[0].status, "model");
+  assert.equal((await second.client.chatMessages({ id: sessionId })).items[0].content, "Durable Extension input");
+  await assert.rejects(second.client.chatArchive({ id: sessionId, expectedRevision: 2, operationId: randomUUID() }),
+    error => error.code === "CONFLICT");
+  const cancelled = await second.client.chatCancel({ id: accepted.id, expectedRevision: discovery.items[0].revision,
+    operationId: randomUUID() });
+  assert.equal(cancelled.status, "cancelled");
+  gate.release();
+  await fixture.runtime.services.chatTurns.settled(managerActor.id, accepted.id);
+  assert.equal(provider.counts().modelCalls, 1);
+  assert.equal((await first.client.connect()).status, "connected");
+  const transcript = await first.client.chatMessages({ id: sessionId });
+  assert.deepEqual(transcript.items.map(message => [message.role, message.status]),
+    [["user", "complete"], ["assistant", "cancelled"]]);
+  const archived = await second.client.chatArchive({ id: sessionId, expectedRevision: transcript.revision,
+    operationId: randomUUID() });
+  assert.notEqual(archived.archivedAt, null);
+  assert.equal((await first.client.chatList({})).items.length, 0);
+  assert.equal((await first.client.chatList({ includeArchived: true })).items[0].id, sessionId);
+  assert.equal([...first.requests, ...second.requests].some(request => request.body.operation === "chat.session.append"), false);
+});
+
+test("typed Extension Chat retains exact mutation receipt identity when a successful server response is malformed", async t => {
+  const fixture = await nativeWorkspace(t);
+  let corrupted = false;
+  const { client } = await connect(t, fixture, managerActor, async (request, response) => {
+    if (!corrupted && request.method === "capability_call" && request.body?.operation === "chat.session.create") {
+      corrupted = true;
+      const envelope = await response.json();
+      envelope.result = { schema: "unexpected" };
+      return new Response(JSON.stringify(envelope), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return response;
+  });
+  const input = { id: randomUUID(), title: "Preserved receipt", operationId: randomUUID(), expectedRevision: 0 };
+  await assert.rejects(client.chatCreate(input), error => error.code === "INVALID_CHAT_RESPONSE" && error.effect === "unknown");
+  assert(client.state().pending.includes(input.operationId));
+  assert.equal((await client.retryMutation(input.operationId)).id, input.id);
+  assert.deepEqual(client.state().pending, []);
+  assert.equal((await client.chatList()).items.length, 1);
+});
 
 test("typed VS Code Manager starts two native workers over authenticated HTTP, queues pinned feedback without blocking siblings and accepts exact E2E evidence", async t => {
   const manager = syntheticManager("feature", 2, { hold: true, publish: true });

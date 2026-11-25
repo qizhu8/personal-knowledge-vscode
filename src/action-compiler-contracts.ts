@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { nativeActionModuleSnapshot } from "./action-module-bytes.js";
 
 export const ACTION_COMPILER_LIMITS = Object.freeze({
   inputBytes: 67_108_864,
@@ -25,9 +26,10 @@ const moduleSource = z.strictObject({
   files: z.record(z.string(), z.string()),
   enabled: z.boolean().optional(),
 });
-const source = z.discriminatedUnion("kind", [
+const source = z.union([
   z.strictObject({ kind: z.literal("inline"), definition: z.json() }),
   moduleSource,
+  nativeActionModuleSnapshot,
 ]);
 const diagnostic = z.strictObject({
   path: z.string(),
@@ -86,7 +88,7 @@ const compileResult = z.union([compiled, z.strictObject({
   diagnostics: z.array(diagnostic).min(1),
 })]);
 
-const projectInput = z.strictObject({ source: moduleSource });
+const projectInput = z.strictObject({ source: z.union([moduleSource, nativeActionModuleSnapshot]) });
 const moduleProjection = z.strictObject({
   module_set_id: z.string(),
   version: z.number().int().positive(),
@@ -98,7 +100,7 @@ const moduleProjection = z.strictObject({
 });
 const projectResult = z.strictObject({ ok: z.literal(true), module_sets: z.array(moduleProjection) });
 
-const graphInput = z.strictObject({ graph: z.json(), sourceModules: z.array(moduleSource).max(16).optional() });
+const graphInput = z.strictObject({ graph: z.json(), sourceModules: z.array(z.union([moduleSource, nativeActionModuleSnapshot])).max(16).optional() });
 const graphResult = z.union([
   z.strictObject({
     schema: z.literal("pkm.action.graph.compile/v1"),

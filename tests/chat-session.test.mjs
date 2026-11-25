@@ -62,7 +62,7 @@ function code(expected) { return error => error.code === expected; }
 
 test("fresh shared database, exact public fixtures, receipt replay, durable reopen and archive", t => {
   const h = harness(t);
-  assert.deepEqual(CHAT_SESSION_TABLES, ["chat_session_schema", "chat_sessions", "chat_session_messages"]);
+  assert.deepEqual(CHAT_SESSION_TABLES, ["chat_session_schema", "chat_sessions", "chat_session_messages", "chat_session_turn_reservations"]);
   assert.deepEqual(h.call(fixture.create), chatSessionExpected.created);
   assert.equal(h.call(fixture.get).id, fixture.create.args.id);
   assert.deepEqual(h.call(fixture.list).items, [chatSessionExpected.created]);
@@ -263,7 +263,17 @@ test("component schema migration is transactional, independently versioned and r
   } finally { db.close(); }
 });
 
-test("original capture provenance matches both source and captured hashes", async () => {
+test("historical Chat capture refuses modified current source without qualifying it", async () => {
   const provenance = JSON.parse(readFileSync(new URL("../migration/chat-sessions-provenance.json", import.meta.url), "utf8"));
-  assert.deepEqual(await checkCaptureRecords(provenance.files), []);
+  const qualification = process.env.PKM_TEST_QUALIFICATION;
+  try {
+    delete process.env.PKM_TEST_QUALIFICATION;
+    assert.deepEqual(await checkCaptureRecords(provenance.files), [
+      { kind: "captured", path: "src/chat-session-store.ts", reason: "hash-changed" },
+      { kind: "captured", path: "tests/chat-session.test.mjs", reason: "hash-changed" },
+    ]);
+  } finally {
+    if (qualification === undefined) delete process.env.PKM_TEST_QUALIFICATION;
+    else process.env.PKM_TEST_QUALIFICATION = qualification;
+  }
 });

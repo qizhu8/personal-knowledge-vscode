@@ -11,9 +11,11 @@ import type { Core } from "./core.js";
 import type { Actor } from "./contracts.js";
 import { createLegacyCapabilityDispatcher, legacyCapabilityRequest } from "./legacy-capability-mcp.js";
 import { runLegacyMcpPython } from "./legacy-mcp-python.js";
-import { scanMarkdown } from "./markdown.js";
+import { decodeMarkdownPath, readKnowledgePathSnapshot, scanMarkdown, sha256 } from "./markdown.js";
 import { readProjectRecipeSnapshot } from "./project-recipes.js";
 import { legacyKnowledgeTree, type LegacySnapshotFile } from "./legacy-knowledge-snapshot.js";
+import { readOriginalMcpJournal } from "./original-mcp-root-custody.js";
+import { originalMcpPublicRequestActive } from "./original-mcp-native-host.js";
 import { legacyKnowledgeWrite, legacyKnowledgeWriteRequest } from "./legacy-knowledge-write.js";
 import { createNativeLegacyNoteWorkItemsHost } from "./legacy-note-workitems.js";
 import { parseLegacyRouterConfig } from "./legacy-router-config.js";
@@ -45,6 +47,20 @@ import {
 import { registerLegacyChatroomContinuation, type LegacyChatroomContinuation } from "./legacy-chatroom-continuation.js";
 import type { LegacyChatroomRuntime } from "./legacy-chatroom-runtime.js";
 import type { LegacyApiChatRuntime } from "./legacy-api-chat-runtime.js";
+import { NativeMcpBackend } from "./native-public-mcp-backend.js";
+import type { FreshNoteQueryReply, LegacyNoteListArguments, LegacyNoteSearchArguments } from "./fresh-note-query-contracts.js";
+import { knowledgeReadPrivateTopLevels } from "./fresh-note-query-contracts.js";
+import {
+  buildLegacyInventoryView, legacyInventoryPage, normalizeLegacyList, projectLegacyNote,
+} from "./domain/legacy-note-query-original.js";
+
+const canonicalBackends = new WeakMap<NativeMcpBackend, { storage: Storage; core: Core; actor: Readonly<Actor> }>();
+export function assertLegacyNoteBackendBinding(backend: NativeMcpBackend, storage: Storage, core: Core, actor: Readonly<Actor>): void {
+  const bound = canonicalBackends.get(backend);
+  if (!bound || bound.storage !== storage || bound.core !== core || bound.actor.id !== actor.id
+    || bound.actor.canWrite !== actor.canWrite || bound.actor.boardWorker || actor.boardWorker)
+    throw new CoreError("ACCESS_DENIED", "The original public adapter requires its actual same-owner canonical backend and actor.");
+}
 
 const script = fileURLToPath(new URL("../compat/legacy-note-inventory.py", import.meta.url));
 export const legacyNoteInventoryArgs = z.strictObject({
@@ -73,6 +89,39 @@ const legacySnapshotWriteRequest = z.discriminatedUnion("tool", [
 export async function legacyNoteInventory(storage: Storage, args: z.infer<typeof legacyNoteInventoryArgs>): Promise<Record<string, unknown>> {
   return storage.withWorkspaceExclusive(async () => {
     storage.assertWorkspaceLease();
+    const root = storage.workspaceRoot(), privateTopLevels = knowledgeReadPrivateTopLevels(root, "notes");
+    if (privateTopLevels.size) {
+      const normalized = normalizeLegacyList(args);
+      if (privateTopLevels.has(normalized.directory.split("/")[0]!))
+        throw new CoreError("ACCESS_DENIED", "Original private Note directories remain archive-only.");
+      const visible = (path: string) => {
+        const parts = path.split("/");
+        return /\.md$/i.test(path) && !parts.some(part => part.startsWith(".") || part === "_assets" || /\.assets$/i.test(part))
+          && (!normalized.directory || path.startsWith(`${normalized.directory}/`))
+          && (normalized.recursive || !path.slice(normalized.directory ? normalized.directory.length + 1 : 0).includes("/"));
+      };
+      // The existing Root-bound snapshot denies private subtrees before stat/open/read.
+      // Never send this admitted Root to the unrestricted filesystem Python inventory.
+      const files = legacyKnowledgeTree(root, "notes", "", true);
+      if (normalized.directory && !files.some(file => file.directory && file.path === normalized.directory))
+        throw new CoreError("INVALID_ARGUMENT", "Notes directory was not found.");
+      const paths = new Set(files.map(file => file.path));
+      const rows = files.filter(file => !file.directory && visible(file.path)).map(file => {
+        const snapshot = readKnowledgePathSnapshot(root, file.path, "notes");
+        if (!snapshot.file) throw new CoreError("CONFLICT", "Notes changed during inventory; restart from offset 0.");
+        let raw: string;
+        try { raw = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(snapshot.file.bytes); }
+        catch { throw new CoreError("INVALID_DOCUMENT", "Note inventory requires valid UTF-8 Markdown."); }
+        return projectLegacyNote({
+          path: file.path, raw, mtimeNs: snapshot.file.mtimeNs, sha256: sha256(snapshot.file.bytes),
+          boardPresent: paths.has(`${file.path.slice(0, -3)}.assets/pkm-todo-board.json`),
+        }).row;
+      });
+      if (JSON.stringify(files) !== JSON.stringify(legacyKnowledgeTree(root, "notes", "", true)))
+        throw new CoreError("CONFLICT", "Notes changed during inventory; restart from offset 0.");
+      storage.assertWorkspaceLease();
+      return JSON.parse(legacyInventoryPage(buildLegacyInventoryView(rows, normalized), normalized));
+    }
     const result = await runLegacyMcpPython(script, [storage.workspaceRoot()], args);
     storage.assertWorkspaceLease();
     if (!result || typeof result !== "object" || Array.isArray(result))
@@ -81,10 +130,18 @@ export async function legacyNoteInventory(storage: Storage, args: z.infer<typeof
   });
 }
 
-export async function startLegacyNoteMcp(storage: Storage, transport: Transport = new StdioServerTransport(),
-  canonical?: { core: Core; actor: Actor; snapshotHost?: LegacyKnowledgeSnapshotHost; assetClassificationEnabled?: boolean;
+export interface LegacyNoteCanonical {
+  core: Core; actor: Actor; snapshotHost?: LegacyKnowledgeSnapshotHost; assetClassificationEnabled?: boolean;
     actionHost?: ReturnType<typeof createHostServices>; chatroomContinuation?: LegacyChatroomContinuation;
-    chatroomRuntime?: LegacyChatroomRuntime; apiChatRuntime?: LegacyApiChatRuntime },
+    chatroomRuntime?: LegacyChatroomRuntime; apiChatRuntime?: LegacyApiChatRuntime;
+    noteQuery?: {
+      list(arguments_: LegacyNoteListArguments): Promise<FreshNoteQueryReply | undefined>;
+      search(arguments_: LegacyNoteSearchArguments): Promise<FreshNoteQueryReply | undefined>;
+    };
+}
+
+export async function startLegacyNoteMcp(storage: Storage, transport: Transport = new StdioServerTransport(),
+  canonical?: LegacyNoteCanonical,
   control?: {
     allowTool(name: string): boolean;
     invoke<T>(name: string, work: () => T | Promise<T>): Promise<T>;
@@ -100,7 +157,32 @@ export async function startLegacyNoteMcp(storage: Storage, transport: Transport 
       return registered;
     }) as typeof server.registerTool;
   }
+  const backend = createLegacyNoteBackend(storage, canonical);
   if (canonical?.chatroomContinuation) registerLegacyChatroomContinuation(server, canonical.chatroomContinuation);
+  for (const [name, tool] of backend.tools) {
+    server.registerTool(name, {
+      description: tool.description, inputSchema: tool.inputSchema, annotations: tool.annotations,
+    }, async args => tool.invoke(args));
+  }
+  const closeServer = server.close.bind(server);
+  server.close = async () => { try { await closeServer(); } finally { await backend.close(); } };
+  server.server.onclose = () => {
+    const closing = backend.close();
+    if (control) control.trackWorkerClose(closing);
+    else void closing.catch(error => server.server.onerror?.(error));
+  };
+  try { await server.connect(transport); }
+  catch (error) { await backend.close(); throw error; }
+  return server;
+}
+
+export function createLegacyNoteBackend(storage: Storage, canonical?: LegacyNoteCanonical): NativeMcpBackend {
+  const server = new NativeMcpBackend();
+  if (canonical) {
+    canonicalBackends.set(server, { storage, core: canonical.core, actor: Object.freeze({ ...canonical.actor }) });
+    server.onClose(() => { canonicalBackends.delete(server); });
+  }
+  const archiveOnlyOriginal = !!readOriginalMcpJournal(storage.workspaceRoot());
   if (canonical?.apiChatRuntime) {
     const identity = { namespace: z.string().regex(/^[a-f0-9]{16}$/), chatId: z.string().uuid() };
     const reply = async (work: () => Promise<unknown>) => {
@@ -131,7 +213,11 @@ export async function startLegacyNoteMcp(storage: Storage, transport: Transport 
     inputSchema: legacyNoteInventoryArgs,
     annotations: { readOnlyHint: true },
   }, async args => {
-    const result = await legacyNoteInventory(storage, args);
+    const fresh = await canonical?.noteQuery?.list(args);
+    const value: unknown = fresh === undefined ? await legacyNoteInventory(storage, args) : JSON.parse(fresh.text);
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      throw new CoreError("INVALID_RESULT", "The private Note inventory returned an invalid original result.");
+    const result = z.record(z.string(), z.unknown()).parse(value);
     return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result };
   });
   if (canonical) {
@@ -292,19 +378,14 @@ export async function startLegacyNoteMcp(storage: Storage, transport: Transport 
         return { content: [{ type: "text", text }], structuredContent: { value, text } };
       });
     }
-    indexedWorker = new LegacyMcpPythonWorker(fileURLToPath(new URL("../compat/legacy-knowledge-mcp.py", import.meta.url)));
-    const ownedWorker = indexedWorker;
-    const closeServer = server.close.bind(server);
-    server.close = async () => {
-      try { await closeServer(); }
-      finally { await ownedWorker.close(); }
+    const executeWorker = (input: unknown) => {
+      indexedWorker ??= new LegacyMcpPythonWorker(fileURLToPath(new URL("../compat/legacy-knowledge-mcp.py", import.meta.url)));
+      return indexedWorker.execute(input);
     };
-    server.server.onclose = () => {
+    server.onClose(async () => {
       assetClassificationSession.close();
-      const closing = ownedWorker.close();
-      if (control) control.trackWorkerClose(closing);
-      else void closing.catch(error => server.server.onerror?.(error));
-    };
+      await indexedWorker?.close();
+    });
     const recoveryRead = legacyKnowledgeRecoveryRequest.options[0], recoveryWrite = legacyKnowledgeRecoveryRequest.options[1];
     server.registerTool("legacy_knowledge_recovery_preview", {
       description: "Exact original missing-only recovery preview against native host-approved immutable evidence and a fixed actor/root.",
@@ -347,7 +428,7 @@ export async function startLegacyNoteMcp(storage: Storage, transport: Transport 
           pages.push(page); offset = page.nextOffset; revision = page.revision;
         }
         return pages;
-      }, input => ownedWorker.execute(input), canonical.actor);
+      }, executeWorker, canonical.actor);
       return { content: [{ type: "text" as const, text: JSON.stringify(result) }], structuredContent: result };
     };
     server.registerTool("legacy_indexed_knowledge_read", {
@@ -372,7 +453,7 @@ export async function startLegacyNoteMcp(storage: Storage, transport: Transport 
     }, async args => {
       const snapshot = () => storage.withWorkspaceExclusive(() => {
         storage.assertWorkspaceLease();
-        const documents = scanMarkdown(storage.workspaceRoot()).filter(document => document.record.area === "notes");
+        const documents = scanMarkdown(storage.workspaceRoot(), { metadata: false }).filter(document => document.record.area === "notes");
         return JSON.stringify({
           documents: documents.map(document => ({ id: document.record.id, path: document.record.path, raw: document.raw })),
           resources: documents.flatMap(document => legacyKnowledgeTree(storage.workspaceRoot(), "notes",
@@ -437,9 +518,70 @@ export async function startLegacyNoteMcp(storage: Storage, transport: Transport 
         arguments: z.record(z.string(), z.unknown()),
       }),
       annotations: { readOnlyHint: true },
-    }, async args => storage.withWorkspaceExclusive(async () => {
+    }, async args => {
+      if (canonical.noteQuery && args.tool === "search_notes"
+        && (args.arguments.detail === undefined || args.arguments.detail === "legacy")
+        && (args.arguments.route === undefined || args.arguments.route === "lexical")) {
+        const query = z.string().parse(args.arguments.query);
+        const limit = args.arguments.limit === undefined ? undefined : z.number().int().parse(args.arguments.limit);
+        const fresh = await canonical.noteQuery.search({ query, ...(limit === undefined ? {} : { limit }) });
+        if (fresh !== undefined) {
+          const value: unknown = JSON.parse(fresh.text);
+          if (!Array.isArray(value)) throw new CoreError("INVALID_RESULT", "The private legacy Note search returned an invalid original result.");
+          const result = { value, text: fresh.text };
+          return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result };
+        }
+      }
+      return storage.withWorkspaceExclusive(async () => {
       storage.assertWorkspaceLease();
+      const identifier = args.arguments.id, slug = args.arguments.slug;
+      const pathKey = args.tool === "get_note" && (identifier === undefined || typeof identifier === "string")
+        && (slug === undefined || slug === null || typeof slug === "string")
+        && !(identifier && slug && identifier !== slug)
+        ? String(identifier || slug || "").trim() : "";
+      const scopedNote = !!pathKey && !/^(?:pkm:\/\/(?:knowledge|script|subscriptions)\/|knowledge_|script_)/.test(pathKey);
+      let firstNote: ReturnType<typeof readKnowledgePathSnapshot> | undefined;
+      let explicitBoard = false;
+      if (scopedNote) {
+        firstNote = readKnowledgePathSnapshot(storage.workspaceRoot(), `${pathKey}.md`, "notes", true);
+        if (firstNote.file) {
+          let raw: string;
+          try { raw = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(firstNote.file.bytes); }
+          catch { throw new CoreError("INVALID_DOCUMENT", "Markdown must be valid UTF-8."); }
+          decodeMarkdownPath(raw, `${pathKey}.md`);
+          explicitBoard = z.strictObject({ todoBoard: z.boolean() }).parse(await executeWorker({
+            tool: "get_note", arguments: args.arguments, noteReadDependencies: true,
+            files: [{ area: "notes", path: `${pathKey}.md`, raw }],
+          })).todoBoard;
+        }
+      }
+      function pathSnapshot(first = false) {
+        const path = `${pathKey}.md`, note = first ? firstNote!
+          : readKnowledgePathSnapshot(storage.workspaceRoot(), path, "notes", true);
+        const files: LegacySnapshotFile[] = [];
+        const readSet = [note.parents];
+        let recipes: ReturnType<typeof readProjectRecipeSnapshot> | undefined;
+        if (note.file) {
+          let raw: string;
+          try { raw = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(note.file.bytes); }
+          catch { throw new CoreError("INVALID_DOCUMENT", "Markdown must be valid UTF-8."); }
+          decodeMarkdownPath(raw, path);
+          files.push({ area: "notes", path, raw, pin: note.file.pin, mtimeNs: note.file.mtimeNs, size: note.file.size });
+          if (!explicitBoard) {
+            const boardPath = `${pathKey}.assets/pkm-todo-board.json`;
+            const board = readKnowledgePathSnapshot(storage.workspaceRoot(), boardPath, "notes");
+            readSet.push(board.parents);
+            if (board.file) files.push({ area: "notes", path: boardPath, raw: "", pin: board.file.pin,
+              mtimeNs: board.file.mtimeNs, size: board.file.size });
+            else if (!archiveOnlyOriginal || originalMcpPublicRequestActive(storage, args.tool, args.arguments))
+              recipes = readProjectRecipeSnapshot(storage.workspaceRoot(), { publication: true });
+          }
+        }
+        return { files, recipes: recipes?.recipes ?? [], recipeSnapshotRevision: recipes?.snapshotRevision,
+          subscriptionsPresent: false, readSet };
+      }
       function snapshot() {
+        if (scopedNote) return pathSnapshot();
         const noteTool = ["get_note", "search_notes"].includes(args.tool);
         const skillTool = ["list_skills", "get_skill", "search_skills", "skill_context", "skill_capabilities"].includes(args.tool);
         const subscriptionTool = args.tool.includes("subscri");
@@ -447,7 +589,7 @@ export async function startLegacyNoteMcp(storage: Storage, transport: Transport 
         const recipeTool = args.tool.startsWith("recipe_");
         const area = noteTool ? "notes" : skillTool ? "skills" : "papers";
         const documents = subscriptionTool || agentTool || recipeTool ? []
-          : scanMarkdown(storage.workspaceRoot()).filter(document => document.record.area === area);
+          : scanMarkdown(storage.workspaceRoot(), { metadata: false }).filter(document => document.record.area === area);
         const byPath = new Map(documents.map(document => [document.record.path, document]));
         const populatedFolders = new Set(documents.flatMap(document => {
           const parts = document.record.path.split("/");
@@ -499,8 +641,9 @@ export async function startLegacyNoteMcp(storage: Storage, transport: Transport 
               document.record.path.replace(/\.md$/i, ".assets"), true));
           return rows;
         });
-        const recipeSnapshot = args.tool === "get_note" || skillTool || args.tool === "recipe_search"
-          ? readProjectRecipeSnapshot(storage.workspaceRoot()) : undefined;
+        const recipeSnapshot = (!archiveOnlyOriginal || originalMcpPublicRequestActive(storage, args.tool, args.arguments))
+          && (args.tool === "get_note" || skillTool || args.tool === "recipe_search")
+          ? readProjectRecipeSnapshot(storage.workspaceRoot(), { publication: true }) : undefined;
         const subscriptions = join(storage.workspaceRoot(), "subscriptions");
         const subscriptionDirectory = skillTool || subscriptionTool || args.tool === "recipe_search"
           ? lstatSync(subscriptions, { throwIfNoEntry: false }) : undefined;
@@ -526,14 +669,27 @@ export async function startLegacyNoteMcp(storage: Storage, transport: Transport 
           subscriptionsPresent: (skillTool || subscriptionTool || args.tool === "recipe_search")
           && subscriptionDirectory !== undefined && readdirSync(subscriptions).length > 0 };
       }
-      const before = snapshot();
-      const result = z.strictObject({ value: z.json(), text: z.string() }).parse(await runLegacyMcpPython(
-        fileURLToPath(new URL("../compat/legacy-knowledge-mcp.py", import.meta.url)), [], { ...args, ...before }));
+      const before = scopedNote ? pathSnapshot(true) : snapshot();
+      const input = { ...args, ...before };
+      // Match the pinned Original MCP text reads without normalizing raw custody/CAS snapshots.
+      const parserInput = ["get_skill", "get_paper", "get_research"].includes(args.tool)
+        ? { ...input, files: input.files.map(file => file.raw === undefined ? file
+          : { ...file, raw: file.raw.replace(/\r\n?/g, "\n") }) } : input;
+      const result = z.strictObject({ value: z.json(), text: z.string() }).parse(
+        ["get_note", "search_notes"].includes(args.tool) ? await executeWorker(input)
+          : await runLegacyMcpPython(fileURLToPath(new URL("../compat/legacy-knowledge-mcp.py", import.meta.url)), [], parserInput));
       storage.assertWorkspaceLease();
-      if (JSON.stringify(before) !== JSON.stringify(snapshot()))
+      let after: ReturnType<typeof snapshot>;
+      try { after = snapshot(); }
+      catch (error) {
+        if (!scopedNote) throw error;
+        throw new CoreError("CONFLICT", "CONFLICT: Knowledge path or dependency changed during read.");
+      }
+      if (JSON.stringify(before) !== JSON.stringify(after))
         throw new Error("CONFLICT: Knowledge changed during read; retry against the current source.");
       return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result };
-    }));
+      });
+    });
     server.registerTool("legacy_subscription_share_markers", {
       description: "Local broker share markers through the fixed actor and authorized native subscription snapshot.",
       inputSchema: z.strictObject({
@@ -565,7 +721,5 @@ export async function startLegacyNoteMcp(storage: Storage, transport: Transport 
       });
     }
   }
-  try { await server.connect(transport); }
-  catch (error) { await indexedWorker?.close(); throw error; }
   return server;
 }

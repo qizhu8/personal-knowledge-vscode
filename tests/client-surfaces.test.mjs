@@ -360,9 +360,14 @@ test("workflow cancellation is version-gated and concurrent stale cancellation c
   assert.ok(events.items.some(item => item.kind === "created"));
   const firstCancel = { operationId: randomUUID(), runId: created.runId, expectedVersion: inspected.version };
   const secondCancel = { operationId: randomUUID(), runId: created.runId, expectedVersion: inspected.version };
+  const contenderProtocol = new ProtocolClient({ origin: f.http.url, operations: WORKFLOW_SURFACE_OPERATIONS });
+  contenderProtocol.authenticate(f.token);
+  await contenderProtocol.bootstrap();
+  t.after(() => contenderProtocol.dispose());
+  const contender = createWorkflowSurfaceClient(contenderProtocol);
   const outcomes = await Promise.all([
     f.client.workflowCancel(firstCancel),
-    f.client.workflowCancel(secondCancel).then(value => value, error => error),
+    contender.workflowCancel(secondCancel).then(value => value, error => error),
   ]);
   assert.equal(outcomes.filter(item => item?.state === "cancelled").length, 1);
   assert.equal(outcomes.filter(item => item?.code === "CONFLICT").length, 1);

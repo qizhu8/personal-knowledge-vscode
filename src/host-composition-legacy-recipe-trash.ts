@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
+import { workspaceRootForDatabase } from "./workspace-storage-paths.js";
 import type { DatabaseSync } from "node:sqlite";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { z } from "zod";
 import { CoreError, type Actor } from "./contracts.js";
 import { legacyRecipeTrashCommandSchema, type LegacyRecipeTrashEnvelope } from "./legacy-recipe-trash-contracts.js";
@@ -46,7 +47,7 @@ export function createNativeRecipeTrashHost(
     },
     verifyCallerHostFingerprint(envelope, binding) {
       const main = database.prepare("PRAGMA database_list").all().find(row => row.name === "main");
-      return !!main && resolve(dirname(String(main.file))) === resolve(binding.root)
+      return !!main && workspaceRootForDatabase(String(main.file)) === resolve(binding.root)
         && envelope.workspaceId === workspaceId && envelope.callerHostFingerprint === fingerprint(envelope, binding);
     },
     assertOperationAvailable(operationId) {

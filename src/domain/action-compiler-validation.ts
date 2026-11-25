@@ -2,13 +2,15 @@ import { createHash } from "node:crypto";
 import { ACTION_COMPILER_LIMITS as L } from "../action-compiler-contracts.js";
 import { ORIGINAL_ACTION_COMPILER_CAPTURE as C } from "./action-compiler-original.js";
 import { ACTION_SOURCE_IDENTITY } from "./action-source-identity.js";
+import { actionModuleFileBytes, nativeActionModuleSourceProtocol, type ActionModuleFileContent } from "../action-module-bytes.js";
 
 export type JsonRecord = Record<string, unknown>;
 export type ActionDiagnostic = {
   path: string; code: string; message: string; allowed_values?: string[]; missing_field?: string;
 };
 export type ActionModuleSnapshot = {
-  kind: "moduleSet"; manifest: unknown; files: Record<string, string>; enabled?: boolean;
+  kind: "moduleSet"; manifest: unknown; files: Record<string, ActionModuleFileContent>; enabled?: boolean;
+  fileEncoding?: typeof nativeActionModuleSourceProtocol;
 };
 export type LoadedModuleSet = {
   manifest: JsonRecord;
@@ -440,7 +442,7 @@ export function actionDefinitionDiagnostics(value: unknown): ActionDiagnostic[] 
   return schemaDiagnostics(definitionSchema, value);
 }
 
-function safeModuleMember(member: string): boolean {
+export function safeModuleMember(member: string): boolean {
   if (!member || member.includes("\\") || member.includes(":") || /[\x00-\x1f\x7f]/.test(member)) return false;
   const parts = member.split("/");
   if (parts.some(part => !part || part === "." || part === ".." || part.endsWith(" ") || part.endsWith(".")
@@ -448,7 +450,7 @@ function safeModuleMember(member: string): boolean {
   return true;
 }
 
-function validResourceReference(reference: unknown): boolean {
+export function validResourceReference(reference: unknown): boolean {
   if (typeof reference !== "string") return false;
   if (/^pkm:\/\/script\/script_[a-f0-9]{24}$/.test(reference)
     || /^pkm:\/\/knowledge\/(?:knowledge_[a-f0-9]{24}|action_(?:[a-f0-9]{24}|[a-f0-9]{32}))$/.test(reference)
@@ -482,6 +484,8 @@ function validResourceReference(reference: unknown): boolean {
 
 export function loadModuleSet(source: ActionModuleSnapshot): LoadedModuleSet {
   if (!isRecord(source.manifest) || !isRecord(source.files)) throw new TypeError("Invalid explicit ModuleSet snapshot.");
+  if (source.fileEncoding !== undefined && source.fileEncoding !== nativeActionModuleSourceProtocol)
+    throw new TypeError("Unsupported explicit ModuleSet file encoding.");
   const manifest = source.manifest;
   if (manifest.schema !== "pkm.action.module-set/v1"
     || typeof manifest.module_set_id !== "string" || !actionIdPattern.test(manifest.module_set_id)
@@ -498,6 +502,10 @@ export function loadModuleSet(source: ActionModuleSnapshot): LoadedModuleSet {
   }
   const fileDigests = manifest.files as JsonRecord;
   const names = Object.keys(source.files);
+  if (manifest.executables !== undefined && (!Array.isArray(manifest.executables)
+    || manifest.executables.some(member => typeof member !== "string" || !member.startsWith("assets/") || !names.includes(member))
+    || new Set(manifest.executables).size !== manifest.executables.length))
+    throw new TypeError("Invalid declared ModuleSet executable inventory.");
   const folded = new Set<string>();
   for (const name of ["manifest.json", ...names]) {
     if (!safeModuleMember(name)) throw new TypeError("Unsafe relative Action resource member.");
@@ -505,13 +513,14 @@ export function loadModuleSet(source: ActionModuleSnapshot): LoadedModuleSet {
     if (folded.has(key)) throw new TypeError("Case-insensitive package member collision: " + name);
     folded.add(key);
     if (name === "manifest.json") continue;
-    if (typeof source.files[name] !== "string" || typeof fileDigests[name] !== "string"
+    if (typeof source.files[name] !== "string" && source.fileEncoding !== nativeActionModuleSourceProtocol
+      || typeof fileDigests[name] !== "string"
       || !digestPattern.test(fileDigests[name] as string)) throw new TypeError("Invalid ModuleSet file digest: " + name);
-    const bytes = Buffer.byteLength(source.files[name]!, "utf8");
-    if (bytes > L.moduleFileBytes) throw new RangeError(`ModuleSet file exceeds ${L.moduleFileBytes} bytes.`);
-    if (sha256(source.files[name]!) !== fileDigests[name]) throw new TypeError("Installed ModuleSet file hash mismatch: " + name);
+    const bytes = actionModuleFileBytes(source.files[name]!);
+    if (bytes.length > L.moduleFileBytes) throw new RangeError(`ModuleSet file exceeds ${L.moduleFileBytes} bytes.`);
+    if (sha256(bytes) !== fileDigests[name]) throw new TypeError("Installed ModuleSet file hash mismatch: " + name);
   }
-  const totalBytes = names.reduce((total, name) => total + Buffer.byteLength(source.files[name]!, "utf8"), 0);
+  const totalBytes = names.reduce((total, name) => total + actionModuleFileBytes(source.files[name]!).length, 0);
   if (totalBytes > L.moduleBytes) throw new RangeError("ModuleSet exceeds 32 MiB.");
   const memberSet = new Set(["manifest.json", ...names].map(name => name.normalize("NFC").toLocaleLowerCase("en-US")));
   for (const name of names) {

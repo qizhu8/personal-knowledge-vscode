@@ -11,7 +11,7 @@ export const integration = Object.freeze({
   staticFiles: Object.freeze([
     "index.html", "bootstrap.mjs", "host-config.mjs", "protocol.mjs", "workspace.mjs", "workspace.css",
     "workflow-surfaces.mjs", "workflow-surfaces.css",
-    "knowledge-lifecycle.mjs", "knowledge-lifecycle.css",
+    "knowledge-lifecycle.mjs", "knowledge-lifecycle.css", "shared-management.mjs",
   ]),
   apiMethods: Object.freeze(["server_info", "capabilities_describe", "capability_read", "capability_call"]),
   apiPath: "/v1/",

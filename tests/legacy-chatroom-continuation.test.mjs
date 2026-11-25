@@ -109,7 +109,8 @@ test("real legacy history, interrupted resumable projection, real local HTTP con
   const request = { roomId: fixture.roomId, operationId: randomUUID(), expectedRevision: imported.session.revision, text: "Continue the ORCHID-47 discussion after the upgrade." };
   let failedAppend = false;
   h.setIntercept((operation, args) => {
-    if (!failedAppend && operation === "chat.session.append" && args.message.content.startsWith("LOCAL_FIXTURE_CONTINUATION")) {
+    if (!failedAppend && operation === "chat.turn.get"
+      && h.native.services.chatTurns.get(h.actor.id, args.id).status === "completed") {
       failedAppend = true; throw new Error("synthetic interruption after provider success");
     }
   });
@@ -193,7 +194,7 @@ test("real MCP child process death after provider success recovers from disk wit
     stderr = "";
     transport = new StdioClientTransport({
       command: process.execPath,
-      args: [join(project, "tests/next-trial-electron/in-place-server.cjs"), directory, h.root, join(project, "../"), nonce],
+      args: [resolve(import.meta.dirname, "legacy-chatroom-continuation-mcp-child.mjs"), directory, h.root, join(project, "../"), nonce],
       cwd: directory, stderr: "pipe", env: { ...process.env, PKM_IN_PLACE_PRIVATE_FIXTURE: nonce,
         ...(interrupt ? { PKM_CHAT_INTERRUPT_AFTER_PROVIDER: nonce } : {}) },
     });

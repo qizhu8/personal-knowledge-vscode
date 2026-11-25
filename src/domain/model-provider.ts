@@ -210,7 +210,7 @@ export async function* decodeModelSse(body: ReadableStream<Uint8Array>, wait: <T
     if (error instanceof ModelProviderError) throw error;
     throw new ModelProviderError("invalid-stream", "uncertain");
   } finally {
-    void reader.cancel().catch(() => {});
+    void wait(reader.cancel()).catch(() => {});
     reader.releaseLock();
   }
 }

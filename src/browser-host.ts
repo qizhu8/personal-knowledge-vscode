@@ -7,6 +7,7 @@ const manifestSchema = z.strictObject({
     z.literal("protocol.mjs"), z.literal("workspace.mjs"), z.literal("workspace.css"),
     z.literal("workflow-surfaces.mjs"), z.literal("workflow-surfaces.css"),
     z.literal("knowledge-lifecycle.mjs"), z.literal("knowledge-lifecycle.css"),
+    z.literal("shared-management.mjs"),
   ]),
   apiMethods: z.tuple([
     z.literal("server_info"), z.literal("capabilities_describe"), z.literal("capability_read"), z.literal("capability_call"),
@@ -27,5 +28,6 @@ export async function loadBrowserAssets() {
   const assets = new Map<string, Buffer>(await Promise.all(manifest.staticFiles.map(async name => [
     `/${name}`, await readFile(new URL(`../browser/${name}`, import.meta.url)),
   ] as const)));
+  assets.set("/shared-managed-client.mjs", await readFile(new URL("./shared-managed-client.js", import.meta.url)));
   return { assets, headers: manifest.staticHeaders };
 }

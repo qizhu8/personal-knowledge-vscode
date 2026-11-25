@@ -17,6 +17,7 @@ import {
 } from "./legacy-action-catalog.js";
 import { runLegacyMcpPython } from "./legacy-mcp-python.js";
 import { actionRuntimeDefinitions } from "./action-runtime-contracts.js";
+import { resolveActionExecutable } from "./action-program-build.js";
 
 export type LegacyActionRuntimeReader = (
   operation: "action.runtime.get",
@@ -39,6 +40,7 @@ const ddl = `
 CREATE TABLE legacy_action_mcp_proposals(proposal_id TEXT PRIMARY KEY,payload TEXT NOT NULL,payload_sha256 TEXT NOT NULL);
 CREATE TRIGGER legacy_action_mcp_proposals_no_update BEFORE UPDATE ON legacy_action_mcp_proposals BEGIN SELECT RAISE(ABORT,'original Action proposal immutable'); END;
 CREATE TRIGGER legacy_action_mcp_proposals_no_delete BEFORE DELETE ON legacy_action_mcp_proposals BEGIN SELECT RAISE(ABORT,'original Action proposal immutable'); END;`;
+export const legacyActionProposalDdl = ddl;
 
 export const legacyActionCapabilitiesRequest = z.strictObject({
   tool: z.literal("action_capabilities"), arguments: z.strictObject({}),
@@ -123,8 +125,20 @@ function checkDefinition(definition: Record<string, unknown>, sources: ActionMod
 }
 
 async function templateDefinition(actionId: string, parameters: Record<string, unknown>, sources: ActionModuleSnapshot[]) {
-  if (parameters.template_id === "azuredevops-pipeline-status")
-    throw new CoreError("NOT_AVAILABLE", "The host-specific Azure CLI template requires the original execution host and toolchain.");
+  if (parameters.template_id === "azuredevops-pipeline-status") {
+    const inputs = { organization: { type: "string", pattern: "^https://(?:dev\\.azure\\.com/[A-Za-z0-9_.-]+|[A-Za-z0-9_.-]+\\.visualstudio\\.com)/?$" },
+      project: { type: "string", minLength: 1, maxLength: 256 }, run_id: { type: "string", pattern: "^[0-9]{1,40}$" } };
+    const outputs = { remote_id: { type: "string" }, pipeline_id: { type: "string" }, observed_at: { type: "string" },
+      url: { type: "string" }, status: { type: "string" }, result: { type: ["string", "null"] }, terminal: { type: "boolean" }, tasks: { type: "array" } };
+    const script = fileURLToPath(new URL("../compat/legacy-action-azuredevops-query.py", import.meta.url));
+    return { schema: "pkm.action.definition/v1", action_id: actionId, version: 1,
+      description: "Explicit read-only Azure DevOps status; existing native host Azure CLI identity only. No install, login, queue, retry or credential export.",
+      effects: ["remote-read"], dependencies: {}, examples: [],
+      input_schema: { type: "object", properties: inputs, required: Object.keys(inputs), additionalProperties: false },
+      output_schema: { type: "object", properties: outputs, required: Object.keys(outputs), additionalProperties: false },
+      implementations: [{ id: "azure-cli", kind: "program", platforms: ["Linux", "Windows", "Darwin"],
+        program: resolveActionExecutable("python3"), args: [script], files: [script], result_protocol: "pkm.action.result/v1" }] };
+  }
   const monitoring = parameters.template_id === "monitor";
   const parametersWithoutKind = monitoring
     ? Object.fromEntries(Object.entries(parameters).filter(([key]) => key !== "template_id")) : parameters;
@@ -221,6 +235,9 @@ function rows(db: DatabaseSync, workspaceId: string) {
     return value.proposal;
   });
 }
+export function verifyLegacyActionProposals(database: DatabaseSync, workspaceId: string) {
+  return rows(database, workspaceId);
+}
 
 function assertActor(actor: Actor) {
   if (actor.id !== "mcp:external" || actor.boardWorker)
@@ -254,7 +271,8 @@ function blockedActionGet(definition: Record<string, unknown>) {
 export async function legacyActionRead(storage: Storage, actor: Actor,
   input: z.infer<typeof legacyActionReadRequest>, readActionRuntime?: LegacyActionRuntimeReader,
   readRegisteredAction?: (actor: Actor, actionId: string) => Promise<Record<string, unknown> | undefined>,
-  readActionResult?: (actor: Actor, runId: string) => Promise<Record<string, unknown> | undefined>): Promise<unknown> {
+  readActionResult?: (actor: Actor, runId: string) => Promise<Record<string, unknown> | undefined>,
+  additionalSources: ActionModuleSnapshot[] = []): Promise<unknown> {
   assertActor(actor);
   const request = legacyActionReadRequest.parse(input);
   if (request.tool === "action_run_get") {
@@ -289,7 +307,7 @@ export async function legacyActionRead(storage: Storage, actor: Actor,
     if (/^[\t-\r\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/u.test(task)
       || limit < 1 || limit > 10)
       throw new CoreError("INVALID_ARGUMENT", "A non-empty task and limit between 1 and 10 are required.");
-    const sources = await legacyActionCatalogSources(storage);
+    const sources = [...await legacyActionCatalogSources(storage), ...additionalSources];
     const definitions = [
       ...builtinActionDefinitions().values(),
       ...sources.flatMap(source => [...loadModuleSet(source).definitions.values()]),
@@ -342,21 +360,28 @@ export async function legacyActionRead(storage: Storage, actor: Actor,
       } finally { db.close(); }
     });
   }
-  const sources = await legacyActionCatalogSources(storage);
+  const sources = [...await legacyActionCatalogSources(storage), ...additionalSources];
   if (request.tool === "action_definition_check") {
-    return checkDefinition(request.arguments.definition, sources);
+    const checked = checkDefinition(request.arguments.definition, sources);
+    const current = await readRegisteredAction?.(actor, String(request.arguments.definition.action_id));
+    if (checked.ok && current && Number(request.arguments.definition.version) <= Number(current.version))
+      return { ...checked, ok: false, diagnostics: [{ path: "/version", code: "revision",
+        message: "Updating an Action requires a larger version." }], next_action: "fix_definition" };
+    return checked;
   }
   return graphDefinition(request.arguments.graph, sources);
 }
 
 export async function legacyActionWrite(storage: Storage, actor: Actor,
   input: z.infer<typeof legacyActionWriteRequest>,
-  admitProposal?: (actor: Actor, proposalId: string, contentHash: string) => boolean | Promise<boolean>): Promise<unknown> {
+  admitProposal?: (actor: Actor, proposalId: string, contentHash: string) => boolean | Promise<boolean>,
+  additionalSources: ActionModuleSnapshot[] = [], assertSources?: () => void): Promise<unknown> {
   assertActor(actor);
   if (!actor.canWrite) throw new CoreError("ACCESS_DENIED", "Original Action proposals require write permission.");
   const request = legacyActionWriteRequest.parse(input);
+  const inventory = [...await legacyActionCatalogSources(storage), ...additionalSources];
   const sources = request.tool === "action_register" && exactRunnableArtifactBuiltin(request.arguments.definition)
-    ? [] : await legacyActionCatalogSources(storage);
+    ? [] : inventory;
   const definition = request.tool === "action_register" ? request.arguments.definition
     : request.tool === "action_graph_save" ? graphDefinition(request.arguments.graph, sources)
       : await templateDefinition(request.arguments.action_id, request.arguments.parameters, sources);
@@ -375,8 +400,9 @@ export async function legacyActionWrite(storage: Storage, actor: Actor,
       let proposed!: z.infer<typeof proposal>;
       db.exec("BEGIN IMMEDIATE");
       try {
+        assertSources?.();
         const currentSources = readLegacyActionCatalogSources(db, workspaceId);
-        if (originalDigest(currentSources) !== originalDigest(sources))
+        if (originalDigest([...currentSources, ...additionalSources]) !== originalDigest(inventory))
           throw new CoreError("CONFLICT", "Action catalog changed before proposal publication.");
         if (currentSources.some(source => (source.manifest as { actions: unknown[] }).actions.includes(definition.action_id)))
           throw new CoreError("INVALID_ARGUMENT", "Unload the packaged provider before proposing a local definition with this identity.");

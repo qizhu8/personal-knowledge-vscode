@@ -45,6 +45,8 @@ export interface DataRuntimeRequest {
 }
 export interface DataRuntimeHost {
   namespace: string;
+  syncContent?: import("./sync-content.js").SyncContentAuthority;
+  withSyncContentReview?: (request: DataRuntimeRequest, work: () => Promise<unknown>) => Promise<unknown>;
   retrieval?: Omit<RetrievalRuntimeOptions, "database">;
   learning?: RetrievalLearningOptions;
   subscription?: {
@@ -174,7 +176,7 @@ export class DataRuntime {
     try {
       return serializeSyncApplyPlan(this.sync, {
         sessionId: String(request.args.sessionId), actorId: request.actorId, input: request.args.input,
-      });
+      }, { contentAuthority: this.options.host?.syncContent }, this.root);
     } catch (error) {
       if (error instanceof CoreError || !(error instanceof Error)) throw error;
       if (/Sync plan session not found/.test(error.message)) throw new CoreError("NOT_FOUND", error.message);
@@ -189,13 +191,21 @@ export class DataRuntime {
     this.check(); const request = this.parse(value), { operation, args, actorId } = request;
     if (operation === "knowledge.folder.lifecycle.preview" || operation === "knowledge.folder.lifecycle.promote-preview") return this.options.transaction(() =>
       readFolderLifecycle(this.root, scanMarkdown(this.root), request as FolderLifecycleRequest));
-    if (operation === "sync.apply.preview") return this.options.transaction(() => this.serializeSync(request));
+    if (operation === "sync.apply.preview") {
+      const work = async () => this.options.transaction(() => this.serializeSync(request));
+      return this.options.host?.withSyncContentReview ? this.options.host.withSyncContentReview(request, work) : work();
+    }
     if (operation === "retrieval.runtime.availability") return this.retrieval?.availability(this.scope(actorId)) ?? { available: false };
     if (operation === "retrieval.runtime.search") return this.engine().search(this.scope(actorId), args as unknown as Parameters<RetrievalRuntime["search"]>[1]);
     throw new CoreError("INVALID_ARGUMENT", "This data operation is not read-only.");
   }
   async mutate(value: DataRuntimeRequest): Promise<unknown> {
     this.check(); const request = this.parse(value);
+    if (request.operation === "sync.apply" && this.options.host?.withSyncContentReview && !this.receipt(request))
+      return this.options.host.withSyncContentReview(request, () => this.mutatePrepared(request));
+    return this.mutatePrepared(request);
+  }
+  private async mutatePrepared(request: DataRuntimeRequest): Promise<unknown> {
     const definition = definitions.find(item => item.id === request.operation)!;
     if (definition.readOnly) throw new CoreError("INVALID_ARGUMENT", "Read-only data operation cannot mutate.");
     if (request.operation === "subscription.materialize.apply") {
@@ -233,10 +243,12 @@ export class DataRuntime {
     if (operation === "sync.apply") {
       const plan = syncApplyPlanSchema.parse(JSON.parse(row.plan_json));
       if (plan.actorId !== actorId || plan.planHash !== args.expectedPlanHash
-        || JSON.stringify(serializeSyncApplyPlan(this.sync, { sessionId: String(args.sessionId), actorId, input: args.input })) !== row.plan_json) {
+        || JSON.stringify(serializeSyncApplyPlan(this.sync, { sessionId: String(args.sessionId), actorId, input: args.input },
+          { contentAuthority: this.options.host?.syncContent }, this.root)) !== row.plan_json) {
         fail("Sync intent no longer matches its persisted owner, source or decision pins.");
       }
       return applySyncPlan(this.sync, { sessionId: String(args.sessionId), actorId, input: args.input }, this.root, {
+        contentAuthority: this.options.host?.syncContent,
         beforeCommit: receipt => this.finish(request, receipt),
       });
     }
@@ -295,7 +307,7 @@ export class DataRuntime {
       } else if (request.operation === "sync.apply") {
         const plan = serializeSyncApplyPlan(this.sync, {
           sessionId: String(request.args.sessionId), actorId: request.actorId, input: request.args.input,
-        });
+        }, { contentAuthority: this.options.host?.syncContent }, this.root);
         if (JSON.stringify(plan) !== row.plan_json || plan.planHash !== request.args.expectedPlanHash) fail("Shared Sync recovery source/decision pins changed.");
       } else {
         if (!["retrieval.runtime.stage", "retrieval.runtime.qualify", "retrieval.runtime.activate"].includes(request.operation)

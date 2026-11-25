@@ -9,6 +9,7 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { createWorkspaceBackup, restoreWorkspaceBackup, WorkspaceBackupError } from "../dist/workspace-backup.js";
 import { initialize, Storage } from "../dist/storage.js";
+import { coreDatabasePath, codingProcessDatabasePath } from "../dist/workspace-storage-paths.js";
 
 const request = (operation, args) => ({ operation, args, actorId: "test:owner" });
 const nativeRestoreAuthority = {
@@ -54,6 +55,13 @@ test("quiescent backup and absent-destination restore preserve Markdown, assets,
     id: "receipt-note", operationId: randomUUID(), title: "Receipt fixture", content: "committed before WAL snapshot",
   });
   const receipt = await f.storage.request(createRequest);
+  const native = f.storage.connectNative();
+  try {
+    assert.equal(native.prepare("PRAGMA database_list").get().file, coreDatabasePath(f.source));
+    assert.equal(native.prepare("SELECT title FROM documents WHERE id=?").get("receipt-note").title, "Receipt fixture");
+    assert.equal(native.prepare("SELECT operation_id FROM receipts WHERE operation_id=?").get(createRequest.args.operationId).operation_id,
+      createRequest.args.operationId, "worker commits and owner connections must use the same durable database");
+  } finally { native.close(); }
   assert.equal(created.revision, 1);
   const assets = join(f.source, "notes", "synthetic-note.assets");
   await mkdir(assets);
@@ -69,6 +77,11 @@ test("quiescent backup and absent-destination restore preserve Markdown, assets,
   assert.equal(backup.workspaceId, identity);
   assert.equal(backup.fileCount, 5);
   const manifest = JSON.parse(await readFile(join(backupPath, ".pkm-workspace-backup.json"), "utf8"));
+  const snapshot = new DatabaseSync(coreDatabasePath(backupPath), { readOnly: true });
+  try {
+    assert.equal(snapshot.prepare("SELECT operation_id FROM receipts WHERE operation_id=?").get(createRequest.args.operationId).operation_id,
+      createRequest.args.operationId, "standalone backup must snapshot the database used by the worker");
+  } finally { snapshot.close(); }
   assert(!manifest.files.some(file => file.path === writerMarker));
   if (sourceWriterMarker) assert.deepEqual(await readFile(join(f.source, writerMarker)), sourceWriterMarker);
   if (process.platform !== "win32") {
@@ -106,6 +119,29 @@ test("quiescent backup and absent-destination restore preserve Markdown, assets,
   }
   await assert.rejects(restoreWorkspaceBackup(backupPath, restored), { code: "DESTINATION_EXISTS" });
   console.log(`WORKSPACE_BACKUP_RESULTS ${JSON.stringify({ backupMs, files: backup.fileCount, bytes: backup.totalBytes, restoreVerified: true })}`);
+});
+
+test("coding process journal stays separate and durable across native storage reopen", async t => {
+  const f = await workspace(t), ownerId = randomUUID();
+  const coding = f.storage.connectCodingProcess();
+  try {
+    assert.equal(coding.prepare("PRAGMA database_list").get().file, codingProcessDatabasePath(f.source));
+    assert.equal(coding.prepare("PRAGMA user_version").get().user_version, 1);
+    coding.prepare("INSERT INTO runtime_process_owner VALUES(1,?,1)").run(ownerId);
+  } finally { coding.close(); }
+  const native = f.storage.connectNative();
+  try {
+    assert.equal(native.prepare("SELECT 1 FROM runtime_process_owner WHERE owner_id=?").get(ownerId), undefined);
+  } finally { native.close(); }
+  await f.storage.close();
+  const reopened = await Storage.open(f.source);
+  try {
+    const journal = reopened.connectCodingProcess();
+    try { assert.equal(journal.prepare("SELECT owner_id FROM runtime_process_owner").get().owner_id, ownerId); }
+    finally { journal.close(); }
+    assert.equal((await lstat(coreDatabasePath(f.source))).isFile(), true);
+    assert.equal((await lstat(codingProcessDatabasePath(f.source))).isFile(), true);
+  } finally { await reopened.close(); }
 });
 
 test("restore accepts older manifests without Markdown times and rejects malformed time fields", { timeout: 20_000 }, async t => {

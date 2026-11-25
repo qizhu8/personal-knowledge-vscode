@@ -3,6 +3,8 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, rea
 import { dirname, join, relative, resolve } from "node:path";
 import { inspectLegacyChatroomTree } from "./legacy-chatroom-continuation.js";
 import { legacyPathHasNoSymlinks, legacyPrivateRootGuard, sameLegacyPrivateRoot } from "./legacy-effective-private-root.js";
+import { verifyNativeSyncRootContent } from "./sync-root-content-custody.js";
+import { coreDatabasePath } from "./workspace-storage-paths.js";
 
 const surfaces = new Map<string, "directory" | "file">([
   [".git", "directory"], [".gitignore", "file"], ["chatrooms", "directory"],
@@ -332,7 +334,7 @@ function validateCompletedRollbackArchive(root: string, name: string, maximumByt
 }
 
 export function inspectLegacyRootInertInventory(
-  root: string, limits: { maxEntries?: number; maxDepth?: number; maxTotalBytes?: number } = {},
+  root: string, limits: { maxEntries?: number; maxDepth?: number; maxTotalBytes?: number; nativeUserGit?: boolean } = {},
 ): LegacyRootInertInventory {
   if (resolve(root) !== root || realpathSync(root) !== root)
     fail(".", "Legacy root must be canonical and contain no symlink aliases.");
@@ -377,7 +379,7 @@ export function inspectLegacyRootInertInventory(
     if (before.dev !== after.dev || before.ino !== after.ino || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs)
       fail(prefix, "Legacy inert metadata directory changed during inventory.");
   };
-  const entries = [...surfaces];
+  const entries = [...surfaces].filter(([name]) => name !== ".git" || !limits.nativeUserGit);
   const archivePrefix = createHash("sha256").update(root).digest("hex").slice(0, 40) + ".";
   for (const name of readdirSync(root).sort()) {
     if (!name.startsWith(archivePrefix) || !name.endsWith(".postcommit")) continue;
@@ -395,8 +397,11 @@ export function inspectLegacyRootInertInventory(
     add(name);
     if (expected === "directory") {
       const managedMcp = name === "mcp-server" && readdirSync(path).length > 0;
-      if (name === "servers" && readdirSync(path).length)
-        fail(name, "Only the exact empty activation-created Chatroom/MCP/Server directories are retained inertly.");
+      if (name === "servers" && readdirSync(path).length) {
+        if (!lstatSync(coreDatabasePath(root), { throwIfNoEntry: false }))
+          fail(name, "Non-empty legacy Servers require genuine completed native Sync byte custody.");
+        verifyNativeSyncRootContent(root, "servers");
+      }
       if (managedMcp) validateManagedMcp(path, maxTotalBytes, maxEntries);
       visit(path, name, 1, managedMcp);
       if (name === "chatrooms" && readdirSync(path).length) {

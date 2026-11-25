@@ -68,7 +68,11 @@ export function createAgentRuntime(db: DatabaseSync, options: AgentRuntimeStoreO
     if (!claim) return store.get(context, id);
     let observation: AgentRuntimeObservation;
     try { observation = await host!.spawn({ ...invocation(context, id), task: claim.task }); }
-    catch { return store.get(context, id); }
+    catch (error) {
+      outside();
+      if (error instanceof AgentRuntimeError) throw error;
+      return store.get(context, id);
+    }
     outside();
     return apply(context, id, claim.record.revision, observation);
   }
@@ -84,6 +88,7 @@ export function createAgentRuntime(db: DatabaseSync, options: AgentRuntimeStoreO
       outside();
       return apply(context, id, binding.record.revision, observation);
     } catch (error) {
+      outside();
       if (error instanceof AgentRuntimeError) throw error;
       return store.get(context, id);
     }

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { coreDatabasePath } from "./workspace-storage-paths.js";
 import { constants } from "node:fs";
 import { lstat, open, realpath, link, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -44,7 +45,7 @@ export async function exportLegacyRootSqliteSnapshotExperimental(
       let stageIdentity: { dev: bigint; ino: bigint } | undefined;
       try {
         const main = source.prepare("PRAGMA database_list").all().find(row => row.name === "main");
-        if (!main?.file || await realpath(String(main.file)) !== join(root, "core.sqlite"))
+        if (!main?.file || await realpath(String(main.file)) !== coreDatabasePath(root))
           throw new Error("SQLite export source is not the selected workspace database.");
         const before = source.prepare("PRAGMA data_version").get()?.data_version;
         const handle = await open(stage, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);

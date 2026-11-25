@@ -116,11 +116,19 @@ export function managerChatFixture(t, options = {}) {
     ...options.composition,
   });
   const runtime = createManagerRuntime(db, { host: composition.host, leaseMs: 15000 });
+  const cleanups = [];
   const budget = { maxWorkers: count, maxConcurrentWorkers: 4 > count ? count : 4,
     maxTasks: count + 3, maxAttemptsPerTask: 2 };
   const start = runId => runtime.start(token, { operationId: randomUUID(), runId, projectId: "text-project", contract, budget });
-  t.after(async () => { await runtime.close(); await composition.close(); db.close(); });
+  t.after(async () => {
+    await runtime.close();
+    await until(() => provider.activity() === 0);
+    await composition.close();
+    for (const cleanup of cleanups.reverse()) await cleanup();
+    db.close();
+  });
   return { db, transaction, provider, contract, expected, compact, owner, token, composition, runtime, start, calls,
+    addCleanup: cleanup => cleanups.push(cleanup),
     peak: () => peak, version: value => { workspaceVersion = value; },
     terminal: runId => until(() => {
       const run = runtime.get(token, { runId });

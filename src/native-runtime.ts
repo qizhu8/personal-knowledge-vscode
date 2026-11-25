@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { codingProcessDatabasePath } from "./workspace-storage-paths.js";
 import { DatabaseSync } from "node:sqlite";
 import { CoreError, type Actor } from "./contracts.js";
 import type { StorageRequest } from "./contracts.js";
 import { Core, type NativeRuntimeDispatcher } from "./core.js";
-import { Storage } from "./storage.js";
+import { Storage, assertStorage } from "./storage.js";
 import { attachNativeSubscriptionHostIpc } from "./native-subscription-host-ipc.js";
 import { createNativeSubscriptionProfileService, readNativeSubscriptionProfile } from "./native-subscription-profile.js";
 import { readSubscriptions } from "./subscription-reads.js";
@@ -14,6 +15,7 @@ import { ModelConfigService } from "./model-config.js";
 import { ModelProviderService, type ModelProviderTransport } from "./model-provider.js";
 import { ChatTurnService } from "./chat-turn.js";
 import { ChatTurnStore, ChatTurnError } from "./chat-turn-store.js";
+import { createChatSessionStore, initializeChatSessionSchema } from "./chat-session-store.js";
 import { createChatTurnModelPort, createChatTurnToolPort } from "./chat-turn-adapters.js";
 import type { ApprovalBridgeReviewer } from "./approval-bridge-contracts.js";
 import { CHAT_TOOL_GATEWAY_OUTPUT_BYTES, type ToolApprovalBinding, type ToolGatewayBinding } from "./tool-gateway-contracts.js";
@@ -27,7 +29,7 @@ import { workflowExecutorDefinitions } from "./workflow-executor-contracts.js";
 import {
   createAgentRuntime, type AgentRuntimeHost, type AgentRuntimeOwnerToken,
 } from "./agent-runtime.js";
-import type { AgentRuntimeTask } from "./agent-runtime-contracts.js";
+import { agentRuntimeDefinitions, type AgentRuntimeTask } from "./agent-runtime-contracts.js";
 import type { AgentRuntimePinnedSnapshot, AgentRuntimeOwner } from "./agent-runtime-store.js";
 import { AgentRuntimeError } from "./domain/agent-runtime-policy.js";
 import { MemoryContextService, type MemoryContextDependencies } from "./memory-context.js";
@@ -62,6 +64,10 @@ import {
   legacyTrashDocuments, legacyTrashStageReceiptPath, LegacyTrashImportError, snapshotLegacyTrashTree,
 } from "./legacy-trash-import.js";
 import { deserializeTrashLifecyclePlan } from "./trash-lifecycle.js";
+import { assertNativeOriginalTrashPort, withNativeOriginalTrashContext, withApprovedOriginalTrashOperation,
+  originalTrashListResult, withOriginalTrashRecovery, type NativeOriginalTrashPort,
+  type OriginalTrashRecovery } from "./original-native-trash-native.js";
+import { readOriginalMcpJournal } from "./original-mcp-root-custody.js";
 import {
   createNativeLegacyTrashAccess, type NativeLegacyTrashPolicy,
 } from "./host-composition-legacy-trash.js";
@@ -216,6 +222,9 @@ function captureLegacyKnowledgeReadSnapshot(storage: Storage, operation: string,
 
 export interface NativeRuntimeOptions {
   storage: Storage;
+  originalTodoGenesisRecovery?: import("./original-mcp-todo-genesis-native.js").OriginalMcpTodoGenesisRecoveryScope;
+  privateResourcePublicationRecovery?: import("./private-resource-publication-native.js").PrivateResourcePublicationRecovery;
+  authorizeMemoryDecision?: NonNullable<ConstructorParameters<typeof Core>[1]>["authorizeMemoryDecision"];
   experimentalSubscriptionHost?: { profile: string };
   plugins?: PluginRuntime;
   legacySnapshots?: NativeLegacySnapshotPolicy;
@@ -245,6 +254,8 @@ export interface NativeRuntimeOptions {
     adapters: Readonly<Record<string, WorkflowStepAdapter>>;
     resolveRecipe?: ConstructorParameters<typeof WorkflowExecutor>[1]["resolveRecipe"];
     leaseMs?: number;
+    clock?: () => number;
+    authorizeTrigger?: ConstructorParameters<typeof WorkflowExecutor>[1]["authorizeTrigger"];
     process?: Omit<ProcessBridgeOptions, "database" | "workspaceRoot">;
   };
   hostConfig?: { json: string; dependencies: HostConfigDependencies };
@@ -270,7 +281,8 @@ export interface NativeRuntimeOptions {
   subscription?: Pick<RemoteSubscriptionOptions, "endpoint" | "stagingRoot" | "secrets" | "fetch" | "authorityForActor" | "nativePolicy" | "authorize">;
   subscriptionBundle?: NativeSubscriptionBundleAuthority;
   hostServices?: Pick<HostServicesOptions, "action" | "authorizeBackup" | "backupOptions">;
-  trash?: { layoutVersion: "pkm.trash-lifecycle/v1"; faultInjector?: (point: string) => void };
+  trash?: { layoutVersion: "pkm.trash-lifecycle/v1"; faultInjector?: (point: string) => void;
+    original?: NativeOriginalTrashPort; recovery?: OriginalTrashRecovery };
   legacyTrash?: NativeLegacyTrashPolicy;
   manager?: {
     ownerForActor(actorId: string): ManagerOwner;
@@ -290,7 +302,17 @@ export interface NativeRuntimeOptions {
  * The default is intentionally useful for data operations only: model, tool,
  * approval, embedding, workflow and Agent capabilities require explicit host injection.
  */
-export async function createNativeRuntime(options: NativeRuntimeOptions) {
+export async function createNativeRuntime(options: NativeRuntimeOptions): Promise<Awaited<ReturnType<typeof createNativeRuntimeInScope>>> {
+  assertStorage(options.storage);
+  if (options.privateResourcePublicationRecovery) {
+    const { privateResourcePublicationRecovery: recovery, ...prepared } = options;
+    const { withPrivateResourcePublicationRecovery } = await import("./private-resource-publication-native.js");
+    return withPrivateResourcePublicationRecovery(options.storage, recovery, () => createNativeRuntimeInScope(prepared));
+  }
+  return createNativeRuntimeInScope(options);
+}
+async function createNativeRuntimeInScope(options: NativeRuntimeOptions) {
+  assertStorage(options.storage);
   if (options.recipeTrash && typeof options.recipeTrash.authorize !== "function") {
     throw new CoreError("INVALID_CONFIGURATION", "Recipe trash requires an explicit native actor policy.");
   }
@@ -318,6 +340,10 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
     options = { ...options, ...buildHostConfigOptions(options.hostConfig.json, options.hostConfig.dependencies) };
   }
   const { storage } = options;
+  if (options.originalTodoGenesisRecovery) {
+    const { recoverOriginalMcpTodoGenesisWithScope } = await import("./original-mcp-todo-genesis-native.js");
+    await recoverOriginalMcpTodoGenesisWithScope(storage, options.originalTodoGenesisRecovery);
+  }
   const database = storage.connectNative();
   try { assertBatch16UnintegratedClear(database, false, undefined, !!options.batch16Classification, !!options.batch16Memory, !!options.originalClassification); }
   catch (error) { database.close(); throw error; }
@@ -480,6 +506,16 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
     close: () => data.close(),
   };
   const trashLayout = options.trash ?? (options.legacyTrash ? { layoutVersion: "pkm.trash-lifecycle/v1" as const } : undefined);
+  const originalTrashPort = options.trash?.original;
+  if (trashLayout && readOriginalMcpJournal(root) && !originalTrashPort)
+    throw new CoreError("NATIVE_AUTHORITY_REQUIRED", "A generic Trash layout or relocated-import policy is not original-root custody authority.");
+  let originalTrashRecovery = options.trash?.recovery;
+  if (originalTrashRecovery && !originalTrashPort)
+    throw new CoreError("NATIVE_AUTHORITY_REQUIRED", "Original Trash recovery requires its genuine current native producer.");
+  if (originalTrashPort) {
+    assertNativeOriginalTrashPort(originalTrashPort, storage);
+    if (options.legacyTrash) throw new CoreError("INVALID_CONFIGURATION", "Original in-place Trash cannot inherit relocated-import authority.");
+  }
   const migration = new MigrationRuntime({
     database, root, workspaceId, transaction, assertOperationAvailable, trash: trashLayout,
     fingerprint: request => digest({ operation: request.operation, actorId: request.actorId, args: request.args }),
@@ -491,20 +527,37 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
         record.sha256, record.path, record.area);
     },
   });
+  const recoverMigration = async () => {
+    const recovery = originalTrashRecovery;
+    if (recovery) {
+      originalTrashRecovery = undefined;
+      return withOriginalTrashRecovery(storage, recovery, () => migration.recover());
+    }
+    return migration.recover();
+  };
   const migrationServices = {
     read: (request: Parameters<MigrationRuntime["read"]>[0]) => storage.withWorkspaceExclusive(() => migration.read(request)),
-    mutate: (request: Parameters<MigrationRuntime["mutate"]>[0]) => storage.withWorkspaceExclusive(async () => {
-      if (legacyTrashHost) {
-        const inspected = await inspectLegacyTrashNative(legacyTrashHost.host);
-        if (request.operation === "knowledge.trash.restore"
-          && inspected.receipt.original.entries.some(entry => entry.runtimeId === request.args.entryId)) {
-          throw new CoreError("NOT_AVAILABLE", "Imported original Trash must use its receipt-aware knowledge.trash.restore.original operation.");
+    mutate: (request: Parameters<MigrationRuntime["mutate"]>[0]) => {
+      const perform = () => storage.withWorkspaceExclusive(async () => {
+        if (legacyTrashHost) {
+          const inspected = await inspectLegacyTrashNative(legacyTrashHost.host);
+          if (request.operation === "knowledge.trash.restore"
+            && inspected.receipt.original.entries.some(entry => entry.runtimeId === request.args.entryId)) {
+            throw new CoreError("NOT_AVAILABLE", "Imported original Trash must use its receipt-aware knowledge.trash.restore.original operation.");
+          }
         }
-      }
-      return migration.mutate(request);
-    }),
+        if (originalTrashPort && request.operation.startsWith("knowledge.trash.")
+          && database.prepare("SELECT 1 FROM migration_runtime_intents LIMIT 1").get())
+          throw new CoreError("RECOVERY_REQUIRED", "Pending original-root effects need their separate current native recovery approval.");
+        return migration.mutate(request);
+      });
+      return originalTrashPort && request.operation.startsWith("knowledge.trash.")
+        ? withNativeOriginalTrashContext(originalTrashPort, () =>
+          withApprovedOriginalTrashOperation(storage, request, perform))
+        : perform();
+    },
     inspectRecovery: () => storage.withWorkspaceExclusive(() => migration.inspectRecovery()),
-    recover: () => storage.withWorkspaceExclusive(() => migration.recover()),
+    recover: () => storage.withWorkspaceExclusive(recoverMigration),
   };
   let pendingLegacyTrashIndex: MarkdownRecord[] | undefined;
   const legacyTrashReconcileIndex = () => {
@@ -798,9 +851,9 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
     if (remoteRuntimePending(database) && !remote && !subscription && !subscriptionBundle)
       throw new CoreError("RECOVERY_CONFLICT", "Remote effects require explicitly configured native reconciliation.", "unknown");
     remote?.inspect();
-    if (options.modelConfig && options.providerTransport && options.toolCatalog?.length && options.reviewer) {
-      modelProvider = new ModelProviderService({ modelConfig: options.modelConfig, transport: options.providerTransport });
+    if (nativeConfigured || !readOriginalMcpJournal(root)) {
       const chatStore = new ChatTurnStore(database, {
+        session: createChatSessionStore(database).sessionTurns,
         receipt(receipt) {
           const prior = database.prepare("SELECT fingerprint,actor_id,operation FROM receipts WHERE operation_id=?")
             .get(receipt.operationId);
@@ -816,7 +869,10 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
           );
         },
       });
-      transaction(() => chatStore.initialize());
+      transaction(() => { initializeChatSessionSchema(database); chatStore.initialize(); });
+      chatTurns = new ChatTurnService({ store: chatStore, transaction });
+      if (options.modelConfig && options.providerTransport && options.toolCatalog?.length && options.reviewer) {
+      modelProvider = new ModelProviderService({ modelConfig: options.modelConfig, transport: options.providerTransport });
       const toolsPort = createChatTurnToolPort({
         workspaceId, storage: { read, transaction: fn => transaction(() => fn(database)) },
         reviewer: async request => { assertOwner(); const result = await options.reviewer!(request); assertOwner(); return result; },
@@ -845,6 +901,7 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
       approval = toolsPort;
       const guardedProvider = {
         get available() { return modelProvider!.available; },
+        activity: () => modelProvider!.activity(),
         get preDispatchAdmission() { return modelProvider!.preDispatchAdmission; },
         async *stream(request: Parameters<ModelProviderService["stream"]>[0], beforeDispatch?: () => void) {
           assertOwner();
@@ -856,6 +913,7 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
       };
       const model = createChatTurnModelPort(guardedProvider, { tools: (...args) => toolsPort.modelTools(...args) });
       chatTurns = new ChatTurnService({ store: chatStore, transaction, model, tools: toolsPort.tools });
+      }
     }
 
     if (options.workflow) {
@@ -880,6 +938,7 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
       }]));
       workflow = new WorkflowExecutor(database, {
         workspaceRoot: root, ownerId: uuid(), adapters, leaseMs: options.workflow.leaseMs, assertOwner,
+        clock: options.workflow.clock, authorizeTrigger: options.workflow.authorizeTrigger,
         ...(options.workflow.resolveRecipe ? { resolveRecipe: options.workflow.resolveRecipe } : {}),
       });
     }
@@ -1060,11 +1119,33 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
           throw new CoreError("INVALID_CONFIGURATION", "Invalid configured Agent task.");
         }
       }
+      const assertAgentOwner = (owner: Readonly<AgentRuntimeOwner>) => {
+        assertOwner();
+        const current = resolveAgentOwner(options.agents!, owner.actorId);
+        if (current.nativeOwnerId !== owner.nativeOwnerId)
+          throw new AgentRuntimeError("UNAUTHORIZED", "Native Agent owner authority changed.");
+      };
       const host: AgentRuntimeHost = {
-        resolveOwner(token) { return ownersByToken.get(token); },
-        spawn: request => track(async () => { assertOwner(); const result = await options.agents!.host.spawn(request); assertOwner(); return result; }),
-        inspect: request => track(async () => { assertOwner(); const result = await options.agents!.host.inspect(request); assertOwner(); return result; }),
-        cancel: request => track(async () => { assertOwner(); await options.agents!.host.cancel(request); assertOwner(); }),
+        resolveOwner(token) {
+          const owner = ownersByToken.get(token);
+          if (owner) assertAgentOwner(owner);
+          return owner;
+        },
+        spawn: request => track(async () => {
+          assertAgentOwner(request.owner);
+          try { return await options.agents!.host.spawn(request); }
+          finally { assertAgentOwner(request.owner); }
+        }),
+        inspect: request => track(async () => {
+          assertAgentOwner(request.owner);
+          try { return await options.agents!.host.inspect(request); }
+          finally { assertAgentOwner(request.owner); }
+        }),
+        cancel: request => track(async () => {
+          assertAgentOwner(request.owner);
+          try { await options.agents!.host.cancel(request); }
+          finally { assertAgentOwner(request.owner); }
+        }),
       };
       agentRuntime = createAgentRuntime(database, {
         tasks: options.agents.tasks, snapshots: options.agents.snapshots, host, assertOwner,
@@ -1091,7 +1172,7 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
       authorizeBackup(request) {
         assertOwner();
         inspectLegacyNoteWorkItemsState(database);
-        if (request.operation === "backup" && existsSync(join(root, "coding-process.sqlite")))
+        if (request.operation === "backup" && existsSync(codingProcessDatabasePath(root)))
           throw new CoreError("CODING_BACKUP_UNSUPPORTED", "Backup is refused before snapshot creation: the dedicated coding process journal requires multi-database qualification.");
         return options.hostServices?.authorizeBackup?.(request) ?? false;
       },
@@ -1122,6 +1203,7 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
         if (operation === "project.legacy.command") return !!options.legacyCommands;
         if (["knowledge.trash.list", "knowledge.trash.get", "knowledge.trash.restore.original",
           ...legacyTrashPurgeDefinitions.map(item => item.id)].includes(operation)) {
+          if (originalTrashPort && operation === "knowledge.trash.list") return !actor || actor.id === "mcp:external";
           if (!legacyTrashAccess || !legacyTrashHost) return false;
           if (!actor) return true;
           const policyOperation = operation.endsWith(".original") ? operation.slice(0, -".original".length) : operation;
@@ -1151,10 +1233,14 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
         if (operation === "manager.chat.artifacts") return !!managerChat;
         if (operation.startsWith("manager.")) return !!manager && (!actor || !options.coding || actor.id === options.coding.workspace.owner.actorId);
         if (migrationRuntimeDefinitions.some(item => item.id === operation)) return migration.available(operation);
-        if (operation.startsWith("chat.turn.")) return !!chatTurns?.available;
+        if (operation.startsWith("chat.turn.")) return operation === "chat.turn.start" ? !!chatTurns?.available : !!chatTurns;
         if (operation.startsWith("workflow.executor.")) return !!workflow;
-        if (operation.startsWith("agent.runtime.")) return !!agentRuntime
-          && ["agent.runtime.spawn", "agent.runtime.cancel", "agent.runtime.get", "agent.runtime.list"].includes(operation);
+        if (operation.startsWith("agent.runtime.")) {
+          if (!agentRuntime || !agentRuntimeDefinitions.some(item => item.id === operation)) return false;
+          try { if (actor) resolveAgentOwner(options.agents!, actor.id); }
+          catch { return false; }
+          return true;
+        }
         if (operation.startsWith("knowledge.folder.lifecycle.") || operation === "knowledge.folder.move" || operation === "knowledge.folder.promote-delete"
           || operation.startsWith("sync.apply.") || operation === "sync.apply"
           || operation.startsWith("retrieval.runtime.") || operation === "subscription.materialize.apply") {
@@ -1237,6 +1323,12 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
         }
         if (operation === "knowledge.trash.list" || operation === "knowledge.trash.get"
           || operation === "knowledge.trash.restore.original" || legacyTrashPurgeDefinitions.some(item => item.id === operation)) {
+          if (originalTrashPort && operation === "knowledge.trash.list") {
+            const request = { operation, actorId: actor.id, args };
+            return withNativeOriginalTrashContext(originalTrashPort, () =>
+              withApprovedOriginalTrashOperation(storage, request, async () =>
+                storage.withWorkspaceExclusive(() => originalTrashListResult(root, request))));
+          }
           if (!legacyTrashAccess || !legacyTrashHost) throw new CoreError("NOT_AVAILABLE", "Authenticated original trash import policy is unavailable.");
           try {
             if (legacyTrashPurgeDefinitions.some(item => item.id === operation)) {
@@ -1345,7 +1437,9 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
           return result;
         }
         if (migrationRuntimeDefinitions.some(item => item.id === operation)) {
-          return storage.withWorkspaceExclusive(() => migration.dispatch({ operation, args, actorId: actor.id }));
+          const request = { operation, actorId: actor.id, args };
+          return migrationRuntimeDefinitions.find(item => item.id === operation)!.readOnly
+            ? migrationServices.read(request) : migrationServices.mutate(request);
         }
         if (operation.startsWith("manager.")) {
           try {
@@ -1406,6 +1500,7 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
       },
     };
     core = new Core(storage, { modelConfig: options.modelConfig, nativeRuntime: dispatcher, recipeApi: options.recipeApi,
+       authorizeMemoryDecision: options.authorizeMemoryDecision,
       plugins: options.plugins, runPlugin: track,
       assertAdmission(request) {
         assertOwner();
@@ -1477,8 +1572,10 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
           if (closing) return;
           assertOwner();
           const current = workflow!.get(actorId, runId);
-          if (current.dispatchMode === "explicit") return;
+          if (!workflow!.autoDispatchAllowed(actorId, runId)) return;
           if (!["ready", "running"].includes(current.state)) return;
+          if (await workflow!.waitForDispatch(actorId, runId)) { count--; continue; }
+          if (closing) return;
           await workflow!.tick(actorId, runId);
         }
       };
@@ -1508,12 +1605,12 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
         if (subscription) read(() => inspectRemoteSubscriptionRecovery(database, workspaceId));
         await data.inspectRecovery(); await migration.inspectRecovery();
         await subscriptionBundle?.recoverPending();
-        await data.recover(); await migration.recover();
+        await data.recover(); await recoverMigration();
       });
     });
     verifyLegacyNoteWorkItemsWorkspace(database, root);
     if (!inspectLegacyInlineNoteFence(database)) await verifyInlineNoteWorkspace(database, root);
-    if (trashLayout) {
+    if (trashLayout && !originalTrashPort) {
       if (remoteRuntimePending(database)) await storage.validateTrash();
       else {
         assertOperationAvailable("native-trash-provision");
@@ -1543,7 +1640,7 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
     if (workflow && !sharedSourcePending) {
       for (const row of database.prepare("SELECT actor_id,run_id FROM workflow_executor_runs").all() as { actor_id: string; run_id: string }[]) {
         try {
-          if (workflow.get(row.actor_id, row.run_id).dispatchMode === "explicit") continue;
+          if (!workflow.autoDispatchAllowed(row.actor_id, row.run_id)) continue;
           const recovered = workflow.recover(row.actor_id, row.run_id);
           if (["ready", "running"].includes(recovered.state)) scheduleWorkflow(row.actor_id, row.run_id);
         } catch { /* Live leases and unreadable runs remain fenced. */ }
@@ -1567,6 +1664,26 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
     let closeTask: Promise<void> | undefined;
     return {
       core,
+      async enrollOriginalMcpTodoNoteSources(
+        host: import("./original-mcp-native-host.js").OriginalMcpNativeHost,
+        scope: import("./original-mcp-native-source-policy.js").OriginalMcpNativeTodoSourceScope,
+      ) {
+        if (!noteWorkItems || closing || quiescing)
+          throw new CoreError("NOT_AVAILABLE", "Current original Todo Note bridge is unavailable.");
+        return storage.withWorkspaceExclusive(async () => {
+          assertOwner();
+          storage.assertNoPendingLegacyNoteWorkItems();
+          await noteWorkItems.admitOriginalMcpTodoSources(host, scope);
+        });
+      },
+      async enrollOriginalMcpTodoNoteGenesis(host: import("./original-mcp-native-host.js").OriginalMcpNativeHost, slug: string) {
+        if (!noteWorkItems || closing || quiescing)
+          throw new CoreError("NOT_AVAILABLE", "Current original Todo Note bridge is unavailable.");
+        return storage.withWorkspaceExclusive(() => {
+          assertOwner(); storage.assertNoPendingLegacyNoteWorkItems();
+          noteWorkItems.admitOriginalMcpTodoGenesisSource(host, slug);
+        });
+      },
       batch16Memory,
       acquireWorkspaceQuiescence,
       services: { modelProvider, chatTurns, approval, workflow, agentRuntime, manager, managerProgress, managerChat, hostServices, coding, channel, portal, remote, subscription, subscriptionBundle,
@@ -1607,29 +1724,36 @@ export async function createNativeRuntime(options: NativeRuntimeOptions) {
       },
     };
   } catch (error) {
-    await subscriptionHostIpc?.close();
-    portal?.dispose();
-    closePortalConnections();
     closing = true;
-    channel?.dispose();
-    const stopped = await Promise.allSettled([
-      Promise.resolve().then(() => manager?.close()), Promise.resolve().then(() => workflow?.close()),
-      Promise.resolve().then(() => process?.close()), Promise.resolve().then(() => chatTurns?.close()),
-      Promise.resolve().then(() => options.agents?.host.close?.()),
-      Promise.resolve().then(() => managerChat?.close()), Promise.resolve().then(() => hostServices?.close()),
-      Promise.resolve().then(() => coding?.native.close()), Promise.resolve().then(() => channel?.drain()),
-      Promise.resolve().then(() => remote?.close()), Promise.resolve().then(() => subscription?.close()),
-      Promise.resolve().then(() => subscriptionBundle?.close()),
-      Promise.resolve().then(() => options.plugins?.close()),
-    ]);
-    await Promise.allSettled([...nativeTasks]);
-    await Promise.allSettled(workflowTasks);
-    const undrained = stopped.find(item => item.status === "rejected");
-    if (undrained?.status === "rejected") throw undrained.reason;
-    data.close();
-    migration.close();
-    codingProcess?.close();
-    database.close();
+    const cleanup = async () => {
+      await subscriptionHostIpc?.close();
+      portal?.dispose();
+      closePortalConnections();
+      channel?.dispose();
+      const stopped = await Promise.allSettled([
+        Promise.resolve().then(() => manager?.close()), Promise.resolve().then(() => workflow?.close()),
+        Promise.resolve().then(() => process?.close()), Promise.resolve().then(() => chatTurns?.close()),
+        Promise.resolve().then(() => options.agents?.host.close?.()),
+        Promise.resolve().then(() => managerChat?.close()), Promise.resolve().then(() => hostServices?.close()),
+        Promise.resolve().then(() => coding?.native.close()), Promise.resolve().then(() => channel?.drain()),
+        Promise.resolve().then(() => remote?.close()), Promise.resolve().then(() => subscription?.close()),
+        Promise.resolve().then(() => subscriptionBundle?.close()),
+        Promise.resolve().then(() => options.plugins?.close()),
+      ]);
+      await Promise.allSettled([...nativeTasks]);
+      await Promise.allSettled(workflowTasks);
+      const undrained = stopped.find(item => item.status === "rejected");
+      if (undrained?.status === "rejected") throw undrained.reason;
+      data.close();
+      migration.close();
+      codingProcess?.close();
+      database.close();
+    };
+    try { await cleanup(); }
+    catch (cleanupError) {
+      storage.retainNativeCleanup({ release: cleanup });
+      throw cleanupError;
+    }
     throw error;
   }
 }
@@ -1639,6 +1763,8 @@ function dispatchChat(service: ChatTurnService, operation: string, args: JsonRec
     switch (operation) {
       case "chat.turn.start": return service.start(actor.id, args);
       case "chat.turn.get": return service.get(actor.id, String(args.id));
+      case "chat.turn.list": return service.list(actor.id, String(args.sessionId),
+        args.after === undefined ? undefined : String(args.after), args.limit === undefined ? 20 : Number(args.limit));
       case "chat.turn.events": return service.events(actor.id, String(args.id), Number(args.after), Number(args.limit));
       case "chat.turn.cancel": return service.cancel(actor.id, args);
       default: throw new CoreError("NOT_FOUND", "Unknown Chat turn operation.");
@@ -1658,7 +1784,8 @@ function dispatchWorkflow(
   commitReceipt: (operationId: string, fingerprint: string, actorId: string, operation: string, result: unknown) => void,
   schedule: (actorId: string, runId: string) => void,
 ) {
-  if (operation === "workflow.executor.get") return readWorkflowExecutor(executor, { operation, actorId: actor.id, args });
+  if (operation === "workflow.executor.get" || operation === "workflow.executor.outputs")
+    return readWorkflowExecutor(executor, { operation, actorId: actor.id, args });
   if (operation !== "workflow.executor.create" && operation !== "workflow.executor.cancel") {
     throw new CoreError("NOT_FOUND", "Unknown workflow executor operation.");
   }
@@ -1684,23 +1811,33 @@ function dispatchWorkflow(
   return result;
 }
 
-function dispatchAgent(
+function resolveAgentOwner(config: NonNullable<NativeRuntimeOptions["agents"]>, actorId: string): AgentRuntimeOwner {
+  const owner = config.ownerForActor(actorId);
+  if (!owner || owner.actorId !== actorId || typeof owner.nativeOwnerId !== "string" || !owner.nativeOwnerId) {
+    throw new AgentRuntimeError("UNAUTHORIZED", "Native Agent owner does not match the authenticated actor.");
+  }
+  return Object.freeze({ actorId: owner.actorId, nativeOwnerId: owner.nativeOwnerId });
+}
+
+async function dispatchAgent(
   runtime: ReturnType<typeof createAgentRuntime>, operation: string, args: JsonRecord, actor: Actor,
   config: NonNullable<NativeRuntimeOptions["agents"]>, tokens: Map<string, AgentRuntimeOwnerToken>,
   owners: WeakMap<object, AgentRuntimeOwner>, database: DatabaseSync,
 ) {
   const tokenForActor = (actorId: string) => {
+    const owner = resolveAgentOwner(config, actorId);
     let token = tokens.get(actorId);
-    if (!token) {
-      const owner = config.ownerForActor(actorId);
-      if (owner.actorId !== actorId) throw new CoreError("ACCESS_DENIED", "Native Agent owner does not match the authenticated actor.");
+    if (!token || owners.get(token)?.nativeOwnerId !== owner.nativeOwnerId) {
+      if (token) owners.delete(token);
       token = Object.freeze({});
       owners.set(token, owner); tokens.set(actorId, token);
     }
     return token;
   };
   try {
-    if (operation === "agent.runtime.spawn" || operation === "agent.runtime.cancel") {
+    const token = tokenForActor(actor.id);
+    if (operation === "agent.runtime.spawn" || operation === "agent.runtime.cancel"
+      || operation === "agent.runtime.restore" || operation === "agent.runtime.reconnect") {
       const operationId = String(args.opId);
       const fingerprint = digest({ operation, actorId: actor.id, args });
       const prior = database.prepare("SELECT fingerprint,actor_id,operation,result FROM receipts WHERE operation_id=?").get(operationId);
@@ -1709,20 +1846,28 @@ function dispatchAgent(
           throw new CoreError("CONFLICT", "Global operationId belongs to a different request or actor.");
         }
         const stored = JSON.parse(String(prior.result)) as { receipt: { rootId: string }; session: unknown };
-        return { receipt: stored.receipt, session: runtime.get(tokenForActor(actor.id), { id: stored.receipt.rootId }) };
+        const session = runtime.get(token, { id: stored.receipt.rootId });
+        return operation === "agent.runtime.reconnect" ? session : { receipt: stored.receipt, session };
       }
     }
     switch (operation) {
-      case "agent.runtime.spawn": return runtime.spawn(tokenForActor(actor.id), args as never);
-      case "agent.runtime.cancel": return runtime.cancel(tokenForActor(actor.id), args as never);
-      case "agent.runtime.get": return runtime.get(tokenForActor(actor.id), args);
-      case "agent.runtime.list": return runtime.list(tokenForActor(actor.id), args);
-      default: throw new CoreError("NOT_FOUND", "Agent reconnect/restore are host-only.");
+      case "agent.runtime.spawn": return await runtime.spawn(token, args as never);
+      case "agent.runtime.cancel": return await runtime.cancel(token, args as never);
+      case "agent.runtime.restore": return await runtime.restore(token, args as never);
+      case "agent.runtime.reconnect": return await runtime.reconnect(token, args);
+      case "agent.runtime.get": return runtime.get(token, args);
+      case "agent.runtime.list": return runtime.list(token, args);
+      default: throw new CoreError("NOT_FOUND", "Unknown native Agent operation.");
     }
   } catch (error) {
     if (error instanceof AgentRuntimeError) {
-      const code = error.code === "NOT_FOUND" ? "NOT_FOUND" : error.code === "UNAUTHORIZED" ? "ACCESS_DENIED" : "INVALID_ARGUMENT";
-      throw new CoreError(code, error.message);
+      const code = error.code === "NOT_FOUND" ? "NOT_FOUND"
+        : ["UNAUTHORIZED", "SNAPSHOT_DENIED", "POLICY_DENIED", "POLICY_CHANGED"].includes(error.code) ? "ACCESS_DENIED"
+        : ["REVISION_CONFLICT", "OPERATION_CONFLICT"].includes(error.code) ? "CONFLICT" : "INVALID_ARGUMENT";
+      const committed = typeof args.opId === "string" && database.prepare(
+        "SELECT 1 FROM receipts WHERE operation_id=? AND fingerprint=? AND actor_id=? AND operation=?",
+      ).get(args.opId, digest({ operation, actorId: actor.id, args }), actor.id, operation);
+      throw new CoreError(code, error.message, committed ? "unknown" : "not-committed");
     }
     throw error;
   }

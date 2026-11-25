@@ -84,6 +84,7 @@ export function createChatTurnChainFixture(options = {}) {
       assert.equal(request.operation, "knowledge.document.create");
       assert.equal(request.actorId, "chain-actor");
       toolEffects++;
+      if (options.onEffect) await options.onEffect(request);
       if (options.unknown) throw new Error("Synthetic connection loss after possible effect.");
       if (options.safeFailure) throw new CoreError("CONFLICT", "private error detail", "not-committed");
       const { id, title, content } = request.args;
@@ -95,7 +96,8 @@ export function createChatTurnChainFixture(options = {}) {
   fixture = chatTurnFixture({
     ...options,
     model: createChatTurnModelPort(modelProvider, { tools: (...args) => native.modelTools(...args) }),
-    tools: { available: true, execute: request => native.tools.execute(request) },
+    tools: { available: true, execute: request => native.tools.execute(request),
+      activity: () => native.tools.activity() },
   });
   fixture.transaction(() => fixture.db.exec(`CREATE TABLE IF NOT EXISTS synthetic_chain_documents(
     id TEXT PRIMARY KEY,title TEXT,content TEXT,operation_id TEXT UNIQUE)`));

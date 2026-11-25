@@ -9,11 +9,19 @@
   "main": "./dist/extension.cjs",
   "files": ["dist/**", "next-runtime/**", "README.md", "LICENSE"],
   "activationEvents": [
+    "onStartupFinished",
     "onMcpCollection:pkm-v5",
     "onCommand:pkm.next.connect",
     "onCommand:pkm.next.disconnect",
     "onCommand:pkm.nextHost.open",
     "onCommand:pkm.nextHost.setToken",
+    "onCommand:pkm.nextHost.enrollNativeIdentity",
+    "onCommand:pkm.nextHost.attachNativeProducer",
+    "onCommand:personalKnowledge.originalPortalTaskRerun",
+    "onCommand:personalKnowledge.originalPortalEndpointSettings",
+    "onCommand:pkm.nextHost.reenrollModelCredential",
+    "onCommand:pkm.nextHost.enableNativeModels",
+    "onCommand:pkm.nextHost.enableNativeActions",
     "onCommand:pkm.nextHost.importPreview",
     "onCommand:pkm.nextHost.importConfirm",
     "onCommand:pkm.nextHost.migrationConnect",
@@ -32,10 +40,27 @@
       { "id": "pkm-v5", "label": "pkm-v5" }
     ],
     "commands": [
+      { "command": "pkm.nextHost.setSharedToken", "title": "pkm-v5 (Experimental): Store Shared Business Token" },
+      { "command": "pkm.nextHost.setSharedManagementToken", "title": "pkm-v5 (Experimental): Store Separate Shared Management Token" },
+      { "command": "pkm.nextHost.sharedStatus", "title": "pkm-v5 (Experimental): Shared Server Status" },
+      { "command": "pkm.nextHost.sharedSwitch", "title": "pkm-v5 (Experimental): Apply Shared Generation Selection" },
+      { "command": "pkm.nextHost.sharedRecover", "title": "pkm-v5 (Experimental): Recover Shared Backend Without Replay" },
+      { "command": "pkm.nextHost.sharedCleanupRuntime", "title": "pkm-v5 (Experimental): Clean Inactive Shared Runtime Bytes" },
+      { "command": "pkm.nextHost.sharedResetIndex", "title": "pkm-v5 (Experimental): Reset Derived Shared Fresh-Note Index Only" },
+      { "command": "pkm.nextHost.sharedReconcile", "title": "pkm-v5 (Experimental): Acknowledge Reviewed Unknown Shared Receipt Without Replay" },
+      { "command": "pkm.nextHost.sharedRevokeAccess", "title": "pkm-v5 (Experimental): Revoke Current Business Access for ALL Shared Clients" },
+      { "command": "pkm.nextHost.sharedHumanReview", "title": "pkm-v5 (Experimental): Approve Separate Native Human Review Enrollment" },
       { "command": "pkm.next.connect", "title": "pkm-v5 (Experimental): Connect" },
       { "command": "pkm.next.disconnect", "title": "pkm-v5 (Experimental): Disconnect" },
       { "command": "pkm.nextHost.open", "title": "pkm-v5 (Experimental): Open" },
       { "command": "pkm.nextHost.setToken", "title": "pkm-v5 (Experimental): Store Token" },
+      { "command": "pkm.nextHost.enrollNativeIdentity", "title": "pkm-v5 (Experimental): Enroll Separate Native Identity" },
+      { "command": "pkm.nextHost.attachNativeProducer", "title": "pkm-v5 (Experimental): Attach Native Producer" },
+      { "command": "personalKnowledge.originalPortalTaskRerun", "title": "pkm-v5: Start Independently Approved Portal Manual Attempt" },
+      { "command": "personalKnowledge.originalPortalEndpointSettings", "title": "pkm-v5: Configure Current Native Portal Endpoints" },
+      { "command": "pkm.nextHost.reenrollModelCredential", "title": "pkm-v5 (Experimental): Re-enroll Native Model Credential" },
+      { "command": "pkm.nextHost.enableNativeModels", "title": "pkm-v5 (Experimental): Enable Native VS Code Models" },
+      { "command": "pkm.nextHost.enableNativeActions", "title": "pkm-v5 (Experimental): Enable Separate Native Action Approvals" },
       { "command": "pkm.nextHost.importPreview", "title": "pkm-v5 (Experimental): Preview First-Run Import" },
       { "command": "pkm.nextHost.importConfirm", "title": "pkm-v5 (Experimental): Confirm Inspected Import" },
       { "command": "pkm.nextHost.migrationConnect", "title": "pkm-v5 (Experimental): Connect Isolated Managed MCP" },
@@ -52,6 +77,18 @@
     "configuration": {
       "title": "pkm-v5 Experimental Host",
       "properties": {
+        "pkm.nextHost.sharedServer": {
+          "type": "object", "scope": "machine", "default": { "enabled": false },
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "backendKind": { "type": "string", "enum": ["native-public-mcp", "standalone-core"], "default": "native-public-mcp", "description": "Explicit admitted protocol kind. Core serves real standalone HTML/Chat and canonical MCP; native public remains reduced knowledge-only." },
+            "origin": { "type": "string", "description": "Independently provisioned stable loopback manager origin." },
+            "serviceId": { "type": "string", "description": "Independently provisioned persistent shared service UUID." },
+            "generation": { "type": "string", "description": "Exact already-staged compatible isolated generation. Changing this prompts management approval and hands off all enrolled clients without extension reload." }
+          },
+          "description": "Explicit isolated shared backend. standalone-core uses an immutable native model/tool policy and real Core HTTP/HTML/MCP; native-public-mcp is reduced knowledge-only. Neither claims original 151-operation parity or production/legacy switching. Conflicts with managedRoot, original enrollment and productionCoordinator. Business and separate management secrets are stored using the corresponding commands."
+        },
         "pkm.nextHost.productionCoordinator": {
           "type": "object", "scope": "machine", "default": { "enabled": false },
           "additionalProperties": false,

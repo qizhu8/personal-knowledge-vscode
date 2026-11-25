@@ -16,6 +16,7 @@ import { syncPlanCreateFixture } from "./sync-plan-fixture.mjs";
 import { originalActionCompilerFixtures } from "./action-compiler-original-fixtures.mjs";
 import { loadCollaborationModules, actors, mutation } from "./collaboration-state-fixtures.mjs";
 import { Storage } from "../dist/storage.js";
+import { coreDatabasePath } from "../dist/workspace-storage-paths.js";
 
 const cli = resolve("dist/cli.js");
 const adapter = fileURLToPath(new URL("./batch04-adapter-child.mjs", import.meta.url));
@@ -147,7 +148,7 @@ test("Batch 04 public operations share HTTP/MCP receipts, actor isolation and du
   const { data } = await workspace(t);
   const initialStorage = await Storage.open(data);
   await initialStorage.close();
-  const database = new DatabaseSync(join(data, "core.sqlite"));
+  const database = new DatabaseSync(coreDatabasePath(data));
   assert.equal(Number(database.prepare("PRAGMA user_version").get().user_version), 23);
   const collaboration = await loadCollaborationModules();
   const state = new collaboration.store.CollaborationStateStore(database, {

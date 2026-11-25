@@ -70,6 +70,32 @@ test("actual gateway/Core uncertain effect remains unknown, durable execution is
   assert.deepEqual(f.counts(), { modelCalls: 1, toolEffects: 1 });
 });
 
+test("cancelled Chat retains ignored-abort Core effect until actual retirement without overwriting terminal state", async t => {
+  let release, entered;
+  const ready = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  const f = createChatTurnChainFixture({ onEffect: async () => { entered(); await gate; } });
+  t.after(() => f.db.close());
+  const input = chatTurnInput();
+  f.service.start("chain-actor", input);
+  await ready;
+  const current = f.service.get("chain-actor", input.id);
+  f.service.cancel("chain-actor", { id: input.id, expectedRevision: current.revision, operationId: randomUUID() });
+  const terminal = await f.service.settled("chain-actor", input.id);
+  assert.equal(terminal.status, "cancelled");
+  assert.equal(terminal.uncertain, true);
+  assert.ok(f.native.tools.activity() > 0);
+  assert.ok(f.service.activity().active > 0);
+  await assert.rejects(f.service.close(), { code: "EFFECTS_NOT_RETIRED" });
+  release();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.service.activity().active, 0);
+  assert.deepEqual(f.service.get("chain-actor", input.id), terminal);
+  assert.deepEqual(f.counts(), { modelCalls: 1, toolEffects: 1 });
+  assert.equal(f.db.prepare("SELECT count(*) AS n FROM synthetic_chain_documents").get().n, 1);
+  await f.service.close();
+});
+
 for (const [label, toolContent, expectToolLimit] of [
   ["multibyte", "汉".repeat(12000), false],
   ["near-boundary multibyte", "汉".repeat(15800), false],

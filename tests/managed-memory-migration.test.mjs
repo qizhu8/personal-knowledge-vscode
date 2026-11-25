@@ -551,13 +551,13 @@ with sqlite3.connect(sys.argv[1]) as db:
     }, true), /native|decision|authoriz|unavailable|not available/i);
     return { importedScopeActivated: false };
   };
-  const stage = async data => {
-    const generation = await stageIsolatedManagedGeneration({ managedRoot, data, allowWrites: true, python,
+  const stage = async (data, targetManagedRoot = managedRoot) => {
+    const generation = await stageIsolatedManagedGeneration({ managedRoot: targetManagedRoot, data, allowWrites: true, python,
       ...(schedulerArtifactsEnabled && data === destination ? { snapshotScheduler: schedulerArtifacts.snapshotScheduler } : {}),
       modelDependencies: modelEnabled, maxPythonDependencyBytes: modelEnabled ? 2 * 1024 ** 3 : 512 * 1024 ** 2 });
     assert.equal(generation.pythonDependencyProfile, modelEnabled ? "local-model" : "fastmcp");
     if (modelEnabled) {
-      const pins = JSON.parse(await readFile(join(managedRoot, "generations", generation.generation, "python-dependencies.json"), "utf8"));
+      const pins = JSON.parse(await readFile(join(targetManagedRoot, "generations", generation.generation, "python-dependencies.json"), "utf8"));
       assert.equal(pins.requirementsSha256, sha(await readFile(join(repositoryRoot, "resources/retrieval-model-requirements.txt"))));
       assert.equal(pins.distributions.torch.version, "2.6.0+cpu");
       assert.match(pins.distributions.transformers.version, /^4\./);
@@ -575,7 +575,7 @@ assert all(pathlib.Path(p).is_relative_to(root) for p in origins.values()),origi
 assert not any("site-packages" in p and pathlib.Path(p).resolve()!=root for p in sys.path),sys.path
 assert torch.version.cuda is None
 print(json.dumps({"origins":origins,"isolated":bool(sys.flags.isolated),"noSite":bool(sys.flags.no_site),"cpuProduct":(torch.tensor([[1.,2.]])@torch.tensor([[3.],[4.]])).tolist()}))
-`, join(managedRoot, "generations", generation.generation, "runtime/site-packages")],
+`, join(targetManagedRoot, "generations", generation.generation, "runtime/site-packages")],
         { encoding: "utf8", env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } }));
         assert.equal(probe.isolated, true); assert.equal(probe.noSite, true);
         assert.deepEqual(probe.cpuProduct, [[11]]);
@@ -770,16 +770,20 @@ print(json.dumps({"origins":origins,"isolated":bool(sys.flags.isolated),"noSite"
   const restoredReceipt = await restoreWorkspaceBackup(backup, restored, { nativeRestoreAuthority, pythonExecutable: python });
   assert.equal(restoredReceipt.workspaceId, backedUp.workspaceId);
   assert.notEqual(memoryScope(restored), scope);
-  const relocated = await stage(restored);
+  await assert.rejects(stage(restored), /Managed runtime cannot change its durable workspace identity/);
+  const restoredManagedRoot = join(parent, "relocated", "managed-restored");
+  const relocated = await stage(restored, restoredManagedRoot);
   if (process.env.PKM_MANAGED_ACCEPTANCE_COPY_SIGNAL)
     await writeFile(process.env.PKM_MANAGED_ACCEPTANCE_COPY_SIGNAL, JSON.stringify({
-      managedRoot, generations: [first.generation, second.generation, relocated.generation],
+      managedRoot, restoredManagedRoot,
+      generationRoots: [managedRoot, managedRoot, restoredManagedRoot],
+      generations: [first.generation, second.generation, relocated.generation],
       runtimeBuilds: [first.runtimeBuild, second.runtimeBuild, relocated.runtimeBuild],
     }) + "\n", { flag: "wx" });
   assert.notEqual(relocated.runtimeBuild, second.runtimeBuild, "Pinned launcher data location changes after explicit relocation");
-  await publishIsolatedManagedGeneration(managedRoot, relocated.generation);
-  await verifyIsolatedManagedGeneration(managedRoot, relocated.generation);
-  const restoredConnection = await connect(managedRoot);
+  await publishIsolatedManagedGeneration(restoredManagedRoot, relocated.generation);
+  await verifyIsolatedManagedGeneration(restoredManagedRoot, relocated.generation);
+  const restoredConnection = await connect(restoredManagedRoot);
   assert.equal(restoredConnection.generation, relocated.generation);
   await checkBoardRecovery(restoredConnection, restored);
   await checkActionSnapshots(restoredConnection, restored);
@@ -812,6 +816,7 @@ print(json.dumps({"origins":origins,"isolated":bool(sys.flags.isolated),"noSite"
   }
   for (const suffix of ["-wal", "-shm"]) await assert.rejects(lstat(database + suffix), { code: "ENOENT" });
   await assert.rejects(readdir(join(managedRoot, "instances")), { code: "ENOENT" });
+  await assert.rejects(readdir(join(restoredManagedRoot, "instances")), { code: "ENOENT" });
   console.log("MANAGED_MEMORY_MIGRATION_OK", JSON.stringify({
     experimental: true, productionCutover: false, completeFeatureDomains: false,
     importOwned: true, scopeContinuityExplicit: true, originalSourcesUnchanged: true,

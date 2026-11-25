@@ -14,6 +14,7 @@ export type ChatTurnModelEvent =
   | { type: "finish"; reason: "stop" | "tool_calls" | "length" };
 export interface ChatTurnModelPort {
   readonly available: boolean;
+  activity?(): number;
   readonly imageInput?: boolean;
   readonly preDispatchAdmission?: boolean;
   stream(request: {
@@ -25,10 +26,13 @@ export interface ChatTurnModelPort {
 }
 export interface ChatTurnToolPort {
   readonly available: boolean;
+  activity?(): number;
   execute(request: {
     actor: string; turnId: string; call: ChatTurnCall; operationId: string; signal: AbortSignal;
     onApproval: (event: { executionId: string; status: "pending" | "approved" | "denied" }) => void;
-  }): Promise<{ content: string; executionId: string; resultStatus?: "complete" | "failed" }>;
+  }): Promise<{ content: string; executionId: string; resultStatus?: "complete" | "failed";
+    evidence?: { operation: string; operationId: string; executionId: string;
+      resource?: { kind: "manager-run"; id: string } } }>;
 }
 export class ChatTurnToolError extends Error {
   constructor(readonly effect: "not-committed" | "committed" | "unknown", readonly code = "TOOL_FAILED") {
@@ -84,6 +88,7 @@ const callId = (value: string) => typeof value === "string" && /^[A-Za-z0-9][A-Z
 
 export class ChatTurnService {
   private readonly active = new Map<string, { controller: AbortController; done: Promise<void> }>();
+  private readonly outstanding = new Set<Promise<unknown>>();
   private closing?: Promise<void>;
   private readonly now: () => number;
   private closed = false;
@@ -97,8 +102,23 @@ export class ChatTurnService {
     if (result && typeof (result as { then?: unknown }).then === "function") throw new ChatTurnError("ASYNC_TRANSACTION_FORBIDDEN");
     return result;
   }
+  private track<T>(value: PromiseLike<T>): Promise<T> {
+    const pending = Promise.resolve(value);
+    this.outstanding.add(pending);
+    void pending.then(() => this.outstanding.delete(pending), () => this.outstanding.delete(pending));
+    return pending;
+  }
   get(actor: string, id: string) { return this.dependencies.store.get(actor, id); }
   events(actor: string, id: string, after = 0, limit = 20) { return this.dependencies.store.events(actor, id, after, limit); }
+  list(actor: string, sessionId: string, after?: string, limit = 20) {
+    if (!this.dependencies.store.list) throw new ChatTurnError("UNSUPPORTED_OPERATION");
+    return this.dependencies.store.list(actor, sessionId, after, limit);
+  }
+  activity() {
+    return { active: Math.max(this.active.size, this.dependencies.store.interrupted().length, this.outstanding.size,
+      this.dependencies.model?.activity?.() ?? 0, this.dependencies.tools?.activity?.() ?? 0),
+      uncertain: this.dependencies.store.uncertain?.() ?? 0 };
+  }
   start(actor: string, input: unknown): ChatTurnRecord {
     if (this.closed) throw new ChatTurnError("SERVICE_CLOSED");
     chatTurnActor(actor);
@@ -146,13 +166,22 @@ export class ChatTurnService {
       },
     )));
   }
+  closeAdmission(): void {
+    this.closed = true;
+    for (const item of this.active.values()) item.controller.abort("closed");
+  }
   close(): Promise<void> {
     if (this.closing) return this.closing;
-    this.closed = true;
+    this.closeAdmission();
     const active = [...this.active.values()];
     this.closing = Promise.resolve().then(async () => {
-      for (const item of active) item.controller.abort("closed");
       await Promise.all(active.map(item => item.done));
+      // Allow cooperative abort handlers to unwind without waiting for genuinely outstanding effects.
+      await new Promise<void>(resolve => setImmediate(resolve));
+      if (this.activity().active) throw new ChatTurnError("EFFECTS_NOT_RETIRED");
+    }).catch(error => {
+      if (error instanceof ChatTurnError && error.code === "EFFECTS_NOT_RETIRED") this.closing = undefined;
+      throw error;
     });
     return this.closing;
   }
@@ -205,7 +234,7 @@ export class ChatTurnService {
         const calls: ChatTurnCall[] = [];
         const seen = new Set(current.messages.flatMap(message => message.tool_calls?.map(call => call.id) ?? []));
         for (;;) {
-          const next = await abortable(iterator.next(), signal);
+          const next = await abortable(this.track(iterator.next()), signal);
           check();
           if (next.done) break;
           const event = next.value;
@@ -273,7 +302,7 @@ export class ChatTurnService {
           });
           phase = "tool";
           check();
-          const result = await abortable(this.dependencies.tools.execute({
+          const result = await abortable(this.track(this.dependencies.tools.execute({
             actor, turnId: id, call: structuredClone(call), operationId, signal,
             onApproval: event => {
               check();
@@ -283,7 +312,7 @@ export class ChatTurnService {
                 record.status = event.status === "pending" ? "approval" : "tool";
               });
             },
-          }), signal);
+          })), signal);
           check();
           if (!callId(result.executionId)) throw new ChatTurnError("INVALID_TOOL_RESULT");
           // Original Chat reports an oversized result to the model as a failed tool result instead of aborting.
@@ -291,8 +320,17 @@ export class ChatTurnService {
             throw new ChatTurnError("INVALID_TOOL_RESULT");
           const invalidContent = typeof result.content !== "string" || result.content.length > 16000;
           const content = invalidContent ? JSON.stringify({ error: "Tool result exceeded the local limit." }) : result.content;
+          if (result.evidence) {
+            boundedJson(result.evidence, 4096);
+            if (!callId(result.evidence.operation) || !callId(result.evidence.executionId)
+              || result.evidence.executionId !== result.executionId || result.evidence.operationId !== operationId
+              || result.evidence.resource && (result.evidence.resource.kind !== "manager-run" || !callId(result.evidence.resource.id))) {
+              throw new ChatTurnError("INVALID_TOOL_EVIDENCE");
+            }
+          }
           this.change(actor, id, "tool-complete", { executionId: result.executionId, callId: call.id,
-            resultStatus: invalidContent ? "failed" : result.resultStatus ?? "complete" }, record => {
+            resultStatus: invalidContent ? "failed" : result.resultStatus ?? "complete",
+            ...(result.evidence ? { evidence: result.evidence } : {}) }, record => {
             record.messages.push({ role: "tool", tool_call_id: call.id, content });
             record.pendingTool = null; record.status = "model";
           });
@@ -314,7 +352,7 @@ export class ChatTurnService {
       controller.abort("settled");
       // Never await an uncooperative provider's return() after cancellation.
       if (iterator?.return) {
-        try { void Promise.resolve(iterator.return()).catch(() => undefined); }
+        try { void this.track(iterator.return()).catch(() => undefined); }
         catch { /* An uncooperative native iterator cannot alter durable settlement. */ }
       }
     }

@@ -1,8 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { rm, readFile, writeFile, readdir, mkdir, rename, symlink, lstat, stat, utimes } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { syncBuiltinESMExports } from "node:module";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { initialize, Storage } from "../dist/storage.js";
@@ -43,6 +45,145 @@ test("Markdown scanning preserves unchanged records and detects same-size edits 
   assert.notEqual(second[0], third[0]);
   assert.equal(third[0].record.content, "after!");
 });
+
+test("metadata-free Markdown snapshots preserve records, complex YAML, Unicode and rich metadata isolation", async t => {
+  const { directory } = await fixture(t);
+  const files = [
+    ["notes", "Nested/复杂.md", "---\n# Preserve metadata comments\ndocumentId: rich-note\n"
+      + "title: 复杂 🧪\nrevision: 3\ncustom: &custom\n  nested: [first, {unknown: true}]\n"
+      + "description: |\n  Unknown attributes\n  stay intact.\n---\nUnicode body 中文 🧪\n"],
+    ["skills", "Unicode.md", "\uFEFF---\ntitle: BOM stays original\n---\nUnicode body 中文\n"],
+    ["papers", "研究.md", "---\ndocumentId: rich-paper\ntitle: Research\n"
+      + "unknown:\n  nested:\n    - null\n    - [one, two]\n---\nPaper body\n"],
+  ];
+  for (const [area, path, raw] of files) {
+    await mkdir(dirname(join(directory, area, path)), { recursive: true });
+    await writeFile(join(directory, area, path), raw);
+  }
+  const snapshot = scanMarkdown(directory, { metadata: false });
+  const rich = scanMarkdown(directory);
+  const project = values => values.map(({ record, raw }) => ({ record, raw }));
+  assert.deepEqual(snapshot, project(rich));
+  assert.deepEqual(scanMarkdown(directory, { metadata: false }), snapshot);
+  assert(Object.isFrozen(snapshot));
+  for (const item of snapshot) {
+    assert(!Object.hasOwn(item, "metadata"));
+    assert(Object.isFrozen(item));
+    assert(Object.isFrozen(item.record));
+    assert.equal(item.record.sha256, sha256(item.raw));
+    assert.throws(() => { item.record.title = "Must not mutate the snapshot"; }, TypeError);
+  }
+  const original = rich.find(item => item.record.id === "rich-note");
+  assert.match(original.metadata.toString(), /# Preserve metadata comments/);
+  assert.match(original.metadata.toString(), /&custom/);
+  original.metadata.get("custom").set("nested", ["local mutation"]);
+  original.metadata.set("title", "Local mutation");
+  const current = scanMarkdown(directory);
+  assert.equal(current.find(item => item.record.id === "rich-note").record.title, "复杂 🧪");
+  assert.deepEqual(current.find(item => item.record.id === "rich-note").metadata.toJS().custom,
+    { nested: ["first", { unknown: true }] });
+  assert.deepEqual(scanMarkdown(directory, { metadata: false }), project(current));
+  for (const [area, path, raw] of files) assert.equal(await readFile(join(directory, area, path), "utf8"), raw);
+});
+
+test("metadata-free Markdown snapshots retain format, identity, membership and path validation", async t => {
+  const { directory } = await fixture(t);
+  const file = join(directory, "notes", "Example.md");
+  const valid = "---\ndocumentId: projection-note\ntitle: Before\n---\nBefore\n";
+  await writeFile(file, valid);
+  await utimes(file, 1_700_000_000, 1_700_000_000);
+  const original = scanMarkdown(directory, { metadata: false });
+  const timestamp = await stat(file);
+  const before = await stat(file, { bigint: true });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  await writeFile(file, valid.replaceAll("Before", "After!"));
+  await utimes(file, timestamp.atime, timestamp.mtime);
+  const after = await stat(file, { bigint: true });
+  assert.equal(after.mtimeNs, before.mtimeNs);
+  assert.notEqual(after.ctimeNs, before.ctimeNs);
+  const updated = scanMarkdown(directory, { metadata: false });
+  assert.equal(updated[0].record.content, "After!\n");
+  assert.notEqual(updated[0].record.sha256, original[0].record.sha256);
+  const failure = scan => {
+    let result;
+    assert.throws(scan, error => { result = { code: error.code, message: error.message }; return true; });
+    return result;
+  };
+  const bothFail = () => assert.deepEqual(
+    failure(() => scanMarkdown(directory, { metadata: false })), failure(() => scanMarkdown(directory)));
+  for (const raw of [
+    Buffer.from([0xff, 0xfe, 0x61]),
+    "---\ntitle: Unclosed\n",
+    "---\ntitle: First\ntitle: Duplicate\n---\nBody",
+    "---\ncustom: &custom [one, two]\ncopy: *custom\n---\nBody",
+  ]) {
+    await writeFile(file, raw);
+    bothFail();
+  }
+  await writeFile(file, valid);
+  await mkdir(join(directory, "skills"));
+  await writeFile(join(directory, "skills", "Duplicate.md"), valid);
+  bothFail();
+  await rm(join(directory, "skills", "Duplicate.md"));
+  await writeFile(join(directory, "skills", "Added.md"), "Added Skill\n");
+  await mkdir(join(directory, "papers"));
+  await writeFile(join(directory, "papers", "Added.md"), "Added Paper\n");
+  assert.deepEqual(scanMarkdown(directory, { metadata: false }),
+    scanMarkdown(directory).map(({ record, raw }) => ({ record, raw })));
+  assert.equal(scanMarkdown(directory, { metadata: false }).length, 3);
+  await rm(join(directory, "papers", "Added.md"));
+  assert.equal(scanMarkdown(directory, { metadata: false }).length, 2);
+  await symlink(file, join(directory, "notes", "Link.md"));
+  bothFail();
+  await rm(join(directory, "notes", "Link.md"));
+  await mkdir(join(directory, "notes", ".hidden"));
+  await writeFile(join(directory, "notes", ".hidden", "Unsafe.md"), "Hidden Note\n");
+  bothFail();
+});
+
+for (const mode of ["rich", "snapshot"]) {
+  test(`${mode} Markdown cache checks fresh content when the entire stat fingerprint is unchanged`, async t => {
+    const { directory } = await fixture(t);
+    const file = join(directory, "notes", "SameFingerprint.md");
+    const original = "---\ndocumentId: cache-a\ntitle: Before\nrevision: 1\n---\nBefore\n";
+    const changed = original.replaceAll("Before", "After!").replace("cache-a", "cache-b").replace("revision: 1", "revision: 2");
+    assert.equal(Buffer.byteLength(original), Buffer.byteLength(changed));
+    await writeFile(file, original);
+    const actualStat = fs.lstatSync;
+    const pinnedStat = actualStat(file, { bigint: true });
+    const stub = t.mock.method(fs, "lstatSync", (path, options) =>
+      path === file && options?.bigint ? pinnedStat : actualStat(path, options));
+    syncBuiltinESMExports();
+    try {
+      const scan = () => mode === "snapshot" ? scanMarkdown(directory, { metadata: false }) : scanMarkdown(directory);
+      scan();
+      await writeFile(file, changed);
+      const updated = scan()[0];
+      assert.equal(updated.record.id, "cache-b");
+      assert.equal(updated.record.title, "After!");
+      assert.equal(updated.record.revision, 2);
+      assert.equal(updated.record.content, "After!\n");
+      assert.equal(updated.record.sha256, createHash("sha256").update(Buffer.from(changed, "utf8")).digest("hex"));
+      assert.equal(updated.raw, changed);
+      assert.deepEqual(scan()[0].record, updated.record);
+      const invalid = changed.replace("title: After!", "title: [oops!");
+      assert.equal(Buffer.byteLength(invalid), Buffer.byteLength(changed));
+      await writeFile(file, invalid);
+      assert.throws(scan, error => error.code === "INVALID_DOCUMENT" && /YAML frontmatter/.test(error.message));
+      const invalidUtf8 = Buffer.from(changed, "utf8");
+      invalidUtf8[invalidUtf8.length - 2] = 0xff;
+      await writeFile(file, invalidUtf8);
+      assert.throws(scan, error => error.code === "INVALID_DOCUMENT" && /valid UTF-8/.test(error.message));
+      await writeFile(file, changed);
+      await mkdir(join(directory, "skills"));
+      await writeFile(join(directory, "skills", "Duplicate.md"), changed);
+      assert.throws(scan, error => error.code === "CONFLICT" && /Duplicate document identity/.test(error.message));
+    } finally {
+      stub.mock.restore();
+      syncBuiltinESMExports();
+    }
+  });
+}
 
 test("Markdown documents can be read and written above the former size limits", async t => {
   const { directory, open } = await fixture(t);

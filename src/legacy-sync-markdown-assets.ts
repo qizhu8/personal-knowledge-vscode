@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 type RetainedAssets = {
-  listedMarkdownAssets(root: string, area: "skills", document: string, markdown: string): Array<{ path: string }>;
+  listedMarkdownAssets(root: string, area: "skills" | "notes" | "papers", document: string, markdown: string): Array<{ path: string }>;
   rewriteMarkdownAssetReferences(markdown: string, transform: (reference: string) => string): string;
   isMarkdownAssetDirectory(name: string): boolean;
 };

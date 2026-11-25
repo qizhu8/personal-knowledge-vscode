@@ -1,17 +1,15 @@
 import { z } from "zod";
 import { workflowCompilerSource } from "./workflow-compiler-contracts.js";
+import { workflowRuntimeBindings } from "./domain/workflow-executor-bindings.js";
 
-export const WORKFLOW_EXECUTOR_LIMITS = Object.freeze({
-  steps: 1024, iterations: 64, outputBytes: 65_536, snapshotBytes: 1_048_576,
-  events: 8192, runs: 4096, receipts: 16_384, assignmentsPerRun: 2048,
-  leaseMs: 300_000, deadlineMs: 86_400_000,
-});
+export { WORKFLOW_EXECUTOR_LIMITS } from "./domain/workflow-executor-limits.js";
 const id = z.string().regex(/^[A-Za-z][A-Za-z0-9._-]{0,127}$/);
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 export const workflowExecutorCreate = z.strictObject({
   operationId: z.uuid(), runId: id, source: workflowCompilerSource,
   expectedExecutableDigest: digest, deadline: z.number().safe().int().positive(),
   inputs: z.record(z.string(), z.json()).default({}),
+  runtimeBindings: workflowRuntimeBindings.optional(),
 });
 export const workflowExecutorCancel = z.strictObject({
   operationId: z.uuid(), runId: id, expectedVersion: z.number().safe().int().positive(),
@@ -51,6 +49,11 @@ export const workflowExecutorDefinitions = [
     id: "workflow.executor.cancel", readOnly: false,
     description: "Fence future step results. Running distributed effects remain unknown; cancellation does not prove rollback.",
     input: workflowExecutorCancel, output: workflowExecutorView,
+  },
+  {
+    id: "workflow.executor.outputs", readOnly: true,
+    description: "Read typed explicit run output bindings only after authoritative successful completion.",
+    input: z.strictObject({ runId: id }), output: z.record(z.string(), z.json()),
   },
 ] as const;
 export type WorkflowExecutorCreate = z.input<typeof workflowExecutorCreate>;

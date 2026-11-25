@@ -8,7 +8,8 @@ export const legacyRecipeLazyInputs = {
     recipe_id: run, command_id: text, inputs_json: text.default("{}"), project_id: run.default(""),
     expected_revision: z.number().int().default(0), expected_digest: text.default(""),
     detail: detail.default("compact"), autonomous: z.boolean().default(false),
-    max_auto_nodes: z.number().int().default(100), max_auto_seconds: z.number().int().default(300),
+    max_auto_nodes: z.number().int().min(1).max(1000).default(100),
+    max_auto_seconds: z.number().int().min(1).max(3600).default(300),
   }),
   "mcp.tool.recipe_run_get": z.strictObject({ run_id: run, detail: detail.default("full") }),
   "mcp.tool.recipe_run_next": z.strictObject({
@@ -34,5 +35,5 @@ export const legacyRecipeLazyDefinitions = Object.entries(legacyRecipeLazyInputs
     ? "Original lazy Recipe inspection synchronizes durable execution/terminal state and may mutate; requires explicit host authority, never a read-only alias."
     : id.endsWith("_submit_input")
       ? "Submit explicit current user input to the exact waiting human gate challenge; ordinary Recipe reports cannot replace this evidence."
-      : "Original controlled lazy Recipe lifecycle; deterministic legacy command identities and durable receipts, exact host authority, no autonomous/default dispatch or arbitrary executables.",
+      : "Original controlled Recipe lifecycle; lazy by default, bounded autonomous command/Script dispatch only with exact pinned host adapters; durable receipts and explicit report/human boundaries, never arbitrary executables.",
 }));

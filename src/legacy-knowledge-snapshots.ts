@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { coreDatabasePath } from "./workspace-storage-paths.js";
 import {
   chmodSync, closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync,
   readFileSync, readdirSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync,
@@ -16,6 +17,7 @@ import { MigrationRuntime } from "./migration-runtime.js";
 import { previewTrashLifecycle } from "./trash-lifecycle.js";
 import { verifySnapshotSchedule } from "./legacy-knowledge-snapshot-scheduler-state.js";
 import { inspectLegacyRootPkmPrivacyState } from "./legacy-root-pkm-state.js";
+import { assertOriginalMcpPrivacy } from "./original-mcp-root-custody.js";
 
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const encode = (value: unknown) => JSON.stringify(value);
@@ -225,7 +227,7 @@ export function inspectLegacyKnowledgeSnapshotSchedulerEnrollment(rootOrDb: stri
   const owned = typeof rootOrDb === "string", root = owned ? rootOrDb : rootOrSha!;
   const expectedSha256 = owned ? rootOrSha : expected;
   checkedRoot(root);
-  const path = join(root, "core.sqlite"), before = lstatSync(path);
+  const path = coreDatabasePath(root), before = lstatSync(path);
   if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1)
     fail("UNSAFE_PATH", "Scheduler enrollment requires an existing unlinked native database.");
   const db = owned ? new DatabaseSync(path, { readOnly: true }) : rootOrDb;
@@ -337,6 +339,13 @@ export function assertLegacyKnowledgeSnapshotAdoptionBootstrap(
 }
 export function verifyLegacyKnowledgeSnapshots(db: DatabaseSync, root: string, allowPending = false,
   archivedModes?: ReadonlyMap<string, number>) {
+  if (assertOriginalMcpPrivacy(root)) {
+    const version = Number(db.prepare("PRAGMA user_version").get()?.user_version);
+    if (![0, 23].includes(version)
+      || db.prepare("SELECT 1 FROM sqlite_master WHERE name GLOB 'legacy_knowledge_snapshot_*' LIMIT 1").get())
+      fail("INVALID_WORKSPACE", "Archive-only original MCP custody cannot activate private snapshot authority.");
+    return;
+  }
   const policy = privacy(root);
   const hasPrivacyDirectory = !!lstatSync(join(root, ".pkm"), { throwIfNoEntry: false });
   const schemaQuery = "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name GLOB 'legacy_knowledge_snapshot_*' ORDER BY name";

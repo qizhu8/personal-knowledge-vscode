@@ -46,7 +46,7 @@ const spawn = z.strictObject({
   "A child reservation requires its parent's revision.");
 const pin = { snapshotId: agentRuntimeSnapshot.shape.snapshotId, digest: agentRuntimeDigest };
 
-/** Schema-only integration inventory. No transport registration, actor argument or host completion endpoint. */
+/** Canonical contracts; availability requires the current native host policy. No caller identity or completion endpoint. */
 export const agentRuntimeDefinitions = [
   { id: "agent.runtime.spawn", readOnly: false, description: "Spawn a task from the configured native task policy; no caller-supplied prompt or permission grant.", input: spawn, output: mutationResult },
   { id: "agent.runtime.cancel", readOnly: false,

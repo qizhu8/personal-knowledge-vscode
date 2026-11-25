@@ -10,6 +10,9 @@ import {
 import { initializeActionRuntime } from "./domain/action-runtime-store.js";
 import { containsActionArtifactReference } from "./action-runtime-process.js";
 import { supportedPureMathExpression } from "./action-pure-components.js";
+import { actionCheckpoint, checkpointResponse, checkActionCheckpointAnswer, newActionCheckpoint,
+  type ActionCheckpoint } from "./action-runtime-checkpoints.js";
+import { recordActionImplementation, selectedActionImplementation } from "./action-runtime-selection.js";
 import {
   actionComponents, builtinActionDefinitions, exactRunnableArtifactBuiltin, exactRunnablePureBuiltin, loadModuleSet, originalDigest, schemaValueErrors,
   type ActionModuleSnapshot,
@@ -27,6 +30,7 @@ export type ActionInvocation = Readonly<{
   inputs: JsonRecordValue; deadline: number;
 }>;
 export type ActionAuthorizationBinding = Readonly<{
+  runId?: string;
   actorId: string; workspaceId?: string; executableDigest: string; source: unknown; actionId: string;
   definition: JsonRecordValue; implementation: Implementation; nodeId: string;
   step?: JsonRecordValue;
@@ -44,30 +48,60 @@ type AdapterPin = {
   key: string; id: string; version: number; outputContractDigest: string; authorizationDigest: string;
 };
 type NodeRecord = {
-  nodeId: string; state: "pending" | "running" | "succeeded" | "failed" | "skipped" | "cancelled" | "unknown";
+  nodeId: string; state: "pending" | "running" | "waiting" | "succeeded" | "failed" | "skipped" | "cancelled" | "unknown";
   reason?: ActionNodeReason;
   outputs?: JsonRecordValue; dependencies: string[];
 };
 type Snapshot = {
-  runId: string; version: number; state: "ready" | "running" | "succeeded" | "failed" | "cancelled" | "cancelling" | "unknown";
+  runId: string; version: number; state: "ready" | "running" | "waiting" | "succeeded" | "failed" | "cancelled" | "cancelling" | "unknown";
   actionId: string; actionVersion: number; definitionDigest: string; definition: JsonRecordValue;
   source: unknown; sourceSnapshot: unknown; implementation: Implementation;
   deadline: number; inputs: JsonRecordValue; nodes: NodeRecord[];
   adapters: Record<string, AdapterPin>; eventSequence: number; cancelRequested: boolean;
+  checkpoints?: ActionCheckpoint[];
+  selectedActionId?: string;
+  originalAdmissionSha256?: string;
+  reconciledOutput?: JsonRecordValue;
+  reconciliations?: Array<{ kind: "manual"; expectedVersion: number; sourceReceiptSha256: string;
+    outcome: string; evidence: JsonRecordValue; at: number }>;
 };
 export type ActionRuntimeHostRequest = ActionRuntimeRequest & { actorId: string };
+export type ActionObservedReconciliation = {
+  runId: string; expectedVersion: number; sourceReceiptSha256: string;
+  outcome: "succeeded"; evidence: JsonRecordValue;
+};
+export interface RecoveredActionRun {
+  operationId: string; runId: string; source: ActionRuntimeCreate["source"]; actionId?: string;
+  previousVersion: number;
+  expectedDefinitionDigest: string; implementationId: string; inputs: Record<string, z.infer<ReturnType<typeof z.json>>>;
+  state: "unknown" | "waiting" | "succeeded" | "failed" | "cancelled";
+  sourceReceiptSha256: string;
+  completed: Record<string, Record<string, z.infer<ReturnType<typeof z.json>>>>;
+  checkpoint?: ActionCheckpoint;
+  history: ActionCheckpoint[];
+  expectedOutput?: Record<string, z.infer<ReturnType<typeof z.json>>>;
+}
 const id = z.string().regex(/^[A-Za-z][A-Za-z0-9._-]{0,127}$/);
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const terminal = new Set(["succeeded", "failed", "cancelled", "unknown"]);
 const fail = (code: string, message: string): never => { throw new CoreError(code, message); };
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const keyFor = (actorId: string, runId: string) => `${actorId}\u0000${runId}`;
+const invocationFingerprint = (run: Snapshot) => originalDigest({
+  action_id: run.actionId, hash: run.definitionDigest, inputs: run.inputs, run_id: run.runId,
+});
 
 function actor(value: string) {
   if (typeof value !== "string" || !value.trim() || value.length > 256) fail("INVALID_ARGUMENT", "Authenticated actor required.");
 }
 function isRecord(value: unknown): value is JsonRecordValue {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function targetCompatible(implementation: Implementation) {
+  const platform = process.platform === "win32" ? "Windows" : process.platform === "darwin" ? "Darwin" : "Linux";
+  const architecture = process.arch === "x64" ? "x86_64" : process.arch;
+  return implementation.platforms.includes(platform)
+    && (!Array.isArray(implementation.architectures) || !implementation.architectures.length || implementation.architectures.includes(architecture));
 }
 export function exactPipelineArtifactInput(inputs: unknown): string | undefined {
   if (!isRecord(inputs) || Object.keys(inputs).length !== 1 || !isRecord(inputs.source)
@@ -274,6 +308,7 @@ export class ActionRuntime {
     workspaceRoot: string; adapters: Readonly<Record<string, ActionNativeAdapter>>;
     resolveAdapter?: (key: string, outputContractDigest: string) => ActionNativeAdapter | undefined;
     authorizePipelineArtifact?: (actorId: string, inputs: unknown, output: unknown) => boolean;
+    authorizeObservedReconciliation?: (actorId: string, input: ActionObservedReconciliation) => boolean;
     clock?: () => number; assertOwner?: () => void; workspaceId?: string;
     initialized?: boolean; deferRecovery?: boolean; onLifecycle?: () => void; beforeEffect?: () => void;
   }) {
@@ -367,14 +402,17 @@ export class ActionRuntime {
     }
     return adapter;
   }
-  recoverInterrupted() {
+  recoverInterrupted(actorId?: string) {
     this.outside();
+    if (actorId !== undefined) actor(actorId);
     if (this.database.isTransaction) fail("TRANSACTION_BOUNDARY", "Action recovery requires an idle shared database.");
     this.database.exec("BEGIN IMMEDIATE");
     try {
       const rows = this.database.prepare("SELECT actor_id,run_id,version,snapshot FROM action_runtime_runs WHERE json_extract(snapshot,'$.state') IN ('running','cancelling')")
         .all() as Array<{ actor_id: string; run_id: string; version: number; snapshot: string }>;
+      const reconciled: string[] = [];
       for (const row of rows) {
+        if (actorId !== undefined && actorId !== row.actor_id || this.active.has(keyFor(row.actor_id, row.run_id))) continue;
         const run = JSON.parse(row.snapshot) as Snapshot, previous = run.version;
         for (const node of run.nodes) {
           if (node.state === "running") node.state = "unknown";
@@ -382,8 +420,10 @@ export class ActionRuntime {
         }
         run.state = "unknown"; this.event(row.actor_id, run, "run-unknown");
         this.save(row.actor_id, run, previous);
+        reconciled.push(run.runId);
       }
       this.database.exec("COMMIT");
+      return reconciled;
     } catch (error) { if (this.database.isTransaction) this.database.exec("ROLLBACK"); throw error; }
   }
 
@@ -409,15 +449,18 @@ export class ActionRuntime {
         validateSchema(definition.input_schema, parsed.inputs, "Action input violates its pinned schema");
         const inputs = clone(parsed.inputs) as JsonRecordValue;
         const implementations = Array.isArray(definition.implementations) ? definition.implementations as Implementation[] : [];
-        const platformName = process.platform === "win32" ? "Windows" : process.platform === "darwin" ? "Darwin" : "Linux";
-        const implementation = implementations.find(item => item.platforms?.includes(platformName));
+        const selected = selectedActionImplementation(this.database, actorId, String(definition.action_id), compiled.definitionDigest);
+        const compatible = implementations.filter(targetCompatible);
+        const implementation = selected ? compatible.find(item => item.id === selected)
+          : compatible.length === 1 ? compatible[0] : undefined;
+        if (!selected && compatible.length > 1) fail("CONFLICT", "Select an explicit compatible Action implementation.");
         if (!implementation) return fail("ADAPTER_UNAVAILABLE", "No Action implementation is available on this platform.");
         const steps = pipelineSteps(implementation);
         const nodes = implementation.kind === "pipeline" ? assertAcyclic(steps)
           : [{ nodeId: "action", state: "pending" as const, dependencies: [] }];
         const available = availableDefinitions(parsed.source);
         const pins: Record<string, AdapterPin> = Object.create(null);
-        const bindingBase = { actorId, workspaceId: this.options.workspaceId,
+        const bindingBase = { actorId, runId: parsed.runId, workspaceId: this.options.workspaceId,
           executableDigest: compiled.definitionDigest, source: compiled.source, definition };
         if (implementation.kind === "program") {
           pins.action = this.pin(`program:${String(implementation.program)}`, definition.output_schema, {
@@ -479,17 +522,141 @@ export class ActionRuntime {
     this.outside(); actor(actorId); id.parse(runId);
     return actionRuntimeDefinitions[1].output.parse(publicView(load(this.database, actorId, runId)));
   }
+  importRecoveredBatch(actorId: string, inputs: readonly RecoveredActionRun[]) {
+    if (inputs.length > L.runs) return fail("RESOURCE_LIMIT", "Historical Action Run batch exceeds its domain bound.");
+    return this.atomic(() => inputs.map(input => this.importRecoveredInTransaction(actorId, input)));
+  }
+  private importRecoveredInTransaction(actorId: string, input: RecoveredActionRun) {
+    return this.mutate(() => {
+      actor(actorId); id.parse(input.runId); z.uuid().parse(input.operationId);
+      digest.parse(input.sourceReceiptSha256); digest.parse(input.expectedDefinitionDigest);
+      z.number().safe().int().nonnegative().max(Number.MAX_SAFE_INTEGER - 1).parse(input.previousVersion);
+      bounded(input, L.snapshotBytes);
+      if (!["unknown", "waiting", "succeeded", "failed", "cancelled"].includes(input.state))
+        return fail("INVALID_ARGUMENT", "Historical Action admission cannot dispatch a worker.");
+      const compiled = readActionCompiler({ operation: "action.definition.compile",
+        args: { source: input.source, ...(input.actionId ? { actionId: input.actionId } : {}) } }) as {
+          status: string; definitionDigest: string; definition: JsonRecordValue; source: unknown;
+        };
+      if (compiled.status !== "valid" || compiled.definitionDigest !== input.expectedDefinitionDigest)
+        return fail("CONFLICT", "The historical Action requires its exact independently selected compiler identity.");
+      return this.receipt(actorId, input.operationId, hash({ operation: "action.runtime.import-recovered", input }), () => {
+        if (this.database.prepare("SELECT 1 FROM action_runtime_runs WHERE actor_id=? AND run_id=?").get(actorId, input.runId))
+          return fail("CONFLICT", "Historical Action admission will not replace an existing canonical Run.");
+        const definition = compiled.definition;
+        validateSchema(definition.input_schema, input.inputs, "Historical Action inputs violate the pinned schema");
+        const implementation = (definition.implementations as Implementation[]).find((item, index) =>
+          (typeof item.id === "string" ? item.id : `index:${index}`) === input.implementationId);
+        if (!implementation) return fail("INVALID_DEFINITION", "The historical implementation is not pinned in its source.");
+        const steps = pipelineSteps(implementation);
+        const nodes: NodeRecord[] = implementation.kind === "pipeline" ? assertAcyclic(steps)
+          : [{ nodeId: "action", state: "pending", dependencies: [] }];
+        const pins: Record<string, AdapterPin> = Object.create(null);
+        const available = availableDefinitions(input.source);
+        for (const [nodeId, outputs] of Object.entries(input.completed)) {
+          const node = nodes.find(item => item.nodeId === nodeId), step = steps.find(item => item.id === nodeId);
+          const child = step ? available.get(String(step.component ?? step.action_id)) : definition;
+          if (!node || !child) return fail("RECOVERY_CONFLICT", "Historical step receipt does not name a pinned native node.");
+          validateSchema(schemaFor(step ?? {}, child), outputs, "Historical step output violates its pinned schema");
+          node.state = "succeeded"; node.outputs = clone(outputs);
+        }
+        const run: Snapshot = {
+          runId: input.runId, version: input.previousVersion + 1, state: input.state, actionId: String(definition.action_id),
+          actionVersion: Number(definition.version), definitionDigest: compiled.definitionDigest, definition,
+          source: compiled.source, sourceSnapshot: clone(input.source), implementation,
+          deadline: this.clock() + L.deadlineMs, inputs: clone(input.inputs), nodes, adapters: pins,
+          eventSequence: 0, cancelRequested: input.state === "cancelled",
+          checkpoints: input.history.map(item => actionCheckpoint.parse(item)),
+          originalAdmissionSha256: input.sourceReceiptSha256,
+          ...(input.actionId ? { selectedActionId: input.actionId } : {}),
+        };
+        if (input.state === "waiting") {
+          if (!targetCompatible(implementation) || implementation.kind !== "pipeline" || !input.checkpoint)
+            return fail("RECOVERY_CONFLICT", "Only a quiescent compatible pinned native checkpoint may be rebound.");
+          const checkpoint = actionCheckpoint.parse(input.checkpoint), node = nodes.find(item => item.nodeId === checkpoint.step);
+          if (!node || node.state !== "pending" || checkpoint.run_id !== input.runId || checkpoint.state !== "waiting"
+            || originalDigest(checkpoint.proposal) !== checkpoint.proposal_digest)
+            return fail("RECOVERY_CONFLICT", "The historical checkpoint does not match its exact native continuation.");
+          const checkpointStep = steps.find(step => step.id === checkpoint.step);
+          const checkpointInputs = checkpointStep && resolveInputs(checkpointStep.inputs, run);
+          if (!checkpointStep || !isRecord(checkpointInputs))
+            return fail("RECOVERY_CONFLICT", "Historical checkpoint inputs cannot be resolved from exact prior receipts.");
+          const expected = newActionCheckpoint(input.runId, checkpoint.step, String(checkpointStep.component),
+            checkpointInputs, this.clock(), run.deadline);
+          const binding = (value: ActionCheckpoint) => ({
+            kind: value.kind, proposal: value.proposal, evidence: value.evidence, owner: value.owner,
+            deadline: value.deadline, timeout_behavior: value.timeout_behavior, answer_schema: value.answer_schema, trigger: value.trigger,
+          });
+          if (originalDigest(binding(expected)) !== originalDigest(binding(checkpoint)))
+            return fail("RECOVERY_CONFLICT", "The old proposal/trigger is not the exact pinned source continuation.");
+          for (const step of steps) {
+            const child = available.get(String(step.component));
+            if (!child || !["core.checkpoint", "core.wait", "core.constant", "core.math-expression", "core.cast", "core.lookup"].includes(String(step.component)))
+              return fail("NOT_AVAILABLE", "This historical continuation requires an unimplemented native nested/effect handler.");
+            const binding = { actorId, runId: run.runId, workspaceId: this.options.workspaceId, executableDigest: run.definitionDigest,
+              source: run.source, actionId: String(child.action_id), definition: child, implementation,
+              nodeId: String(step.id), step };
+            const pin = this.pin(`component:${String(step.component)}`, schemaFor(step, child), binding);
+            if (this.installed(pin).authorizeData(freeze({ ...clone(binding), inputs: run.inputs })) !== true)
+              return fail("ACCESS_DENIED", "Native Action admission denied this historical input/continuation.");
+            pins[String(step.id)] = pin;
+          }
+          node.state = "waiting";
+          run.checkpoints!.push(checkpoint);
+          run.deadline = this.clock() + Math.ceil(Math.min(checkpoint.remaining_seconds, L.deadlineMs / 1000) * 1000);
+        } else if (input.state === "succeeded") {
+          if (nodes.some(node => node.state !== "succeeded"))
+            return fail("RECOVERY_CONFLICT", "Successful historical Runs require every exact completed step receipt.");
+          const output = implementation.kind === "pipeline" ? resolveInputs(implementation.output, run) : nodes[0]?.outputs;
+          validateSchema(definition.output_schema, output, "Historical result violates its pinned source");
+          if (!input.expectedOutput || originalDigest(output) !== originalDigest(input.expectedOutput))
+            return fail("RECOVERY_CONFLICT", "Historical output does not match the exact completed step receipts.");
+        } else {
+          for (const node of nodes) if (node.state === "pending") node.state = input.state === "cancelled" ? "cancelled" : "unknown";
+        }
+        if (Number(this.database.prepare("SELECT count(*) n FROM action_runtime_runs").get()!.n) >= L.runs)
+          return fail("RESOURCE_LIMIT", "Action run capacity reached.");
+        this.event(actorId, run, "created");
+        if (input.state === "waiting") this.event(actorId, run, "checkpoint-created", input.checkpoint!.step);
+        else this.event(actorId, run, input.state === "succeeded" ? "run-succeeded" : input.state === "failed" ? "run-failed"
+          : input.state === "cancelled" ? "run-cancelled" : "run-unknown");
+        bounded(clone(run), L.snapshotBytes);
+        this.database.prepare("INSERT INTO action_runtime_runs VALUES(?,?,?,?)").run(actorId, run.runId, run.version, JSON.stringify(run));
+        return publicView(run);
+      });
+    });
+  }
+  selectImplementation(actorId: string, source: ActionRuntimeCreate["source"], expectedDigest: string, implementationId: string) {
+    this.outside(); actor(actorId); digest.parse(expectedDigest);
+    const compiled = readActionCompiler({ operation: "action.definition.compile", args: { source } }) as {
+      status: string; definitionDigest: string; definition: JsonRecordValue;
+    };
+    if (compiled.status !== "valid" || compiled.definitionDigest !== expectedDigest) fail("CONFLICT", "Action definition changed before selection.");
+    const implementations = compiled.definition.implementations as Implementation[];
+    if (!implementations.some(item => item.id === implementationId && targetCompatible(item)))
+      fail("INVALID_ARGUMENT", "Implementation is unavailable on the current target host.");
+    return this.atomic(() => {
+      recordActionImplementation(this.database, { actorId, actionId: String(compiled.definition.action_id),
+        definitionDigest: expectedDigest, implementationId });
+      return { ok: true, action_id: String(compiled.definition.action_id), implementation_id: implementationId };
+    });
+  }
   /** Native-only owned result read; metadata and events remain output-free. */
   getOwnedResult(actorId: string, runId: string, pinnedDefinition: JsonRecordValue): JsonRecordValue | undefined {
     this.outside(); actor(actorId); id.parse(runId);
     const run = load(this.database, actorId, runId);
     if (run.state !== "succeeded") return undefined;
+    if (pinnedDefinition.action_id !== run.actionId || originalDigest(pinnedDefinition) !== originalDigest(run.definition))
+      return fail("RECOVERY_CONFLICT", "The owned Action output requires its exact pinned definition.");
+    if (run.reconciledOutput) {
+      validateSchema(pinnedDefinition.output_schema, run.reconciledOutput, "Reconciled output violates its pinned schema");
+      return clone(run.reconciledOutput);
+    }
     let output: unknown;
     if (run.implementation.kind === "program" || run.implementation.kind === "builtin") {
       if (run.implementation.kind === "builtin") {
-        const platform = process.platform === "win32" ? "Windows" : process.platform === "darwin" ? "Darwin" : "Linux";
         const selected = (Array.isArray(pinnedDefinition.implementations) ? pinnedDefinition.implementations : [])
-          .find(item => isRecord(item) && Array.isArray(item.platforms) && item.platforms.includes(platform));
+          .find(item => isRecord(item) && hash(item) === hash(run.implementation));
         if (!(exactRunnablePureBuiltin(pinnedDefinition) || exactRunnableArtifactBuiltin(pinnedDefinition))
           || !isRecord(selected) || hash(selected) !== hash(run.implementation))
           return fail("RECOVERY_CONFLICT", "The owned builtin revision is unavailable or invalid.");
@@ -503,12 +670,16 @@ export class ActionRuntime {
         return fail("RECOVERY_CONFLICT", "The successful Action result is unavailable or invalid.");
       output = run.nodes[0].outputs;
     } else if (run.implementation.kind === "pipeline") {
-      const platform = process.platform === "win32" ? "Windows" : process.platform === "darwin" ? "Darwin" : "Linux";
       const selected = (Array.isArray(pinnedDefinition.implementations) ? pinnedDefinition.implementations : [])
-        .find(item => isRecord(item) && Array.isArray(item.platforms) && item.platforms.includes(platform));
+        .find(item => isRecord(item) && hash(item) === hash(run.implementation));
       if (!isRecord(selected) || hash(selected) !== hash(run.implementation))
         return fail("RECOVERY_CONFLICT", "The owned pipeline revision is unavailable or invalid.");
-      validatePurePipeline(pinnedDefinition, selected);
+      if (run.checkpoints?.length) {
+        if (!Array.isArray(pinnedDefinition.effects) || pinnedDefinition.effects.some(effect => !["pure", "human-input"].includes(String(effect)))
+          || !Array.isArray(selected.steps) || selected.steps.some(step => !isRecord(step)
+            || !["core.checkpoint", "core.wait", "core.constant", "core.cast", "core.lookup", "core.math-expression"].includes(String(step.component))))
+          return fail("ACCESS_DENIED", "The checkpoint result requires a supported intrinsic/pure pipeline.");
+      } else validatePurePipeline(pinnedDefinition, selected);
       const steps = pipelineSteps(selected as Implementation), components = actionComponents();
       if (run.nodes.length !== steps.length) return fail("RECOVERY_CONFLICT", "The owned pipeline result is incomplete.");
       for (const step of steps) {
@@ -525,6 +696,87 @@ export class ActionRuntime {
     bounded(output, L.outputBytes);
     validateSchema(pinnedDefinition.output_schema, output, "Stored Action output violates its pinned schema");
     return clone(output);
+  }
+  getCurrentOwnedResult(actorId: string, runId: string) {
+    this.outside(); actor(actorId); id.parse(runId);
+    const run = load(this.database, actorId, runId);
+    if (run.state !== "succeeded") return undefined;
+    for (const node of run.nodes) {
+      const step = pipelineSteps(run.implementation).find(item => item.id === node.nodeId);
+      const child = step ? availableDefinitions(run.sourceSnapshot).get(String(step.component ?? step.action_id)) : run.definition;
+      const pin = run.adapters[node.nodeId] ?? run.adapters.action, adapter = pin && this.installed(pin);
+      const inputs = step ? resolveInputs(step.inputs, run) : run.inputs;
+      if (!child || !adapter || !isRecord(inputs)) return fail("ACCESS_DENIED", "The exact native Action result policy is unavailable.");
+      const binding = { actorId, runId, workspaceId: this.options.workspaceId, executableDigest: run.definitionDigest, source: run.source,
+        actionId: String(child.action_id), definition: child, implementation: run.implementation, nodeId: node.nodeId, ...(step ? { step } : {}) };
+      if (adapter.authorizeDefinition(freeze(clone(binding))) !== true
+        || adapter.authorizeData(freeze({ ...clone(binding), inputs })) !== true)
+        return fail("ACCESS_DENIED", "The current native policy denied this exact Action result.");
+    }
+    return this.getOwnedResult(actorId, runId, run.definition);
+  }
+  maintenanceSnapshot(actorId: string, runId: string) {
+    this.outside(); actor(actorId); id.parse(runId);
+    const run = load(this.database, actorId, runId);
+    const compiled = readActionCompiler({ operation: "action.definition.compile", args: {
+      source: run.sourceSnapshot, ...(isRecord(run.sourceSnapshot) && run.sourceSnapshot.kind === "moduleSet" ? { actionId: run.actionId } : {}),
+    } }) as { status: string; definitionDigest: string; definition: JsonRecordValue };
+    if (compiled.status !== "valid" || compiled.definitionDigest !== run.definitionDigest
+      || originalDigest(compiled.definition) !== originalDigest(run.definition))
+      fail("RECOVERY_CONFLICT", "Action maintenance requires the exact stored source and definition.");
+    const view = actionRuntimeDefinitions[1].output.parse(publicView(run));
+    bounded(run.inputs, L.inputBytes);
+    const outputs = run.state === "succeeded" ? [this.getOwnedResult(actorId, runId, compiled.definition)] : run.nodes.map(node => node.outputs ?? {});
+    if (run.state === "succeeded" && outputs[0] === undefined)
+      fail("RECOVERY_CONFLICT", "Action maintenance cannot release ownership without its exact successful result.");
+    bounded(outputs, L.snapshotBytes);
+    const event = this.database.prepare("SELECT record_json FROM action_runtime_events WHERE actor_id=? AND run_id=? ORDER BY sequence DESC LIMIT 1")
+      .get(actorId, runId);
+    const at = event && (JSON.parse(String(event.record_json)) as { at?: unknown }).at;
+    if (typeof at !== "number" || !Number.isFinite(at) || at < 0)
+      fail("RECOVERY_CONFLICT", "Action maintenance requires its recorded terminal event time.");
+    return { ...view, inputs: clone(run.inputs), outputs: clone(outputs), completedAt: Number(at) };
+  }
+  reconcileRecovered(actorId: string, input: { runId: string; expectedVersion: number; sourceReceiptSha256: string;
+      outcome: "succeeded" | "failed" | "cancelled" | "review"; evidence: Record<string, unknown> }) {
+      return this.atomic(() => {
+        actor(actorId); bounded(input, L.outputBytes);
+        const run = load(this.database, actorId, input.runId), previous = run.version;
+        if (run.originalAdmissionSha256 !== digest.parse(input.sourceReceiptSha256) || run.state !== "unknown"
+          || run.version !== input.expectedVersion) return fail("CONFLICT", "Reconciliation requires this admitted uncertain Run's exact current revision.");
+        if (typeof input.evidence.reason !== "string" || !input.evidence.reason.trim())
+          return fail("INVALID_ARGUMENT", "Manual reconciliation requires an explicit evidence reason.");
+        if (!["succeeded", "failed", "cancelled", "review"].includes(input.outcome))
+          return fail("INVALID_ARGUMENT", "Unsupported manual reconciliation outcome.");
+        if (input.outcome === "succeeded") {
+          validateSchema(run.definition.output_schema, input.evidence.output, "Manual evidence output violates the pinned source");
+          if (!isRecord(input.evidence.output)) return fail("INVALID_ARGUMENT", "A typed Action output object is required.");
+          run.reconciledOutput = clone(input.evidence.output);
+        }
+        if (input.outcome !== "review") run.state = input.outcome;
+        run.reconciliations = [...run.reconciliations ?? [], { kind: "manual", expectedVersion: input.expectedVersion,
+          sourceReceiptSha256: input.sourceReceiptSha256, evidence: clone(input.evidence), outcome: input.outcome, at: this.clock() }];
+        this.event(actorId, run, "run-reconciled"); this.save(actorId, run, previous);
+        return publicView(run);
+      });
+    }
+  reconcileObserved(actorId: string, input: ActionObservedReconciliation) {
+    return this.atomic(() => {
+      actor(actorId); bounded(input, L.outputBytes); digest.parse(input.sourceReceiptSha256);
+      const run = load(this.database, actorId, input.runId), previous = run.version;
+      if (run.originalAdmissionSha256 !== undefined || run.state !== "unknown" || run.version !== input.expectedVersion
+        || input.outcome !== "succeeded" || this.options.authorizeObservedReconciliation?.(actorId, input) !== true)
+        return fail("CONFLICT", "Observed reconciliation requires this native uncertain Run's exact authorized revision and process evidence.");
+      if (typeof input.evidence.reason !== "string" || !input.evidence.reason.trim())
+        return fail("INVALID_ARGUMENT", "Observed reconciliation requires an explicit evidence reason.");
+      validateSchema(run.definition.output_schema, input.evidence.output, "Observed output violates the pinned source");
+      if (!isRecord(input.evidence.output)) return fail("INVALID_ARGUMENT", "A typed observed Action output is required.");
+      run.reconciledOutput = clone(input.evidence.output); run.state = "succeeded";
+      run.reconciliations = [...run.reconciliations ?? [], { kind: "manual", expectedVersion: input.expectedVersion,
+        sourceReceiptSha256: input.sourceReceiptSha256, evidence: clone(input.evidence), outcome: "succeeded", at: this.clock() }];
+      this.event(actorId, run, "run-reconciled"); this.save(actorId, run, previous);
+      return publicView(run);
+    });
   }
   events(actorId: string, args: unknown) {
     this.outside(); actor(actorId);
@@ -550,7 +802,8 @@ export class ActionRuntime {
         if (terminal.has(run.state)) return publicView(run);
         const previous = run.version;
         run.cancelRequested = true; run.state = "cancelling";
-        for (const node of run.nodes) if (node.state === "pending") {
+        for (const checkpoint of run.checkpoints ?? []) if (checkpoint.state === "waiting") checkpoint.state = "cancelled";
+        for (const node of run.nodes) if (node.state === "pending" || node.state === "waiting") {
           node.state = "cancelled"; this.event(actorId, run, "node-cancelled", node.nodeId);
         }
         if (!run.nodes.some(node => node.state === "running")) {
@@ -565,6 +818,104 @@ export class ActionRuntime {
         });
         return publicView(run);
       });
+    });
+  }
+  checkpoints(actorId: string, runId: string, includeHistory = false) {
+    this.outside(); actor(actorId); id.parse(runId); z.boolean().parse(includeHistory);
+    const run = load(this.database, actorId, runId);
+    const checkpoints = (run.checkpoints ?? []).map(item => actionCheckpoint.parse(item));
+    return { ok: true, checkpoints: clone(includeHistory ? checkpoints : checkpoints.slice(-1)) };
+  }
+  respondCheckpoint(actorId: string, args: z.infer<typeof checkpointResponse>) {
+    const parsed = checkpointResponse.parse(args);
+    return this.atomic(() => {
+      actor(actorId); bounded(parsed, L.outputBytes);
+      const run = load(this.database, actorId, parsed.run_id);
+      const checkpoint = run.checkpoints?.at(-1);
+      if (!checkpoint || checkpoint.checkpoint_id !== parsed.checkpoint_id) return fail("CONFLICT", "Checkpoint identity is stale.");
+      if (checkpoint.resume_token !== parsed.resume_token || checkpoint.proposal_digest !== parsed.proposal_digest
+        || originalDigest(checkpoint.proposal) !== parsed.proposal_digest)
+        fail("ACCESS_DENIED", "Response must bind the exact proposal and resume token.");
+      if (checkpoint.state === "resolved") {
+        if (checkpoint.answer_digest !== originalDigest(parsed.answer)) fail("CONFLICT", "Checkpoint has already been answered differently.");
+        return { ok: true, run_id: run.runId, replayed: true };
+      }
+      if (checkpoint.trigger.kind !== "human") fail("ACCESS_DENIED", "This checkpoint is owned by its durable trigger.");
+      this.resolveCheckpoint(actorId, run, checkpoint, parsed.answer, parsed.event_key);
+      return { ok: true, run_id: run.runId, replayed: false };
+    });
+  }
+  private resolveCheckpoint(actorId: string, run: Snapshot, checkpoint: ActionCheckpoint,
+    answer: z.infer<typeof checkpointResponse>["answer"], eventKey: string) {
+    if (run.state !== "waiting" || checkpoint.state !== "waiting") fail("CONFLICT", "Checkpoint is no longer waiting.");
+    if (checkpoint.deadline !== null && this.clock() / 1000 >= checkpoint.deadline) fail("CONFLICT", "Checkpoint deadline expired; run the safety scan.");
+    checkActionCheckpointAnswer(checkpoint, answer);
+    const node = run.nodes.find(item => item.nodeId === checkpoint.step);
+    if (!node || node.state !== "waiting" || run.nodes.some(item => item.state === "running"))
+      return fail("RECOVERY_CONFLICT", "Checkpoint continuation is not quiescent.");
+    const previous = run.version;
+    checkpoint.state = "resolved"; checkpoint.answer = clone(answer); checkpoint.answer_digest = originalDigest(answer);
+    checkpoint.event_key = eventKey; checkpoint.resolved_at = this.clock() / 1000;
+    node.state = "succeeded"; node.outputs = { value: clone(answer) };
+    run.state = "ready"; run.deadline = this.clock() + Math.ceil(checkpoint.remaining_seconds * 1000);
+    this.event(actorId, run, "checkpoint-resolved", node.nodeId);
+    this.event(actorId, run, "node-succeeded", node.nodeId);
+    this.save(actorId, run, previous);
+  }
+  wakeCheckpoint(actorId: string, runId: string, eventKey: string, eventName: string) {
+    this.outside(); actor(actorId); z.string().min(1).max(200).parse(eventKey);
+    return this.atomic(() => {
+      const run = load(this.database, actorId, runId), checkpoint = run.checkpoints?.at(-1);
+      if (!checkpoint || checkpoint.trigger.kind !== "event" || checkpoint.trigger.name !== eventName)
+        return fail("CONFLICT", "Wakeup does not match the current event trigger.");
+      if (checkpoint.state === "resolved") {
+        if (checkpoint.event_key !== eventKey) fail("CONFLICT", "Another event already resolved this checkpoint.");
+        return { ok: true, run_id: runId, replayed: true };
+      }
+      this.resolveCheckpoint(actorId, run, checkpoint, { event: eventName }, eventKey);
+      return { ok: true, run_id: runId, replayed: false };
+    });
+  }
+  scanCheckpoints(actorId: string, limit = 8) {
+    this.outside(); actor(actorId); z.number().int().min(1).max(32).parse(limit);
+    return this.atomic(() => {
+      const reviewed: string[] = [], ready: string[] = [];
+      const rows = this.database.prepare("SELECT snapshot FROM action_runtime_runs WHERE actor_id=? AND json_extract(snapshot,'$.state')='waiting' ORDER BY json_extract(snapshot,'$.checkpoints[#-1].created_at'),run_id")
+        .all(actorId);
+      for (const row of rows) {
+        if (ready.length + reviewed.length >= limit) break;
+        const run = JSON.parse(String(row.snapshot)) as Snapshot, checkpoint = run.checkpoints?.at(-1);
+        if (!checkpoint) return fail("RECOVERY_CONFLICT", "Waiting Action has no typed checkpoint.");
+        if (checkpoint.deadline !== null && this.clock() / 1000 >= checkpoint.deadline) {
+          const previous = run.version;
+          checkpoint.state = "expired";
+          run.state = checkpoint.timeout_behavior === "cancel" ? "cancelled" : "unknown";
+          for (const node of run.nodes) if (node.state === "waiting" || node.state === "pending")
+            node.state = run.state === "cancelled" ? "cancelled" : "unknown";
+          this.event(actorId, run, "checkpoint-expired", checkpoint.step);
+          this.event(actorId, run, run.state === "cancelled" ? "run-cancelled" : "run-unknown");
+          this.save(actorId, run, previous); reviewed.push(run.runId);
+        } else if (checkpoint.trigger.kind === "timer" && this.clock() / 1000 >= checkpoint.trigger.at) {
+          this.resolveCheckpoint(actorId, run, checkpoint, { at: checkpoint.trigger.at }, `timer:${checkpoint.checkpoint_id}`);
+          ready.push(run.runId);
+        } else if (checkpoint.trigger.kind === "dependency") {
+          let dependency: Snapshot | undefined;
+          try { dependency = load(this.database, actorId, checkpoint.trigger.run_id); }
+          catch (error) { if (!(error instanceof CoreError) || error.code !== "NOT_FOUND") throw error; }
+          if (!dependency || dependency.version < checkpoint.trigger.expected_version
+            || invocationFingerprint(dependency) !== checkpoint.trigger.invocation_fingerprint
+            || ["failed", "cancelled", "unknown"].includes(dependency.state)) {
+            const previous = run.version;
+            run.state = "unknown";
+            for (const node of run.nodes) if (node.state === "waiting" || node.state === "pending") node.state = "unknown";
+            this.event(actorId, run, "run-unknown"); this.save(actorId, run, previous); reviewed.push(run.runId);
+          } else if (dependency.state === "succeeded") {
+            this.resolveCheckpoint(actorId, run, checkpoint, { run_id: dependency.runId }, `dependency:${checkpoint.checkpoint_id}`);
+            ready.push(run.runId);
+          }
+        }
+      }
+      return { ok: true, ready, reviewed };
     });
   }
   request(actorId: string, request: ActionRuntimeRequest): unknown {
@@ -584,7 +935,8 @@ export class ActionRuntime {
     this.outside(); actor(actorId); id.parse(runId);
     const pinned = load(this.database, actorId, runId);
     const selected = readActionCompiler({
-      operation: "action.definition.compile", args: { source: pinned.sourceSnapshot },
+      operation: "action.definition.compile", args: { source: pinned.sourceSnapshot,
+        ...(pinned.selectedActionId ? { actionId: pinned.selectedActionId } : {}) },
     }) as { status: string; definitionDigest?: string };
     if (selected.status !== "valid" || selected.definitionDigest !== pinned.definitionDigest)
       fail("CONFLICT", "Stored Action belongs to a different source identity; execution requires its own version and admission.");
@@ -648,11 +1000,17 @@ export class ActionRuntime {
           });
           return publicView(snapshot);
         }
-        for (const node of ready) this.markStarted(actorId, runId, node.nodeId);
-        const outcomes = await Promise.all(ready.map(node => this.dispatchNode(actorId, runId, node.nodeId, controller)));
+        // A suspension must not strand parallel effects without receipts. Complete its peers first.
+        const steps = pipelineSteps(run.implementation);
+        const controls = ready.filter(node => steps.some(step => step.id === node.nodeId
+          && ["core.checkpoint", "core.wait"].includes(String(step.component))));
+        const batch = controls.length ? ready.filter(node => !controls.includes(node)) : ready;
+        const selected = batch.length ? batch : controls.slice(0, 1);
+        for (const node of selected) this.markStarted(actorId, runId, node.nodeId);
+        const outcomes = await Promise.all(selected.map(node => this.dispatchNode(actorId, runId, node.nodeId, controller)));
         let terminalResult: Snapshot | undefined;
         for (const outcome of outcomes) {
-          const updated = this.finishNode(actorId, runId, outcome.nodeId, outcome.status, outcome.outputs, outcome.reason);
+          const updated = this.finishNode(actorId, runId, outcome.nodeId, outcome.status, outcome.outputs, outcome.reason, outcome.checkpoint);
           if (updated.state !== "running") terminalResult = updated;
         }
         if (terminalResult) return publicView(terminalResult);
@@ -676,8 +1034,8 @@ export class ActionRuntime {
     });
   }
   private async dispatchNode(actorId: string, runId: string, nodeId: string, controller: AbortController): Promise<{
-    nodeId: string; status: "succeeded" | "failed" | "unknown"; outputs?: JsonRecordValue;
-    reason?: ActionNodeReason;
+    nodeId: string; status: "succeeded" | "failed" | "unknown" | "waiting"; outputs?: JsonRecordValue;
+    reason?: ActionNodeReason; checkpoint?: ActionCheckpoint;
   }> {
     try {
       const run = load(this.database, actorId, runId);
@@ -691,7 +1049,7 @@ export class ActionRuntime {
       }
       const implementation = run.implementation;
       const binding: ActionAuthorizationBinding = freeze({
-        actorId, workspaceId: this.options.workspaceId, executableDigest: run.definitionDigest, source: run.source, actionId: String(childDefinition.action_id),
+        actorId, runId, workspaceId: this.options.workspaceId, executableDigest: run.definitionDigest, source: run.source, actionId: String(childDefinition.action_id),
         definition: childDefinition, implementation, nodeId, ...(step ? { step } : {}),
       });
       const inputs = step ? resolveInputs(step.inputs ?? {}, run) : run.inputs;
@@ -700,6 +1058,17 @@ export class ActionRuntime {
       catch { return { nodeId, status: "failed" }; }
       if (adapter.authorizeDefinition(freeze(clone(binding))) !== true
         || adapter.authorizeData(freeze({ ...clone(binding), inputs })) !== true) return { nodeId, status: "failed" };
+      if (step && ["core.checkpoint", "core.wait"].includes(String(step.component))) {
+        const checkpoint = newActionCheckpoint(runId, nodeId, String(step.component), inputs, this.clock(), run.deadline);
+        if (checkpoint.trigger.kind === "dependency") {
+          if (checkpoint.trigger.run_id === runId) return { nodeId, status: "failed" };
+          const dependency = load(this.database, actorId, checkpoint.trigger.run_id);
+          if (dependency.version < checkpoint.trigger.expected_version || checkpoint.trigger.invocation_fingerprint !== undefined
+            && checkpoint.trigger.invocation_fingerprint !== invocationFingerprint(dependency)) return { nodeId, status: "failed" };
+          checkpoint.trigger.invocation_fingerprint = invocationFingerprint(dependency);
+        }
+        return { nodeId, status: "waiting", checkpoint };
+      }
       const remaining = run.deadline - this.clock();
       if (remaining < 1 || controller.signal.aborted) return { nodeId, status: "unknown" };
       const timeout = AbortSignal.timeout(Math.min(remaining, L.deadlineMs));
@@ -737,8 +1106,8 @@ export class ActionRuntime {
       return { nodeId, status: "unknown" };
     }
   }
-  private finishNode(actorId: string, runId: string, nodeId: string, status: "succeeded" | "failed" | "unknown",
-    outputs?: JsonRecordValue, reason?: ActionNodeReason): Snapshot {
+  private finishNode(actorId: string, runId: string, nodeId: string, status: "succeeded" | "failed" | "unknown" | "waiting",
+    outputs?: JsonRecordValue, reason?: ActionNodeReason, checkpoint?: ActionCheckpoint): Snapshot {
     return this.atomic(() => {
       const run = load(this.database, actorId, runId), previous = run.version;
       const node = run.nodes.find(item => item.nodeId === nodeId);
@@ -747,6 +1116,10 @@ export class ActionRuntime {
       if (run.cancelRequested || run.state === "cancelling") {
         node.state = "unknown"; run.state = "unknown";
         this.event(actorId, run, "node-unknown", nodeId); this.event(actorId, run, "run-unknown");
+      } else if (status === "waiting" && checkpoint) {
+        node.state = "waiting"; run.state = "waiting";
+        run.checkpoints = [...run.checkpoints ?? [], actionCheckpoint.parse(checkpoint)];
+        this.event(actorId, run, "checkpoint-created", nodeId);
       } else {
         node.state = status; if (status === "succeeded") node.outputs = outputs;
         if (status !== "succeeded" && reason) node.reason = reason;
@@ -803,7 +1176,7 @@ export class ActionRuntime {
   assertQuiescent(): void {
     this.outside();
     if (this.active.size || this.running.size) fail("BUSY", "Action dispatch is still active.");
-    if (this.database.prepare("SELECT 1 FROM action_runtime_runs WHERE json_extract(snapshot,'$.state') IN ('ready','running','cancelling') LIMIT 1").get()) {
+    if (this.database.prepare("SELECT 1 FROM action_runtime_runs WHERE json_extract(snapshot,'$.state') IN ('ready','running','waiting','cancelling') LIMIT 1").get()) {
       fail("BUSY", "Action runs still require native execution or reconciliation.");
     }
   }

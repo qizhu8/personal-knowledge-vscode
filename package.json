@@ -2,6 +2,7 @@
   "name": "pkm-v5",
   "version": "0.1.0",
   "private": true,
+  "runtimeMcpFacade": "native-v1",
   "type": "module",
   "engines": {
     "node": ">=22.18.0"
@@ -10,7 +11,7 @@
     "test": "node tests/framework/run.cjs",
     "test:list": "node tests/framework/run.cjs --list",
     "test:framework": "node tests/framework/run.cjs --suite framework",
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/verify-native-public-mcp-contracts.mjs && tsc -p tsconfig.json && node scripts/generate-original-mcp-source-protocol.mjs && node scripts/build-chatroom-retained.cjs && node scripts/generate-storage-bootstrap-profile.mjs --check",
     "build:compat": "npm --prefix legacy run build",
     "typecheck": "tsc -p tsconfig.json --noEmit && npm run typecheck:client && npm run typecheck:host",
     "typecheck:client": "tsc -p clients/vscode/tsconfig.json",
@@ -41,6 +42,7 @@
     }
   },
   "devDependencies": {
+    "@github/copilot-sdk": "1.0.34",
     "@types/node": "26.1.0",
     "@types/vscode": "1.90.0",
     "esbuild": "0.28.1",

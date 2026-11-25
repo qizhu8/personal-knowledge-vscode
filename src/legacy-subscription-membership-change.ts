@@ -1,5 +1,5 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { CoreError } from "./contracts.js";
+import { CoreError } from "./host-composition-legacy-batch15-errors.js";
 
 type Pin = { path: string; sha256: string; size: number };
 type Capture = {
@@ -77,12 +77,13 @@ function parseFile(file: Capture["files"][number] | undefined): Record<string, a
 }
 
 function validateAddedRecord(record: Record<string, any>, change: Extract<MembershipChange, { action: "add" }>,
-  files: Capture["files"]): void {
+  files: Capture["files"], currentRead = false): void {
   const link = validateAddedRequest(change);
   if (record.nodeId !== link.nodeId || record.nodeId !== change.publisherNodeId || record.shareId !== link.shareId
     || record.shareId !== change.shareId || record.magicLink !== change.magicLink || record.publicKey !== link.publicKey
     || record.publisher !== link.publisher || record.publisherUser !== link.publisherUser || record.publisherHost !== link.publisherHost
-    || record.endpoint !== change.endpoint || record.alias !== change.alias.trim() || record.priority !== "normal"
+    || record.endpoint !== change.endpoint || record.alias !== change.alias.trim()
+    || (currentRead ? !["normal", "high", "highest"].includes(record.priority) : record.priority !== "normal")
     || !!record.secretProtected !== !!link.secretProtected
     || (link.secretProtected ? !change.secretSalt || record.secretSalt !== change.secretSalt
       : change.secretSalt !== null || record.secretSalt !== undefined)
@@ -108,6 +109,14 @@ function validateAddedRecord(record: Record<string, any>, change: Extract<Member
       || metadata.alias !== record.alias || metadata.endpoint !== record.endpoint || metadata.priority !== record.priority
       || metadata.revision !== record.revision || metadata.collectionHash !== record.collectionHash) return conflict();
   } catch { return conflict(); }
+}
+
+/** Validate a current signed Broker record without synthesizing a membership transition or importing historical authority. */
+export function validateCurrentSubscriptionBrokerRecord(record: Record<string, any>, files: Capture["files"]): void {
+  const change = { action: "add" as const, publisherNodeId: record.nodeId, shareId: record.shareId,
+    magicLink: record.magicLink, alias: record.alias, endpoint: record.endpoint, secretSalt: record.secretSalt ?? null };
+  membershipRequestSha256(change);
+  validateAddedRecord(record, change, files, true);
 }
 
 /** A retry can only touch the approved target after all foreign state is still exact. */

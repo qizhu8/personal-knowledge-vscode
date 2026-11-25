@@ -215,13 +215,34 @@ test("native progress feedback validation fences a concurrent direct mutation bo
   await until(() => manager.calls.published === 1);
   const active = (await f.call("manager.runtime.get", { runId: input.runId })).result;
   const operationId = randomUUID();
-  const feedback = f.call("manager.progress.feedback", {
+  const feedbackInput = {
     operationId, runId: input.runId, expectedVersion: active.version, target: { kind: "task", taskId: "worker-1" }, message: "Exact target only.",
-  });
-  const direct = f.call("manager.runtime.cancel", { operationId, runId: input.runId, expectedVersion: active.version });
-  const [queued, denied] = await Promise.all([feedback, direct]);
+  };
+  const progress = f.runtime.services.managerProgress, validateFeedback = progress.feedback;
+  let validating = false, releaseValidation;
+  const validation = new Promise(resolve => { releaseValidation = resolve; });
+  progress.feedback = async (...args) => {
+    validating = true;
+    await validation;
+    return validateFeedback.apply(progress, args);
+  };
+  const feedback = f.call("manager.progress.feedback", feedbackInput);
+  let queued;
+  try {
+    await until(() => validating, "native feedback reservation");
+    const denied = await f.call("manager.runtime.cancel", { operationId, runId: input.runId, expectedVersion: active.version });
+    assert.equal(denied.error.code, "BUSY", JSON.stringify(denied));
+    assert.match(denied.error.message, /this operationId is already being validated/);
+  } finally {
+    releaseValidation();
+    try { queued = await feedback; } finally { progress.feedback = validateFeedback; }
+  }
   assert.ok(queued.result, JSON.stringify(queued));
-  assert.equal(denied.error.code, "BUSY", JSON.stringify(denied));
+  const committedConflict = await f.call("manager.runtime.cancel", { operationId, runId: input.runId, expectedVersion: active.version });
+  assert.equal(committedConflict.error.code, "CONFLICT", JSON.stringify(committedConflict));
+  const foreignConflict = await f.call("manager.progress.feedback", feedbackInput, { id: "native:foreign-feedback", canWrite: true });
+  assert.equal(foreignConflict.error.code, "CONFLICT", JSON.stringify(foreignConflict));
+  assert.deepEqual((await f.call("manager.progress.feedback", feedbackInput)).result, queued.result);
   assert.equal((await f.call("manager.runtime.get", { runId: input.runId })).result.state, "active");
   manager.release();
   await until(async () => (await f.call("manager.runtime.get", { runId: input.runId })).result.state === "succeeded");

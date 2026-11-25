@@ -14,17 +14,20 @@ export class LegacyRecipeExternalReports {
   private readonly allowStaticBranches: boolean;
   private readonly allowPortedNoops: boolean;
   private readonly allowHumanGates: boolean;
+  private readonly allowResolvedControls: boolean;
   constructor(options: {
     id: string; authorizationDigest: string;
     staticBranches?: boolean;
     portedNoops?: boolean;
     humanGates?: boolean;
+    resolvedControls?: boolean;
     authorizeDefinition: WorkflowStepAdapter["authorizeDefinition"];
     authorizeData?: WorkflowStepAdapter["authorizeData"];
   }) {
     this.allowStaticBranches = options.staticBranches === true;
     this.allowPortedNoops = options.portedNoops === true;
     this.allowHumanGates = options.humanGates === true;
+    this.allowResolvedControls = options.resolvedControls === true;
     const allowed: WorkflowStepAdapter["authorizeDefinition"] = binding =>
       this.supportsNode(binding.node)
       && options.authorizeDefinition(binding) === true;
@@ -36,6 +39,7 @@ export class LegacyRecipeExternalReports {
         portedNoops: this.allowPortedNoops,
         humanGates: this.allowHumanGates,
         legacyInputSemantics: "run-inputs-only/v1",
+        ...(this.allowResolvedControls ? { resolvedControls: true } : {}),
       })).digest("hex"),
       authorizeDefinition: allowed,
       authorizeData: binding => allowed(binding) && (!options.authorizeData || options.authorizeData(binding) === true),
@@ -61,13 +65,19 @@ export class LegacyRecipeExternalReports {
     if (node.kind === HUMAN_GATE_NODE_KIND)
       return this.humanGatesEnabled() && (!node.control || node.control.mode === "single")
         && !node.dependsOn.some(edge => edge.loop);
-    if (node.kind !== "pkm.step.noop/v1" || node.control?.mode === "repeat") return false;
+    if (node.kind !== "pkm.step.noop/v1" || node.control?.mode === "repeat" && !this.allowResolvedControls) return false;
     if (node.ports && !this.portedNoopsEnabled()) return false;
-    if (node.control?.mode === "branch" && (!this.staticBranchesEnabled() || node.control.dynamicCases)) return false;
+    if (node.control?.mode === "branch" && (!this.staticBranchesEnabled() || node.control.dynamicCases && !this.allowResolvedControls)) return false;
     return !node.control || node.control.mode === "single"
-      || node.control.mode === "branch" && this.staticBranchesEnabled() && !node.control.dynamicCases;
+      || node.control.mode === "repeat" && this.allowResolvedControls
+      || node.control.mode === "branch" && this.staticBranchesEnabled() && (!node.control.dynamicCases || this.allowResolvedControls);
   }
   private key(runId: string, nodeId: string) { return `${runId}\0${nodeId}`; }
+  acceptedOutcomes(runId: string, nodeId: string) {
+    const invocation = this.pending.get(this.key(runId, nodeId))?.invocation;
+    if (!invocation) throw new Error("Only the current claimed invocation exposes accepted outcomes.");
+    return legacyExternalReportOutcomes({ ...invocation.node, control: invocation.runtimeControl ?? invocation.node.control });
+  }
   private reportOutputs(node: WorkflowNodeV1, outcome: string, result: unknown, error: string) {
     if (!node.ports) return { result, reportedError: error };
     if (outcome === "failed") return {};
@@ -92,7 +102,7 @@ export class LegacyRecipeExternalReports {
     const pending = this.pending.get(this.key(runId, nodeId))!;
     if (pending.invocation.node.kind === HUMAN_GATE_NODE_KIND)
       throw new Error("Human gate input cannot be replaced by an ordinary Recipe report.");
-    if (!legacyExternalReportOutcomes(pending.invocation.node).includes(outcome))
+    if (!this.acceptedOutcomes(runId, nodeId).includes(outcome))
       throw new Error("outcome is not accepted by the claimed node.");
     if (pending.invocation.legacyRunInputs) return outcome === "failed" ? {} : { result, reportedError: error };
     return this.reportOutputs(pending.invocation.node, outcome, result, error);
@@ -103,7 +113,7 @@ export class LegacyRecipeExternalReports {
     const node = pending.invocation.node;
     pending.complete({
       status: outcome === "failed" ? "failed" : "succeeded",
-      ...(node.control?.mode === "branch" && outcome !== "failed" ? { branch: outcome } : {}),
+      ...((pending.invocation.runtimeControl ?? node.control)?.mode === "branch" && outcome !== "failed" ? { branch: outcome } : {}),
       outputs,
     });
   }

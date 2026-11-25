@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { CoreError } from "./contracts.js";
+import { CoreError } from "./host-composition-legacy-batch15-errors.js";
 import { RenameNoReplaceError, renameNoReplaceSync } from "./rename-no-replace.js";
 
 export const sha256 = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
@@ -10,13 +10,16 @@ export function atomicFileWrite(destination: string, content: string | Uint8Arra
   return atomicFileWriteInternal(destination, content, expected, operationId, false);
 }
 
-export function atomicFileCreateNoReplace(destination: string, content: string | Uint8Array, operationId?: string) {
-  return atomicFileWriteInternal(destination, content, null, operationId, true);
+export function atomicFileCreateNoReplace(destination: string, content: string | Uint8Array, operationId?: string,
+  beforePublication?: () => void) {
+  return atomicFileWriteInternal(destination, content, null, operationId, true, beforePublication);
 }
 
 function atomicFileWriteInternal(
   destination: string, content: string | Uint8Array, expected: string | null, operationId: string | undefined, noReplace: boolean,
+  beforePublication?: () => void,
 ) {
+  beforePublication?.();
   function digest() {
     let stat;
     try { stat = lstatSync(destination); }
@@ -46,6 +49,7 @@ function atomicFileWriteInternal(
     finally { closeSync(descriptor); }
     if (digest() !== expected) throw new CoreError("RECOVERY_CONFLICT", "File changed while preparing a write; the pending operation requires reconciliation.");
     if (noReplace) {
+      beforePublication?.();
       try { renameNoReplaceSync(temporary, destination); }
       catch (error) {
         if (error instanceof RenameNoReplaceError && error.code === "UNAVAILABLE") {

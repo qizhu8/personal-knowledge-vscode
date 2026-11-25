@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { githubSyncIgnoredPath, githubSyncSafeRelativePath } from "./domain/sync-plan-original.js";
+import { githubSyncIgnoredPath, githubSyncSafeRelativePath } from "./sync-storage-boundary.js";
 import {
   syncNoteFileHasUnlimitedText, syncPlanInputSchema, syncPlanLimits,
   type SyncManifest, type SyncPlanInput,

@@ -1,13 +1,22 @@
 import * as vscode from "vscode";
 import { randomBytes } from "node:crypto";
+import { join } from "node:path";
 import { publicName } from "../../src/public-identity";
 import { bindWebview, registerCommands, VscodeClient } from "../vscode/index.ts";
 import { IsolatedManagedMigration } from "./managed-migration";
 import { registerFirstRunImport } from "./first-run-import";
 import { productionCoordinatorConfiguration, registerProductionCoordinator } from "./production-coordinator";
 import { McpApiUnavailableError, registerIsolatedMcp } from "./mcp-provider";
+import { bindOriginalMcpEnrollment } from "./original-mcp-enrollment.js";
+import { registerOriginalMcpNativeIdentity } from "./original-mcp-native-identity.js";
+import { registerOriginalMcpNativeAttachment } from "./original-mcp-native-attachment.js";
+import { registerOriginalMcpNativeCredentials } from "./original-mcp-native-credentials.js";
+import { sharedManagedRequest, type SharedManagedBinding } from "../../src/shared-managed-client.js";
+import { experimentalPanelHtml } from "./chat-panel.js";
 
 const secretKey = "pkm.next-host.bearer";
+const sharedTokenKey = "pkm.next-host.shared-bearer";
+const sharedManagementKey = "pkm.next-host.shared-management";
 type Disposable = { dispose(): void };
 let migration: IsolatedManagedMigration | undefined;
 let production: ReturnType<typeof registerProductionCoordinator> | undefined;
@@ -31,6 +40,7 @@ export function activate(context: vscode.ExtensionContext): Readonly<{ assertAct
   const panels = new Set<vscode.WebviewPanel>();
   const bindings = new Map<vscode.WebviewPanel, Disposable>();
   const diagnostics = vscode.window.createOutputChannel("pkm-v5 Experimental");
+  const originalEnrollment = bindOriginalMcpEnrollment(context.globalStorageUri.fsPath);
   production = registerProductionCoordinator(context, diagnostics);
   const mcpRoot = () => {
     if (productionCoordinatorConfiguration()) return undefined;
@@ -39,8 +49,36 @@ export function activate(context: vscode.ExtensionContext): Readonly<{ assertAct
     if (typeof root !== "string" || root !== root.trim()) throw new Error("INVALID_ISOLATED_MANAGED_ROOT");
     return root;
   };
+  const originalMcp = () => {
+    const enrolled = originalEnrollment.current();
+    if (enrolled && productionCoordinatorConfiguration())
+      throw new Error("ORIGINAL_MCP_CONFIGURATION_CONFLICT");
+    return enrolled;
+  };
+  const sharedConfiguration = () => {
+    const value = vscode.workspace.getConfiguration("pkm.nextHost").inspect<unknown>("sharedServer")?.globalValue;
+    if (value === undefined || value && typeof value === "object" && (value as { enabled?: unknown }).enabled === false)
+      return undefined;
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("INVALID_SHARED_SERVER");
+    const config = value as Record<string, unknown>;
+    if (config.enabled !== true || typeof config.origin !== "string" || typeof config.serviceId !== "string"
+      || config.backendKind !== undefined && !["native-public-mcp", "standalone-core"].includes(String(config.backendKind))
+      || config.generation !== undefined && (typeof config.generation !== "string" || !/^[a-f0-9-]{36}$/.test(config.generation))
+      || productionCoordinatorConfiguration()) throw new Error("INVALID_SHARED_SERVER");
+    return { origin: config.origin, serviceId: config.serviceId, generation: config.generation as string | undefined,
+      backendKind: (config.backendKind ?? "native-public-mcp") as "native-public-mcp" | "standalone-core" };
+  };
+  const sharedBinding = async (management = false): Promise<SharedManagedBinding> => {
+    const config = sharedConfiguration();
+    const token = await context.secrets.get(management ? sharedManagementKey : sharedTokenKey);
+    if (!config || !token) throw new Error("SHARED_SERVER_PROVISIONING_REQUIRED");
+    return { origin: config.origin, serviceId: config.serviceId, token };
+  };
   let mcp: ReturnType<typeof registerIsolatedMcp> | undefined;
-  try { mcp = registerIsolatedMcp(vscode, mcpRoot); }
+  try { mcp = registerIsolatedMcp(vscode, mcpRoot, originalMcp, async () => sharedConfiguration()
+    ? { ...await sharedBinding(), backendKind: sharedConfiguration()!.backendKind,
+      relayPath: join(context.extensionPath, "next-runtime", "server", "dist", "shared-managed-relay.js") }
+    : undefined); }
   catch (error) {
     if (!(error instanceof McpApiUnavailableError)) throw error;
     diagnostics.appendLine(`${error.code}: ${error.message}`);
@@ -49,7 +87,12 @@ export function activate(context: vscode.ExtensionContext): Readonly<{ assertAct
   const mcpConfiguration = vscode.workspace.onDidChangeConfiguration(event => {
     if (event.affectsConfiguration("pkm.nextHost.managedRoot")
       || event.affectsConfiguration("pkm.nextHost.productionCoordinator")) mcp?.refresh();
+    if (event.affectsConfiguration("pkm.nextHost.sharedServer")) {
+      // The relay definition stays stable across generation changes; only its backend is handed off.
+      void applySharedSelection().catch(error => diagnostics.appendLine(`Shared server selection refused: ${String(error)}. No request was replayed.`));
+    }
   });
+  const originalInventory = originalMcp() ? vscode.extensions.onDidChange(() => mcp?.refresh()) : undefined;
 
   const reset = () => {
     const pending = client?.state().pending ?? [];
@@ -94,6 +137,81 @@ export function activate(context: vscode.ExtensionContext): Readonly<{ assertAct
       return undefined;
     }
   };
+  let sharedTransition: Promise<unknown> | undefined;
+  const sharedManage = async (action: string, generation?: string, fields?: { receiptId?: string; acknowledge: string }) => {
+    if (sharedTransition) throw new Error("SHARED_TRANSITION_RUNNING");
+    const selected = sharedConfiguration();
+    const binding = await sharedBinding(true);
+    const confirmation = await vscode.window.showWarningMessage(
+      `pkm-v5 shared isolated server ${binding.serviceId}: ${action}${generation ? ` to ${generation}` : ""}${fields?.receiptId ? ` reviewed receipt ${fields.receiptId}` : ""}? All enrolled clients share this backend. No uncertain write will be replayed.${action === "revoke-access" ? " This revokes the current business credential for EVERY HTTP/MCP client, including connected clients. Already-admitted work is not cancelled. A new independently provisioned environment credential and manager restart are required to restore business access." : ""}`,
+      { modal: true }, "Approve");
+    if (confirmation !== "Approve") return;
+    if (sharedTransition) throw new Error("SHARED_TRANSITION_RUNNING");
+    if (JSON.stringify(sharedConfiguration()) !== JSON.stringify(selected)) throw new Error("SHARED_SELECTION_CHANGED");
+    sharedTransition = (async () => {
+      const approval = await sharedManagedRequest(binding, "/manage/approve", { action,
+        ...(generation ? { generation } : {}), ...fields });
+      return sharedManagedRequest(binding, `/manage/${action}`, {
+        approvalId: approval.approvalId, ...(generation ? { generation } : {}), ...fields,
+      });
+    })();
+    try { return await sharedTransition; } finally { sharedTransition = undefined; }
+  };
+  const applySharedSelection = async () => {
+    const config = sharedConfiguration();
+    if (!config) { mcp?.refresh(); return; }
+    const status = await sharedManagedRequest(await sharedBinding(), "/shared/status");
+    if (config.generation && status.generation !== config.generation) await sharedManage("switch", config.generation);
+    // Refresh only an origin/identity change, not the live generation selection.
+    const identity = JSON.stringify([config.origin, config.serviceId, config.backendKind]);
+    if (sharedIdentity !== identity) { sharedIdentity = identity; mcp?.refresh(); }
+  };
+  let sharedIdentity = (() => {
+    try {
+      const config = sharedConfiguration();
+      return config ? JSON.stringify([config.origin, config.serviceId, config.backendKind]) : undefined;
+    } catch { diagnostics.appendLine("Invalid shared server machine settings; provisioning is refused."); return undefined; }
+  })();
+  const sharedCommands = [
+    vscode.commands.registerCommand("pkm.nextHost.sharedStatus", safe(async () => {
+      const status = await sharedManagedRequest(await sharedBinding(), "/shared/status")
+        .catch(async () => sharedManagedRequest(await sharedBinding(true), "/manage/status"));
+      diagnostics.appendLine(JSON.stringify(status)); diagnostics.show(); return status;
+    })),
+    vscode.commands.registerCommand("pkm.nextHost.sharedSwitch", safe(() => applySharedSelection())),
+    vscode.commands.registerCommand("pkm.nextHost.sharedRecover", safe(() => sharedManage("recover"))),
+    vscode.commands.registerCommand("pkm.nextHost.sharedCleanupRuntime", safe(() => sharedManage("cleanup-runtime"))),
+    vscode.commands.registerCommand("pkm.nextHost.sharedResetIndex", safe(() => sharedManage("reset-index"))),
+    vscode.commands.registerCommand("pkm.nextHost.sharedRevokeAccess", safe(() => sharedManage("revoke-access",
+      undefined, { acknowledge: "revoke-current-business-credential" }))),
+    vscode.commands.registerCommand("pkm.nextHost.sharedHumanReview", safe(async () => {
+      const enrollment = await sharedManage("human-review-enrollment");
+      if (!enrollment) return;
+      if (typeof enrollment !== "object" || !("code" in enrollment)
+        || typeof enrollment.code !== "string" || !/^[a-f0-9]{64}$/.test(enrollment.code))
+        throw new Error("INVALID_HUMAN_ENROLLMENT");
+      await vscode.window.showInputBox({ password: true, ignoreFocusOut: true, value: enrollment.code,
+        prompt: "Copy this one-use native HUMAN APPROVAL enrollment code. Valid 120 seconds; paste into the separate review desk. Never send it to a model or ordinary client." });
+      await vscode.env.openExternal(vscode.Uri.parse(`${(await sharedBinding(true)).origin}/human-review`));
+    })),
+    vscode.commands.registerCommand("pkm.nextHost.sharedReconcile", safe(async () => {
+      const receiptId = await vscode.window.showInputBox({ ignoreFocusOut: true,
+        prompt: "Exact unknown receipt UUID, only AFTER independently reviewing its actual outcome. This acknowledges review; it never retries." });
+      if (receiptId === undefined) return;
+      if (!/^[a-f0-9-]{36}$/.test(receiptId)) throw new Error("INVALID_RECEIPT");
+      return sharedManage("reconcile", undefined, { receiptId, acknowledge: "reviewed-outcome-no-replay" });
+    })),
+    ...[[sharedTokenKey, "pkm.nextHost.setSharedToken", "business"],
+      [sharedManagementKey, "pkm.nextHost.setSharedManagementToken", "management"]].map(([key, command, authority]) =>
+      vscode.commands.registerCommand(command, safe(async () => {
+        const value = await vscode.window.showInputBox({ password: true, ignoreFocusOut: true,
+          prompt: `Independently provisioned shared server ${authority} token` });
+        if (value === undefined) return;
+        if (value.length < 32 || /[\r\n]/.test(value)) throw new Error("INVALID_TOKEN");
+        await context.secrets.store(key, value);
+        if (key === sharedTokenKey) mcp?.refresh();
+      }))),
+  ];
   // Use the shared command adapter but deliberately omit human-review registration.
   const commandHost = {
     registerCommand(id: string, handler: () => Promise<unknown> | unknown): Disposable {
@@ -147,8 +265,11 @@ export function activate(context: vscode.ExtensionContext): Readonly<{ assertAct
       return migration!.invoke(name, input as Record<string, unknown>);
     }),
   ];
-  context.subscriptions.push(open, token, ...(mcp ? [mcp] : []), mcpConfiguration,
-    ...migrationCommands, ...registerFirstRunImport(context, diagnostics),
+  context.subscriptions.push(open, token, ...(mcp ? [mcp] : []), mcpConfiguration, ...(originalInventory ? [originalInventory] : []),
+    ...migrationCommands, ...sharedCommands, ...registerFirstRunImport(context, diagnostics),
+    registerOriginalMcpNativeIdentity(context, diagnostics),
+    registerOriginalMcpNativeAttachment(context, diagnostics),
+    registerOriginalMcpNativeCredentials(context, diagnostics),
     ...production.subscriptions, persistentRegistrations, {
     dispose() {
       if (disposed) return; disposed = true; reset();
@@ -165,19 +286,6 @@ export function activate(context: vscode.ExtensionContext): Readonly<{ assertAct
 export async function deactivate(): Promise<void> { await production?.close(); await migration?.close(); }
 
 function html(): string {
-  // The page has no user-controlled HTML, network access, or dynamic code.
   const nonce = randomBytes(16).toString("base64");
-  return `<!doctype html><html><head><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'">
-<meta name="viewport" content="width=device-width, initial-scale=1"></head>
-<body><h1>pkm-v5 (Experimental)</h1><p>Uncertain writes are kept only in memory. Reconcile server receipts before replacing a request.</p>
-<button id="state">State</button><button id="list">List documents</button><pre id="result"></pre>
-<script nonce="${nonce}">
-const vscode = acquireVsCodeApi();
-let sequence = 0;
-const send = action => vscode.postMessage({ requestId: String(++sequence), action, input: {} });
-document.getElementById('state').addEventListener('click', () => send('state'));
-document.getElementById('list').addEventListener('click', () => send('knowledgeList'));
-window.addEventListener('message', event => { document.getElementById('result').textContent = JSON.stringify(event.data, null, 2); });
-</script></body></html>`;
+  return experimentalPanelHtml(nonce);
 }

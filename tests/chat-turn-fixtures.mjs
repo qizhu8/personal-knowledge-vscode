@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { ChatTurnStore } from "../dist/chat-turn-store.js";
 import { ChatTurnService } from "../dist/chat-turn.js";
+import { createChatSessionStore, initializeChatSessionSchema } from "../dist/chat-session.js";
 
 export function chatTurnInput(extra = {}) {
   return {
@@ -21,6 +22,11 @@ export function chatTurnFixture(options = {}) {
   };
   transaction(() => db.exec(`CREATE TABLE IF NOT EXISTS synthetic_parent_receipts(
     actor TEXT NOT NULL,operation_id TEXT NOT NULL,fingerprint TEXT NOT NULL,PRIMARY KEY(actor,operation_id))`));
+  let sessions;
+  if (options.sessionBacked) {
+    transaction(() => initializeChatSessionSchema(db));
+    sessions = createChatSessionStore(db);
+  }
   const store = new ChatTurnStore(db, {
     receipt(receipt) {
       if (!db.isTransaction) throw new Error("Parent receipt must be atomic.");
@@ -28,11 +34,12 @@ export function chatTurnFixture(options = {}) {
       options.receipt?.(receipt);
     },
     ...(options.now ? { now: options.now } : {}),
+    ...(sessions ? { session: sessions.sessionTurns } : {}),
   });
   transaction(() => store.initialize());
   const service = new ChatTurnService({ store, transaction, model: options.model, tools: options.tools,
     ...(options.now ? { now: options.now } : {}), ...(options.admitPrompt ? { admitPrompt: options.admitPrompt } : {}) });
-  return { db, store, service, transaction };
+  return { db, store, service, transaction, sessions };
 }
 export function chatTurnEvents(service, actor, id) {
   let after = 0;

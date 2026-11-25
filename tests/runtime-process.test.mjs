@@ -242,6 +242,12 @@ test("store calls reject outer transactions; duplicate ownership and stale takeo
 test("configuration caps cannot be raised or bypass trusted authorization", () => {
   const base = { repositoryFactory: () => { throw new Error("must not reach repository"); }, adapters: [], authorizeLaunch: async () => true };
   assert.throws(() => new RuntimeProcessService({ ...base, limits: { queue: 33 } }), { code: "INVALID_LIMIT" });
+  assert.throws(() => new RuntimeProcessService({ ...base, limits: { deadlineMs: 300001 } }), { code: "INVALID_LIMIT" });
+  assert.throws(() => new RuntimeProcessService({ ...base, originalPortalCommand: { assertCurrent() {} },
+    limits: { deadlineMs: 86400001 } }), { code: "INVALID_LIMIT" });
+  assert.throws(() => new RuntimeProcessService({ ...base,
+    originalPortalCommand: { assertCurrent() { throw new Error("Portal authority revoked"); } },
+    limits: { deadlineMs: 86400000 } }), /Portal authority revoked/);
   assert.throws(() => new RuntimeProcessService({ ...base, authorizeLaunch: undefined }), { code: "INVALID_ADAPTER" });
   assert.throws(() => new RuntimeProcessService({ ...base, adapters: [{ id: "bad", executable: "relative", arguments: () => [] }] }), { code: "INVALID_ADAPTER" });
 });

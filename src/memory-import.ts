@@ -6,6 +6,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { encodeImportedMemoryDocument, explicitMemoryStateSchema, readMemoryRecord, type ExplicitMemoryState } from "./memory.js";
 import { memoryDefinitions } from "./memory-contracts.js";
+import { createKnowledgeId } from "./domain/knowledge-contracts.js";
 import {
   legacyMemoryImportPlanSchema, legacyMemoryImportReceiptSchema,
   type LegacyMemoryImportPlan, type LegacyMemoryImportReceipt,
@@ -371,7 +372,10 @@ async function writeOwnedFile(path: string, bytes: Buffer): Promise<void> {
   try { await file.writeFile(bytes); await file.sync(); } finally { await file.close(); }
 }
 
-export async function stageLegacyMemoryImport(planInput: LegacyMemoryImportPlan, stage: string): Promise<StagedLegacyMemoryImport> {
+export async function stageLegacyMemoryImport(planInput: LegacyMemoryImportPlan, stage: string,
+  options?: { documentIdentity: "source-derived/v1" }): Promise<StagedLegacyMemoryImport> {
+  if (options && options.documentIdentity !== "source-derived/v1")
+    fail("STAGING_INVALID", "Unsupported explicit Memory document identity protocol.");
   const plan = legacyMemoryImportPlanSchema.parse(planInput);
   const { planSha256, ...body } = plan;
   if (planDigest(body) !== planSha256) fail("PLAN_CHANGED", "Memory import plan was modified.");
@@ -401,7 +405,9 @@ export async function stageLegacyMemoryImport(planInput: LegacyMemoryImportPlan,
     const state = item.state;
     const document = encodeImportedMemoryDocument(state, {
       ...item.provenance, sourceDatabaseSha256: plan.sourceSha256,
-    });
+    }, options?.documentIdentity === "source-derived/v1" ? createKnowledgeId(() => Buffer.from(hash(JSON.stringify([
+      "pkm.legacy-memory-knowledge/v1", plan.sourceSha256, plan.engineIdentity, state.scope, state.id,
+    ])), "hex").subarray(0, 12)) : undefined);
     const record = readMemoryRecord(document);
     const path = `${document.record.path}`;
     await writeOwnedFile(join(base, "notes", ...path.split("/")), Buffer.from(document.raw, "utf8"));
@@ -425,9 +431,7 @@ export async function stageLegacyMemoryImport(planInput: LegacyMemoryImportPlan,
   return { receipt, operations };
 }
 
-export function persistLegacyMemoryImport(database: DatabaseSync, workspaceId: string, imported: StagedLegacyMemoryImport): void {
-  if (!workspaceId) fail("STAGING_INVALID", "Imported Memory receipts require a staged workspace identity.");
-  database.exec(`
+export const legacyMemoryImportDdl = `
     CREATE TABLE IF NOT EXISTS legacy_memory_imports(
       singleton INTEGER PRIMARY KEY CHECK(singleton=1), workspace_id TEXT NOT NULL,
       source_sha256 TEXT NOT NULL, engine_identity TEXT NOT NULL, actor_id TEXT NOT NULL,
@@ -437,7 +441,10 @@ export function persistLegacyMemoryImport(database: DatabaseSync, workspaceId: s
       operation_id TEXT PRIMARY KEY, source_sha256 TEXT NOT NULL, method TEXT NOT NULL,
       request_hash TEXT NOT NULL, params_json TEXT NOT NULL, result_json TEXT NOT NULL
     );
-  `);
+  `;
+export function persistLegacyMemoryImport(database: DatabaseSync, workspaceId: string, imported: StagedLegacyMemoryImport): void {
+  if (!workspaceId) fail("STAGING_INVALID", "Imported Memory receipts require a staged workspace identity.");
+  database.exec(legacyMemoryImportDdl);
   database.prepare("INSERT INTO legacy_memory_imports VALUES(1,?,?,?,?,?,?)").run(
     workspaceId, imported.receipt.sourceDatabaseSha256, imported.receipt.engineIdentity,
     imported.receipt.actorId, imported.receipt.receiptSha256, JSON.stringify(imported.receipt),

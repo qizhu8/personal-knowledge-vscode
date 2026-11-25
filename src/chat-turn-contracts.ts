@@ -14,6 +14,7 @@ export const chatTurnMessageInput = z.strictObject({
 });
 export const chatTurnStartInput = z.strictObject({
   id, sessionId: id, operationId: z.string().uuid(), expectedRevision: z.literal(0),
+  expectedSessionRevision: positive.optional(),
   messages: z.array(chatTurnMessageInput).min(1).max(CHAT_TURN_LIMITS.messages),
   maxSteps: positive.max(CHAT_TURN_LIMITS.steps).default(4),
   maxOutputTokens: positive.max(CHAT_TURN_LIMITS.outputTokens).default(4096),
@@ -34,6 +35,7 @@ export interface ChatTurnMessage {
 export type ChatTurnStatus = "queued" | "model" | "tool" | "approval" | "completed" | "cancelled" | "failed" | "unknown";
 export interface ChatTurnRecord {
   schema: "pkm.chat.turn/v1"; id: string; sessionId: string; actor: string; revision: number;
+  sessionBacked?: true;
   contextDigest: string;
   status: ChatTurnStatus; replay: "never"; createdAt: number; updatedAt: number; deadline: number;
   messages: ChatTurnMessage[]; output: string; step: number; toolCount: number;
@@ -55,6 +57,7 @@ const toolCall = z.strictObject({
 });
 export const chatTurnRecordSchema = z.strictObject({
   schema: z.literal("pkm.chat.turn/v1"), id, sessionId: id, actor: z.string().min(1).max(256),
+  sessionBacked: z.literal(true).optional(),
   revision: positive, contextDigest: z.string().regex(/^[a-f0-9]{64}$/),
   status: z.enum(["queued", "model", "tool", "approval", "completed", "cancelled", "failed", "unknown"]),
   replay: z.literal("never"), createdAt: count, updatedAt: count, deadline: count,
@@ -97,5 +100,9 @@ export function createChatTurnDefinitions(nativeProviderAvailable = false) {
       description: "Read bounded actor-private durable events using a turn-scoped numeric cursor." },
     { id: "chat.turn.cancel", readOnly: false, input: chatTurnCancelInput, output: chatTurnRecordSchema,
       description: "CAS-cancel a turn. In-flight tool effects may be unknown; cancellation does not roll them back." },
+    { id: "chat.turn.list", readOnly: true,
+      input: z.strictObject({ sessionId: id, after: id.optional(), limit: positive.max(CHAT_TURN_LIMITS.pageItems).default(20) }),
+      output: z.strictObject({ items: z.array(chatTurnRecordSchema).max(CHAT_TURN_LIMITS.pageItems), next: id.nullable() }),
+      description: "Discover actor-private session turns without resuming or replaying generation." },
   ] as const;
 }

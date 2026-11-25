@@ -6,10 +6,8 @@ import { inspectLegacyApiChatArchive, type LegacyApiChatArchive } from "./legacy
 import { legacyManagedApiChatRoots } from "./legacy-api-chat-managed-archive.js";
 import { inspectLegacyManagedWriterSession, type LegacyManagedWriterSession } from "./legacy-managed-writer-session.js";
 import { inspectLegacyUiBootstrapCompatibility, type LegacyUiBootstrapCompatibility } from "./legacy-ui-bootstrap-compatibility.js";
-
-const privacyTypes = new Set([
-  "skills", "notes", "papers", "prompts", "packages", "servers", "scripts", "recipes", "actions", "action-module-sets",
-]);
+import { validatePrivacyPolicy } from "./legacy-content-privacy.js";
+export { validatePrivacyPolicy } from "./legacy-content-privacy.js";
 const maximumPrivacyBytes = 2 * 1024 * 1024;
 const sha256 = (value: Uint8Array | string) => createHash("sha256").update(value).digest("hex");
 
@@ -64,26 +62,6 @@ function requireDirectory(path: string, privateDirectory = false): void {
       && (stat.mode & 0o7000) === 0 && (stat.mode & 0o002) === 0;
     if (process.getuid && stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0 && !legacyMode) {
       fail(path, "Original private .pkm state directories must be owned and inaccessible to group/other, except for the two legacy-created container directories.");
-    }
-  }
-}
-
-export function validatePrivacyPolicy(bytes: Buffer): void {
-  let state: unknown;
-  try { state = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
-  catch { fail(".pkm/content-privacy.json", "Original content privacy must remain valid UTF-8 JSON."); }
-  if (!state || typeof state !== "object" || Array.isArray(state)
-    || !("schema" in state) || state.schema !== 1
-    || !("private" in state) || !state.private || typeof state.private !== "object" || Array.isArray(state.private)) {
-    fail(".pkm/content-privacy.json", "Only the original schema-1 content privacy policy is supported by this slice.");
-  }
-  if (Object.keys(state).some(key => key !== "schema" && key !== "private")) {
-    fail(".pkm/content-privacy.json", "Original content privacy has unsupported schema-1 fields.");
-  }
-  for (const [type, values] of Object.entries(state.private)) {
-    if (!privacyTypes.has(type) || !Array.isArray(values)
-      || values.some(value => typeof value !== "string" || !value || value.length > 512 || /[\u0000-\u001f\u007f]/.test(value))) {
-      fail(".pkm/content-privacy.json", "Original content privacy contains an unsupported type or non-array policy.");
     }
   }
 }

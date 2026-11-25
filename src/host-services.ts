@@ -8,8 +8,9 @@ import {
   ActionRuntime, actionRuntimeDefinitions, mutateActionRuntime, readActionRuntime, validatePurePipeline,
   exactPipelineArtifactInput, hasArtifactField, isPipelineArtifactForward,
   type ActionNativeAdapter, type ActionInvocation, type ActionAuthorizationBinding, type ActionRuntimeHostRequest,
+  type ActionObservedReconciliation,
 } from "./action-runtime.js";
-import { createActionProcessBridge, type ActionProcessBridgeOptions } from "./action-runtime-process.js";
+import { createActionProcessBridge, type ActionProcessBridgeOptions, type ActionObservedCompletion } from "./action-runtime-process.js";
 import { pureComponentAdapter, pureComponentAvailable } from "./action-pure-components.js";
 import { artifactAdapter } from "./action-artifact-adapter.js";
 import { admitLegacyActionArtifactPath, inspectActionArtifact, legacyActionArtifact,
@@ -64,6 +65,8 @@ export interface HostServicesOptions {
     adapters?: Readonly<Record<string, ActionNativeAdapter>>;
     process?: Omit<ActionProcessBridgeOptions, "database" | "workspaceRoot" | "authorizeLaunch">;
     automaticTrusted?: AutomaticActionTrustAuthority;
+    approveObservedReconciliation?(observed: ActionObservedCompletion, expectedVersion: number, reason: string): Promise<boolean>;
+    assertObservedReconciliationCurrent?(observed: ActionObservedCompletion): void;
     approvePurePipeline?(binding: ActionAuthorizationBinding & { inputs: Record<string, unknown> },
       artifact?: Readonly<{ artifactId: string; digest: string; size: number }>): Promise<boolean>;
     approveManagedArtifact?(binding: ActionAuthorizationBinding & { inputs: Record<string, unknown> },
@@ -93,7 +96,7 @@ const automaticProposal = z.strictObject({
 const automaticProposalEnvelope = z.strictObject({
   actorId: z.string().min(1), workspaceId: z.string().min(1), proposal: automaticProposal,
 });
-const automaticAdmissionDdl = `
+export const automaticAdmissionDdl = `
 CREATE TABLE IF NOT EXISTS native_action_automatic_admissions(
   proposal_id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, workspace_id TEXT NOT NULL,
   action_id TEXT NOT NULL, content_hash TEXT NOT NULL, executable_digest TEXT NOT NULL,
@@ -111,7 +114,7 @@ CREATE TRIGGER IF NOT EXISTS native_action_automatic_readmissions_no_update
 BEFORE UPDATE ON native_action_automatic_readmissions BEGIN SELECT RAISE(ABORT,'native Action readmission immutable'); END;
 CREATE TRIGGER IF NOT EXISTS native_action_automatic_readmissions_no_delete
 BEFORE DELETE ON native_action_automatic_readmissions BEGIN SELECT RAISE(ABORT,'native Action readmission immutable'); END;`;
-const automaticCallsDdl = `
+export const automaticCallsDdl = `
 CREATE TABLE IF NOT EXISTS native_action_automatic_calls(
   actor_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, request_sha256 TEXT NOT NULL,
   operation_id TEXT NOT NULL, run_id TEXT NOT NULL, deadline INTEGER NOT NULL,
@@ -121,7 +124,7 @@ CREATE TRIGGER IF NOT EXISTS native_action_automatic_calls_no_update
 BEFORE UPDATE ON native_action_automatic_calls BEGIN SELECT RAISE(ABORT,'native Action call receipt immutable'); END;
 CREATE TRIGGER IF NOT EXISTS native_action_automatic_calls_no_delete
 BEFORE DELETE ON native_action_automatic_calls BEGIN SELECT RAISE(ABORT,'native Action call receipt immutable'); END;`;
-const nestedArtifactDdl = `
+export const nestedArtifactDdl = `
 CREATE TABLE IF NOT EXISTS native_action_nested_artifacts(
   actor_id TEXT NOT NULL, parent_run_id TEXT NOT NULL, child_run_id TEXT NOT NULL, artifact_id TEXT NOT NULL,
   payload TEXT NOT NULL, payload_sha256 TEXT NOT NULL, PRIMARY KEY(actor_id,parent_run_id,child_run_id)
@@ -143,7 +146,8 @@ function canonicalJson(value: unknown): string {
     .map(key => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
 }
 
-function uuidFromDigest(value: string): string {
+export function automaticActionOperationId(workspaceId: string, actorId: string, idempotencyKey: string): string {
+  const value = `${workspaceId}\0${actorId}\0${idempotencyKey}`;
   const bytes = createHash("sha256").update(value).digest("hex").slice(0, 32).split("");
   bytes[12] = "4";
   bytes[16] = (8 + (Number.parseInt(bytes[16]!, 16) & 3)).toString(16);
@@ -334,9 +338,16 @@ export function createHostServices(options: HostServicesOptions) {
   function notify() {
     try { options.onLifecycle?.(); } catch { /* Durable events remain available to bounded readers. */ }
   }
+  let reconciliationGrant: { key: string; epoch: string } | undefined;
   const runtime = new ActionRuntime(database, {
     workspaceRoot: options.storage.workspaceRoot(), workspaceId: options.workspaceId,
     adapters, assertOwner: options.assertOwner, initialized: true, deferRecovery: true,
+    authorizeObservedReconciliation(actorId, input) {
+      const grant = reconciliationGrant; reconciliationGrant = undefined;
+      const current = readTrust();
+      return !!grant && !!current && current.actorId === actorId && current.epoch === grant.epoch
+        && grant.key === originalDigest({ actorId, input });
+    },
     authorizePipelineArtifact(actorId, inputs, output) {
       const current = readTrust(), artifactId = exactPipelineArtifactInput(inputs);
       if (!current || current.actorId !== actorId || !artifactId || !isPipelineArtifactForward(inputs, output)) return false;
@@ -688,6 +699,45 @@ export function createHostServices(options: HostServicesOptions) {
       throw new CoreError("ACCESS_DENIED", "Action registration or workspace trust changed during lookup.");
     return exact ? originalDefinitionValue(exact.proposal.definition) : undefined;
   }
+  async function prepareRegisteredActionExport(actor: Actor, actionIds: readonly string[]) {
+    available();
+    if (!options.action?.automaticTrusted) return undefined;
+    const current = await trustedContext(actor);
+    const selected = new Map<string, { definition: Record<string, unknown>; contentHash: string; proposalId: string }>();
+    const visit = async (actionId: string) => {
+      if (selected.has(actionId) || builtinActionDefinitions().has(actionId)) return;
+      const exact = registeredAction(current, actionId);
+      if (!exact) return;
+      if (selected.size >= 1000) throw new CoreError("RESOURCE_LIMIT", "Registered Action export exceeds its source closure bound.");
+      if (options.action?.automaticTrusted?.authorize
+        && !await options.action.automaticTrusted.authorize(actionId, exact.contentHash, current.epoch))
+        throw new CoreError("ACCESS_DENIED", "The host denied this registered export source.");
+      selected.set(actionId, { definition: originalDefinitionValue(exact.proposal.definition),
+        contentHash: exact.contentHash, proposalId: exact.proposal.proposal_id });
+      for (const child of Object.keys(exact.proposal.definition.dependencies as Record<string, unknown> ?? {})) await visit(child);
+    };
+    for (const actionId of actionIds) await visit(actionId);
+    const assertCurrent = () => {
+      available();
+      const refreshed = readTrust();
+      if (!refreshed || refreshed.actorId !== current.actorId || refreshed.workspaceId !== current.workspaceId
+        || refreshed.epoch !== current.epoch)
+        throw new CoreError("ACCESS_DENIED", "Registered export workspace authority changed.");
+      for (const [actionId, source] of selected)
+        if (registeredAction(current, actionId, source.contentHash)?.proposal.proposal_id !== source.proposalId)
+          throw new CoreError("CONFLICT", "Registered export source revision changed.");
+    };
+    assertCurrent();
+    const refresh = async () => {
+      for (const [actionId, source] of selected) {
+        const currentDefinition = await readRegisteredAction(actor, actionId);
+        if (!currentDefinition || originalDigest(currentDefinition) !== originalDigest(source.definition))
+          throw new CoreError("CONFLICT", "Registered export source authority changed.");
+      }
+      assertCurrent();
+    };
+    return { definitions: [...selected.values()].map(value => structuredClone(value.definition)), assertCurrent, refresh };
+  }
   async function readAutomaticActionResult(actor: Actor, runId: string, activeParent?: string): Promise<Record<string, unknown> | undefined> {
     available();
     const current = await trustedContext(actor);
@@ -742,6 +792,86 @@ export function createHostServices(options: HostServicesOptions) {
         throw new CoreError("ACCESS_DENIED", "The nested artifact root result is unavailable.");
     }
     return output;
+  }
+  async function reconcileAutomaticActionRun(actor: Actor, requestValue: unknown): Promise<boolean> {
+    available();
+    if (!options.action?.automaticTrusted) return false;
+    const request = z.strictObject({ run_id: z.string(), expected_version: z.number().safe().int().positive(),
+      kind: z.string().optional(), outcome: z.string().nullable().optional(),
+      evidence: z.record(z.string(), z.unknown()).nullable().optional() }).parse(requestValue);
+    const call = database.prepare("SELECT * FROM native_action_automatic_calls WHERE actor_id=? AND run_id=?")
+      .get(actor.id, request.run_id);
+    if (!call) return false;
+    const current = await trustedContext(actor);
+    const expectedVersion = z.number().safe().int().positive().parse(request.expected_version);
+    if ((request.kind ?? "manual") !== "manual" || request.outcome !== "succeeded")
+      throw new CoreError("NOT_AVAILABLE", "Only an authoritative observed completion can reconcile this native Run; no guessed outcome or replay is allowed.");
+    const evidence = z.strictObject({ reason: z.string().trim().min(1).max(4096), output: z.json().optional() }).parse(request.evidence);
+    const observed = processBridge?.observedCompletion(actor.id, request.run_id);
+    if (!observed)
+      throw new CoreError("NOT_AVAILABLE", "No exact owned observed process completion is available. Ambiguous outcomes and lost post-restart output stay UNKNOWN.");
+    const run = runtime.maintenanceSnapshot(actor.id, request.run_id);
+    const binding = observed.binding;
+    const exact = registeredAction(current, binding.actionId, String(originalDefinitionValue(binding.definition).content_hash));
+    const admission = exact && database.prepare("SELECT payload_sha256 FROM native_action_automatic_admissions WHERE proposal_id=?")
+      .get(exact.proposal.proposal_id);
+    if (!exact || !admission || run.runId !== binding.runId || run.actionId !== binding.actionId
+      || run.definitionDigest !== binding.executableDigest || exact.executableDigest !== binding.executableDigest
+      || originalDigest(run.inputs) !== originalDigest(binding.inputs) || binding.workspaceId !== current.workspaceId
+      || binding.actorId !== actor.id || binding.nodeId !== "action" || !hasAdmission(binding)
+      || call.operation_id !== automaticActionOperationId(current.workspaceId, actor.id, String(call.idempotency_key))
+      || call.run_id !== `action_run_${String(call.operation_id).replaceAll("-", "")}` || call.deadline !== run.deadline
+      || call.request_sha256 !== hash(canonicalJson({ proposalId: exact.proposal.proposal_id,
+        actionId: binding.actionId, contentHash: exact.contentHash, inputs: binding.inputs }))
+      || evidence.output !== undefined && originalDigest(evidence.output) !== originalDigest(observed.outputs))
+      throw new CoreError("CONFLICT", "The observed process, owned request, source revision or requested output does not match.");
+    const snapshotRow = database.prepare("SELECT snapshot FROM action_runtime_runs WHERE actor_id=? AND run_id=?").get(actor.id, request.run_id)!;
+    const snapshot = JSON.parse(String(snapshotRow.snapshot));
+    const adapter = processBridge!.resolveAdapter(`program:${binding.implementation.program}`, originalDigest(binding.definition.output_schema));
+    if (!adapter || originalDigest(snapshot.source) !== originalDigest(binding.source)
+      || originalDigest(snapshot.definition) !== originalDigest(binding.definition)
+      || originalDigest(snapshot.implementation) !== originalDigest(binding.implementation)
+      || originalDigest(snapshot.adapters.action) !== originalDigest({ key: `program:${binding.implementation.program}`,
+        id: adapter.id, version: adapter.version, outputContractDigest: adapter.outputContractDigest,
+        authorizationDigest: adapter.authorizationDigest }))
+      throw new CoreError("CONFLICT", "The observed Run's source or native adapter pins changed.");
+    const input: ActionObservedReconciliation = {
+      runId: request.run_id, expectedVersion, sourceReceiptSha256: String(admission.payload_sha256), outcome: "succeeded",
+      evidence: { reason: evidence.reason, output: observed.outputs, observation: {
+        processJobId: observed.processJobId, processOperationId: observed.processOperationId,
+        processReceiptSha256: observed.processReceiptSha256, processJobSha256: observed.processJobSha256,
+        processOwnerId: observed.processOwnerId, outputSha256: originalDigest(observed.outputs),
+      } },
+    };
+    const alreadyApplied = (value: { state: string; reconciliations?: Array<Record<string, unknown>> }) =>
+      value.state === "succeeded" && value.reconciliations?.some((entry: Record<string, unknown>) =>
+      entry.expectedVersion === expectedVersion && entry.sourceReceiptSha256 === input.sourceReceiptSha256
+      && entry.outcome === "succeeded" && originalDigest(entry.evidence) === originalDigest(input.evidence));
+    if (alreadyApplied(snapshot)) return true;
+    if (run.state !== "unknown" || run.version !== expectedVersion)
+      throw new CoreError("CONFLICT", "Observed reconciliation requires this uncertain Run's exact current revision.");
+    if (!options.action?.automaticTrusted?.authorize
+      || !await options.action.automaticTrusted.authorize(binding.actionId, exact.contentHash, current.epoch)
+      || !options.action.approveObservedReconciliation
+      || !options.action.assertObservedReconciliationCurrent
+      || !await options.action.approveObservedReconciliation(observed, expectedVersion, evidence.reason)
+      || !await options.action.automaticTrusted.authorize(binding.actionId, exact.contentHash, current.epoch))
+      throw new CoreError("ACCESS_DENIED", "The current native host denied independent observed-outcome review.");
+    return options.storage.withWorkspaceExclusive(() => {
+      available();
+      const refreshed = readTrust(), latest = processBridge?.observedCompletion(actor.id, request.run_id);
+      if (!refreshed || refreshed.epoch !== current.epoch || refreshed.actorId !== actor.id
+        || !latest || originalDigest(latest) !== originalDigest(observed)
+        || registeredAction(refreshed, binding.actionId, exact.contentHash)?.executableDigest !== binding.executableDigest)
+        throw new CoreError("ACCESS_DENIED", "Observed process or current source authority changed during review.");
+      options.action!.assertObservedReconciliationCurrent!(observed);
+      const currentRow = database.prepare("SELECT snapshot FROM action_runtime_runs WHERE actor_id=? AND run_id=?")
+        .get(actor.id, request.run_id)!;
+      if (alreadyApplied(JSON.parse(String(currentRow.snapshot)))) return true;
+      reconciliationGrant = { key: originalDigest({ actorId: actor.id, input }), epoch: current.epoch };
+      try { runtime.reconcileObserved(actor.id, input); return true; }
+      finally { reconciliationGrant = undefined; }
+    });
   }
   async function prepareManagedArtifactExport(actor: Actor, artifactId: string): Promise<(() => boolean) | undefined> {
     const owner = managedActionArtifactOwner(database, options.workspaceId, actor, artifactId);
@@ -936,7 +1066,7 @@ export function createHostServices(options: HostServicesOptions) {
     const requestSha256 = hash(canonicalJson({
       proposalId: exact.proposal.proposal_id, actionId: request.actionId, contentHash: request.contentHash, inputs: request.inputs,
     }));
-    const operationId = uuidFromDigest(`${current.workspaceId}\0${actor.id}\0${request.idempotencyKey}`);
+    const operationId = automaticActionOperationId(current.workspaceId, actor.id, request.idempotencyKey);
     const runId = `action_run_${operationId.replaceAll("-", "")}`;
     if (database.isTransaction) throw new CoreError("TRANSACTION_BOUNDARY", "Action call admission requires an idle host database.");
     const prior = database.prepare("SELECT request_sha256,operation_id,run_id,deadline FROM native_action_automatic_calls WHERE actor_id=? AND idempotency_key=?")
@@ -952,7 +1082,7 @@ export function createHostServices(options: HostServicesOptions) {
     const binding: ActionAuthorizationBinding & { inputs: Record<string, unknown> } = {
       actorId: actor.id, workspaceId: current.workspaceId, executableDigest: exact.executableDigest,
       source: exact.compiled.source, actionId: request.actionId, definition, implementation,
-      nodeId: "action", inputs: request.inputs,
+      nodeId: "action", inputs: request.inputs, runId: call.run_id,
     };
     const nestedProgram = nestedCopyEnabled(binding);
     if (implementation.kind === "program" && isRecord(definition.dependencies)
@@ -1070,12 +1200,15 @@ export function createHostServices(options: HostServicesOptions) {
   }
   return {
     definitions: actionRuntimeDefinitions,
+    get actionRuntime(): ActionRuntime { return runtime; },
     automaticActionTrustEnabled: !!options.action?.automaticTrusted,
     automaticActionTrustStatus,
     revokeAutomaticActionTrust,
     admitActionProposal,
     readRegisteredAction,
+    prepareRegisteredActionExport,
     readAutomaticActionResult,
+    reconcileAutomaticActionRun,
     prepareManagedArtifactExport,
     preparePickedArtifactAccess,
     pickAndImportArtifact,

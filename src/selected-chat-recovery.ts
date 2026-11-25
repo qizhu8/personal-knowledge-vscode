@@ -1,5 +1,6 @@
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep, dirname, basename } from "node:path";
+import { coreDatabasePath } from "./workspace-storage-paths.js";
 
 export interface SelectedChatRecoveryPin {
   schema: "pkm.next-selected-chat-recovery/v1";
@@ -38,7 +39,7 @@ export function assertSelectedChatRecovery(pin: SelectedChatRecoveryPin, legacyR
     || !/^chat-snapshot-[a-f0-9-]{36}$/.test(basename(pin.snapshotRoot)))
     throw new Error("Selected Chat recovery paths are invalid.");
   if (identity(pin.parent, true) !== pin.parentIdentity || identity(workspace, true) !== pin.workspaceIdentity
-    || identity(join(workspace, "core.sqlite"), false) !== pin.databaseIdentity
+    || identity(coreDatabasePath(workspace), false) !== pin.databaseIdentity
     || identity(join(workspace, ".pkm-next-workspace"), false) !== pin.markerIdentity
     || identity(legacyRoot, true, false) !== pin.legacyIdentity
     || identity(snapshotParent, true) !== pin.snapshotParentIdentity || identity(pin.snapshotRoot, true) !== pin.snapshotIdentity

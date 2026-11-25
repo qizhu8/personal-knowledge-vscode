@@ -42,6 +42,7 @@ export class SyncTransportError extends Error {
 }
 
 export interface SyncTransportNativeHost {
+  contentAuthority?: import("./sync-content.js").SyncContentAuthority;
   /** Configuration/approval is native authority. No caller URL, token, repository override, or environment lookup. */
   policy: SyncTransportPolicy;
   fetch: typeof fetch;

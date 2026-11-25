@@ -1,19 +1,27 @@
 import { Worker } from "node:worker_threads";
+import { codingProcessDatabasePath, workspaceStoragePaths } from "./workspace-storage-paths.js";
 import { DatabaseSync } from "node:sqlite";
-import { mkdir, readFile, readdir, writeFile, lstat, realpath } from "node:fs/promises";
+import { mkdir, lstat } from "node:fs/promises";
 import { resolve, join } from "node:path";
-import { createHash, randomUUID } from "node:crypto";
-import { isDeepStrictEqual } from "node:util";
 import { CoreError, type StorageRequest } from "./contracts.js";
-import { activateReadoptedMemoryScope, deactivateMemoryScopeContinuity,
+import type { BrowserMutationPin, BrowserMutationReceipt, BrowserMutationReceiptControl } from "./browser-mutation-receipt.js";
+import { originalMcpTodoGenesisStorageAdmission } from "./original-mcp-todo-genesis-native.js";
+import { verifyOriginalRecoveryState } from "./original-knowledge-recovery-state.js";
+import { experimentalTodoGenesisFaultForStorage, reportExperimentalTodoGenesisFault } from "./original-mcp-todo-genesis-fault.js";
+import { originalMcpTodoGenesisSourceControlForStorage, type OriginalMcpTodoGenesisSourceScope } from "./original-mcp-todo-genesis-native.js";
+import { activateOriginalMcpTodoGenesisOwnerSource,
+  type OriginalMcpTodoGenesisSourceControl } from "./original-mcp-todo-genesis-source.js";
+import { activateReadoptedMemoryScope, bindMemoryScopeRevocation, deactivateMemoryScopeContinuity,
   type MemoryScopeContinuityRequest } from "./memory-scope-continuity.js";
 import { knowledgeArea } from "./document-path.js";
+import { activateOriginalMcpTodoSession, deactivateOriginalMcpTodoSession,
+  activateOriginalMcpTodoWorker, readOriginalMcpDomain, type OriginalMcpTodoSession } from "./original-mcp-domain-state.js";
 import { scanMarkdown } from "./markdown.js";
 import { DataRuntime } from "./data-runtime.js";
 import { MigrationRuntime } from "./migration-runtime.js";
 import { remoteRuntimePending } from "./remote-runtime.js";
 import { RUNTIME_PROCESS_DDL } from "./runtime-process-store.js";
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, constants, existsSync, openSync, readFileSync } from "node:fs";
 import { inspectLegacyControlRecovery } from "./legacy-control-import.js";
 import { readLegacyExtensionPendingEnvelope } from "./legacy-command-extension-recovery.js";
 import { recoverNativeLegacyCommands } from "./host-composition-legacy-commands.js";
@@ -24,7 +32,7 @@ import { inspectLegacySkillMaintenanceRecovery, recoverLegacySkillMaintenance } 
 import { inspectLegacyRetrievalModelRecovery, recoverLegacyRetrievalModels } from "./legacy-retrieval-model.js";
 import { inspectLegacyTodoBoardCreateIntent, type LegacyTodoBoardCreateArguments } from "./legacy-todo-board-create.js";
 import { verifyLegacyKnowledgeRecovery } from "./legacy-knowledge-recovery.js";
-import { assertLegacyKnowledgeSnapshotPrivacyRoot, verifyLegacyKnowledgeSnapshots } from "./legacy-knowledge-snapshots.js";
+import { verifyLegacyKnowledgeSnapshots } from "./legacy-knowledge-snapshots.js";
 import { verifyLegacyActionArtifacts } from "./legacy-action-artifacts.js";
 import { inspectLegacyInlineNoteFence } from "./legacy-inline-note-journal.js";
 import { inspectPausedSnapshotJournal, assertSharedSourceRecoveryScope } from "./host-composition-legacy-snapshot-restore.js";
@@ -35,249 +43,36 @@ import { assertBatch16UnintegratedClear } from "./host-composition-legacy-batch1
 import { validateLegacyMemoryErasureLedger } from "./legacy-memory-erasure.js";
 import { inspectNativeClassificationPending } from "./legacy-classification-native.js";
 import { inspectLegacyClassificationCommand } from "./legacy-classification-command.js";
-import { inspectLegacyRootInertInventory } from "./legacy-root-inert-state.js";
-import { inspectLegacyUiBootstrapCompatibility, verifyLegacyUiBootstrapCompatibility } from "./legacy-ui-bootstrap-compatibility.js";
-import { validateLegacyTodoRootProjection, verifyLegacyTodoProjectionReceipt, verifyLegacyTodoProjectionSource } from "./legacy-todo-root-projection.js";
 import { nativeTodoUserInput, nativeTodoUiChats, NATIVE_TODO_USER_OPERATION, assertNativeTodoUserAuthority,
   assertNativeTodoUserRootAuthority, nativeTodoUserBoards,
   type NativeTodoUserInput, type NativeTodoUiChat, type NativeTodoUserAuthority } from "./native-todo-user-ui.js";
 import { legacyTodoBoardCreateSlug } from "./legacy-todo-board-create-contracts.js";
-import { legacyImportPlanSchema } from "./domain/legacy-import.js";
-import {
-  acquireLinuxRootWriterFence, assertLinuxRootOwnerMarker, isTrustedLinuxRootWriterFence, markLinuxRootNextOwned,
-  type LinuxRootWriterFence,
-} from "./linux-root-writer-fence.js";
+import type { LinuxRootWriterFence } from "./linux-root-writer-fence.js";
 import { assertLinuxLegacyWritersQuiescent } from "./linux-legacy-writer-quiescence.js";
 import { readMembershipIntent } from "./legacy-subscription-membership-intent.js";
 import { consumeMembershipRecoveryAuthority, type MembershipRecoveryPhase } from "./legacy-subscription-membership-authority.js";
 import { nativeBoardLifecycleCatalog, nativeBoardLifecycleInput, NATIVE_BOARD_LIFECYCLE_OPERATION,
   type NativeBoardLifecycleInput } from "./native-board-lifecycle-state.js";
 
-const marker = ".pkm-next-workspace";
-const rootAdoptionJournal = ".pkm-next-root-adoption.json";
-const rootAdoptionCommit = ".pkm-next-root-adoption.commit.json";
-const jsonSha256 = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-const privateRoomRecovery = Symbol("private-room-recovery");
-type PrivateRoomRecovery = { root: string; archives: { roomId: string; sourceFingerprint: string }[] };
-export async function initialize(directory: string) {
-  const root = resolve(directory);
-  await mkdir(root, { mode: 0o700 });
-  await writeFile(join(root, marker), JSON.stringify({ schema: "pkm.next-workspace/v2", id: randomUUID() }), { flag: "wx", mode: 0o600 });
-  await mkdir(join(root, "notes"), { mode: 0o700 });
-  return root;
-}
-export async function validateWorkspace(directory: string, options: {
-  adoptionToken?: string; [privateRoomRecovery]?: PrivateRoomRecovery;
-} = {}) {
-  const root = resolve(directory);
-  if ((await lstat(root)).isSymbolicLink()) throw new CoreError("INVALID_WORKSPACE", "Workspace symlinks are not supported.");
-  const entries = await readdir(root);
-  const directories = new Set<string>([...knowledgeArea.options, "prompts", "scripts", "actions", "components",
-    "packages", "boards", "project", "recipes", "subscriptions", "agent-snapshot-reads", "recipe-usage-reads",
-    "knowledge-read-config", "legacy-import-evidence", "legacy-code-archive", ".pkm", ".pkm-action-authority", ".pkm-plugin-authority", ".pkm-room-admission",
-    ".pkm-action-sources", ".pkm-action-builds", ".git", "chatrooms", "mcp-server", "servers"]);
-  const inertRootFiles = new Set([".gitignore", "fixture-sentinel.txt"]);
-  for (const name of ["_feedback", "_proposals"]) {
-    if (!entries.includes(name)) continue;
-    const rootStat = await lstat(join(root, name));
-    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new CoreError("INVALID_WORKSPACE", "Skill maintenance root must be a real directory.");
-    const children = await readdir(join(root, name));
-    if (name === "_feedback" && children.some(child => child !== "skill-usage.jsonl" && !/^\.pkm-write-[a-fA-F0-9-]{36}$/.test(child))
-      || name === "_proposals" && children.some(child => child !== "skills")) {
-      throw new CoreError("INVALID_WORKSPACE", "Unknown Skill maintenance artifact state.");
-    }
-    if (name === "_proposals" && children.includes("skills")) {
-      const stat = await lstat(join(root, name, "skills"));
-      if (!stat.isDirectory() || stat.isSymbolicLink()) throw new CoreError("INVALID_WORKSPACE", "Skill proposal area must be a real directory.");
-    }
-    directories.add(name);
-  }
-  let inertInventory: ReturnType<typeof inspectLegacyRootInertInventory>;
-  try { inertInventory = inspectLegacyRootInertInventory(root); }
-  catch { throw new CoreError("INVALID_WORKSPACE", "Legacy inert root metadata changed or is unsafe."); }
-  for (const name of inertInventory.paths) {
-    if (!name.includes("/") && name.endsWith(".postcommit")) directories.add(name);
-  }
-  const allowed = new Set([marker, rootAdoptionJournal, rootAdoptionCommit, ...(process.platform === "linux" ? [".pkm-next-writer-fenced.json"] : []),
-    ".legacy-trash-import.json", ...directories, ...inertRootFiles, "core.sqlite", "core.sqlite-wal", "core.sqlite-shm",
-    ".pkm-paired-memory-backup.json", ".pkm-native-memory-adoption.json", ".pkm-native-memory-publication.json",
-    "coding-process.sqlite", "coding-process.sqlite-wal", "coding-process.sqlite-shm"]);
-  if (entries.some(name => !allowed.has(name))) throw new CoreError("INVALID_WORKSPACE", "Not an isolated next-server workspace. Legacy data directories must not be used.");
-  if (entries.includes(".pkm-next-writer-fenced.json")) await assertLinuxRootOwnerMarker(root);
-  if (entries.includes(".pkm-room-admission") && !options[privateRoomRecovery])
-    throw new CoreError("RECOVERY_REQUIRED", "Private Room/Note admission requires explicit independent profile-pin recovery before workers start.");
-  if (entries.includes(".pkm-room-admission")) {
-    const stat = await lstat(join(root, ".pkm-room-admission"));
-    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0)
-      throw new CoreError("INVALID_WORKSPACE", "Private Room/Note admission directory is unsafe.");
-  }
-  if (options[privateRoomRecovery] || inertInventory.chatroomArchives?.length && !entries.includes(rootAdoptionJournal)) {
-    const admission = options[privateRoomRecovery], archives = inertInventory.chatroomArchives ?? [];
-    if (!admission || admission.root !== root || archives.length !== admission.archives.length
-      || archives.some(archive => !admission.archives.some(pin =>
-        pin.roomId === archive.roomId && pin.sourceFingerprint === archive.sourceFingerprint)))
-      throw new CoreError("INVALID_WORKSPACE", "Non-empty legacy Chatroom archives require an exact in-place adoption journal.");
-  }
-  for (const name of entries) {
-    const stat = await lstat(join(root, name));
-    if (stat.isSymbolicLink() || !(directories.has(name) ? stat.isDirectory() : stat.isFile())) throw new CoreError("INVALID_WORKSPACE", "Workspace entries must be regular files or knowledge/boards directories.");
-  }
-  for (const name of [".pkm-action-sources", ".pkm-action-builds"]) {
-    if (!entries.includes(name)) continue;
-    const stat = await lstat(join(root, name));
-    if (process.platform !== "win32" && ((stat.mode & 0o077) !== 0 || process.getuid && stat.uid !== process.getuid()))
-      throw new CoreError("INVALID_WORKSPACE", "Action build directories must be private and owned.");
-  }
-  for (const authorityDirectory of [".pkm-action-authority", ".pkm-plugin-authority"]) {
-    if (!entries.includes(authorityDirectory)) continue;
-    const directory = join(root, authorityDirectory), stat = await lstat(directory);
-    const files = await readdir(directory);
-    if (process.platform !== "win32" && ((stat.mode & 0o077) !== 0 || process.getuid && stat.uid !== process.getuid())
-      || files.some(name => name !== "host-authority.json"))
-      throw new CoreError("INVALID_WORKSPACE", "Native authority directory is unsafe.");
-    if (files.length) {
-      const file = await lstat(join(directory, files[0]));
-      if (!file.isFile() || file.isSymbolicLink() || file.nlink !== 1 || file.size > 8192
-        || process.platform !== "win32" && ((file.mode & 0o077) !== 0 || process.getuid && file.uid !== process.getuid()))
-        throw new CoreError("INVALID_WORKSPACE", "Native authority record is unsafe.");
-    }
-  }
-  if (entries.includes(".pkm")) {
-    if (entries.includes(rootAdoptionJournal) && !entries.includes(rootAdoptionCommit) && options.adoptionToken === undefined) {
-      throw new CoreError("RECOVERY_REQUIRED", "An interrupted in-place root adoption must be resumed before workers can start.");
-    }
-    if (options.adoptionToken === undefined || !entries.includes(rootAdoptionJournal) || entries.includes(rootAdoptionCommit)) {
-      let database: DatabaseSync | undefined;
-      try {
-        const databasePath = join(root, "core.sqlite");
-        const stat = await lstat(databasePath);
-        if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error("Unowned native database.");
-        database = new DatabaseSync(databasePath, { readOnly: true });
-        assertLegacyKnowledgeSnapshotPrivacyRoot(database, root);
-      } catch {
-        throw new CoreError("INVALID_WORKSPACE", "Legacy data directories must not be used without explicit native private snapshot authority.");
-      } finally { database?.close(); }
-    }
-  }
-  if (entries.includes(".pkm-native-memory-adoption.json") || entries.includes(".pkm-paired-memory-backup.json")) {
-    if (!entries.includes(".pkm-native-memory-publication.json"))
-      throw new CoreError("RECOVERY_REQUIRED", "Paired native memory publication requires explicit durable reconciliation.");
-    const publication = JSON.parse(await readFile(join(root, ".pkm-native-memory-publication.json"), "utf8"));
-    if (publication.state !== "committed")
-      throw new CoreError("RECOVERY_REQUIRED", "Unknown paired native memory publication must not start workers or replay effects.");
-  }
-  if (!entries.includes(marker)) {
-    throw new CoreError("INVALID_WORKSPACE", "This is not an initialized next-server workspace. Legacy roots require separate read-only adoption inspection.");
-  }
-  const identity: unknown = JSON.parse(await readFile(join(root, marker), "utf8"));
-  if (!identity || typeof identity !== "object" || !("schema" in identity) || identity.schema !== "pkm.next-workspace/v2") throw new CoreError("INVALID_WORKSPACE", "Initialize a new Markdown-authoritative v2 workspace. Database-only prototype v1 workspaces are not automatically adopted.");
-  if (!("id" in identity) || typeof identity.id !== "string" || !/^[0-9a-f-]{36}$/i.test(identity.id))
-    throw new CoreError("INVALID_WORKSPACE", "Workspace identity is invalid.");
-  if (!entries.includes("notes")) throw new CoreError("INVALID_WORKSPACE", "Workspace notes directory is missing.");
-  const canonicalRoot = await realpath(root);
-  if (entries.includes(rootAdoptionCommit) && !entries.includes(rootAdoptionJournal))
-    throw new CoreError("RECOVERY_REQUIRED", "Root adoption commit has no matching durable plan.");
-  if (entries.includes(rootAdoptionJournal)) {
-    try {
-      const journalStat = await lstat(join(root, rootAdoptionJournal));
-      if (!journalStat.isFile() || journalStat.isSymbolicLink() || journalStat.nlink !== 1 || journalStat.size > 16_777_216)
-        throw new Error("Unsafe adoption journal.");
-      const journal: unknown = JSON.parse(await readFile(join(root, rootAdoptionJournal), "utf8"));
-      if (!journal || typeof journal !== "object") throw new Error("Malformed adoption journal.");
-      const value = journal as Record<string, unknown>;
-      const { journalSha256, ...body } = value;
-      if (value.schema !== "pkm.legacy-root-adoption-journal/v1" || value.state !== "prepared"
-        || value.sourceRoot !== canonicalRoot || value.workspaceId !== identity.id
-        || typeof value.token !== "string" || !/^[0-9a-f-]{36}$/i.test(value.token)
-        || typeof value.sourceFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(value.sourceFingerprint)
-        || typeof journalSha256 !== "string" || !/^[a-f0-9]{64}$/.test(journalSha256)
-        || jsonSha256(body) !== journalSha256
-        || !value.rootIdentity || typeof value.rootIdentity !== "object"
-        || !value.inventoryPlan || typeof value.inventoryPlan !== "object"
-        || !Array.isArray(value.sourceEntries)) throw new Error("Invalid adoption journal binding.");
-      const rootIdentity = value.rootIdentity as Record<string, unknown>;
-      if (typeof rootIdentity.device !== "string" || typeof rootIdentity.inode !== "string"
-        || !/^\d+$/.test(rootIdentity.device) || !/^\d+$/.test(rootIdentity.inode)) throw new Error("Invalid root identity.");
-      const plan = legacyImportPlanSchema.parse(value.inventoryPlan);
-      if (plan.schema !== "pkm.legacy-import-plan/v1" || plan.ready !== true || plan.planSha256 !== value.planSha256)
-        throw new Error("Invalid bound inventory plan.");
-      const canonicalArchives = (archives: NonNullable<typeof inertInventory.chatroomArchives>) => JSON.stringify(
-        archives.map(archive => ({
-          roomId: archive.roomId,
-          sourceFingerprint: archive.sourceFingerprint,
-          files: [...archive.files].sort((left, right) => left.path.localeCompare(right.path)).map(file => ({
-            path: file.path, sha256: file.sha256, size: file.size, mode: file.mode,
-            dev: file.dev, ino: file.ino, mtimeMs: file.mtimeMs,
-          })),
-        })).sort((left, right) => left.roomId.localeCompare(right.roomId)),
-      );
-      if (canonicalArchives(inertInventory.chatroomArchives ?? []) !== canonicalArchives(plan.inPlaceChatroomArchives ?? []))
-        throw new Error("Chatroom archive identity differs from its adoption inventory binding.");
-      if (!entries.includes(rootAdoptionCommit) && entries.includes(".pkm")
-        && (plan.inPlaceOnly !== true || typeof plan.inPlacePkmPrivacySha256 !== "string"
-          || !/^[a-f0-9]{64}$/.test(plan.inPlacePkmPrivacySha256)
-          || !value.snapshotAdmission || typeof value.snapshotAdmission !== "object"))
-        throw new Error("Pending .pkm adoption has no exact privacy or host-authority binding.");
-      if (value.planSha256 === undefined || typeof value.planSha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.planSha256))
-        throw new Error("Invalid import plan digest.");
-      const rootStat = await lstat(root, { bigint: true });
-      if (rootStat.dev.toString() !== rootIdentity.device || rootStat.ino.toString() !== rootIdentity.inode)
-        throw new Error("Root identity changed.");
-      if (entries.includes(rootAdoptionCommit)) {
-        const commitStat = await lstat(join(root, rootAdoptionCommit));
-        if (!commitStat.isFile() || commitStat.isSymbolicLink() || commitStat.nlink !== 1 || commitStat.size > 4096)
-          throw new Error("Unsafe adoption commit.");
-        const commit: unknown = JSON.parse(await readFile(join(root, rootAdoptionCommit), "utf8"));
-        if (!commit || typeof commit !== "object") throw new Error("Malformed adoption commit.");
-        const record = commit as Record<string, unknown>;
-        const { receiptSha256, ...receiptBody } = record;
-        if (record.schema !== "pkm.legacy-root-adoption-commit/v1" || record.token !== value.token
-          || record.sourceRoot !== value.sourceRoot || record.workspaceId !== value.workspaceId
-          || record.sourceFingerprint !== value.sourceFingerprint || record.journalSha256 !== journalSha256
-          || typeof receiptSha256 !== "string" || !/^[a-f0-9]{64}$/.test(receiptSha256)
-          || jsonSha256(receiptBody) !== receiptSha256) throw new Error("Adoption commit does not match its journal.");
-      } else if (options.adoptionToken !== value.token) {
-        throw new CoreError("RECOVERY_REQUIRED", "An interrupted in-place root adoption must be resumed before workers can start.");
-      }
-      if (plan.inPlaceUiBootstrap) {
-        const actual = inspectLegacyUiBootstrapCompatibility(canonicalRoot);
-        if (!actual || !isDeepStrictEqual(actual, plan.inPlaceUiBootstrap))
-          throw new Error("UI bootstrap compatibility differs from its prepared source.");
-        if (entries.includes("core.sqlite")) {
-          const database = new DatabaseSync(join(root, "core.sqlite"), { readOnly: true });
-          try { verifyLegacyUiBootstrapCompatibility(database, String(value.workspaceId), plan.inPlaceUiBootstrap, !entries.includes(rootAdoptionCommit)); }
-          finally { database.close(); }
-        } else if (entries.includes(rootAdoptionCommit)) throw new Error("Committed UI compatibility has no native receipt database.");
-      }
-      const oldLayoutBoards = plan.entries.filter(entry => entry.kind === "board-backing" && entry.destination !== entry.source);
-      if (oldLayoutBoards.length && value.todoProjection === undefined)
-        throw new Error("Old-layout Todo authority has no bound native publication.");
-      if (value.todoProjection !== undefined) {
-        const projection = validateLegacyTodoRootProjection(value.todoProjection);
-        if (projection.boards.length !== oldLayoutBoards.length) throw new Error("Incomplete old-layout Todo publication coverage.");
-        if (projection.boards.some(board => !plan.entries.some(entry => entry.kind === "board-backing"
-          && entry.source === board.source && entry.destination === board.destination && entry.sha256 === board.sha256
-          && entry.boardSlug === board.slug && entry.size === board.size)
-          || !plan.entries.some(entry => entry.source === board.markdown && entry.sha256 === board.markdownSha256)))
-          throw new Error("Todo projection differs from its source inventory.");
-        verifyLegacyTodoProjectionSource(canonicalRoot, projection, false);
-        if (entries.includes(rootAdoptionCommit)) {
-          const database = new DatabaseSync(join(root, "core.sqlite"), { readOnly: true });
-          try { verifyLegacyTodoProjectionReceipt(database, canonicalRoot, String(value.workspaceId), projection); }
-          finally { database.close(); }
-        }
-      }
-    } catch (error) {
-      if (error instanceof CoreError) throw error;
-      throw new CoreError("RECOVERY_REQUIRED", "Root adoption journal is invalid or requires exact recovery.");
-    }
-  } else if (options.adoptionToken !== undefined) {
-    throw new CoreError("RECOVERY_REQUIRED", "Adoption recovery token has no matching journal.");
-  }
-  return canonicalRoot;
-}
+import { marker, rootAdoptionJournal, privateRoomRecovery, capturePlainWorkspaceControls, type PrivateRoomRecovery } from "./workspace-validation.js";
+import { RootOwner, assertRootOwner, assertRootReadScope, type RootReadScope } from "./root-owner.js";
+import type { RootClassification } from "./storage-startup-classification.js";
+import type { FreshNoteQuery, FreshNoteQueryReply } from "./fresh-note-query-contracts.js";
+import type { OriginalTodoAssignmentAdmission } from "./original-mcp-todo-assignment-gate.js";
+import type { ManagedTaskOperation } from "./managed-chat-task-contracts.js";
+export { initialize, validateWorkspace } from "./workspace-validation.js";
+export type LegacyNotesReadQuery = FreshNoteQuery;
+export type LegacyNotesReadResult = ({ readonly kind: "fresh" } & FreshNoteQueryReply)
+  | { readonly kind: "canonical-required"; readonly reason: Extract<RootClassification, { kind: "full-required" }>["reason"] };
 
 type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void };
+const attachments = new WeakMap<RootOwner, Promise<Storage>>();
+const storageConstructor = Symbol("canonical-storage");
+const storageOwners = new WeakMap<object, RootOwner>();
+export function assertStorage(value: unknown): asserts value is Storage {
+  const owner = value && typeof value === "object" ? storageOwners.get(value) : undefined;
+  assertRootOwner(owner);
+}
 interface NativeSnapshotSchedulerResource {
   pauseForBackup(): Promise<{ assertHeld(): void; release(): Promise<void> | void }>;
   close(): Promise<void>;
@@ -288,26 +83,27 @@ export class Storage {
   private closed = false;
   private drain: (() => void) | undefined;
   private closing: Promise<void> | undefined;
+  private closeRequested = false;
   private snapshotScheduler?: NativeSnapshotSchedulerResource;
   private exited = false;
   private recovered = false;
   private memoryScopeActive = false;
   private recovery: Promise<void> | undefined;
   private worker: Worker;
-  private lease?: { ownerId: string; fence: number };
-  private leaseDatabase?: DatabaseSync;
-  private leaseTimer?: ReturnType<typeof setInterval>;
-  private leaseLost = false;
-  private leaseLostHandler?: (error: CoreError) => void;
+  private get lease() { return this.owner.workspaceLease(); }
   private exclusiveTail: Promise<void> = Promise.resolve();
   private exclusiveQueued = 0;
   private exclusiveActive = false;
   private readonly retainedResources: Array<{ release(): Promise<void> | void }> = [];
   private constructor(
+    token: typeof storageConstructor,
     private readonly root: string,
     private readonly rootAdoptionPrivacySha256: string | undefined,
-    private readonly writerFence: LinuxRootWriterFence,
+    private readonly owner: RootOwner,
   ) {
+    if (token !== storageConstructor) throw new CoreError("STORAGE_UNAVAILABLE", "Storage requires its canonical attachment constructor.", "unknown");
+    assertRootOwner(owner);
+    storageOwners.set(this, owner);
     this.worker = new Worker(new URL("./storage-worker.js", import.meta.url), {
       workerData: { root, adoptionPrivacySha256: rootAdoptionPrivacySha256 },
     });
@@ -331,30 +127,33 @@ export class Storage {
     writerFence?: LinuxRootWriterFence;
     [privateRoomRecovery]?: PrivateRoomRecovery;
   } = {}) {
-    const writerFence = options.writerFence === undefined
-      ? await acquireLinuxRootWriterFence(directory)
-      : options.writerFence;
-    let store: Storage | undefined;
+    const owner = await RootOwner.acquire(directory, options);
     try {
-      writerFence.assertHeld();
-      if (process.platform === "linux" && existsSync(join(resolve(directory), rootAdoptionJournal)))
-        await assertLinuxLegacyWritersQuiescent(resolve(directory));
-      const root = await validateWorkspace(directory, { adoptionToken: options.adoptionToken,
-        [privateRoomRecovery]: options[privateRoomRecovery] });
-      if (!isTrustedLinuxRootWriterFence(writerFence, root))
-        throw new CoreError("STORAGE_UNAVAILABLE", "Storage requires the real exclusive Linux writer-fence resource.");
-      if (process.platform === "linux" && existsSync(join(root, rootAdoptionJournal)))
-        await assertLinuxLegacyWritersQuiescent(root);
-      await markLinuxRootNextOwned(root, writerFence);
-      let adoptionPrivacySha256: string | undefined;
-      if (options.adoptionToken !== undefined) {
-        const journal = JSON.parse(await readFile(join(root, rootAdoptionJournal), "utf8")) as Record<string, unknown>;
-        const plan = journal.inventoryPlan as Record<string, unknown> | undefined;
-        if (journal.token === options.adoptionToken && typeof plan?.inPlacePkmPrivacySha256 === "string")
-          adoptionPrivacySha256 = plan.inPlacePkmPrivacySha256;
-      }
-      const activeStore = new Storage(root, adoptionPrivacySha256, writerFence);
-      store = activeStore;
+      return await Storage.attach(owner, options);
+    } catch (error) {
+      await owner.close();
+      throw error;
+    }
+  }
+  static attach(owner: RootOwner, options: { deferRecovery?: boolean } = {}): Promise<Storage> {
+    assertRootOwner(owner);
+    owner.assertAttachmentAdmission();
+    const existing = attachments.get(owner);
+    if (existing) return existing;
+    const task = Storage.startAttached(owner, options);
+    attachments.set(owner, task);
+    return task;
+  }
+  private static async startAttached(owner: RootOwner, options: { deferRecovery?: boolean }): Promise<Storage> {
+    await owner.prepareStorageAttachment();
+    owner.assertAttachmentAdmission();
+    const root = owner.workspaceRoot();
+    const activeStore = new Storage(storageConstructor, root, owner.rootAdoptionBootstrapPrivacySha256(), owner);
+    owner.retainResource({
+      closeAdmission: () => { activeStore.closeRequested = true; },
+      release: () => activeStore.closeAttached(),
+    });
+    try {
       await new Promise<void>((resolve, reject) => {
         activeStore.worker.once("error", reject);
         activeStore.worker.once("exit", code => reject(new CoreError("STORAGE_UNAVAILABLE", `Storage exited before ready (${code}).`)));
@@ -363,7 +162,11 @@ export class Storage {
           const pending = activeStore.pending.get(message.id);
           if (!pending) return;
           activeStore.pending.delete(message.id);
-          if (message.error) pending.reject(new CoreError(message.error.code, message.error.message, message.error.effect));
+          if (message.error) pending.reject(Object.assign(new CoreError(message.error.code, message.error.message, message.error.effect),
+            message.error.experimentalTodoGenesisCheckpoint ? {
+              experimentalTodoGenesisCheckpoint: message.error.experimentalTodoGenesisCheckpoint,
+              cause: new CoreError(message.error.code, message.error.message, message.error.effect),
+            } : {}));
           else pending.resolve(message.result);
           if (!activeStore.pending.size) activeStore.drain?.();
         });
@@ -378,21 +181,20 @@ export class Storage {
       activeStore.worker.on("error", error => {
         console.error("PKM next storage worker:", error);
       });
-      if (process.platform === "linux" && existsSync(join(root, rootAdoptionJournal)))
+      if (process.platform === "linux" && (existsSync(join(root, rootAdoptionJournal))
+        || existsSync(join(root, ".pkm-next-original-mcp.json"))))
         await assertLinuxLegacyWritersQuiescent(root);
-      activeStore.acquireWorkspaceLease();
+      owner.acquireWorkspaceLease();
       if (!options.deferRecovery && !activeStore.hasPendingLegacyNoteWorkItemsIntent() && !activeStore.hasPendingSharedSourceIntent()) await activeStore.recover();
       return activeStore;
     } catch (error) {
-      if (store) {
-        try { await store.worker.terminate(); }
-        catch {
-          throw new CoreError("STORAGE_UNAVAILABLE",
-            "Storage startup failed and worker termination could not be verified; the writer fence remains held.", "unknown");
-        }
-        store.releaseWorkspaceLease();
+      try { await activeStore.worker.terminate(); }
+      catch {
+        throw new CoreError("STORAGE_UNAVAILABLE",
+          "Storage startup failed and worker termination could not be verified; the writer fence remains held.", "unknown");
       }
-      await writerFence.release();
+      activeStore.exited = true;
+      activeStore.closed = true;
       throw error;
     }
   }
@@ -402,51 +204,78 @@ export class Storage {
     if (this.closed) throw new CoreError("STORAGE_UNAVAILABLE", "Cannot retain a resource on closed storage.");
     this.retainedResources.push(resource);
   }
+  retainNativeCleanup(resource: { release(): Promise<void> | void }): void {
+    assertStorage(this);
+    this.owner.retainResource(resource);
+  }
   workspaceLease(): Readonly<{ ownerId: string; fence: number }> {
     this.assertWorkspaceLease();
     return this.lease!;
   }
-  onLeaseLost(handler: (error: CoreError) => void): void { this.leaseLostHandler = handler; }
+  onLeaseLost(handler: (error: CoreError) => void): void { this.owner.onLeaseLost(handler); }
+  /** Private backend port. Caller owns live actor/privacy/routing authorization; do not nest an exclusive. */
+  async readLegacyNotes(scope: RootReadScope, query: LegacyNotesReadQuery): Promise<LegacyNotesReadResult> {
+    assertStorage(this);
+    const assertScope = () => {
+      assertRootReadScope(scope, this.owner);
+      if (scope.full?.storage !== this || this.closed || this.closing)
+        throw new CoreError("STORAGE_UNAVAILABLE", "Fresh Note reads require this live native attachment.", "unknown");
+    };
+    assertScope();
+    return this.withWorkspaceExclusive<LegacyNotesReadResult>(async () => {
+      assertScope();
+      const eligibility = await this.owner.qualifyFreshLegacyReadScope(scope);
+      if (eligibility.kind !== "plain") return { kind: "canonical-required", reason: eligibility.reason };
+      this.assertNoPendingLegacyNoteWorkItems();
+      if (this.hasPendingSharedSourceIntent())
+        throw new CoreError("RECOVERY_REQUIRED", "Shared-source recovery blocks fresh Note reads.", "unknown");
+      const before = capturePlainWorkspaceControls(this.root);
+      if (!before) return { kind: "canonical-required", reason: "layout" };
+      if (!this.recovered)
+        throw new CoreError("STORAGE_UNAVAILABLE", "Workspace recovery must complete before fresh Note reads are accepted.");
+      const result = await new Promise<LegacyNotesReadResult>((resolveRead, reject) => {
+        const id = ++this.sequence;
+        this.pending.set(id, { resolve: value => resolveRead(value as LegacyNotesReadResult), reject });
+        try {
+          assertScope();
+          this.worker.postMessage({ id, freshLegacyNotes: query, runtimeOwner: this.lease });
+        } catch (error) { this.pending.delete(id); reject(error); }
+      });
+      assertScope();
+      const current = await this.owner.qualifyFreshLegacyReadScope(scope);
+      const after = capturePlainWorkspaceControls(this.root);
+      if (!after || after.digest !== before.digest)
+        throw new CoreError("CONFLICT", "Workspace controls changed during the Note read.");
+      assertScope();
+      if (result.kind === "fresh") {
+        if (current.kind !== "plain")
+          throw new CoreError("RECOVERY_REQUIRED", "Workspace state changed during the Note read.", "unknown");
+      }
+      return result;
+    });
+  }
   assertNoPendingLegacyNoteWorkItems(): void {
     if (this.hasPendingLegacyNoteWorkItemsIntent()) {
       throw new CoreError("BUSY", "A legacy Note operation requires exact native recovery before workspace admission.", "unknown");
     }
   }
   assertWorkspaceLease(): void {
-    if (this.closed || this.leaseLost || !this.lease) throw new CoreError("STORAGE_UNAVAILABLE", "Workspace ownership lease is unavailable.", "unknown");
-    this.writerFence.assertHeld();
-    const database = new DatabaseSync(join(this.root, "core.sqlite"));
-    try {
-      const owner = database.prepare("SELECT owner_id,fence,lease_until FROM native_runtime_owner WHERE singleton=1").get();
-      if (owner?.owner_id !== this.lease.ownerId || owner?.fence !== this.lease.fence || Number(owner.lease_until) <= Date.now()) {
-        this.loseWorkspaceLease();
-        throw new CoreError("STORAGE_UNAVAILABLE", "Workspace ownership lease was lost.", "unknown");
-      }
-    } finally { database.close(); }
+    if (this.closed) throw new CoreError("STORAGE_UNAVAILABLE", "Workspace ownership lease is unavailable.", "unknown");
+    this.owner.assertWorkspaceLease();
   }
   async workspaceId(): Promise<string> {
     if (this.closed) throw new CoreError("STORAGE_UNAVAILABLE", "Storage is closed.");
-    const identity: unknown = JSON.parse(await readFile(join(this.root, marker), "utf8"));
-    if (!identity || typeof identity !== "object" || !("id" in identity)
-      || typeof identity.id !== "string" || !/^[0-9a-f-]{36}$/i.test(identity.id)) {
-      throw new CoreError("INVALID_WORKSPACE", "Workspace identity is invalid.");
-    }
-    return identity.id;
+    return this.owner.workspaceId();
   }
   connectNative(): DatabaseSync {
     if (this.closed) throw new CoreError("STORAGE_UNAVAILABLE", "Storage is closed.");
-    const database = new DatabaseSync(join(this.root, "core.sqlite"));
-    try {
-      database.exec("PRAGMA busy_timeout=3000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;");
-      return database;
-    } catch (error) {
-      database.close();
-      throw error;
-    }
+    return this.owner.connectNative();
   }
   connectCodingProcess(): DatabaseSync {
     this.assertWorkspaceLease();
-    const database = new DatabaseSync(join(this.root, "coding-process.sqlite"));
+    if (workspaceStoragePaths(this.root).layout === "separated" && !existsSync(codingProcessDatabasePath(this.root)))
+      closeSync(openSync(codingProcessDatabasePath(this.root), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600));
+    const database = new DatabaseSync(codingProcessDatabasePath(this.root));
     try {
       database.exec("PRAGMA busy_timeout=3000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;");
       const version = Number(database.prepare("PRAGMA user_version").get()?.user_version);
@@ -463,7 +292,7 @@ export class Storage {
   }
   inspectCodingProcess(): void {
     this.assertWorkspaceLease();
-    const path = join(this.root, "coding-process.sqlite");
+    const path = codingProcessDatabasePath(this.root);
     if (!existsSync(path)) return;
     const database = new DatabaseSync(path, { readOnly: true });
     try {
@@ -548,6 +377,12 @@ export class Storage {
       const database = this.connectNative();
       try {
         const workspaceId = await this.workspaceId();
+        verifyOriginalRecoveryState(database, this.root);
+        for (const domain of ["todo", "memory"] as const) {
+          const state = readOriginalMcpDomain(this.root, domain, database);
+          if (state && !state.committed)
+            throw new CoreError("RECOVERY_REQUIRED", "Original source-domain hydration requires its exact fresh native-approved continuation.");
+        }
         verifyLegacyKnowledgeRecovery(database, this.root);
         verifyLegacyKnowledgeSnapshots(database, this.root);
         verifyLegacyActionArtifacts(database, workspaceId);
@@ -677,11 +512,39 @@ export class Storage {
     })().finally(() => { this.recovery = undefined; });
     return this.recovery;
   }
+  bindBrowserMutationPin(request: StorageRequest, bodySha256: string, receiptMode: "worker" | "unknown" = "worker"): Promise<void> {
+    if (!this.recovered || this.exclusiveActive || this.exclusiveQueued)
+      return Promise.reject(new CoreError("BUSY", "Mutation ingress requires a recovered available workspace."));
+    return this.postMutationReceipt({ bind: { request, bodySha256, receiptMode } }).then(() => undefined);
+  }
+  readBrowserMutationReceipt(pin: BrowserMutationPin): Promise<BrowserMutationReceipt> {
+    return this.postMutationReceipt({ read: pin }) as Promise<BrowserMutationReceipt>;
+  }
+  private postMutationReceipt(mutationReceipt: BrowserMutationReceiptControl): Promise<unknown> {
+    if (this.closed || this.closeRequested || this.closing)
+      return Promise.reject(new CoreError("STORAGE_UNAVAILABLE", "Storage is closed.", "unknown"));
+    if (this.pending.size >= 32) return Promise.reject(new CoreError("BUSY", "Storage receipt queue is full.", "unknown"));
+    return new Promise((resolve, reject) => {
+      const id = ++this.sequence;
+      this.pending.set(id, { resolve, reject });
+      try {
+        this.assertWorkspaceLease();
+        this.worker.postMessage({ id, runtimeOwner: this.lease, mutationReceipt });
+      } catch (error) { this.pending.delete(id); reject(error); }
+    });
+  }
   request(request: StorageRequest): Promise<unknown> {
+    if (request.operation.startsWith("chat.task."))
+      return Promise.reject(new CoreError("NATIVE_AUTHORITY_REQUIRED", "Managed Tasks require their actual private native Core scope."));
     if (request.actorId === "user:local" && request.operation === "todo.board.create")
       return Promise.reject(new CoreError("ACCESS_DENIED", "User Board creation requires the trusted fixture channel."));
-    if (this.closed || this.closing) return Promise.reject(new CoreError("STORAGE_UNAVAILABLE", "Storage is closed."));
+    if (this.closed || this.closeRequested || this.closing) return Promise.reject(new CoreError("STORAGE_UNAVAILABLE", "Storage is closed."));
     if (!this.recovered) return Promise.reject(new CoreError("STORAGE_UNAVAILABLE", "Workspace recovery must complete before requests are accepted."));
+    if (request.operation === "todo.board.create") {
+      const admission = originalMcpTodoGenesisStorageAdmission(this, request);
+      if (admission) return this.withWorkspaceExclusive(() =>
+        this.postRequest(request, undefined, undefined, undefined, undefined, admission));
+    }
     try { this.assertNoPendingLegacyNoteWorkItems(); }
     catch (error) { return Promise.reject(error); }
     try {
@@ -690,19 +553,132 @@ export class Storage {
     if (this.exclusiveActive || this.exclusiveQueued) return Promise.reject(new CoreError("BUSY", "A native workspace journal is being applied; request was not dispatched."));
     return this.postRequest(request);
   }
+  recoverOriginalMcpTodoGenesis(plan: import("./original-mcp-todo-genesis-contracts.js").OriginalMcpTodoGenesisPlan): Promise<unknown> {
+    if (this.closed || this.closeRequested || this.closing || plan.request.phase !== "recover")
+      return Promise.reject(new CoreError("STORAGE_UNAVAILABLE", "Todo genesis recovery requires its current private Root channel."));
+    const request: StorageRequest = { operation: "todo.board.create", actorId: "mcp:external",
+      args: { board_slug: plan.request.selection.boardSlug, operationId: plan.request.operationId } };
+    const admission = originalMcpTodoGenesisStorageAdmission(this, request);
+    if (!admission || admission.plan.planSha256 !== plan.planSha256)
+      return Promise.reject(new CoreError("NATIVE_AUTHORITY_REQUIRED", "Fresh exact signed Todo genesis recovery is required."));
+    return this.withWorkspaceExclusive(() => this.postRequest(request, undefined, undefined, undefined, undefined, admission));
+  }
+  async requestManagedChatTask(grant: object, operation: ManagedTaskOperation, args: Record<string, unknown>): Promise<unknown> {
+    if (this.closed || this.closeRequested || this.closing || !this.recovered || this.exclusiveActive || this.exclusiveQueued)
+      throw new CoreError("STORAGE_UNAVAILABLE", "Managed Task admission requires recovered available canonical Storage.");
+    this.assertNoPendingLegacyNoteWorkItems();
+    if (this.hasPendingSharedSourceIntent()) throw new CoreError("RECOVERY_REQUIRED", "Shared-source recovery blocks managed Tasks.");
+    const { readManagedChatTaskWorkerAdmission } = await import("./managed-chat-task-native.js");
+    const admission = await readManagedChatTaskWorkerAdmission(grant, this.owner, operation);
+    this.assertWorkspaceLease();
+    if (this.closed || this.closeRequested || this.closing || this.exclusiveActive || this.exclusiveQueued)
+      throw new CoreError("BUSY", "Managed Task authority changed before worker dispatch.");
+    if (this.pending.size >= 32) throw new CoreError("BUSY", "Storage queue is full.");
+    return new Promise((resolve, reject) => {
+      const id = ++this.sequence;
+      this.pending.set(id, { resolve, reject });
+      try { this.worker.postMessage({ id, managedChatTask: { operation, args, admission }, runtimeOwner: this.lease }); }
+      catch (error) { this.pending.delete(id); reject(error); }
+    });
+  }
+  async requestOriginalMcpTodoChatAssignment(prepared: unknown): Promise<unknown> {
+    if (this.closed || this.closeRequested || this.closing || !this.recovered || this.exclusiveActive || this.exclusiveQueued)
+      throw new CoreError("STORAGE_UNAVAILABLE", "Original Chat assignment requires recovered available canonical Storage.");
+    this.assertNoPendingLegacyNoteWorkItems();
+    if (this.hasPendingSharedSourceIntent()) throw new CoreError("RECOVERY_REQUIRED", "Shared-source recovery blocks original Chat assignment.");
+    const { readOriginalMcpTodoAssignmentAdmission } = await import("./original-mcp-todo-assignment.js");
+    const admission = await readOriginalMcpTodoAssignmentAdmission(prepared, this.owner);
+    this.assertWorkspaceLease();
+    if (this.closed || this.closeRequested || this.closing || this.exclusiveActive || this.exclusiveQueued)
+      throw new CoreError("BUSY", "Original Chat assignment admission changed before dispatch.");
+    return this.postOriginalTodoAssignment(admission);
+  }
+  private postOriginalTodoAssignment(originalTodoAssignment: OriginalTodoAssignmentAdmission): Promise<unknown> {
+    if (this.pending.size >= 32) return Promise.reject(new CoreError("BUSY", "Storage queue is full."));
+    return new Promise((resolve, reject) => {
+      const id = ++this.sequence;
+      this.pending.set(id, { resolve, reject });
+      try {
+        this.assertWorkspaceLease();
+        this.worker.postMessage({ id, originalTodoAssignment, runtimeOwner: this.lease });
+      } catch (error) { this.pending.delete(id); reject(error); }
+    });
+  }
+  async requestOriginalTodoRole(resource: unknown): Promise<unknown> {
+    if (this.closed || this.closeRequested || this.closing || !this.recovered || this.exclusiveActive || this.exclusiveQueued)
+      throw new CoreError("BUSY", "Todo role effects require the current available canonical owner.");
+    this.assertWorkspaceLease(); this.assertNoPendingLegacyNoteWorkItems();
+    if (this.hasPendingSharedSourceIntent()) throw new CoreError("RECOVERY_REQUIRED", "Shared-source recovery blocks Todo roles.");
+    const { readOriginalTodoRoleAdmission } = await import("./original-mcp-todo-role-native.js");
+    const originalTodoRole = await readOriginalTodoRoleAdmission(resource, this.owner, this);
+    if (this.pending.size >= 32 || this.closed || this.closeRequested || this.closing || this.exclusiveActive || this.exclusiveQueued)
+      throw new CoreError("BUSY", "Todo role admission changed before worker dispatch.");
+    return new Promise((resolve, reject) => {
+      const id = ++this.sequence;
+      this.pending.set(id, { resolve, reject });
+      try {
+        this.assertWorkspaceLease();
+        this.worker.postMessage({ id, originalTodoRole, runtimeOwner: this.lease });
+      } catch (error) { this.pending.delete(id); reject(error); }
+    });
+  }
+  async requestOriginalRecovery(capsule: import("./original-knowledge-recovery-native.js").OriginalRecoveryWorkerCapsule): Promise<unknown> {
+    if (this.closed || this.closeRequested || this.closing || !this.recovered || !this.exclusiveActive || this.pending.size)
+      throw new CoreError("BUSY", "Recovery uses only its current exclusive, already attached canonical owner; no lost-Root admission bypass.");
+    this.assertWorkspaceLease();
+    const { readOriginalRecoveryWorkerCapsule } = await import("./original-knowledge-recovery-native.js");
+    const originalRecovery = readOriginalRecoveryWorkerCapsule(this, capsule);
+    return new Promise((resolve, reject) => {
+      const id = ++this.sequence; this.pending.set(id, { resolve, reject });
+      try { this.assertWorkspaceLease(); this.worker.postMessage({ id, originalRecovery, runtimeOwner: this.lease }); }
+      catch (error) { this.pending.delete(id); reject(error); }
+    });
+  }
   async adoptMemoryScopeContinuity(request: MemoryScopeContinuityRequest,
-    approval: { decisionId: string; actorId: string; expiresAtMs: number }): Promise<void> {
+    approval: { decisionId: string; actorId: string; expiresAtMs: number }, revocation?: SharedArrayBuffer): Promise<void> {
     if (request.workspaceId !== await this.workspaceId())
       throw new CoreError("NOT_AVAILABLE", "Memory admission belongs to another workspace.");
-    await this.postMemoryScope({ request, approval });
+    await this.postMemoryScope({ request, approval, ...(revocation ? { revocation } : {}) });
     try {
       this.assertWorkspaceLease();
       activateReadoptedMemoryScope(this.root, request, approval);
+      bindMemoryScopeRevocation(this.root, revocation);
       this.memoryScopeActive = true;
     } catch (error) {
       await this.revokeMemoryScopeContinuity();
       throw error;
     }
+  }
+  async adoptOriginalMcpTodoSession(session: OriginalMcpTodoSession): Promise<void> {
+    await this.postOriginalTodoControl({ originalTodoSession: session });
+    try { this.assertWorkspaceLease(); activateOriginalMcpTodoSession(this.root, session); }
+    catch (error) { deactivateOriginalMcpTodoSession(this.root); throw error; }
+  }
+  async adoptOriginalMcpTodoWorker(receiptSha256: string): Promise<void> {
+    await this.postOriginalTodoControl({ originalTodoWorkerReceiptSha256: receiptSha256 });
+    this.assertWorkspaceLease(); activateOriginalMcpTodoWorker(this.root, receiptSha256);
+  }
+  async adoptOriginalMcpTodoGenesisSource(capsule: OriginalMcpTodoGenesisSourceScope): Promise<void> {
+    const control = originalMcpTodoGenesisSourceControlForStorage(this, capsule);
+    await this.postOriginalTodoControl({ originalTodoGenesisSource: control });
+    const db = this.connectNative();
+    try {
+      this.assertWorkspaceLease();
+      activateOriginalMcpTodoGenesisOwnerSource(this, db, capsule, this.lease);
+    } finally { db.close(); }
+  }
+  private async postOriginalTodoControl(control: { originalTodoSession: OriginalMcpTodoSession }
+    | { originalTodoWorkerReceiptSha256: string } | { originalTodoGenesisSource: OriginalMcpTodoGenesisSourceControl }): Promise<void> {
+    if (this.closed || this.closeRequested || this.closing)
+      throw new CoreError("STORAGE_UNAVAILABLE", "Storage is closed.");
+    await new Promise<void>((resolve, reject) => {
+      const id = ++this.sequence;
+      this.pending.set(id, { resolve: () => resolve(), reject });
+      try {
+        this.assertWorkspaceLease();
+        this.worker.postMessage({ id, ...control, runtimeOwner: this.lease });
+      } catch (error) { this.pending.delete(id); reject(error); }
+    });
   }
   async revokeMemoryScopeContinuity(): Promise<void> {
     deactivateMemoryScopeContinuity(this.root);
@@ -710,8 +686,8 @@ export class Storage {
     await this.postMemoryScope({ revoke: true });
   }
   private postMemoryScope(memoryScope: { request: MemoryScopeContinuityRequest;
-    approval: { decisionId: string; actorId: string; expiresAtMs: number } } | { revoke: true }): Promise<void> {
-    if (this.closed || this.closing) return Promise.reject(new CoreError("STORAGE_UNAVAILABLE", "Storage is closed."));
+    approval: { decisionId: string; actorId: string; expiresAtMs: number }; revocation?: SharedArrayBuffer } | { revoke: true }): Promise<void> {
+    if (this.closed || this.closeRequested || this.closing) return Promise.reject(new CoreError("STORAGE_UNAVAILABLE", "Storage is closed."));
     if (this.pending.size >= 32) return Promise.reject(new CoreError("BUSY", "Storage queue is full."));
     return new Promise((resolve, reject) => {
       const id = ++this.sequence;
@@ -772,7 +748,7 @@ export class Storage {
   async requestNativeBoardLifecycle(value: NativeBoardLifecycleInput, authority?: NativeTodoUserAuthority): Promise<unknown> {
     const input = nativeBoardLifecycleInput.parse(value);
     assertNativeTodoUserRootAuthority(this.root, authority);
-    if (!this.recovered || this.closing) throw new CoreError("BUSY", "Board file lifecycle requires a recovered native workspace.");
+    if (!this.recovered || this.closeRequested || this.closing) throw new CoreError("BUSY", "Board file lifecycle requires a recovered native workspace.");
     return this.withWorkspaceExclusive(() => {
       this.assertNoPendingLegacyNoteWorkItems();
       if (this.hasPendingSharedSourceIntent())
@@ -800,7 +776,7 @@ export class Storage {
     }, actorId }, undefined, input);
   }
   requestNativeTodoUser(value: NativeTodoUserInput, directory: NativeTodoUiChat[], authority?: NativeTodoUserAuthority): Promise<unknown> {
-    if (this.closed || this.closing || !this.recovered || this.exclusiveActive || this.exclusiveQueued)
+    if (this.closed || this.closeRequested || this.closing || !this.recovered || this.exclusiveActive || this.exclusiveQueued)
       return Promise.reject(new CoreError("BUSY", "Trusted Todo UI requires a recovered available native workspace."));
     this.assertNoPendingLegacyNoteWorkItems();
     if (this.hasPendingSharedSourceIntent()) return Promise.reject(new CoreError("RECOVERY_REQUIRED", "Shared-source recovery blocks Todo UI.", "unknown"));
@@ -811,16 +787,26 @@ export class Storage {
       undefined, undefined, { input, chats });
   }
   private postRequest(request: StorageRequest, legacyNoteOperationId?: string, originalNoteCreate?: LegacyTodoBoardCreateArguments,
-    nativeTodoUser?: { input: NativeTodoUserInput; chats: NativeTodoUiChat[] }, nativeBoardLifecycle?: NativeBoardLifecycleInput): Promise<unknown> {
+    nativeTodoUser?: { input: NativeTodoUserInput; chats: NativeTodoUiChat[] }, nativeBoardLifecycle?: NativeBoardLifecycleInput,
+    originalTodoGenesis?: import("./original-mcp-todo-genesis.js").OriginalMcpTodoGenesisAdmission): Promise<unknown> {
     if (this.pending.size >= 32) return Promise.reject(new CoreError("BUSY", "Storage queue is full; request was not dispatched."));
     return new Promise((resolve, reject) => {
       const id = ++this.sequence;
-      this.pending.set(id, { resolve, reject });
+      const experimentalTodoGenesisFault = originalTodoGenesis
+        ? experimentalTodoGenesisFaultForStorage(this, originalTodoGenesis) : undefined;
+      this.pending.set(id, { resolve, reject: error => {
+        if (experimentalTodoGenesisFault && error instanceof CoreError && error.code === "TODO_GENESIS_EXPERIMENTAL_FAULT") {
+          try { reportExperimentalTodoGenesisFault(this, experimentalTodoGenesisFault, error); }
+          catch (callbackError) { reject(callbackError); return; }
+        }
+        reject(error);
+      } });
       try {
         this.assertWorkspaceLease();
         this.worker.postMessage({ id, request, runtimeOwner: this.lease, ...(legacyNoteOperationId ? { legacyNoteOperationId } : {}),
           ...(originalNoteCreate ? { originalNoteCreate } : {}), ...(nativeTodoUser ? { nativeTodoUser } : {}),
-          ...(nativeBoardLifecycle ? { nativeBoardLifecycle } : {}) });
+          ...(nativeBoardLifecycle ? { nativeBoardLifecycle } : {}), ...(originalTodoGenesis ? { originalTodoGenesis } : {}),
+          ...(experimentalTodoGenesisFault ? { experimentalTodoGenesisFault } : {}) });
       }
       catch (error) {
         this.pending.delete(id);
@@ -831,7 +817,7 @@ export class Storage {
     });
   }
   private hasPendingLegacyNoteWorkItemsIntent(): boolean {
-    if (!this.lease) return false;
+    if (!this.owner.hasWorkspaceLease()) return false;
     const database = this.connectNative();
     try { return !!database.prepare("SELECT 1 FROM legacy_note_workitems_intent WHERE singleton=1").get(); }
     finally { database.close(); }
@@ -850,7 +836,11 @@ export class Storage {
     return !!readMembershipIntent(database, identity.id);
   }
   private hasOtherPendingSharedSource(database: DatabaseSync): boolean {
-    return !!inspectLegacyInlineNoteFence(database) || !!inspectPausedSnapshotJournal(database) || !!inspectBatch15SkillPending(database);
+    return !!inspectLegacyInlineNoteFence(database) || !!inspectPausedSnapshotJournal(database) || !!inspectBatch15SkillPending(database)
+      || (["todo", "memory"] as const).some(domain => {
+        const state = readOriginalMcpDomain(this.root, domain, database);
+        return state && !state.committed;
+      });
   }
   async withWorkspaceExclusive<T>(work: () => Promise<T> | T,
     recovery?: { authority: object; phase: MembershipRecoveryPhase }): Promise<T> {
@@ -885,7 +875,7 @@ export class Storage {
     }
   }
   registerNativeSnapshotScheduler(resource: NativeSnapshotSchedulerResource): () => void {
-    if (this.closed || this.closing || this.snapshotScheduler)
+    if (this.closed || this.closeRequested || this.closing || this.snapshotScheduler)
       throw new CoreError("BUSY", "A native snapshot scheduler is already owned or Storage is closing.");
     this.snapshotScheduler = resource;
     return () => { if (this.snapshotScheduler === resource) this.snapshotScheduler = undefined; };
@@ -893,7 +883,9 @@ export class Storage {
   async acquireNativeSnapshotSchedulerQuiescence() {
     return this.snapshotScheduler?.pauseForBackup();
   }
-  close(): Promise<void> {
+  close(): Promise<void> { return this.owner.close(); }
+  private closeAttached(): Promise<void> {
+    deactivateOriginalMcpTodoSession(this.root);
     if (this.memoryScopeActive) {
       deactivateMemoryScopeContinuity(this.root);
       this.memoryScopeActive = false;
@@ -913,82 +905,11 @@ export class Storage {
         await this.retainedResources[this.retainedResources.length - 1].release();
         this.retainedResources.pop();
       }
-      this.releaseWorkspaceLease();
-      await this.writerFence.release();
     })();
     this.closing = closing.catch(error => {
       this.closing = undefined;
       throw error;
     });
     return this.closing;
-  }
-  private acquireWorkspaceLease(): void {
-    this.writerFence.assertHeld();
-    if (!isTrustedLinuxRootWriterFence(this.writerFence, this.root))
-      throw new CoreError("STORAGE_UNAVAILABLE", "Workspace ownership requires the real exclusive Linux writer fence.");
-    const database = this.connectNative();
-    const ownerId = randomUUID(), now = Date.now(), duration = 30_000;
-    try {
-      database.exec("BEGIN IMMEDIATE");
-      this.writerFence.assertHeld();
-      const prior = database.prepare("SELECT owner_id,fence,lease_until FROM native_runtime_owner WHERE singleton=1").get();
-      if (prior && (typeof prior.owner_id !== "string" || !prior.owner_id
-        || !Number.isSafeInteger(prior.fence) || Number(prior.fence) < 1 || Number(prior.fence) >= Number.MAX_SAFE_INTEGER
-        || !Number.isSafeInteger(prior.lease_until) || Number(prior.lease_until) < 0)) {
-        throw new CoreError("RECOVERY_REQUIRED", "Native workspace owner lease is malformed and requires exact reconciliation.");
-      }
-      // On Linux the exclusive root flock is the process-liveness authority; SQL remains the monotonic fencing token.
-      if (prior && Number(prior.lease_until) > now && process.platform !== "linux")
-        throw new CoreError("BUSY", "Another process currently owns this workspace.", "not-committed");
-      const fence = prior ? Number(prior.fence) + 1 : 1;
-      database.prepare(`INSERT INTO native_runtime_owner VALUES(1,?,?,?)
-        ON CONFLICT(singleton) DO UPDATE SET owner_id=excluded.owner_id,fence=excluded.fence,lease_until=excluded.lease_until`)
-        .run(ownerId, fence, now + duration);
-      this.writerFence.assertHeld();
-      database.exec("COMMIT");
-      this.lease = { ownerId, fence };
-      this.leaseTimer = setInterval(() => {
-        try {
-          const current = Date.now();
-          database.exec("BEGIN IMMEDIATE");
-          const updated = database.prepare(`UPDATE native_runtime_owner SET lease_until=?
-            WHERE singleton=1 AND owner_id=? AND fence=? AND lease_until>?`)
-            .run(current + duration, ownerId, fence, current);
-          if (updated.changes !== 1) throw new CoreError("STORAGE_UNAVAILABLE", "Workspace ownership lease expired or changed.", "unknown");
-          database.exec("COMMIT");
-        } catch (error) {
-          if (database.isTransaction) database.exec("ROLLBACK");
-          this.loseWorkspaceLease(error);
-        }
-      }, Math.floor(duration / 3));
-      this.leaseTimer.unref();
-      this.leaseDatabase = database;
-    } catch (error) {
-      if (database.isTransaction) database.exec("ROLLBACK");
-      throw error;
-    } finally { if (!this.lease) database.close(); }
-  }
-  private loseWorkspaceLease(error?: unknown): void {
-    if (this.leaseLost) return;
-    this.leaseLost = true;
-    if (this.leaseTimer) clearInterval(this.leaseTimer);
-    this.leaseTimer = undefined;
-    this.leaseLostHandler?.(error instanceof CoreError ? error
-      : new CoreError("STORAGE_UNAVAILABLE", "Workspace ownership lease was lost.", "unknown"));
-  }
-  private releaseWorkspaceLease(): void {
-    if (this.leaseTimer) clearInterval(this.leaseTimer);
-    this.leaseTimer = undefined;
-    if (!this.lease) return;
-    const database = this.leaseDatabase;
-    if (!database) { this.lease = undefined; return; }
-    try {
-      database.exec("BEGIN IMMEDIATE");
-      database.prepare("UPDATE native_runtime_owner SET lease_until=0 WHERE singleton=1 AND owner_id=? AND fence=?")
-        .run(this.lease.ownerId, this.lease.fence);
-      database.exec("COMMIT");
-    } catch {
-      if (database.isTransaction) database.exec("ROLLBACK");
-    } finally { database.close(); this.leaseDatabase = undefined; this.lease = undefined; }
   }
 }

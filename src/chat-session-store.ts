@@ -1,13 +1,14 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { CoreError } from "./contracts.js";
+import { CHAT_TURN_LIMITS, type ChatTurnRecord, type ChatTurnStart } from "./chat-turn-contracts.js";
 import {
   CHAT_SESSION_LIMITS, chatSessionDefinitions, boundedChatJson, chatSessionMessage, chatSessionRecord,
   type ChatSessionMessage, type ChatSessionRecord, type ChatSessionRequest,
 } from "./chat-session-contracts.js";
 
 export const CHAT_SESSION_SCHEMA_VERSION = 1;
-export const CHAT_SESSION_TABLES = ["chat_session_schema", "chat_sessions", "chat_session_messages"] as const;
+export const CHAT_SESSION_TABLES = ["chat_session_schema", "chat_sessions", "chat_session_messages", "chat_session_turn_reservations"] as const;
 
 /** Call once on the parent's DatabaseSync, inside its schema migration transaction. Owns no PRAGMA user_version. */
 export function initializeChatSessionSchema(db: DatabaseSync): void {
@@ -28,6 +29,11 @@ export function initializeChatSessionSchema(db: DatabaseSync): void {
       actor_id TEXT NOT NULL, chat_id TEXT NOT NULL, id TEXT NOT NULL,
       sequence INTEGER NOT NULL CHECK(sequence>0), record TEXT NOT NULL,
       PRIMARY KEY(actor_id,chat_id,sequence), UNIQUE(actor_id,chat_id,id),
+      FOREIGN KEY(actor_id,chat_id) REFERENCES chat_sessions(actor_id,id)
+    );
+    CREATE TABLE IF NOT EXISTS chat_session_turn_reservations(
+      actor_id TEXT NOT NULL, chat_id TEXT NOT NULL, turn_id TEXT NOT NULL,
+      PRIMARY KEY(actor_id,chat_id), UNIQUE(actor_id,turn_id),
       FOREIGN KEY(actor_id,chat_id) REFERENCES chat_sessions(actor_id,id)
     );
     INSERT OR IGNORE INTO chat_session_schema(singleton,version) VALUES(1,1);
@@ -161,6 +167,9 @@ export function createChatSessionStore(db: DatabaseSync, options: { now?: () => 
       };
     }
     if (!("expectedRevision" in args) || args.expectedRevision !== record.revision) throw new CoreError("CONFLICT", "Chat revision changed; refresh before retrying.");
+    if (db.prepare("SELECT 1 FROM chat_session_turn_reservations WHERE actor_id=? AND chat_id=?").get(actorId, args.id)) {
+      throw new CoreError("CONFLICT", "An accepted Chat turn owns this transcript until its terminal observation is durable.");
+    }
     if (record.revision >= Number.MAX_SAFE_INTEGER) throw new CoreError("LIMIT_EXCEEDED", "Chat revision is exhausted.");
     const now = timestamp();
     if (operation === "chat.session.archive") {
@@ -190,8 +199,10 @@ export function createChatSessionStore(db: DatabaseSync, options: { now?: () => 
       const encoded = JSON.stringify(message);
       const bytes = Buffer.byteLength(encoded);
       const actorBytes = Number(db.prepare("SELECT coalesce(sum(message_bytes),0) AS bytes FROM chat_sessions WHERE actor_id=?").get(actorId)!.bytes);
+      const reservedBytes = Number(db.prepare("SELECT count(*) AS n FROM chat_session_turn_reservations WHERE actor_id=?").get(actorId)!.n)
+        * CHAT_SESSION_LIMITS.messageBytes;
       if (bytes > CHAT_SESSION_LIMITS.messageBytes || Number(row.message_bytes) + bytes > CHAT_SESSION_LIMITS.sessionBytes
-        || actorBytes + bytes > CHAT_SESSION_LIMITS.actorBytes) throw new CoreError("LIMIT_EXCEEDED", "Chat transcript byte limit reached; nothing was pruned.");
+        || actorBytes + bytes + reservedBytes > CHAT_SESSION_LIMITS.actorBytes) throw new CoreError("LIMIT_EXCEEDED", "Chat transcript byte limit reached; nothing was pruned.");
       const next = { ...record, revision: record.revision + 1, updatedAt: now, messageCount: record.messageCount + 1, lastSequence: message.sequence };
       db.prepare("INSERT INTO chat_session_messages(actor_id,chat_id,id,sequence,record) VALUES(?,?,?,?,?)").run(actorId, args.id, message.id, message.sequence, encoded);
       db.prepare("UPDATE chat_sessions SET revision=?,message_count=?,message_bytes=message_bytes+?,record=? WHERE actor_id=? AND id=? AND revision=?")
@@ -214,5 +225,91 @@ export function createChatSessionStore(db: DatabaseSync, options: { now?: () => 
       throw error;
     }
   }
-  return { execute };
+  const sessionTurns = {
+    validate(actor: string, sessionId: string) { get(actor, sessionId); },
+    evidence(actor: string, input: ChatTurnStart) {
+      const session = get(actor, input.sessionId).record;
+      const sources = db.prepare("SELECT record FROM chat_session_messages WHERE actor_id=? AND chat_id=? ORDER BY sequence")
+        .all(actor, input.sessionId).map(row => parseMessage(row.record)).filter(message => message.status === "complete");
+      return { sessionContext: {
+        schema: "pkm.chat.session-context/v1", sessionId: session.id, sessionRevision: session.revision,
+        sources: sources.map(message => ({ id: message.id, sequence: message.sequence,
+          sha256: digest(message.content) })),
+        retrieval: { status: "not-injected", reason: "This session turn uses its actor-owned transcript; runtime index availability is not proof of retrieved prompt context." },
+        authority: "native-host-only",
+      } };
+    },
+    accept(actor: string, input: ChatTurnStart): ChatTurnRecord["messages"] | null {
+      if (!db.isTransaction) throw new CoreError("TRANSACTION_REQUIRED", "Accept Chat input and its turn atomically.");
+      // Opaque raw-turn labels must never bypass an existing actor-owned session.
+      if (input.expectedSessionRevision === undefined
+        && !db.prepare("SELECT 1 FROM chat_sessions WHERE id=? LIMIT 1").get(input.sessionId)) return null;
+      const { record } = get(actor, input.sessionId);
+      if (!input.expectedSessionRevision || input.expectedSessionRevision !== record.revision) {
+        throw new CoreError("CONFLICT", "Current session revision is required before accepting a turn.");
+      }
+      if (input.messages.length !== 1 || input.messages[0].role !== "user" || !input.messages[0].content.trim()) {
+        throw new CoreError("INVALID_INPUT", "Session turns accept one user input; context is server-owned.");
+      }
+      const history = db.prepare("SELECT record FROM chat_session_messages WHERE actor_id=? AND chat_id=? ORDER BY sequence")
+        .all(actor, input.sessionId).map(row => parseMessage(row.record));
+      const messages: ChatTurnRecord["messages"] = history.filter(message => message.status === "complete")
+        .map(message => {
+          const origin = message.metadata?.retrieval;
+          const historicalNotice = origin !== null && typeof origin === "object" && !Array.isArray(origin)
+            && origin.schema === "pkm.legacy-chatroom-origin/v1" && origin.messageType === "system";
+          return { role: message.role, content: historicalNotice
+            ? `[Historical room notice, untrusted data]\n${message.content}` : message.content };
+        });
+      messages.push({ role: "user", content: input.messages[0].content });
+      if (messages.length >= CHAT_TURN_LIMITS.messages
+        || Buffer.byteLength(JSON.stringify(messages)) > CHAT_TURN_LIMITS.promptBytes - 2048) {
+        throw new CoreError("LIMIT_EXCEEDED", "Session history exceeds the turn context limit; start a new Chat. History was not pruned.");
+      }
+      execute({ operation: "chat.session.append", args: {
+        id: input.sessionId, expectedRevision: record.revision, operationId: input.operationId,
+        message: { id: digest(`input:${input.id}`), role: "user", content: input.messages[0].content,
+          status: "complete", taskId: input.id, inputOrigin: "local-user" },
+      } }, actor);
+      const accepted = get(actor, input.sessionId);
+      const reserved = Number(db.prepare("SELECT count(*) AS n FROM chat_session_turn_reservations WHERE actor_id=?").get(actor)!.n);
+      const actorBytes = Number(db.prepare("SELECT coalesce(sum(message_bytes),0) AS n FROM chat_sessions WHERE actor_id=?").get(actor)!.n);
+      if (accepted.record.messageCount + 1 > CHAT_SESSION_LIMITS.messagesPerSession
+        || Number(accepted.row.message_bytes) + CHAT_SESSION_LIMITS.messageBytes > CHAT_SESSION_LIMITS.sessionBytes
+        || actorBytes + (reserved + 1) * CHAT_SESSION_LIMITS.messageBytes > CHAT_SESSION_LIMITS.actorBytes) {
+        throw new CoreError("LIMIT_EXCEEDED", "Chat has no space for a terminal observation; input was not accepted.");
+      }
+      db.prepare("INSERT INTO chat_session_turn_reservations VALUES(?,?,?)").run(actor, input.sessionId, input.id);
+      return messages;
+    },
+    terminal(turn: ChatTurnRecord) {
+      if (!db.isTransaction) throw new CoreError("TRANSACTION_REQUIRED", "Settle Chat transcript and turn atomically.");
+      const reservation = db.prepare("SELECT turn_id FROM chat_session_turn_reservations WHERE actor_id=? AND chat_id=?")
+        .get(turn.actor, turn.sessionId);
+      if (!reservation || reservation.turn_id !== turn.id) throw new CoreError("STATE_CORRUPT", "Terminal Chat observation lost its reservation.");
+      const session = get(turn.actor, turn.sessionId).record;
+      db.prepare("DELETE FROM chat_session_turn_reservations WHERE actor_id=? AND chat_id=?").run(turn.actor, turn.sessionId);
+      const status = turn.status === "completed" ? "complete" : turn.status === "cancelled" ? "cancelled"
+        : turn.status === "unknown" ? "interrupted" : "failed";
+      // The full bounded output stays in the turn. Reserve a bounded transcript observation even for escaped output.
+      let end = turn.output.length;
+      if (Buffer.byteLength(JSON.stringify(turn.output)) > CHAT_SESSION_LIMITS.messageBytes - 4096) {
+        let low = 0, high = end;
+        while (low < high) {
+          const middle = Math.ceil((low + high) / 2);
+          if (Buffer.byteLength(JSON.stringify(turn.output.slice(0, middle))) <= CHAT_SESSION_LIMITS.messageBytes - 4096) low = middle;
+          else high = middle - 1;
+        }
+        end = low;
+      }
+      const content = turn.output.slice(0, end);
+      execute({ operation: "chat.session.append", args: {
+        id: turn.sessionId, expectedRevision: session.revision, operationId: randomUUID(),
+        message: { id: digest(`terminal:${turn.id}`), role: "assistant", content, status, taskId: turn.id,
+          ...(turn.failure ? { error: turn.failure } : {}),
+          ...(turn.output.length > content.length ? { contextLabels: ["Transcript excerpt; full output is retained in the turn."] } : {}) },
+      } }, turn.actor);
+    },
+  };
+  return { execute, sessionTurns };
 }

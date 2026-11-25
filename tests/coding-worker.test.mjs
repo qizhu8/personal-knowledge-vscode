@@ -256,6 +256,8 @@ test("urgent targeted feedback fences only the affected attempt; cancelled run c
   await f.composition.host.cancel({ owner: f.owner, runId: "cancelled-direct", effectId: randomUUID() });
   await assert.rejects(f.composition.host.worker(f.workerInput("add", { runId: "cancelled-direct" }), f.signal), /FENCED/);
   f.assertOriginals();
+  // A cancelled transcript can precede the released transport's actual retirement.
+  await until(() => f.provider.activity() === 0);
 });
 
 test("source policy and check denial block native child launch; immutable check hashes are in acceptance pin", async t => {

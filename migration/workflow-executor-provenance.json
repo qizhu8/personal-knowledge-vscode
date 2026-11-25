@@ -16,18 +16,16 @@
     "definition/source pins"
   ],
   "unavailable": [
-    "cron",
-    "multi-node loop bodies",
-    "dynamic repeats/cases",
     "general expression evaluation",
-    "subflows",
     "human gates",
     "automatic process/tool/model adapters",
-    "run output mapping",
     "distributed effect rollback",
     "automatic effect retries",
     "exact safe reconciliation",
-    "full original executor profile/attestation parity"
+    "full original executor profile/attestation parity",
+    "unbounded recurring cron",
+    "generic Core subflows",
+    "generic Core multi-node loop bodies"
   ],
   "files": [
     {
@@ -106,19 +104,35 @@
   "native": [
     {
       "file": "src/workflow-executor.ts",
-      "sha256": "a578d2bf920169044b2c99477423dc38faf98d59239eec988bcd04111a16c498"
+      "sha256": "a37b5dd2bbaf23ba96ffe921d824da8e46580e1053201bb694028b1cca1ceb9b"
     },
     {
       "file": "src/workflow-executor-contracts.ts",
-      "sha256": "30a60de0d2c37cf70904864b2871a98d061bd1aca6e774517206e43548e6ac59"
+      "sha256": "8f8dc7a37997eccb09b97c4027679329ef683098695618d251366ae3534f2e45"
     },
     {
       "file": "src/domain/workflow-executor-state.ts",
-      "sha256": "ddf9307f8ca58e7cffd43e57afa914ef2d5e51a54ac4cbc8f9e44d30993a1653"
+      "sha256": "a39552ff7f1d2a9d4d1d2cd7c39346851632267a37c573571cf18ab6dc70232a"
+    },
+    {
+      "file": "src/domain/workflow-executor-bindings.ts",
+      "sha256": "49cf80327da426bd0370e3ba2c87d7b84e3de2bd3f467980e2e076c3814ee695"
+    },
+    {
+      "file": "src/domain/workflow-executor-cron.ts",
+      "sha256": "8ce5ada46116e461064277ee168b2d3109e52d48bf31dd81f2743e24f7d5aea2"
+    },
+    {
+      "file": "src/domain/workflow-executor-limits.ts",
+      "sha256": "36322c58d36d8608d799b2aa2c46810dfd6f09a9cf3c6655d1a7b415b3450263"
+    },
+    {
+      "file": "src/domain/workflow-executor-original-loops.ts",
+      "sha256": "26bf5864a2f14166d96fef4be9b113f5d0e4e7b6fd3ac31d0f7415af8e928aa6"
     },
     {
       "file": "tests/workflow-executor.test.mjs",
-      "sha256": "f574396aa1498760df3c0320dfd2b209f86d4e09d1b2acf22d7c5087879dc692"
+      "sha256": "f2d13edb2f9c54d017d4a4d3a601cbe83c3e92475ef38607763b6f4360a05337"
     },
     {
       "file": "tests/workflow-executor-fixtures.mjs",
@@ -128,5 +142,29 @@
       "file": "tests/workflow-executor-restart-child.mjs",
       "sha256": "5bab94f6610690d7a56bc5cde666e1e54e9f7adca1ecb818f7bed54a316fe4e9"
     }
-  ]
+  ],
+  "runtimeControls": {
+    "schema": "pkm.workflow.runtime-controls/v1",
+    "qualified": [
+      "explicit input/authoritative-node-output bindings",
+      "dynamic count or collection repeat 1–64",
+      "dynamic eligible subset of declared branch outcomes",
+      "typed bound run outputs",
+      "one explicitly consented future cron due-slot delivery",
+      "current source/consent/output authority fences",
+      "explicit Original Recipe metadata semantics and declared inputs_json native-control opt-in",
+      "Original authored feedback bodies with exact invocation completion receipts",
+      "bounded actual host progress observations gated by exact known invocation completion clocks",
+      "trusted pinned subflow child intents on the same executor with shared tree budgets and descendant fences"
+    ],
+    "limits": [
+      "no implicit control bindings",
+      "no unbounded recurring run generation",
+      "no missed-slot or unknown-effect replay",
+      "no generic Core subflows or feedback bodies",
+      "no automatic subflow child claims or mixed native-control subflows"
+    ],
+    "storage": "Existing bounded event journal and receipts; unchanged DDL and strict legacy Recipe records. Native controls use the existing explicit dispatch flag plus a versioned journal marker, preventing old native hosts from automatically scheduling them.",
+    "originalCompatibility": "Genuine registered Original Recipe start/get/next/report executes non-loop nodes once; repeat/cron/output fields are metadata, dynamicCases uses explicitly reported declared outcomes, and no recurring producer is registered. Native source-authorized metadata mode preserves that behavior with disclosure. Required declared string workflowControls plus versioned envelope is a new native opt-in through unchanged inputs_json, not an invented historical binding rule."
+  }
 }

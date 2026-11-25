@@ -26,6 +26,7 @@ import { attachLegacyChatroomHostIpc } from "./legacy-chatroom-host-ipc.js";
 import { managedSelectedOwnerIpc } from "./managed-selected-owner-ipc.js";
 import { managedClientSelectedChatIpc } from "./managed-client-selected-chat-ipc.js";
 import { assertSelectedChatRecovery, type SelectedChatRecoveryPin } from "./selected-chat-recovery.js";
+import { coreDatabasePath } from "./workspace-storage-paths.js";
 
 const endpoint = "http://127.0.0.1:1/v1";
 let selectedChatRecovery: SelectedChatRecoveryPin | undefined;
@@ -116,7 +117,7 @@ async function assertRoomRecovery() {
   const pin = roomRecovery!;
   const parent = await realDirectory(pin.parent), root = await realDirectory(join(pin.parent, "workspace"));
   const legacy = await realDirectory(pin.legacyRoot), parentStat = await lstat(parent.path);
-  const database = await lstat(join(root.path, "core.sqlite"), { bigint: true });
+  const database = await lstat(coreDatabasePath(root.path), { bigint: true });
   const marker = await lstat(join(root.path, ".pkm-next-workspace"), { bigint: true });
   if (parent.pin !== pin.parentIdentity || root.pin !== pin.workspaceIdentity || legacy.pin !== pin.legacyIdentity
     || !database.isFile() || database.isSymbolicLink() || `${database.dev}:${database.ino}` !== pin.databaseIdentity
@@ -664,7 +665,7 @@ process.on("message", (value: unknown) => {
       }
       const check = async () => {
         const directory = await realDirectory(data), parentStat = await lstat(parent.path);
-        const database = await lstat(join(data, "core.sqlite"), { bigint: true });
+        const database = await lstat(coreDatabasePath(data), { bigint: true });
         const marker = await lstat(join(data, ".pkm-next-workspace"), { bigint: true });
         if ((await realDirectory(parent.path)).pin !== pin.parentIdentity || directory.pin !== pin.workspaceIdentity
           || parentStat.uid !== process.getuid?.() || parentStat.mode & 0o077

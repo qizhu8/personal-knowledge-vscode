@@ -129,6 +129,7 @@ function allTrashEntries(receipt: LegacyTrashAdoptionReceipt, database?: Databas
   const entries = [...receipt.original.entries];
   if (!database || !workspaceId) return entries;
   for (const plan of readNativeTrashOrigins(database, workspaceId).values()) {
+    if (plan.area === "scripts" || plan.area === "prompts") continue;
     if (entries.some(entry => entry.runtimeId === plan.entryId)) trashImportFail("TAMPER", "Native Trash provenance collides with an imported original identity.");
     const bytes = trashLifecycleMetadata(plan);
     entries.push({

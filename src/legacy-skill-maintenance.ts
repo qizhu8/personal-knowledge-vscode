@@ -263,12 +263,16 @@ export function recoverLegacySkillMaintenance(database: DatabaseSync, root: stri
 }
 
 export async function legacySkillMaintenance(storage: Storage, actor: Actor,
-  request: z.infer<typeof legacySkillMaintenanceRequest>, options: { operationId?: string; genesis?: LegacySkillMaintenanceGenesis } = {}) {
+  request: z.infer<typeof legacySkillMaintenanceRequest>, options: {
+    operationId?: string; genesis?: LegacySkillMaintenanceGenesis; assertCurrent?: () => void;
+  } = {}) {
   if (!actor.canWrite) throw new CoreError("ACCESS_DENIED", "The isolated MCP process is read-only.");
+  options.assertCurrent?.();
   const args = schemas[request.tool].parse(request.arguments);
   const operationId = uuid.parse(options.operationId ?? randomUUID());
   const requestDigest = sha256(JSON.stringify({ tool: request.tool, arguments: args, actor: actor.id }));
   return storage.withWorkspaceExclusive(async () => {
+    options.assertCurrent?.();
     storage.assertWorkspaceLease();
     const database = storage.connectNative(), root = storage.workspaceRoot();
     try {
@@ -294,6 +298,7 @@ export async function legacySkillMaintenance(storage: Storage, actor: Actor,
         artifacts: z.array(z.strictObject({ path: z.string(), raw: z.string(), append: z.boolean() })).max(1),
       }).parse(await runLegacyMcpPython(fileURLToPath(new URL("../compat/legacy-knowledge-mcp.py", import.meta.url)), [],
         { tool: request.tool, arguments: args, files, recipes: [] }));
+      options.assertCurrent?.();
       if (JSON.stringify(files) !== JSON.stringify(legacyKnowledgeTree(root, "skills").concat(legacyKnowledgeTree(root, "subscriptions", "cache"))))
         throw new CoreError("CONFLICT", "Skill source changed during advisory planning.");
       if (!projection.artifacts.length) return { text: projection.text, value: projection.value };
@@ -314,6 +319,7 @@ export async function legacySkillMaintenance(storage: Storage, actor: Actor,
         ? projection.text.replace(/"proposal_path":\s*"(?:\\.|[^"])*"/, `"proposal_path": ${JSON.stringify(artifact.path)}`)
         : projection.text;
       storage.assertWorkspaceLease();
+      options.assertCurrent?.();
       database.exec("BEGIN IMMEDIATE");
       try {
         if (!database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)) database.exec(ddl);
@@ -321,6 +327,7 @@ export async function legacySkillMaintenance(storage: Storage, actor: Actor,
         database.prepare(`INSERT INTO ${table} VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(rows.length + 1, operationId,
           workspaceId, actor.id, request.tool, requestDigest, artifact.path, artifact.raw,
           previousSha, currentSha, resultText);
+        options.assertCurrent?.();
         database.exec("COMMIT");
       } catch (error) { database.exec("ROLLBACK"); throw error; }
       try {

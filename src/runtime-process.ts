@@ -33,6 +33,8 @@ export interface RuntimeProcessAdapter {
   openLaunch?(args: readonly string[]): { executable: number; cwd: number };
   stdin?: boolean;
   outputPersistence?: "stored" | "ephemeral";
+  /** Trusted per-adapter capture bounds may only narrow the service limits. */
+  outputLimits?: Readonly<{ stdoutBytes: number; stderrBytes: number }>;
   /** Trusted opt-in only. Processes that leave the group are not contained. */
   processScope?: "direct-child" | "linux-process-group";
 }
@@ -43,6 +45,8 @@ export interface RuntimeProcessOptions {
   resolveAdapter?(id: string, input: Json): RuntimeProcessAdapter | undefined;
   authorizeLaunch(request: { actorId: string; adapterId: string; input: Json }): Promise<boolean>;
   limits?: Partial<Limits>;
+  /** Exact native Original Portal command authority; never populated by public runtime arguments. */
+  originalPortalCommand?: { assertCurrent(): void };
   /** Private Chat-only durable combined output sink; never used by the public dispatcher. */
   legacyChatCapture?: {
     write(jobId: string, stream: "stdout" | "stderr", bytes: Buffer): void;
@@ -103,7 +107,9 @@ export class RuntimeProcessService {
   private persistenceFailure?: unknown;
 
   constructor(private readonly options: RuntimeProcessOptions) {
-    const ceilings = options.legacyChatCapture ? { ...RUNTIME_PROCESS_LIMITS, deadlineMs: 86_400_000 } : RUNTIME_PROCESS_LIMITS;
+    options.originalPortalCommand?.assertCurrent();
+    const ceilings = options.legacyChatCapture || options.originalPortalCommand
+      ? { ...RUNTIME_PROCESS_LIMITS, deadlineMs: 86_400_000 } : RUNTIME_PROCESS_LIMITS;
     const limits = { ...RUNTIME_PROCESS_LIMITS, ...options.limits };
     for (const key of Object.keys(RUNTIME_PROCESS_LIMITS) as (keyof Limits)[]) {
       const minimum = ["queue", "stdoutBytes", "stderrBytes", "closeDrainMs"].includes(key) ? 0 : 1;
@@ -157,13 +163,18 @@ export class RuntimeProcessService {
       || (candidate.cwd !== undefined && (!isAbsolute(candidate.cwd) || candidate.cwd.includes("\0")))
       || typeof candidate.arguments !== "function" || (candidate.stdin !== undefined && typeof candidate.stdin !== "boolean")
       || (candidate.outputPersistence !== undefined && !["stored", "ephemeral"].includes(candidate.outputPersistence))
+      || candidate.outputLimits !== undefined && (!candidate.outputLimits || typeof candidate.outputLimits !== "object"
+        || (["stdoutBytes", "stderrBytes"] as const).some(key =>
+          !Number.isSafeInteger(candidate.outputLimits![key]) || candidate.outputLimits![key] < 0
+          || candidate.outputLimits![key] > this.limits[key]))
       || (candidate.processScope !== undefined && !["direct-child", "linux-process-group"].includes(candidate.processScope))
       || (candidate.processScope === "linux-process-group" && process.platform !== "linux"))
       fail("ADAPTER_UNAVAILABLE", "Native process adapter is unavailable or invalid.");
     const env = Object.freeze({ ...candidate.env });
     if (Object.entries(env).some(([key, value]) => !key || /[=\0]/.test(key) || typeof value !== "string" || value.includes("\0")))
       fail("INVALID_ADAPTER", "Adapter environment must be explicit string entries.");
-    const adapter = Object.freeze({ ...candidate, env });
+    const adapter = Object.freeze({ ...candidate, env,
+      ...(candidate.outputLimits ? { outputLimits: Object.freeze({ ...candidate.outputLimits }) } : {}) });
     if (request.stdin !== undefined && (!(request.stdin instanceof Uint8Array) || adapter.stdin !== true
       || request.stdin.byteLength > this.limits.inputBytes)) fail("INPUT_LIMIT", "Stdin is not enabled or exceeds its byte limit.");
     const stdin = request.stdin === undefined ? undefined : Buffer.from(request.stdin);
@@ -367,7 +378,7 @@ export class RuntimeProcessService {
       return;
     }
     const cap = stream === "stderr" && task.adapter.outputPersistence === "ephemeral" ? 0
-      : this.limits[stream === "stdout" ? "stdoutBytes" : "stderrBytes"];
+      : (task.adapter.outputLimits ?? this.limits)[stream === "stdout" ? "stdoutBytes" : "stderrBytes"];
     const kept = chunk.subarray(0, Math.max(0, cap - task[stream].length));
     if (kept.length) task[stream] = Buffer.concat([task[stream], kept]);
     task.job[stream] = task.adapter.outputPersistence === "ephemeral" ? "" : task[stream].toString("base64");

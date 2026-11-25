@@ -24,6 +24,7 @@ import { installProjectMutationTransportFixture, projectMutationFixtureRequests 
 import { planProjectMutation, serializeProjectMutationPlan } from "../dist/project-mutations.js";
 import { syncApplyFixtureBytes, syncApplyFixtureInput } from "./sync-apply-fixture.mjs";
 import { syncPlanHash } from "../dist/sync-plan.js";
+import { coreDatabasePath } from "../dist/workspace-storage-paths.js";
 
 const cli = resolve("dist/cli.js");
 const executeFile = promisify(execFile);
@@ -1024,11 +1025,15 @@ test("CLI initializes only a new workspace and rejects insecure startup before o
   const directory = join(parent, "cli-workspace");
   const initialized = await executeFile(process.execPath, [cli, "init", "--data", directory]);
   assert.equal(JSON.parse(initialized.stdout).initialized, directory);
+  const initializedEntries = (await readdir(directory)).sort();
+  const database = coreDatabasePath(directory);
+  assert.equal((await readFile(database)).length, 0, "Separated init creates only an empty canonical database stub.");
   await assert.rejects(executeFile(process.execPath, [cli, "init", "--data", directory]), /EEXIST/);
   await assert.rejects(executeFile(process.execPath, [cli, "http", "--data", directory], {
     env: { ...process.env, PKM_NEXT_TOKEN: "" },
   }), /PKM_NEXT_TOKEN/);
-  assert.deepEqual((await readdir(directory)).sort(), [".pkm-next-workspace", "notes"], "invalid transport config must not open/create the database");
+  assert.deepEqual((await readdir(directory)).sort(), initializedEntries, "invalid transport config must not change initialized entries");
+  assert.equal((await readFile(database)).length, 0, "invalid transport config must not initialize the database");
 });
 
 test("HTTP accepts Note requests above the former 128-KiB request-body limit", async t => {

@@ -8,6 +8,9 @@ import {
 import type { ManagerRun } from "../../src/manager-runtime.js";
 import { managerPlanTaskSchema, managerPlanBudgetSchema } from "../../src/domain/manager-plan-contracts.ts";
 import { z } from "zod";
+import { chatSessionDefinitions, chatSessionRecord, type ChatSessionRecord } from "../../src/chat-session-contracts.ts";
+import { chatTurnRecordSchema, chatTurnEventSchema } from "../../src/chat-turn-contracts.ts";
+import { mutationReceiptResult } from "../../src/mutation-receipt-contracts.ts";
 
 export type { ManagerRun };
 
@@ -80,6 +83,7 @@ export interface ChatTurn {
   schema: "pkm.chat.turn/v1"; id: string; sessionId: string; revision: number;
   status: string; output: string; lastSequence: number;
 }
+export type ChatSession = ChatSessionRecord;
 export interface ChatEvent { sequence: number; type: string; data: Record<string, unknown>; }
 export type ManagerOverview = ManagerProgressOverview;
 export type ManagerEvent = ManagerProgressEvent;
@@ -205,6 +209,7 @@ export class VscodeClient {
     try {
       const result = await this.request(definition.readOnly ? "capability_read" : "capability_call", body, !definition.readOnly, signal);
       this.validateManagerResult(key, result, parsed.data);
+      this.validateChatResult(key, result, parsed.data);
       if (mutationId) this.pending.delete(mutationId);
       return result;
     } catch (error) {
@@ -222,6 +227,7 @@ export class VscodeClient {
     try {
       const result = await this.request("capability_call", pending.body, true, signal);
       this.validateManagerResult(pending.key, result, JSON.parse(pending.body).arguments);
+      this.validateChatResult(pending.key, result, JSON.parse(pending.body).arguments);
       this.pending.delete(operationId); return result;
     } catch (error) {
       this.code = error instanceof ClientError ? error.code : "TRANSPORT_ERROR";
@@ -268,14 +274,84 @@ export class VscodeClient {
   knowledgeList(input: OperationInput<"knowledgeList"> = {}, signal?: AbortSignal) { return this.invoke("knowledgeList", input, signal) as unknown as Promise<DocumentPage>; }
   knowledgeGet(input: OperationInput<"knowledgeGet">, signal?: AbortSignal) { return this.invoke("knowledgeGet", input, signal) as unknown as Promise<Document>; }
   knowledgeEdit(input: OperationInput<"knowledgeEdit">, signal?: AbortSignal) { return this.invoke("knowledgeEdit", input, signal) as unknown as Promise<Document>; }
-  chatList(input: OperationInput<"chatList"> = {}, signal?: AbortSignal) { return this.invoke("chatList", input, signal); }
-  chatCreate(input: OperationInput<"chatCreate">, signal?: AbortSignal) { return this.invoke("chatCreate", input, signal); }
-  chatGet(input: OperationInput<"chatGet">, signal?: AbortSignal) { return this.invoke("chatGet", input, signal); }
-  chatMessages(input: OperationInput<"chatMessages">, signal?: AbortSignal) { return this.invoke("chatMessages", input, signal); }
-  chatStart(input: OperationInput<"chatStart">, signal?: AbortSignal) { return this.invoke("chatStart", input, signal) as unknown as Promise<ChatTurn>; }
-  chatTurn(input: OperationInput<"chatTurn">, signal?: AbortSignal) { return this.invoke("chatTurn", input, signal) as unknown as Promise<ChatTurn>; }
+  private chatResponse<T>(schema: z.ZodType<T>, value: unknown): T {
+    const parsed = schema.safeParse(value);
+    if (!parsed.success) throw new ClientError("INVALID_CHAT_RESPONSE");
+    return parsed.data;
+  }
+  private validateChatResult(key: OperationKey, value: Record<string, unknown>, input: unknown) {
+    if (!key.startsWith("chat")) return;
+    const args = input as Record<string, unknown>;
+    try {
+      if (key === "chatList") this.chatResponse(chatSessionDefinitions[2].output, value);
+      else if (key === "chatMessages") {
+        this.chatResponse(chatSessionDefinitions[4].output, value);
+        if (value.id !== args.id) throw new Error();
+      } else if (key === "chatTurns") {
+        const page = this.chatResponse(z.strictObject({ items: z.array(chatTurnRecordSchema).max(100),
+          next: z.string().nullable() }), value);
+        if (page.items.some(item => item.sessionId !== args.sessionId)) throw new Error();
+      } else if (key === "chatEvents") {
+        const page = this.chatResponse(z.strictObject({ events: z.array(chatTurnEventSchema).max(100),
+          next: z.number().int().safe().positive().nullable() }), value);
+        if (page.events.some(event => event.turnId !== args.id)) throw new Error();
+      } else {
+        if (["chatCreate", "chatGet", "chatArchive"].includes(key)) this.chatResponse(chatSessionRecord, value);
+        else this.chatResponse(chatTurnRecordSchema, value);
+        if (value.id !== args.id || key === "chatStart" && value.sessionId !== args.sessionId) throw new Error();
+      }
+    } catch {
+      throw new ClientError("INVALID_CHAT_RESPONSE", operations[key].readOnly ? "not-committed" : "unknown");
+    }
+  }
+  async chatList(input: OperationInput<"chatList"> = {}, signal?: AbortSignal) {
+    return this.chatResponse(chatSessionDefinitions[2].output, await this.invoke("chatList", input, signal));
+  }
+  async chatCreate(input: OperationInput<"chatCreate">, signal?: AbortSignal) {
+    return this.chatResponse(chatSessionRecord, await this.invoke("chatCreate", input, signal));
+  }
+  async chatGet(input: OperationInput<"chatGet">, signal?: AbortSignal) {
+    const result = this.chatResponse(chatSessionRecord, await this.invoke("chatGet", input, signal));
+    if (result.id !== input.id) throw new ClientError("INVALID_CHAT_RESPONSE");
+    return result;
+  }
+  async chatArchive(input: OperationInput<"chatArchive">, signal?: AbortSignal) {
+    return this.chatResponse(chatSessionRecord, await this.invoke("chatArchive", input, signal));
+  }
+  async chatMessages(input: OperationInput<"chatMessages">, signal?: AbortSignal) {
+    const result = this.chatResponse(chatSessionDefinitions[4].output, await this.invoke("chatMessages", input, signal));
+    if (result.id !== input.id) throw new ClientError("INVALID_CHAT_RESPONSE");
+    return result;
+  }
+  async chatStart(input: OperationInput<"chatStart">, signal?: AbortSignal) {
+    return this.chatResponse(chatTurnRecordSchema, await this.invoke("chatStart", input, signal));
+  }
+  async chatTurn(input: OperationInput<"chatTurn">, signal?: AbortSignal) {
+    const result = this.chatResponse(chatTurnRecordSchema, await this.invoke("chatTurn", input, signal));
+    if (result.id !== input.id) throw new ClientError("INVALID_CHAT_RESPONSE");
+    return result;
+  }
+  async receiptGet(input: OperationInput<"receiptGet">, signal?: AbortSignal) {
+    const actorId = this.binding?.actorId;
+    const parsed = mutationReceiptResult.safeParse(await this.invoke("receiptGet", input, signal));
+    if (!parsed.success) throw new ClientError("INVALID_CONTRACT");
+    const result = parsed.data;
+    if (result.state === "committed" && (result.actorId !== actorId || result.operationId !== input.operationId
+      || result.operation !== input.operation || result.bodySha256 !== input.bodySha256))
+      throw new ClientError("INVALID_CONTRACT");
+    return result;
+  }
+  async chatTurns(input: OperationInput<"chatTurns">, signal?: AbortSignal) {
+    const result = this.chatResponse(z.strictObject({ items: z.array(chatTurnRecordSchema).max(100),
+      next: z.string().nullable() }), await this.invoke("chatTurns", input, signal));
+    if (result.items.some(item => item.sessionId !== input.sessionId)) throw new ClientError("INVALID_CHAT_RESPONSE");
+    return result;
+  }
   chatEvents(input: OperationInput<"chatEvents">, signal?: AbortSignal) { return this.invoke("chatEvents", input, signal) as unknown as Promise<{ events: ChatEvent[]; next: number | null }>; }
   chatCancel(input: OperationInput<"chatCancel">, signal?: AbortSignal) { return this.invoke("chatCancel", input, signal) as unknown as Promise<ChatTurn>; }
+  retrievalAvailability(input: OperationInput<"retrievalAvailability"> = {}, signal?: AbortSignal) {
+    return this.invoke("retrievalAvailability", input, signal);
+  }
   private managerResponse<T extends { runId: string }>(schema: z.ZodType<T>, value: unknown, runId: string): T {
     const parsed = schema.safeParse(value);
     if (!parsed.success || parsed.data.runId !== runId) throw new ClientError("INVALID_MANAGER_RESPONSE");

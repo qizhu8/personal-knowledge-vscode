@@ -1,5 +1,5 @@
 import { constants, closeSync, fstatSync, openSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { coreDatabasePath } from "./workspace-storage-paths.js";
 import { DatabaseSync } from "node:sqlite";
 import { CoreError, type Actor } from "./contracts.js";
 import { scanBoards } from "./boards.js";
@@ -30,7 +30,7 @@ function readOriginal(path: string) {
 export async function legacyMcpNotePolicy(storage: Storage, principal: Readonly<Actor>): Promise<NativeLegacyNoteWorkItemsPolicy> {
   const selected = await storage.withWorkspaceExclusive(() => {
     storage.assertWorkspaceLease();
-    const root = storage.workspaceRoot(), database = new DatabaseSync(join(root, "core.sqlite"), { readOnly: true });
+    const root = storage.workspaceRoot(), database = new DatabaseSync(coreDatabasePath(root), { readOnly: true });
     const pins: LegacyNoteWorkItemsAdmissionPin[] = [];
     const canonicalSources: { slug: string; sourceMarkdownDigest: string; nativeBoardDigest: string; actorId: string }[] = [];
     let pending = false;
@@ -45,6 +45,8 @@ export async function legacyMcpNotePolicy(storage: Storage, principal: Readonly<
       }
       pending = tables.has("migration_runtime_intents")
         && !!database.prepare("SELECT 1 FROM migration_runtime_intents LIMIT 1").get();
+      pending ||= tables.has("original_todo_genesis_pending")
+        && !!database.prepare("SELECT 1 FROM original_todo_genesis_pending LIMIT 1").get();
     } finally { database.close(); }
     if (pending) return { pins, canonicalSources };
     const native = scanBoards(root);

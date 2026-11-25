@@ -6,6 +6,7 @@ import { z } from "zod";
 import { CoreError } from "./contracts.js";
 import { assertLegacyUiDeletionWriteTarget } from "./legacy-ui-deletion-journal.js";
 import { checkedDocumentPath, checkedResourcePath, documentPath } from "./document-path.js";
+import { coreDatabasePath } from "./workspace-storage-paths.js";
 
 export const NATIVE_BOARD_LIFECYCLE_OPERATION = "private.native-board-lifecycle";
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
@@ -101,7 +102,7 @@ function privateRead(path: string, limit: number): Buffer {
 }
 export function withBoardLifecycleDatabase<T>(root: string, supplied: DatabaseSync | undefined, work: (db: DatabaseSync) => T): T | undefined {
   if (supplied) return work(supplied);
-  const path = join(root, "core.sqlite");
+  const path = coreDatabasePath(root);
   let stat;
   try { stat = lstatSync(path); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }

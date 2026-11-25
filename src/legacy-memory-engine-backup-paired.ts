@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants, lstatSync, readFileSync } from "node:fs";
 import { chmod, copyFile, lstat, mkdir, open, readFile, readdir, realpath, rename, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { coreDatabaseFiles, coreDatabasePath } from "./workspace-storage-paths.js";
 import { DatabaseSync } from "node:sqlite";
 import { assertPairedMemoryWorkspaceIdle, type WorkspaceQuiescenceLease } from "./workspace-backup.js";
 import { LegacyMemoryErasureOwnedWorker, type LegacyMemoryOwnedFixturePolicy } from "./legacy-memory-erasure-worker.js";
@@ -175,7 +176,7 @@ async function inventory(root: string, live: boolean, nativeScratch?: string): P
         continue;
       }
       if (relative === manifestName || relative === adoptionName || relative === publicationName
-        || live && ["core.sqlite", "core.sqlite-wal", "core.sqlite-shm", engineRelative,
+        || live && [...coreDatabaseFiles, engineRelative,
           `${engineRelative}-wal`, `${engineRelative}-shm`].includes(relative)) continue;
       const full = join(path, name);
       if (live && prefix === "packages/.pkm-native-memory" && name.startsWith(".pkm-memory-snapshot-")) {
@@ -230,7 +231,7 @@ async function inspect(root: string, allowPending = false) {
   if (marker.id !== manifest.workspaceId || marker.schema !== "pkm.next-workspace/v2")
     throw new PairedMemoryBackupError("WORKSPACE_MISMATCH", "Workspace identity does not match the paired artifact.");
   const artifact = await engineArtifact(join(root, engineRelative), manifest.engine.identity);
-  const db = new DatabaseSync(join(root, "core.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(coreDatabasePath(root), { readOnly: true });
   try {
     if (![21, 22, 23].includes(Number(db.prepare("PRAGMA user_version").get()?.user_version))
       || db.prepare("PRAGMA integrity_check").get()?.integrity_check !== "ok")
@@ -248,7 +249,7 @@ async function inspect(root: string, allowPending = false) {
   try {
     if (artifact.schema !== manifest.engine.schemaSha256 || artifact.tables !== manifest.engine.tablesSha256)
       throw new PairedMemoryBackupError("ENGINE_MISMATCH", "Engine schema, references, invalidation, or table state differs.");
-    const core = new DatabaseSync(join(root, "core.sqlite"), { readOnly: true });
+    const core = new DatabaseSync(coreDatabasePath(root), { readOnly: true });
     try { assertEngineErasureState(engine, ledger(core, manifest.workspaceId).operations); }
     finally { core.close(); }
   } finally { engine.close(); }
@@ -286,7 +287,7 @@ export async function createPairedMemoryWorkspaceBackup(storage: Storage, worker
       const binding = worker.engineBinding();
       const workspaceId = await storage.workspaceId();
       const rootPin = await pin(root, true);
-      const dbPin = await pin(join(root, "core.sqlite"), false);
+      const dbPin = await pin(coreDatabasePath(root), false);
       const enginePin = await pin(binding.database, false);
       const db = storage.connectNative();
       try {
@@ -320,8 +321,8 @@ export async function createPairedMemoryWorkspaceBackup(storage: Storage, worker
           await copyFile(join(root, file.path), join(stage, file.path), constants.COPYFILE_EXCL);
           await chmod(join(stage, file.path), 0o600); await sync(join(stage, file.path));
         }
-        db.exec(`VACUUM INTO '${join(stage, "core.sqlite").replaceAll("'", "''")}'`);
-        const core = new DatabaseSync(join(stage, "core.sqlite"));
+        db.exec(`VACUUM INTO '${coreDatabasePath(stage).replaceAll("'", "''")}'`);
+        const core = new DatabaseSync(coreDatabasePath(stage));
         try {
           core.prepare("UPDATE native_runtime_owner SET lease_until=0 WHERE singleton=1").run();
           core.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get();
@@ -329,7 +330,7 @@ export async function createPairedMemoryWorkspaceBackup(storage: Storage, worker
             throw new PairedMemoryBackupError("DATABASE_BUSY", "Paired core snapshot could not be made standalone.");
         }
         finally { core.close(); }
-        await chmod(join(stage, "core.sqlite"), 0o600);
+        await chmod(coreDatabasePath(stage), 0o600);
         scratch = join(binding.runtimeDirectory, `.pkm-memory-snapshot-${randomUUID()}.sqlite3`);
         await binding.worker.snapshotDatabase(scratch);
         normalizeEngineSnapshot(scratch, binding.identity);
@@ -354,7 +355,7 @@ export async function createPairedMemoryWorkspaceBackup(storage: Storage, worker
         await write(join(stage, publicationName), Buffer.from(JSON.stringify({ state: "pending", manifestSha256: hash(bytes) })));
         if (!equal(before, await inventory(root, true, scratch)) || db.prepare("PRAGMA data_version").get()?.data_version !== dataVersion
           || ledger(db, workspaceId).sha256 !== state.sha256 || !equal(await pin(root, true), rootPin)
-          || !equal(await pin(join(root, "core.sqlite"), false), dbPin)
+          || !equal(await pin(coreDatabasePath(root), false), dbPin)
           || !equal(await pin(binding.database, false), enginePin)
           || !equal(sourceIdentities, await inventoryIdentity(root, before)))
           throw new PairedMemoryBackupError("SOURCE_CHANGED", "Paired source inventory, SQLite epoch, or native identity changed.");
@@ -442,7 +443,7 @@ export async function restorePairedMemoryWorkspaceBackup(source: string, destina
       throw new PairedMemoryBackupError("SOURCE_CHANGED", "Paired staged bytes or native publication parent changed.");
     const adoption = { schema: "pkm.native-memory-adoption/v1", request: { ...request, phase: "open" },
       manifestSha256: backup.sha256, destination, rootPin: await pin(stage, true),
-      enginePin: await pin(join(stage, engineRelative), false), corePin: await pin(join(stage, "core.sqlite"), false),
+      enginePin: await pin(join(stage, engineRelative), false), corePin: await pin(coreDatabasePath(stage), false),
       roots: backup.manifest.roots };
     await write(join(stage, adoptionName), Buffer.from(JSON.stringify(adoption)));
     await write(join(stage, publicationName), Buffer.from(JSON.stringify({ state: "pending", manifestSha256: backup.sha256 })));
@@ -515,11 +516,11 @@ export async function openPairedMemoryWorkspaceWorker(root: string, policy: Pair
   if (publication.state !== "committed" || publication.manifestSha256 !== adoption.manifestSha256
     || adoption.schema !== "pkm.native-memory-adoption/v1" || adoption.destination !== root
     || !equal(await pin(root, true), adoption.rootPin) || !equal(await pin(database, false), adoption.enginePin)
-    || !equal(await pin(join(root, "core.sqlite"), false), adoption.corePin)
+    || !equal(await pin(coreDatabasePath(root), false), adoption.corePin)
     || hash(await readFile(join(root, manifestName))) !== adoption.manifestSha256 || !equal(adoption.roots, manifest.roots))
     throw new PairedMemoryBackupError("ADOPTION_MISMATCH", "Restored file identity and immutable ancestry require exact native adoption.");
   const currentEpoch = () => {
-    const coreStat = lstatSync(join(root, "core.sqlite"), { bigint: true });
+    const coreStat = lstatSync(coreDatabasePath(root), { bigint: true });
     const rootStat = lstatSync(root, { bigint: true });
     const marker = JSON.parse(readFileSync(join(root, publicationName), "utf8"));
     if (!coreStat.isFile() || coreStat.isSymbolicLink() || (Number(coreStat.mode) & 0o777) !== 0o600
@@ -529,7 +530,7 @@ export async function openPairedMemoryWorkspaceWorker(root: string, policy: Pair
       || hash(readFileSync(join(root, manifestName))) !== adoption.manifestSha256
       || hash(readFileSync(join(root, adoptionName))) !== hash(adoptionBytes))
       throw new PairedMemoryBackupError("ADOPTION_MISMATCH", "Live native workspace identity or durable adoption authority changed.");
-    const db = new DatabaseSync(join(root, "core.sqlite"), { readOnly: true });
+    const db = new DatabaseSync(coreDatabasePath(root), { readOnly: true });
     try {
       if (![21, 22, 23].includes(Number(db.prepare("PRAGMA user_version").get()?.user_version)))
         throw new PairedMemoryBackupError("SCHEMA_MISMATCH", "Restored workspace schema changed after native adoption.");
@@ -550,7 +551,7 @@ export async function openPairedMemoryWorkspaceWorker(root: string, policy: Pair
     } finally { db.close(); }
   };
   const currentLedgerHash = () => {
-    const db = new DatabaseSync(join(root, "core.sqlite"), { readOnly: true });
+    const db = new DatabaseSync(coreDatabasePath(root), { readOnly: true });
     try { return ledger(db, manifest.workspaceId).sha256; } finally { db.close(); }
   };
   const artifact = await engineArtifact(database, manifest.engine.identity);

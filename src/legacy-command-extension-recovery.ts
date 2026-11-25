@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { workspaceRootForDatabase } from "./workspace-storage-paths.js";
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
@@ -76,7 +77,7 @@ export function assertLegacyExtensionRoot(db: DatabaseSync, root: string, worksp
   outsideSQL(db);
   const databases = db.prepare("PRAGMA database_list").all() as Array<{ name: string; file: string }>;
   const main = databases.find(item => item.name === "main");
-  if (!main?.file || dirname(resolve(main.file)) !== resolve(root)) fail("Extension root differs from the native SQLite workspace.");
+  if (!main?.file || workspaceRootForDatabase(main.file) !== resolve(root)) fail("Extension root differs from the native SQLite workspace.");
   safePath(root, "project/placeholder");
   const markerPath = join(root, ".pkm-next-workspace");
   const stat = lstatSync(markerPath);

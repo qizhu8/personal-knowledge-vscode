@@ -1,0 +1,14 @@
+export { ChatHub } from "../legacy/src/chatroom/chatroom-hub";
+export { ChatJoinApprovalManager } from "../legacy/src/chatroom/chat-join-approval";
+export { MeetingStateStore } from "../legacy/src/chatroom/meeting-state";
+export { PeerSession } from "../legacy/src/chatroom/peer-session";
+export { ChatClient } from "../legacy/src/chatroom/chatroom-client";
+export { PortalFiles } from "../legacy/src/chatroom/portal-files";
+export { PortalRelay } from "../legacy/src/chatroom/portal-relay";
+export { createPortalLink, parsePortalLink } from "../legacy/src/chatroom/portal-link";
+export { selectPortalRoute } from "../legacy/src/chatroom/portal-routing";
+export { endpointScope, PortalConnectionJournal, portalConnectionAccess } from "../legacy/src/chatroom/portal-connections";
+export { PortalPermissions } from "../legacy/src/chatroom/portal-permissions";
+export { PortalEndpointStore } from "../legacy/src/chatroom/portal-endpoint-store";
+export { portalTaskAttempts } from "../legacy/src/chat/portal-task-attempts";
+export { WebSocketServer } from "../legacy/node_modules/ws";

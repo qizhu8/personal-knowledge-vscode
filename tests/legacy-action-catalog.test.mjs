@@ -9,8 +9,9 @@ import {
   LEGACY_ACTION_RUNTIME_UNAVAILABLE, admitLegacyActionPackage, legacyActionCatalog,
 } from "../dist/legacy-action-catalog.js";
 import { legacyActionRead, legacyActionWrite } from "../dist/legacy-action-mcp.js";
-import { decodeLegacyActionPackage } from "../dist/legacy-action-package.js";
-import { originalDigest } from "../dist/domain/action-compiler-validation.js";
+import { decodeLegacyActionPackage, encodeLegacyActionPackage } from "../dist/legacy-action-package.js";
+import { originalDigest, loadModuleSet } from "../dist/domain/action-compiler-validation.js";
+import { actionModuleFileBytes, nativeActionModuleSourceProtocol } from "../dist/action-module-bytes.js";
 import { createNativeRuntime } from "../dist/native-runtime.js";
 import { createWorkspaceBackup, restoreWorkspaceBackup } from "../dist/workspace-backup.js";
 import { nativeRestoreAuthority } from "./host-composition-legacy-batch16-restore-fixture.mjs";
@@ -29,17 +30,18 @@ portableManifest.package_hash = originalDigest(portableManifest);
 const invoke = (storage, tool, args = {}) => legacyActionCatalog(storage, actor, { tool, arguments: args });
 function archive(manifest = portableManifest, options = {}) {
   return execFileSync("python3", ["-c", `
-import io,json,sys,zipfile
+import base64,io,json,sys,zipfile
 request=json.load(sys.stdin)
 result=io.BytesIO()
 with zipfile.ZipFile(result,"w",compression=zipfile.ZIP_DEFLATED) as z:
  z.writestr("manifest.json",json.dumps(request["manifest"]))
  for path,content in request["files"].items(): z.writestr(path,content)
+ for path,content in request["options"].get("binary",{}).items(): z.writestr(path,base64.b64decode(content))
  if request["options"].get("duplicate"): z.writestr("manifest.json","{}")
  if request["options"].get("traversal"): z.writestr("../outside","bad")
 sys.stdout.buffer.write(result.getvalue())
 `], { input: JSON.stringify({ manifest, files: {
-    [`definitions/${original.example.action_id}.json`]: definitionFile,
+    [`definitions/${original.example.action_id}.json`]: options.definition ?? definitionFile,
   }, options }), env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
 }
 const originalCall = (directory, sourceRoot, operation, args = {}) => originalActionFixture(dirname(directory)).json(`
@@ -49,7 +51,7 @@ from action_modules import ModuleRuntime
 runtime=ModuleRuntime(sys.argv[2],proposal_mode=True)
 runtime.configure_workspace(sys.argv[3])
 request=json.load(sys.stdin)
-if request["operation"] not in {"module_set_import","module_set_list","module_set_load","module_set_remove","definition","definition_check","register"}:
+if request["operation"] not in {"module_set_import","module_set_export","module_set_list","module_set_load","module_set_remove","definition","definition_check","register"}:
  raise ValueError("Operation outside original Action fixture scope")
 print(json.dumps(getattr(runtime,request["operation"])(**request["arguments"])))
 `, [directory, sourceRoot], JSON.stringify({ operation, arguments: args }));
@@ -86,6 +88,61 @@ test("native bounded ZIP decoding agrees with independent zipfile and rejects am
     if (invalid.length === bytes.length) invalid[45] ^= 0x80;
     assert.throws(() => decodeLegacyActionPackage(invalid));
   }
+});
+
+test("binary ModuleSet bytes and executable declarations survive genuine Original and native package operations under explicit v2 source admission", async t => {
+  const f = await fixture(t), storage = await Storage.open(f.data);
+  const prefix = `assets/${original.example.action_id}/`, binary = Buffer.from([0, 9, 255, 42]),
+    tool = Buffer.from("#!/usr/bin/env python3\nprint('declared')\n"), extra = Buffer.from("not a declared resource");
+  const definition = JSON.parse(definitionFile);
+  definition.implementations[0].files = [`\${module_assets}/${original.example.action_id}/data.bin`,
+    `\${module_assets}/${original.example.action_id}/tool.py`];
+  const text = JSON.stringify(definition), manifest = structuredClone(portableManifest);
+  manifest.files = { [`definitions/${original.example.action_id}.json`]: sha(text), [`${prefix}data.bin`]: sha(binary),
+    [`${prefix}tool.py`]: sha(tool), [`${prefix}unused.txt`]: sha(extra) };
+  manifest.executables = [`${prefix}tool.py`];
+  delete manifest.package_hash; manifest.package_hash = originalDigest(manifest);
+  f.bytes = archive(manifest, { definition: text, binary: { [`${prefix}data.bin`]: binary.toString("base64"),
+    [`${prefix}tool.py`]: tool.toString("base64"), [`${prefix}unused.txt`]: extra.toString("base64") } });
+  await writeFile(f.sourcePath, f.bytes);
+  const source = decodeLegacyActionPackage(f.bytes);
+  assert.equal(source.fileEncoding, nativeActionModuleSourceProtocol);
+  assert.deepEqual(actionModuleFileBytes(source.files[`${prefix}data.bin`]), binary);
+  loadModuleSet(source);
+  const damaged = structuredClone(source);
+  damaged.files[`${prefix}data.bin`].base64 = Buffer.from("tampered").toString("base64");
+  assert.throws(() => loadModuleSet(damaged), /hash mismatch/);
+  delete damaged.fileEncoding;
+  assert.throws(() => loadModuleSet(damaged), /digest/);
+  const encoded = encodeLegacyActionPackage(source);
+  const independent = JSON.parse(execFileSync("python3", ["-c", `
+import base64,io,json,sys,zipfile
+with zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())) as z:
+ print(json.dumps({i.filename:{"bytes":base64.b64encode(z.read(i)).decode(),"mode":i.external_attr>>16}
+ for i in z.infolist()}))
+`], { input: encoded, encoding: "utf8" }));
+  assert.equal(independent[`${prefix}data.bin`].bytes, binary.toString("base64"));
+  assert.equal(independent[`${prefix}tool.py`].mode & 0o111, 0o100);
+  assert.equal(independent[`${prefix}data.bin`].mode & 0o111, 0);
+  try {
+    await assert.rejects(admit(storage, f), { code: "NATIVE_AUTHORITY_REQUIRED" });
+    let decisions = 0;
+    await assert.rejects(admit(storage, f, { sourceProtocol: nativeActionModuleSourceProtocol,
+      authorize: () => ++decisions === 1 }), { code: "ACCESS_DENIED" });
+    await admit(storage, f, { sourceProtocol: nativeActionModuleSourceProtocol,
+      authorize: binding => binding.sourceProtocol === nativeActionModuleSourceProtocol && binding.packageSha256 === sha(f.bytes) });
+    await invoke(storage, "action_module_set_import", { local_path: f.sourcePath });
+    await invoke(storage, "action_module_set_load", { module_set_id: manifest.module_set_id, version: manifest.version, enabled: true });
+    await originalCall(f.original, f.sourceRoot, "module_set_import", { local_path: f.sourcePath });
+    await originalCall(f.original, f.sourceRoot, "module_set_load", { module_set_id: manifest.module_set_id, version: manifest.version, enabled: true });
+    const destination = join(f.sourceRoot, "genuine-original-export.zip");
+    await originalCall(f.original, f.sourceRoot, "module_set_export", { module_set_id: "fixture.binary-export", version: 1,
+      action_ids: manifest.actions, destination });
+    const originalExport = decodeLegacyActionPackage(await readFile(destination));
+    assert.deepEqual(actionModuleFileBytes(originalExport.files[`${prefix}data.bin`]), binary);
+    assert.deepEqual(originalExport.manifest.executables, [`${prefix}tool.py`]);
+    assert.equal(originalExport.files[`${prefix}unused.txt`], undefined);
+  } finally { await storage.close(); }
 });
 
 test("original ModuleSet import/list/enable/disable/remove results use real original source and never acquire execution authority", async t => {

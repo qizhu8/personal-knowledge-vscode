@@ -13,8 +13,11 @@ import { knowledgeMutationDefinitions, type KnowledgeMutationRequest } from "./k
 import {
   applyDocumentLifecycleUpdate, deserializeDocumentLifecyclePlan, inspectDocumentLifecycleUpdate,
   planDocumentLifecycle, readDocumentLifecycle, readDocumentLifecycleUpdateSources, serializeDocumentLifecyclePlan,
+  documentLifecycleUpdatedBytes,
 } from "./document-lifecycle.js";
-import { rebaseMarkdownAssets } from "./domain/document-lifecycle-original.js";
+import { assertPrivatePublicationCanonicalRequest } from "./private-resource-publication-native.js";
+import { privateResourcePublicationDigest } from "./private-resource-publication-contracts.js";
+import { assertNoNewPrivateResourceReferences } from "./document-legacy-assets.js";
 
 export { knowledgeMutationDefinitions } from "./knowledge-mutations-contracts.js";
 export type { KnowledgeMutationOperation, KnowledgeMutationRequest } from "./knowledge-mutations-contracts.js";
@@ -382,6 +385,7 @@ function planFrom(root: string, request: KnowledgeMutationRequest): KnowledgeMut
   const operationId = String(args.operationId);
   if (!UUID.safeParse(operationId).success || !request.actorId || request.actorId.length > 500) fail("INVALID_ARGUMENT", "A UUID operationId and bounded actorId are required.");
   root = checkedRoot(root);
+  assertPrivatePublicationCanonicalRequest(root, { operation: request.operation, actorId: request.actorId, args });
   const records = ensureScan(root, String(args.expectedScanRevision));
   const kind = documentKind(request.operation);
   const creating = request.operation.endsWith(".create");
@@ -456,6 +460,7 @@ function planFrom(root: string, request: KnowledgeMutationRequest): KnowledgeMut
     const updates = metadataChanges(kind, args, undefined, papersFor(records));
     after = createRaw(kind, id, path, args, updates);
   }
+  assertNoNewPrivateResourceReferences(root, area, path, existing?.raw, after.toString("utf8"));
   const decoded = decodeMarkdown(id, after.toString("utf8"), path, area);
   if (decoded.record.revision !== revision) fail("INVALID_DOCUMENT", "Specialized identity revision did not match the Markdown projection.");
   let relocation: string | undefined;
@@ -463,14 +468,14 @@ function planFrom(root: string, request: KnowledgeMutationRequest): KnowledgeMut
     const address = { area, path, id: existing.record.id, expectedRevision: existing.record.revision,
       expectedSha256: existing.record.sha256, destinationPath: destination };
     const preview = readDocumentLifecycle(root, records, { operation: "knowledge.document.lifecycle.preview",
-      actorId: request.actorId, args: address }, args.preserveIdentity === true);
+      actorId: request.actorId, args: address }, args.preserveIdentity === true, operationId);
     relocation = serializeDocumentLifecyclePlan(planDocumentLifecycle(root, records, {
       operation: "knowledge.document.move", actorId: request.actorId, args: { ...address, operationId,
         expectedScanRevision: preview.scanRevision, expectedPairedTreeDigest: preview.pairedAssets.digest,
         expectedDestinationSha256: null, expectedDestinationTreeDigest: null },
     }, args.preserveIdentity === true));
   }
-  const finalBytes = relocation ? Buffer.from(rebaseMarkdownAssets(join(root, area), path, destination, after.toString("utf8"))) : after;
+  const finalBytes = relocation ? documentLifecycleUpdatedBytes(root, deserializeDocumentLifecyclePlan(relocation), after) : after;
   const receipt = receiptFor(operationId, creating ? "create" : "update", area, destination, id, finalBytes);
   const before = existing?.raw === undefined ? null : Buffer.from(existing.raw, "utf8");
   const change = {
@@ -529,8 +534,8 @@ function validatePlan(plan: KnowledgeMutationPlan) {
   }
   const after = decodeMarkdown(plan.receipt.id, change.after.toString("utf8"), change.path, change.area);
   if (after.record.revision !== plan.receipt.revision) fail("INVALID_WORKSPACE", "Knowledge mutation receipt revision does not match the Markdown.");
-  const finalBytes = relocation ? Buffer.from(rebaseMarkdownAssets(resolve("next-server/tests/knowledge-move-virtual", change.area),
-    change.path, destination, after.raw)) : change.after;
+  const finalBytes = relocation ? documentLifecycleUpdatedBytes(resolve("next-server/tests/knowledge-move-virtual"),
+    relocation, change.after) : change.after;
   if (sha256(finalBytes) !== plan.receipt.sha256) fail("INVALID_WORKSPACE", "Knowledge mutation receipt SHA does not match the Markdown.");
   if (after.metadata.get("knowledgeId") !== plan.receipt.knowledgeId) fail("INVALID_WORKSPACE", "Knowledge mutation receipt identity does not match the Markdown.");
   if ((kind === "skill" ? after.metadata.get("name") : after.metadata.get("title")) !== plan.receipt.name) {
@@ -656,6 +661,8 @@ function finish(root: string, plan: KnowledgeMutationPlan, operationId: string, 
     validatePlan(plan);
     if (operationId !== plan.operationId) fail("INVALID_WORKSPACE", "Knowledge mutation operationId does not match the durable intent.");
     root = checkedRoot(root);
+    assertNoNewPrivateResourceReferences(root, plan.change.area, plan.change.path,
+      plan.change.before?.toString("utf8"), plan.change.after.toString("utf8"));
     if (plan.relocation) {
       applyDocumentLifecycleUpdate(root, deserializeDocumentLifecyclePlan(plan.relocation), plan.change.after, operationId, recovering);
       return plan.receipt;
@@ -689,6 +696,8 @@ export function recoverKnowledgeMutation(root: string, plan: KnowledgeMutationPl
 
 export function inspectKnowledgeMutationRecovery(root: string, plan: KnowledgeMutationPlan): number {
   validatePlan(plan);
+  assertNoNewPrivateResourceReferences(checkedRoot(root), plan.change.area, plan.change.path,
+    plan.change.before?.toString("utf8"), plan.change.after.toString("utf8"));
   if (plan.relocation) return inspectDocumentLifecycleUpdate(root, deserializeDocumentLifecyclePlan(plan.relocation), plan.change.after);
   return currentPhase(checkedRoot(root), plan);
 }
@@ -703,6 +712,14 @@ export function assertKnowledgeMutationRequestPlan(root: string, plan: Knowledge
     fail("RECOVERY_CONFLICT", "Knowledge plan does not match its immutable request.");
   }
   const args = parsed.data as Record<string, unknown>, kind = documentKind(request.operation);
+  if (plan.relocation) {
+    const relocation = deserializeDocumentLifecyclePlan(plan.relocation);
+    for (const copy of relocation.legacyAssets?.copies ?? []) {
+      if (copy.visibility === "private" && (copy.publication!.subject.canonicalArgumentsDigest !== privateResourcePublicationDigest(args)
+        || copy.publication!.subject.operation !== request.operation))
+        fail("RECOVERY_CONFLICT", "Private publication provenance does not match its immutable canonical request.");
+    }
+  }
   const { area, path } = plan.change;
   const before = plan.change.before ? decodeMarkdown(plan.receipt.id, plan.change.before.toString("utf8"), path, area) : undefined;
   const destination = plan.receipt.path;
@@ -749,6 +766,7 @@ export function assertKnowledgeMutationRequestPlan(root: string, plan: Knowledge
     if (args.preserveIdentity && before.record.id !== identity.knowledgeId) fields.documentId = before.record.id;
     expected = losslessFrontmatterWrite(before, fields, typeof args.content === "string" ? args.content : undefined);
   } else expected = createRaw(kind, plan.receipt.id, path, args, fields);
+  assertNoNewPrivateResourceReferences(checkedRoot(root), area, path, before?.raw, expected.toString("utf8"));
   if (!expected.equals(plan.change.after)) {
     fail("RECOVERY_CONFLICT", "Knowledge after-image is not derived from its exact immutable request and before bytes.");
   }

@@ -1,11 +1,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { coreDatabasePath } from "./workspace-storage-paths.js";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { CoreError } from "./contracts.js";
 import { sha256 } from "./file-write.js";
 import { legacyMemoryImportReceiptSchema } from "./domain/memory-import-contracts.js";
+import { readOriginalMcpJournal } from "./original-mcp-root-custody.js";
 
 const legacyMemoryScopeContinuitySchema = z.strictObject({
   schema: z.literal("pkm.memory-scope-continuity/v1"),
@@ -39,13 +41,23 @@ export type MemoryScopeContinuityAuthorizer = (request: Readonly<MemoryScopeCont
   | { actorId: string; decisionId: string; expiresAtMs: number } | null;
 
 const activeSessions = new Map<string, ApprovedMemoryScopeContinuity>();
+const revocations = new Map<string, Int32Array>();
+export function bindMemoryScopeRevocation(root: string, buffer?: SharedArrayBuffer): void {
+  if (!buffer) { revocations.delete(root); return; }
+  if (!(buffer instanceof SharedArrayBuffer) || buffer.byteLength !== 4)
+    throw new CoreError("NOT_AVAILABLE", "Invalid native Memory session revocation resource.");
+  revocations.set(root, new Int32Array(buffer));
+}
 export function deactivateMemoryScopeContinuity(root: string): void {
   activeSessions.delete(root);
+  revocations.delete(root);
 }
 export function openMemoryContinuitySnapshot(root: string): DatabaseSync {
   const database = new DatabaseSync(":memory:");
   try {
-    database.prepare("ATTACH DATABASE ? AS imported").run(`${pathToFileURL(join(root, "core.sqlite")).href}?mode=ro&immutable=1`);
+    const liveOriginal = !!readOriginalMcpJournal(root);
+    database.prepare("ATTACH DATABASE ? AS imported")
+      .run(`${pathToFileURL(coreDatabasePath(root)).href}?mode=ro${liveOriginal ? "" : "&immutable=1"}`);
     for (const table of ["legacy_memory_imports", "legacy_memory_scope_continuity", "legacy_memory_import_operations", "receipts"]) {
       if (database.prepare("SELECT 1 FROM imported.sqlite_master WHERE type='table' AND name=?").get(table))
         database.exec(`CREATE TEMP VIEW ${table} AS SELECT * FROM imported.${table}`);
@@ -86,11 +98,12 @@ function continuityIdentity(binding: ApprovedMemoryScopeContinuity) {
   const { decisionId: _decisionId, expiresAtMs: _expiresAtMs, ...identity } = binding;
   return identity;
 }
+export const memoryScopeContinuityDdl = `CREATE TABLE legacy_memory_scope_continuity(
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1), binding_json TEXT NOT NULL, binding_sha256 TEXT NOT NULL
+  )`;
 export function persistMemoryScopeContinuity(database: DatabaseSync, binding: ApprovedMemoryScopeContinuity): void {
   const parsed = approvedMemoryScopeContinuitySchema.parse(binding);
-  database.exec(`CREATE TABLE legacy_memory_scope_continuity(
-    singleton INTEGER PRIMARY KEY CHECK(singleton=1), binding_json TEXT NOT NULL, binding_sha256 TEXT NOT NULL
-  )`);
+  database.exec(memoryScopeContinuityDdl);
   const json = JSON.stringify(parsed);
   database.prepare("INSERT INTO legacy_memory_scope_continuity VALUES(1,?,?)").run(json, sha256(json));
 }
@@ -123,15 +136,27 @@ export function continuityScope(root: string): string | undefined {
   return activeContinuity(root)?.scope;
 }
 
+/** Evidence of an already admitted session, never an authority to activate one. */
+export function readActiveMemoryScopeSession(root: string, actorId: string): Readonly<ApprovedMemoryScopeContinuity> {
+  const binding = activeContinuity(root);
+  if (!binding || binding.actorId !== actorId)
+    throw new CoreError("NOT_AVAILABLE", "Fresh exact host Memory admission is required for this actor.");
+  return Object.freeze({ ...binding });
+}
+
 export function assertMemoryScopeActor(root: string, actorId: string): void {
   const binding = activeContinuity(root);
+  if (readOriginalMcpJournal(root) && !binding)
+    throw new CoreError("NOT_AVAILABLE", "Original-root Memory requires a fresh exact native source/actor continuity session.");
   if (binding && binding.actorId !== actorId) {
     throw new CoreError("NOT_AVAILABLE", "Imported Memory scope is unavailable to this host actor.");
   }
 }
 
 function activeContinuity(root: string): ApprovedMemoryScopeContinuity | undefined {
-  if (!existsSync(join(root, "core.sqlite"))) return undefined;
+  const revoked = revocations.get(root);
+  if (revoked && Atomics.load(revoked, 0) !== 0) return undefined;
+  if (!existsSync(coreDatabasePath(root))) return undefined;
   let database: DatabaseSync | undefined;
   try {
     database = openMemoryContinuitySnapshot(root);

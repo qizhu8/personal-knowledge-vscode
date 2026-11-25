@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
-import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, utimes } from "node:fs/promises";
+import { mkdirSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, utimes, rename, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -93,8 +93,8 @@ test("captured original Knowledge executors remain source matched", () => {
   execFileSync(process.execPath, [join(root, "scripts/capture-legacy-knowledge-mcp.mjs"), "--check"]);
 });
 
-for (const change of ["content", "membership", "lease"]) {
-  test(`captured Knowledge refuses a stale result after ${change} changes`, async t => {
+for (const area of ["papers", "notes"]) for (const change of ["content", "restored-content", "membership", "lease"]) {
+  test(`captured Knowledge ${area === "notes" && change === "membership" ? "ignores unrelated" : "refuses stale"} ${area} ${change} changes`, async t => {
     const parent = await mkdtemp(join(tmpdir(), "pkm-knowledge-race-"));
     let client, server;
     t.after(async () => {
@@ -102,8 +102,9 @@ for (const change of ["content", "membership", "lease"]) {
       finally { await rm(parent, { recursive: true, force: true }); }
     });
     const data = await initialize(join(parent, "workspace"));
-    await mkdir(join(data, "papers"));
-    await writeFile(join(data, "papers", "Example.md"), "---\ntitle: Before\n---\nBefore\n");
+    await mkdir(join(data, area), { recursive: true });
+    await writeFile(join(data, area, "Example.md"), "---\ntitle: Before\n---\nBefore\n");
+    if (change === "restored-content") await utimes(join(data, area, "Example.md"), 1_700_000_000, 1_700_000_000);
     let checks = 0;
     const storage = {
       workspaceRoot: () => data,
@@ -111,8 +112,10 @@ for (const change of ["content", "membership", "lease"]) {
       assertWorkspaceLease() {
         if (++checks !== 2) return;
         if (change === "lease") throw new Error("STORAGE_UNAVAILABLE: Test workspace lease was fenced.");
-        writeFileSync(join(data, "papers", change === "content" ? "Example.md" : "Added.md"),
-          "---\ntitle: After\n---\nAfter\n");
+        const path = join(data, area, change === "membership" ? "Added.md" : "Example.md");
+        const original = statSync(join(data, area, "Example.md"));
+        writeFileSync(path, "---\ntitle: After!\n---\nAfter!\n");
+        if (change === "restored-content") utimesSync(path, original.atime, original.mtime);
       },
     };
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -122,11 +125,181 @@ for (const change of ["content", "membership", "lease"]) {
     client = new Client({ name: "knowledge-read-race", version: "1.0.0" });
     await client.connect(clientTransport);
     const result = await client.callTool({ name: "legacy_knowledge_read",
-      arguments: { tool: "get_research", arguments: { slug: "Example" } } });
+      arguments: { tool: area === "notes" ? "get_note" : "get_research", arguments: { slug: "Example" } } });
+    if (area === "notes" && change === "membership") {
+      assert.notEqual(result.isError, true, JSON.stringify(result));
+      assert.equal(result.structuredContent.value.title, "Before");
+      return;
+    }
     assert.equal(result.isError, true);
     assert.equal(result.structuredContent, undefined);
     assert.match(result.content[0].text, change === "lease" ? /lease was fenced/ : /CONFLICT: Knowledge changed/);
     assert.equal(checks, 2);
+  });
+}
+
+test("reused captured Knowledge reads observe Note replacement, removed assets and fresh membership", async t => {
+  const parent = await mkdtemp(join(tmpdir(), "pkm-knowledge-reused-"));
+  let client, server;
+  t.after(async () => {
+    try { await client?.close(); await server?.close(); }
+    finally { await rm(parent, { recursive: true, force: true }); }
+  });
+  const data = await initialize(join(parent, "workspace"));
+  const file = join(data, "notes", "Example.md");
+  const before = "---\ntitle: Before\n---\nBefore\n", after = "---\ntitle: After!\n---\nAfter!\n";
+  assert.equal(Buffer.byteLength(before), Buffer.byteLength(after));
+  await writeFile(file, before);
+  await utimes(file, 1_700_000_000, 1_700_000_000);
+  const storage = {
+    workspaceRoot: () => data, withWorkspaceExclusive: work => work(), assertWorkspaceLease() {},
+  };
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  server = await startLegacyNoteMcp(storage, serverTransport, {
+    core: {}, actor: { id: "mcp:external", canRead: true, canWrite: false },
+  });
+  client = new Client({ name: "knowledge-reused-read", version: "1.0.0" });
+  await client.connect(clientTransport);
+  const call = (tool, arguments_) => client.callTool({ name: "legacy_knowledge_read",
+    arguments: { tool, arguments: arguments_ } });
+  const read = async () => {
+    const response = await call("get_note", { slug: "Example" });
+    assert.notEqual(response.isError, true, JSON.stringify(response));
+    return response.structuredContent.value;
+  };
+  assert.equal((await read()).title, "Before");
+  const original = await stat(file);
+  await writeFile(file, after);
+  await utimes(file, original.atime, original.mtime);
+  assert.equal((await read()).title, "After!");
+  await writeFile(join(data, "notes", "Replacement.md"), before);
+  await utimes(join(data, "notes", "Replacement.md"), original.atime, original.mtime);
+  await rename(join(data, "notes", "Replacement.md"), file);
+  assert.equal((await read()).title, "Before");
+
+  const assets = join(data, "notes", "Example.assets");
+  await mkdir(assets);
+  await writeFile(join(assets, "pkm-todo-board.json"), "{}");
+  assert.equal((await read()).documentKind, "todo-board");
+  await rm(assets, { recursive: true });
+  assert.equal((await read()).content, "Before\n");
+  assert.equal((await call("get_note", { id: "Example", slug: "Different" })).structuredContent.value.ok, false);
+  assert.equal((await call("get_note", { slug: "../Example" })).isError, true);
+  for (const raw of [Buffer.from([0xff, 0xfe]), "---\ntitle: [invalid\n---\nBody",
+    "---\ndocumentId: invalid!\n---\nBody"]) {
+    await writeFile(file, raw);
+    assert.equal((await call("get_note", { slug: "Example" })).isError, true);
+  }
+  await writeFile(file, "\uFEFFUnicode 中文 🧪\n");
+  assert.equal((await read()).content, "\uFEFFUnicode 中文 🧪\n");
+  await rm(file);
+  assert.match(await read(), /not found/);
+  await mkdir(join(data, "notes", "Nested"));
+  await writeFile(join(data, "notes", "Nested", "Added.md"), before);
+  const search = await call("search_notes", { query: "Before" });
+  assert.deepEqual(search.structuredContent.value.map(row => row.slug), ["Nested/Added"]);
+  await symlink(join(data, "notes", "Nested", "Added.md"), file);
+  assert.equal((await call("get_note", { slug: "Example" })).isError, true);
+});
+
+for (const change of ["unrelated-edit", "unrelated-duplicate", "target-rename", "target-symlink",
+  "parent-replace", "parent-symlink", "board-add", "board-remove", "board-edit", "recipe-add",
+  "commented-kind-recipe-add", "explicit-board-unused"]) {
+  test(`path Note read scopes ${change} to its actual read-set`, async t => {
+    const parent = await mkdtemp(join(tmpdir(), "pkm-note-path-scope-"));
+    let client, server;
+    t.after(async () => {
+      try { await client?.close(); await server?.close(); }
+      finally { await rm(parent, { recursive: true, force: true }); }
+    });
+    const data = await initialize(join(parent, "workspace"));
+    const folder = join(data, "notes", "Nested"), file = join(folder, "Example.md");
+    const raw = "---\ndocumentId: scoped-note\nknowledgeId: knowledge_000000000000000000000001\ntitle: Scoped\n"
+      + (change === "explicit-board-unused" ? "documentKind: todo-board\n"
+        : change === "commented-kind-recipe-add" ? "documentKind: todo-board # YAML comment\n" : "")
+      + "---\nBody\n";
+    await mkdir(folder);
+    await writeFile(file, raw);
+    const other = join(data, "notes", "Other.md");
+    await writeFile(other, "---\ntitle: Other\n---\nOther\n");
+    const assets = join(folder, "Example.assets");
+    if (change === "board-remove" || change === "board-edit") {
+      await mkdir(assets);
+      await writeFile(join(assets, "pkm-todo-board.json"), "{}");
+    }
+    let checks = 0;
+    const storage = {
+      workspaceRoot: () => data, withWorkspaceExclusive: work => work(),
+      assertWorkspaceLease() {
+        if (++checks !== 2) return;
+        if (change === "unrelated-edit") writeFileSync(other, "Unrelated changed\n");
+        if (change === "unrelated-duplicate") {
+          writeFileSync(other, raw);
+          for (const area of ["skills", "papers"]) {
+            mkdirSync(join(data, area), { recursive: true });
+            writeFileSync(join(data, area, "Unrelated.md"), raw);
+          }
+        }
+        if (change === "target-rename") renameSync(file, join(folder, "Renamed.md"));
+        if (change === "target-symlink") { rmSync(file); symlinkSync(other, file); }
+        if (change.startsWith("parent-")) {
+          renameSync(folder, join(data, "notes", "Renamed"));
+          if (change === "parent-symlink") symlinkSync(join(data, "notes", "Renamed"), folder);
+          else { mkdirSync(folder); writeFileSync(file, raw); }
+        }
+        if (change === "board-add") { mkdirSync(assets); writeFileSync(join(assets, "pkm-todo-board.json"), "{}"); }
+        if (change === "board-remove") rmSync(assets, { recursive: true });
+        if (change === "board-edit") writeFileSync(join(assets, "pkm-todo-board.json"), '{"changed":true}');
+        if (change === "explicit-board-unused") {
+          symlinkSync(folder, assets);
+          mkdirSync(join(data, "recipes"), { recursive: true });
+          writeFileSync(join(data, "recipes", "invalid.json"), "invalid unused Recipe");
+        }
+        if (change.endsWith("recipe-add")) {
+          const definition = { schema: "pkm.workflow.definition/v1", spec: {
+            inputs: {}, nodes: [{ nodeId: "work", kind: "pkm.step.noop/v1", config: {}, dependsOn: [] }],
+            outputs: {}, completion: { requiredNodes: ["work"] },
+          } };
+          const compiled = compileWorkflowDefinitionV1(definition);
+          const recipe = projectRecipeSchema.parse({
+            schema: "pkm.knowledge/v1", knowledgeId: "knowledge_000000000000000000000002",
+            aliases: ["recipe:recipe_scoped"], recipeId: "recipe_scoped", scope: "global", name: "Scoped Recipe",
+            category: "", description: "New dependency", definition, executableDigest: compiled.executableDigest, revision: 1,
+            nodeBindings: [{ nodeId: "work", bindings: [{ bindingId: "note", kind: "note",
+              knowledgeId: "Nested/Example", contentHash: "a".repeat(64), usage: "reference" }] }],
+          });
+          mkdirSync(join(data, "recipes"), { recursive: true });
+          writeFileSync(join(data, "recipes", safeRecipeFileName(recipe.name, recipe.recipeId)), JSON.stringify(recipe));
+        }
+      },
+    };
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    server = await startLegacyNoteMcp(storage, serverTransport, {
+      core: {}, actor: { id: "mcp:external", canRead: true, canWrite: false },
+    });
+    client = new Client({ name: "note-path-scope", version: "1.0.0" });
+    await client.connect(clientTransport);
+    const call = (tool, arguments_) => client.callTool({ name: "legacy_knowledge_read",
+      arguments: { tool, arguments: arguments_ } });
+    const response = await call("get_note", { slug: "Nested/Example" });
+    if (change === "explicit-board-unused") {
+      assert.notEqual(response.isError, true, JSON.stringify(response));
+      assert.equal(response.structuredContent.value.documentKind, "todo-board");
+    } else if (change.startsWith("unrelated-")) {
+      assert.notEqual(response.isError, true, JSON.stringify(response));
+      assert.equal(response.structuredContent.value.content, "Body\n");
+      if (change === "unrelated-duplicate") {
+        assert.equal((await call("search_notes", { query: "Body" })).isError, true);
+        assert.equal((await call("get_note", { id: "knowledge_000000000000000000000001" })).isError, true);
+        const inventory = await client.callTool({ name: "list_notes", arguments: { limit: 0 } });
+        assert.notEqual(inventory.isError, true, JSON.stringify(inventory));
+        assert.equal(inventory.structuredContent.duplicate_identity_count, 2);
+      }
+    } else {
+      assert.equal(response.isError, true, JSON.stringify(response));
+      assert.match(response.content[0].text, /CONFLICT/);
+      assert.equal(response.structuredContent, undefined);
+    }
   });
 }
 

@@ -30,7 +30,7 @@ export function createChatTurnMemoryAdmission(
 
 /** The native host supplies an actor/turn-bound catalog; callers cannot install tools or providers. */
 export function createChatTurnModelPort(
-  provider: Pick<ModelProviderService, "available" | "stream"> & Partial<Pick<ModelProviderService, "preDispatchAdmission">>,
+  provider: Pick<ModelProviderService, "available" | "stream"> & Partial<Pick<ModelProviderService, "preDispatchAdmission" | "activity">>,
   options: {
     tools?: (actor: string, turnId: string) => Promise<ModelProviderTool[]>;
     profileId?: string; contextWindow?: number;
@@ -38,6 +38,7 @@ export function createChatTurnModelPort(
 ): ChatTurnModelPort {
   return {
     get available() { return provider.available; },
+    activity: () => provider.activity?.() ?? 0,
     get preDispatchAdmission() { return provider.preDispatchAdmission === true; },
     async *stream(request) {
       const tools = await options.tools?.(request.actor, request.turnId);
@@ -98,6 +99,7 @@ export function createChatTurnToolPort(options: {
   timeoutMs?: number;
 }) {
   const pending = new Map<string, { gateway: ToolGateway; name: string; readOnly: boolean }>();
+  const gateways = new Set<ToolGateway>();
   const bridge = createApprovalBridge({
     workspaceId: options.workspaceId, storage: options.storage,
     resultBytes: 131_072,
@@ -106,10 +108,16 @@ export function createChatTurnToolPort(options: {
     async dispatch(request) {
       const invocation = pending.get(request.execution.id);
       if (!invocation) throw new ChatTurnToolError("not-committed", "NATIVE_INVOCATION_UNAVAILABLE");
-      const result = await invocation.gateway.execute({
-        name: invocation.name, arguments: request.execution.arguments,
-        ...(!invocation.readOnly ? { operationId: request.operationId } : {}), approval: request.approval,
-      }, { signal: request.signal });
+      gateways.add(invocation.gateway);
+      let result: ToolGatewayResult;
+      try {
+        result = await invocation.gateway.execute({
+          name: invocation.name, arguments: request.execution.arguments,
+          ...(!invocation.readOnly ? { operationId: request.operationId } : {}), approval: request.approval,
+        }, { signal: request.signal });
+      } finally {
+        void invocation.gateway.retired().then(() => gateways.delete(invocation.gateway));
+      }
       if (result.status !== "complete") {
         if (result.status === "failed" && result.error?.code === "OUTPUT_LIMIT"
           && (result.effect === "committed" || result.effect === "not-committed"))
@@ -135,6 +143,8 @@ export function createChatTurnToolPort(options: {
   };
   const tools: ChatTurnToolPort = {
     available: true,
+    activity: () => Math.max(bridge.native.activity(),
+      [...gateways].reduce((count, gateway) => count + gateway.activity(), 0)),
     async execute(request) {
       let dispatched = false;
       try {
@@ -200,7 +210,17 @@ export function createChatTurnToolPort(options: {
           throw new ChatTurnToolError(observed.execution.status === "unknown" ? "unknown" : "not-committed", "TOOL_FAILED");
         if (!result || result.schema !== "pkm.tool-result/v1" || result.status !== "complete")
           throw new ChatTurnToolError("unknown", "INVALID_TOOL_RESULT");
-        return { executionId: execution.id, content: toolResultContent(result) };
+        const output = result.result;
+        const manager = output && typeof output === "object" && !Array.isArray(output)
+          ? output as Record<string, unknown> : undefined;
+        const managerRun = binding.operation.startsWith("manager.") && manager
+          && ["pkm.manager.runtime/v1", "pkm.manager.progress/v1", "pkm.manager.progress.events/v1",
+            "pkm.manager.progress.feedback-receipt/v1"].includes(String(manager.schema))
+          && typeof manager.runId === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(manager.runId)
+          ? manager.runId : undefined;
+        return { executionId: execution.id, content: toolResultContent(result),
+          evidence: { operation: binding.operation, operationId: request.operationId, executionId: execution.id,
+            ...(managerRun ? { resource: { kind: "manager-run" as const, id: managerRun } } : {}) } };
       } finally { pending.delete(execution.id); }
       } catch (error) {
         if (error instanceof ChatTurnToolError) throw error;

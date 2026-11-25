@@ -2,6 +2,8 @@ import * as net from "node:net";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AutomaticActionTrustAuthority, AutomaticActionTrustContext } from "./host-services.js";
+import { assertOriginalActionProgramDecision, type OriginalActionProgramRequest,
+  type OriginalActionProgramDecision } from "./original-mcp-action-program-contracts.js";
 
 const identity = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const epochPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
@@ -37,6 +39,20 @@ interface AuthorityResponse {
   error?: string;
   artifactSource?: unknown;
   artifactDestination?: unknown;
+  sourceDecision?: unknown;
+  programDecision?: unknown;
+}
+export interface NativeActionSourceRequest {
+  schema: "pkm.native-action-source-request/v1";
+  root: string; workspaceId: string; actorId: "mcp:external"; profileSha256: string;
+  epoch: string; capsuleSha256: string; requestSha256: string; operation: string;
+  sources: { actionId: string; contentHash: string; implementationSha256: string; effects: string[] }[];
+  noExecution: true;
+}
+export interface NativeActionSourceDecision {
+  schema: "pkm.native-action-source-decision/v1"; scope: "original-action-source-state/v1";
+  root: string; workspaceId: string; actorId: "mcp:external"; profileSha256: string; epoch: string;
+  capsuleSha256: string; requestSha256: string; decisionId: string; expiresAtMs: number; noExecution: true;
 }
 
 export interface VscodeActionTrustBridgeOptions {
@@ -87,9 +103,11 @@ function readConfig(root: string, nativeEndpoint = false): AuthorityConfig {
   }
 }
 
-function request(config: AuthorityConfig, operation: "status" | "authorize" | "revoke" | "effect_consent" | "artifact_pick" | "artifact_export_pick",
+function request(config: AuthorityConfig, operation: "status" | "authorize" | "revoke" | "effect_consent" | "artifact_pick" | "artifact_export_pick" | "source_admission" | "program_consent",
   options: { actionId?: string; contentHash?: string; trustEpoch?: string;
-    effectContext?: EffectContext; artifact?: { artifactId: string; digest: string; size: number } }, timeoutMs: number): Promise<AuthorityResponse> {
+    effectContext?: EffectContext; artifact?: { artifactId: string; digest: string; size: number };
+    sourceAdmission?: NativeActionSourceRequest; programAdmission?: OriginalActionProgramRequest }, timeoutMs: number,
+  signal?: AbortSignal): Promise<AuthorityResponse> {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection({ host: config.host, port: config.port });
     let input = "";
@@ -97,11 +115,15 @@ function request(config: AuthorityConfig, operation: "status" | "authorize" | "r
     const finish = (error?: Error, value?: AuthorityResponse) => {
       if (settled) return;
       settled = true;
+      signal?.removeEventListener("abort", aborted);
       socket.destroy();
       if (error) reject(error);
       else if (!value) reject(new Error("Empty trusted Action authority response."));
       else resolve(value);
     };
+    const aborted = () => finish(bridgeError("CANCELLED", "The native Action request was cancelled."));
+    signal?.addEventListener("abort", aborted, { once: true });
+    if (signal?.aborted) { aborted(); return; }
     socket.setTimeout(timeoutMs, () => finish(new Error("Trusted Action authority timed out.")));
     socket.on("error", error => finish(error));
     socket.setEncoding("utf8");
@@ -134,6 +156,8 @@ export function createVscodeActionTrustBridge(options: VscodeActionTrustBridgeOp
   authorize(actionId: string, contentHash: string, epoch: string): Promise<boolean>;
   authorizeEffects(actionId: string, contentHash: string, epoch: string,
     effectContext: EffectContext): Promise<boolean>;
+  authorizeSourceAdmission(input: NativeActionSourceRequest): Promise<NativeActionSourceDecision>;
+  authorizeProgram(input: OriginalActionProgramRequest, signal?: AbortSignal): Promise<OriginalActionProgramDecision>;
   pickArtifactSource(epoch: string): Promise<{ path: string; selectedRoot: string; expectedSha256: string; size: number } | undefined>;
   pickArtifactDestination(epoch: string, artifact: { artifactId: string; digest: string; size: number }):
     Promise<{ path: string; selectedRoot: string } | undefined>;
@@ -198,6 +222,56 @@ export function createVscodeActionTrustBridge(options: VscodeActionTrustBridgeOp
       if (!response.ok || !response.trusted || response.consented !== true || response.trustEpoch !== epoch)
         throw bridgeError("ACCESS_DENIED", `Trusted Action consent service failed: ${response.reason ?? "INVALID_RESPONSE"}.`);
       return true;
+    },
+    async authorizeSourceAdmission(input: NativeActionSourceRequest): Promise<NativeActionSourceDecision> {
+      if (disposed || input.root !== root || input.workspaceId !== options.workspaceId || input.actorId !== options.actorId
+        || !digest.test(input.profileSha256) || !digest.test(input.capsuleSha256) || !digest.test(input.requestSha256)
+        || input.noExecution !== true || input.sources.length < 1 || input.sources.length > 128)
+        throw bridgeError("ACCESS_DENIED", "The exact native Action source-admission binding is invalid.");
+      const config = readConfig(root, options.nativeEndpoint);
+      if (!options.nativeEndpoint || config.trust_epoch !== input.epoch)
+        throw bridgeError("ACCESS_DENIED", "Action source admission requires the current native-only endpoint/epoch.");
+      const result = await request(config, "source_admission", { trustEpoch: input.epoch, sourceAdmission: input }, 300_000);
+      const value = result.sourceDecision;
+      if (!result.ok || !result.trusted || result.trustEpoch !== input.epoch || !value || typeof value !== "object" || Array.isArray(value))
+        throw bridgeError("NATIVE_AUTHORITY_REQUIRED", "ACTION_SOURCE_ADMISSION_RPC_REQUIRED: an exact current native Action decision is required; effect/model booleans are not admission.");
+      const decision = value as Record<string, unknown>;
+      if (decision.schema !== "pkm.native-action-source-decision/v1" || decision.scope !== "original-action-source-state/v1"
+        || decision.root !== root || decision.workspaceId !== options.workspaceId || decision.actorId !== options.actorId
+        || decision.profileSha256 !== input.profileSha256 || decision.epoch !== input.epoch
+        || decision.capsuleSha256 !== input.capsuleSha256 || decision.requestSha256 !== input.requestSha256
+        || typeof decision.decisionId !== "string" || !identity.test(decision.decisionId)
+        || typeof decision.expiresAtMs !== "number" || !Number.isSafeInteger(decision.expiresAtMs)
+        || decision.expiresAtMs <= Date.now() || decision.expiresAtMs > Date.now() + 5 * 60_000 || decision.noExecution !== true)
+        throw bridgeError("ACCESS_DENIED", "Native Action source approval does not match this exact request/current profile.");
+      return {
+        schema: "pkm.native-action-source-decision/v1", scope: "original-action-source-state/v1",
+        root, workspaceId: options.workspaceId, actorId: "mcp:external", profileSha256: input.profileSha256,
+        epoch: input.epoch, capsuleSha256: input.capsuleSha256, requestSha256: input.requestSha256,
+        decisionId: decision.decisionId, expiresAtMs: decision.expiresAtMs, noExecution: true,
+      };
+    },
+    async authorizeProgram(input: OriginalActionProgramRequest, signal?: AbortSignal): Promise<OriginalActionProgramDecision> {
+      signal?.throwIfAborted();
+      if (disposed || !options.nativeEndpoint || input.root !== root || input.workspaceId !== options.workspaceId
+        || input.actorId !== options.actorId) throw bridgeError("ACCESS_DENIED", "Native local program binding is unavailable.");
+      const config = readConfig(root, options.nativeEndpoint);
+      if (config.trust_epoch !== input.epoch) throw bridgeError("ACCESS_DENIED", "Native program epoch changed.");
+      let abort!: () => void;
+      const interrupted = new Promise<never>((_resolve, reject) => {
+        abort = () => reject(signal?.reason);
+        signal?.addEventListener("abort", abort, { once: true });
+        if (signal?.aborted) abort();
+      });
+      let response: AuthorityResponse;
+      try { response = await Promise.race([request(config, "program_consent", {
+        trustEpoch: input.epoch, programAdmission: input,
+      }, 120000, signal), interrupted]); }
+      finally { signal?.removeEventListener("abort", abort); }
+      signal?.throwIfAborted();
+      if (!response.ok || !response.trusted || response.trustEpoch !== input.epoch || !response.programDecision)
+        throw bridgeError("ACCESS_DENIED", "ACTION_LOCAL_PROGRAM_CONSENT_REQUIRED: exact native process/toolchain consent was not granted.");
+      return assertOriginalActionProgramDecision(response.programDecision, input);
     },
     async pickArtifactSource(epoch: string) {
       if (disposed || !epochPattern.test(epoch)) throw bridgeError("ACCESS_DENIED", "Action artifact trust is unavailable.");

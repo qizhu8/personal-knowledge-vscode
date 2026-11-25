@@ -828,9 +828,13 @@ export class LegacyManagedApiChatRuntime {
       throw new ChatTurnToolError("unknown", "NATIVE_WORKER_OUTCOME_UNKNOWN");
     return result;
   }
+  closeAdmission(): void {
+    this.closing = true;
+    this.turns.closeAdmission();
+  }
   close(): Promise<void> {
     if (this.closeTask) return this.closeTask;
-    this.closing = true;
+    this.closeAdmission();
     this.closeTask = (async () => {
       await this.turns.close();
       this.transaction(() => this.db.prepare("DELETE FROM legacy_managed_chat_owner WHERE actor=? AND instance_id=?")

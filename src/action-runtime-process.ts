@@ -14,10 +14,15 @@ import { createActionProgramInvocation } from "./action-program-invocation.js";
 type ArgumentRule = { literal: string } | { pattern: RegExp; maxBytes: number };
 export interface ActionProcessCommand {
   id: string;
+  /** Exact compiler spelling; a native command ID never rewrites an admitted definition. */
+  program?: string;
   executable: string;
   cwd: string;
   arguments: readonly ArgumentRule[];
   directChildOnly: true;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  assertCurrent?(): void;
   outputContractDigest: string;
   authorizationDigest: string;
   authorizeDefinition(binding: ActionAuthorizationBinding): boolean;
@@ -25,7 +30,7 @@ export interface ActionProcessCommand {
   approve(request: Readonly<{
     actorId: string; executableDigest: string; actionId: string; implementationId: string;
     nodeId: string; invocationId: string; commandId: string; arguments: readonly string[];
-    inputDigest: string;
+    inputDigest: string; runId?: string;
   }>): Promise<boolean>;
   redactOutput(output: unknown, actionId: string): unknown;
 }
@@ -35,7 +40,11 @@ export interface ActionProcessBridgeOptions {
   commands: readonly ActionProcessCommand[];
   /** Explicit trusted-workspace opt-in, not a per-program allowlist. */
   trustedPrograms?: {
-    approve(binding: ActionAuthorizationBinding & { inputs: Record<string, unknown> }, build?: ActionBuildPlan,
+    arguments?(binding: ActionAuthorizationBinding & { inputs?: Record<string, unknown> }): readonly string[];
+    timeoutMs?(binding: ActionAuthorizationBinding & { inputs?: Record<string, unknown> }): number | undefined;
+    assertCurrent?(binding: ActionAuthorizationBinding & { inputs?: Record<string, unknown>; runId?: string }): void;
+    output?(binding: ActionAuthorizationBinding, output: unknown): unknown;
+    approve(binding: ActionAuthorizationBinding & { inputs: Record<string, unknown>; runId?: string }, build?: ActionBuildPlan,
       artifact?: { artifactId: string; digest: string; size: number }): Promise<boolean>;
   };
   nestedArtifact?: {
@@ -60,6 +69,13 @@ type Pending = {
   invocationEnvironment?: Record<string, string>;
 };
 type Json = z.infer<ReturnType<typeof z.json>>;
+export type ActionObservedCompletion = Readonly<{
+  binding: ActionAuthorizationBinding & { inputs: Record<string, unknown> };
+  arguments: readonly string[];
+  processJobId: string; processOperationId: string; processReceiptSha256: string;
+  processJobSha256: string; processOwnerId: string;
+  outputs: Record<string, unknown>;
+}>;
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const identity = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
 
@@ -105,6 +121,7 @@ export function containsActionArtifactReference(value: unknown): boolean {
 export function createActionProcessBridge(options: ActionProcessBridgeOptions): {
   adapters: Readonly<Record<string, ActionNativeAdapter>>;
   resolveAdapter(key: string, outputContractDigest: string): ActionNativeAdapter | undefined;
+  observedCompletion(actorId: string, runId: string): ActionObservedCompletion | undefined;
   approveRun(runId: string, binding: ActionAuthorizationBinding & { inputs: Record<string, unknown> }, deadline: number,
     artifact?: { artifactId: string; digest: string; size: number }): Promise<boolean>;
   discardApproval(runId: string): void;
@@ -115,14 +132,18 @@ export function createActionProcessBridge(options: ActionProcessBridgeOptions): 
   const root = realpathSync(options.workspaceRoot);
   if (!statSync(root).isDirectory()) throw new Error("Action process workspace root must be a directory.");
   const commands = new Map<string, ActionProcessCommand>();
+  const programCommands = new Map<string, ActionProcessCommand>();
   for (const original of options.commands) {
     identity.parse(original.id);
     if (original.id.length > 110 || options.trustedPrograms && original.id === "trusted-program"
       || commands.has(original.id) || original.directChildOnly !== true || !isAbsolute(original.executable)
       || original.executable.includes("\0") || typeof original.approve !== "function"
       || typeof original.authorizeDefinition !== "function" || typeof original.authorizeData !== "function"
+      || original.assertCurrent !== undefined && typeof original.assertCurrent !== "function"
       || typeof original.redactOutput !== "function" || !/^[a-f0-9]{64}$/.test(original.outputContractDigest)
       || !/^[a-f0-9]{64}$/.test(original.authorizationDigest)
+      || original.program !== undefined && (typeof original.program !== "string" || !original.program || original.program.includes("\0")
+        || programCommands.has(original.program))
       || original.arguments.length > RUNTIME_PROCESS_LIMITS.arguments) throw new Error("Invalid Action program command policy.");
     const executable = realpathSync(original.executable);
     if (!statSync(executable).isFile()) throw new Error("Allowlisted Action executable must be a file.");
@@ -140,16 +161,25 @@ export function createActionProcessBridge(options: ActionProcessBridgeOptions): 
     });
     commands.set(original.id, Object.freeze({ ...original, executable, cwd: assertDirectory(original.cwd, root),
       arguments: Object.freeze(arguments_) }));
+    if (original.program !== undefined) programCommands.set(original.program, commands.get(original.id)!);
+  }
+  const adapterKeys = new Set<string>();
+  for (const command of commands.values()) {
+    const key = command.program ?? command.id;
+    if (adapterKeys.has(key)) throw new Error("Action program adapter authority must be unique.");
+    adapterKeys.add(key);
   }
   const pending = new Map<string, Pending>();
   const approvals = new Map<string, { fingerprint: string; approval: Approval; build?: ActionBuildPlan; trustEpoch?: string }>();
   const activeEpochs = new Map<string, string>();
+  const observations = new Map<string, ActionObservedCompletion>();
   const shutdown = new AbortController();
   const runtime = new RuntimeProcessService({
     repositoryFactory: (ownerId, events) => new RuntimeProcessStore(options.database, ownerId, events, options.previousOwnerId),
     adapters: [...commands.values()].map(command => ({
       id: command.id, executable: command.executable, cwd: command.cwd,
       stdin: true, outputPersistence: "ephemeral" as const,
+      assertCurrent() { command.signal?.throwIfAborted(); command.assertCurrent?.(); },
       arguments(input: Json) {
         const parsed = z.strictObject({ invocationId: z.uuid(), args: z.array(z.string()) }).parse(input);
         if (!matches(command, parsed.args)) throw new Error("Action program arguments are outside the allowlist.");
@@ -164,6 +194,7 @@ export function createActionProcessBridge(options: ActionProcessBridgeOptions): 
       const command = context.command;
       return {
         id, executable: command.executable, cwd: command.cwd,
+        assertCurrent() { command.assertCurrent?.(); },
         env: { PATH: process.env.PATH ?? "", ...(context.buildDirectory
           ? { TMPDIR: context.buildDirectory, TMP: context.buildDirectory, TEMP: context.buildDirectory } : {}),
           ...context.invocationEnvironment },
@@ -194,12 +225,16 @@ export function createActionProcessBridge(options: ActionProcessBridgeOptions): 
   });
   let closed = false;
   const running = new Set<Promise<unknown>>();
-  function commandFor(binding: ActionAuthorizationBinding) {
+  function argumentsFor(binding: ActionAuthorizationBinding & { inputs?: Record<string, unknown> }) {
+    return options.trustedPrograms?.arguments?.(binding) ?? binding.implementation.args ?? [];
+  }
+  function commandFor(binding: ActionAuthorizationBinding & { inputs?: Record<string, unknown>; runId?: string }) {
     if (binding.implementation.kind !== "program" || typeof binding.implementation.program !== "string"
       || (binding.implementation.result_protocol !== undefined
         && binding.implementation.result_protocol !== "pkm.action.result/v1")) return undefined;
-    let command = binding.implementation.build === undefined ? commands.get(binding.implementation.program) : undefined;
-    const args = binding.implementation.args ?? [];
+    let command = binding.implementation.build === undefined
+      ? programCommands.get(binding.implementation.program) ?? commands.get(binding.implementation.program) : undefined;
+    const args = argumentsFor(binding);
     if (!command && options.trustedPrograms && Array.isArray(args) && args.every(value => typeof value === "string")
       && args.length <= runtime.limits.arguments
       && Buffer.byteLength(JSON.stringify(args)) <= runtime.limits.argumentBytes
@@ -217,11 +252,14 @@ export function createActionProcessBridge(options: ActionProcessBridgeOptions): 
       command = {
         id: "trusted-program", executable, cwd: root, directChildOnly: true,
         arguments: args.map(value => ({ literal: value as string })),
+        timeoutMs: options.trustedPrograms.timeoutMs?.(binding),
         outputContractDigest: originalDigest(binding.definition.output_schema),
         authorizationDigest: digest("pkm.trusted-workspace-program/v1"),
+        assertCurrent: () => options.trustedPrograms?.assertCurrent?.(binding),
         authorizeDefinition: () => true, authorizeData: () => true,
-        approve: () => options.trustedPrograms!.approve(binding as ActionAuthorizationBinding & { inputs: Record<string, unknown> }, build),
-        redactOutput: output => output,
+        approve: () => options.trustedPrograms!.approve(binding as ActionAuthorizationBinding
+          & { inputs: Record<string, unknown>; runId?: string }, build),
+        redactOutput: output => options.trustedPrograms?.output?.(binding, output) ?? output,
       };
     }
     return command && Array.isArray(args) && args.every(value => typeof value === "string")
@@ -232,7 +270,7 @@ export function createActionProcessBridge(options: ActionProcessBridgeOptions): 
       actorId: binding.actorId, executableDigest: binding.executableDigest, actionId: binding.actionId,
       implementationId: String(binding.implementation.id ?? "default"), nodeId: binding.nodeId,
       invocationId: randomUUID(), commandId: command.id,
-      arguments: Object.freeze([...(binding.implementation.args as string[] | undefined ?? [])]),
+      arguments: Object.freeze([...argumentsFor(binding) as string[]]),
       inputDigest: digest(canonical(binding.inputs)),
     });
   }
@@ -240,10 +278,10 @@ export function createActionProcessBridge(options: ActionProcessBridgeOptions): 
     return digest(canonical(binding));
   }
   async function execute(invocation: Parameters<ActionNativeAdapter["execute"]>[0], signal: AbortSignal) {
-    const binding: ActionAuthorizationBinding = {
+    const binding: ActionAuthorizationBinding & { inputs: Record<string, unknown> } = {
       actorId: invocation.actorId, workspaceId: invocation.workspaceId, executableDigest: invocation.executableDigest,
       source: invocation.source, actionId: invocation.actionId, definition: invocation.definition,
-      implementation: invocation.implementation, nodeId: invocation.nodeId,
+      implementation: invocation.implementation, nodeId: invocation.nodeId, inputs: invocation.inputs, runId: invocation.runId,
     };
     const selected = commandFor(binding);
     if (!selected || closed || signal.aborted || selected.outputContractDigest !== originalDigest(invocation.definition.output_schema)) {
@@ -251,7 +289,7 @@ export function createActionProcessBridge(options: ActionProcessBridgeOptions): 
       return { status: "unknown", outputs: {} };
     }
     let command: ActionProcessCommand = selected;
-    let args = [...(invocation.implementation.args as string[] | undefined ?? [])];
+    let args = [...argumentsFor(binding) as string[]];
     const inputText = canonical(invocation.inputs), inputDigest = digest(inputText);
     const bound = { ...binding, inputs: invocation.inputs };
     const reserved = options.requirePreapproval ? approvals.get(invocation.runId) : undefined;
@@ -287,13 +325,15 @@ export function createActionProcessBridge(options: ActionProcessBridgeOptions): 
     };
     try {
       if (!options.requirePreapproval) {
-        const approvalResult = await interruptible(() => command.approve(approval));
+        const approvalResult = await interruptible(() => command.approve(
+          command.program !== undefined ? { ...approval, runId: invocation.runId } : approval));
         if (signal.aborted || approvalResult === undefined) return { status: "unknown", outputs: {} };
         if (approvalResult === false) return { status: "failed", reason: "ACTION_EFFECT_CONSENT_REQUIRED", outputs: {} };
         if (approvalResult !== true) return { status: "unknown", outputs: {} };
       }
       context.approved = true;
-      let deadlineMs = Math.min(invocation.deadline - Date.now(), runtime.limits.deadlineMs);
+      let deadlineMs = Math.min(invocation.deadline - Date.now(), runtime.limits.deadlineMs,
+        command.timeoutMs ?? runtime.limits.deadlineMs);
       if (deadlineMs < 1 || Buffer.byteLength(inputText) > runtime.limits.inputBytes) return { status: "unknown", outputs: {} };
       if (options.authorizeLaunch && await options.authorizeLaunch({ ...binding, inputs: invocation.inputs }, context.trustEpoch) !== true)
         return { status: "unknown", outputs: {} };
@@ -368,7 +408,8 @@ export function createActionProcessBridge(options: ActionProcessBridgeOptions): 
       if (!captured || captured.job.state === "TIMED_OUT" || captured.job.state === "CANCELLED"
         || captured.job.effect === "unknown") return { status: "unknown", outputs: {} };
       if (captured.job.state !== "SUCCEEDED") {
-        return captured.job.signal ? { status: "unknown", outputs: {} } : { status: "failed", outputs: {} };
+        return captured.job.signal || ["cosmos.artifact.upload", "cosmos.artifact.download"].includes(invocation.actionId)
+          ? { status: "unknown", outputs: {} } : { status: "failed", outputs: {} };
       }
       let raw: unknown;
       try { raw = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(captured.stdout)); }
@@ -414,6 +455,20 @@ export function createActionProcessBridge(options: ActionProcessBridgeOptions): 
         || schemaValueErrors(invocation.definition.output_schema, output).length) return {
         status: "unknown", outputs: {}, ...(protocol ? { reason: "ACTION_RESULT_PROTOCOL_INVALID" } : {}),
       };
+      if (options.requirePreapproval && invocation.nodeId === "action" && !nested
+        && invocation.implementation.build === undefined) {
+        const receipt = options.database.prepare("SELECT fingerprint FROM runtime_process_jobs WHERE actor_id=? AND job_id=? AND operation_id=?")
+          .get(invocation.actorId, job.jobId, invocationId);
+        if (receipt && /^[a-f0-9]{64}$/.test(String(receipt.fingerprint))) {
+          if (observations.size >= 128) observations.delete(observations.keys().next().value!);
+          observations.set(`${invocation.actorId}\0${invocation.runId}`, structuredClone({
+            binding: { ...bound, inputs: invocation.inputs }, arguments: args,
+            processJobId: job.jobId, processOperationId: invocationId,
+            processReceiptSha256: String(receipt.fingerprint), processJobSha256: originalDigest(captured.job),
+            processOwnerId: runtime.ownerId, outputs: output as Record<string, unknown>,
+          }));
+        }
+      }
       return { status: "succeeded", outputs: output };
     } catch { return { status: "unknown", outputs: {} }; }
     finally {
@@ -435,12 +490,12 @@ export function createActionProcessBridge(options: ActionProcessBridgeOptions): 
         return selected?.id === command.id && command.authorizeData(binding) === true;
       },
       execute(invocation, context) {
-        const work = execute(invocation, AbortSignal.any([context.signal, shutdown.signal]));
+        const work = execute(invocation, AbortSignal.any([context.signal, shutdown.signal, ...(command.signal ? [command.signal] : [])]));
         running.add(work); void work.then(() => running.delete(work), () => running.delete(work));
         return work;
       },
     };
-    adapters[`program:${command.id}`] = adapter;
+    adapters[`program:${command.program ?? command.id}`] = adapter;
   }
   function resolveAdapter(key: string, outputContractDigest: string): ActionNativeAdapter | undefined {
     if (!options.trustedPrograms || !key.startsWith("program:")) return undefined;
@@ -459,8 +514,22 @@ export function createActionProcessBridge(options: ActionProcessBridgeOptions): 
   return {
     adapters: Object.freeze(adapters),
     resolveAdapter,
+    observedCompletion(actorId: string, runId: string): ActionObservedCompletion | undefined {
+      if (closed) return undefined;
+      const observed = observations.get(`${actorId}\0${runId}`);
+      if (!observed || observed.processOwnerId !== runtime.ownerId) return undefined;
+      const job = runtime.status(actorId, observed.processJobId);
+      const receipt = options.database.prepare("SELECT fingerprint FROM runtime_process_jobs WHERE actor_id=? AND job_id=? AND operation_id=?")
+        .get(actorId, observed.processJobId, observed.processOperationId);
+      if (job.state !== "SUCCEEDED" || job.effect !== "completed" || job.exitCode !== 0 || job.signal !== null
+        || job.operationId !== observed.processOperationId || job.ownerId !== observed.processOwnerId
+        || originalDigest(job) !== observed.processJobSha256
+        || receipt?.fingerprint !== observed.processReceiptSha256) return undefined;
+      return structuredClone(observed);
+    },
     async approveRun(runId, binding, deadline, artifact) {
       if (!options.requirePreapproval || closed || approvals.has(runId)) throw new Error("Action approval is unavailable.");
+      binding = { ...binding, runId };
       const command = commandFor(binding);
       if (!command || command.outputContractDigest !== originalDigest(binding.definition.output_schema)) return false;
       const build = binding.implementation.build !== undefined ? inspectActionBuild(root, binding) : undefined;
@@ -496,7 +565,7 @@ export function createActionProcessBridge(options: ActionProcessBridgeOptions): 
       return epoch === undefined ? undefined : options.authorizationEpoch?.() === epoch;
     },
     async close(closeOptions = {}) {
-      closed = true; shutdown.abort(); approvals.clear(); activeEpochs.clear();
+      closed = true; shutdown.abort(); approvals.clear(); activeEpochs.clear(); observations.clear();
       await runtime.close({ drainMs: closeOptions.drainMs ?? 0 });
       await Promise.allSettled([...running]);
     },

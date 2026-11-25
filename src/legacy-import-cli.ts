@@ -7,8 +7,24 @@ import {
 type ImportCommand = "import-plan" | "import" | "import-status" | "import-cleanup";
 
 export async function runLegacyRootInspectionCli(args: string[]): Promise<void> {
-  if (args.length !== 2 || args[0] !== "--root" || !args[1] || !isAbsolute(args[1])) {
-    throw new Error("Usage: inspect-legacy-root --root <absolute legacy Knowledge Root>");
+  const checkWriters = args.length === 3 && args[2] === "--check-writers";
+  if ((!checkWriters && args.length !== 2) || args[0] !== "--root" || !args[1] || !isAbsolute(args[1])) {
+    throw new Error("Usage: inspect-legacy-root --root <absolute legacy Knowledge Root> [--check-writers]");
+  }
+  if (checkWriters) {
+    const { inspectLinuxLegacyWriterQuiescence } = await import("./linux-legacy-writer-quiescence.js");
+    const writerQuiescence = await inspectLinuxLegacyWriterQuiescence(args[1]);
+    const inspection = writerQuiescence.blockers.length ? null : await inspectLegacyRootForAdoption(args[1]);
+    console.log(JSON.stringify({ preflight: {
+      schema: "pkm.legacy-root-cold-preflight/v1", sourceRoot: writerQuiescence.root,
+      ready: false, writerQuiescence, inspection,
+      blockers: inspection ? inspection.blockers : [{
+        code: "legacy-writers-active", path: ".",
+        message: "Legacy writers or unverified processes remain; content inventory was not started. No process was terminated.",
+      }],
+    } }));
+    process.exitCode = 1;
+    return;
   }
   const inspection = await inspectLegacyRootForAdoption(args[1]);
   console.log(JSON.stringify({ inspection }));

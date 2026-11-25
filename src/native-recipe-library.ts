@@ -25,6 +25,24 @@ const nativeRecord = recipeLibraryEditable.extend({
     brokerName: z.string().optional(), publisherUser: z.string().optional(), publisherHost: z.string().optional() }).optional(),
 });
 type Snapshot = { snapshotRevision: string; recipes: ProjectRecipeRecord[] };
+export const nativeRecipeLibraryDdl = `
+      CREATE TABLE IF NOT EXISTS native_recipe_library_records(
+        workspace_id TEXT NOT NULL, recipe_id TEXT NOT NULL, original_digest TEXT NOT NULL,
+        record TEXT NOT NULL, digest TEXT NOT NULL, PRIMARY KEY(workspace_id,recipe_id));
+      CREATE TABLE IF NOT EXISTS native_recipe_library_receipts(
+        operation_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, actor_id TEXT NOT NULL,
+        fingerprint TEXT NOT NULL, result TEXT NOT NULL);
+    `;
+export const nativeRecipePayloadReceiptPrefix = "native-library-payload:";
+export const nativeRecipePayloadReceiptSchema = z.strictObject({
+  schema: z.literal("pkm.native-recipe-payload-receipt/v1"),
+  input: z.strictObject({
+    actorId: z.string().min(1), operationId: z.string().uuid(), recipeId: z.string(),
+    expectedRevision: z.number().int().safe().nonnegative(), expectedSnapshot: z.string().regex(/^[a-f0-9]{64}$/),
+    fields: recipeLibraryEditable,
+  }),
+  recordSha256: z.string().regex(/^[a-f0-9]{64}$/),
+});
 
 /** Native-owned definitions and receipts only. Original filesystem/ProjectStore authorities are never written. */
 export class NativeRecipeLibrary {
@@ -33,16 +51,13 @@ export class NativeRecipeLibrary {
     database: DatabaseSync; workspaceId: string; assertLease(): void;
     original(): Snapshot;
     fault?(point: "before-commit" | "after-commit", operationId: string): void;
+    receiptWitness?(database: DatabaseSync, result: LibraryRecord, input: {
+      actorId: string; operationId: string; recipeId: string; expectedRevision: number;
+      expectedSnapshot: string; fields: unknown;
+    }): void;
   }) {
     options.assertLease();
-    options.database.exec(`
-      CREATE TABLE IF NOT EXISTS native_recipe_library_records(
-        workspace_id TEXT NOT NULL, recipe_id TEXT NOT NULL, original_digest TEXT NOT NULL,
-        record TEXT NOT NULL, digest TEXT NOT NULL, PRIMARY KEY(workspace_id,recipe_id));
-      CREATE TABLE IF NOT EXISTS native_recipe_library_receipts(
-        operation_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, actor_id TEXT NOT NULL,
-        fingerprint TEXT NOT NULL, result TEXT NOT NULL);
-    `);
+    options.database.exec(nativeRecipeLibraryDdl);
   }
   private assert() {
     if (this.closed) throw new Error("Recipe library closed.");
@@ -147,8 +162,15 @@ export class NativeRecipeLibrary {
           .run(this.options.workspaceId, input.recipeId, hash(original ?? null), canonicalJson(result), hash(result));
         db.prepare("INSERT INTO native_recipe_library_receipts VALUES(?,?,?,?,?)")
           .run(input.operationId, this.options.workspaceId, input.actorId, fingerprint, canonicalJson(result));
+        const payloadReceipt = nativeRecipePayloadReceiptSchema.parse({
+          schema: "pkm.native-recipe-payload-receipt/v1", input: { ...input, fields }, recordSha256: hash(result),
+        });
+        db.prepare("INSERT INTO native_recipe_library_receipts VALUES(?,?,?,?,?)")
+          .run(nativeRecipePayloadReceiptPrefix + input.operationId, this.options.workspaceId, input.actorId,
+            hash(payloadReceipt), canonicalJson(payloadReceipt));
         this.options.fault?.("before-commit", input.operationId);
       }
+      this.options.receiptWitness?.(db, result, { ...input, fields });
       this.assert(); db.exec("COMMIT");
     } catch (error) { if (db.isTransaction) db.exec("ROLLBACK"); throw error; }
     try { this.options.fault?.("after-commit", input.operationId); }

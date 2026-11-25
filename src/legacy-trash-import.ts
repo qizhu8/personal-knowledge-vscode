@@ -15,6 +15,9 @@ import {
 } from "./domain/legacy-trash-import-contracts.js";
 import { deserializeTrashLifecyclePlan, serializeTrashLifecyclePlan, type TrashLifecyclePlan } from "./trash-lifecycle.js";
 import { assertLinuxRootOwnerMarker } from "./linux-root-writer-fence.js";
+import { serverDataDirectory, storageLayoutMarker, workspaceStoragePaths } from "./workspace-storage-paths.js";
+import { inspectWorkspaceRuntimeControls } from "./workspace-runtime-control.js";
+import { workspaceGitIgnoreBlock } from "./workspace-git-protection.js";
 
 export { legacyTrashImportSharedSeams } from "./domain/legacy-trash-import-contracts.js";
 export type { LegacyTrashImportPlan } from "./domain/legacy-trash-import-contracts.js";
@@ -126,6 +129,32 @@ export async function snapshotLegacyTrashTree(root: string, native = false, auth
     const name = basename(path);
     if (native && process.platform === "linux" && depth === 1 && name === ".pkm-next-writer-fenced.json") {
       await assertLinuxRootOwnerMarker(root);
+      return;
+    }
+    if (native && depth === 1 && name === "runtime-control"
+      && workspaceStoragePaths(root).runtimeControl === join(root, path)) {
+      inspectWorkspaceRuntimeControls(root);
+      return;
+    }
+    if (native && depth === 1 && [serverDataDirectory, storageLayoutMarker, ".gitignore"].includes(name)
+      && !(name === ".gitignore" && scope?.excludedRootNames.includes(name))
+      && workspaceStoragePaths(root).layout === "separated") {
+      const privateFile = async (full: string) => {
+        const stat = await lstat(full);
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1
+          || process.platform !== "win32" && (stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0))
+          trashImportFail("UNSAFE_PATH", "Separated server files must be private, owned and link-free.");
+      };
+      if (name === serverDataDirectory) {
+        inspectWorkspaceRuntimeControls(root);
+        for (const entry of await readdir(join(root, name)))
+          if (entry !== "runtime-control") await privateFile(join(root, name, entry));
+      } else {
+        await privateFile(join(root, name));
+        if (name === ".gitignore"
+          && (await trashImportRead(root, name, Buffer.byteLength(workspaceGitIgnoreBlock))).toString("utf8") !== workspaceGitIgnoreBlock)
+          trashImportFail("UNKNOWN_LAYOUT", "Unrecognized user Git rules require explicit snapshot authority.");
+      }
       return;
     }
     if (depth === 1 && scope?.excludedRootNames.includes(name)

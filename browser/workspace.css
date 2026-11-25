@@ -136,3 +136,7 @@ footer { font-size: .7rem; color: var(--muted); border-top: 1px solid var(--line
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+.shared-management { max-width: 1500px; margin: 20px auto; padding: 18px; }
+.shared-management > details > summary { cursor: pointer; font-weight: 600; }
+.shared-management pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.shared-management .surface-tools { margin: 12px 0; }

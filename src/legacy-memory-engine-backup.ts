@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { coreDatabasePath } from "./workspace-storage-paths.js";
 import { createReadStream, constants, lstatSync } from "node:fs";
 import { copyFile, chmod, lstat, mkdir, open, readFile, readdir, realpath, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -349,7 +350,7 @@ export async function createLegacyMemoryEngineBackup(
       })));
       const workspaceId = await storage.workspaceId();
       const workspacePin = await statPin(workspaceRoot, true);
-      const workspaceDbPath = join(workspaceRoot, "core.sqlite");
+      const workspaceDbPath = coreDatabasePath(workspaceRoot);
       const databasePin = await statPin(workspaceDbPath, false);
       const enginePin = await statPin(binding.database, false);
       const inventoryBefore = await workspaceInventory(workspaceRoot);

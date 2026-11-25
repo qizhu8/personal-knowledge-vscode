@@ -7,6 +7,7 @@ import { sha256 } from "./file-write.js";
 import { scanMarkdown } from "./markdown.js";
 import { readLegacyMemoryImportReceipt } from "./memory-import.js";
 import { openMemoryContinuitySnapshot, readMemoryScopeContinuity } from "./memory-scope-continuity.js";
+import { coreDatabasePath } from "./workspace-storage-paths.js";
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 export const memoryHostPinSchema = z.strictObject({
@@ -28,16 +29,16 @@ export function inspectMemoryHostPin(root: string, liveDatabase = false): Memory
   if (resolve(root) !== root || realpathSync(root) !== root || stat.isSymbolicLink() || !stat.isDirectory()
     || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0)
     throw new CoreError("NOT_AVAILABLE", "A private canonical isolated Memory workspace is required.");
-  for (const name of [".pkm-next-workspace", "core.sqlite"]) {
-    const item = lstatSync(join(root, name));
+  for (const path of [join(root, ".pkm-next-workspace"), coreDatabasePath(root)]) {
+    const item = lstatSync(path);
     if (!item.isFile() || item.isSymbolicLink() || item.nlink !== 1)
       throw new CoreError("NOT_AVAILABLE", "Memory provenance must remain in owned regular files.");
   }
   const marker = JSON.parse(readFileSync(join(root, ".pkm-next-workspace"), "utf8"));
-  if (!liveDatabase && (existsSync(join(root, "core.sqlite-journal"))
-    || existsSync(join(root, "core.sqlite-wal")) && lstatSync(join(root, "core.sqlite-wal")).size > 0))
+  if (!liveDatabase && (existsSync(`${coreDatabasePath(root)}-journal`)
+    || existsSync(`${coreDatabasePath(root)}-wal`) && lstatSync(`${coreDatabasePath(root)}-wal`).size > 0))
     throw new CoreError("NOT_AVAILABLE", "Read-only Memory reopening requires a closed checkpointed isolated database.");
-  const database = liveDatabase ? new DatabaseSync(join(root, "core.sqlite"), { readOnly: true }) : openMemoryContinuitySnapshot(root);
+  const database = liveDatabase ? new DatabaseSync(coreDatabasePath(root), { readOnly: true }) : openMemoryContinuitySnapshot(root);
   try {
     database.exec("BEGIN");
     const binding = readMemoryScopeContinuity(database, String(marker.id));

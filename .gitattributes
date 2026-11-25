@@ -1,1 +1,3 @@
+/src/**/*.ts text eol=lf
+/scripts/generate-storage-bootstrap-profile.mjs text eol=lf
 /migration/evidence/compute-chat-memory-worker-78118937.ts.txt -text

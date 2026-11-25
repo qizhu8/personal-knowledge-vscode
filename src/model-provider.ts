@@ -9,14 +9,23 @@ import {
 } from "./domain/model-provider.js";
 import type { ModelProviderId } from "./model-config-contracts.js";
 import { estimateChatPromptTokens } from "./domain/chat-prompt-budget.js";
+const providerBindings = new WeakMap<object, ModelProviderDependencies>();
+export function assertModelProviderBinding(provider: unknown, modelConfig: ModelProviderDependencies["modelConfig"],
+  transport: ModelProviderTransport): void {
+  const actual = provider && typeof provider === "object" ? providerBindings.get(provider) : undefined;
+  if (!actual || actual.modelConfig !== modelConfig || actual.transport !== transport)
+    throw new ModelProviderError("configuration-unavailable");
+}
 
 export * from "./model-provider-contracts.js";
 
 /** One inference only. Tools are proposals, never executed here. No automatic replay. */
 export class ModelProviderService {
+  private readonly outstanding = new Set<Promise<unknown>>();
   readonly preDispatchAdmission: boolean = true;
   readonly available: boolean;
   constructor(private readonly dependencies: ModelProviderDependencies) {
+    providerBindings.set(this, dependencies);
     this.available = dependencies.transport?.supports("openai-compatible") === true
       || dependencies.transport?.supports("azure-openai") === true;
     for (const [value, maximum] of [[dependencies.idleTimeoutMs, 1_800_000], [dependencies.totalTimeoutMs, 1_800_000]]) {
@@ -27,6 +36,12 @@ export class ModelProviderService {
     const available = provider !== "vscode" && this.dependencies.transport?.supports(provider) === true;
     return { available, reason: available ? "injected-transport" : "provider-unavailable" };
   }
+  activity() { return this.outstanding.size; }
+  private track<T>(value: Promise<T>): Promise<T> {
+    this.outstanding.add(value);
+    void value.then(() => this.outstanding.delete(value), () => this.outstanding.delete(value));
+    return value;
+  }
 
   async *stream(request: ModelProviderRequest, beforeDispatch?: () => void): AsyncGenerator<ModelProviderEvent> {
     let dispatched = false;
@@ -35,7 +50,8 @@ export class ModelProviderService {
     let deadline: ReturnType<typeof setTimeout> | undefined;
     const cancel = () => controller.abort("cancelled");
     const dispatch = () => dispatched ? "uncertain" as const : "not-sent" as const;
-    const wait = async <T>(pending: Promise<T>): Promise<T> => {
+    const wait = async <T>(work: Promise<T>): Promise<T> => {
+      const pending = this.track(work);
       let timer: ReturnType<typeof setTimeout> | undefined;
       let onAbort: (() => void) | undefined;
       const interruption = new Promise<never>((_, reject) => {
@@ -99,7 +115,7 @@ export class ModelProviderService {
       dispatched = true;
       const opening = this.dependencies.transport.open({ provider: resolution.provider, payload, signal: controller.signal });
       // An injected host may ignore abort. Dispose even a response arriving after cancellation.
-      void opening.then(body => { if (controller.signal.aborted) void body.cancel().catch(() => {}); }, () => {});
+      void opening.then(body => { if (controller.signal.aborted) void this.track(body.cancel()).catch(() => {}); }, () => {});
       const body = await wait(opening);
       let finished: "stop" | "tool_calls" | "length" | undefined, done = false, outputBytes = 0, visible = false;
       let measured: ModelProviderUsage | undefined;

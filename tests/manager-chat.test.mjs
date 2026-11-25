@@ -254,7 +254,7 @@ for (const key of ["workspaceId", "workspaceVersion", "inputPin", "nativeOwnerId
         return { ...await genuine.delivery(input, signal), [key]: key === "inputPin" ? "a".repeat(64) : "wrong" };
       } },
     });
-    t.after(() => second.close());
+    x.addCleanup(() => second.close());
     x.composition.host.validate = second.host.validate;
     x.start(`wrong-${key}`);
     assert.equal((await x.terminal(`wrong-${key}`)).state, "unknown");

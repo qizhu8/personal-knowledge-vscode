@@ -13,7 +13,9 @@ export const legacyCapabilityRequest = z.strictObject({
   workerToken: z.string().optional(),
 });
 
-export function createLegacyCapabilityDispatcher(core: Core, actor: Actor, storage: Storage) {
+export function createLegacyCapabilityDispatcher(core: Core, actor: Actor, storage: Storage,
+  readOriginalTodoAgents?: (principal: Actor, arguments_: unknown) => Promise<unknown>,
+  assignOriginalTodoChat?: (principal: Actor, arguments_: unknown) => Promise<Record<string, unknown> | undefined>) {
   const registry = new CapabilityRegistry([...todoCapabilities, ...externalMemoryCapabilities]
     .filter(operation => actor.canWrite || operation.readOnly));
   return async (request: z.infer<typeof legacyCapabilityRequest>) => {
@@ -49,13 +51,24 @@ export function createLegacyCapabilityDispatcher(core: Core, actor: Actor, stora
     }
     const input = !operation.readOnly && operation.id.startsWith("todo.")
       ? { ...args, arguments: { ...z.record(z.string(), z.unknown()).parse(args.arguments), operationId: randomUUID() } } : args;
-    const result = await core.dispatch(operation.readOnly ? "capability_read" : "capability_call", input, principal);
-    if (result.error) throw new CapabilityError(result.error.code, result.error.message);
-    try { validateCapabilityInput(result.result, operation.outputSchema, "result"); }
+    let value: unknown;
+    if (operation.id === "todo.agent.list" && readOriginalTodoAgents) {
+      value = await readOriginalTodoAgents(principal, args.arguments);
+    } else {
+      const assigned = operation.id === "todo.workitem.assign" && assignOriginalTodoChat
+        ? await assignOriginalTodoChat(principal, input.arguments) : undefined;
+      if (assigned !== undefined) value = assigned;
+      else {
+        const result = await core.dispatch(operation.readOnly ? "capability_read" : "capability_call", input, principal);
+        if (result.error) throw new CapabilityError(result.error.code, result.error.message);
+        value = result.result;
+      }
+    }
+    try { validateCapabilityInput(value, operation.outputSchema, "result"); }
     catch {
       throw new CapabilityError("INVALID_RESULT", "Leaf returned a result outside its advertised contract. Reconcile any committed effects before retrying.");
     }
     return { schema: "pkm.capability-result/v1", operation: operation.id, version: operation.version,
-      catalogRevision: registry.revision, result: result.result };
+      catalogRevision: registry.revision, result: value };
   };
 }

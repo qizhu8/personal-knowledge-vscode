@@ -7,9 +7,11 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Core } from "../dist/core.js";
 import { folderLifecycleDefinitions, planFolderLifecycle, serializeFolderLifecyclePlan } from "../dist/folder-lifecycle.js";
 import { startHttp } from "../dist/http.js";
+import { startMcp } from "../dist/mcp.js";
 import { scanMarkdown } from "../dist/markdown.js";
 import { initialize, Storage } from "../dist/storage.js";
 import { syncPlanHash } from "../dist/sync-plan.js";
@@ -21,6 +23,14 @@ const tests = dirname(fileURLToPath(import.meta.url));
 const bearer = "native-runtime-synthetic-test-token-000000000000";
 const invoke = (operation, arguments_) => ({ operation, version: 1, arguments: arguments_ });
 const tick = () => new Promise(resolve => setTimeout(resolve, 10));
+async function sessionInput(url) {
+  const input = chatTurnInput({ expectedSessionRevision: 1 });
+  const created = await post(url, "capability_call", invoke("chat.session.create", {
+    id: input.sessionId, title: "Native server Chat", expectedRevision: 0, operationId: randomUUID(),
+  }));
+  assert.equal(created.status, 200, JSON.stringify(created.body));
+  return input;
+}
 
 async function workspace(t) {
   const root = join(tests, `.native-runtime-${randomUUID()}`);
@@ -45,10 +55,11 @@ async function workspace(t) {
       return configured;
     },
     async listen(core = configured.core, actor = nativeActor) {
-      const current = await startHttp(core, bearer, actor, 0);
+      const current = await startHttp(core, bearer, actor, 0, undefined, undefined, configured?.runtime.services.chatTurns);
       server = current.server;
       return {
         url: current.url,
+        transport: current,
         async close() {
           if (!server) return;
           const currentServer = server;
@@ -164,7 +175,7 @@ test("configured native host runs the provider-to-Chat-to-exact-approval-to-Core
   const f = await workspace(t);
   const configured = await f.configure({ documentId: "native-chain-document" });
   const http = await f.listen();
-  const input = chatTurnInput();
+  const input = await sessionInput(http.url);
 
   assert.equal((await post(http.url, "server_info", {}, "wrong-native-test-token")).status, 401);
   const started = await post(http.url, "capability_call", invoke("chat.turn.start", input));
@@ -180,10 +191,19 @@ test("configured native host runs the provider-to-Chat-to-exact-approval-to-Core
   assert.equal(configured.reviews[0].record.arguments.id, "native-chain-document");
   assert.equal(configured.reviews[0].record.arguments.title, "Synthetic chain");
   assert.equal(configured.reviews[0].record.arguments.operationId, configured.reviews[0].executionOperationId);
+  const transcript = await post(http.url, "capability_read", invoke("chat.session.messages", { id: input.sessionId }));
+  assert.deepEqual(transcript.body.result.items.map(item => item.role), ["user", "assistant"]);
+  const discovery = await post(http.url, "capability_read", invoke("chat.turn.list", { sessionId: input.sessionId }));
+  assert.equal(discovery.body.result.items[0].id, input.id);
 
   const events = await turnEvents(http.url, input.id);
   assert(events.some(event => event.type === "tool-intent"));
   assert.deepEqual(events.filter(event => event.type === "approval").map(event => event.data.status), ["pending", "approved"]);
+  const execution = events.find(event => event.type === "tool-complete").data.evidence;
+  assert.equal(execution.operation, "knowledge.document.create");
+  assert.equal(execution.operationId, events.find(event => event.type === "tool-intent").data.operationId);
+  assert.equal(execution.executionId, events.find(event => event.type === "tool-complete").data.executionId);
+  assert.equal(execution.resource, undefined, "Unrelated tool output cannot invent a Manager evidence link.");
   const document = await post(http.url, "capability_read", invoke("knowledge.document.get", { id: "native-chain-document" }));
   assert.equal(document.body.result.content, "Synthetic content.");
   assert.equal(document.body.result.title, "Synthetic chain");
@@ -230,13 +250,15 @@ test("HTTP cancellation wins over a late native approval and prevents the tool e
       return decision;
     },
   });
+
   const http = await f.listen();
-  const input = chatTurnInput();
+  const input = await sessionInput(http.url);
   const start = await post(http.url, "capability_call", invoke("chat.turn.start", input));
   assert.equal(start.status, 200, JSON.stringify(start.body));
   await reviewEntered;
   const pending = await post(http.url, "capability_read", invoke("chat.turn.get", { id: input.id }));
   assert.equal(pending.body.result.status, "approval");
+  assert.equal(configured.runtime.services.chatTurns.activity().active, 1);
   const cancelled = await post(http.url, "capability_call", invoke("chat.turn.cancel", {
     id: input.id, expectedRevision: pending.body.result.revision, operationId: randomUUID(),
   }));
@@ -248,6 +270,117 @@ test("HTTP cancellation wins over a late native approval and prevents the tool e
   assert.equal(configured.provider.counts().modelCalls, 1);
   const absent = await post(http.url, "capability_read", invoke("knowledge.document.get", { id: "native-chain-document" }));
   assert.equal(absent.body.error.code, "NOT_FOUND");
+});
+
+test("public native Chat cannot omit session binding to bypass foreign or archived session admission", async t => {
+  const f = await workspace(t);
+  const configured = await f.configure();
+  const http = await f.listen();
+  const input = await sessionInput(http.url);
+  const unbound = { ...input };
+  delete unbound.expectedSessionRevision;
+  for (const candidate of [unbound, { ...unbound, sessionBacked: false }, { ...unbound, mode: "raw" }]) {
+    const response = await post(http.url, "capability_call", invoke("chat.turn.start", candidate));
+    assert(response.body.error, JSON.stringify(response.body));
+  }
+  for (const candidate of [unbound, input]) {
+    const response = await configured.core.dispatch("capability_call", invoke("chat.turn.start", candidate),
+      { id: "native:foreign-caller", canWrite: true });
+    assert.equal(response.error.code, "NOT_FOUND");
+  }
+  const archived = await post(http.url, "capability_call", invoke("chat.session.archive", {
+    id: input.sessionId, expectedRevision: 1, operationId: randomUUID(),
+  }));
+  assert.equal(archived.body.result.revision, 2);
+  for (const candidate of [unbound, { ...input, expectedSessionRevision: 2 }]) {
+    const response = await post(http.url, "capability_call", invoke("chat.turn.start", candidate));
+    assert.equal(response.body.error.code, "CONFLICT");
+  }
+  assert.equal(configured.provider.counts().modelCalls, 0);
+  const transcript = await post(http.url, "capability_read", invoke("chat.session.messages", { id: input.sessionId }));
+  assert.deepEqual(transcript.body.result.items, []);
+});
+
+for (const phase of ["provider", "tool"]) test(`cancelled native Chat blocks handoff until ignored-abort ${phase} retires`, async t => {
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const ready = new Promise(resolve => { entered = resolve; });
+  const f = await workspace(t);
+  f.addCleanup(() => release());
+  const configured = await f.configure(phase === "provider" ? { onOpen: async () => { entered(); await gate; } } : {});
+  if (phase === "tool") {
+    const dispatch = configured.core.dispatch.bind(configured.core);
+    configured.core.dispatch = async (method, request, actor) => {
+      if (method === "capability_call" && request?.operation === "knowledge.document.create") {
+        entered(); await gate;
+      }
+      return dispatch(method, request, actor);
+    };
+  }
+  const http = await f.listen();
+  const input = await sessionInput(http.url);
+  assert.equal((await post(http.url, "capability_call", invoke("chat.turn.start", input))).status, 200);
+  await ready;
+  const running = await post(http.url, "capability_read", invoke("chat.turn.get", { id: input.id }));
+  const cancelled = await post(http.url, "capability_call", invoke("chat.turn.cancel", {
+    id: input.id, operationId: randomUUID(), expectedRevision: running.body.result.revision,
+  }));
+  assert.equal(cancelled.body.result.status, "cancelled");
+  await configured.runtime.services.chatTurns.settled(nativeActor.id, input.id);
+  const before = await post(http.url, "capability_read", invoke("chat.session.messages", { id: input.sessionId }));
+  assert.equal(before.body.result.items.at(-1).status, "cancelled");
+  assert(configured.runtime.services.chatTurns.activity().active > 0);
+  await assert.rejects(http.transport.quiesce(), error => error.code === "BUSY");
+  release();
+  for (let count = 0; configured.runtime.services.chatTurns.activity().active && count < 100; count++) await tick();
+  assert.equal(configured.runtime.services.chatTurns.activity().active, 0);
+  const after = await post(http.url, "capability_read", invoke("chat.session.messages", { id: input.sessionId }));
+  assert.deepEqual(after.body.result, before.body.result, "Late work cannot overwrite a terminal transcript.");
+  assert.equal(configured.provider.counts().modelCalls, 1);
+  if (phase === "tool") {
+    assert.equal(configured.runtime.services.chatTurns.activity().uncertain, 1);
+    await assert.rejects(http.transport.quiesce(), error => error.code === "BUSY");
+  } else await http.transport.quiesce();
+});
+
+test("two-client HTTP/MCP handoff refuses an actually running background Chat after start dispatch returns", async t => {
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const ready = new Promise(resolve => { entered = resolve; });
+  const f = await workspace(t);
+  f.addCleanup(() => release());
+  const configured = await f.configure({ onOpen: async (_request, count) => {
+    if (count === 1) { entered(); await gate; }
+  } });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const secondServer = await startMcp(configured.core, nativeActor, serverTransport);
+  const secondClient = new Client({ name: "independent-chat-observer", version: "1.0.0" });
+  await secondClient.connect(clientTransport);
+  f.addCleanup(async () => { await secondClient.close(); await secondServer.close(); });
+  const http = await f.listen();
+  const input = await sessionInput(http.url);
+  assert.equal((await post(http.url, "capability_call", invoke("chat.turn.start", input))).status, 200);
+  await ready;
+  const observed = await secondClient.callTool({ name: "capability_read",
+    arguments: invoke("chat.turn.list", { sessionId: input.sessionId }) });
+  assert.equal(observed.structuredContent.result.items[0].id, input.id);
+  assert.equal(observed.structuredContent.result.items[0].status, "model");
+  const conflicting = await secondClient.callTool({ name: "capability_call",
+    arguments: invoke("chat.turn.start", chatTurnInput({ expectedSessionRevision: 2 })) });
+  assert.equal(conflicting.structuredContent.error.code, "CONFLICT");
+  assert.equal(configured.provider.counts().modelCalls, 1);
+  assert.equal(configured.runtime.services.chatTurns.activity().active, 1);
+  await assert.rejects(http.transport.quiesce(), error => error.code === "BUSY");
+  assert.equal((await post(http.url, "capability_read", invoke("chat.turn.get", { id: input.id }))).status, 200,
+    "failed handoff reopens admission rather than stranding the owner");
+  release();
+  await terminalTurn(http.url, input.id);
+  await configured.runtime.services.chatTurns.settled(nativeActor.id, input.id);
+  const terminal = await secondClient.callTool({ name: "capability_read",
+    arguments: invoke("chat.turn.get", { id: input.id }) });
+  assert.equal(terminal.structuredContent.result.status, "completed");
+  await http.transport.quiesce();
+  assert.equal(configured.runtime.services.chatTurns.activity().active, 0);
 });
 
 test("unknown tool outcome retains its receipt and does not replay after runtime restart", async t => {
@@ -262,7 +395,7 @@ test("unknown tool outcome retains its receipt and does not replay after runtime
     return result;
   };
   let http = await f.listen();
-  const input = chatTurnInput();
+  const input = await sessionInput(http.url);
   const started = await post(http.url, "capability_call", invoke("chat.turn.start", input));
   assert.equal(started.status, 200, JSON.stringify(started.body));
   const unknown = await terminalTurn(http.url, input.id);

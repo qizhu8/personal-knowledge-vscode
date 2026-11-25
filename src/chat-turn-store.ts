@@ -27,6 +27,8 @@ export interface ChatTurnPersistentStore {
   change(actor: string, id: string, revision: number, operationId: string, type: string,
     data: Record<string, unknown>, mutate: (record: ChatTurnRecord) => void): ChatTurnRecord;
   events(actor: string, id: string, after?: number, limit?: number): { events: ChatTurnEvent[]; next: number | null };
+  list?(actor: string, sessionId: string, after?: string, limit?: number): { items: ChatTurnRecord[]; next: string | null };
+  uncertain?(): number;
   interrupted(): { actor: string; id: string; revision: number }[];
 }
 
@@ -37,6 +39,12 @@ export interface ChatTurnPersistentStore {
 export class ChatTurnStore implements ChatTurnPersistentStore {
   constructor(private readonly db: DatabaseSync, private readonly options: {
     receipt: (receipt: ChatTurnReceipt) => void; now?: () => number;
+    session?: {
+      accept(actor: string, input: ChatTurnStart): ChatTurnRecord["messages"] | null;
+      evidence?(actor: string, input: ChatTurnStart): Record<string, unknown>;
+      terminal(record: ChatTurnRecord): void;
+      validate(actor: string, sessionId: string): void;
+    };
   }) {}
   initialize() {
     this.transaction();
@@ -97,6 +105,7 @@ export class ChatTurnStore implements ChatTurnPersistentStore {
     this.db.prepare("INSERT INTO chat_turn_events VALUES(?,?,?,?)").run(record.actor, record.id, event.sequence, JSON.stringify(event));
     this.db.prepare("INSERT INTO chat_turn_receipts VALUES(?,?,?,?)")
       .run(record.actor, operationId, fingerprint, JSON.stringify(record));
+    if (record.sessionBacked && chatTurnTerminal(record.status)) this.options.session?.terminal(record);
     const receipt = this.options.receipt({
       actor: record.actor, operationId, operation: `chat.turn.${type}`, fingerprint,
       result: structuredClone(record),
@@ -116,17 +125,22 @@ export class ChatTurnStore implements ChatTurnPersistentStore {
     const count = this.db.prepare("SELECT count(*) AS n FROM chat_turn_records WHERE actor=?").get(actor)!.n;
     if (Number(count) >= CHAT_TURN_LIMITS.turnsPerActor) throw new ChatTurnError("TURN_LIMIT");
     const now = this.now();
+    const accepted = this.options.session?.accept(actor, input);
+    const sessionBacked = accepted !== undefined && accepted !== null;
+    const messages = accepted ?? input.messages;
     const { maxSteps, maxOutputTokens, maxInputTokens, maxTotalOutputTokens } = input;
     const record: ChatTurnRecord = {
       schema: "pkm.chat.turn/v1", actor, id: input.id, sessionId: input.sessionId, revision: 1,
-      contextDigest: chatTurnDigest([actor, input.sessionId, input.id, input.messages, input.maxSteps,
+      ...(sessionBacked ? { sessionBacked: true as const } : {}),
+      contextDigest: chatTurnDigest([actor, input.sessionId, input.id, messages, input.maxSteps,
         input.maxOutputTokens, input.maxInputTokens, input.maxTotalOutputTokens]),
       status: "queued", replay: "never", createdAt: now, updatedAt: now, deadline: now + input.deadlineMs,
-      messages: input.messages, output: "", step: 0, toolCount: 0, outputBytes: 0,
+      messages, output: "", step: 0, toolCount: 0, outputBytes: 0,
       inputTokens: 0, outputTokens: 0, bounds: { maxSteps, maxOutputTokens, maxInputTokens, maxTotalOutputTokens },
       pendingTool: null, failure: null, uncertain: false, lastSequence: 1,
     };
-    return { record: this.save(record, input.operationId, "start", {}, fingerprint), replayed: false };
+    return { record: this.save(record, input.operationId, "start",
+      sessionBacked ? this.options.session?.evidence?.(actor, input) ?? {} : {}, fingerprint), replayed: false };
   }
   change(actor: string, id: string, revision: number, operationId: string, type: string,
     data: Record<string, unknown>, mutate: (record: ChatTurnRecord) => void) {
@@ -165,5 +179,32 @@ export class ChatTurnStore implements ChatTurnPersistentStore {
   interrupted() {
     return this.db.prepare("SELECT actor,id,revision FROM chat_turn_records WHERE status IN ('queued','model','tool','approval')")
       .all() as unknown as { actor: string; id: string; revision: number }[];
+  }
+  list(actor: string, sessionId: string, after?: string, limit = 20) {
+    chatTurnActor(actor);
+    this.options.session?.validate(actor, sessionId);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > CHAT_TURN_LIMITS.pageItems) throw new ChatTurnError("INVALID_CURSOR");
+    let position = 0;
+    if (after !== undefined) {
+      const previous = this.get(actor, after);
+      if (previous.sessionId !== sessionId || (this.options.session && !previous.sessionBacked))
+        throw new ChatTurnError("INVALID_CURSOR");
+      position = Number(this.db.prepare("SELECT rowid AS position FROM chat_turn_records WHERE actor=? AND id=?").get(actor, after)!.position);
+    }
+    const rows = this.db.prepare(`SELECT id FROM chat_turn_records WHERE actor=? AND rowid>? AND json_extract(record,'$.sessionId')=?
+      ${this.options.session ? "AND json_extract(record,'$.sessionBacked')=1" : ""} ORDER BY rowid LIMIT ?`)
+      .all(actor, position, sessionId, CHAT_TURN_LIMITS.turnsPerActor);
+    const items: ChatTurnRecord[] = [];
+    let bytes = 0;
+    for (const row of rows.slice(0, limit)) {
+      const item = this.get(actor, String(row.id));
+      const size = chatTurnBytes(item);
+      if (items.length && bytes + size > CHAT_TURN_LIMITS.recordBytes) break;
+      items.push(item); bytes += size;
+    }
+    return { items, next: rows.length > items.length ? items.at(-1)!.id : null };
+  }
+  uncertain() {
+    return Number(this.db.prepare("SELECT count(*) AS n FROM chat_turn_records WHERE status='unknown' OR json_extract(record,'$.pendingTool') IS NOT NULL").get()!.n);
   }
 }

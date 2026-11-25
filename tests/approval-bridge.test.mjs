@@ -209,8 +209,10 @@ test("timeout and thrown/invalid host observations become unknown, never late co
       const result = await f.native.execute("alice", input);
       assert.equal(result.execution.status, "unknown");
       assert.equal(result.result, undefined);
+      assert.equal(f.native.activity(), mode === "timeout" ? 1 : 0);
       finish?.({ status: "succeeded", result: "late" });
-      await Promise.resolve();
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(f.native.activity(), 0);
       assert.deepEqual(await f.native.execute("alice", input), result);
       assert.equal(calls, 1);
     } finally { f.db.close(); }

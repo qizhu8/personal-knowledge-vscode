@@ -23,6 +23,10 @@ extension host without emitting build files. CI runs the same command.
 Their module-resolution settings remain distinct: the Core/client use Node
 modules, while the extension-host surface uses bundler resolution.
 
+The bootstrap profile fingerprints exact Core source bytes. [.gitattributes](.gitattributes)
+keeps those sources and its generator LF-terminated on Windows as well as Linux;
+historical evidence retains its existing byte-preservation rules.
+
 The normalized test entrypoint is `npm test` (complete isolated CI regressions);
 `npm run test:quick` provides the short developer loop. See
 [tests/README.md](tests/README.md) for source discovery, automatic Core/client/
@@ -62,21 +66,363 @@ and uses the locked Core dependency tree, not the frozen extension's old
 `next-server/` staging script. The default output is `next-runtime/`; omitting
 `--payload` produces a rehearsal manifest rather than a managed-client payload.
 
+## Storage ownership and refactoring boundary
+
+The refactoring has three ownership layers. Classify data by its authority and
+reconstructibility, not by file extension or the process that currently writes it.
+
+| Layer | Contents | Backup and lifecycle |
+| --- | --- | --- |
+| User Knowledge / Tool / Automation | User-authored knowledge, tool code, automation definitions and their resources | GitHub Sync; extension updates, version selection and runtime cleanup must not directly rewrite these assets |
+| User server data | Permissions, business history, Chat/task state, execution receipts, pending operations and recovery records | User-controlled Git backup of consistent, credential-free exports; preserve across runtime updates and derived-data reset |
+| Managed runtime | Running code, dependencies, embedding model packages, reconstructible indexes and caches | Independent versions and update cycles; prepare, verify, activate, retire and clean only explicitly owned assets |
+
+Fresh CLI `init` workspaces use the separated layout:
+
+```text
+Root/
+  <existing user assets>
+  server-data/
+    core.sqlite
+    coding-process.sqlite
+    runtime-control/
+  runtime/
+    managed-server/generations/<generation>/
+    retrieval-models/<package-sha256>/
+    indexes/fresh-note.sqlite
+```
+
+Optional journals and managed assets appear only when used. Durable handoff,
+selection and retirement history belongs in `server-data/runtime-control/`,
+not inside disposable generations. Existing user asset paths stay unchanged.
+Programmatic `initialize(root)` retains flat-layout compatibility; callers
+explicitly select `{ storageLayout: "separated" }` for new separated roots.
+The inventory still imposes these constraints in either layout:
+
+| Current storage | Classification and constraint |
+| --- | --- |
+| `core.sqlite`, including its WAL/SHM | Mixed storage containing durable server data; never delete the database as an index reset |
+| `receipts`, `pending_*`, `uploads`, `upload_chunks` | Durable effects, recovery state and incomplete user uploads; not disposable cache |
+| Chat, workflow, task, approval, sync and execution tables | Durable server state, even where an existing module calls them “runtime state” |
+| `documents` | Projection and identity state coupled to document/recovery transactions; retained in the durable database |
+| Fresh Note query/FTS tables | Reconstructible; separated workspaces use `runtime/indexes/fresh-note.sqlite` |
+| `coding-process.sqlite` | Persistent process/execution state; not a disposable index |
+| `legacy_retrieval_corpus` and model selection/learning records | Generation provenance, selections and feedback; preserve rather than treating every retrieval table as cache |
+| Admitted retrieval model packages | Managed assets; supported retirement preserves admission/selection provenance and waits for active readers before deleting bytes |
+
+Opening an existing root never silently reorganizes it. Stop clients and use
+`storage-inspect --data <root>`, then explicitly run
+`storage-migrate --data <root>` through `node dist/cli.js`. Migration holds the
+exclusive owner fence, checkpoints both journals, verifies moves and records a
+restart journal. Interrupted migration blocks ordinary startup; rerun the same
+command to verify and resume. Custody/adopted/private-snapshot and conflicting
+layouts refuse rather than falling back.
+
+Existing Git repositories or custom ignore rules require
+`storage-migrate --data <root> --protect-user-git`. Protection is additive;
+tracked private files require explicit user reconciliation. Native Knowledge
+Sync also excludes root server/runtime/control paths independently of Git rules.
+It does not exclude nested user documents merely because their names match.
+
+`storage-reset-index --data <root>` is an offline, fenced reset of the separated
+Fresh Note database and sidecars only. It never deletes mixed `core.sqlite`
+tables, user assets, Chat, Tasks, receipts or pending recovery.
+
+Quiescent portable backup preserves durable journals and resolved control
+history, but excludes runtime binaries and host credentials. Active models
+have an immutable hash-only reconstruction manifest; restore requires explicit
+exact-content `modelReconstructionSources`, never downloads or cleared
+selection history. Live/unknown/prepared control state blocks backup. Restored
+manager bindings require explicit re-enrollment rather than rewritten history.
+See [physical storage and portable recovery](docs/managed-chat-task-foundation.md#physical-storage-and-portable-recovery)
+for restore authority, layout and Git-backup details.
+
+Runtime updates must not inherit the extension's release frequency. In the
+steady state, retain one active generation per managed asset; preparation and
+pending cleanup can temporarily retain more. A candidate has no knowledge-root
+write authority during preparation. Activate only after compatibility,
+readiness and writer handoff checks; retire old users before cleanup. Cleanup
+failure is not permission to roll back a successful activation. Switching to
+older code does not roll back data.
+
+Retrieval models and their compatible indexes activate together, independently
+of application runtime generations. Index construction must account for
+concurrent document changes and enforce disk budgets before staging. Reset
+rebuilds only explicitly reconstructible state; unresolved effects and recovery
+work block unsafe reset or switching. Credentials never belong in Git-backed
+exports or runtime manifests.
+
+Refactor progress is tracked in the authoritative
+[Migration Board](pkm://notes/Research/PKM/Migration/Migration%20Board).
+Completion requires preserved user-file bytes and durable records, verified
+backup/restore, safe generation retirement, real shared-client handoff, and
+browser reload/restart continuity. A source build or an MCP definition refresh
+alone does not establish those outcomes. Historical test and installation
+results later in this document apply only to their named sources and artifacts;
+they do not qualify subsequent refactoring changes.
+
+Native retrieval model admission now bounds a new package's verified staging
+copy with `limits.maxTotalBytes` (default 8 GiB, positive safe integer) and
+`limits.minFreeBytes` (default 64 MiB, nonnegative safe integer). The total
+includes the manifest and model files; a new copy requires that total plus the
+free-space headroom on the destination filesystem. Invalid limits fail with
+`INVALID_ARGUMENT`; package-budget or capacity refusals fail with `LIMIT`
+before a stage or admission receipt is created. Copying remains bounded and
+hash-verified if a source changes. Already-admitted packages require no extra
+copy space. This is staging protection, not a general disk-quota manager.
+
+Progress is tracked in the existing Migration Board under
+`pkm-three-layer-refactor`. Source, fixture, installed-client and production
+acceptance remain separate; passing a small regression does not complete the
+refactoring.
+
 ## Migration delivery status
 
-Status date: 2026-11-16. **Not ready for production switching.** A passing
+### Server and client scope
+
+PKM targets a client-independent server, not only an MCP server or a VS Code
+extension. Windows/Linux applications, browsers, HTTP API consumers and external
+MCP clients must share the same Core, data ownership and server-side permissions.
+VS Code is one client; client UI and identity storage must not become the only
+way to authenticate or approve an operation.
+
+The authentication goal is an SSH-key-style public/private-key trust mechanism
+with secure tokens shared across the transport adapters. SSH connectivity and
+key-based application identity are distinct layers. External-client protocol
+compatibility must not replace that trust or silently inherit another client's
+grants.
+
+The current [HTTP adapter](src/http.ts) and shared manager remain
+exact-loopback/same-origin. The shared manager uses separate business and
+management credentials and one configured Core actor, `local:owner`. Client
+registration IDs identify routes, not independent principals. Status `clients`
+counts enrolled MCP relays; stateless HTTP polling does not enroll a relay or
+consume that enrollment budget. Approved
+business-credential revocation also rejects subsequent requests from existing
+HTTP/MCP sessions and survives restart; it does not undo admitted effects or
+revoke separately granted human authority.
+
+Remote access, SSH/public-key enrollment and per-client principals remain
+unqualified. Do not expose the listener by disabling its checks.
+
+### Required managed hot switch
+
+The migration target is a Settings UI that switches the shared active PKM
+backend without a user-run command or VS Code reload. The backend is a
+long-running API server with MCP support, not an MCP-only process tied to
+VS Code. A client-independent manager must manage backend startup, readiness,
+health, handoff and shutdown, and route all enrolled VS Code, browser, API and
+MCP clients to the same selected backend. VS Code is a management client,
+not the required host for other clients. Preparing both server processes is
+not permission for both to write the same Knowledge Root.
+
+The handoff must stop new work, settle in-flight operations, verify exclusive
+writer ownership and storage compatibility, and only then publish the new
+route. Unknown or directly connected legacy writers block the handoff; an
+uncertain write is never replayed automatically. Failed or interrupted
+transitions need explicit recovery, and switching back after writes is offered
+only when storage compatibility and data preservation are verified.
+
+The Linux [shared manager](src/shared-managed-server.ts) implements stable
+HTTP/MCP routing for immutable compatible generations. Its `standalone-core`
+backend composes HTTP and canonical MCP over the same configured Core, including
+server-owned Chat. The separate `native-public-mcp` backend retains its reduced
+content-only scope; it is not a canonical Chat protocol adapter. Backend kinds
+and ABIs cannot be silently mixed.
+
+Provision a strict [Core host profile](src/shared-core-profile.ts), initialize
+separated storage, and stage/publish the initial generation with
+`stageIsolatedManagedGeneration` / `publishIsolatedManagedGeneration` from
+`experimental/managed-migration.mjs`. Subsequent updates stage a candidate only;
+the manager owns publication during handoff. Provider/model/tool allowlists and
+secret environment references are immutable profile inputs, not caller grants.
+
+Run the independently provisioned service payload outside prunable backend
+generations. No Extension window is required. The checkout-built entrypoint is:
+
+```sh
+# Independently provision PKM_SHARED_TOKEN, PKM_SHARED_MANAGEMENT_TOKEN
+# and any profile-selected provider secret environment variables.
+node dist/shared-managed-server-cli.js \
+  --directory "$DATA/server-data/runtime-control/shared-manager" \
+  --root "$DATA/runtime/managed-server" \
+  --backend-kind standalone-core --port 43821
+```
+
+The control directory must be private. Startup reports the service UUID and
+origin, never credentials. Use a fixed port to retain the origin across
+restarts. Open that origin in the browser and supply the business token in
+memory. Management uses its separate credential, pinned service UUID and an
+explicit single-use approval for the exact action/target; it is not an implicit
+business-token permission.
+
+The Extension's machine-scoped `pkm.nextHost.sharedServer` setting pins
+`origin`, `serviceId`, `backendKind` and optional staged `generation`. Its
+separate SecretStorage commands enroll business and management credentials.
+Changing generation performs an approved shared handoff without replacing live
+MCP definitions or reloading VS Code. Other clients observe the same selection.
+
+Handoff checks actual provider/tool retirement, including cancelled-but-running
+work, rather than only transport counters or terminal Chat rows. Unknown
+outcomes remain journaled and fenced until explicit reconciliation; writes are
+never replayed. Reset targets only the separated Fresh Note index. Cleanup
+waits for live generation leases and does not undo a successful switch.
+
+Human approval remains a separate channel. Approved
+`human-review-enrollment` creates a one-use, 120-second enrollment for
+`/human-review`; codes are never persisted and old human sessions are not
+rebound across generations.
+
+The older experimental coordinator still requires reload for its own
+configuration changes. It is not the shared-manager path. Original/full151
+parity, unmanaged legacy writers and production same-root takeover remain
+separately gated; none is qualified by the managed Core workflow.
+
+The compatibility adapter permits a new drain observation after an unverified
+response while keeping admission closed. It does not replay writes or treat an
+unknown process exit as a confirmed drain. This is not a shared-manager or
+production-cutover guarantee.
+
+#### Shared-server module boundaries
+
+The target control plane owns the selected backend and its process lifetime.
+The data plane keeps one stable client endpoint and delegates authenticated
+requests to that selection. Neither plane belongs to a VS Code window.
+
+| Module | Responsibility | Required acceptance before dependent delivery |
+| --- | --- | --- |
+| Service identity and status | Bind workspace, runtime instance/build, admitted scope, clients and active work | Authenticated read-only status across actual shared clients; no new storage owner or permission grant |
+| Backend supervisor | Start and verify the current/candidate processes and observe their exits | Candidate preparation must not open the active Root for writes or perform recovery |
+| Shared routing and ownership | Fence all enrolled ingress, drain work and transfer the sole writer | Prove unmanaged writers absent, enforce data compatibility and persist a recoverable handoff; never replay uncertain writes |
+| Management clients | Settings selection and status for VS Code, then other clients | Use server-side management authority; no reload, command or per-window route divergence for a switch |
+| Business modules | Note, Skill, Paper/Research, then dependency-driven workflows | Real data preservation, permissions, recovery, transport and isolated installed acceptance per module |
+| Migration progress | Existing Todo Board, multi-level tree and Gantt projections | Compatible Board format, preserved history and one authoritative task graph; status is not user acceptance |
+
+The handoff sequence is prepare candidate without writer authority, close
+shared ingress, settle admitted work, verify exclusive ownership and data
+compatibility, persist transition intent, activate the successor, then publish
+the route and reopen ingress. A crash or uncertain activation leaves ingress
+closed until the recorded state and actual owner are reconciled. A failure is
+not permission to restart the old writer. Switching back after successor
+writes requires a fresh compatibility decision, not a cached startup check.
+Business-module fallback is not introduced until independent storage boundaries
+or a single authoritative writer make it safe.
+
+#### First slice: authenticated shared-owner status
+
+The existing Linux original-library broker now provides a read-only
+`pkm.server-status/v1` management response, separate from an MCP business
+session. It identifies the workspace, broker instance and runtime build,
+reports the actual admitted scope and writable setting, aggregates connected
+clients and their active/uncertain calls, and distinguishes accepting,
+draining, closed and action-required states. A per-client MCP quiesce does
+not become a global server switch.
+
+The pinned relay can query it with:
+
+```sh
+node dist/original-mcp-relay-cli.js status --descriptor /absolute/private/descriptor.json --pin <descriptor-sha256>
+```
+
+This diagnostic entry point is not the eventual Settings UX. The server checks
+the same private descriptor/token and ownership boundary as business clients;
+the relay independently verifies the response identity and strict schema.
+Status does not create an MCP business session, release the owner, write a
+heartbeat or expose the token. It remains queryable while an admitted write
+drains, and explicitly reports `handoff.available: false` with shared-routing
+and unmanaged-writer-coverage blockers.
+
+This slice attaches to the existing adopted-root broker, not the current
+production compatibility process. It does not enroll legacy clients, start a
+second backend, implement remote key enrollment, implement the Settings switch
+or qualify production cutover. Source/isolated-test evidence and installed
+acceptance remain separate.
+
+Source validation on 2026-11-24: build and all three typecheck surfaces pass.
+The complete broker file passes all ten cases, including authenticated status,
+independent pins, admitted-write drain and failed-drain status. The old count
+assertion omitted the existing pure `action_templates` implementation; it now
+checks the exact 26 operation IDs. No permissions or full-runtime qualification
+were expanded to repair that stale assertion.
+
+Isolated package acceptance uses the existing production `stage-runtime.cjs`
+payload builder, installs the unpacked payload into a private fixture directory,
+and starts the broker and verified status relay from that package with its own
+dependencies and manifest build identity. It covers two actual SDK clients,
+invalid token and pin rejection, exclusive writer fencing, graceful shutdown,
+cold restart with stable workspace/new instance identity, private data and
+permission preservation, and unchanged installed payload hashes. It does not
+use a synthetic runtime build hash or run the broker from checkout `dist`.
+
+A second staged-package integration dynamically loads the packaged native
+broker and pinned relay, blocks an admitted Note update at its synthetic
+native-approval boundary, and verifies that the relay reports `draining` with
+one client and one in-flight request. Releasing that test approval lets the
+write complete before shutdown. This qualifies packaged status/drain mechanics,
+not an actual user profile or model/account approval.
+
+```sh
+node tests/framework/run.cjs --file tests/original-mcp-broker.test.mjs --file tests/shared-server-installed.test.mjs --jobs 1 --timeout 120
+```
+
+This is Linux unpacked-server-package and staged-package integration acceptance,
+not a VSIX installation, real native-profile/model approval, production data
+takeover or shared Settings switch. Native approval is deliberately synthetic
+and held only to exercise drain observation. No reload or production activation
+is required for these checks.
+
+### Modular migration delivery
+
+Migration proceeds from the client-independent server and lifecycle boundary
+to individual business modules. Establish a shared service identity, routing,
+authentication and single-writer handoff before claiming a cross-client
+switch. Then migrate Note, Skill, Paper/Research and other modules against
+their original contracts and data, followed by dependent Chat, automation and
+other workflows. Module order follows dependencies and operational need.
+
+Each module is usable only after its complete intended read/write workflows,
+permissions, recovery and data preservation are tested through the relevant
+interfaces and an isolated installation. Source-only or fixture-only results
+are reported separately. Keeping a module on the original backend is permitted
+only through an explicitly supported, safe routing and ownership boundary;
+mixed operation must not create concurrent writers or imply unsupported
+rollback. Production activation remains a separate authorized step.
+
+Migration progress belongs in the existing PKM Todo Board. Its target is a
+multi-level graphical feature tree with the Gantt view derived from the same
+authoritative tasks, not a separately maintained schedule. Nodes show white for
+not started, orange for in progress, green for complete and red for blocked;
+parent display status is derived from children and does not itself accept the
+parent. Current Todo parent links support only User Story to Work Item, so a
+multi-level tree requires a compatible data model and UI migration; it is not
+provided by the existing two-level grouping.
+
+Status date: 2026-11-23. **Not ready for production switching.** A passing
 build, fixture or test profile is not migration completion. Work is organized
 by the deliverables below, not by the number of compatibility tests repaired.
 The manager's final acceptance requires all three outcomes: **migration
 complete, testing complete, installation complete**. None can substitute for
 another, and production switching still requires separate authority.
 
-**Confirmed final scope: isolated Linux `pkm-v5` candidate.** This delivery
+The current operation matrix has **41 basic / 40 scoped installed** proofs.
+Research read/list/lexical/graph and single-owner normal Recovery have genuine
+installed acceptance; this is not full151, full Recovery or shared-root cutover.
+SDK transport integration still requires verified Host/runtime and real-model
+role acceptance. The public SDK package is a development type/API reference,
+not a silently bundled model runtime or an authentication grant.
+The Chat model preference target is a user-configurable default, initially Auto:
+new Chats inherit the current default, each Chat can use its own model, and
+changing the default does not silently change existing Chats. This preference
+and real-account Auto availability are not yet qualified in the native candidate.
+The accepted no-tracking Linux artifact below is a historical baseline; its
+full-suite and performance results are not transferred to later candidates.
+
+**Current verification lane: isolated Linux `pkm-v5` candidate.** This lane
 requires applicable migration regressions, explicit current-version input
-qualification and an independently verified isolated installation. Production
-old-profile takeover, Windows and genuine historical installed/private-profile
-acceptance are separately unsupported; the production obligations below are
-not being silently declared complete.
+qualification and an independently verified isolated installation. It is not
+the final multi-client product scope. Production old-profile takeover, Windows
+and genuine historical installed/private-profile acceptance remain unqualified;
+the product and production obligations are not silently declared complete.
 
 **Production resource gate:** per-instance MCP diagnostic history is
 migration-only, not a permanent production service. Production must not
@@ -112,7 +458,7 @@ installed/private-profile suites and their missing requirements. The original
 `ci`, historical hashes, report documents and generation-432 unqualified marker
 remain unchanged. See [candidate validation](tests/README.md#linux-candidate-validation).
 
-### Accepted Linux candidate
+### Accepted Linux baseline
 
 | Acceptance condition | Result |
 | --- | --- |
@@ -142,6 +488,281 @@ zero instance-registry tracking are not performance acceptance.
 The report includes raw data, paired dispersion, observation limits and the
 standalone [benchmark command](scripts/benchmark-mcp.mjs). No application runtime
 or accepted VSIX bytes were changed for this measurement.
+
+The benchmark defaults remain pinned to that accepted VSIX and resource audit.
+Testing a different package requires `--new-resource-audit PATH`: a separately
+completed, passing `pkm.no-tracking-independent-resource-acceptance/v2` audit
+binding its exact `vsixSha256`, `factorySha256`, and all five
+`factoryDependencies` hashes. The evidence and dependency hashes are checked
+again after measurement; this option does not change timings or equivalence
+requirements and is not itself installation or resource acceptance.
+
+Native lexical Note search uses stable path order for equal FTS ranks; the
+original release inherits filesystem enumeration order for those ties. The
+benchmark remains strictly ordered by default. Explicit
+`--allow-stable-note-ties` permits only this approved difference in its ten-hit
+fixture, after independently verifying exact-float rank groups with the
+original SQLite trigram query and full document bodies. All result fields and
+cross-rank ordering remain checked; raw ordered digests are retained, and
+the qualified comparison is not labelled byte-identical output. Other
+operations are unchanged.
+
+### Profile-driven optimization after the pushed baseline
+
+The measured migration baseline was committed and pushed as `74aa8469` on
+`pkm-v5` before optimization. The current bounded optimization removes repeated
+snapshot directory searches, reuses the already-owned serialized Python worker
+for ordinary Note reads/searches, avoids cloning mutable YAML metadata for
+explicit immutable snapshot consumers, and defers unused Core discovery-schema
+construction. Default rich Markdown callers retain detached mutable metadata.
+Global reads retain fresh bytes, global identity checks and whole-root pre/post
+guards. Leases and zero persistent lifecycle tracking remain required.
+
+A deterministic test exposed a pre-existing parse-cache hole when changed
+content had the same filesystem fingerprint. Cache eligibility now also checks
+the freshly read content SHA256; the digest is computed once and reused, not
+replaced with an mtime-only shortcut. The safety fix has an explicit measured
+cost and is retained rather than traded away for latency.
+
+Parent fresh focused integration passed four files/71 cases after that fix.
+All 488 reader/owner Core descriptions match the pushed baseline exactly.
+Diagnostic module-import and short request probes are not release-wide speed,
+startup or memory claims. A fresh complete regression, new actual package/native
+acceptance and the unchanged full benchmark are still required for these edits;
+the previously accepted VSIX and performance report above remain immutable
+baselines, not qualifications of the optimized working tree.
+
+The clarified performance goal is **5–10 times faster than the original
+release**, not just faster than the regressed v5 bridge. The
+[architecture bottleneck review](artifacts/mcp-performance-bottleneck-review.md)
+finds that ordinary path-local reads became whole-workspace validation and
+snapshot transfer, with additional MCP/Python boundaries and broad duplicate
+module loading at startup. Global duplicate rejection and unrelated-Note
+change guarding are newer v5 policies, not original exact-slug semantics.
+The approved redesign scopes ordinary path-based get to its target Note and
+actual dependencies; unrelated Note changes or duplicate IDs do not invalidate
+that read. Stable-ID, list and search operations retain their global checks.
+The default compact MCP entry is being moved to a single native Node facade,
+with compatibility Python loaded only where needed; an explicit legacy profile
+retains its compatibility entry. Canonical root ownership and a strictly fresh,
+incremental query projection were reworked after that baseline. Each new
+artifact requires its own full regression, installed-package/resource
+acceptance and paired performance measurements; the latest bounded result is
+recorded below.
+No 5–10x goal achievement is claimed.
+
+Full fresh-Note query rebuilds clear the derived identity table once, rather
+than scanning its growing contents with a redundant delete for every source.
+Incremental identity replacements/removals, foreign-index rebuilds and fresh
+pre/post read checks retain their behavior. This source optimization does not
+requalify an existing VSIX or establish an end-to-end performance gain.
+The query model also reuses its fixed prepared statements and avoids per-row
+deletes after rebuilding an empty FTS table. Statement reuse is reset before
+rebuilds; schema checks and foreign-index repair remain live. At most one
+serialized list page is retained, only when both the page and its view fit
+1 MiB. It is reused only for the same validated view and pagination/revision
+arguments, is published to the cache only after commit, and is invalidated on
+any source delta. Both fresh source scans and admission checks still execute.
+Legacy-compatible lowercasing uses the native string implementation only when
+the input contains neither Final Sigma nor the qualified Python/Node mapping
+exceptions. Those inputs retain the existing compatibility algorithm, and the
+qualified Unicode-runtime check remains mandatory.
+
+Plain-root classification reuses a connection-bound prepared statement that
+checks all required-empty tables against the current SQLite snapshot; schema
+and seed rows remain freshly checked, and no database verdict is cached.
+Within one live read scope, canonical filesystem validation may be reused
+only when freshly reread plain-root control bytes and path identities match.
+New scopes, changed controls or non-plain options require validation again.
+Live lease/fence assertions and database classification still run before
+publication; this does not relax external-edit freshness.
+
+For an exactly qualified plain root, native MCP Note lists and legacy lexical
+Note searches now use a minimal canonical RootOwner-owned query connection to
+the same `core.sqlite`. They do not construct Storage, its worker, Core or the
+full runtime merely to read Notes. The lifetime lease connection is unchanged;
+the basic connection is serialized and drained/closed before full attachment
+or shutdown. Unknown schema, durable state, private/history roots and advanced
+native contexts retain full canonical admission and recovery. Public tools,
+actor authorization, complete results and strict fresh source scans are
+unchanged. This basic path is Note-only, not a new large-scale Skill mode.
+The original compatibility adapter remains byte-identical to its native
+provenance pin; lightweight native validation is checked against the public
+contracts and compatibility protocol rather than extracting that pinned file.
+Its scanner/query execute synchronously on the MCP process main thread, so
+lifecycle requests can wait for an in-progress scan; it is not worker
+offloading, cancellation preemption or million-document qualification.
+
+Normal builds verify the checked native MCP contracts before TypeScript
+compilation and check the release-bound storage bootstrap profile afterward.
+Neither verification requires Python, Git, network, session state or existing
+artifacts. The profile check performs real canonical initialization in owned
+project-local fixtures and removes them; it does not regenerate the profile.
+After deliberate changes to bound canonical sources, refresh explicitly:
+
+```bash
+node scripts/verify-native-public-mcp-contracts.mjs
+./node_modules/.bin/tsc -p tsconfig.json
+node scripts/generate-storage-bootstrap-profile.mjs
+npm run build
+```
+
+The final normal build recompiles and checks the regenerated profile. A stale
+profile is a build failure, not permission to refresh it silently in packaging.
+
+### Core-first deployment verification
+
+New native builds declare a small reviewed startup core through
+`server/deployment-core.json`. A newly created managed root can publish the
+explicit `core-then-background-v2` policy: the launcher directly checks the
+named core/control files without enumerating the complete generation, while
+installation, publication and explicit full-audit commands still verify the
+entire deployment. Existing roots and older payloads retain their original
+full-verification policy; a different policy requires a new managed root rather
+than replacing an old pinned launcher.
+
+After MCP initialization and an idle interval, one bounded Node worker audits
+the remaining deployment. Foreground operations pause its work. Basic
+authorized reads and static catalog discovery do not wait for that full audit; nonbasic data capabilities have a
+first-use gate. Shared or unknown integrity failures quiesce admission, while
+only proven-unused browser resources can be degraded independently. EOF,
+quiesce and shutdown cancel the worker. No persistent progress or instance
+history is recorded. Explicit legacy compatibility and autonomous scheduler
+enrollments retain full foreground verification.
+
+This changes deployment validation, not live actor/root/fence/lease/recovery
+or data read-set checks. The measured core includes 19 generation/control
+files (about 473 KB), plus separately hashed Node/Python executable bytes.
+Full runtime attachment remains expensive, but qualified basic Note
+list/lexical-search reads no longer require it. Core-first verification is
+not a claim that all get/list/search calls are 5–10 times faster, or that
+protocol initialization alone means basic data operations are ready.
+
+### Latest isolated basic-read candidate
+
+The 2026-11-18 isolated Linux candidate is bound to VSIX SHA-256
+`16726eed77079cc667630553eb1132a538fee0ed9b27f73c7bb9ca81a47e27e1`
+and canonical runtime source binding
+`888bbea594e866aa4413385e6fa4760ea719f11751eb34ab1959fdc66b1c98f4`.
+A new complete `linux-candidate` run passed **383/383 files**, with **2789
+passing cases, seven gated skips, and zero failures, opaque tasks, timeouts
+or cleanup errors**. The five disclosed original installed/private suites
+remain excluded; this is not production takeover or Windows qualification.
+
+That exact artifact separately passed actual unmodified Workbench
+Start/nine-tools/Stop, source pickers and Note read, cold-host safety refusal,
+and independent zero-registry kernel tracing with zero/1390 stale records.
+All three deployment-audit scenarios fully verified 8591 files after basic
+reads were usable; only 19 core/control files were checked on the startup path.
+No default/production profile was switched, and no new commit/push is implied.
+
+The genuine 4.0.22 comparison completed 48 server runs and 7200 timed calls.
+For 1000 Notes and zero stale records, warm get/list/one-hit lexical search
+P50 changed from 5.23/265.67/195.44 ms to 3.78/79.18/75.62 ms. Handshake
+improved about 2.52x. This is **not an overall 5-10x result**: the first actual
+get/list still regressed (6.37/269.90 to 20.37/500.07 ms), and idle process-tree
+PSS remained higher than the original (98.62 to 123.85 MiB).
+These measurements cover pure Note reads; features that require full runtime
+composition do not inherit its lightweight-session memory/get gains.
+Only explicitly approved exact-rank tie reordering was allowed; full fields,
+complete lists and non-tied ordering remained checked.
+
+The qualification freeze closed before that documentation-only status update;
+at that point runtime sources and all 545 compiled Core JS files remained
+artifact-correlated. The subsequent source-only changes below are not covered
+by that artifact's qualification.
+Earlier acceptance tables and artifacts below are historical milestones,
+not substitute evidence for this candidate or a production cutover grant.
+
+### Capability-search source optimization (not yet packaged)
+
+Native MCP `capabilities_search` now reuses the authorized static Todo/Memory
+registry without attaching Storage/Core. Data reads and mutations still use
+the canonical runtime and its existing authorization. Full-required roots
+retain their startup attachment requirement. Worker tokens are still rejected
+for discovery, and native-only Memory decisions are not advertised.
+
+The default catalog precomputes search text and exact Python-compatible page
+byte costs. Encoded static contracts are cached only when used; user queries
+and result pages are not cached. Contract fields, ordering, revisions,
+pagination, float spelling and the existing 15000-byte page rule are preserved.
+Neither eager AJV compilation nor eager whole-catalog encoding is retained.
+
+A source-only comparison against captured `16726e...` runtime files used
+60 alternating stdio server processes and 1800 timed warm calls on empty,
+isolated roots. For the writable profile:
+
+| Actual capability-search metric | Previous native | New source |
+| --- | ---: | ---: |
+| First Todo search, after handshake | 788.66 ms | 10.94 ms |
+| First Memory search, after handshake | 772.35 ms | 10.56 ms |
+| Spawn through first Todo search | 1022.57 ms | 243.21 ms |
+| Warm default search P50 | 0.979 ms | 0.592 ms |
+| Warm maximum-page search P50 | 1.467 ms | 0.674 ms |
+
+This is not a comparison against genuine 4.0.22 or a uniform 5-10x gain.
+Warm Todo and no-match calls did not improve; some startup/tail metrics
+regressed. Default first-call time remains about 10 ms. Build/typecheck and
+four targeted suites passed all 68 cases, including exact active-Python
+protocol comparisons and both metadata permission profiles. All 545 baseline
+JS files were correlated with the previous artifact; only two new runtime
+modules differ. The earlier 383-file and installed-VSIX qualification does
+not cover these changes. No new package, commit/push or production switch
+is implied.
+
+### Direct module tools (source-only hybrid surface)
+
+The trusted `original-full` native facade now defaults to a hybrid surface:
+the existing nine discovery/execution/lifecycle tools plus a bounded set of
+direct module tools. Compatibility profiles keep their original compact
+surface; a trusted factory can explicitly select `toolSurface: "compact"` or
+`"hybrid"`. This is independent of `PKM_CAPABILITY_PROFILE`.
+
+| Module | Direct tools |
+| --- | --- |
+| Skill | `skill_read`, `skill_write`, `skill_modify`, `skill_list`, `skill_search` |
+| Note | `note_read`, `note_write`, `note_modify`, `note_list`, `note_search` |
+| Paper/Research | `paper_read`, `paper_write`, `paper_modify`, `paper_list`, `paper_search` |
+| Script | `script_read`, `script_search` (never execution) |
+| Cross-library retrieval | `retrieval_search` |
+
+These are alternate entries into the same canonical version-1 operations,
+schemas, authorization, CAS, lifecycle and result handling. They do not add a
+second writer or grant permissions. `skill_write` preserves `add_skill`
+create/upsert behavior, including existing-name overwrite semantics;
+`skill_modify` is the partial-update entry. No unsupported Prompt/Script
+write tools are advertised.
+
+Common tasks no longer require capability discovery first. Search for a
+direct name such as `skill_read` also finds its canonical `mcp.tool.get_skill`
+contract without duplicating catalog operations. `capabilities_search`
+continues to discover all admitted canonical operations; it does not execute
+them. Module content search and action discovery are explicitly distinguished
+in descriptions and MCP initialization instructions, with examples for
+long-tail actions. Hybrid revisions bind the exposed alias mapping.
+
+With the full current catalog admitted, the writable surface exposes 27 tools
+(18 direct aliases); the read-only surface exposes 20 tools, inheriting
+original operation hints. Both tested schema surfaces remain below 32 KiB. These
+are schema-size measurements, not provider tokens or a measured LLM
+accuracy improvement. Focused SDK tests verify a direct read uses one
+`tools/call`, canonical results match, actual fixture Note/Skill writes work,
+and readonly, input-validation and drain checks cannot be bypassed.
+The installed production MCP has not been changed by this source work.
+
+### Read-only native MCP initialization
+
+The read-only public catalog exposes no Trash mutation tools. Its full runtime
+therefore does not provision Trash directories merely to start or read Notes.
+Writable native MCP retains its existing Trash behavior. This avoids an
+unrequested source-tree change that would otherwise invalidate the experimental
+committed rollback baseline even when no document was edited.
+
+This is not filesystem-read-only operation: owner leases and SQLite activity
+still occur, and other read paths can persist derived or retrieval state.
+Existing unsupported old Trash layouts remain blocked by adoption; no import
+or rollback check is weakened. A synthetic initialization/read/rollback
+regression is not original-library or installed-package qualification.
 
 | Deliverable | State | Exit criteria and remaining work |
 | --- | --- | --- |
@@ -3784,6 +4405,118 @@ Bounds are 256 KiB input, 1 MiB output, JSON depth 32/32768 values,
 Actual HTTP/MCP tests compare complete captured valid/invalid compiler fixtures,
 not only successful transport envelopes.
 
+#### Inline Workflow controls and Original Recipe compatibility
+
+`workflow.executor.create` accepts optional `runtimeBindings` without changing
+original `pkm.workflow.definition/v1`. Each dynamic control binds an explicit
+`{kind:"input",name}` or `{kind:"node-output",nodeId,output}` source. Upstream
+controls require a declared output port and direct `succeeded` dependency.
+`nodes[nodeId].repeat` supplies `source` and `semantics`: `count` accepts a safe
+integer or canonical nonnegative int64 string restricted to 1–64; `collection`
+repeats exact array items and requires a declared `itemInput`. Missing/invalid/
+empty values fail explicitly, never inventing a count or successful result.
+`cases` binds a nonempty unique subset of declared outcomes; the adapter must
+explicitly select an eligible branch. `invocation.node` remains the authorized
+original node; `runtimeControl` contains resolved controls. Definition/data
+policies receive exact bindings at creation, dispatch and output acceptance.
+Fixed repeats, DAGs and bounded self-loops retain their existing Core behavior;
+subflows and multi-node loop bodies are not added to the generic Core mode.
+
+`runtimeBindings.outputs[name]` binds a declared typed run output to an input
+or authoritative node output. Required outputs need a source or the original
+descriptor's explicit default; type/missing-output failures prevent success.
+`workflow.executor.outputs` reads them after success, without changing the
+existing strict run view.
+
+The genuine 4.0.22 **registered Recipe runtime differs from its authoring
+schema**: explicit `recipe_run_start`/`recipe_run_start_adhoc` create one pinned
+run; `autonomous` drains that existing run within node/time budgets. There is
+no registered recurring cron producer. `spec.trigger` and fixed/dynamic repeat
+fields remain metadata; each non-loop node is claimed once. `dynamicCases`
+does not derive cases: `recipe_run_report` explicitly selects a declared
+outcome. `current_result.completed_nodes[*].result` returns reported values;
+`spec.outputs` does not map typed run outputs. Genuine registered-tool tests
+verify these effects, raw definition/input preservation and completed restart
+reads, rather than treating compiler acceptance as execution.
+
+The native Original Recipe producer preserves that behavior through an explicit
+host/source-authorized `original-recipe-metadata/v1` mode. The original node and
+definition remain intact, while invocation `executionSemantics` and
+`runtimeControl` disclose metadata-only repeat/manual-trigger semantics and
+declared reported outcomes. Public `next_action` exposes the mode; it is not
+reported as dynamic repetition, typed output mapping or recurring scheduling.
+The host-only mode is unavailable as a public Core create argument and cannot
+override an explicit native control envelope.
+
+Original **loop edges are real feedback execution**, unlike repeat metadata.
+The metadata-compatibility producer preserves the authored forward-path body,
+explicit reported-outcome continuation, iteration contexts and settled body
+history. An accepted back-edge resets that body for the next iteration; a
+nonaccepted outcome ends the loop. `condition` is the original descriptive
+label, not an invented evaluated expression. Reaching `maxIterations` while
+still continuing fails the run rather than claiming success. Iterations cap
+at 64 and total execution at 1024 steps. Unknown or revoked effects never
+reset; cancellation prevents a subsequent iteration. Known pending work may
+resume only through fresh explicit producer calls, not native auto-dispatch.
+Original autonomous loop execution remains unsupported, as in 4.0.22.
+Original metadata mode retains global run inputs, including untyped inputs
+when no input descriptors exist; dependency port labels do not invent data
+remapping. Generic Core typed port/authority validation is unchanged.
+Inline metadata execution retains authored node order, waits for dependency
+settlement before skipping an unselected path, and stops when a required node
+is excluded; it does not dispatch unrelated nodes after that failure.
+
+Host-owned Original subflows use the **same** executor, not a second scheduler.
+An explicitly authorized metadata adapter creates one deterministic child from
+the exact authored Recipe revision/digest and current root source resolver.
+Children receive the parent's normalized global inputs unchanged, without
+adding child defaults, and wait for an explicit child claim. Durable journal
+links bind the parent invocation, child identity and source pins. The tree
+inherits one deadline and one total claim budget (at most 1000 steps, 16 levels
+and 32 runs); child creation cannot reset either allowance. Cancellation and
+interruption fence descendants, and parent success requires the exact child's
+authoritative success. Unknown work is not replayed. These trusted host hooks
+do not enable generic Core subflows, autonomous child claims, recursive Recipe
+invocation or mixed native-control subflows. Exact authoritative completion
+receipts remain readable after feedback resets a node to pending.
+Bounded host observations preserve actual progress and start/heartbeat times
+under the current reporter lease. History exposes them only after the observed
+node's exact invocation is known; completion time comes from its durable Core
+completion clock. Observations neither authorize effects nor relabel UNKNOWN.
+
+New native control execution can be requested through the **unchanged**
+Original `inputs_json` argument: author a required string input
+`workflowControls`, then supply a JSON string
+`{"schema":"pkm.workflow.runtime-controls/v1","bindings":...}` as its value.
+Only that declared port and exact version marker opt in; ordinary inputs are
+not reinterpreted and required-input normalization is preserved. This is an
+explicit additive native convention, not a historical binding rule. Library
+source admission binds the mode/bindings to the selected definition and source;
+the existing Recipe scheduler feeds the same WorkflowExecutor. Each native
+effect still requires current independent approval bound to its exact
+iteration, resolved controls, source and inputs. Source approval and caller
+consent IDs do not confer effect authority.
+
+For native-bound cron definitions, choose `trigger:{mode:"manual"}` or
+`{mode:"automation",consentId,dueAt,expiresAt,maxLatenessMs}` for one consented
+future delivery. This is **not a replacement for a recurring cron service**.
+UTC minute slots are matched against numeric five-field cron expressions in
+the IANA timezone (lists/ranges/steps and the standard restricted
+day-of-month/day-of-week OR rule). Due slot/expiry fit the 24-hour deadline;
+lateness is at most 60 seconds. Injected current `workflow.authorizeTrigger`
+approves actor/source/consent at create, dispatch and output acceptance.
+Cancellation, revocation, expiry, durable slot identity and assignment CAS/
+leases fence duplicate or late delivery; UNKNOWN effects and missed slots are
+never replayed. The sole Root writer cancels owned timers; waiting consumes
+no node budget and never creates another run.
+
+Controls and compatibility markers use existing bounded journals/receipts:
+no new tables or strict legacy Recipe record fields. Native controls retain
+the old-readable explicit dispatch flag plus a versioned marker, so older
+native hosts do not automatically execute pending new controls; Recipe-owned
+explicit runs remain with the Recipe producer. This is not universal original
+Workflow parity, unbounded automation, automatic retries or effect rollback.
+
 ### Subscription ACL and immutable Agent Snapshot reads
 
 `subscription.list`, `subscription.get` and `subscription.acl.evaluate` read
@@ -4235,6 +4968,7 @@ importer for disposable copies:
 
 ```sh
 node dist/cli.js inspect-legacy-root --root /absolute/configured-legacy-root
+node dist/cli.js inspect-legacy-root --root /absolute/configured-legacy-root --check-writers
 node dist/cli.js import-plan --source /absolute/disposable-copy --acknowledge-quiescent-disposable-copy
 node dist/cli.js import --source /absolute/disposable-copy --destination /absolute/new-workspace \
   --plan-sha256 <planSha256-from-import-plan> --python /absolute/path/to/python3 \
@@ -4252,6 +4986,21 @@ not proof that other writers are stopped or that a copy is disposable.
 and exits successfully when inspection itself completes; it never opens
 `Storage`, initializes files, or authorizes a cutover. Its `ready: false` and
 blockers must not be overridden by callers.
+
+On Linux, `--check-writers` first performs the existing bounded live-process
+inspection and prints a `pkm.legacy-root-cold-preflight/v1` report. Existing
+writers, unverified VS Code hosts and uninspectable processes block the check
+before any document inventory (`inspection: null`). It never terminates
+processes, opens Storage, creates backups, changes MCP configuration or adopts
+the root. Even a clear writer inventory is only a point-in-time observation,
+not a held cross-version writer fence: the ordinary adoption inspection and
+its unresolved qualification gates still apply. This mode reports
+`ready: false` and exits nonzero; it is not an executable cutover grant.
+
+Do not treat a saved MCP configuration as a data rollback. The experimental
+committed rollback described above refuses changed source or SQLite contents
+after adoption; writable dogfood requires a separately qualified preservation
+and reconciliation strategy before switching the original library.
 
 The internal `legacy-root-adoption.js` module has experimental
 `prepareLegacyRootAdoptionExperimental`, `resumeLegacyRootAdoptionExperimental`
@@ -5053,7 +5802,10 @@ against the result, and records the baseline diff and backup receipt. On Linux,
 the exact root-bound `.pkm-next-writer-fenced.json` marker is validated and
 retained in the source inventory but is not copied into the backup: its root,
 device and inode cannot authorize a different directory. All other listed
-non-database entries must be present. Its verifier hashes the complete
+non-database entries must be present, except root Git metadata and validated
+ephemeral runtime-control guards. Durable runtime-control documents are
+schema-validated and must match byte-for-byte, with their necessary parent
+directories. Its verifier hashes the complete
 backup and runs Python's SQLite `integrity_check` in immutable read-only mode.
 It does not re-run the host's private backup verifier or authenticate the
 receipt. The external digest must be independently trusted.
@@ -6321,3 +7073,44 @@ an unexpected exit or unaccounted clients remain unknown; do not kill their
 worker, replay writes, replace the root, or interpret an idle timeout as
 consent. A known client's clean exit alone cannot establish that no other old
 clients may start or write.
+# MCP-only compatibility cutover
+
+The explicit `v5-mcp-with-original-business-adapter` path replaces only the MCP
+protocol, cached capability discovery, dispatch and direct module aliases. It
+does **not** create a v5 database, adopt the original root, move credentials or
+replace the original Chat/business/storage implementations. Those operations
+continue through one supervised connection to the verified original MCP
+generation. This is a staged MCP migration, not full Core/DB migration.
+
+Stage a private self-contained gateway outside the Knowledge Root:
+
+```sh
+node scripts/stage-compatibility-mcp.mjs \
+  /absolute/original-extension /absolute/knowledge \
+  /absolute/knowledge/mcp-server /absolute/original-venv/bin/python \
+  /absolute/private-stage/new-runtime
+```
+
+The resulting `target.json` is selected with **PKM: Switch MCP Runtime to v5**
+in the hot-switch-enabled v4 host. Native MCP trust/confirmation remains
+required. The gateway captures every live original contract at startup, binds
+one catalog revision and the exact connected legacy version/build, and exposes
+the existing canonical operations plus the same 18 direct module aliases.
+`check_version` identifies the v5 MCP as `0.1.0` and reports the retained original
+backend separately with `storageMigrated:false`; it never labels old business
+execution as native v5 Core.
+
+**PKM: Switch MCP Runtime Back to Managed** drains this gateway and its owned
+adapter before reconnecting the original launcher. Committed content remains
+in place; no database restore or automatic tool replay occurs. A cancelled
+client wait remains tracked until its actual original operation settles.
+The reviewed target explicitly permits original managed generations only while
+the MCP version and every component API version remain unchanged. The original
+launcher still verifies each complete generation. The actual connected business
+generation/build is always reported separately; incompatible versions refuse
+startup and require explicit re-staging.
+
+Run `node --test tests/compatibility-mcp.test.mjs` for original-business stdio
+integration, alias/canonical equivalence, cancelled-write draining, and wrong
+runtime refusal. The original extension checkout and its existing test Python
+environment must be available; no dependency installation is performed.

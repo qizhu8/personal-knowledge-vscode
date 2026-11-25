@@ -1,6 +1,7 @@
 import { HUMAN_GATE_NODE_KIND, type WorkflowDefinitionV1, type WorkflowNodeV1 } from "./project-recipes-workflow-contracts.js";
 import type { WorkflowStepResult } from "../workflow-executor-contracts.js";
-import { WORKFLOW_EXECUTOR_LIMITS as L } from "../workflow-executor-contracts.js";
+import { WORKFLOW_EXECUTOR_LIMITS as L } from "./workflow-executor-limits.js";
+import { originalRecipeLoops } from "./workflow-executor-original-loops.js";
 
 export type StepState = "pending" | "offered" | "claimed" | "running" | "succeeded" | "failed" | "skipped" | "cancelled" | "unknown";
 export type RunState = "ready" | "running" | "succeeded" | "failed" | "cancelled" | "unknown";
@@ -13,39 +14,37 @@ export const terminalStep = (step: Step) => ["succeeded", "failed", "skipped", "
 export function adapterKey(node: WorkflowNodeV1): string {
   return node.kind === "pkm.step.native/v1" ? `${node.kind}:${node.config.operation}` : node.kind;
 }
-export function assertSupportedControls(definition: WorkflowDefinitionV1): void {
-  if (definition.spec.trigger) throw new Error("Cron dispatch is not qualified.");
-  if (Object.keys(definition.spec.outputs).length) throw new Error("Run output mapping is not qualified; consume authoritative node outputs.");
+export function assertSupportedControls(definition: WorkflowDefinitionV1, originalMetadata = false): void {
   let bound = 0;
   for (const node of definition.spec.nodes) {
-    if (node.kind === "pkm.subflow/v1") throw new Error("Subflow execution is not qualified.");
-    if (node.control?.mode === "repeat" && node.control.count.kind !== "fixed") throw new Error("Dynamic repeat is not qualified.");
-    if (node.control?.mode === "branch" && node.control.dynamicCases) throw new Error("Dynamic branch cases are not qualified.");
+    if (node.kind === "pkm.subflow/v1" && !originalMetadata) throw new Error("Subflow execution requires an explicitly authorized Original host.");
     const loops = node.dependsOn.filter(edge => edge.loop);
-    if (loops.length > 1 || loops.some(edge => edge.from !== node.nodeId || edge.fromOutput || edge.toInput)) {
+    if (!originalMetadata && (loops.length > 1 || loops.some(edge => edge.from !== node.nodeId || edge.fromOutput || edge.toInput))) {
       throw new Error("Only one bounded self-loop without port remapping is qualified.");
     }
-    if (loops.length && node.control && node.control.mode !== "single") throw new Error("Combined loop/control modes are not qualified.");
-    const iterations = loops[0]?.loop?.termination.maxIterations
-      ?? (node.control?.mode === "repeat" && node.control.count.kind === "fixed" ? node.control.count.value : 1);
+    if (!originalMetadata && loops.length && node.control && node.control.mode !== "single") throw new Error("Combined loop/control modes are not qualified.");
+    const iterations = originalMetadata ? 1 : loops[0]?.loop?.termination.maxIterations
+      ?? (!originalMetadata && node.control?.mode === "repeat" ? node.control.count.kind === "fixed" ? node.control.count.value : L.iterations : 1);
     if (iterations > L.iterations) throw new Error("Iteration bound exceeded.");
     bound += iterations;
-    for (const edge of node.dependsOn) {
+    if (!originalMetadata) for (const edge of node.dependsOn) {
       if (!!edge.fromOutput !== !!edge.toInput) throw new Error("Both dependency port names are required.");
     }
     const targetInputs = node.dependsOn.flatMap(edge => edge.toInput ? [edge.toInput] : []);
-    if (new Set(targetInputs).size !== targetInputs.length) throw new Error("Duplicate dependency input authority.");
+    if (!originalMetadata && new Set(targetInputs).size !== targetInputs.length) throw new Error("Duplicate dependency input authority.");
   }
+  if (originalMetadata) bound += originalRecipeLoops(definition)
+    .reduce((sum, loop) => sum + (loop.maxIterations - 1) * loop.body.length, 0);
   if (bound > L.steps) throw new Error("Step bound exceeded.");
 }
-export function dependencyState(node: WorkflowNodeV1, steps: Step[]): "ready" | "waiting" | "blocked" {
-  let waiting = false;
+export function dependencyState(node: WorkflowNodeV1, steps: Step[], originalMetadata = false): "ready" | "waiting" | "blocked" {
+  let waiting = false, blocked = false;
   for (const edge of node.dependsOn.filter(edge => !edge.loop)) {
     const from = steps.find(step => step.nodeId === edge.from)!;
     if (!terminalStep(from)) { waiting = true; continue; }
-    if (!edge.accept.includes(from.branch ?? from.state)) return "blocked";
+    if (!edge.accept.includes(from.branch ?? from.state)) blocked = true;
   }
-  return waiting ? "waiting" : "ready";
+  return waiting && (originalMetadata || !blocked) ? "waiting" : blocked ? "blocked" : "ready";
 }
 export function acceptStepResult(node: WorkflowNodeV1, step: Step, result: WorkflowStepResult): void {
   if (result.status !== "succeeded" && result.branch !== undefined) throw new Error("Only success may select a branch.");
@@ -82,12 +81,12 @@ export function acceptStepResult(node: WorkflowNodeV1, step: Step, result: Workf
     step.state = step.iteration < loop.termination.maxIterations ? "pending" : "failed";
   }
 }
-export function settle(definition: WorkflowDefinitionV1, steps: Step[]): RunState {
+export function settle(definition: WorkflowDefinitionV1, steps: Step[], originalMetadata = false): RunState {
   for (let pass = 0; pass <= steps.length; pass++) {
     let changed = false;
     for (const node of definition.spec.nodes) {
       const step = steps.find(item => item.nodeId === node.nodeId)!;
-      if (step.state === "pending" && dependencyState(node, steps) === "blocked") {
+      if (step.state === "pending" && dependencyState(node, steps, originalMetadata) === "blocked") {
         step.state = "skipped"; changed = true;
       }
     }

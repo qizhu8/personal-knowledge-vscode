@@ -49,6 +49,13 @@ export class RetrievalRuntime {
         payload TEXT NOT NULL, digest TEXT NOT NULL, PRIMARY KEY(scope,id));
       CREATE TABLE IF NOT EXISTS retrieval_runtime_active (
         scope TEXT PRIMARY KEY, index_id TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS retrieval_runtime_retirements (
+        sequence INTEGER PRIMARY KEY, scope TEXT NOT NULL, index_id TEXT NOT NULL,
+        checkpoint_json TEXT NOT NULL, reason TEXT NOT NULL);
+      CREATE TRIGGER IF NOT EXISTS retrieval_runtime_retirements_no_update
+        BEFORE UPDATE ON retrieval_runtime_retirements BEGIN SELECT RAISE(ABORT,'immutable index retirement'); END;
+      CREATE TRIGGER IF NOT EXISTS retrieval_runtime_retirements_no_delete
+        BEFORE DELETE ON retrieval_runtime_retirements BEGIN SELECT RAISE(ABORT,'immutable index retirement'); END;
     `);
   }
   private transaction<T>(write: boolean, work: () => T): T {
@@ -186,7 +193,7 @@ export class RetrievalRuntime {
       retrievalAssert(index.sources.every(source => this.authorized(scope, source, "index")), "FORBIDDEN", "Indexing authorization changed.");
       if (expectedActiveIndexId !== null) {
         const old = this.load(key, expectedActiveIndexId, false);
-        old.state = "qualified"; this.save(key, old);
+        this.retire(key, old, "replaced");
       }
       index.state = "active"; this.save(key, index);
       this.options.database.prepare(`INSERT INTO retrieval_runtime_active(scope,index_id) VALUES(?,?)
@@ -198,7 +205,24 @@ export class RetrievalRuntime {
     const { key } = this.scope(value); retrievalText(indexId, 256);
     this.transaction(true, () => {
       retrievalAssert(this.active(key) !== indexId, "CONFLICT", "Cannot discard the active index.");
-      this.options.database.prepare("DELETE FROM retrieval_runtime_indexes WHERE scope=? AND id=?").run(key, indexId);
+      const exists = this.options.database.prepare("SELECT 1 FROM retrieval_runtime_indexes WHERE scope=? AND id=?").get(key, indexId);
+      if (exists) this.retire(key, this.load(key, indexId, false), "discarded");
+    });
+  }
+  private retire(key: string, index: StoredIndex, reason: "replaced" | "discarded" | "reset"): void {
+    this.options.database.prepare(`INSERT INTO retrieval_runtime_retirements(scope,index_id,checkpoint_json,reason)
+      VALUES(?,?,?,?)`).run(key, index.id, JSON.stringify(this.checkpoint(index)), reason);
+    this.options.database.prepare("DELETE FROM retrieval_runtime_indexes WHERE scope=? AND id=?").run(key, index.id);
+  }
+  /** Deletes only reconstructible vectors, never sources, learning history or retirement receipts. */
+  resetDerived(value: RetrievalScope, expectedActiveIndexId: string | null): void {
+    const { key } = this.scope(value);
+    if (expectedActiveIndexId !== null) retrievalText(expectedActiveIndexId, 256);
+    this.transaction(true, () => {
+      retrievalAssert(this.active(key) === expectedActiveIndexId, "CONFLICT", "Active index compare-and-swap failed.");
+      const rows = this.options.database.prepare("SELECT id FROM retrieval_runtime_indexes WHERE scope=?").all(key);
+      for (const row of rows) this.retire(key, this.load(key, String(row.id), false), "reset");
+      this.options.database.prepare("DELETE FROM retrieval_runtime_active WHERE scope=?").run(key);
     });
   }
   availability(value: RetrievalScope): { available: false } | { available: true; indexId: string; model: RetrievalModelPin } {

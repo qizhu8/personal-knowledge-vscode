@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { accessSync, constants, lstatSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { basename, delimiter, isAbsolute, join, relative, sep } from "node:path";
 import type { ActionAuthorizationBinding } from "./action-runtime.js";
-import { RUNTIME_PROCESS_LIMITS } from "./runtime-process.js";
+import { RUNTIME_PROCESS_LIMITS } from "./runtime-process-contracts.js";
 
 type Source = { path: string; sha256: string };
 export type ActionBuildPlan = {

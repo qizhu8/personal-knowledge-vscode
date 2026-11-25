@@ -36,6 +36,10 @@ const genesisDdl = `CREATE TABLE legacy_original_learning_genesis (
 export interface LegacyLearningAuthority {
   actorId: string; workspaceId: string; packageId: string; selectionRevision: string; corpusRevision: string; pinsDigest: string;
 }
+export const legacyRetrievalLearningOptionalSchemaGroups = [
+  { ddl, tables: ["legacy_original_learning_heads", "legacy_original_learning_versions", "legacy_original_learning_receipts"] },
+  { ddl: genesisDdl, tables: ["legacy_original_learning_genesis"] },
+] as const;
 const hash = (value: unknown) => sha256(JSON.stringify(value));
 const namespace = (authority: Pick<LegacyLearningAuthority, "actorId" | "workspaceId">) => hash([authority.workspaceId, authority.actorId]);
 function validate(state: unknown) {

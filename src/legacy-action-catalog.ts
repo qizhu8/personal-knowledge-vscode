@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, realpathSync } from "node:fs";
 import type { Stats } from "node:fs";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { CoreError, type Actor } from "./contracts.js";
 import type { Storage } from "./storage.js";
-import { decodeLegacyActionPackage } from "./legacy-action-package.js";
+import { decodeLegacyActionPackage, readBoundedActionPackageFile } from "./legacy-action-package.js";
+import { actionPackageParentPin } from "./original-mcp-action-package-native-contracts.js";
+import { nativeActionModuleSnapshot, nativeActionModuleSourceProtocol } from "./action-module-bytes.js";
 import {
   loadModuleSet, moduleSnapshotDefinitions, validateActionDefinition, type ActionModuleSnapshot,
 } from "./domain/action-compiler-validation.js";
@@ -17,15 +19,24 @@ export const LEGACY_ACTION_RUNTIME_UNAVAILABLE =
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const identity = z.string().regex(/^[a-z][a-z0-9_.-]{2,100}$/);
 const version = z.number().int().safe().positive();
-const snapshot = z.strictObject({
+const textSnapshot = z.strictObject({
   kind: z.literal("moduleSet"), manifest: z.json(), files: z.record(z.string(), z.string()), enabled: z.literal(false),
 });
+const byteSnapshot = nativeActionModuleSnapshot.extend({ enabled: z.literal(false) });
+const snapshot = z.union([textSnapshot, byteSnapshot]);
 const binding = z.strictObject({
   actorId: z.literal("mcp:external"), workspaceId: z.string().min(1), authorityId: z.string().min(1),
   workspaceRoot: z.string().min(1), workspaceRootPin: z.string().min(1),
   sourceRoot: z.string().min(1), sourcePath: z.string().min(1), packageSha256: digest,
 });
-const admission = z.strictObject({ binding, source: snapshot, package: z.string(), sourcePin: z.string(), sourceRootPin: z.string() });
+const byteBinding = binding.extend({ sourceProtocol: z.literal(nativeActionModuleSourceProtocol) });
+const grantSchema = z.union([binding, byteBinding]);
+const textAdmission = z.strictObject({ binding, source: textSnapshot, package: z.string(), sourcePin: z.string(), sourceRootPin: z.string() });
+export const nativeActionPackageAdmission = z.strictObject({
+  schema: z.literal("pkm.native-action-package-admission/v2"), binding: byteBinding, source: byteSnapshot,
+  package: z.string(), sourcePin: z.string(), sourceRootPin: z.string(),
+});
+const admission = z.union([textAdmission, nativeActionPackageAdmission]);
 const event = z.strictObject({
   actorId: z.literal("mcp:external"), workspaceId: z.string().min(1), admissionId: digest,
   action: z.enum(["import", "load", "remove"]), enabled: z.boolean().optional(), previousSha256: digest.nullable(),
@@ -37,6 +48,7 @@ CREATE TRIGGER legacy_action_catalog_admissions_no_update BEFORE UPDATE ON legac
 CREATE TRIGGER legacy_action_catalog_admissions_no_delete BEFORE DELETE ON legacy_action_catalog_admissions BEGIN SELECT RAISE(ABORT,'original Action package admission immutable'); END;
 CREATE TRIGGER legacy_action_catalog_events_no_update BEFORE UPDATE ON legacy_action_catalog_events BEGIN SELECT RAISE(ABORT,'original Action catalog event immutable'); END;
 CREATE TRIGGER legacy_action_catalog_events_no_delete BEFORE DELETE ON legacy_action_catalog_events BEGIN SELECT RAISE(ABORT,'original Action catalog event immutable'); END;`;
+export const legacyActionCatalogDdl = ddl;
 const sha = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
 const fail = (message: string, code = "ACCESS_DENIED"): never => { throw new CoreError(code, message); };
 const pin = (stat: Stats) => `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
@@ -62,7 +74,12 @@ function readPackage(path: string) {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     if (pin(fstatSync(fd)) !== pin(stat)) fail("Action package changed before reading.", "CONFLICT");
-    const bytes = readFileSync(fd);
+    let bytes: Buffer;
+    try { bytes = readBoundedActionPackageFile(fd, stat.size); }
+    catch (error) {
+      if (error instanceof TypeError) fail("Action package changed while reading.", "CONFLICT");
+      throw error;
+    }
     if (pin(fstatSync(fd)) !== pin(stat) || pin(lstatSync(path)) !== pin(stat))
       fail("Action package changed while reading.", "CONFLICT");
     return { bytes, sourcePin: pin(stat) };
@@ -87,9 +104,11 @@ function readCatalog(db: DatabaseSync, workspaceId: string) {
       fail("Original Action package admission bytes changed.", "RECOVERY_CONFLICT");
     const checked = admission.parse(JSON.parse(String(row.payload)));
     const raw = Buffer.from(checked.package, "base64");
+    const decoded = decodeLegacyActionPackage(raw);
+    if ("schema" in checked) decoded.fileEncoding = nativeActionModuleSourceProtocol;
     if (checked.binding.workspaceId !== workspaceId || raw.toString("base64") !== checked.package
       || sha(raw) !== checked.binding.packageSha256
-      || JSON.stringify(snapshot.parse(decodeLegacyActionPackage(raw))) !== JSON.stringify(checked.source))
+      || JSON.stringify(snapshot.parse(decoded)) !== JSON.stringify(checked.source))
       fail("Original Action package admission binding changed.", "RECOVERY_CONFLICT");
     loadModuleSet(checked.source);
     admissions.set(String(row.admission_id), checked);
@@ -131,7 +150,9 @@ function selectedSources(catalog: Catalog): ActionModuleSnapshot[] {
 function validateSelection(catalog: Catalog) {
   const definitions = moduleSnapshotDefinitions(selectedSources(catalog));
   for (const source of selectedSources(catalog)) for (const definition of loadModuleSet(source).definitions.values()) {
-    const raw = JSON.parse(source.files[`definitions/${definition.action_id}.json`]!);
+    const text = source.files[`definitions/${definition.action_id}.json`];
+    if (typeof text !== "string") return fail("Packaged Action definitions must remain UTF-8 JSON text.");
+    const raw = JSON.parse(text);
     if (!raw.dependencies || typeof raw.dependencies !== "object" || Array.isArray(raw.dependencies))
       fail("Packaged Actions require an explicit dependencies object before selection.", "INVALID_DOCUMENT");
     const authored = Object.fromEntries(Object.entries(definition)
@@ -139,6 +160,11 @@ function validateSelection(catalog: Catalog) {
     const diagnostics = validateActionDefinition(authored, definitions);
     if (diagnostics.length) fail(diagnostics[0]!.message, "INVALID_ARGUMENT");
   }
+}
+export function verifyLegacyActionCatalog(database: DatabaseSync, workspaceId: string) {
+  const catalog = readCatalog(database, workspaceId);
+  validateSelection(catalog);
+  return catalog;
 }
 export async function legacyActionCatalogSources(storage: Storage): Promise<ActionModuleSnapshot[]> {
   const workspaceId = await storage.workspaceId();
@@ -155,35 +181,54 @@ export function readLegacyActionCatalogSources(db: DatabaseSync, workspaceId: st
   return selectedSources(catalog);
 }
 
-type ActionPackageBinding = z.infer<typeof binding>;
+type ActionPackageBinding = z.infer<typeof grantSchema>;
 export async function admitLegacyActionPackage(storage: Storage, actor: Actor, request: {
   sourceRoot: string; sourcePath: string; expectedPackageSha256: string; authorityId: string;
+  sourceProtocol?: typeof nativeActionModuleSourceProtocol;
+  expectedSourceFilePin?: string;
+  expectedSourceRootPin?: string;
+  expectedSourceParentPin?: string;
+  prepareCurrent?: () => Promise<void>;
   authorize(binding: Readonly<ActionPackageBinding>): boolean;
 }) {
   actorCheck(actor, true);
   const nativeRoot = storage.workspaceRoot(), nativeStat = lstatSync(nativeRoot);
-  const grant = binding.parse({ actorId: actor.id, workspaceId: await storage.workspaceId(),
+  const grant = grantSchema.parse({ actorId: actor.id, workspaceId: await storage.workspaceId(),
     workspaceRoot: nativeRoot, workspaceRootPin: `${nativeStat.dev}:${nativeStat.ino}`,
     authorityId: request.authorityId, sourceRoot: request.sourceRoot, sourcePath: request.sourcePath,
-    packageSha256: request.expectedPackageSha256 });
+    packageSha256: request.expectedPackageSha256,
+    ...(request.sourceProtocol ? { sourceProtocol: request.sourceProtocol } : {}) });
   if (request.authorize(Object.freeze(grant)) !== true) fail("Native host denied the exact Action package source.");
   return storage.withWorkspaceExclusive(async () => {
+    await request.prepareCurrent?.();
     storage.assertWorkspaceLease();
     const root = canonical(grant.sourceRoot);
     if (!lstatSync(root).isDirectory() || !grant.sourcePath.startsWith(root + sep)) fail("Action package is outside its approved source workspace.");
     const rootStat = lstatSync(root), sourceRootPin = `${rootStat.dev}:${rootStat.ino}`;
+    if (request.expectedSourceFilePin !== undefined && request.expectedSourceFilePin !== pin(lstatSync(grant.sourcePath))
+      || request.expectedSourceRootPin !== undefined && request.expectedSourceRootPin !== sourceRootPin
+      || request.expectedSourceParentPin !== undefined
+        && request.expectedSourceParentPin !== actionPackageParentPin(lstatSync(dirname(grant.sourcePath))))
+      fail("The exact native picker source descriptor changed.");
     const { bytes, sourcePin } = readPackage(grant.sourcePath);
     if (sha(bytes) !== grant.packageSha256) fail("Approved Action package digest changed.", "CONFLICT");
-    const source = snapshot.parse(decodeLegacyActionPackage(bytes));
+    const decoded = decodeLegacyActionPackage(bytes);
+    if (decoded.fileEncoding && !("sourceProtocol" in grant))
+      fail("Native binary ModuleSet source protocol v2 must be explicitly admitted by the current host.", "NATIVE_AUTHORITY_REQUIRED");
+    if ("sourceProtocol" in grant) decoded.fileEncoding = nativeActionModuleSourceProtocol;
+    const source = snapshot.parse(decoded);
     loadModuleSet(source);
     const manifest = source.manifest as Record<string, unknown>;
     if (typeof manifest.name !== "string" || !manifest.provenance || typeof manifest.provenance !== "object")
       fail("Portable Action packages require explicit name and provenance metadata.", "INVALID_DOCUMENT");
     const reread = readPackage(grant.sourcePath);
     const finalRoot = lstatSync(canonical(grant.sourceRoot));
-    if (reread.sourcePin !== sourcePin || !reread.bytes.equals(bytes) || `${finalRoot.dev}:${finalRoot.ino}` !== sourceRootPin)
+    if (reread.sourcePin !== sourcePin || !reread.bytes.equals(bytes) || `${finalRoot.dev}:${finalRoot.ino}` !== sourceRootPin
+      || request.expectedSourceParentPin !== undefined
+        && request.expectedSourceParentPin !== actionPackageParentPin(lstatSync(dirname(grant.sourcePath))))
       fail("Action package source changed during validation.", "CONFLICT");
-    const payload = JSON.stringify({ binding: grant, source, package: bytes.toString("base64"), sourcePin, sourceRootPin });
+    const payload = JSON.stringify({ ...("sourceProtocol" in grant ? { schema: "pkm.native-action-package-admission/v2" } : {}),
+      binding: grant, source, package: bytes.toString("base64"), sourcePin, sourceRootPin });
     const id = sha(payload), db = storage.connectNative();
     try {
       db.exec("BEGIN IMMEDIATE");
@@ -191,6 +236,9 @@ export async function admitLegacyActionPackage(storage: Storage, actor: Actor, r
         readCatalog(db, grant.workspaceId);
         if (!present(db)) db.exec(ddl);
         storage.assertWorkspaceLease();
+        const actualRoot = lstatSync(nativeRoot);
+        if (`${actualRoot.dev}:${actualRoot.ino}` !== grant.workspaceRootPin || request.authorize(Object.freeze(grant)) !== true)
+          fail("Native Action package source authority changed before admission.");
         db.prepare("INSERT OR IGNORE INTO legacy_action_catalog_admissions VALUES(?,?,?)").run(id, payload, id);
         db.exec("COMMIT");
         return { admissionId: id, packageSha256: grant.packageSha256 };
@@ -232,7 +280,7 @@ export async function legacyActionCatalog(storage: Storage, actor: Actor,
         let admissionId: string | undefined, result: unknown, action: "import" | "load" | "remove", enabled: boolean | undefined;
         if (request.tool === "action_module_set_import") {
           const nativeRoot = storage.workspaceRoot(), nativeStat = lstatSync(nativeRoot);
-          const found = [...catalog.admissions].filter(([, value]) => value.binding.sourcePath === request.arguments.local_path
+          const found = [...catalog.admissions].filter(([, value]) => value.binding.sourcePath === resolve(request.arguments.local_path)
             && value.binding.workspaceRoot === nativeRoot && value.binding.workspaceRootPin === `${nativeStat.dev}:${nativeStat.ino}`);
           if (found.length !== 1) fail("An exact previously host-admitted Action package source is required.");
           [admissionId] = found[0]!;

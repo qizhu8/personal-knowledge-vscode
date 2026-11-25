@@ -8,9 +8,13 @@ import { basename, dirname, join, posix, resolve } from "node:path";
 import { z } from "zod";
 import { CoreError } from "./contracts.js";
 import { knowledgeArea, resourcePath, type KnowledgeArea } from "./document-path.js";
+import { opaqueTrashArea, opaqueTrashPath, opaqueTrashFile, opaqueTrashPair, trashCustodyArea, type TrashCustodyArea } from "./opaque-trash-contracts.js";
 import { decodeMarkdown, type MarkdownRecord } from "./markdown.js";
 import { sha256 } from "./file-write.js";
 import { localAssetReference, markdownAssetDirectory, markdownReferences } from "./domain/markdown-assets.js";
+import { readOriginalMcpJournal, originalMcpPrivateTopLevels } from "./original-mcp-root-custody.js";
+import { originalTrashTransitionSchema, validateOriginalTrashTransition, applyOriginalTrashHistory } from "./original-native-trash-custody.js";
+import { approvedOriginalTrashPlan, beginOriginalTrashAttemptForPlan, assertOriginalTrashAttempt } from "./original-native-trash-native.js";
 import {
   trashLifecycleDefinitions, trashLifecycleLayout, trashLifecycleLimits as limits,
   trashLifecyclePin, trashEntryId, type TrashLifecycleResult,
@@ -31,13 +35,15 @@ const planSchema = z.strictObject({
   kind: z.literal("trash-lifecycle"), version: z.literal(1),
   operationId: z.string().uuid(), actorId: z.string().min(1).max(500),
   action: z.enum(["trash", "restore"]), entryId: trashEntryId,
-  area: knowledgeArea, path: resourcePath, targetKind: z.enum(["document", "folder"]),
+  area: trashCustodyArea, path: resourcePath, targetKind: z.enum(["document", "folder", "opaque"]),
   deletedAt: z.string().datetime(), expectedTreeSha256: digest,
   expectedScanRevision: digest, referencePins: z.array(trashLifecyclePin).max(limits.documents),
   documentPins: z.array(trashLifecyclePin).max(limits.documents),
   moves: z.array(moveSchema).min(1).max(2),
   requiresCompoundJournal: z.literal(true),
   boardIdentity: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/).optional(),
+  originalTrash: originalTrashTransitionSchema.optional(),
+  opaqueFile: opaqueTrashFile.optional(),
 });
 export type TrashLifecyclePlan = z.infer<typeof planSchema>;
 type TreeEntry = z.infer<typeof entrySchema>;
@@ -228,7 +234,7 @@ function editable(document: MarkdownRecord, boardIdentity?: string) {
     fail("ACCESS_DENIED", "Board, memory and System descriptors require their authorized original lifecycle.");
   }
 }
-function references(documents: MarkdownRecord[], area: KnowledgeArea, paths: string[], owners: Pin[]) {
+function references(documents: MarkdownRecord[], area: TrashCustodyArea, paths: string[], owners: Pin[]) {
   for (const doc of documents) {
     if (doc.record.area !== area || owners.some(p => p.area === area && p.path === doc.record.path)) continue;
     for (const reference of markdownReferences(doc.raw)) {
@@ -255,6 +261,26 @@ function validate(value: unknown): TrashLifecyclePlan {
   const parsed = planSchema.safeParse(value);
   if (!parsed.success) fail("INVALID_WORKSPACE", "Trash intent violates strict journal schema.");
   const plan = parsed.data;
+  const opaque = opaqueTrashArea.safeParse(plan.area).success;
+  if (opaque !== (plan.targetKind === "opaque") || opaque !== !!plan.opaqueFile
+    || opaque && (!opaqueTrashPath.safeParse(plan.path).success || plan.documentPins.length !== 0 || plan.boardIdentity))
+    fail("INVALID_WORKSPACE", "Opaque custody cannot be reinterpreted as Markdown.");
+  if (plan.originalTrash) {
+    const transition = validateOriginalTrashTransition(plan.originalTrash), { originalTrash: _transition, ...base } = plan;
+    if (plan.area !== transition.selection.area || (!opaque && (plan.targetKind !== "document" || plan.documentPins.length !== 1)) || plan.boardIdentity
+      || transition.operationId !== plan.operationId || transition.action !== (plan.action === "trash" ? "move" : "restore")
+      || transition.selection.entryId !== plan.entryId || transition.planSha256 !== sha256(JSON.stringify(base)))
+      fail("INVALID_WORKSPACE", "Original Trash journal requires its exact bounded public document transition.");
+    if (transition.schema === "pkm.original-native-trash-transition/v2"
+      && (transition.selection.path !== plan.path || transition.provenance.request.subject.actorId !== plan.actorId
+        || transition.selection.document.id !== plan.documentPins[0]!.id
+        || transition.selection.document.revision !== plan.documentPins[0]!.revision
+        || transition.selection.document.sha256 !== plan.documentPins[0]!.sha256))
+      fail("INVALID_WORKSPACE", "Skill/Paper v2 pins must match the exact canonical document identity and raw revision.");
+    if (transition.schema === "pkm.original-native-trash-transition/v3"
+      && (!opaque || transition.selection.path !== plan.path || JSON.stringify(transition.selection.file) !== JSON.stringify(plan.opaqueFile)))
+      fail("INVALID_WORKSPACE", "Opaque v3 pins must match exact reviewed source bytes.");
+  }
   if (plan.boardIdentity && (plan.area !== "notes" || plan.targetKind !== "document"
     || plan.documentPins.length !== 1 || plan.documentPins[0]!.id !== plan.boardIdentity))
     fail("INVALID_WORKSPACE", "Dedicated Board Trash must pin exactly one Note identity.");
@@ -265,7 +291,7 @@ function validate(value: unknown): TrashLifecyclePlan {
   safePath(plan.path, plan.targetKind === "folder");
   if (plan.targetKind === "document" && !/\.md$/i.test(plan.path)) fail("INVALID_ARGUMENT", "Document trash requires Markdown.");
   const expected = plan.moves.length === 2
-    ? [{ originalPath: markdownAssetDirectory(plan.path), slot: "assets" }, { originalPath: plan.path, slot: "payload" }]
+    ? [{ originalPath: opaque ? opaqueTrashPair(plan.path) : markdownAssetDirectory(plan.path), slot: "assets" }, { originalPath: plan.path, slot: "payload" }]
     : [{ originalPath: plan.path, slot: "payload" }];
   if (plan.targetKind === "folder" && plan.moves.length !== 1
     || JSON.stringify(plan.moves.map(({ originalPath, slot }) => ({ originalPath, slot }))) !== JSON.stringify(expected)) {
@@ -286,13 +312,19 @@ function validate(value: unknown): TrashLifecyclePlan {
       const payload = plan.moves.find(move => move.slot === "payload")!;
       const documentEntries = payload.entries.filter(entry => entry.kind === "file"
         && (plan.targetKind === "document" || /\.md$/i.test(entry.path) && !entry.path.split("/").some(part => /\.assets$/i.test(part))));
-      if (documentEntries.length !== plan.documentPins.length || documentEntries.some(entry => {
+      if (!opaque && (documentEntries.length !== plan.documentPins.length || documentEntries.some(entry => {
         const path = plan.targetKind === "document" ? plan.path : `${plan.path}/${entry.path}`;
         return !plan.documentPins.some(pin => pin.area === plan.area && pin.path === path && pin.sha256 === entry.sha256);
       }) || payload.entries[0]!.kind !== (plan.targetKind === "folder" ? "directory" : "file")
-        || plan.moves.some(move => move.slot === "assets" && move.entries[0]!.kind !== "directory")) {
+        || plan.moves.some(move => move.slot === "assets" && move.entries[0]!.kind !== "directory"))) {
         fail("INVALID_WORKSPACE", "Document pins do not cover the exact payload Markdown subtree.");
       }
+      if (opaque && (plan.moves.find(move => move.slot === "payload")?.entries.length !== 1
+        || plan.moves.find(move => move.slot === "payload")?.entries[0]?.kind !== "file"
+        || plan.moves.find(move => move.slot === "payload")?.entries[0]?.sha256 !== plan.opaqueFile!.sha256
+        || plan.moves.find(move => move.slot === "payload")?.entries[0]?.size !== plan.opaqueFile!.size
+        || plan.moves.some(move => move.slot === "assets" && move.entries[0]!.kind !== "directory")))
+        fail("INVALID_WORKSPACE", "Opaque pins require one exact regular source and its optional owned pair.");
       if ((entry.kind === "directory") !== (entry.sha256 === null) || entry.kind === "directory" && entry.size !== 0) fail("INVALID_WORKSPACE", "Invalid tree content pin.");
       paths.add(entry.path); total += entry.size; count++;
     }
@@ -338,6 +370,22 @@ function inspectTrashLifecycle(root: string, args: unknown, boardIdentity?: stri
   const parsed = trashLifecycleDefinitions[0].input.safeParse(args);
   if (!parsed.success) fail("INVALID_ARGUMENT", "Invalid trash preview arguments.");
   const { area, path, kind } = parsed.data;
+  if (opaqueTrashArea.safeParse(area).success || kind === "opaque") {
+    if (!readOriginalMcpJournal(root) || kind !== "opaque" || !opaqueTrashArea.safeParse(area).success || !opaqueTrashPath.safeParse(path).success)
+      fail("NATIVE_AUTHORITY_REQUIRED", "Opaque custody requires its actual original root and typed source.");
+    const source = checked(root, `${area}/${path}`);
+    if (!source?.stat.isFile()) fail("CONFLICT", "Opaque Trash source must be an existing regular file.");
+    const pins = snapshot(root).map(pin), moves: TrashLifecyclePlan["moves"] = [];
+    const assets = opaqueTrashPair(path);
+    if (assets && checked(root, `${area}/${assets}`)) {
+      if (!checked(root, `${area}/${assets}`)!.stat.isDirectory()) fail("CONFLICT", "Opaque pair must be a directory.");
+      moves.push({ originalPath: assets, slot: "assets", entries: tree(root, `${area}/${assets}`) });
+    }
+    moves.push({ originalPath: path, slot: "payload", entries: tree(root, `${area}/${path}`) });
+    assertOriginalPublicPairReferences(root, area, path);
+    return { treeSha256: sha256(JSON.stringify(moves)), scanRevision: scanRevision(pins), documents: [],
+      moves, referencePins: pins };
+  }
   safePath(path, kind === "folder");
   if (kind === "document" && !/\.md$/i.test(path)) fail("INVALID_ARGUMENT", "Document trash requires Markdown.");
   const source = checked(root, `${area}/${path}`);
@@ -360,11 +408,34 @@ function inspectTrashLifecycle(root: string, args: unknown, boardIdentity?: stri
   return { treeSha256: sha256(JSON.stringify(moves)), scanRevision: scanRevision(pins), documents: ownerPins, moves, referencePins: pins };
 }
 export function previewTrashLifecycle(root: string, args: unknown) {
+  if (readOriginalMcpJournal(root)) {
+    const value = trashLifecycleDefinitions[0].input.parse(args);
+    if (!["document", "opaque"].includes(value.kind) || originalMcpPrivateTopLevels(root, value.area).has(value.path.split("/")[0]!))
+      fail("ACCESS_DENIED", "Original Trash is bounded to one public document and its exclusively owned pair.");
+  }
   const { treeSha256, scanRevision, documents } = inspectTrashLifecycle(root, args);
+  if (readOriginalMcpJournal(root)) {
+    const value = trashLifecycleDefinitions[0].input.parse(args);
+    if (value.area !== "notes") assertOriginalPublicPairReferences(root, value.area, value.path);
+  }
   return { treeSha256, scanRevision, documents };
 }
 export function planTrashLifecycle(root: string, actorId: string, args: unknown): TrashLifecyclePlan {
+  if (readOriginalMcpJournal(root))
+    return validate(approvedOriginalTrashPlan(root, { operation: "knowledge.trash.move", actorId, args: trashLifecycleDefinitions[1].input.parse(args) }));
   return planTrash(root, actorId, args);
+}
+/** Read-only planning; never an effect or native grant. */
+export function prepareOriginalPublicNoteTrash(root: string, actorId: string, args: unknown): TrashLifecyclePlan {
+  const value = trashLifecycleDefinitions[1].input.parse(args);
+  if (value.area !== "notes") fail("ACCESS_DENIED", "Note v1 planning cannot reinterpret another area.");
+  return prepareOriginalPublicDocumentTrash(root, actorId, value);
+}
+export function prepareOriginalPublicDocumentTrash(root: string, actorId: string, args: unknown): TrashLifecyclePlan {
+  if (!readOriginalMcpJournal(root)) fail("NATIVE_AUTHORITY_REQUIRED", "Original planning requires the actual custody-bound root.");
+  const value = trashLifecycleDefinitions[1].input.parse(args);
+  previewTrashLifecycle(root, { area: value.area, path: value.path, kind: value.kind });
+  return planTrash(root, actorId, args, undefined, true);
 }
 export function previewNativeBoardTrash(root: string, args: unknown, noteId: string) {
   const { treeSha256, scanRevision, documents } = inspectTrashLifecycle(root, args, noteId);
@@ -374,12 +445,12 @@ export function previewNativeBoardTrash(root: string, args: unknown, noteId: str
 export function planNativeBoardTrash(root: string, actorId: string, args: unknown, noteId: string): TrashLifecyclePlan {
   return planTrash(root, actorId, args, noteId);
 }
-function planTrash(root: string, actorId: string, args: unknown, boardIdentity?: string): TrashLifecyclePlan {
+function planTrash(root: string, actorId: string, args: unknown, boardIdentity?: string, originalPlanning = false): TrashLifecyclePlan {
   const parsed = trashLifecycleDefinitions[1].input.safeParse(args);
   if (!parsed.success) fail("INVALID_ARGUMENT", "Invalid trash operation arguments.");
   const value = parsed.data, preview = inspectTrashLifecycle(root, { area: value.area, path: value.path, kind: value.kind }, boardIdentity);
   if (value.expectedTreeSha256 !== preview.treeSha256 || value.expectedScanRevision !== preview.scanRevision) fail("CONFLICT", "Trash source or reference CAS changed.");
-  if (!checked(root, `${value.area}/.trash`)?.stat.isDirectory() && !boardIdentity) fail("INVALID_WORKSPACE", "Host must qualify and provision the allowlisted trash root.");
+  if (!checked(root, `${value.area}/.trash`)?.stat.isDirectory() && !boardIdentity && !originalPlanning) fail("INVALID_WORKSPACE", "Host must qualify and provision the allowlisted trash root.");
   const deletedAt = new Date().toISOString();
   const entryId = value.entryIdFormat === "original"
     ? `${Date.parse(deletedAt)}-${randomBytes(5).toString("hex")}` : value.operationId;
@@ -389,14 +460,78 @@ function planTrash(root: string, actorId: string, args: unknown, boardIdentity?:
     deletedAt, expectedTreeSha256: preview.treeSha256,
     expectedScanRevision: preview.scanRevision, referencePins: preview.referencePins,
     documentPins: preview.documents, moves: preview.moves, requiresCompoundJournal: true,
+    ...(value.kind === "opaque" ? { opaqueFile: {
+      sha256: preview.moves.find(move => move.slot === "payload")!.entries[0]!.sha256!,
+      size: preview.moves.find(move => move.slot === "payload")!.entries[0]!.size,
+    } } : {}),
     ...(boardIdentity ? { boardIdentity } : {}),
   });
   if (checked(root, bucket(plan))) fail("CONFLICT", "Trash entry destination already exists.");
   return plan;
 }
 export function planTrashRestore(root: string, actorId: string, committedEntry: TrashLifecyclePlan, args: unknown): TrashLifecyclePlan {
+  if (readOriginalMcpJournal(root))
+    return validate(approvedOriginalTrashPlan(root, { operation: "knowledge.trash.restore", actorId, args: trashLifecycleDefinitions[2].input.parse(args) }));
   if (committedEntry.boardIdentity) fail("ACCESS_DENIED", "Board restore requires its dedicated authorized journal.");
   return planRestore(root, actorId, committedEntry, args);
+}
+export function prepareOriginalPublicNoteRestore(root: string, actorId: string, committedEntry: TrashLifecyclePlan, args: unknown): TrashLifecyclePlan {
+  if (committedEntry.area !== "notes") fail("ACCESS_DENIED", "Note v1 restore cannot reinterpret another area.");
+  return prepareOriginalPublicDocumentRestore(root, actorId, committedEntry, args);
+}
+function assertOriginalPublicPairReferences(root: string, area: TrashCustodyArea, path: string) {
+  const pair = opaqueTrashArea.safeParse(area).success ? opaqueTrashPair(path) : markdownAssetDirectory(path);
+  if (!pair) return;
+  const target = `${area}/${pair}`;
+  if (opaqueTrashArea.safeParse(area).success) {
+    let entries = 0, bytes = 0;
+    const markers = [target, pair, basename(pair)].flatMap(value => [value, encodeURI(value), encodeURIComponent(value)]);
+    for (const opaqueArea of opaqueTrashArea.options) {
+      const privateNames = originalMcpPrivateTopLevels(root, opaqueArea);
+      function visit(relative: string, depth: number) {
+        if (++entries > 4096 || depth > 32) fail("CONFLICT", "Opaque ownership proof exceeds its bounded namespace.");
+        const fullPath = `${opaqueArea}${relative ? `/${relative}` : ""}`, found = checked(root, fullPath);
+        if (!found) return;
+        if (relative.split("/")[0] === ".trash" || /\.assets(?:\/|$)/i.test(relative)) return;
+        if (privateNames.has(relative.split("/")[0]!))
+          fail("ACCESS_DENIED", "A private opaque referrer cannot be inspected under public pair consent.");
+        if (found.stat.isDirectory()) {
+          for (const name of readdirSync(found.full).sort()) visit(relative ? `${relative}/${name}` : name, depth + 1);
+          return;
+        }
+        if (opaqueArea === area && relative === path || basename(relative) === ".gitkeep") return;
+        bytes += found.stat.size;
+        if (bytes > 16 * 1024 * 1024) fail("CONFLICT", "Opaque ownership proof exceeds its byte bound.");
+        const raw = read(root, fullPath, 16 * 1024 * 1024);
+        if (markers.some(marker => raw.includes(Buffer.from(marker))))
+          fail("CONFLICT", "Another opaque source may reference this owned pair.");
+      }
+      visit("", 0);
+    }
+  }
+  for (const doc of snapshot(root)) {
+    if (doc.record.area === area && doc.record.path === path) continue;
+    const paperFile = doc.record.area === "papers" ? doc.metadata.get("file") : undefined;
+    const references = [...markdownReferences(doc.raw).map(reference => reference.value),
+      ...(typeof paperFile === "string" ? [paperFile] : [])];
+    for (const reference of references) {
+      const local = localAssetReference(reference);
+      if (!local) continue;
+      const resolved = posix.normalize(posix.join(doc.record.area, posix.dirname(doc.record.path), local));
+      if (resolved === target || resolved.startsWith(`${target}/`))
+        fail("CONFLICT", "An outside public or private document references this owned pair.");
+    }
+  }
+}
+export function prepareOriginalPublicDocumentRestore(root: string, actorId: string, committedEntry: TrashLifecyclePlan, args: unknown): TrashLifecyclePlan {
+  if (!readOriginalMcpJournal(root)) fail("NATIVE_AUTHORITY_REQUIRED", "Original restore planning requires the actual custody-bound root.");
+  const { originalTrash: _old, ...original } = committedEntry;
+  if ((!(original.targetKind === "opaque" && original.opaqueFile && original.documentPins.length === 0)
+    && (original.targetKind !== "document" || original.documentPins.length !== 1)) || original.boardIdentity
+    || originalMcpPrivateTopLevels(root, original.area).has(original.path.split("/")[0]!))
+    fail("ACCESS_DENIED", "Original restore is limited to its exact committed public document/pair.");
+  if (original.area !== "notes") assertOriginalPublicPairReferences(root, original.area, original.path);
+  return planRestore(root, actorId, original, args);
 }
 export function planNativeBoardRestore(root: string, actorId: string, committedEntry: TrashLifecyclePlan, args: unknown, noteId: string): TrashLifecyclePlan {
   if (committedEntry.boardIdentity !== noteId) fail("ACCESS_DENIED", "Board restore identity differs from its committed Trash entry.");
@@ -426,7 +561,7 @@ function sync(directory: string) {
   const fd = openSync(directory, "r");
   try { fsyncSync(fd); } finally { closeSync(fd); }
 }
-function ensureRestoreParent(root: string, area: KnowledgeArea, path: string) {
+function ensureRestoreParent(root: string, area: TrashCustodyArea, path: string) {
   if (!checked(root, area)?.stat.isDirectory()) fail("RECOVERY_CONFLICT", "Restore area root is missing.");
   let parent: string = area;
   for (const part of path.split("/").slice(0, -1)) {
@@ -467,6 +602,9 @@ function classify(root: string, plan: TrashLifecyclePlan) {
     && (checked(root, `${plan.area}/${markdownAssetDirectory(plan.path)}`) || checked(root, `${bucket(plan)}/assets`))) {
     fail("RECOVERY_CONFLICT", "An unpinned paired asset tree appeared.");
   }
+  if (plan.targetKind === "opaque" && plan.moves.length === 1 && opaqueTrashPair(plan.path)
+    && (checked(root, `${plan.area}/${opaqueTrashPair(plan.path)}`) || checked(root, `${bucket(plan)}/assets`)))
+    fail("RECOVERY_CONFLICT", "An unpinned opaque pair appeared.");
   const docs = snapshot(root, plan.action === "restore" && plan.moves.length === 2
     ? `${plan.area}/${plan.moves[0]!.originalPath}` : undefined), pins = docs.map(pin);
   const expected = plan.referencePins.filter(p => !owned(plan, p));
@@ -487,7 +625,9 @@ function classify(root: string, plan: TrashLifecyclePlan) {
     if (docs.some(active => active.record.id !== p.id && [active.record.id, active.metadata.get("knowledgeId")]
       .some(key => typeof key === "string" && keys.includes(key)))) fail("RECOVERY_CONFLICT", "A trashed stable identity is already active under another address.");
   }
-  references(docs, plan.area, plan.targetKind === "folder" ? [plan.path] : [markdownAssetDirectory(plan.path)], plan.documentPins);
+  references(docs, plan.area, plan.targetKind === "folder" ? [plan.path]
+    : plan.targetKind === "opaque" ? (opaqueTrashPair(plan.path) ? [opaqueTrashPair(plan.path)!] : [])
+      : [markdownAssetDirectory(plan.path)], plan.documentPins);
   return prefix;
 }
 function inspectBucket(root: string, plan: TrashLifecyclePlan, recovery: boolean, prefix: number) {
@@ -504,14 +644,22 @@ function inspectBucket(root: string, plan: TrashLifecyclePlan, recovery: boolean
     if (!read(root, `${bucket(plan)}/metadata.json`, 8192).equals(metadata(plan))) fail("RECOVERY_CONFLICT", "Trash metadata changed.");
   } else if (prefix !== 0 && plan.action === "trash" || prefix !== plan.moves.length && plan.action === "restore") fail("RECOVERY_CONFLICT", "Trash metadata missing in an effects phase.");
 }
-function effects(root: string, plan: TrashLifecyclePlan, recovery: boolean, fault?: (point: string) => void) {
-  if (!checked(root, `${plan.area}/.trash`)?.stat.isDirectory()) fail("INVALID_WORKSPACE", "Allowlisted trash root is missing.");
+function effects(root: string, plan: TrashLifecyclePlan, recovery: boolean, fault?: (point: string) => void, current = () => {}) {
+  current();
+  if (!checked(root, `${plan.area}/.trash`) && plan.originalTrash && plan.action === "trash") {
+    mkdirSync(join(root, `${plan.area}/.trash`), { mode: 0o700 }); sync(join(root, plan.area));
+  }
+  if (!checked(root, `${plan.area}/.trash`)?.stat.isDirectory()
+    && !(plan.originalTrash && plan.action === "restore" && !checked(root, bucket(plan))))
+    fail("INVALID_WORKSPACE", "Allowlisted trash root is missing.");
   let prefix = classify(root, plan);
   inspectBucket(root, plan, recovery, prefix);
   if (plan.action === "trash") {
+    current();
     if (!checked(root, bucket(plan))) { mkdirSync(join(root, bucket(plan)), { mode: 0o700 }); sync(join(root, plan.area, ".trash")); }
     fault?.("bucket");
     if (!checked(root, `${bucket(plan)}/metadata.json`)) {
+      current();
       const fd = openSync(join(root, bucket(plan), "metadata.json"), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
       try { const bytes = metadata(plan); let offset = 0; while (offset < bytes.length) offset += writeSync(fd, bytes, offset); fsyncSync(fd); }
       finally { closeSync(fd); }
@@ -520,6 +668,7 @@ function effects(root: string, plan: TrashLifecyclePlan, recovery: boolean, faul
     fault?.("metadata");
   }
   for (; prefix < plan.moves.length; prefix++) {
+    current();
     // Reclassify all known phases immediately before each effect, without accepting unknown bytes.
     classify(root, plan);
     const move = plan.moves[prefix]!, original = `${plan.area}/${move.originalPath}`, trash = `${bucket(plan)}/${move.slot}`;
@@ -527,21 +676,31 @@ function effects(root: string, plan: TrashLifecyclePlan, recovery: boolean, faul
     if (plan.action === "restore") ensureRestoreParent(root, plan.area, move.originalPath);
     const from = checked(root, source), parent = checked(root, posix.dirname(destination));
     if (!from || !parent?.stat.isDirectory()) fail("RECOVERY_CONFLICT", "Trash move parent or source changed.");
+    current();
     renameExclusive(from.full, join(root, destination));
     fault?.(`move-${prefix}`);
   }
   classify(root, plan);
   if (plan.action === "restore" && checked(root, bucket(plan))) {
+    current();
     inspectBucket(root, plan, true, prefix);
     const file = `${bucket(plan)}/metadata.json`;
     if (checked(root, file)) { unlinkSync(join(root, file)); sync(join(root, bucket(plan))); }
     rmdirSync(join(root, bucket(plan))); sync(join(root, plan.area, ".trash"));
+    if (plan.originalTrash && readdirSync(join(root, plan.area, ".trash")).length === 0) {
+      rmdirSync(join(root, plan.area, ".trash")); sync(join(root, plan.area));
+    }
     fault?.("cleanup");
   }
 }
 export function executeTrashLifecycle(root: string, plan: TrashLifecyclePlan, host: TrashLifecycleHost, recovery = false): TrashLifecycleResult {
   const serialized = serializeTrashLifecyclePlan(plan);
   return host.withWriterLock(() => {
+    const attempt = plan.originalTrash ? beginOriginalTrashAttemptForPlan(root, plan) : undefined;
+    const current = () => {
+      if (attempt) assertOriginalTrashAttempt(attempt, plan.originalTrash!);
+    };
+    current();
     if (recovery) {
       if (host.readIntent(plan.operationId) !== serialized) fail("RECOVERY_CONFLICT", "Host journal does not match this exact intent.");
     } else {
@@ -553,7 +712,8 @@ export function executeTrashLifecycle(root: string, plan: TrashLifecyclePlan, ho
       host.faultInjector?.("intent");
     }
 
-    effects(root, plan, recovery, host.faultInjector);
+    effects(root, plan, recovery, host.faultInjector, current);
+    if (plan.originalTrash) applyOriginalTrashHistory(root, plan.originalTrash, attempt!, host.faultInjector);
     const result: TrashLifecycleResult = {
       operationId: plan.operationId, entryId: plan.entryId, action: plan.action, area: plan.area, path: plan.path,
     };
@@ -561,6 +721,7 @@ export function executeTrashLifecycle(root: string, plan: TrashLifecyclePlan, ho
       && !e.path.split("/").some(part => part.startsWith(".")))
       .map(e => `${plan.area}/${move.originalPath}${e.path ? "/" + e.path : ""}`));
     host.faultInjector?.("before-commit");
+    current();
     host.commitAtomic(plan, result, {
       removed: plan.action === "trash" ? paths.map(path => ({ path, deletedAt: plan.deletedAt })) : [],
       restored: plan.action === "restore" ? paths : [],
@@ -573,7 +734,8 @@ export function executeTrashLifecycle(root: string, plan: TrashLifecyclePlan, ho
 
 export function inspectTrashLifecycleRecovery(root: string, plan: TrashLifecyclePlan): number {
   validate(plan);
-  if (!checked(root, `${plan.area}/.trash`)?.stat.isDirectory()) fail("INVALID_WORKSPACE", "Allowlisted trash root is missing.");
+  if (!checked(root, `${plan.area}/.trash`)?.stat.isDirectory() && !plan.originalTrash)
+    fail("INVALID_WORKSPACE", "Allowlisted trash root is missing.");
   const prefix = classify(root, plan);
   inspectBucket(root, plan, true, prefix);
   return prefix;
