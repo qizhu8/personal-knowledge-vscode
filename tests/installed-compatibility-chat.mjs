@@ -58,7 +58,7 @@ if (!process.argv.includes("--inside")) {
   const editor = process.env.PKM_PROFILE_CODE || "/home/yuwang8/.cache/pkm-vscode-test/vscode-linux-x64-1.143.0/code";
   const xvfb = process.env.PKM_PROFILE_XVFB || "/home/yuwang8/.cache/pkm-vscode-test/tools/xvfb/usr/bin/Xvfb";
   const browserPython = checked("python3", ["-c", "import sys,playwright;print(sys.executable)"]);
-  const browserCache = options.browser ? checked(browserPython, ["-B", "-c",
+  const browserCache = options.browser || options.settings ? checked(browserPython, ["-B", "-c",
     "from pathlib import Path; from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print(Path(p.chromium.executable_path).parents[2]); p.stop()"]) : "";
   const businessPython = process.env.PKM_TEST_PYTHON || "/home/yuwang8/pkm-envs/personal-knowledge-vscode-dev/bin/python";
   const command = [process.execPath, fileURLToPath(import.meta.url), "--inside",
@@ -506,7 +506,7 @@ exports.registerApiChatShell = (...args) => {
       if (transcript || settingsSwitch) {
         browser = spawn(browserPython, ["-B", join(here, settingsSwitch ? "installed-settings-switch.py" : "installed-compatibility-chat.py"),
           join(base, "fixture.json"), ...(transcript ? ["--transcript-consent"] : [])],
-          { env: appEnv, stdio: "inherit" });
+          { env: settingsSwitch ? { ...appEnv, PLAYWRIGHT_BROWSERS_PATH: browserCache } : appEnv, stdio: "inherit" });
       }
       if (installedBrowser) {
         browser = spawn(browserPython, ["-B", join(here, "installed-original-browser.py"), join(base, "fixture.json")],

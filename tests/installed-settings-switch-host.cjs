@@ -45,8 +45,19 @@ async function run() {
       assert.equal(result.chat.routeRuntime.instanceId, first.chat.routeRuntime.instanceId);
       for (const role of ["native", "chat"]) assert.deepEqual(result[role].originalConnection, first[role].originalConnection);
       write(`settings-observed-${label}.json`, result);
+      if (label === "v5") await enrollBrowser(label);
       return result;
     };
+    async function enrollBrowser(label) {
+      const url = await vscode.commands.executeCommand("personalKnowledge.openOriginalBrowser");
+      assert.match(url, /^http:\/\/127\.0\.0\.1:\d+\/webview\/$/);
+      const token = await vscode.env.clipboard.readText();
+      assert.match(token, /^[A-Za-z0-9_-]{43}$/);
+      await vscode.env.clipboard.writeText("");
+      fs.writeFileSync(path.join(base, "browser-enrollment.json"), JSON.stringify({ label, url, token }),
+        { mode: 0o600, flag: "wx" });
+      await until(() => fs.existsSync(path.join(base, `settings-browser-read-${label}`)));
+    }
     async function observe(mode) {
       const value = await vscode.lm.invokeTool("mcp_pkm_check_version", { input: {} }, undefined);
       const native = JSON.parse(value.content.map(part => part.value ?? "").join(""));
@@ -68,12 +79,16 @@ async function run() {
     }
     await vscode.commands.executeCommand("personalKnowledge.setupMcp");
     write("settings-observed-original.json", first);
+    await enrollBrowser("original");
     const cancelled = await phase("cancelled", "original");
     const v5 = await phase("v5", "bundled-v5");
     const returned = await phase("returned", "original");
     assert.notEqual(first.native.version, v5.native.version);
     assert.equal(first.native.version, returned.native.version);
-    write("installed-settings-switch.json", { hostPid: process.pid, first, cancelled, v5, returned });
+    await until(() => fs.existsSync(path.join(base, "settings-browser-coexistence.json")));
+    const browser = JSON.parse(fs.readFileSync(path.join(base, "settings-browser-coexistence.json"), "utf8"));
+    assert.deepEqual(browser, { bothBackendsRead: true, grantsRevokedOnSwitch: true });
+    write("installed-settings-switch.json", { hostPid: process.pid, first, cancelled, v5, returned, browser });
     await until(() => fs.existsSync(path.join(base, "settings-peer-refused.json")));
     const whilePeerOpen = await observe("original");
     for (const role of ["native", "chat"]) {

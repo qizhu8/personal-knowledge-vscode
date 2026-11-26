@@ -4,7 +4,7 @@ import sys
 import time
 from pathlib import Path
 
-from playwright.sync_api import expect, sync_playwright
+from playwright.sync_api import Error, expect, sync_playwright
 
 
 fixture = json.loads(Path(sys.argv[1]).read_text())
@@ -53,6 +53,43 @@ with sync_playwright() as playwright:
 
     try:
         wait_for("settings-observed-original.json", initial=True)
+        web = playwright.chromium.launch(headless=True)
+
+        def enroll_browser(label):
+            page.get_by_text("Copy sign-in token and open", exact=True).click(timeout=15000)
+            wait_for("browser-enrollment.json")
+            enrollment = base / "browser-enrollment.json"
+            grant = json.loads(enrollment.read_text())
+            enrollment.unlink()
+            assert grant["label"] == label
+            url = grant["url"]
+            tab = web.new_page()
+            tab.goto(url, wait_until="networkidle")
+            expect(tab.get_by_label("Server token")).to_be_visible()
+            tab.locator("input[type=password]").evaluate("(el, token) => { el.value = token; }", grant.pop("token"))
+            tab.get_by_role("button", name="Sign in").click()
+            expect(tab.get_by_role("searchbox", name="Search Notes")).to_be_visible()
+            tab.get_by_role("button", name="(uncategorized) Folder", exact=False).click()
+            tab.get_by_role("button", name="InstalledGatewayNote File").click()
+            expect(tab.locator("#detail")).to_contain_text("Created by genuine installed 4.0.27 PKM Chat")
+            (base / f"settings-browser-read-{label}").touch()
+            return tab, url
+
+        def assert_revoked(tab, url):
+            try:
+                status = tab.evaluate("""async () => (await fetch("/webview/message", {
+                    method: "POST", headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({command: "detail", path: "InstalledGatewayNote.md"}),
+                    signal: AbortSignal.timeout(3000)
+                })).status""")
+            except Error as error:
+                assert "Failed to fetch" in str(error)
+            else:
+                assert status in (401, 403, 409, 503), f"Old browser grant returned HTTP {status} after handoff"
+            finally:
+                tab.close()
+
+        original_browser = enroll_browser("original")
         frame, tab = settings_frame()
         tab.click()
         active = frame.locator(".mcp-backend-observed")
@@ -76,7 +113,16 @@ with sync_playwright() as playwright:
 
         action("Bundled v5 MCP", "Original MCP", False, "cancelled")
         action("Bundled v5 MCP", "Original MCP", True, "v5")
+        assert_revoked(*original_browser)
+        v5_browser = enroll_browser("v5")
         action("Original MCP", "Bundled v5 MCP", True, "returned")
+        assert_revoked(*v5_browser)
+        (base / "settings-browser-coexistence.json").write_text(json.dumps({
+            "bothBackendsRead": True, "grantsRevokedOnSwitch": True,
+        }))
     except Exception:
         page.screenshot(path=str(base / "installed-settings-switch-failure.png"))
         raise
+    finally:
+        if "web" in locals():
+            web.close()

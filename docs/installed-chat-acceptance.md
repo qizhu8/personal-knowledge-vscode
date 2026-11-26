@@ -71,10 +71,17 @@ The harness enables `PKM_COMPATIBILITY_LIVE_SWITCH=1` only in the isolated
 candidate host. It opens Settings → MCP, cancels once, then approves Original
 → bundled v5 → Original in the real workbench modal. It verifies both live
 relay instance IDs and the same Original library without reloading. Repair
-probes are intentionally separate. The fixture then starts a second real
+probes are intentionally separate. In the same window, the fixture opens the
+bundled Webview in Chromium, signs in, and searches for and opens the retained
+Note on both backends. It verifies that the previous browser grant can no
+longer read after each switch. The fixture then starts a second real
 VS Code window under the same isolated account and root, with the flag
 unset. That window must report custody unavailable and refuse native MCP
 startup without replacing the owner's marker.
+
+The diagnostic archive `7f906d9d…` passed this combined test. The browser
+check here covers Note reads and grant revocation, not Chat Send/Stop; the
+separate installed browser scenario covers those actions.
 
 The experimental switch requires a local, private root with an exact native
 account binding. Settings status is passive: refreshing neither enrolls
