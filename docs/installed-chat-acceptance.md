@@ -205,6 +205,13 @@ requires restarting the daemon. This mode does not enable Notes, MCP or Chat
 mutations, and does not change ordinary gateway admission or settings.
 This callback is not advertised as an MCP operation and grants no remote writes.
 
+The native turn shares its model dispatcher with plain Node. The dispatcher
+requires an already prepared, authorized request; it neither grants tools nor
+loads VS Code credentials. A VS Code model still requires its owning adapter
+and does not fall back to another provider. Detached browser Send/Stop remain
+unavailable until the native admission, preparation and settlement lifecycle can
+run under persistent custody.
+
 To qualify the actual candidate rather than a staged checkout payload, run
 `node --test tests/test-browser-chat-transcript.js` from `legacy/` with
 `PKM_TRANSCRIPT_TEST_VSIX` set to the absolute archive path and

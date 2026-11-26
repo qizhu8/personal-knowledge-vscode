@@ -5,6 +5,7 @@ const { mkdirSync, rmSync } = require("node:fs");
 const { createServer } = require("node:http");
 const { join, resolve } = require("node:path");
 const Module = require("node:module");
+const build = process.env.PKM_CHAT_TEST_BUILD || join(__dirname, "../dist");
 
 test("native browser Send and exact Stop use the existing store, writer and streaming transport", { timeout: 15_000 }, async t => {
   const root = join(__dirname, "../../.migration-test-work", `browser-turn-${randomUUID()}`);
@@ -44,11 +45,11 @@ test("native browser Send and exact Stop use the existing store, writer and stre
   Module._load = function (name, ...args) { return name === "vscode" ? vscode : load.call(this, name, ...args); };
   let view, store, binding;
   try {
-    const { ApiChatView } = require("../dist/chat/api-chat-view");
-    const { ApiChatStore } = require("../dist/chat/api-chat-store");
-    const { bindBrowserChatTurns } = require("../dist/chat/browser-chat-turns");
-    const { setStorePath } = require("../dist/knowledge/filestore");
-    const { HostWriterAdmission } = require("../dist/runtime/host-writer-admission");
+    const { ApiChatView } = require(join(build, "chat/api-chat-view"));
+    const { ApiChatStore } = require(join(build, "chat/api-chat-store"));
+    const { bindBrowserChatTurns } = require(join(build, "chat/browser-chat-turns"));
+    const { setStorePath } = require(join(build, "knowledge/filestore"));
+    const { HostWriterAdmission } = require(join(build, "runtime/host-writer-admission"));
     setStorePath(root);
     const host = new HostWriterAdmission(root, () => root);
     const context = { extensionPath: resolve(__dirname, ".."), globalStorageUri: { fsPath: root }, globalState: { get: (_, fallback) => fallback, update: async () => {} },

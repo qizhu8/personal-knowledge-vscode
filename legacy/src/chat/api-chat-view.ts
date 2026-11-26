@@ -13,6 +13,7 @@ import { listAgentSnapshots, readAgentSnapshotContents } from "../agent-sessions
 import { detectMcpPython, warmMcpPythonProbes, mcpServerDefinitionData, managedMcpServerDirectory, readManagedMcpManifest } from "../mcp/mcp";
 import { bundledMcpBuildIdentity } from "../mcp/mcp-lifecycle";
 import { ApiChatMessage, streamApiChat, chatToolRoundLimit, defaultLoopExemptTools, ChatToolLoopNotice, ChatToolLoopDecision } from "./api-chat-client";
+import { dispatchNativeChatModel, type NativeChatModelDispatch } from "./native-chat-model-dispatch";
 import { ApiChatStore, ApiConversation, ApiChatStatus, ApiChatProgress, ChatMessage, ChatDelegation, apiChatStatus, apiChatProjection, apiChatDiagnostics, apiChatContextSummary, apiChatCreditUsage, chatHistoryPage, apiChatHarnessSnapshot, verifyHarnessArtifacts, settleProgressSteps } from "./api-chat-store";
 import { BaselineEventKind, recordBaselineEvent } from "../runtime/pkm-baseline";
 import { ChatBudgetExceededError, modelProfiles, assertModelAvailable, estimateInputTokens, validateBudget, validActivityCreditLimit, estimateCost, ChatModelProfile, ChatTokenUsage, parseThinkingBudget } from "./api-chat-models";
@@ -3882,6 +3883,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         this.persist(chat); this.publish();
       }
       let nativeModel: VscodeChatModel | undefined;
+      let modelDispatch: NativeChatModelDispatch;
       let profile = settings.selectedProfile;
       if (settings.provider === "vscode") {
         if (settings.needsModelConnection) throw new Error("Choose a VS Code model using Model connection or the model picker.");
@@ -3889,9 +3891,14 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         const available = preparedNativeModels || await this.availableVscodeModels(controller.signal);
         nativeModel = available.find(model => vscodeModelProfile(model).id === settings.selectedProfile.id);
         if (!nativeModel) throw new Error("The selected VS Code model is no longer available. Refresh the model picker; no fallback model was used.");
+        const selected = nativeModel;
+        modelDispatch = { provider: "vscode", stream: (request, onText) => streamVscodeChat(selected, request, onText) };
         profile = vscodeModelProfile(nativeModel);
         reply.model = profile.label;
-      } else if (!settings.endpoint) throw new Error("Configure an API endpoint using the settings button.");
+      } else {
+        if (!settings.endpoint) throw new Error("Configure an API endpoint using the settings button.");
+        modelDispatch = { provider: settings.provider };
+      }
       stage("Preparing tools and input", false, { category:"info", operation:"preparation" });
       const askQuestion = async (prompt: string, schema: QuestionSchema, signal: AbortSignal, verify?: (answer: Record<string, unknown>) => Promise<void>) => {
         this.assertExecution(chat, executionContext);
@@ -4588,8 +4595,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
             if (output.length + chunk.length > 8000) throw new Error("Retrieval selection exceeded its response boundary.");
             output += chunk;
           };
-          await abortable(nativeModel ? streamVscodeChat(nativeModel, evaluation, collect)
-            : streamApiChat({ ...evaluation, provider:settings.provider === "azure-openai" ? "azure-openai" : "openai-compatible" }, collect), evaluationSignal);
+          await dispatchNativeChatModel(modelDispatch, evaluation, collect);
           this.assertExecution(chat, executionContext);
           controller.signal.throwIfAborted();
           retrieval.refreshSourceValidation?.();
@@ -4966,8 +4972,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         if (this.chat?.id === chat.id && this.view?.visible !== false) void this.view?.webview.postMessage({ type: "delta", chatId: chat.id, id: reply!.id, text: chunk });
         this.scheduleStreamPersistence();
       };
-      await abortable(nativeModel ? streamVscodeChat(nativeModel, request, onText)
-        : streamApiChat({ ...request, provider: settings.provider === "azure-openai" ? "azure-openai" : "openai-compatible" }, onText), controller.signal);
+      await dispatchNativeChatModel(modelDispatch, request, onText);
       if (controller.signal.aborted) throw new Error("Request cancelled.");
       if (!workerHandoffPending() && reply.toolRoundLimit?.reached && (workActive && chat.workGoal?.status === "active" || debugActive && chat.debugRequest?.status === "investigating")) {
         throw new Error("The request's tool round limit was reached. The final summary and completed tool results were preserved; the objective remains unresolved. Inspect them before explicitly starting another request.");
