@@ -589,8 +589,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     if (!workspace) throw new Error("Original Chat workspace is unavailable.");
     const namespace = createHash("sha256").update(workspace).digest("hex").slice(0, 16);
     const store = new ApiChatStore(path.join(root, ".pkm", "state"), namespace);
-    const chat = store.resolveChat(chatPkmUrl(namespace, chatId));
-    return { title: chat.title, messages: chat.messages };
+    return store.readBrowserTranscript(chatId);
   }
 
   browserChatTurnTarget(root: string, chatId: string) {

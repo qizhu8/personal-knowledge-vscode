@@ -715,6 +715,19 @@ export class ApiChatStore {
     return chat;
   }
 
+  readBrowserTranscript(id: string) {
+    const file = path.join(this.directory, `${id}.json`);
+    if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id)) throw new Error("Invalid Chat identity.");
+    const before = fs.lstatSync(file);
+    if (!before.isFile() || before.nlink !== 1 || fs.realpathSync(file) !== file) throw new Error("Invalid Chat file.");
+    const chat = this.resolveChat(chatPkmUrl(this.namespace, id));
+    const after = fs.lstatSync(file);
+    if (after.dev !== before.dev || after.ino !== before.ino || after.ctimeMs !== before.ctimeMs)
+      throw new Error("Chat changed while reading.");
+    return { title: chat.title, messages: chat.messages,
+      revision: JSON.stringify([chat.createdAt, chat.revision, before.dev, before.ino, before.ctimeMs]) };
+  }
+
   startTask(chat: ApiConversation, title: string): void {
     if (chat.sessionId) throw new Error("Complete the current Task before starting another Task.");
     if (chat.progress?.status === "running" || chat.messages.some(message => message.status === "streaming")) throw new Error("Wait for the current request before starting a Task.");

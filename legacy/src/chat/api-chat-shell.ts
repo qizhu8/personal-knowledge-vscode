@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
-import { randomBytes } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import type { ApiChatView } from "./api-chat-view";
 import { getStorePath } from "../knowledge/filestore";
 import { loadedExtensionBuild } from "../runtime/extension-host-runtime";
@@ -11,6 +11,7 @@ import { registerVisualizationWindow } from "./visualization-window";
 import { withAsyncDeadline } from "../runtime/async-deadline";
 import { createBrowserChatTranscriptReader, type BrowserChatGrant } from "./browser-chat-transcript";
 import { bindBrowserChatTurns } from "./browser-chat-turns";
+import type { bindNativeBrowserChatTranscriptConsent } from "./detached-browser-chat-transcript";
 
 export const CHAT_STARTUP_TIMEOUT_MS = 180_000;
 
@@ -106,6 +107,8 @@ export function registerApiChatShell(context: vscode.ExtensionContext, load: (si
   readonly isBusy: boolean;
   bindBrowserChatTranscript(grant: BrowserChatGrant, assertCurrent: (grant: BrowserChatGrant) => void):
     ReturnType<typeof createBrowserChatTranscriptReader>;
+  bindDetachedTranscriptConsent(grant: BrowserChatGrant, assertCurrent: (grant: BrowserChatGrant) => void):
+    { namespace: string } & ReturnType<typeof bindNativeBrowserChatTranscriptConsent>;
   bindBrowserChatTurns(grant: BrowserChatGrant, assertCurrent: (grant: BrowserChatGrant) => void):
     ReturnType<typeof bindBrowserChatTurns>;
   drainManagedWriter(): Promise<void>;
@@ -301,6 +304,25 @@ export function registerApiChatShell(context: vscode.ExtensionContext, load: (si
             "Share transcript") === "Share transcript";
         },
       });
+    },
+    bindDetachedTranscriptConsent(grant, assertCurrent) {
+      const workspace = () => vscode.workspace.workspaceFolders?.map(folder => folder.uri.toString()).join("|");
+      const captured = workspace();
+      if (!captured) throw new Error("Original Chat workspace is unavailable.");
+      const assertOwner = (bound: BrowserChatGrant) => {
+        if (!assertChatHost || managedWriterFenced || workspace() !== captured)
+          throw new Error("Original Chat Host is unavailable.");
+        assertCurrent(bound);
+        assertChatHost(bound);
+      };
+      assertOwner(grant);
+      const namespace = createHash("sha256").update(captured).digest("hex").slice(0, 16);
+      const consent = (require("./detached-browser-chat-transcript") as typeof import("./detached-browser-chat-transcript"))
+        .bindNativeBrowserChatTranscriptConsent({ grant, namespace, assertCurrent: assertOwner }, async (title, chatId) =>
+          await vscode.window.showInformationMessage("Share this exact Chat transcript after VS Code closes?",
+            { modal: true, detail: `${title.slice(0, 120)} (${chatId})\nThis browser grant can read this saved transcript for up to 24 hours, even after VS Code closes. New Chat changes are not shared. No tools, attachments or approvals are shared.` },
+            "Share saved transcript") === "Share saved transcript");
+      return { namespace, ...consent };
     },
     drainManagedWriter: async () => {
       managedWriterFenced = true;
