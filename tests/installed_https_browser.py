@@ -26,31 +26,37 @@ def verify_https_setup(editor, browser, base, chat_id, bundle):
         quick.locator("input").fill(">PKM: Configure Independent HTTPS Browser Access")
         quick.locator(".monaco-list-row").filter(has_text="Configure Independent HTTPS Browser Access").first.click()
 
-    command()
-    editor.get_by_text("Configure independent HTTPS Chat", exact=True).click()
-    quick = editor.locator(".quick-input-widget")
-    for title, value in [
-        ("PKM HTTPS address", origin), ("PKM HTTPS server interface", "127.0.0.1"),
-        ("Select the HTTPS certificate on the PKM server", str(cert)),
-        ("Select the owner-only HTTPS private key on the PKM server", str(key)),
-    ]:
-        expect(quick.get_by_text(title, exact=True)).to_be_visible(timeout=20000)
-        quick.locator("input").fill(value)
-        editor.keyboard.press("Enter")
-    quick.locator(".monaco-list-row").filter(has_text=chat_id).click(timeout=30000)
     dialog = editor.locator(".monaco-dialog-box")
-    dialog.get_by_role("button", name="Authorize conversation", exact=True).click(timeout=20000)
-    dialog.get_by_role("button", name="Share saved transcript", exact=True).click()
-    dialog.get_by_role("button", name="Read and edit Notes", exact=True).click()
-    expect(editor.get_by_text("PKM HTTPS: configured", exact=True)).to_be_visible(timeout=30000)
-    (base / "https-enrollment-request").touch()
-    enrollment = base / "https-enrollment.json"
-    until = time.monotonic() + 15
-    while not enrollment.exists() and time.monotonic() < until:
-        time.sleep(0.1)
-    assert enrollment.exists(), "Native HTTPS setup did not publish its clipboard sign-in token"
-    issued = json.loads(enrollment.read_text())
-    enrollment.unlink()
+    def authorize():
+        command()
+        editor.get_by_text("Configure independent HTTPS Chat", exact=True).click()
+        quick = editor.locator(".quick-input-widget")
+        for title, value in [
+            ("PKM HTTPS address", origin), ("PKM HTTPS server interface", "127.0.0.1"),
+            ("Select the HTTPS certificate on the PKM server", str(cert)),
+            ("Select the owner-only HTTPS private key on the PKM server", str(key)),
+        ]:
+            expect(quick.get_by_text(title, exact=True)).to_be_visible(timeout=20000)
+            quick.locator("input").fill(value)
+            editor.keyboard.press("Enter")
+        quick.locator(".monaco-list-row").filter(has_text=chat_id).click(timeout=30000)
+        dialog.get_by_role("button", name="Authorize conversation", exact=True).click(timeout=20000)
+        dialog.get_by_role("button", name="Share saved transcript", exact=True).click()
+        dialog.get_by_role("button", name="Read and edit Notes", exact=True).click()
+        expect(editor.get_by_text("PKM HTTPS: configured", exact=True)).to_be_visible(timeout=30000)
+        request = base / "https-enrollment-request"
+        request.touch()
+        enrollment = base / "https-enrollment.json"
+        until = time.monotonic() + 15
+        while not enrollment.exists() and time.monotonic() < until:
+            time.sleep(0.1)
+        assert enrollment.exists(), "Native HTTPS setup did not publish its clipboard sign-in token"
+        issued = json.loads(enrollment.read_text())
+        request.unlink()
+        enrollment.unlink()
+        return issued
+
+    issued = authorize()
     context = browser.new_context(ignore_https_errors=True)
     try:
         page = context.new_page()
@@ -113,6 +119,12 @@ def verify_https_setup(editor, browser, base, chat_id, bundle):
             try { return (await fetch("/webview/panel.js", {cache: "no-store"})).ok; }
             catch { return false; }
         }""")
+        detached = authorize()
+        detached.update({"origin": origin, "chatId": chat_id, "bundle": str(bundle), "base": str(base)})
+        retained = base / "https-detached-enrollment.json"
+        with retained.open("x", encoding="utf8") as file:
+            json.dump(detached, file)
+        retained.chmod(0o600)
         return {"nativeSetup": True, "exactTlsBundle": True, "sameOriginalNotesCreateAndEdit": True,
                 "multiRoundChatWithoutNativePrompts": True, "reopenedSavedReply": True, "nativeRevoke": True}
     finally:

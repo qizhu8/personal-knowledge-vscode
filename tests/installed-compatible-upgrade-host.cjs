@@ -228,7 +228,12 @@ print(json.dumps(tools["api_chat_send"](sys.argv[3], sys.argv[4], sys.argv[5], s
           if (fs.existsSync(path.join(base, "https-enrollment-request")) && !fs.existsSync(httpsEnrollment)) {
             const token = await vscode.env.clipboard.readText();
             if (/^[A-Za-z0-9_-]{43}$/.test(token)) {
-              fs.writeFileSync(httpsEnrollment, JSON.stringify({ token }), { mode: 0o600, flag: "wx" });
+              const { pkmServiceIdentity } = require(path.join(extension.extensionPath, "dist/runtime/pkm-service.js"));
+              const service = pkmServiceIdentity({ knowledgeRoot: root, extensionVersion: extension.packageJSON.version,
+                globalStoragePath: path.join(base, "u/User/globalStorage/uone.personal-knowledge") });
+              fs.writeFileSync(httpsEnrollment, JSON.stringify({ token,
+                provisionPath: path.join(service.serviceDirectory, "browser-transcript-v1.json"),
+              }), { mode: 0o600, flag: "wx" });
               await vscode.env.clipboard.writeText("");
             }
           }

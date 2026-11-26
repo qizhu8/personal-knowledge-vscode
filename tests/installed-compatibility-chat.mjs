@@ -569,6 +569,16 @@ exports.registerApiChatShell = (...args) => {
           line.includes(join(base, "x")) && line.includes("/compatibility-mcp-cli.js"));
         while ((oldClients() || gatewayAlive()) && Date.now() < closeDeadline) await wait(100);
         assert(!oldClients() && !gatewayAlive(), "Prior stdio clients must exit before restart.");
+        if (installedBrowser) {
+          browser = spawn(browserPython, ["-B", join(here, "installed_https_detached.py"),
+            join(base, "https-detached-enrollment.json")],
+          { env: { ...appEnv, PLAYWRIGHT_BROWSERS_PATH: browserCache }, stdio: "inherit" });
+          const detachedDeadline = Date.now() + 90_000;
+          while (browser.exitCode === null && browser.signalCode === null && Date.now() < detachedDeadline) await wait(100);
+          assert.equal(browser.exitCode, 0, "Native-provisioned HTTPS must work after the actual Workbench exits.");
+          upgradeEvidence.browser.detached = await file(join(base, "https-detached.json"));
+          assert.equal(upgradeEvidence.browser.detached?.actualNativeHostExited, true);
+        }
         app = spawn(editor, launchArgs, { env: { ...appEnv, PKM_UPGRADE_BASE: base,
           PKM_UPGRADE_GATEWAY: "1", PKM_UPGRADE_RESTART: "1" }, stdio: ["ignore", "pipe", "pipe"] });
         for (const stream of [app.stdout, app.stderr]) stream.on("data", bytes => logs.push(bytes.toString()));
