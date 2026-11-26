@@ -205,6 +205,13 @@ requires restarting the daemon. This mode does not enable Notes, MCP or Chat
 mutations, and does not change ordinary gateway admission or settings.
 This callback is not advertised as an MCP operation and grants no remote writes.
 
+To qualify the actual candidate rather than a staged checkout payload, run
+`node --test tests/test-browser-chat-transcript.js` from `legacy/` with
+`PKM_TRANSCRIPT_TEST_VSIX` set to the absolute archive path and
+`PKM_TRANSCRIPT_TEST_VSIX_SHA256` set to its reviewed digest. The test extracts
+the archive into a disposable directory and starts its daemon without changing
+the active extension installation.
+
 The transcript probe passed in isolated Linux VS Code 1.143.0 fixture
 `installed-chat-28420905-e61c-4427-83e4-afcf986ea114` with candidate VSIX
 SHA-256 `5e87c958f097b8f6b6aafbf2fc109d12bda02b98e36a4a77b9cc915809441cce`.

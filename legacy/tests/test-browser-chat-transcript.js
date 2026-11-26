@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createBrowserChatTranscriptReader } = require("../dist/chat/browser-chat-transcript");
 const fs = require("node:fs");
-const { join } = require("node:path");
+const { join, dirname, isAbsolute } = require("node:path");
 const { tmpdir } = require("node:os");
 const { randomBytes, randomUUID } = require("node:crypto");
 const { execFileSync, fork, spawn } = require("node:child_process");
@@ -119,6 +119,19 @@ test("native receipt requires exact per-Chat consent and is rechecked on every p
 });
 
 function installFixture(installed) {
+  const archive = process.env.PKM_TRANSCRIPT_TEST_VSIX;
+  const digest = process.env.PKM_TRANSCRIPT_TEST_VSIX_SHA256;
+  if (archive !== undefined || digest !== undefined) {
+    assert(archive && isAbsolute(archive) && /^[a-f0-9]{64}$/.test(digest),
+      "Supply an absolute candidate archive and its exact SHA-256.");
+    assert.equal(execFileSync("sha256sum", ["--", archive], { encoding: "utf8" }).split(" ")[0], digest);
+    execFileSync("unzip", ["-q", archive, "-d", dirname(installed)]);
+    fs.renameSync(join(dirname(installed), "extension"), installed);
+    const manifest = JSON.parse(fs.readFileSync(join(installed, "package.json")));
+    assert.equal(`${manifest.publisher}.${manifest.name}`, "Uone.personal-knowledge");
+    require("../dist/runtime/next-payload-verifier").verifyNextPayload(installed);
+    return manifest.version;
+  }
   const project = join(__dirname, "../..");
   const payload = join(installed, "next-runtime");
   const copy = (source, target) => {
@@ -134,7 +147,7 @@ function installFixture(installed) {
   return version;
 }
 
-test("installed-layout PKM daemon serves only the consented Original Chat over TLS after native writer exits", { timeout: 30_000 }, async t => {
+test("packaged PKM daemon serves only the consented Original Chat over TLS after native writer exits", { timeout: 30_000 }, async t => {
   const f = fixture();
   const installRoot = fs.mkdtempSync(join(__dirname, ".transcript-install-"));
   f.installed = join(installRoot, "uone.personal-knowledge-fixture");
