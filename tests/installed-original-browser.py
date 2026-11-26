@@ -162,5 +162,9 @@ with sync_playwright() as playwright:
             "nativeSendAndStopAfterReload": True, "fixtureProviderAborted": True,
             "independentHttps": https,
         }))
+    except (Error, AssertionError):
+        editor.screenshot(path=str(base / "installed-browser-blocked.png"))
+        (base / "installed-browser-workbench.txt").write_text(editor.locator("body").inner_text())
+        raise
     finally:
         browser.close()

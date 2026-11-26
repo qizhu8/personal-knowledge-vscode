@@ -52,14 +52,13 @@ exports.activate = () => {
     const expectGateway = process.env.PKM_UPGRADE_GATEWAY === "1";
     const originalBuild = lifecycle.bundledMcpBuildIdentity(extension.extensionPath);
     if (expectGateway) {
-      assert.equal(version.version, "0.1.0");
-      assert.equal(version.backend.runtimeBuild, originalBuild);
-      assert.equal(version.backend.storageEngine, "original");
-      assert.equal(version.backend.storageMigrated, false);
-      const selected = await vscode.commands.executeCommand("_personalKnowledge.pkmCompatibilityRouteStatus");
-      assert.equal(selected.selected.runtimeBuild, version.runtime.runtimeBuild);
-      assert.equal(selected.selected.generation, version.runtime.generation);
-      assert.deepEqual(selected.compatibleCandidates, []);
+      assert.equal(version.dispatchMode, "original", "Production activation must preserve Original as the initial backend");
+      assert.equal(version.version, mcp.UNIFIED_MCP_VERSION);
+      assert.equal(version.runtime.runtimeBuild, originalBuild);
+      assert.equal(version.runtime.extensionVersion, "5.0.0");
+      assert.match(version.routeRuntime.runtimeBuild, /^[a-f0-9]{64}$/);
+      assert.equal(version.routeRuntime.phase, "accepting");
+      assert.equal(version.originalConnection.attribution.source, "vscode-provider");
     } else assert.equal(version.runtime.runtimeBuild, originalBuild);
     fs.writeFileSync(path.join(base, "upgrade-live-version.json"), JSON.stringify(version));
     const readOriginalNote = async () => assert.match(await tool("capability_read", {
@@ -175,6 +174,21 @@ print(json.dumps(tools["api_chat_send"](sys.argv[3], sys.argv[4], sys.argv[5], s
       assert.equal(receipt.result?.reply?.status, "complete", JSON.stringify(receipt));
       assert.equal(receipt.result?.reply?.content, "BUNDLED_GATEWAY_ACCEPTED");
       stage("chat-final-read-receipt");
+      const observedChat = await vscode.commands.executeCommand("_personalKnowledge.observeChatGateway");
+      const observedNative = await liveVersion();
+      assert.equal(observedChat.dispatchMode, "original");
+      assert.equal(observedNative.dispatchMode, "original");
+      assert.equal(observedChat.routeRuntime.generation, observedNative.routeRuntime.generation);
+      assert.notEqual(observedChat.routeRuntime.instanceId, observedNative.routeRuntime.instanceId);
+      const clients = Object.fromEntries([["native", observedNative], ["chat", observedChat]].map(([role, observed]) => [
+        role, { source: observed.originalConnection.attribution.source,
+          gateway: { generation: observed.runtime.generation, runtimeBuild: observed.runtime.runtimeBuild },
+          relay: observed.routeRuntime },
+      ]));
+      assert.equal(clients.native.source, "vscode-provider");
+      assert.equal(clients.chat.source, "pkm-chat");
+      assert.deepEqual(clients.native.gateway, clients.chat.gateway);
+      fs.writeFileSync(path.join(base, "upgrade-gateway-clients.json"), JSON.stringify(clients));
       if (process.env.PKM_UPGRADE_BROWSER === "1") {
         const searchDeadline = Date.now() + 30_000;
         let standard;
@@ -227,7 +241,7 @@ print(json.dumps(tools["api_chat_send"](sys.argv[3], sys.argv[4], sys.argv[5], s
     }
     fs.writeFileSync(path.join(base, "upgrade-host.json"), JSON.stringify({
       liveBuild: version.runtime.runtimeBuild, liveVersion: version.version,
-      route: expectGateway ? "bundled-original-business-gateway" : "original-managed",
+      route: expectGateway ? "flag-free-original-dispatch" : "original-managed",
       generation: version.runtime.generation,
       oldNoteReadThroughNativePkm: true, panelAndChatCommands: true,
       rejectedRuntimeRepairReleasedScopedMarkers: true,

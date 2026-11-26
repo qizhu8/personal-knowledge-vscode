@@ -24,7 +24,7 @@ def verify_https_setup(editor, browser, base, chat_id, bundle):
         editor.keyboard.press("Control+Shift+P")
         quick = editor.locator(".quick-input-widget")
         quick.locator("input").fill(">PKM: Configure Independent HTTPS Browser Access")
-        editor.keyboard.press("Enter")
+        quick.locator(".monaco-list-row").filter(has_text="Configure Independent HTTPS Browser Access").first.click()
 
     command()
     editor.get_by_text("Configure independent HTTPS Chat", exact=True).click()

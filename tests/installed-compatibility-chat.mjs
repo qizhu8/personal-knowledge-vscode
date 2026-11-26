@@ -102,7 +102,7 @@ if (!process.argv.includes("--inside")) {
       await mkdir(join(base, directory), { recursive: true, mode: 0o700 });
     process.chdir(base);
     const short = `/proc/${process.pid}/cwd`;
-    const env = { PATH: process.env.PATH || "", HOME: join(base, "h"), USERPROFILE: join(base, "h"),
+    const env = { PATH: process.env.PATH || "", HOME: `${short}/h`, USERPROFILE: `${short}/h`,
       TMPDIR: upgrade ? "/proc/self/cwd/scratch" : join(base, "scratch"),
       TMP: upgrade ? "/proc/self/cwd/scratch" : join(base, "scratch"),
       TEMP: upgrade ? "/proc/self/cwd/scratch" : join(base, "scratch"),
@@ -202,23 +202,6 @@ extensionPath:${JSON.stringify(installed)},globalStorageUri:{fsPath:${JSON.strin
           const step = sequence[results.length];
           if (!step) {
             assert(results.at(-1).content.includes(noteText));
-            const processArgs = checked("ps", ["-eo", "pid=,args="], { env }).split("\n")
-              .filter(line => line.includes("/uone.personal-knowledge-5.0.0/next-runtime/server/dist/compatibility-mcp-cli.js"));
-            const receipts = [];
-            for (const line of processArgs) {
-              const pid = Number(line.trim().split(/\s+/)[0]);
-              const vars = (await readFile(`/proc/${pid}/environ`, "utf8")).split("\0");
-              const arg = vars.find(item => item.startsWith("PKM_MCP_LAUNCH_ATTRIBUTION="));
-              const argv = (await readFile(`/proc/${pid}/cmdline`, "utf8")).split("\0");
-              if (!arg || arg === "PKM_MCP_LAUNCH_ATTRIBUTION=" || !argv[1]?.endsWith("/compatibility-mcp-cli.js")) continue;
-              const source = JSON.parse(arg.slice("PKM_MCP_LAUNCH_ATTRIBUTION=".length)).source;
-              receipts.push({ source, gateway: JSON.parse(await readFile(argv[2], "utf8")).gateway });
-            }
-            const native = receipts.find(receipt => receipt.source === "vscode-provider");
-            const chat = receipts.find(receipt => receipt.source === "pkm-chat");
-            assert(native && chat);
-            assert.deepEqual(chat.gateway, native.gateway);
-            await writeFile(join(base, "upgrade-gateway-clients.json"), JSON.stringify({ native, chat }));
           }
           response.writeHead(200, { "content-type": "text/event-stream" });
           response.end(`data: ${JSON.stringify({ choices: [{ delta: step ? { tool_calls: [{ index: 0,
