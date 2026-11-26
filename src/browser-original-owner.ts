@@ -24,6 +24,9 @@ interface OriginalBrowserBinding {
   token: string;
   grant: OriginalBrowserGrant;
   assertCurrent(grant: OriginalBrowserGrant): void;
+  /** Private, explicitly consented Original filestore Notes bridge; never an MCP operation. */
+  originalNotes?: ((input: Extract<BrowserCommand, { command: "list" | "detail" | "saveNote" | "updateNote" }>,
+    current: () => boolean) => Promise<unknown>) & Readonly<{ allowWrite?: boolean }>;
   /** Private callback from bindBrowserChatTranscript, never an MCP or mailbox operation. */
   readChatTranscript?(grant: OriginalBrowserGrant,
     input: Readonly<{ chatId: string; cursor?: string; limit?: number }>): Promise<unknown>;
@@ -76,6 +79,7 @@ export async function createOriginalBrowserRoute(owner: OriginalBrowserOwner, op
   const transcriptOnly = owner.transcriptOnly === true;
   const detachedChatId = owner.transcriptOnly ? chatId.parse(owner.detachedChatId) : undefined;
   const assertCurrent = owner.assertCurrent.bind(owner);
+  const originalNotes = owner.originalNotes?.bind(owner);
   const capabilityRead = owner.transcriptOnly ? undefined : owner.capabilityRead.bind(owner);
   const readChatTranscript = grant.chatHostId ? owner.readChatTranscript?.bind(owner) : undefined;
   if (transcriptOnly && !readChatTranscript) throw new Error("Missing detached Original Chat binding.");
@@ -104,6 +108,28 @@ export async function createOriginalBrowserRoute(owner: OriginalBrowserOwner, op
     if (pending >= 4) throw unavailable("Original browser read limit reached.");
     pending++;
     try {
+      if (originalNotes && (input.command === "list" || input.command === "detail" ||
+          input.command === "saveNote" || input.command === "updateNote")) {
+        if (!current() || !authorized()) throw unavailable("Original Notes authorization expired or was revoked.");
+        try {
+          const result = await originalNotes(input, () => current() && authorized());
+          if (!current() || !authorized()) throw unavailable("Original Notes authorization expired or was revoked.");
+          return result;
+        } catch (error) {
+          const code = (error as { code?: string })?.code;
+          const messages: Record<string, string> = {
+            ORIGINAL_NOTE_EDIT_CONFLICT: "The Note changed. Reopen it before saving.",
+            ORIGINAL_NOTE_EXISTS: "A Note with that name already exists.",
+            ORIGINAL_NOTES_DENIED: "Original Notes authorization expired, was revoked, or does not allow this operation.",
+            ORIGINAL_NOTES_LIMIT: "Original Notes session limit reached. Reopen the authorized browser session.",
+            ORIGINAL_NOTES_OPERATION: "This operation ID was already used for a different request.",
+            ORIGINAL_NOTES_INVALID: "This Note name, path, body, or metadata is not supported. Choose an ordinary Markdown Note.",
+          };
+          const message = messages[code ?? ""];
+          throw message ? unavailable(message) : new CoreError("BUSY",
+            "Original Notes request failed. Reopen the Note; do not automatically retry a save.", "unknown");
+        }
+      }
       if (transcriptOnly && input.command !== "chatMessages" && input.command !== "chatCapabilities" && input.command !== "chatList" &&
           input.command !== "originalChatTarget" && input.command !== "originalChatSend" &&
           input.command !== "originalChatStatus" && input.command !== "originalChatStop")
@@ -249,5 +275,8 @@ export async function createOriginalBrowserRoute(owner: OriginalBrowserOwner, op
       throw unavailable("Original owner did not return the expected browser read.");
     } finally { pending--; }
   };
-  return (req: IncomingMessage, res: ServerResponse) => gate(req, res, { accepting: authorized, authorized, readOriginal, transcriptOnly });
+  return (req: IncomingMessage, res: ServerResponse) => gate(req, res, {
+    accepting: authorized, authorized, readOriginal, transcriptOnly: transcriptOnly && !originalNotes,
+    originalNotesAccess: originalNotes ? owner.originalNotes?.allowWrite === true ? "write" : "read" : undefined,
+  });
 }

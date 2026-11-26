@@ -13,8 +13,9 @@
     const status = document.getElementById("browser-release-status");
     if (status) status.textContent = text;
   };
-  const originalReadOnly = !!document.getElementById("pkm-original-browser");
-  const defaultStatus = originalReadOnly ? "Browser · Original Notes (read-only)" : "Browser release gate · Notes and PKM Chat";
+  const originalOwner = document.getElementById("pkm-original-browser");
+  const originalReadOnly = !!originalOwner && originalOwner.dataset.notesAccess !== "write";
+  const defaultStatus = originalOwner ? `Browser · Original Notes${originalReadOnly ? " (read-only)" : ""}` : "Browser release gate · Notes and PKM Chat";
   const paths = new Map();
   const emit = message => window.dispatchEvent(new MessageEvent("message", { data: message }));
   async function post(path, value) {
@@ -119,8 +120,8 @@
     if (originalReadOnly) {
       create.disabled = true;
       create.title = "Original Note writes are not available in the browser.";
-      byId("search-case").disabled = true;
     }
+    if (originalOwner && !originalOwner.dataset.notesAccess) byId("search-case").disabled = true;
     const form = byId("note-form");
     const save = form.querySelector(".form-actions button:last-child");
     const cancel = form.querySelector(".form-actions button:first-child");

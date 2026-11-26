@@ -809,6 +809,41 @@ export class NoteBodyEditConflict extends Error {
   constructor() { super("The Note changed or disappeared. Reopen it before saving the draft."); }
 }
 
+/** Owner-only create: the existing title-derived filename is never overwritten or renamed. */
+export function createOriginalNoteNoOverwrite(row: {
+  title: string; content: string; type: string; tags: string[]; category: string;
+}, assertCurrent: () => void = () => {}): string {
+  const category = safeCategory(row.category);
+  if (category !== row.category || safeName(row.title) !== row.title || row.title === "." || row.title === "..")
+    throw Object.assign(new Error("Choose an exact valid Note name and category."), { code: "ORIGINAL_NOTES_INVALID" });
+  const relative = `${category ? category + "/" : ""}${row.title}.md`;
+  return withMarkdownAssetMutation(getStorePath(), () => {
+    assertCurrent();
+    if (noteGet(relNoExt(relative))) {
+      throw Object.assign(new Error("A Note with that name already exists."), { code: "ORIGINAL_NOTE_EXISTS" });
+    }
+    const identity = nextKnowledgeIdentity(undefined, "note", relNoExt(relative), relNoExt(relative));
+    const content = serializeFrontmatter({
+      schema: identity.schema, knowledgeId: identity.knowledgeId, revision: identity.revision, aliases: identity.aliases,
+      title: row.title, description: "", type: row.type, tags: row.tags, created: now(), links: [],
+    }, row.content);
+    if (parseFrontmatter(content).body !== row.content || readNoteWorkItems(content).items.length ||
+        relative.split("/").some(part => part.toLowerCase() === "system" || part.toLowerCase() === "_assets" ||
+          part.toLowerCase() === todoBoardFilename.toLowerCase() || isMarkdownAssetDirectory(part)))
+      throw Object.assign(new Error("Choose an ordinary Markdown Note."), { code: "ORIGINAL_NOTES_INVALID" });
+    writeKnowledgeMarkdownUnlocked("notes", relative, undefined, content, (full, text) => {
+      assertCurrent();
+      try { writeFileSync(full, text, { flag: "wx" }); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST")
+          throw Object.assign(new Error("A Note with that name already exists."), { code: "ORIGINAL_NOTE_EXISTS" });
+        throw error;
+      }
+    });
+    return relative;
+  });
+}
+
 const maxNoteBodyEditBytes = 512 * 1024;
 function noteBodyEditSnapshot(root: string, relative: string) {
   const parts = relative.split("/");
@@ -866,7 +901,8 @@ export function readOriginalNoteBodyForEdit(relative: string): { body: string; s
 }
 
 /** Internal owner primitive; the authenticated caller must hold admission to the selected root. */
-export function compareAndSwapOriginalNoteBody(relative: string, expected: { sha256: string; revision: string }, body: string): void {
+export function compareAndSwapOriginalNoteBody(relative: string, expected: { sha256: string; revision: string }, body: string,
+  assertCurrent: () => void = () => {}): void {
   if (!/^[a-f0-9]{64}$/.test(expected.sha256) || !/^[a-f0-9]{64}$/.test(expected.revision)
     || typeof body !== "string" || Buffer.byteLength(body) > maxNoteBodyEditBytes
     || Buffer.from(body).toString("utf8") !== body)
@@ -874,6 +910,7 @@ export function compareAndSwapOriginalNoteBody(relative: string, expected: { sha
   const root = getStorePath();
   withMarkdownAssetLock(root, () => {
     const readCurrent = () => {
+      assertCurrent();
       const current = noteBodyEditSnapshot(root, relative);
       if (current.sha256 !== expected.sha256 || current.revision !== expected.revision) throw new NoteBodyEditConflict();
       return current;
