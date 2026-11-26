@@ -29,6 +29,7 @@ const validText = (text: string) => typeof text === "string" && !!text.trim() &&
 
 /** Private owner record from a native confirmation. Neither a browser credential nor model credentials. */
 export interface DetachedOriginalTextApproval {
+  approvalId: string;
   grant: BrowserChatGrant;
   namespace: string;
   chatId: string;
@@ -39,6 +40,8 @@ export interface DetachedOriginalTextApproval {
   model: Provider;
   approvedTextHash: string;
   revision: string;
+  chatRevision: number;
+  shareReply: true;
   expiresAt: number;
 }
 
@@ -95,7 +98,8 @@ export async function approveDetachedOriginalTextTurn(options: {
   const currentRoot = lstatSync(grant.workspaceRoot);
   if (currentRoot.dev !== root.dev || currentRoot.ino !== root.ino || !currentRoot.isDirectory() ||
       store.browserTurnRevision(chat, execution.digest) !== revision) throw unavailable();
-  return { grant: { ...grant }, namespace, chatId, sessionId: chat.sessionId!, execution, model, revision,
+  return { approvalId: randomUUID(), grant: { ...grant }, namespace, chatId, sessionId: chat.sessionId!, execution, model, revision,
+    chatRevision: chat.revision!, shareReply: true,
     approvedTextHash: sha(text), expiresAt: Date.now() + 15 * 60_000, rootDevice: root.dev, rootInode: root.ino };
 }
 
@@ -106,6 +110,8 @@ export function bindDetachedOriginalTextTurn(privateApproval: DetachedOriginalTe
   withWriter<T>(work: () => Promise<T>): Promise<T>;
 }) {
   const approval = structuredClone(privateApproval);
+  if (!uuid.test(approval.approvalId) || !Number.isSafeInteger(approval.chatRevision) ||
+      !Number.isSafeInteger(approval.expiresAt) || approval.shareReply !== true) throw unavailable();
   const { grant, model, namespace, chatId, sessionId, execution } = approval;
   const store = new ApiChatStore(join(grant.workspaceRoot, ".pkm", "state"), namespace);
   function assertOriginalRoot() {
@@ -127,7 +133,7 @@ export function bindDetachedOriginalTextTurn(privateApproval: DetachedOriginalTe
     if (store.browserTurnRevision(chat, execution.digest) !== approval.revision) throw unavailable();
     return chat;
   }
-  return bindBrowserChatTurns(grant, {
+  const turns = bindBrowserChatTurns(grant, {
     assertCurrent: current,
     target: id => ({ title: target(id).title, stamp: approval.revision }),
     confirm: async (_title, _id, text) => validText(text) && sha(text) === approval.approvedTextHash,
@@ -149,7 +155,7 @@ export function bindDetachedOriginalTextTurn(privateApproval: DetachedOriginalTe
       chat.progress = progress;
       if (!chat.messages.length && !chat.customTitle) chat.title = text.trim().slice(0, 65);
       chat.messages.push({ id: inputId, role: "user", content: text, status: "complete", taskId: sessionId,
-        inputOrigin: "agent", recordedAt, executionContext: execution }, reply);
+        inputOrigin: "agent", recordedAt, executionContext: execution, submissionId: approval.approvalId }, reply);
       chat.updatedAt = recordedAt;
       store.admitBrowserTurn(chat, approval.revision, execution.digest, current);
       const live = () => { current(); store.assertRunnable(chat, admission.id, execution); };
@@ -177,6 +183,7 @@ export function bindDetachedOriginalTextTurn(privateApproval: DetachedOriginalTe
         admission.signal.removeEventListener("abort", abort);
       }
       const ended = Date.now();
+      if (apiKey) reply.content = reply.content.split(apiKey).join("[redacted]");
       progress.finishedAt = ended;
       progress.steps[0] = { ...progress.steps[0], finishedAt: ended, status: progress.status };
       reply.elapsedMs = ended - startedAt;
@@ -187,4 +194,21 @@ export function bindDetachedOriginalTextTurn(privateApproval: DetachedOriginalTe
       return reply.status === "complete" ? "completed" : reply.status === "cancelled" ? "cancelled" : "unknown";
     }),
   });
+  return { ...turns, readSettledReply(id: string) {
+    current();
+    if (id !== chatId) throw unavailable();
+    const snapshot = store.readBrowserTranscript(chatId);
+    const chat = store.resolveChat(chatPkmUrl(namespace, chatId));
+    store.assertAvailable(chat);
+    const input = chat.messages[chat.messages.length - 2], reply = chat.messages[chat.messages.length - 1], progress = chat.progress;
+    if (chat.sessionId !== sessionId || chat.revision !== approval.chatRevision + 2 ||
+        input?.role !== "user" || input.submissionId !== approval.approvalId || input.taskId !== sessionId ||
+        sha(input.content) !== approval.approvedTextHash || reply?.inputId !== input.id || reply.role !== "assistant" ||
+        reply.taskId !== sessionId || !progress?.attemptId || reply.progress?.attemptId !== progress.attemptId ||
+        progress.executionContext?.digest !== execution.digest || !["complete", "cancelled", "failed"].includes(progress.status) ||
+        reply.status !== progress.status || JSON.stringify(snapshot.messages) !== JSON.stringify(chat.messages)) throw unavailable();
+    current();
+    const messages = [input, reply].map(({ id, role, content, status, recordedAt }) => ({ id, role, content, status, recordedAt }));
+    return { chatId, start: 0, total: messages.length, nextCursor: null, messages };
+  } };
 }

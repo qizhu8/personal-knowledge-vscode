@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { isIP } from "node:net";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { BrowserChatGrant } from "../chat/browser-chat-transcript";
+import type { DetachedOriginalTextApproval } from "../chat/detached-original-text-turn";
 import { verifyNextPayload } from "./next-payload-verifier";
 
 /** Provisioned outside the service by its trusted owner; never created by HTTP, IPC or boot arguments. */
@@ -28,6 +29,7 @@ export interface PkmServiceTranscriptProvision {
   cert: string;
   key: string;
   token: string;
+  turn?: { approval: DetachedOriginalTextApproval; providerKey: string };
 }
 
 export async function startServiceBrowserTranscript(options: {
@@ -36,6 +38,7 @@ export async function startServiceBrowserTranscript(options: {
   extensionPath: string;
   managedWriterSession?: string;
   assertServiceCurrent(): void;
+  withWriter<T>(work: () => Promise<T>): Promise<T>;
 }): Promise<{ close(): Promise<void>; assertProvisionCurrent(): void } | undefined> {
   const file = path.join(options.serviceDirectory, PKM_SERVICE_TRANSCRIPT_PROVISION);
   const checkFile = (stat: fs.Stats) => {
@@ -56,7 +59,7 @@ export async function startServiceBrowserTranscript(options: {
     provision = JSON.parse(fs.readFileSync(fd, "utf8"));
   } finally { fs.closeSync(fd); }
   const { schema, serviceIdentity, root, rootDevice, rootInode, actorId, generation, chatHostId,
-    namespace, chatId, token, address, port, httpsOrigin, cert, key, managedWriterSession } = provision;
+    namespace, chatId, token, address, port, httpsOrigin, cert, key, managedWriterSession, turn } = provision;
   const uri = typeof httpsOrigin === "string" ? URL.parse(httpsOrigin) : null;
   if (schema !== "pkm.service-browser-transcript/v1" || serviceIdentity !== path.basename(options.serviceDirectory) ||
       root !== options.knowledgeRoot || managedWriterSession !== options.managedWriterSession ||
@@ -102,8 +105,39 @@ export async function startServiceBrowserTranscript(options: {
   };
   const { bindDetachedBrowserChatTranscript } = require("../chat/detached-browser-chat-transcript") as
     typeof import("../chat/detached-browser-chat-transcript");
+  let turns: ReturnType<typeof import("../chat/detached-original-text-turn").bindDetachedOriginalTextTurn> | undefined;
+  if (turn !== undefined) {
+    const approval = turn?.approval;
+    if (!approval || approval.chatId !== chatId || approval.namespace !== namespace || approval.rootDevice !== rootDevice ||
+        approval.rootInode !== rootInode || approval.grant?.workspaceRoot !== root || approval.grant.actorId !== actorId ||
+        approval.grant.generation !== generation || approval.grant.chatHostId !== chatHostId ||
+        typeof turn.providerKey !== "string" || !turn.providerKey.trim() || turn.providerKey.length > 8192 ||
+        /[\x00-\x20\x7f]/.test(turn.providerKey)) throw new Error("Invalid private PKM turn provision.");
+    const { bindDetachedOriginalTextTurn } = require("../chat/detached-original-text-turn") as
+      typeof import("../chat/detached-original-text-turn");
+    const providerKey = turn.providerKey;
+    const pinnedModel = JSON.stringify(approval.model);
+    turns = bindDetachedOriginalTextTurn(approval, {
+      assertCurrent, withWriter: options.withWriter,
+      async readProviderKey(model, signal) {
+        assertCurrent(grant);
+        signal.throwIfAborted();
+        if (JSON.stringify(model) !== pinnedModel) throw new Error("PKM provider binding changed.");
+        return providerKey;
+      },
+    });
+  }
+  const transcript = bindDetachedBrowserChatTranscript({ grant, namespace, assertCurrent });
   const route = await createOriginalBrowserRoute({ token, grant, assertCurrent, transcriptOnly: true, detachedChatId: chatId,
-    readChatTranscript: bindDetachedBrowserChatTranscript({ grant, namespace, assertCurrent }),
+    ...(turns ? { chatTurns: turns } : {}),
+    async readChatTranscript(supplied: BrowserChatGrant, input: { chatId: string; cursor?: string; limit?: number }) {
+      try { return await transcript(supplied, input); }
+      catch (error) {
+        assertCurrent(supplied);
+        if (!turns || input.cursor !== undefined) throw error;
+        return turns.readSettledReply(input.chatId);
+      }
+    },
   }, { httpsOrigin });
   assertProvisionCurrent();
   const listener = await startBrowserHttpsListener({ route, address, port, tls: { cert, key } });

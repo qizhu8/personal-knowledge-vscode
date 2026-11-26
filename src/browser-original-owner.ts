@@ -31,6 +31,7 @@ interface OriginalBrowserBinding {
 export type OriginalBrowserOwner = OriginalBrowserBinding & ({
   transcriptOnly: true;
   detachedChatId: string;
+  chatTurns?: OriginalBrowserChatTurns;
   readChatTranscript: NonNullable<OriginalBrowserBinding["readChatTranscript"]>;
 } | {
   transcriptOnly?: false;
@@ -78,7 +79,7 @@ export async function createOriginalBrowserRoute(owner: OriginalBrowserOwner, op
   const capabilityRead = owner.transcriptOnly ? undefined : owner.capabilityRead.bind(owner);
   const readChatTranscript = grant.chatHostId ? owner.readChatTranscript?.bind(owner) : undefined;
   if (transcriptOnly && !readChatTranscript) throw new Error("Missing detached Original Chat binding.");
-  const turns = readChatTranscript && !owner.transcriptOnly ? owner.chatTurns : undefined;
+  const turns = readChatTranscript ? owner.chatTurns : undefined;
   let sending = false;
   const gate = await createBrowserReleaseGate(owner.token, false, { ...options, allowDevelopment: options.allowDevelopment ?? false });
   if (!gate) throw new Error("Original browser bundle unavailable.");
@@ -103,7 +104,9 @@ export async function createOriginalBrowserRoute(owner: OriginalBrowserOwner, op
     if (pending >= 4) throw unavailable("Original browser read limit reached.");
     pending++;
     try {
-      if (transcriptOnly && input.command !== "chatMessages" && input.command !== "chatCapabilities" && input.command !== "chatList")
+      if (transcriptOnly && input.command !== "chatMessages" && input.command !== "chatCapabilities" && input.command !== "chatList" &&
+          input.command !== "originalChatTarget" && input.command !== "originalChatSend" &&
+          input.command !== "originalChatStatus" && input.command !== "originalChatStop")
         throw unavailable("Only an explicitly shared Original Chat transcript is available here.");
       const read = async (operation: ReadOperation, args: Record<string, unknown>) => {
         if (!capabilityRead || !current()) throw unavailable("Original browser grant is no longer current.");
@@ -167,12 +170,14 @@ export async function createOriginalBrowserRoute(owner: OriginalBrowserOwner, op
         }
         case "chatCapabilities":
           return { history: false, nativeTranscript: !!readChatTranscript, latestReply: !!grant.chatHostId && !readChatTranscript,
-            nativeTurns: !!turns, create: false, send: false, stop: false, review: false };
+            nativeTurns: !!turns, ...(transcriptOnly ? { detachedOriginal: true } : {}),
+            create: false, send: false, stop: false, review: false };
         case "originalChatTarget":
         case "originalChatSend":
         case "originalChatStatus":
         case "originalChatStop": {
-          if (!turns || !current()) throw unavailable("Original Chat turn controls are unavailable.");
+          if (!turns || !current() || detachedChatId && input.chatId !== detachedChatId)
+            throw unavailable("Original Chat turn controls are unavailable.");
           const mutation = input.command === "originalChatSend" || input.command === "originalChatStop";
           const send = input.command === "originalChatSend";
           if (send && sending) throw unavailable("Another browser send is in progress.");

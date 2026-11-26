@@ -19,11 +19,27 @@ async function main(fixture) {
       toolCalls: [{ id: "secret", name: "private", arguments: "{}", result: "not browser-visible".repeat(34_000), status: "complete" }] });
   for (let n = 2; n < 21; n++) chat.messages.push({ id: `m${n}`, role: "user", status: "complete", content: `message ${n}` });
   store.save(chat);
+  let approval;
+  if (fixture.turn) {
+    const { captureExecutionContext } = require(join(installed, "dist/chat/execution-context"));
+    const { approveDetachedOriginalTextTurn } = require(join(installed, "dist/chat/detached-original-text-turn"));
+    const { pathToFileURL } = require("node:url");
+    const root = grant.workspaceRoot;
+    Object.assign(chat, { permissionMode: "read-only", includeHistory: false, builtinTools: [], vscodeTools: [],
+      activityCreditLimit: -1, modelProvider: "openai-compatible", modelProfileId: "fixture" });
+    store.save(chat);
+    store.startTask(chat, "Original detached task");
+    const execution = captureExecutionContext(grant.chatHostId, [{ uri: {
+      scheme: "file", fsPath: root, toString: () => pathToFileURL(root).href,
+    } }], root, true, "read-only");
+    approval = await approveDetachedOriginalTextTurn({ grant, namespace, chatId: chat.id, text: fixture.turn.text,
+      execution, model: fixture.turn.model, assertNativeOwner() {}, async confirm() { return true; } });
+  }
   const other = store.create();
   const native = bindNativeBrowserChatTranscriptConsent(authority, async () => true);
   if (!await native.allow(chat.id)) throw new Error("Fixture native approval did not persist.");
   if (!await native.allow(other.id)) throw new Error("Second fixture native approval did not persist.");
-  process.send({ chatId: chat.id, otherId: other.id });
+  process.send({ chatId: chat.id, otherId: other.id, approval });
   const [service] = await once(process, "message");
   const { PkmServiceClient } = require(join(installed, "dist/runtime/pkm-service"));
   const client = await PkmServiceClient.connect({ ...service, execute: async () => { throw Error("Unexpected sync"); } });

@@ -799,7 +799,7 @@ async function startPkmServiceRuntime(options: PkmServiceBootOptions): Promise<{
   const recoveryDirectory = path.join(identity.serviceDirectory, "results");
   privateDirectory(recoveryDirectory);
   const drainWaiters = new Set<(stopped: boolean) => void>();
-  let draining = false, reverseCount = 0, published = false;
+  let draining = false, reverseCount = 0, published = false, browserWriters = 0;
   let browserTranscript: Awaited<ReturnType<typeof startServiceBrowserTranscript>>;
   const managedSession = process.env.PKM_MANAGED_WRITER_SESSION;
   let lifecycleTimer: NodeJS.Timeout | undefined;
@@ -998,7 +998,7 @@ async function startPkmServiceRuntime(options: PkmServiceBootOptions): Promise<{
     drainPromise = (async () => {
       const deadline = Date.now() + LONG_TIMEOUT;
       // Persisted runtime is display history, not evidence of an in-flight callback.
-      while (active.size || reverseCount) {
+      while (active.size || reverseCount || browserWriters) {
         if (Date.now() >= deadline) {
           draining = false; drainPromise = undefined;
           for (const resume of drainWaiters) resume(false);
@@ -1169,6 +1169,12 @@ async function startPkmServiceRuntime(options: PkmServiceBootOptions): Promise<{
       knowledgeRoot: identity.knowledgeRoot, serviceDirectory: identity.serviceDirectory,
       extensionPath: path.resolve(__dirname, "../.."),
       managedWriterSession: managedSession,
+      async withWriter(work) {
+        if (!published || draining) throw new Error("PKM service is not accepting browser turns.");
+        // The daemon already holds the managed root writer operation for its entire lifetime.
+        browserWriters++;
+        try { return await work(); } finally { browserWriters--; }
+      },
       assertServiceCurrent() {
         if (!published || draining || readMetadata(identity)?.nonce !== metadata.nonce ||
             managedSession !== undefined && managedWriterAdmissionState(identity.knowledgeRoot, managedSession) !== "accepting")

@@ -627,7 +627,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
       },
       async confirm({ chatId, title, provider, model, endpoint, text }) {
         return await vscode.window.showWarningMessage("Authorize this one Original Chat message after VS Code closes?", {
-          modal: true, detail: `${title.slice(0, 120)} (${chatId})\n${provider}: ${model} at ${endpoint}\nExisting Task instructions and this exact text may be sent to that provider. No tools, attachments or recall. The approval expires after 15 minutes or any Chat edit.\n\n${JSON.stringify(text)}`,
+          modal: true, detail: `${title.slice(0, 120)} (${chatId})\n${provider}: ${model} at ${endpoint}\nExisting Task instructions and this exact text may be sent to that provider. This browser can read this sent message and its saved reply only. No tools, attachments or recall. The approval expires after 15 minutes or any unrelated Chat edit.\n\n${JSON.stringify(text)}`,
         }, "Authorize exact message") === "Authorize exact message";
       },
     });

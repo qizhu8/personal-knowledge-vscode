@@ -201,23 +201,26 @@ them; PKM Chat still displays those locally. Only `id`, `role`, `content`,
 `status` and optional `recordedAt` are returned. Continuation cursors expire
 after two minutes and cannot cross a Chat, bound reader or transcript change.
 
-The detached service has a separate, opt-in transcript-only HTTPS mode. It starts only
+The detached service has a separate, opt-in Original Chat HTTPS mode. It starts only
 with a private `browser-transcript-v1.json` provision in the service identity directory
 and a verified packaged Webview. The provision pins the root, actor, generation, host,
 namespace and one Chat; independent native snapshot consent is still required on
 every read. Removing the provision revokes the browser sessions; replacing it
-requires restarting the daemon. This mode does not enable Notes, MCP or Chat
-mutations, and does not change ordinary gateway admission or settings.
-This callback is not advertised as an MCP operation and grants no remote writes.
+requires restarting the daemon. Without a turn provision, the listener is
+transcript-only. It does not expose Notes or MCP, or change ordinary gateway
+admission or settings.
+Neither transcript reads nor the provisioned turn are advertised as MCP operations.
 
 The plain-Node Original Chat turn adapter supports an explicitly approved,
 single exact text request on an existing read-only Task Session. It uses the
 same Chat and Session files, attempt lease and model transport. Its narrow
 scope excludes tools, attachments, recall, Profiles and host-bound models.
-Production browser Send/Stop is not enabled: the gateway must provision the
-native approval with a scoped provider credential, hold writer custody through
-settlement, and authorize disclosure of the new response separately from the
-old immutable transcript receipt.
+The optional private provision field `turn` binds one native approval to the
+exact browser grant, Chat revision, Task Session, message and provider, with
+its scoped `providerKey`. The daemon holds writer custody through settlement.
+Approval explicitly includes readback of that sent message and its saved
+reply; it does not refresh or widen the prior transcript receipt. There is
+no routine gateway provisioning UI for this private owner contract.
 
 To qualify the actual candidate rather than a staged checkout payload, run
 `node --test tests/test-browser-chat-transcript.js` from `legacy/` with

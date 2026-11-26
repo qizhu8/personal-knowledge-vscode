@@ -1,18 +1,21 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createBrowserChatTranscriptReader } = require("../dist/chat/browser-chat-transcript");
 const fs = require("node:fs");
 const { join, dirname, isAbsolute } = require("node:path");
-const { tmpdir } = require("node:os");
-const { randomBytes, randomUUID } = require("node:crypto");
+const { createHash, randomBytes, randomUUID } = require("node:crypto");
 const { execFileSync, fork, spawn } = require("node:child_process");
 const { once } = require("node:events");
 const { createServer } = require("node:net");
 const { request } = require("node:https");
+const { createServer: createModelServer } = require("node:http");
+const { pathToFileURL } = require("node:url");
 const { setTimeout: delay } = require("node:timers/promises");
-const { ApiChatStore } = require("../dist/chat/api-chat-store");
+const build = process.env.PKM_CHAT_TEST_BUILD || join(__dirname, "../dist");
+const load = name => require(join(build, name));
+const { createBrowserChatTranscriptReader } = load("chat/browser-chat-transcript");
+const { ApiChatStore } = load("chat/api-chat-store");
 const { bindDetachedBrowserChatTranscript, bindNativeBrowserChatTranscriptConsent } =
-  require("../dist/chat/detached-browser-chat-transcript");
+  load("chat/detached-browser-chat-transcript");
 
 const grant = { actorId: "browser", workspaceRoot: "/fixture", generation: "g1", chatHostId: "00000000-0000-0000-0000-000000000001" };
 const chatId = "00000000-0000-0000-0000-000000000002";
@@ -54,7 +57,8 @@ test("decline or revoke during native consent releases no transcript", async () 
 });
 
 function fixture() {
-  const home = fs.mkdtempSync(join(tmpdir(), "pkm-chat-"));
+  const home = join(__dirname, `.chat-${randomUUID().slice(0, 12)}`);
+  fs.mkdirSync(home, { mode: 0o700 });
   const root = join(home, "knowledge");
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   return { home, grant: { ...grant, workspaceRoot: fs.realpathSync(root) }, namespace: "0123456789abcdef",
@@ -129,7 +133,7 @@ function installFixture(installed) {
     fs.renameSync(join(dirname(installed), "extension"), installed);
     const manifest = JSON.parse(fs.readFileSync(join(installed, "package.json")));
     assert.equal(`${manifest.publisher}.${manifest.name}`, "Uone.personal-knowledge");
-    require("../dist/runtime/next-payload-verifier").verifyNextPayload(installed);
+    load("runtime/next-payload-verifier").verifyNextPayload(installed);
     return manifest.version;
   }
   const project = join(__dirname, "../..");
@@ -139,17 +143,30 @@ function installFixture(installed) {
     fs.cpSync(source, target, { recursive: true, dereference: true });
   };
   copy(join(project, "legacy/dist"), join(installed, "dist"));
+  if (process.env.PKM_CHAT_TEST_BUILD) copy(build, join(installed, "dist"));
   copy(join(project, "legacy/package.json"), join(installed, "package.json"));
   const version = JSON.parse(fs.readFileSync(join(installed, "package.json"))).version;
   require("../../scripts/stage-runtime.cjs").stage(payload, {
     production: true, extensionVersion: version, browserWebview: true,
   });
+  if (process.env.PKM_CHAT_TEST_CORE_BUILD) {
+    const manifestFile = join(payload, "manifest.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestFile));
+    const name = "server/dist/browser-original-owner.js";
+    const hash = bytes => createHash("sha256").update(bytes).digest("hex");
+    copy(join(process.env.PKM_CHAT_TEST_CORE_BUILD, "browser-original-owner.js"), join(payload, name));
+    manifest.files[name] = hash(fs.readFileSync(join(payload, name)));
+    manifest.buildId = hash(JSON.stringify(manifest.files));
+    fs.writeFileSync(manifestFile, JSON.stringify(manifest));
+  }
   return version;
 }
 
-test("packaged PKM daemon serves only the consented Original Chat over TLS after native writer exits", { timeout: 30_000 }, async t => {
+for (const mode of ["read", "send", "stop"])
+test(`packaged PKM daemon ${mode} on the Original Chat over TLS after native writer exits`, { timeout: 60_000 }, async t => {
   const f = fixture();
-  const installRoot = fs.mkdtempSync(join(__dirname, ".transcript-install-"));
+  const installRoot = join(__dirname, `.transcript-install-${randomUUID()}`);
+  fs.mkdirSync(installRoot, { mode: 0o700 });
   f.installed = join(installRoot, "uone.personal-knowledge-fixture");
   f.grant.chatHostId = randomUUID();
   const children = [];
@@ -165,9 +182,9 @@ test("packaged PKM daemon serves only the consented Original Chat over TLS after
   const options = { knowledgeRoot: f.grant.workspaceRoot, globalStoragePath: f.globalStoragePath,
     extensionVersion: installFixture(f.installed),
     serviceEntryPath: join(f.installed, "dist/runtime/pkm-service-entry.js") };
-  const { pkmServiceIdentity } = require("../dist/runtime/pkm-service");
-  const { PKM_SERVICE_TRANSCRIPT_PROVISION } = require("../dist/runtime/pkm-service-browser-transcript");
-  const env = { PATH: process.env.PATH, HOME: f.home, PKM_SERVICE_TEST_LIFECYCLE_MS: "50" };
+  const { pkmServiceIdentity } = load("runtime/pkm-service");
+  const { PKM_SERVICE_TRANSCRIPT_PROVISION } = load("runtime/pkm-service-browser-transcript");
+  const env = { PATH: process.env.PATH, HOME: join(".", f.home.slice(__dirname.length + 1)), PKM_SERVICE_TEST_LIFECYCLE_MS: "50" };
   const fixtureEntry = join(__dirname, "fixture-detached-browser-chat.js");
   const ready = async child => {
     children.push(child);
@@ -179,13 +196,43 @@ test("packaged PKM daemon serves only the consented Original Chat over TLS after
   const { port } = pin.address();
   await new Promise(resolve => pin.close(resolve));
   const origin = `https://127.0.0.1:${port}`;
+  let modelCalls = 0, providerKey, providerStarted, providerClosed;
+  if (mode !== "read") {
+    const text = `fixture ${mode}`;
+    f.namespace = createHash("sha256").update(pathToFileURL(f.grant.workspaceRoot).href).digest("hex").slice(0, 16);
+    providerKey = `fixture-${randomUUID()}`;
+    let started, closed;
+    providerStarted = new Promise(resolve => { started = resolve; });
+    providerClosed = new Promise(resolve => { closed = resolve; });
+    const model = createModelServer(async (req, res) => {
+      modelCalls++;
+      let raw = "";
+      for await (const chunk of req) raw += chunk;
+      const request = JSON.parse(raw);
+      if (req.url !== "/v1/chat/completions" || req.headers.authorization !== `Bearer ${providerKey}` ||
+          request.model !== "fixture-model" || request.tools || request.messages.at(-1).content !== text) {
+        res.writeHead(400).end();
+        return;
+      }
+      res.once("close", closed);
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: `saved fixture reply ${providerKey}` } }] })}\n\n`);
+      started();
+      if (mode === "send") res.end('data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+    }).listen(0, "127.0.0.1");
+    t.after(() => { model.closeAllConnections(); model.close(); });
+    await once(model, "listening");
+    f.turn = { text, model: { provider: "openai-compatible", endpoint: `http://127.0.0.1:${model.address().port}/v1`,
+      apiVersion: "2024-06-01", contextWindow: 8192, maxOutputTokens: 512, timeoutMs: 12000,
+      profile: { id: "fixture", label: "Fixture", model: "fixture-model", status: "active", contextWindow: 8192, maxOutputTokens: 512 } } };
+  }
   const certPath = join(f.home, "fixture-cert.pem"), keyPath = join(f.home, "fixture-key.pem");
   execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
     "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1", "-keyout", keyPath, "-out", certPath],
   { env, stdio: "ignore" });
-  const native = fork(fixtureEntry, [JSON.stringify(f)], { env });
+  const native = fork(fixtureEntry, [JSON.stringify(f)], { env, cwd: __dirname });
   const exited = once(native, "exit");
-  const { chatId: nativeChat, otherId } = await ready(native);
+  const { chatId: nativeChat, otherId, approval } = await ready(native);
 
   const identity = pkmServiceIdentity(options);
   const root = fs.statSync(options.knowledgeRoot);
@@ -197,9 +244,10 @@ test("packaged PKM daemon serves only the consented Original Chat over TLS after
     root: options.knowledgeRoot, rootDevice: root.dev, rootInode: root.ino, actorId: f.grant.actorId,
     generation: f.grant.generation, chatHostId: f.grant.chatHostId, namespace: f.namespace, chatId: nativeChat,
     address: "127.0.0.1", port, httpsOrigin: origin, cert, key: fs.readFileSync(keyPath, "utf8"), token,
+    ...(approval ? { turn: { approval, providerKey } } : {}),
   }), { mode: 0o600 });
   const daemon = spawn(process.execPath, [options.serviceEntryPath, JSON.stringify(options)], {
-    env, stdio: ["ignore", "pipe", "pipe"],
+    env, cwd: __dirname, stdio: ["ignore", "pipe", "pipe"],
   });
   children.push(daemon);
   let startupError = "";
@@ -256,13 +304,50 @@ test("packaged PKM daemon serves only the consented Original Chat over TLS after
   assert.equal(next.status, 200);
   assert.deepEqual(JSON.parse(next.raw).messages, [{ id: "m20", role: "user", status: "complete", content: "message 20" }]);
   assert.deepEqual(fs.readFileSync(storedPath), original);
-  const nativeConsent = bindNativeBrowserChatTranscriptConsent({ ...f, assertCurrent() {} }, async () => false);
-  nativeConsent.revoke(nativeChat);
-  assert.equal((await send({ ...read, cursor: page.nextCursor })).status, 409);
-  assert.deepEqual(JSON.parse((await send({ command: "chatList" })).raw).items, []);
+  if (mode === "read") {
+    assert.equal((await send({ command: "originalChatTarget", chatId: nativeChat })).status, 409);
+    const nativeConsent = bindNativeBrowserChatTranscriptConsent({ ...f, assertCurrent() {} }, async () => false);
+    nativeConsent.revoke(nativeChat);
+    assert.equal((await send({ ...read, cursor: page.nextCursor })).status, 409);
+    assert.deepEqual(JSON.parse((await send({ command: "chatList" })).raw).items, []);
+  } else {
+    const target = { command: "originalChatTarget", chatId: nativeChat };
+    assert.equal((await send({ ...target, chatId: otherId })).status, 409);
+    const wrong = JSON.parse((await send(target)).raw);
+    assert.equal(JSON.parse((await send({ ...wrong, command: "originalChatSend", text: "unapproved" })).raw).status, "not-sent");
+    assert.equal(modelCalls, 0);
+    const ref = JSON.parse((await send(target)).raw);
+    const pending = send({ ...ref, command: "originalChatSend", text: f.turn.text });
+    await providerStarted;
+    if (mode === "stop") {
+      const { chatId, turnId } = ref;
+      assert.equal((await send({ command: "originalChatStop", chatId, turnId: randomUUID() })).status, 500);
+      // Wait until the provider delta was consumed before cancelling the held stream.
+      await delay(100);
+      assert.equal(JSON.parse((await send({ command: "originalChatStop", chatId, turnId })).raw).status, "stop-requested");
+    }
+    assert.equal(JSON.parse((await pending).raw).status, mode === "stop" ? "cancelled" : "completed");
+    await providerClosed;
+    assert.equal(modelCalls, 1);
+    assert.equal((await send(target)).status, 409);
+    assert.equal((await send({ ...read, cursor: page.nextCursor })).status, 409);
+    const reconnect = await tls("/webview/session", { token, remember: false });
+    const reply = await tls("/webview/message", read, { cookie: reconnect.headers["set-cookie"][0].split(";")[0] });
+    assert.equal(reply.status, 200);
+    assert.equal(reply.raw.includes(providerKey), false);
+    const saved = new ApiChatStore(join(f.grant.workspaceRoot, ".pkm", "state"), f.namespace).load(nativeChat, false);
+    assert.equal(saved.sessionId, approval.sessionId);
+    assert.equal(saved.progress.attemptId, ref.turnId);
+    const messages = JSON.parse(reply.raw).messages;
+    assert.equal(messages.length, 2);
+    assert.equal(messages[0].content, f.turn.text);
+    assert.equal(messages[1].content, "saved fixture reply [redacted]");
+    assert.equal(saved.messages.at(-1).content, messages[1].content);
+    assert.equal(saved.messages.at(-1).status, messages[1].status);
+  }
 
   // The administrative client must reuse the live daemon; drain closes TLS as well as local IPC.
-  execFileSync(process.execPath, [fixtureEntry, JSON.stringify({ installed: f.installed, drain: options })], { env, timeout: 5000 });
+  execFileSync(process.execPath, [fixtureEntry, JSON.stringify({ installed: f.installed, drain: options })], { env, cwd: __dirname, timeout: 5000 });
   assert.equal((await stopped)[0], 0);
   await assert.rejects(tls("/webview/"), /ECONNREFUSED/);
 });

@@ -141,7 +141,8 @@
       share.textContent = "Request transcript";
       share.hidden = false;
       title.textContent = titles.get(id) || "Original Chat";
-      state.textContent = "Read-only · Request the transcript, then confirm sharing in VS Code.";
+      state.textContent = caps.detachedOriginal ? "Read-only transcript · Only previously approved content is available."
+        : "Read-only · Request the transcript, then confirm sharing in VS Code.";
       update();
       return;
     }
@@ -189,7 +190,7 @@
     nativeStatus = status;
     const labels = {
       ready: "Waiting for the owning Chat to receive this turn.",
-      confirming: "Confirm the exact message in the owning VS Code window.",
+      confirming: caps.detachedOriginal ? "Checking prior approval for this exact message." : "Confirm the exact message in the owning VS Code window.",
       running: "Turn running in the owning Chat.",
       "stop-requested": "Stop requested in the owning Chat.",
       completed: "Turn completed. Request a fresh transcript to read the reply.",
@@ -216,7 +217,7 @@
     if (send.disabled || !input.value.trim()) return;
     const chatId = selectedId, text = input.value;
     nativePreparing = true; update();
-    turnState.textContent = "Checking the selected Chat in VS Code…";
+    turnState.textContent = caps.detachedOriginal ? "Checking the selected Chat and prior approval…" : "Checking the selected Chat in VS Code…";
     let ref;
     try {
       const target = await call("originalChatTarget", { chatId });
@@ -290,7 +291,8 @@
       turnState.hidden = false;
       nativeRef = restoreNative();
       if (nativeRef) void checkNative();
-      else turnState.textContent = "Text only · Send requires confirmation in the owning VS Code window.";
+      else turnState.textContent = caps.detachedOriginal ? "Text only · Only the exact previously approved message can be sent."
+        : "Text only · Send requires confirmation in the owning VS Code window.";
     }
     const review = get("review");
     if (caps.review) {
