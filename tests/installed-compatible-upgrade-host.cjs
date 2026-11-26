@@ -70,7 +70,7 @@ exports.activate = () => {
       assert(expectGateway);
       fs.writeFileSync(path.join(base, "upgrade-restart.json"), JSON.stringify({
         build: version.runtime.runtimeBuild, instance: version.runtime.instanceId,
-        generation: version.runtime.generation, noteRead: true,
+        generation: version.runtime.generation, routeGeneration: version.routeRuntime.generation, noteRead: true,
       }));
       return;
     }
@@ -248,6 +248,7 @@ print(json.dumps(tools["api_chat_send"](sys.argv[3], sys.argv[4], sys.argv[5], s
       liveBuild: version.runtime.runtimeBuild, liveVersion: version.version,
       route: expectGateway ? "flag-free-original-dispatch" : "original-managed",
       generation: version.runtime.generation,
+      routeGeneration: version.routeRuntime?.generation,
       oldNoteReadThroughNativePkm: true, panelAndChatCommands: true,
       rejectedRuntimeRepairReleasedScopedMarkers: true,
       instance: version.runtime.instanceId,

@@ -43,7 +43,7 @@ def verify_https_setup(editor, browser, base, chat_id, bundle):
         dialog.get_by_role("button", name="Authorize conversation", exact=True).click(timeout=20000)
         dialog.get_by_role("button", name="Share saved transcript", exact=True).click()
         dialog.get_by_role("button", name="Read and edit Notes", exact=True).click()
-        expect(editor.get_by_text("PKM HTTPS: configured", exact=True)).to_be_visible(timeout=60000)
+        expect(editor.get_by_text("PKM HTTPS: configured", exact=True)).to_be_visible(timeout=30000)
         request = base / "https-enrollment-request"
         request.touch()
         enrollment = base / "https-enrollment.json"
@@ -91,8 +91,10 @@ def verify_https_setup(editor, browser, base, chat_id, bundle):
         assert created.exists(), "Browser creation did not reach the unchanged Original library"
         search.fill("HTTPSInstalledNote")
         page.locator('.li[data-note-slug="HTTPSInstalledNote"]').click()
+        expect(page.locator("#detail")).to_contain_text("Created through the real installed HTTPS setup.")
         page.locator('#detail button[onclick^="openMarkdownItem("]').click()
         expect(page.locator("#note-title")).to_be_disabled()
+        expect(page.locator("#note-title")).to_have_value("HTTPSInstalledNote")
         page.locator("#note-content").fill("Edited through the Original body CAS.")
         page.locator("#note-form .form-actions button:last-child").click()
         until = time.monotonic() + 10

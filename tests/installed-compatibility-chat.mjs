@@ -591,7 +591,10 @@ exports.registerApiChatShell = (...args) => {
         }
         assert.equal(upgradeEvidence.restart.build, upgradeEvidence.liveBuild);
         assert.notEqual(upgradeEvidence.restart.instance, upgradeEvidence.instance);
-        assert.notEqual(upgradeEvidence.restart.generation, upgradeEvidence.generation);
+        assert.equal(upgradeEvidence.restart.generation, upgradeEvidence.generation,
+          "Restart must retain the configured Original runtime generation");
+        assert.notEqual(upgradeEvidence.restart.routeGeneration, upgradeEvidence.routeGeneration,
+          "Restart must establish a fresh gateway authority generation");
       }
       }
       assert.equal(await readFile(settings, "utf8"), oldSettings);

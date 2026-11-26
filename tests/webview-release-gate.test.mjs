@@ -3,6 +3,9 @@ import { execFileSync, spawn } from "node:child_process";
 import { createServer, request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { createHash, randomUUID } from "node:crypto";
+import { connect } from "node:net";
+import { once } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
@@ -81,6 +84,45 @@ test("browser transport: default HTTP still requires exact loopback Host and sam
   assert.equal((await request("/webview/session", type, body)).status, 403);
   assert.equal((await request("/webview/session", { ...type, origin: origin.replace("http:", "https:") }, body)).status, 403);
   assert.equal((await request("/webview/session", { ...type, origin }, body)).status, 200);
+});
+
+test("browser transport: HTTPS shutdown drains admitted responses without waiting for speculative TLS sockets", { timeout: 10_000 }, async t => {
+  const directory = join(import.meta.dirname, `.webview-tls-close-${randomUUID()}`);
+  await mkdir(directory, { mode: 0o700 });
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const key = join(directory, "key.pem"), cert = join(directory, "cert.pem");
+  execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+    "-subj", "/CN=pkm.test", "-addext", "subjectAltName=DNS:pkm.test", "-keyout", key, "-out", cert], { stdio: "pipe" });
+  let admit, release;
+  const admitted = new Promise(resolve => { admit = resolve; });
+  const work = new Promise(resolve => { release = resolve; });
+  const certificate = await readFile(cert);
+  const listener = await startBrowserHttpsListener({ address: "127.0.0.1", port: 0,
+    tls: { key: await readFile(key), cert: certificate },
+    async route(_req, res) { admit(); await work; res.end("settled"); return true; },
+  });
+  const speculative = connect(listener.port, "127.0.0.1");
+  t.after(async () => { release(); speculative.destroy(); await listener.close(); });
+  await once(speculative, "connect");
+  const response = new Promise((resolve, reject) => {
+    const req = httpsRequest({ host: "127.0.0.1", port: listener.port, path: "/webview/",
+      ca: certificate, servername: "pkm.test", agent: false }, res => {
+      let body = "";
+      res.on("data", chunk => { body += chunk; });
+      res.on("end", () => resolve(body));
+      res.on("error", reject);
+    });
+    req.on("error", reject);
+    req.end();
+  });
+  await admitted;
+  let stopped = false;
+  const closed = listener.close().then(() => { stopped = true; });
+  await delay(20);
+  assert.equal(stopped, false, "Admitted work must finish before listener shutdown");
+  release();
+  assert.equal(await response, "settled");
+  assert.equal(await Promise.race([closed.then(() => true), delay(1000, false, { ref: false })]), true);
 });
 
 test("browser transport: direct HTTPS serves authenticated Original Webview and Chat without trusting proxy headers", async t => {

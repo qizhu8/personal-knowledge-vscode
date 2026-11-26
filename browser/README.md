@@ -106,6 +106,9 @@ origin, a specific local interface IP, and the absolute server-side PEM
 certificate and owner-only private-key paths. The certificate must identify
 the public hostname and be currently valid. DNS, certificate issuance,
 firewall changes and public deployment are not performed automatically.
+Revocation and service restart finish admitted HTTP responses before closing
+idle and speculative TLS connections, so an unused browser connection cannot
+block reconfiguration.
 
 Choose an existing Chat, open it in the native Chat view, and start a Task
 from **Chat actions** if it has no active Task. Set its **Credit limit** to
