@@ -27,16 +27,20 @@ async function rootDirectory(root: string) {
   return { directory, identity };
 }
 
-async function acquireRoute(root: string, mode: "live" | "cold", fence?: LegacySharedFence) {
+async function acquireRoute(root: string, mode: "live" | "cold", acquireLegacyFence?: (root: string) => LegacySharedFence) {
   let guard: Awaited<ReturnType<typeof acquireSharedManagerControlGuard>> | undefined;
+  let fence: LegacySharedFence | undefined;
   try {
-    if (mode === "live" && (fence?.mode !== "shared" || fence.root !== root)) throw new Error("Original shared writer fence required.");
-    fence?.assertHeld();
     const { directory, identity } = await rootDirectory(root);
     guard = await acquireSharedManagerControlGuard(join(directory, "owner.guard"), mode === "live" ? "exclusive" : "shared");
     const existing = await readdir(directory);
     if (existing.includes("owner-pending.json") || mode === "live" && existing.some(name => name.startsWith("cold-pending-")))
       throw new Error("Original compatibility custody requires explicit recovery; no adapter was started.");
+    if (mode === "live") {
+      fence = acquireLegacyFence?.(root);
+      if (fence?.mode !== "shared" || fence.root !== root) throw new Error("Original shared writer fence required.");
+      fence.assertHeld();
+    }
     const owner = randomUUID();
     const marker = join(directory, mode === "live" ? "owner-pending.json" : `cold-pending-${owner}.json`);
     const bytes = JSON.stringify({ schema: "pkm.compatibility-gateway-custody/v1", owner,
@@ -74,7 +78,7 @@ async function acquireRoute(root: string, mode: "live" | "cold", fence?: LegacyS
 
 /** Reuse Original's shared writer fence; exclusive here would deadlock Original's own writes. */
 export function acquireCompatibilityGatewayCustody(root: string, acquireLegacyFence: (root: string) => LegacySharedFence) {
-  return acquireRoute(root, "live", acquireLegacyFence(root));
+  return acquireRoute(root, "live", acquireLegacyFence);
 }
 
 /** Every packaged cold stdio process holds the same guard through its own Original drain. */

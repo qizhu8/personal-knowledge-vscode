@@ -97,6 +97,9 @@ Packaged cold stdio and live
 relays arbitrate on the same root guard. A cold client cannot start while
 a live owner holds custody, and a live owner cannot start over a running
 cold client or its unconfirmed shutdown marker.
+Before starting adapters, the owner also checks for cooperating predecessor
+writers under the Original root fence. This check is not a restart inhibitor
+for older launchers.
 
 On clean host shutdown the live gateway stops accepting new work, waits
 for admitted calls to finish, and confirms Original adapter exit before

@@ -52,6 +52,8 @@ test("Original ↔ bundled v5 on existing pkm relays; interrupted Original write
     return confirm;
   }, acquireLegacyFence(root) {
     assertLinuxRootStillLegacyWritable(root);
+    const preflight = acquireLinuxRootWriterFence(root, "exclusive", 500);
+    try { preflight.assertHeld(); } finally { preflight.release(); }
     return acquireLinuxRootWriterFence(root, "shared", 500);
   } };
   const cold = await f.connect();
@@ -59,6 +61,10 @@ test("Original ↔ bundled v5 on existing pkm relays; interrupted Original write
   const coldIdentity = value(await cold.client.callTool({ name: "check_version", arguments: {} }));
   assert.equal(coldIdentity.version, "0.1.0");
   await f.close(cold.client);
+  const predecessorFence = acquireLinuxRootWriterFence(f.root, "shared", 500);
+  try {
+    await assert.rejects(startCompatibilityGatewayAuthority(config, bundled, host, "original"), /writer.fence/i);
+  } finally { predecessorFence.release(); }
   const authority = await startCompatibilityGatewayAuthority(config, bundled, host, "original");
   const owned = [];
   let closed = false;

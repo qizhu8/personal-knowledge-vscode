@@ -130,6 +130,15 @@ export function createBundledCompatibilityRoute(options: {
       runtimeBuild: selection.runtimeBuild, managedRoot: selection.cwd, createFacade: createNativePublicFacade, assertVerified },
     { acquireLegacyFence(root: string) {
       assertLinuxRootStillLegacyWritable(root);
+      // Check for cooperating predecessor writers while the packaged route guard is held.
+      // This does not inhibit older launchers that do not honor that guard.
+      let preflight;
+      try { preflight = acquireLinuxRootWriterFence(root, "exclusive", 1_000); }
+      catch (error) {
+        const detail = error instanceof Error ? error.message : "Writer fence unavailable.";
+        throw new Error(`Could not verify that cooperating Original writers have drained: ${detail}`);
+      }
+      try { preflight.assertHeld(); } finally { preflight.release(); }
       return acquireLinuxRootWriterFence(root, "shared", 1_000);
     }, workbenchAttribution: attribution("vscode-provider"), chatAttribution: attribution("pkm-chat"),
     assertAllowed: selection.assertCurrent, hasActiveChatWork: options.live!.hasActiveChatWork,
