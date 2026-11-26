@@ -114,7 +114,7 @@ export async function closeOriginalBrowserActivation() {
 }
 
 export function registerOriginalBrowserActivation(context: vscode.ExtensionContext, options: {
-  root(): string; select(): SelectedChatGateway; chat: Shell;
+  root(): string; select(): Promise<SelectedChatGateway & { liveRelay: boolean }>; chat: Shell;
 }) {
   if (vscode.env.remoteName || vscode.env.uiKind !== vscode.UIKind.Desktop ||
       process.env.PKM_COMPATIBILITY_LIVE_SWITCH === "1") return;
@@ -153,7 +153,8 @@ export function registerOriginalBrowserActivation(context: vscode.ExtensionConte
       if (!pin.isDirectory()) throw new Error("Original Knowledge Root is unavailable.");
       const folders = () => JSON.stringify(vscode.workspace.workspaceFolders?.map(folder => folder.uri.toString()) ?? []);
       const pinnedFolders = folders();
-      const selected = options.select();
+      const selected = await options.select();
+      if (selected.liveRelay) throw new Error("PKM Browser is unavailable while the live MCP relay owns this library.");
       // The selected launch already verifies the full installed payload; pin
       // the browser entry as part of that same immutable payload inventory.
       const payload = verifyNextPayload(context.extensionPath);
