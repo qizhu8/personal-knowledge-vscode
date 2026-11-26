@@ -78,18 +78,21 @@ exports.activate = () => {
 
     // An active client must make the real repair reject before any Python
     // packages are changed. Its scoped maintenance markers must not survive.
-    const managed = mcp.managedMcpServerDirectory(), runtime = mcp.managedMcpRuntimePath();
-    const markers = [path.join(managed, "runtime-maintenance.json"), `${runtime}.pkm-maintenance.json`];
-    assert.equal(runtime, path.join(base, "business-python"));
-    assert(mcp.mcpProcessStatus(true).running, "The original connection must still be live before the repair attempt.");
-    for (const marker of markers) assert(!fs.existsSync(marker), `Unexpected existing maintenance marker: ${marker}`);
-    const active = path.join(managed, "active-generation.json"), generation = fs.readFileSync(active, "utf8");
-    // The rejection must happen before maintenance needs an extension context.
-    await assert.rejects(mcp.ensureMcpRuntime(undefined), /close\/reconnect all managed PKM clients/);
-    for (const marker of markers) assert(!fs.existsSync(marker), `Leaked maintenance marker: ${marker}`);
-    assert.equal(fs.readFileSync(active, "utf8"), generation);
-    assert.equal((await liveVersion()).runtime.instanceId, version.runtime.instanceId);
-    await readOriginalNote();
+    const verifyRejectedRepair = async () => {
+      const managed = mcp.managedMcpServerDirectory(), runtime = mcp.managedMcpRuntimePath();
+      const markers = [path.join(managed, "runtime-maintenance.json"), `${runtime}.pkm-maintenance.json`];
+      assert.equal(runtime, path.join(base, "business-python"));
+      assert(mcp.mcpProcessStatus(true).running, "The original connection must still be live before the repair attempt.");
+      for (const marker of markers) assert(!fs.existsSync(marker), `Unexpected existing maintenance marker: ${marker}`);
+      const active = path.join(managed, "active-generation.json"), generation = fs.readFileSync(active, "utf8");
+      await assert.rejects(mcp.ensureMcpRuntime(undefined), /close\/reconnect all managed PKM clients/);
+      for (const marker of markers) assert(!fs.existsSync(marker), `Leaked maintenance marker: ${marker}`);
+      assert.equal(fs.readFileSync(active, "utf8"), generation);
+      assert.equal((await liveVersion()).runtime.instanceId, version.runtime.instanceId);
+      await readOriginalNote();
+      stage("rejected-repair-native-reader-preserved");
+    };
+    if (!expectGateway) await verifyRejectedRepair();
     stage("native-note-read");
     if (!expectGateway) await vscode.commands.executeCommand("personalKnowledge.openNote", "InstalledGatewayNote.md");
     else stage("open-note-not-awaited", { reason: "independent native Note read verified" });
@@ -172,6 +175,9 @@ print(json.dumps(tools["api_chat_send"](sys.argv[3], sys.argv[4], sys.argv[5], s
       assert.equal(receipt.result?.reply?.status, "complete", JSON.stringify(receipt));
       assert.equal(receipt.result?.reply?.content, "BUNDLED_GATEWAY_ACCEPTED");
       stage("chat-final-read-receipt");
+      // Maintenance can intentionally fence a live Chat adapter even when repair is rejected.
+      // Verify ordinary Chat continuity before probing maintenance on the native reader.
+      await verifyRejectedRepair();
     }
     fs.writeFileSync(path.join(base, "upgrade-host.json"), JSON.stringify({
       liveBuild: version.runtime.runtimeBuild, liveVersion: version.version,
