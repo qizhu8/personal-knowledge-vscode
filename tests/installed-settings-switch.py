@@ -101,6 +101,20 @@ with sync_playwright() as playwright:
             option = target.locator("option").filter(has_text=target_label)
             expect(option).to_have_count(1)
             target.select_option(value=option.get_attribute("value"))
+            active.evaluate("""el => {
+                const slot = el.closest('#mcp-backend-slot');
+                slot.dataset.sawDrain = '';
+                const observer = new MutationObserver(records => {
+                    for (const record of records) {
+                        for (const node of record.addedNodes) {
+                            const text = node.querySelector?.('.mcp-backend-observed strong')?.textContent;
+                            if (text?.includes('Draining calls')) slot.dataset.sawDrain = text;
+                        }
+                    }
+                });
+                observer.observe(slot, { childList: true });
+                slot.stopDrainObservation = () => observer.disconnect();
+            }""")
             apply.click()
             dialog = page.locator(".monaco-dialog-box").first
             expect(dialog).to_contain_text(f"Switch pkm from {active_label} to {target_label}?", timeout=10000)
@@ -108,6 +122,12 @@ with sync_playwright() as playwright:
             expect(frame.locator(".mcp-backend-feedback")).to_contain_text(
                 "confirmed completion" if accept else "cancelled", timeout=20000)
             expect(active).to_contain_text(target_label if accept else active_label)
+            drain = active.evaluate("""el => {
+                const slot = el.closest('#mcp-backend-slot');
+                slot.stopDrainObservation();
+                return slot.dataset.sawDrain;
+            }""")
+            assert drain == (f"{active_label} · Draining calls" if accept else ""), drain
             (base / f"settings-switch-{milestone}.json").write_text(json.dumps({"approved": accept}))
             wait_for(f"settings-observed-{milestone}.json")
 

@@ -14,7 +14,7 @@ type Authority = {
   relay(role: "workbench" | "chat"): { origin: string; serviceId: string; token: string };
   status(): Selection & { generation: string; runtimeBuild: string; phase: string; inFlight: number; uncertain: boolean;
     candidates: { mode: Mode; generation: string; runtimeBuild: string }[] };
-  approveSwitch(expected: Selection, mode: Mode): Promise<{ applied: boolean }>;
+  approveSwitch(expected: Selection, mode: Mode, onDraining?: () => void): Promise<{ applied: boolean }>;
   bindBrowserReads(): {
     generation: string; assertCurrent(): void; close(): Promise<void>;
     read(input: { operation: string; version: number; arguments: Record<string, unknown> }): Promise<unknown>;
@@ -196,7 +196,9 @@ export function createBundledCompatibilityRoute(options: {
         if (!target || message.serviceId !== current.serviceId || message.activeGeneration !== current.active.generation
           || message.selectionRevision !== current.selectionRevision) { send({ ...current, error: "selectionChanged" }); return true; }
         try {
-          const result = await authority.approveSwitch({ mode: current.active.mode, selectionRevision: current.selectionRevision }, target.mode);
+          const result = await authority.approveSwitch(
+            { mode: current.active.mode, selectionRevision: current.selectionRevision }, target.mode,
+            () => send({ progress: true, active: snapshot().active }));
           send({ ...snapshot(), outcome: result.applied ? "completed" : "cancelled" });
         } catch { send({ ...snapshot(), error: "refused" }); }
       } catch {

@@ -270,7 +270,7 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
       || target !== "original" && target !== "bundled-v5")
       throw new Error("Gateway selection changed or outstanding work blocks switching; no switch applied.");
   }
-  async function approveSwitch(expected: CompatibilitySwitchExpectation, target: CompatibilityDispatchMode) {
+  async function approveSwitch(expected: CompatibilitySwitchExpectation, target: CompatibilityDispatchMode, onDraining?: () => void) {
     expected = { ...expected };
     assertSwitchable(expected, target);
     if (!await host.confirm({ from: expected.mode, to: target, runtimeBuild: identity(target).runtimeBuild }))
@@ -278,6 +278,7 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
     assertSwitchable(expected, target);
     switching = true;
     try {
+      onDraining?.();
       if (target === "bundled-v5") bundled.assertVerified();
       const results = await Promise.allSettled(roles.map(async role => {
         await original(role).observeVersion({}, true);

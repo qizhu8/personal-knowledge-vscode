@@ -149,13 +149,21 @@ test("Original ↔ bundled v5 on existing pkm relays; interrupted Original write
   try { await assert.rejects(authority.approveSwitch(firstObservation, "bundled-v5"), /Checksum mismatch/); }
   finally { await writeFile(artifact, bytes); }
   assert.deepEqual(authority.status().selectionRevision, firstObservation.selectionRevision);
+  const phases = [];
+  const observeDrain = () => {
+    const { phase, mode, selectionRevision } = authority.status();
+    phases.push({ phase, mode, selectionRevision });
+  };
   confirm = false;
-  assert.equal((await authority.approveSwitch(firstObservation, "bundled-v5")).applied, false);
+  assert.equal((await authority.approveSwitch(firstObservation, "bundled-v5", observeDrain)).applied, false);
+  assert.deepEqual(phases, []);
   confirm = true;
   const originalWrite = await call(clients[0].client, "note_modify", { slug: "Entry", content: "Written through Original." });
   assert.notEqual(originalWrite.isError, true);
   await sharedVersion("original");
-  await authority.approveSwitch(firstObservation, "bundled-v5");
+  await authority.approveSwitch(firstObservation, "bundled-v5", observeDrain);
+  assert.deepEqual(phases, [{ phase: "draining", mode: "original", selectionRevision: firstObservation.selectionRevision }]);
+  assert.equal(authority.status().phase, "accepting");
   const v5Version = await sharedVersion("bundled-v5");
   await assert.rejects(browser.read(args), /no longer current/);
   const reboundBrowser = authority.bindBrowserReads();

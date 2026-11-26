@@ -79,13 +79,17 @@ VS Code window under the same isolated account and root, with the flag
 unset. That window must report custody unavailable and refuse native MCP
 startup without replacing the owner's marker.
 
-The diagnostic archive `7f906d9d…` passed this combined test. The browser
-check here covers Note reads and grant revocation, not Chat Send/Stop; the
-separate installed browser scenario covers those actions.
+The diagnostic archive `f310657f…` passed this combined test, including
+the visible draining phase in both directions. The browser check here
+covers Note reads and grant revocation, not Chat Send/Stop; the separate
+installed browser scenario passed those actions on the same archive.
 
 The experimental switch requires a local, private root with an exact native
 account binding. Settings status is passive: refreshing neither enrolls
-the window nor changes the selected backend. Packaged cold stdio and live
+the window nor changes the selected backend. During an approved switch,
+Settings receives the authority's draining phase with the previously active
+backend; the new backend is shown only after verification and selection.
+Packaged cold stdio and live
 relays arbitrate on the same root guard. A cold client cannot start while
 a live owner holds custody, and a live owner cannot start over a running
 cold client or its unconfirmed shutdown marker.
