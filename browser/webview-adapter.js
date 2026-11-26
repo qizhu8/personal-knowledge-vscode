@@ -39,6 +39,10 @@
         return;
       case "ready": case "webviewStartupTiming": case "webviewDiagnostic": case "webviewLibraryTiming":
       case "markdownDraftState": case "refreshKnowledgeFolder": case "noteFolderPins": case "listSubscriptionGroups":
+      case "panelViewState": case "setPanelTitle": case "githubSyncState":
+        return;
+      case "interfaceError":
+        notice(String(message.message || "The PKM browser interface failed to load."));
         return;
       case "createKnowledgeItem":
         if (message.area === "notes" && !originalReadOnly) { toggleNoteForm(); return; }

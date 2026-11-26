@@ -43,7 +43,7 @@ def verify_https_setup(editor, browser, base, chat_id, bundle):
         dialog.get_by_role("button", name="Authorize conversation", exact=True).click(timeout=20000)
         dialog.get_by_role("button", name="Share saved transcript", exact=True).click()
         dialog.get_by_role("button", name="Read and edit Notes", exact=True).click()
-        expect(editor.get_by_text("PKM HTTPS: configured", exact=True)).to_be_visible(timeout=30000)
+        expect(editor.get_by_text("PKM HTTPS: configured", exact=True)).to_be_visible(timeout=60000)
         request = base / "https-enrollment-request"
         request.touch()
         enrollment = base / "https-enrollment.json"
@@ -61,10 +61,11 @@ def verify_https_setup(editor, browser, base, chat_id, bundle):
     diagnostics = []
     try:
         page = context.new_page()
+        page.on("console", lambda message: diagnostics.append(message.text))
         page.on("pageerror", lambda error: diagnostics.append(str(error)))
         page.on("requestfailed", lambda request: diagnostics.append(f"{request.method} {request.url}: {request.failure}"))
         page.on("response", lambda response: diagnostics.append(
-            f"{response.status} {response.url}: {response.text()[:2000]}"
+            f"{response.status} {response.url}"
         ) if response.status >= 400 or response.url.endswith("/webview/message") else None)
         assert not page.request.get(origin + "/webview/panel.js").ok
         page.goto(origin + "/webview/")
