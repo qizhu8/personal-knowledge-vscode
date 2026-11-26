@@ -58,8 +58,14 @@ def verify_https_setup(editor, browser, base, chat_id, bundle):
 
     issued = authorize()
     context = browser.new_context(ignore_https_errors=True)
+    diagnostics = []
     try:
         page = context.new_page()
+        page.on("pageerror", lambda error: diagnostics.append(str(error)))
+        page.on("requestfailed", lambda request: diagnostics.append(f"{request.method} {request.url}: {request.failure}"))
+        page.on("response", lambda response: diagnostics.append(
+            f"{response.status} {response.url}: {response.text()[:2000]}"
+        ) if response.status >= 400 or response.url.endswith("/webview/message") else None)
         assert not page.request.get(origin + "/webview/panel.js").ok
         page.goto(origin + "/webview/")
         page.wait_for_load_state("networkidle")
@@ -71,7 +77,7 @@ def verify_https_setup(editor, browser, base, chat_id, bundle):
         expect(page.locator("#btn-add-knowledge")).to_be_enabled()
         search = page.get_by_role("searchbox", name="Search Notes")
         search.fill("InstalledGatewayNote")
-        page.get_by_role("button", name="InstalledGatewayNote File", exact=True).click()
+        page.locator('.li[data-note-slug="InstalledGatewayNote"]').click()
         expect(page.locator("#detail")).to_contain_text("Created by genuine installed 4.0.27 PKM Chat")
         page.locator("#btn-add-knowledge").click()
         page.locator("#note-title").fill("HTTPSInstalledNote")
@@ -83,7 +89,7 @@ def verify_https_setup(editor, browser, base, chat_id, bundle):
             time.sleep(0.1)
         assert created.exists(), "Browser creation did not reach the unchanged Original library"
         search.fill("HTTPSInstalledNote")
-        page.get_by_role("button", name="HTTPSInstalledNote File", exact=True).click()
+        page.locator('.li[data-note-slug="HTTPSInstalledNote"]').click()
         page.locator('#detail button[onclick^="openMarkdownItem("]').click()
         expect(page.locator("#note-title")).to_be_disabled()
         page.locator("#note-content").fill("Edited through the Original body CAS.")
@@ -92,6 +98,9 @@ def verify_https_setup(editor, browser, base, chat_id, bundle):
         while "Edited through the Original body CAS." not in created.read_text() and time.monotonic() < until:
             time.sleep(0.1)
         assert "Edited through the Original body CAS." in created.read_text()
+        page.wait_for_timeout(21000)
+        expect(page.locator("#pkm-host-warning")).not_to_be_visible()
+        expect(page.locator("#browser-release-status")).not_to_contain_text("not available")
 
         page.get_by_role("button", name="PKM Chat", exact=True).click()
         page.locator(f'button[data-id="{chat_id}"]').click()
@@ -127,5 +136,10 @@ def verify_https_setup(editor, browser, base, chat_id, bundle):
         retained.chmod(0o600)
         return {"nativeSetup": True, "exactTlsBundle": True, "sameOriginalNotesCreateAndEdit": True,
                 "multiRoundChatWithoutNativePrompts": True, "reopenedSavedReply": True, "nativeRevoke": True}
+    except Exception:
+        (base / "installed-https-browser.txt").write_text(page.locator("body").inner_text())
+        (base / "installed-https-network.txt").write_text("\n".join(diagnostics))
+        page.screenshot(path=str(base / "installed-https-browser.png"), full_page=True)
+        raise
     finally:
         context.close()

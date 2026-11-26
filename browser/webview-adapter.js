@@ -31,6 +31,12 @@
   }
   async function receive(message) {
     switch (message.command) {
+      case "hostHealth":
+        try {
+          await post("message", { command: "chatCapabilities" });
+          emit({ command: "hostHealth", type: "hostHealth", id: message.id });
+        } catch (error) { notice(error.message); }
+        return;
       case "ready": case "webviewStartupTiming": case "webviewDiagnostic": case "webviewLibraryTiming":
       case "markdownDraftState": case "refreshKnowledgeFolder": case "noteFolderPins": case "listSubscriptionGroups":
         return;

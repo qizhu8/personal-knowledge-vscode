@@ -253,6 +253,10 @@ test(`packaged PKM daemon ${mode} on the Original Chat over TLS after native wri
   const identity = pkmServiceIdentity(options);
   const root = fs.statSync(options.knowledgeRoot);
   const cert = fs.readFileSync(certPath, "utf8"), token = randomBytes(32).toString("base64url");
+  if (mode === "read") {
+    fs.mkdirSync(join(options.knowledgeRoot, "notes"), { recursive: true });
+    fs.writeFileSync(join(options.knowledgeRoot, "notes", "DetachedNote.md"), "---\ntitle: DetachedNote\n---\nSame Original Notes root.\n");
+  }
   const file = join(identity.serviceDirectory, PKM_SERVICE_TRANSCRIPT_PROVISION);
   const provision = {
     schema: "pkm.service-browser-transcript/v1", serviceIdentity: identity.identity,
@@ -260,6 +264,7 @@ test(`packaged PKM daemon ${mode} on the Original Chat over TLS after native wri
     generation: f.grant.generation, chatHostId: f.grant.chatHostId, namespace: f.namespace, chatId: nativeChat,
     address: "127.0.0.1", port, httpsOrigin: origin, cert, key: fs.readFileSync(keyPath, "utf8"), token,
     ...(approval ? { turn: { approval, providerKey } } : {}),
+    ...(mode === "read" ? { notes: { expiresAt: Date.now() + 60_000, allowWrite: false } } : {}),
   };
   const metadata = join(identity.serviceDirectory, "endpoint.json");
   let stopped;
@@ -312,12 +317,21 @@ test(`packaged PKM daemon ${mode} on the Original Chat over TLS after native wri
   const [cookie] = login.headers["set-cookie"];
   assert.match(cookie, /HttpOnly; Secure; SameSite=Strict/);
   const session = { cookie: cookie.split(";")[0] };
-  assert.equal((await tls("/webview/", undefined, session)).headers.location, "/webview/chat");
+  const home = await tls("/webview/", undefined, session);
+  if (mode === "read") assert.equal(home.status, 200);
+  else assert.equal(home.headers.location, "/webview/chat");
+  const font = await tls("/webview/codicon.ttf?38dcd33a732ebca5a557e04831e9e235", undefined, session);
+  assert.equal(font.status, 200);
+  assert.equal(font.headers["content-type"], "font/ttf");
   assert.match((await tls("/webview/chat", undefined, session)).raw, /webview-chat\.js/);
   const send = cmd => tls("/webview/message", cmd, session);
   assert.deepEqual(JSON.parse((await send({ command: "chatList" })).raw).items.map(row => row.id), [nativeChat]);
   assert.equal((await send({ ...read, id: otherId })).status, 409);
-  assert.equal((await send({ command: "list", q: "", caseSensitive: false })).status, 409);
+  const notes = await send({ command: "list", q: "", caseSensitive: false });
+  if (mode === "read") {
+    assert.equal(notes.status, 200);
+    assert.equal(JSON.parse(notes.raw).items[0].title, "DetachedNote");
+  } else assert.equal(notes.status, 409);
   const first = await send(read);
   assert.equal(first.status, 200);
   const page = JSON.parse(first.raw);

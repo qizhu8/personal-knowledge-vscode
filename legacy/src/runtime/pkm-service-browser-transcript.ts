@@ -136,6 +136,10 @@ export async function startServiceBrowserTranscript(options: {
       throw new Error("Invalid private PKM Notes authorization.");
     const { bindOriginalBrowserNotes } = require("./pkm-browser-original-notes") as
       typeof import("./pkm-browser-original-notes");
+    const { getStorePath, setStorePath } = require("../knowledge/filestore") as
+      typeof import("../knowledge/filestore");
+    if (getStorePath() && getStorePath() !== root) throw new Error("PKM Notes store is bound to another root.");
+    setStorePath(root);
     originalNotes = bindOriginalBrowserNotes({ root, ...notes, withWriter: work => options.withWriter(async () => work()),
       assertCurrent: () => assertCurrent(grant) });
   }

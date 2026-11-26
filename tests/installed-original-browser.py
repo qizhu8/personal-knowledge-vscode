@@ -142,6 +142,13 @@ with sync_playwright() as playwright:
             time.sleep(0.1)
         assert (base / "browser-provider-closed").exists(), "Browser Stop must close the held model stream"
 
+        desktop_chat.get_by_role("button", name="Chat actions", exact=True).click()
+        desktop_chat.get_by_role("button", name="Start Task", exact=True).click()
+        quick = editor.locator(".quick-input-widget")
+        expect(quick.get_by_text("Start Task", exact=True)).to_be_visible()
+        quick.locator("input").fill("Installed detached HTTPS acceptance")
+        editor.keyboard.press("Enter")
+        expect(desktop_chat.locator("#task")).to_have_attribute("aria-label", "Complete Task")
         (base / "browser-revoke-request").touch()
         editor.get_by_text("Revoke browser access", exact=True).click(timeout=10000)
         # Poll through Chromium, which owns the Secure loopback cookie.

@@ -235,10 +235,11 @@ export async function createBrowserReleaseGate(token: string, reviewAvailable: b
           else reply(303, "", json, { Location: base });
         }
         else {
-          const asset = signedIn() || ["webview-sign-in.js", "webview-theme.css"].includes(route) ? assets.get(route) : undefined;
+          const assetName = route.split("?", 1)[0]!;
+          const asset = signedIn() || ["webview-sign-in.js", "webview-theme.css"].includes(assetName) ? assets.get(assetName) : undefined;
           if (!asset) reply(404, "{}");
-          else reply(200, asset, route.endsWith(".js") ? "text/javascript; charset=utf-8" : route.endsWith(".css")
-            ? "text/css; charset=utf-8" : route.endsWith(".ttf") ? "font/ttf" : "font/woff2");
+          else reply(200, asset, assetName.endsWith(".js") ? "text/javascript; charset=utf-8" : assetName.endsWith(".css")
+            ? "text/css; charset=utf-8" : assetName.endsWith(".ttf") ? "font/ttf" : "font/woff2");
         }
         return true;
       }

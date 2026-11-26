@@ -107,10 +107,15 @@ certificate and owner-only private-key paths. The certificate must identify
 the public hostname and be currently valid. DNS, certificate issuance,
 firewall changes and public deployment are not performed automatically.
 
-Choose an existing Chat, open it in the native Chat view, and explicitly
-approve the bounded conversation authorization and transcript disclosure.
-The native view must be visible and idle in supported read-only, tool-free
-HTTP-provider mode; VS Code-hosted models cannot execute after VS Code exits.
+Choose an existing Chat, open it in the native Chat view, and start a Task
+from **Chat actions** if it has no active Task. Set its **Credit limit** to
+**Unlimited** before explicitly approving the bounded conversation authorization
+and transcript disclosure. Finite activity budgets are not supported by this
+detached route. The native view must be visible and idle in supported read-only
+HTTP-provider mode. Provider, model and credit settings may be inherited from
+native defaults; approval rechecks their effective values without changing
+the saved Chat. The browser receives no native tools, attachments or recall.
+VS Code-hosted models cannot execute after VS Code exits.
 Provider credentials stay server-side in the owner-only service provision,
 not the browser, URLs or ordinary extension settings.
 

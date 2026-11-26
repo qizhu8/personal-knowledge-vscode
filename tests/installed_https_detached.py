@@ -29,7 +29,7 @@ with sync_playwright() as playwright:
         page.wait_for_load_state("networkidle")
         search = page.get_by_role("searchbox", name="Search Notes")
         search.fill("HTTPSInstalledNote")
-        page.get_by_role("button", name="HTTPSInstalledNote File", exact=True).click()
+        page.locator('.li[data-note-slug="HTTPSInstalledNote"]').click()
         expect(page.locator("#detail")).to_contain_text("Edited through the Original body CAS.")
         page.locator('#detail button[onclick^="openMarkdownItem("]').click()
         page.locator("#note-content").fill("Still writable after the actual native host exited.")
