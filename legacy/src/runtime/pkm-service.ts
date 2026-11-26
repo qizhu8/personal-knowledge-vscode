@@ -21,6 +21,7 @@ import { compareVersionOrder } from "./version-order";
 import { GitHubSyncContentRepairError } from "../sync/github-sync-content-repair";
 import { readInstalledExtensionBuild, readInstalledExtensionRuntime } from "./extension-host-runtime";
 import { managedWriterAdmissionState, withManagedWriterOperation } from "./managed-writer-session";
+import { startServiceBrowserTranscript } from "./pkm-service-browser-transcript";
 
 export const PKM_SERVICE_PROTOCOL = "pkm-github-sync/1";
 const SERVICE_METHODS = ["health", "register", "drain", "configure", "request", "report",
@@ -798,7 +799,9 @@ async function startPkmServiceRuntime(options: PkmServiceBootOptions): Promise<{
   const recoveryDirectory = path.join(identity.serviceDirectory, "results");
   privateDirectory(recoveryDirectory);
   const drainWaiters = new Set<(stopped: boolean) => void>();
-  let draining = false, reverseCount = 0;
+  let draining = false, reverseCount = 0, published = false;
+  let browserTranscript: Awaited<ReturnType<typeof startServiceBrowserTranscript>>;
+  const managedSession = process.env.PKM_MANAGED_WRITER_SESSION;
   let lifecycleTimer: NodeJS.Timeout | undefined;
   let stopResolve!: () => void;
   const stopped = new Promise<void>(resolve => { stopResolve = resolve; });
@@ -1011,7 +1014,8 @@ async function startPkmServiceRuntime(options: PkmServiceBootOptions): Promise<{
       // Give the drain response a turn to flush before closing its connection.
       setTimeout(() => {
         for (const connection of connections) connection.peer.close();
-        server.close(() => {
+        server.close(async () => {
+          await browserTranscript?.close().catch(() => undefined);
           const current = readMetadata(identity);
           if (current?.nonce === metadata.nonce) fs.unlinkSync(metadataPath(identity));
           if (identity.ipcDirectory && (!current || current.nonce === metadata.nonce)) {
@@ -1161,14 +1165,27 @@ async function startPkmServiceRuntime(options: PkmServiceBootOptions): Promise<{
       server.listen(identity.endpoint, () => { server.removeListener("error", reject); resolve(); });
     });
     if (identity.ipcDirectory) fs.chmodSync(identity.endpoint, 0o600);
+    browserTranscript = await startServiceBrowserTranscript({
+      knowledgeRoot: identity.knowledgeRoot, serviceDirectory: identity.serviceDirectory,
+      extensionPath: path.resolve(__dirname, "../.."),
+      managedWriterSession: managedSession,
+      assertServiceCurrent() {
+        if (!published || draining || readMetadata(identity)?.nonce !== metadata.nonce ||
+            managedSession !== undefined && managedWriterAdmissionState(identity.knowledgeRoot, managedSession) !== "accepting")
+          throw new Error("PKM service no longer owns this transcript binding.");
+      },
+    });
     const staging = path.join(identity.serviceDirectory, `endpoint.${metadata.nonce}.staging`);
     fs.writeFileSync(staging, JSON.stringify(metadata), { mode: 0o600, flag: "wx" });
     try {
       if (fs.existsSync(metadataPath(identity))) throw new Error("PKM endpoint metadata already has an owner.");
       fs.renameSync(staging, metadataPath(identity));
+      published = true;
     } finally { fs.rmSync(staging, { force: true }); }
   } catch (error) {
-    coordinator.dispose(); server.close(); throw error;
+    coordinator.dispose(); server.close();
+    await browserTranscript?.close().catch(() => undefined);
+    throw error;
   }
   server.on("error", () => { for (const connection of connections) notifyError(connection, new Error("PKM private IPC listener failed.")); });
   let checkingLifecycle = false, lastLifecycleError = "", lastInstalledWarning = "";
@@ -1176,10 +1193,13 @@ async function startPkmServiceRuntime(options: PkmServiceBootOptions): Promise<{
     if (checkingLifecycle || draining) return;
     checkingLifecycle = true;
     void (async () => {
-      const managedSession = process.env.PKM_MANAGED_WRITER_SESSION;
       if (managedSession !== undefined && managedWriterAdmissionState(identity.knowledgeRoot, managedSession) === "fenced") {
         await drain();
         return;
+      }
+      if (browserTranscript) {
+        try { browserTranscript.assertProvisionCurrent(); }
+        catch { const revoked = browserTranscript; browserTranscript = undefined; await revoked.close().catch(() => undefined); }
       }
       const installed = newerInstalledVersion(options);
       if (installed && installed !== lastInstalledWarning) {

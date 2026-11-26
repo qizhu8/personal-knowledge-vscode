@@ -19,20 +19,27 @@ interface OriginalBrowserChatTurns {
   getChatTurn(grant: OriginalBrowserGrant, input: TurnRef): unknown;
   stopChatTurn(grant: OriginalBrowserGrant, input: TurnRef): unknown;
 }
-export interface OriginalBrowserOwner {
+interface OriginalBrowserBinding {
   /** One credential, one actor and one pinned Original owner; never sourced from browser input. */
   token: string;
   grant: OriginalBrowserGrant;
   assertCurrent(grant: OriginalBrowserGrant): void;
+  /** Private callback from bindBrowserChatTranscript, never an MCP or mailbox operation. */
+  readChatTranscript?(grant: OriginalBrowserGrant,
+    input: Readonly<{ chatId: string; cursor?: string; limit?: number }>): Promise<unknown>;
+}
+export type OriginalBrowserOwner = OriginalBrowserBinding & ({
+  transcriptOnly: true;
+  detachedChatId: string;
+  readChatTranscript: NonNullable<OriginalBrowserBinding["readChatTranscript"]>;
+} | {
+  transcriptOnly?: false;
   /** Use only the selected Original gateway's capability_read. Must not launch or reselect a gateway. */
   capabilityRead(grant: OriginalBrowserGrant, input: Readonly<{
     operation: `mcp.tool.${ReadOperation}`; version: 1; arguments: Readonly<Record<string, unknown>>;
   }>): Promise<unknown>;
-  /** Private callback from bindBrowserChatTranscript, never an MCP or mailbox operation. */
-  readChatTranscript?(grant: OriginalBrowserGrant,
-    input: Readonly<{ chatId: string; cursor?: string; limit?: number }>): Promise<unknown>;
   chatTurns?: OriginalBrowserChatTurns;
-}
+});
 const noteRow = z.object({
   slug: z.string().max(2045), title: z.string().max(8192), type: z.string(),
   category: z.string().optional(), updated_at: z.string().nullish(),
@@ -65,9 +72,13 @@ export async function createOriginalBrowserRoute(owner: OriginalBrowserOwner, op
       || !grant.generation || !owner.token ||
       grant.chatHostId !== undefined && !chatId.safeParse(grant.chatHostId).success)
     throw new Error("Invalid Original browser grant.");
-  const assertCurrent = owner.assertCurrent.bind(owner), capabilityRead = owner.capabilityRead.bind(owner);
+  const transcriptOnly = owner.transcriptOnly === true;
+  const detachedChatId = owner.transcriptOnly ? chatId.parse(owner.detachedChatId) : undefined;
+  const assertCurrent = owner.assertCurrent.bind(owner);
+  const capabilityRead = owner.transcriptOnly ? undefined : owner.capabilityRead.bind(owner);
   const readChatTranscript = grant.chatHostId ? owner.readChatTranscript?.bind(owner) : undefined;
-  const turns = readChatTranscript ? owner.chatTurns : undefined;
+  if (transcriptOnly && !readChatTranscript) throw new Error("Missing detached Original Chat binding.");
+  const turns = readChatTranscript && !owner.transcriptOnly ? owner.chatTurns : undefined;
   let sending = false;
   const gate = await createBrowserReleaseGate(owner.token, false, { ...options, allowDevelopment: options.allowDevelopment ?? false });
   if (!gate) throw new Error("Original browser bundle unavailable.");
@@ -92,8 +103,10 @@ export async function createOriginalBrowserRoute(owner: OriginalBrowserOwner, op
     if (pending >= 4) throw unavailable("Original browser read limit reached.");
     pending++;
     try {
+      if (transcriptOnly && input.command !== "chatMessages" && input.command !== "chatCapabilities" && input.command !== "chatList")
+        throw unavailable("Only an explicitly shared Original Chat transcript is available here.");
       const read = async (operation: ReadOperation, args: Record<string, unknown>) => {
-        if (!current()) throw unavailable("Original browser grant is no longer current.");
+        if (!capabilityRead || !current()) throw unavailable("Original browser grant is no longer current.");
         let value: unknown;
         try { value = await capabilityRead(grant, { operation: `mcp.tool.${operation}`, version: 1, arguments: args }); }
         catch { throw unavailable("Original owner did not return a verified read."); }
@@ -184,6 +197,7 @@ export async function createOriginalBrowserRoute(owner: OriginalBrowserOwner, op
         case "chatMessages": {
           if (!readChatTranscript || !current()) throw unavailable("Original Chat transcript sharing is unavailable.");
           const id = chatId.parse(input.id);
+          if (detachedChatId && id !== detachedChatId) throw unavailable("The owning PKM Chat did not share this transcript page.");
           const cursor = input.cursor === undefined ? undefined : transcriptCursor.parse(input.cursor);
           let result;
           try { result = await readChatTranscript(grant, { chatId: id, cursor, limit: 20 }); }
@@ -199,6 +213,14 @@ export async function createOriginalBrowserRoute(owner: OriginalBrowserOwner, op
           return page;
         }
         case "chatList": {
+          if (detachedChatId) {
+            if (input.cursor !== undefined || !current()) throw unavailable("Invalid Original Chat page.");
+            // Listing is itself a disclosure; do not reveal even the identity without current consent.
+            try { await readChatTranscript!(grant, { chatId: detachedChatId, limit: 1 }); }
+            catch { return { items: [], nextCursor: null }; }
+            if (!current()) throw unavailable("Original browser grant is no longer current.");
+            return { items: [{ id: detachedChatId, title: "Shared Original Chat" }], nextCursor: null };
+          }
           if (input.cursor !== undefined && !/^(?:0|[1-9]\d{0,7})$/.test(input.cursor))
             throw unavailable("Invalid Original Chat page.");
           const page = z.object({ chats: z.array(chatRow).max(100), nextOffset: z.number().int().safe().nonnegative().nullable() })
@@ -222,5 +244,5 @@ export async function createOriginalBrowserRoute(owner: OriginalBrowserOwner, op
       throw unavailable("Original owner did not return the expected browser read.");
     } finally { pending--; }
   };
-  return (req: IncomingMessage, res: ServerResponse) => gate(req, res, { accepting: authorized, authorized, readOriginal });
+  return (req: IncomingMessage, res: ServerResponse) => gate(req, res, { accepting: authorized, authorized, readOriginal, transcriptOnly });
 }

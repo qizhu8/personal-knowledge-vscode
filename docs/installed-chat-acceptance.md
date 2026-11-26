@@ -195,6 +195,14 @@ messages per page. It refuses oversized single messages rather than clipping
 them; PKM Chat still displays those locally. Only `id`, `role`, `content`,
 `status` and optional `recordedAt` are returned. Continuation cursors expire
 after two minutes and cannot cross a Chat, bound reader or transcript change.
+
+The detached service has a separate, opt-in transcript-only HTTPS mode. It starts only
+with a private `browser-transcript-v1.json` provision in the service identity directory
+and a verified packaged Webview. The provision pins the root, actor, generation, host,
+namespace and one Chat; independent native snapshot consent is still required on
+every read. Removing the provision revokes the browser sessions; replacing it
+requires restarting the daemon. This mode does not enable Notes, MCP or Chat
+mutations, and does not change ordinary gateway admission or settings.
 This callback is not advertised as an MCP operation and grants no remote writes.
 
 The transcript probe passed in isolated Linux VS Code 1.143.0 fixture

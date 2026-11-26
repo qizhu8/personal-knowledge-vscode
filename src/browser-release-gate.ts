@@ -124,7 +124,7 @@ function panelNote(note: PanelNote) {
 export type BrowserCoreDispatch = (method: "capability_read" | "capability_call" | "capabilities_describe",
   args: object) => Promise<Awaited<ReturnType<Core["dispatch"]>>>;
 export type BrowserCommand = z.infer<typeof command>;
-type BrowserContext = { accepting: () => boolean; authorized?: () => boolean } &
+type BrowserContext = { accepting: () => boolean; authorized?: () => boolean; transcriptOnly?: boolean } &
   ({ dispatch: BrowserCoreDispatch } | { readOriginal: (input: BrowserCommand, current: () => boolean) => Promise<unknown> });
 export type BrowserReleaseGateOptions = {
   allowDevelopment?: boolean;
@@ -225,6 +225,7 @@ export async function createBrowserReleaseGate(token: string, reviewAvailable: b
     try {
       if (req.method === "GET" || req.method === "HEAD") {
         if (req.url === "/webview") reply(303, "", json, { Location: base });
+        else if (!route && context.transcriptOnly && signedIn()) reply(303, "", json, { Location: `${base}chat` });
         else if (!route) reply(200, signedIn() ? ("readOriginal" in context ? originalPanel : panel) : authPage, "text/html; charset=utf-8");
         else if (route === "chat") {
           if (signedIn()) reply(200, chatPage, "text/html; charset=utf-8");
