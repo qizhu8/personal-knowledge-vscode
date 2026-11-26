@@ -64,6 +64,21 @@ Chat/Harness acceptance gap only; it is not full migration or production cutover
 
 ## Same-profile compatibility candidate
 
+### Installed Settings live-switch qualification
+
+Add `--bundled-gateway --settings-switch` to the same-profile command below.
+The harness enables `PKM_COMPATIBILITY_LIVE_SWITCH=1` only in the isolated
+candidate host. It opens Settings → MCP, cancels once, then approves Original
+→ bundled v5 → Original in the real workbench modal. It verifies both live
+relay instance IDs and the same Original library without reloading. Repair
+probes are intentionally separate.
+
+Do not enable this route by default yet. A second window cannot join the
+owning host's authority, and direct Original clients outside the relay do
+not participate in its custody guard. Clean shutdown is covered; automatic
+handoff and crash recovery are not. Changing protocol dispatch does not
+revert writes or migrate storage.
+
 ```sh
 node tests/installed-compatibility-chat.mjs --same-profile-upgrade \
   --candidate-vsix=/absolute/personal-knowledge-5.0.0.vsix \

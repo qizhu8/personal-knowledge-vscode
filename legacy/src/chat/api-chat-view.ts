@@ -108,7 +108,7 @@ async function portalToolResource(roots: readonly vscode.Uri[], tool: string, ar
 }
 
 export function registerApiChat(context: vscode.ExtensionContext, retrieval?: ChatKnowledgeRetriever, registerView = true,
-  prepareMcp?: () => Promise<void>, selectGateway?: () => SelectedChatGateway): ApiChatView {
+  prepareMcp?: () => Promise<void>, selectGateway?: () => SelectedChatGateway | Promise<SelectedChatGateway>): ApiChatView {
   const provider = new ApiChatView(context, retrieval, prepareMcp, selectGateway);
   if (registerView) registerApiChatHost(context, (operation, args) =>
     provider.runHostWriter(() => provider.agentControl(operation, args), operation === "cancel"), () => provider.isBusy);
@@ -195,7 +195,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
   };
 
   constructor(private readonly extension: vscode.ExtensionContext, private readonly retrieval?: ChatKnowledgeRetriever,
-    private readonly prepareMcp?: () => Promise<void>, private readonly selectGateway?: () => SelectedChatGateway) {
+    private readonly prepareMcp?: () => Promise<void>, private readonly selectGateway?: () => SelectedChatGateway | Promise<SelectedChatGateway>) {
     extension.subscriptions?.push(onPortalChanged(() => {
       if (this.disposed || !this.store) return;
       try { this.publish(); } catch (error) { this.notify(error); }
@@ -203,6 +203,10 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
   }
 
   get isBusy(): boolean { return this.running.size > 0 || this.queueDrains.size > 0 || this.workerWakes.size > 0 || this.discoveries.size > 0 || this.decisions.size > 0 || this.acceptanceRunning; }
+  async observeLiveGateway() {
+    await this.discoverPkmMcp();
+    return this.managedMcp?.connection.observeRoute?.();
+  }
 
   setHostWriterObserver(observer: <T>(work: () => Promise<T>, cancellation: boolean) => Promise<T>): void {
     if (this.hostWriterObserver) throw new Error("Chat host writer observer is already bound.");
@@ -1519,7 +1523,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
           controller.signal);
         chatStartupTrace?.(`PKM MCP preparation: elapsedMs=${Date.now() - preparationStarted}`);
         assertContext();
-        const gateway = this.selectGateway?.();
+        const gateway = await this.selectGateway?.();
         const generation = gateway?.generation ?? readManagedMcpManifest(managedMcpServerDirectory())?.generation;
         if (generation && this.managedMcp?.root === root
           && this.managedMcp.connection.generation === generation && !this.managedMcp.closing

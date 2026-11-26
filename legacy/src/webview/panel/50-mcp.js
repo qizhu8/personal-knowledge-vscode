@@ -41,6 +41,8 @@ function renderMcpBackendSwitch() {
     closed: helpText('Closed', '已关闭'),
   }[active?.phase] || helpText('Not verified', '未验证');
   const unavailable = helpText('Not verified', '未验证');
+  const backendName = mode => mode === 'original' ? helpText('Original MCP', '原版 MCP')
+    : mode === 'bundled-v5' ? helpText('Bundled v5 MCP', '内置 v5 MCP') : '';
   const canSwitch = target && !blocked && !error && outcome !== 'unknownOutcome' && !mcpBackendPending;
   const messages = [...new Set([error, outcome, active?.uncertain || active?.backgroundUncertain ? 'uncertainWork'
     : active?.backgroundActive ? 'backgroundWork' : ''].filter(key => mcpBackendCopy[key]))];
@@ -53,7 +55,7 @@ function renderMcpBackendSwitch() {
       <div class="mcp-backend-lane mcp-backend-observed">
         <div class="mcp-backend-label">${active && !active.backendPid ? helpText('Last reported generation', '上次报告的版本')
           : helpText('Manager-reported active', '管理器报告的活动版本')}</div>
-        <strong>${esc(phase)}</strong>
+        <strong>${esc([backendName(active?.mode), phase].filter(Boolean).join(' · '))}</strong>
         <code>${esc(active?.generation || unavailable)}</code>
         ${active?.runtimeBuild ? `<small>${helpText('Build', '构建')} <code>${esc(active.runtimeBuild)}</code></small>` : ''}
         ${active ? `<small>${helpText('In flight', '进行中')} ${esc(active.inFlight)} · ${helpText('Uncertain', '结果不确定')} ${esc(active.uncertain + active.backgroundUncertain)}</small>` : ''}
@@ -62,7 +64,7 @@ function renderMcpBackendSwitch() {
         <label class="mcp-backend-label" for="mcp-backend-target">${helpText('Switch target', '切换目标')}</label>
         <select id="mcp-backend-target" onchange="selectMcpBackend(this.value)" ${error === 'unbound' || !options.length || mcpBackendPending ? 'disabled' : ''}>
           <option value="">${options.some(item => item.compatible) ? helpText('Choose a staged generation…', '选择已暂存的版本…') : helpText('No compatible alternative', '没有兼容的备选版本')}</option>
-          ${options.map(item => `<option value="${esc(item.generation).replace(/"/g, '&quot;')}" ${item === target ? 'selected' : ''} ${item.compatible ? '' : 'disabled'}>${esc(item.generation)} · ${item.compatible ? esc(item.runtimeBuild.slice(0, 12)) : helpText('incompatible', '不兼容')}</option>`).join('')}
+          ${options.map(item => `<option value="${esc(item.generation).replace(/"/g, '&quot;')}" ${item === target ? 'selected' : ''} ${item.compatible ? '' : 'disabled'}>${esc(backendName(item.mode) || item.generation)} · ${item.compatible ? esc(item.runtimeBuild.slice(0, 12)) : helpText('incompatible', '不兼容')}</option>`).join('')}
         </select>
         ${target ? `<small>${helpText('Build', '构建')} <code>${esc(target.runtimeBuild)}</code></small>` : ''}
         ${rejected ? `<small>${esc(rejected)} ${helpText('candidate(s) failed verification', '个候选项未通过验证')}</small>` : ''}
@@ -100,7 +102,8 @@ function requestMcpBackend(action) {
   const requestId = ++mcpBackendRequest;
   refreshMcpBackendSection();
   vscode.postMessage({ command:'mcpBackendSwitch' + action, requestId, ...(action === 'Apply'
-    ? { generation:target.generation, runtimeBuild:target.runtimeBuild, serviceId, activeGeneration:active.generation, activePid:active.backendPid }
+    ? { generation:target.generation, runtimeBuild:target.runtimeBuild, serviceId, activeGeneration:active.generation, activePid:active.backendPid,
+      selectionRevision:mcpBackendView.selectionRevision }
     : {}) });
   mcpBackendDeadline = setTimeout(() => {
     if (requestId !== mcpBackendRequest || !mcpBackendPending) return;

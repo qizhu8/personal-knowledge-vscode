@@ -17,12 +17,14 @@ export interface ManagedChatMcp {
   generation: string;
   catalog: { name: string; description: string; inputSchema: object; managed: true; hints?: ToolSafetyHints }[];
   invoke(name: string, input: Record<string, unknown>, signal: AbortSignal): Promise<string>;
+  observeRoute?(): Promise<unknown>;
   close(): Promise<void>;
 }
 
 export interface SelectedChatGateway {
   command: string; args: string[]; cwd: string; version: string; generation: string;
   runtimeBuild: string; originalBuild: string;
+  env?: Record<string, string>; liveRelay?: boolean;
   assertCurrent(): void;
 }
 
@@ -69,7 +71,7 @@ export async function connectSelectedChatGateway(
   const client = new Client({ name: "pkm-chat-gateway", version: "1.0.0" });
   const transport = new StdioClientTransport({
     command: gateway.command, args: gateway.args, cwd: gateway.cwd, stderr: "inherit",
-    env: managedMcpAttributionEnv({ ELECTRON_RUN_AS_NODE: "1" }, "pkm-chat", chatId),
+    env: managedMcpAttributionEnv({ ELECTRON_RUN_AS_NODE: "1", ...gateway.env }, "pkm-chat", chatId),
   });
   let instance: string | undefined, closing: Promise<void> | undefined, closed = false, draining = false, drained = false;
   let exit: Promise<void> | undefined;
@@ -124,21 +126,25 @@ export async function connectSelectedChatGateway(
     await withMcpDiscoveryDeadline(signal, 30_000, async discovery => {
       await client.connect(transport, { signal: discovery, timeout: 30_000 });
       const version = await control("check_version", {}, discovery);
-      verify(version.runtime);
+      const route = gateway.liveRelay ? version.routeRuntime : version.runtime;
+      verify(route);
       const backend = version.backend;
-      if (version.version !== gateway.version || backend?.architecture !== "v5-mcp-with-original-business-adapter"
+      const originalMode = gateway.liveRelay && version.dispatchMode === "original";
+      if ((originalMode ? version.runtime?.runtimeBuild !== gateway.originalBuild
+        || version.runtime?.attribution?.source !== "pkm-chat"
+        : version.version !== gateway.version || backend?.architecture !== "v5-mcp-with-original-business-adapter"
         || backend.storageEngine !== "original" || backend.storageMigrated !== false
         || backend.runtimeBuild !== gateway.originalBuild || backend.health?.phase !== "accepting"
-        || backend.health.uncertainCalls !== 0 || version.runtime.phase !== "accepting"
-        || version.runtime.acceptingNewCalls !== true || version.runtime.uncertainCalls !== 0 || version.runtime.inFlight !== 0)
+        || backend.health.uncertainCalls !== 0) || route.phase !== "accepting"
+        || route.acceptingNewCalls !== true || route.uncertainCalls !== 0 || route.inFlight !== 0)
         throw new Error("Selected gateway is not bound to the Original generation.");
-      instance = version.runtime.instanceId;
+      instance = route.instanceId;
       let offset = 0, revision: string | undefined;
       for (let pages = 0;; pages++) {
         if (pages >= 512) throw new Error("Gateway catalogue exceeded its bound.");
         const page = await control("capabilities_list", { path: "mcp.tool", offset, limit: 10, ...(revision ? { revision } : {}) }, discovery);
         if (!Array.isArray(page.operations) || !Number.isSafeInteger(page.total) || page.total < 1 || page.total > 4096
-          || page.total !== backend.operations || page.offset !== offset || !/^[0-9a-f]{64}$/.test(page.revision)
+          || !originalMode && page.total !== backend.operations || page.offset !== offset || !/^[0-9a-f]{64}$/.test(page.revision)
           || revision && page.revision !== revision) throw new Error("Gateway catalogue changed during discovery.");
         revision = page.revision;
         for (const entry of page.operations) {
@@ -160,11 +166,18 @@ export async function connectSelectedChatGateway(
         if (!Number.isSafeInteger(page.nextOffset) || page.nextOffset <= offset) throw new Error("Gateway discovery did not progress.");
         offset = page.nextOffset;
       }
-      if (operations.size !== backend.operations) throw new Error("Incomplete Original tool catalogue.");
+      if (!originalMode && operations.size !== backend.operations || !operations.size)
+        throw new Error("Incomplete Original tool catalogue.");
       gateway.assertCurrent();
     });
     if (signal.aborted || draining) throw new Error("Gateway discovery cancelled.");
     return { generation: gateway.generation, catalog, close,
+      ...(gateway.liveRelay ? { async observeRoute() {
+        gateway.assertCurrent();
+        const response = await control("check_version", {});
+        verify(response.routeRuntime);
+        return response;
+      } } : {}),
       async invoke(name, input, requestSignal) {
         gateway.assertCurrent();
         const operation = operations.get(name);

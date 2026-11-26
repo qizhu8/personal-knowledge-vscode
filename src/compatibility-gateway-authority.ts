@@ -42,6 +42,7 @@ export interface CompatibilityGatewayHost {
   acquireLegacyFence(root: string): LegacySharedFence;
   workbenchAttribution: Readonly<Json>;
   chatAttribution: Readonly<Json>;
+  assertAllowed?(): void;
   confirm(review: { from: CompatibilityDispatchMode; to: CompatibilityDispatchMode; runtimeBuild: string }): Promise<boolean>;
 }
 
@@ -118,7 +119,7 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
     return value;
   }
   function available() {
-    try { custody.assertHeld(); } catch { accepting = false; }
+    try { host.assertAllowed?.(); custody.assertHeld(); } catch { accepting = false; }
     return accepting && !uncertain && !closed && originals.size === roles.length
       && [...originals.values()].every(item => item.identity.health.phase === "accepting") && !originalUncertain();
   }

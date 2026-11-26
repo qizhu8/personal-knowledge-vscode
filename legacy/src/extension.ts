@@ -4584,15 +4584,16 @@ async function registerCopilotMcpUserConfig(): Promise<boolean> {
   return true;
 }
 
+let compatibilityRoute: ReturnType<typeof createBundledCompatibilityRoute> | undefined;
 function registerNativeMcpProvider(context: vscode.ExtensionContext, route?: ReturnType<typeof createBundledCompatibilityRoute>): void {
   const api = vscode as any;
   if (typeof api.lm?.registerMcpServerDefinitionProvider !== "function" || typeof api.McpStdioServerDefinition !== "function") return;
   const changed = new vscode.EventEmitter<void>();
   _mcpDefinitionsChanged = changed;
-  const createDefinition = () => {
+  const createDefinition = async () => {
     if (route) {
-      const selected = route.launch();
-      const env = managedMcpAttributionEnv({ ELECTRON_RUN_AS_NODE: "1" });
+      const selected = await route.launch();
+      const env = managedMcpAttributionEnv({ ELECTRON_RUN_AS_NODE: "1", ...selected.env });
       const definition = new api.McpStdioServerDefinition("pkm", selected.command, selected.args, env, selected.runtimeBuild);
       definition.cwd = nativeMcpCwdUri(context.extensionUri, selected.cwd, vscode.Uri.file);
       return definition;
@@ -4604,10 +4605,10 @@ function registerNativeMcpProvider(context: vscode.ExtensionContext, route?: Ret
   };
   const provider = {
     onDidChangeMcpServerDefinitions: changed.event,
-    provideMcpServerDefinitions: () => {
+    provideMcpServerDefinitions: async () => {
       try {
         if (!getStorePath() || readAccountMcpBinding()?.registrationOwner === "manual-user") return [];
-        return [createDefinition()];
+        return [await createDefinition()];
       } catch (error) {
         log.warn(`PKM MCP definition unavailable: ${error instanceof Error ? error.message : String(error)}`);
         if (!route) void offerPkmMcpConfiguration(context, error instanceof Error ? error.message : String(error)).catch(error => log.warn(`PKM MCP configuration failed: ${error instanceof Error ? error.message : String(error)}`));
@@ -4627,7 +4628,7 @@ function registerNativeMcpProvider(context: vscode.ExtensionContext, route?: Ret
     if (vscode.workspace.isTrusted === false) throw new Error("PKM MCP requires a trusted workspace.");
     if (route) {
       await maintainPkmIntegration(context);
-      route.launch();
+      await route.launch();
     }
     const runtime = mcpRuntimeStatus();
     if (!getStorePath() || !runtime.healthy || !mcpStatus().installed) throw new Error("PKM MCP is not ready. Check or repair its runtime in Config.");
@@ -8739,6 +8740,11 @@ async function handleMessageObserved(
   respond: (m: object) => void,
   context: vscode.ExtensionContext
 ): Promise<void> {
+  if (await compatibilityRoute?.handleSettings(msg, respond)) return;
+  if (msg.command === "mcpBackendSwitchRead" || msg.command === "mcpBackendSwitchApply") {
+    respond({ command: "mcpBackendSwitchResult", data: { requestId: msg.requestId, error: "unbound" } });
+    return;
+  }
   const panel = activePanel();
   const session = panelSession();
   try {
@@ -15293,11 +15299,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   performanceStateDir = path.join(context.globalStorageUri.fsPath, "performance");
   configureCopilotSdk({ storageDir: context.globalStorageUri.fsPath });
   log.init(context);
-  const gatewayRoute = process.platform === "linux" && Number(context.extension.packageJSON.version.split(".")[0]) === 5
+  const gatewayRoute = compatibilityRoute = process.platform === "linux" && Number(context.extension.packageJSON.version.split(".")[0]) === 5
     && process.env.PKM_MANAGED_WRITER_SESSION === undefined && readAccountMcpBinding()?.registrationOwner !== "manual-user"
     ? createBundledCompatibilityRoute({
       extensionPath: context.extensionPath, storage: context.globalStorageUri.fsPath,
       root: getStorePath, managed: managedMcpServerDirectory, python: resolveMcpPython,
+      live: process.env.PKM_COMPATIBILITY_LIVE_SWITCH === "1" ? { async confirm(review) {
+        const label = (mode: string) => mode === "original" ? "Original MCP" : "Bundled v5 MCP";
+        return await vscode.window.showWarningMessage(`Switch pkm from ${label(review.from)} to ${label(review.to)}?`,
+          { modal: true, detail: "Workbench and PKM Chat keep the same connections and Original library. This does not roll back storage or replay calls." },
+          "Switch backend") === "Switch backend";
+      } } : undefined,
       assertAllowed() {
         if (!vscode.workspace.isTrusted || !getStorePath() || process.env.PKM_MANAGED_WRITER_SESSION !== undefined
           || hasManagedRetrievalSession(getStorePath()))
@@ -15321,7 +15333,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (integrationMaintenanceState !== "ready") {
           throw new Error(`PKM MCP preparation ${integrationMaintenanceState}: ${integrationMaintenanceError}`);
         }
-      }, gatewayRoute?.launch);
+      }, gatewayRoute ? () => gatewayRoute.launch("chat") : undefined);
+      if (process.env.PKM_COMPATIBILITY_LIVE_SWITCH === "1" && gatewayRoute)
+        context.subscriptions.push(vscode.commands.registerCommand("_personalKnowledge.observeChatGateway",
+          () => chat.observeLiveGateway()));
       chat.setHostWriterObserver((work, cancellation) => cancellation
         ? observeHostChatCancellation(work) : observeHostWriter("chat", work));
       return chat;
@@ -17434,6 +17449,8 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
 }
 
 export async function deactivate(): Promise<void> {
+  await compatibilityRoute?.dispose().catch(() => { console.error("PKM compatibility custody remains unconfirmed."); });
+  compatibilityRoute = undefined;
   retrievalSolutionDisposed = true;
   retrievalAdmissionClosed = true;
   const retrievalDrain = retrievalWorker?.closeOwned().catch(error => {

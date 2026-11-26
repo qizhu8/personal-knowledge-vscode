@@ -1,0 +1,82 @@
+"""Use the installed Settings webview and real host modal, never invoke the controller directly."""
+import json
+import sys
+import time
+from pathlib import Path
+
+from playwright.sync_api import expect, sync_playwright
+
+
+fixture = json.loads(Path(sys.argv[1]).read_text())
+base = Path(fixture["base"])
+with sync_playwright() as playwright:
+    deadline = time.monotonic() + 65
+    page = None
+    while time.monotonic() < deadline:
+        try:
+            browser = playwright.chromium.connect_over_cdp(
+                f"http://127.0.0.1:{fixture['port']}", timeout=500)
+            page = browser.contexts[0].pages[0]
+            break
+        except Exception:
+            time.sleep(0.1)
+    assert page is not None, "Installed switch candidate did not expose CDP."
+
+    def wait_for(filename, initial=False):
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            if (base / filename).exists():
+                return
+            failure = base / "upgrade-failure.json"
+            if failure.exists():
+                raise AssertionError(failure.read_text())
+            if initial:
+                dialog = page.locator(".monaco-dialog-box").first
+                if dialog.count() and dialog.is_visible():
+                    for label in ("Trust", "Allow", "Trust and Start", "Allow and Trust"):
+                        action = dialog.get_by_role("button", name=label, exact=True)
+                        if action.count() and action.first.is_visible():
+                            action.first.click()
+                            break
+            time.sleep(0.1)
+        raise AssertionError(f"Missing observation: {filename}")
+
+    def settings_frame():
+        deadline = time.monotonic() + 25
+        while time.monotonic() < deadline:
+            for frame in page.frames:
+                tab = frame.locator('[data-settings-owner="mcp"] [data-settings-tab="mcp"]')
+                if tab.count() and tab.first.is_visible():
+                    return frame, tab.first
+            time.sleep(0.1)
+        raise AssertionError("Actual PKM Settings webview not found")
+
+    try:
+        wait_for("settings-observed-original.json", initial=True)
+        frame, tab = settings_frame()
+        tab.click()
+        active = frame.locator(".mcp-backend-observed")
+        target = frame.locator("#mcp-backend-target")
+        apply = frame.locator("#mcp-backend-apply")
+        expect(active).to_contain_text("Original MCP", timeout=15000)
+
+        def action(target_label, active_label, accept, milestone):
+            option = target.locator("option").filter(has_text=target_label)
+            expect(option).to_have_count(1)
+            target.select_option(value=option.get_attribute("value"))
+            apply.click()
+            dialog = page.locator(".monaco-dialog-box").first
+            expect(dialog).to_contain_text(f"Switch pkm from {active_label} to {target_label}?", timeout=10000)
+            dialog.get_by_role("button", name="Switch backend" if accept else "Cancel", exact=True).click()
+            expect(frame.locator(".mcp-backend-feedback")).to_contain_text(
+                "confirmed completion" if accept else "cancelled", timeout=20000)
+            expect(active).to_contain_text(target_label if accept else active_label)
+            (base / f"settings-switch-{milestone}.json").write_text(json.dumps({"approved": accept}))
+            wait_for(f"settings-observed-{milestone}.json")
+
+        action("Bundled v5 MCP", "Original MCP", False, "cancelled")
+        action("Bundled v5 MCP", "Original MCP", True, "v5")
+        action("Original MCP", "Bundled v5 MCP", True, "returned")
+    except Exception:
+        page.screenshot(path=str(base / "installed-settings-switch-failure.png"))
+        raise
