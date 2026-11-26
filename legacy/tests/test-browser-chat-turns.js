@@ -148,11 +148,27 @@ test("native browser Send and exact Stop use the existing store, writer and stre
   await t.test("native consent pins inherited settings without changing the saved Chat", async () => {
     const { bindDetachedOriginalTextTurn } = require(join(build, "chat/detached-original-text-turn"));
     const inherited = store.create();
-    Object.assign(inherited, { permissionMode: "read-only", includeHistory: false });
+    Object.assign(inherited, { permissionMode: "read-only", includeHistory: false, builtinTools: [] });
     store.save(inherited);
-    store.startTask(inherited, "Legacy Task");
     view.chat = inherited;
     view.chats.set(inherited.id, inherited);
+    const native = bindBrowserChatTurns(grant, {
+      assertCurrent() {},
+      target: id => view.browserChatTurnTarget(root, id),
+      confirm: async () => true,
+      send: (id, text, admitted) => view.sendBrowserChatTurn(root, id, text, admitted),
+    });
+    const nativeRef = native.getSendTarget(grant, { chatId: inherited.id });
+    assert.equal((await native.sendChatTurn(grant, { ...nativeRef, text: "Ordinary native history before the Task" })).status, "completed",
+      JSON.stringify(notices.slice(-2)));
+    Object.assign(inherited, store.load(inherited.id, false));
+    view.chat = inherited;
+    view.chats.set(inherited.id, inherited);
+    assert.equal(inherited.messages.length, 2);
+    assert.equal(inherited.messages[1].status, "complete");
+    delete inherited.builtinTools;
+    store.save(inherited);
+    store.startTask(inherited, "Legacy Task");
     const file = store.file(inherited.id), before = readFileSync(file, "utf8");
     const inheritedFields = ["activityCreditLimit", "modelProvider", "modelProfileId", "builtinTools", "vscodeTools", "toolSelection"];
     const assertInherited = raw => {
@@ -191,11 +207,31 @@ test("native browser Send and exact Stop use the existing store, writer and stre
       readProviderKey: async () => providerKey,
       withWriter: work => work(),
     });
-    const ref = detached.getSendTarget(grant, { chatId: inherited.id });
-    assert.equal((await detached.sendChatTurn(grant, { ...ref, text: "send with native defaults" })).status, "completed");
+    const sent = ["send with native defaults", "another detached turn"];
+    for (const text of sent) {
+      const ref = detached.getSendTarget(grant, { chatId: inherited.id });
+      assert.equal((await detached.sendChatTurn(grant, { ...ref, text })).status, "completed");
+      const refreshed = store.load(inherited.id, false);
+      view.chat = refreshed;
+      view.chats.set(refreshed.id, refreshed);
+      const saved = readFileSync(file, "utf8");
+      const stamp = store.browserTurnRevision(refreshed, approval.execution.digest);
+      await view.handle({ type: "read", id: refreshed.id, value: refreshed.lastResultId });
+      assert.equal(detached.readSettledReply(refreshed.id).messages.at(-2).content, text);
+      assert.equal(store.load(refreshed.id, false).readResultId, refreshed.lastResultId);
+      assert.equal(store.list().find(row => row.id === refreshed.id).status, "completed");
+      assert.equal(readFileSync(file, "utf8"), saved, "viewing a result must not write Chat history");
+      assert.equal(store.browserTurnRevision(refreshed, approval.execution.digest), stamp);
+    }
+    assert.deepEqual(detached.readSettledReply(inherited.id).messages.filter(message => message.role === "user").map(message => message.content), sent);
     assert.equal(requests.at(-1).model, "fixture");
     assert.equal(requests.at(-1).tools, undefined);
     assert.equal(store.load(inherited.id, false).sessionId, approval.sessionId);
     assertInherited(readFileSync(file, "utf8"));
+    const edited = store.load(inherited.id, false);
+    edited.title = "An actual native edit";
+    store.save(edited);
+    assert.throws(() => detached.readSettledReply(inherited.id), /unavailable/);
+    assert.throws(() => detached.getSendTarget(grant, { chatId: inherited.id }), /unavailable/);
   });
 });

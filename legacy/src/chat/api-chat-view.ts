@@ -2625,7 +2625,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
       }
       case "read":
         if (message.id === chat.id && this.view?.visible !== false && message.value === chat.lastResultId && chat.lastResultId !== chat.readResultId) {
-          chat.readResultId = chat.lastResultId; this.persist(chat); this.publish();
+          if (typeof message.value === "string" && this.store!.markResultRead(chat, message.value)) this.publish();
         }
         break;
       case "settings": await this.configure(); break;

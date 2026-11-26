@@ -728,6 +728,27 @@ export class ApiChatStore {
       revision: JSON.stringify([chat.createdAt, chat.revision, before.dev, before.ino, before.ctimeMs]) };
   }
 
+  /** Viewing a result is UI metadata, not a Chat/Session mutation or an attempt lease change. */
+  markResultRead(chat: ApiConversation, resultId: string): boolean {
+    return withCrossProcessLockSync(path.join(this.stateDirectory, "api-chats", "chats.lock"), "Chat history", () => {
+      const current = this.resolveChat(chat.id);
+      if (current.revision !== chat.revision || current.lastResultId !== resultId) return false;
+      if (current.readResultId !== resultId) this.write(`${this.file(chat.id)}.read`, resultId);
+      chat.readResultId = resultId;
+      return true;
+    });
+  }
+
+  private resultWasRead(file: string, resultId?: string): boolean {
+    if (!resultId) return false;
+    const receipt = `${file}.read`;
+    try {
+      const stat = fs.lstatSync(receipt);
+      return stat.isFile() && stat.nlink === 1 && stat.size <= 512 &&
+        JSON.parse(fs.readFileSync(receipt, "utf8")) === resultId;
+    } catch { return false; }
+  }
+
   startTask(chat: ApiConversation, title: string): void {
     if (chat.sessionId) throw new Error("Complete the current Task before starting another Task.");
     if (chat.progress?.status === "running" || chat.messages.some(message => message.status === "streaming")) throw new Error("Wait for the current request before starting a Task.");
@@ -1135,6 +1156,7 @@ export class ApiChatStore {
       || chat.mcpServers && (!Array.isArray(chat.mcpServers) || chat.mcpServers.some(server => !server || typeof server.id !== "string" || typeof server.label !== "string" || typeof server.url !== "string" || typeof server.enabled !== "boolean" || !Array.isArray(server.tools) || server.tools.some(name => typeof name !== "string")))
       || chat.progress && !progressValid(chat.progress)) throw new Error("Unsupported chat history format.");
     chat.workspaceNamespace ||= path.basename(path.dirname(file));
+    if (this.resultWasRead(file, chat.lastResultId)) chat.readResultId = chat.lastResultId;
     this.rememberQueue(chat, { ...stored, workspaceNamespace: chat.workspaceNamespace });
     if (recoverInterrupted && chat.workGoal?.status === "active") {
       chat.workGoal = recordWorkGoalTransition(chat.workGoal, "interrupted", "host_interrupted");
@@ -1411,23 +1433,27 @@ export class ApiChatStore {
     try { const stat = fs.statSync(file); return `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.ino}`; } catch { return undefined; }
   }
   private listingEntry(file: string, directory: string, name: string) {
-    const stamp = ApiChatStore.fileStamp(file);
+    const listingStamp = () => {
+      const stamp = ApiChatStore.fileStamp(file);
+      return stamp && `${stamp}:${ApiChatStore.fileStamp(`${file}.read`) || ""}`;
+    };
+    const stamp = listingStamp();
     const cached = this.listingCache.get(file);
     if (stamp && cached?.stamp === stamp) return cached.entry;
     const stored = JSON.parse(fs.readFileSync(file, "utf8")) as StoredChat;
     const summary = this.history.summary(stored);
-    const chat = summary ? stored : this.load(name.slice(0, -5), false);
+    const acknowledged = summary?.status === "new-result" && this.resultWasRead(file, stored.lastResultId);
+    const chat = summary && !acknowledged ? stored : this.load(name.slice(0, -5), false);
     if (chat.id !== name.slice(0, -5) || typeof chat.title !== "string" || typeof chat.updatedAt !== "string"
       || !Number.isFinite(Date.parse(chat.updatedAt))
       || chat.activityCreditLimit !== undefined && !validActivityCreditLimit(chat.activityCreditLimit)) throw new Error("Unsupported Chat listing metadata.");
     const entry = { id: chat.id, workspaceNamespace: chat.workspaceNamespace || path.basename(directory), title: chat.title, updatedAt: chat.updatedAt,
-      status: summary?.status || apiChatStatus({ ...chat, version: 1 }), ...(chat.sessionId ? { sessionId: chat.sessionId } : {}),
+      status: !acknowledged && summary?.status || apiChatStatus({ ...chat, version: 1 }), ...(chat.sessionId ? { sessionId: chat.sessionId } : {}),
       activityCreditLimit: chat.activityCreditLimit, activityBudgetBypass: chat.activityBudgetBypass,
       workerManager: !!(summary?.workerManager ?? chat.messages.some(message => message.delegations?.length)),
       ...(chat.workerState ? { workerTreeId: chat.workerState.treeId, ...(chat.workerState.parentChatId ? { workerParentChatId: chat.workerState.parentChatId } : {}) } : {}) };
     // A legacy file may have been rewritten by load(); stamp after reading so the next call re-validates once.
-    const after = ApiChatStore.fileStamp(file);
-    if (after) this.listingCache.set(file, { stamp: after, entry });
+    if (stamp && stamp === listingStamp()) this.listingCache.set(file, { stamp, entry });
     return entry;
   }
   private sessionStopped(sessionId: string, chatId: string): boolean {
@@ -1575,7 +1601,10 @@ export class ApiChatStore {
       const previous = fs.existsSync(groupPath) ? JSON.parse(fs.readFileSync(groupPath, "utf8")) : {};
       this.write(groupPath, { ...previous, schema: "pkm.agent.group/v1", groupId: group.groupId, hostKind: "pkm", hostSessionId: id,
         title: chat.title, deletedAt: new Date().toISOString() });
-      fs.unlinkSync(this.file(id)); this.library.forget(id);
+      const file = this.file(id);
+      fs.rmSync(`${file}.read`, { force: true });
+      fs.unlinkSync(file);
+      this.library.forget(id);
       const retainedTask = (chat.memoryTasks || []).some(task => /^agent_session_[a-f0-9]{32}$/.test(task.id) &&
         ["agent-sessions", "agent-sessions-trash"].some(directory => fs.existsSync(path.join(this.stateDirectory, directory, `${task.id}.json`))));
       const retainedWorker = chat.workerActivity?.receiptId && this.hasWorkerResult(chat.workerActivity.receiptId);

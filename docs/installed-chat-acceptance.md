@@ -235,6 +235,9 @@ The effective activity credit limit must be Unlimited; the detached adapter
 does not enforce finite activity credit limits. To opt in, use **Credit limit**
 in the native Chat library menu for that Chat. Native tool settings remain
 unchanged and the detached browser cannot use them.
+Acknowledging a finished reply in the native Chat does not change its
+execution revision or invalidate detached readback. Edits to the Chat
+or its Task Session still invalidate the approved revision.
 
 To qualify the actual candidate rather than a staged checkout payload, run
 `node --test tests/test-browser-chat-transcript.js` from `legacy/` with
