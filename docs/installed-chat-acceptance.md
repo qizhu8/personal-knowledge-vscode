@@ -91,6 +91,8 @@ Settings receives the authority's draining phase with the previously active
 backend; the new backend is shown only after verification and selection.
 Active native Chat work blocks switching, including a turn started while
 the confirmation dialog is open.
+Both Workbench and Chat relay sessions must have enrolled against a verified
+backend. A prepared gateway without both admitted sessions cannot switch.
 Packaged cold stdio and live
 relays arbitrate on the same root guard. A cold client cannot start while
 a live owner holds custody, and a live owner cannot start over a running
@@ -205,12 +207,14 @@ requires restarting the daemon. This mode does not enable Notes, MCP or Chat
 mutations, and does not change ordinary gateway admission or settings.
 This callback is not advertised as an MCP operation and grants no remote writes.
 
-The native turn shares its model dispatcher with plain Node. The dispatcher
-requires an already prepared, authorized request; it neither grants tools nor
-loads VS Code credentials. A VS Code model still requires its owning adapter
-and does not fall back to another provider. Detached browser Send/Stop remain
-unavailable until the native admission, preparation and settlement lifecycle can
-run under persistent custody.
+The plain-Node Original Chat turn adapter supports an explicitly approved,
+single exact text request on an existing read-only Task Session. It uses the
+same Chat and Session files, attempt lease and model transport. Its narrow
+scope excludes tools, attachments, recall, Profiles and host-bound models.
+Production browser Send/Stop is not enabled: the gateway must provision the
+native approval with a scoped provider credential, hold writer custody through
+settlement, and authorize disclosure of the new response separately from the
+old immutable transcript receipt.
 
 To qualify the actual candidate rather than a staged checkout payload, run
 `node --test tests/test-browser-chat-transcript.js` from `legacy/` with

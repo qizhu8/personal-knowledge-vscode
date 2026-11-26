@@ -1346,9 +1346,29 @@ export class ApiChatStore {
       .update(session).digest("hex");
   }
 
-  admitBrowserTurn(chat: ApiConversation, expected: string, executionDigest: string): void {
+  admitBrowserTurn(chat: ApiConversation, expected: string, executionDigest: string, assertOwner?: () => void): void {
     withCrossProcessLockSync(path.join(this.stateDirectory, "api-chats", "chats.lock"), "Chat history", () => {
+      assertOwner?.();
       if (this.browserTurnRevision(chat, executionDigest) !== expected) throw new Error("The browser Chat revision is stale.");
+      this.saveUnlocked(chat, false);
+    });
+  }
+
+  /** Conditional terminal write to the same Chat and native Session, never a new attempt. */
+  settleOwnedTextTurn(chat: ApiConversation, attemptId: string): void {
+    withCrossProcessLockSync(path.join(this.stateDirectory, "api-chats", "chats.lock"), "Chat history", () => {
+      const current = this.resolveChat(chatPkmUrl(this.namespace, chat.id));
+      const lease = current.progress, settled = chat.progress;
+      if (current.revision !== chat.revision || current.sessionId !== chat.sessionId ||
+          !lease || !settled || lease.status !== "running" || settled.status === "running" ||
+          lease.attemptId !== attemptId || settled.attemptId !== attemptId ||
+          lease.ownerPid !== process.pid || lease.ownerHost !== hostname() ||
+          lease.executionContext?.digest !== settled.executionContext?.digest)
+        throw new Error("The Original Chat attempt lease is no longer owned.");
+      this.assertAvailable(current);
+      if (!current.sessionId || ["stopped", "completed"].includes(JSON.parse(fs.readFileSync(
+        path.join(this.stateDirectory, "agent-sessions", `${current.sessionId}.json`), "utf8")).status))
+        throw new Error("The Original Chat session is closed.");
       this.saveUnlocked(chat, false);
     });
   }

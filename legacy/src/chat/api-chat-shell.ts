@@ -111,6 +111,8 @@ export function registerApiChatShell(context: vscode.ExtensionContext, load: (si
     { namespace: string } & ReturnType<typeof bindNativeBrowserChatTranscriptConsent>;
   bindBrowserChatTurns(grant: BrowserChatGrant, assertCurrent: (grant: BrowserChatGrant) => void):
     ReturnType<typeof bindBrowserChatTurns>;
+  approveDetachedTextTurn(grant: BrowserChatGrant, chatId: string, text: string,
+    assertCurrent: (grant: BrowserChatGrant) => void): ReturnType<ApiChatView["approveDetachedTextTurn"]>;
   drainManagedWriter(): Promise<void>;
   portalChatBindings(): Promise<Array<{ id: string; title: string }>>;
   preparePortalMutationPolicy(chatId: string): Promise<void>;
@@ -323,6 +325,19 @@ export function registerApiChatShell(context: vscode.ExtensionContext, load: (si
             { modal: true, detail: `${title.slice(0, 120)} (${chatId})\nThis browser grant can read this saved transcript for up to 24 hours, even after VS Code closes. New Chat changes are not shared. No tools, attachments or approvals are shared.` },
             "Share saved transcript") === "Share saved transcript");
       return { namespace, ...consent };
+    },
+    async approveDetachedTextTurn(grant, chatId, text, assertCurrent) {
+      const pinned = Object.freeze({ ...grant });
+      const assertOwner = () => {
+        if (!assertChatHost || managedWriterFenced || !backend) throw new Error("Open the Original PKM Chat first.");
+        assertCurrent(pinned);
+        assertChatHost(pinned);
+      };
+      assertOwner();
+      if (browserSendPromptOpen) return;
+      browserSendPromptOpen = true;
+      try { return await (backend as ApiChatView).approveDetachedTextTurn(pinned, chatId, text, assertOwner); }
+      finally { browserSendPromptOpen = false; }
     },
     drainManagedWriter: async () => {
       managedWriterFenced = true;
