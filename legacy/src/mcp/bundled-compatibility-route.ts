@@ -27,11 +27,20 @@ function pin(filename: string) {
   return { path: resolved, sha256: hash(fs.readFileSync(resolved)) };
 }
 const inside = (parent: string, child: string) => child === parent || child.startsWith(parent + path.sep);
+const ownerMarker = (root: string) => path.join(root, ".pkm/state/compatibility-gateway/owner-pending.json");
+function hasPendingOwner(root: string) {
+  if (!root || !path.isAbsolute(root)) return false;
+  try { fs.lstatSync(ownerMarker(root)); return true; }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
 
 export function createBundledCompatibilityRoute(options: {
   extensionPath: string; storage: string;
   root(): string; managed(): string; python(): string; assertAllowed(): void;
-  live?: { confirm(review: { from: Mode; to: Mode; runtimeBuild: string }): Promise<boolean> };
+  live?: { assertAdmittedRoot(): void; confirm(review: { from: Mode; to: Mode; runtimeBuild: string }): Promise<boolean> };
 }) {
   let selected: ReturnType<typeof select> | undefined;
   let phase: "pending" | "selected" | "unavailable" = "pending";
@@ -40,6 +49,7 @@ export function createBundledCompatibilityRoute(options: {
   function select() {
     options.assertAllowed();
     const root = options.root(), managed = options.managed();
+    if (options.live) options.live.assertAdmittedRoot();
     const rootId = identity(fs.lstatSync(root));
     if (fs.realpathSync(root) !== root || fs.realpathSync(managed) !== managed)
       throw new Error("Compatibility selection requires canonical Original paths.");
@@ -76,6 +86,7 @@ export function createBundledCompatibilityRoute(options: {
     fs.writeFileSync(path.join(control, "active-generation.json"), active, { flag: "wx", mode: 0o600 });
     const assertCurrent = () => {
       options.assertAllowed();
+      options.live?.assertAdmittedRoot();
       const current = readManagedMcpManifest(managed);
       if (options.root() !== root || options.managed() !== managed || identity(fs.lstatSync(root)) !== rootId
         || current?.generation !== original.generation || current.runtimeBuild !== original.runtimeBuild
@@ -118,9 +129,15 @@ export function createBundledCompatibilityRoute(options: {
     assertAllowed: selection.assertCurrent,
     confirm: options.live!.confirm }, "original");
   }
+  function assertLaunchAdmission() {
+    if (!starting && hasPendingOwner(options.root()))
+      throw new Error("Compatibility custody belongs to another window or requires recovery. No fallback was started.");
+  }
   return {
+    assertLaunchAdmission,
     async launch(role: "workbench" | "chat" = "workbench") {
       try {
+        assertLaunchAdmission();
         const selection = getSelected();
         if (options.live) {
           const authority = await (starting ??= startAuthority(selection));
@@ -144,12 +161,16 @@ export function createBundledCompatibilityRoute(options: {
       if (!["mcpBackendSwitchRead", "mcpBackendSwitchApply"].includes(message?.command)) return false;
       if (!Number.isSafeInteger(message.requestId) || message.requestId < 1) return true;
       const send = (data: object) => respond({ command: "mcpBackendSwitchResult", data: { requestId: message.requestId, ...data } });
-      if (!options.live) { send({ error: "unbound" }); return true; }
       if (busy) { send({ error: "busy" }); return true; }
       busy = true;
       try {
+        if (!starting) {
+          send({ error: hasPendingOwner(options.root()) ? "custodyUnavailable" : "notAdmitted" });
+          return true;
+        }
         const selection = getSelected();
-        const authority = await (starting ??= startAuthority(selection));
+        const authority = await starting;
+        selection.assertCurrent();
         const snapshot = () => {
           const status = authority.status();
           return { serviceId: authority.relayIdentity.generation, selectionRevision: status.selectionRevision,
@@ -167,7 +188,10 @@ export function createBundledCompatibilityRoute(options: {
           const result = await authority.approveSwitch({ mode: current.active.mode, selectionRevision: current.selectionRevision }, target.mode);
           send({ ...snapshot(), outcome: result.applied ? "completed" : "cancelled" });
         } catch { send({ ...snapshot(), error: "refused" }); }
-      } catch { send({ error: "statusUnavailable" }); }
+      } catch {
+        try { send({ error: hasPendingOwner(options.root()) ? "custodyUnavailable" : "statusUnavailable" }); }
+        catch { send({ error: "statusUnavailable" }); }
+      }
       finally { busy = false; }
       return true;
     },
@@ -176,11 +200,16 @@ export function createBundledCompatibilityRoute(options: {
       if (starting) await (await starting).close();
     },
     status() {
+      let blockedByCustody = false;
+      try { blockedByCustody = !starting && hasPendingOwner(options.root()); }
+      catch { blockedByCustody = true; }
       if (selected) {
         try { selected.assertCurrent(); }
         catch { phase = "unavailable"; }
       }
-      return { phase, selected: selected ? { generation: selected.generation, runtimeBuild: selected.runtimeBuild,
+      return { phase: blockedByCustody ? "unavailable" as const : phase,
+        ...(blockedByCustody ? { reason: "custodyUnavailable" as const } : {}),
+        selected: selected ? { generation: selected.generation, runtimeBuild: selected.runtimeBuild,
         version: selected.version, originalBuild: selected.originalBuild } : null,
         compatibleCandidates: [], scope: "native-vscode-pkm-and-pkm-chat" as const,
         storageEngine: "original" as const, storageMigrated: false as const, cutoverAuthorized: false as const };

@@ -50,6 +50,11 @@ test("Original ↔ bundled v5 on existing pkm relays; interrupted Original write
     assertLinuxRootStillLegacyWritable(root);
     return acquireLinuxRootWriterFence(root, "shared", 500);
   } };
+  const cold = await f.connect();
+  await assert.rejects(startCompatibilityGatewayAuthority(config, bundled, host, "original"), /already held/);
+  const coldIdentity = value(await cold.client.callTool({ name: "check_version", arguments: {} }));
+  assert.equal(coldIdentity.version, "0.1.0");
+  await f.close(cold.client);
   const authority = await startCompatibilityGatewayAuthority(config, bundled, host, "original");
   const owned = [];
   let closed = false;
@@ -69,6 +74,7 @@ test("Original ↔ bundled v5 on existing pkm relays; interrupted Original write
     new URL("../legacy/dist/runtime/linux-root-writer-fence.js", import.meta.url).href, f.root],
     { timeout: 5_000 });
   await assert.rejects(tryPeer(), /already held/);
+  await assert.rejects(f.connect(), /already held/);
   async function connect(name, authority) {
     const { origin, serviceId, token } = authority.relay(name);
     const client = new Client({ name, version: "1" });
@@ -200,6 +206,7 @@ test("Original ↔ bundled v5 on existing pkm relays; interrupted Original write
     assert.throws(() => process.kill(runtime.pid, 0), { code: "ESRCH" });
   }
   await assert.rejects(tryPeer(), /requires explicit recovery/);
+  await assert.rejects(f.connect(), /requires explicit recovery/);
   assert.match(await readFile(join(f.root, "notes/Entry.md"), "utf8"), /Written through v5/);
   t.diagnostic(JSON.stringify({ workbenchAndChat: { originalVersion, v5Version }, sameRelays: true,
     modes: ["original", "bundled-v5", "original"], sameToolCatalog: true, storageMigrated: false, interrupted: "unknown-no-replay" }));

@@ -4627,6 +4627,7 @@ function registerNativeMcpProvider(context: vscode.ExtensionContext, route?: Ret
   context.subscriptions.push(registerHostWriterCommand("personalKnowledge.startPkmMcp", async () => {
     if (vscode.workspace.isTrusted === false) throw new Error("PKM MCP requires a trusted workspace.");
     if (route) {
+      route.assertLaunchAdmission();
       await maintainPkmIntegration(context);
       await route.launch();
     }
@@ -15304,7 +15305,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ? createBundledCompatibilityRoute({
       extensionPath: context.extensionPath, storage: context.globalStorageUri.fsPath,
       root: getStorePath, managed: managedMcpServerDirectory, python: resolveMcpPython,
-      live: process.env.PKM_COMPATIBILITY_LIVE_SWITCH === "1" ? { async confirm(review) {
+      live: process.env.PKM_COMPATIBILITY_LIVE_SWITCH === "1" ? { assertAdmittedRoot() {
+        const root = getStorePath(), binding = readAccountMcpBinding();
+        if (vscode.env.remoteName || binding?.registrationOwner !== "native-provider"
+          || binding.knowledgeRoot !== root || !accountKnowledgeSecurity(root).private)
+          throw new Error("Live switching requires a locally owned, private Knowledge Root configured for native pkm.");
+      }, async confirm(review) {
         const label = (mode: string) => mode === "original" ? "Original MCP" : "Bundled v5 MCP";
         return await vscode.window.showWarningMessage(`Switch pkm from ${label(review.from)} to ${label(review.to)}?`,
           { modal: true, detail: "Workbench and PKM Chat keep the same connections and Original library. This does not roll back storage or replay calls." },
@@ -15329,6 +15335,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const { registerApiChat } = await import("./chat/api-chat-view");
       if (signal.aborted) throw new Error("PKM Chat backend loading was cancelled.");
       const chat = registerApiChat(context, createChatKnowledgeRetriever(() => retrievalWorker, currentRetrievalSnapshot), false, async () => {
+        gatewayRoute?.assertLaunchAdmission();
         await maintainPkmIntegration(context);
         if (integrationMaintenanceState !== "ready") {
           throw new Error(`PKM MCP preparation ${integrationMaintenanceState}: ${integrationMaintenanceError}`);

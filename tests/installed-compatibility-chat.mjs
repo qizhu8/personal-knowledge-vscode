@@ -82,7 +82,7 @@ if (!process.argv.includes("--inside")) {
   await mkdir(base, { recursive: true, mode: 0o700 });
   await writeFile(join(base, "package.json"), '{"type":"commonjs"}\n');
   console.log("INSTALLED_CHAT_EVIDENCE", base);
-  let display, app, browser, inference, passed = false;
+  let display, app, peer, browser, inference, passed = false;
   const errors = [], requests = [], logs = [];
   const overviewModel = overview ? createOverviewModel({ base }) : undefined;
   try {
@@ -469,6 +469,36 @@ exports.registerApiChatShell = (...args) => {
       }
       if (settingsSwitch) {
         upgradeEvidence.candidateVsixSha256 = candidateSha256;
+        const ownerFile = join(library, ".pkm/state/compatibility-gateway/owner-pending.json");
+        const owner = await readFile(ownerFile, "utf8");
+        await mkdir(join(base, "peer/User"), { recursive: true, mode: 0o700 });
+        await writeFile(join(base, "peer/User/settings.json"), oldSettings);
+        peer = spawn(editor, launchArgs.filter(arg => !arg.startsWith("--user-data-dir=") && !arg.startsWith("--remote-debugging-"))
+          .concat(`--user-data-dir=${short}/peer`), {
+          env: { ...appEnv, PKM_UPGRADE_BASE: base, PKM_SWITCH_PEER: "1" }, stdio: ["ignore", "pipe", "pipe"],
+        });
+        for (const stream of [peer.stdout, peer.stderr]) stream.on("data", bytes => logs.push(bytes.toString()));
+        const peerDeadline = Date.now() + 40_000;
+        let refusal;
+        while (!(refusal = await file(join(base, "settings-peer-refused.json")))) {
+          const failure = await file(join(base, "settings-peer-failure.json"));
+          if (failure) throw Error(`Installed second window: ${JSON.stringify(failure)}`);
+          if (peer.exitCode !== null || peer.signalCode !== null || Date.now() > peerDeadline)
+            throw Error("Installed second window did not verify its custody refusal.");
+          await wait(100);
+        }
+        assert.notEqual(refusal.hostPid, upgradeEvidence.hostPid);
+        assert.equal(await readFile(ownerFile, "utf8"), owner);
+        while (!(await file(join(base, "settings-owner-after-peer.json")))) {
+          const failure = await file(join(base, "upgrade-failure.json"));
+          if (failure) throw Error(`Original installed owner: ${JSON.stringify(failure)}`);
+          if (Date.now() > peerDeadline) throw Error("The original owner did not verify continuity while the second window was open.");
+          await wait(100);
+        }
+        await writeFile(join(base, "close-settings-peer"), "");
+        while (peer.exitCode === null && peer.signalCode === null && Date.now() < peerDeadline) await wait(100);
+        assert.equal(peer.exitCode, 0, "Competing window must close normally.");
+        upgradeEvidence.peer = refusal;
         assert.equal(await readFile(join(library, "notes/InstalledGatewayNote.md"), "utf8"), hostEvidence.originalNote);
         assert.equal(await readFile(settings, "utf8"), oldSettings);
         assert.equal((await stat(library)).ino, oldRoot.ino);
@@ -541,11 +571,11 @@ exports.registerApiChatShell = (...args) => {
       stage: await file(join(base, "progress.json")), providerErrors: errors }, null, 2));
     throw error;
   } finally {
-    await stop(browser); await stop(app); await stop(display);
+    await stop(browser); await stop(peer); await stop(app); await stop(display);
     await writeFile(join(base, "editor.log"), logs.join(""));
     if (inference) { inference.closeAllConnections(); await new Promise(done => inference.close(done)); }
     await writeFile(join(base, "provider-evidence.json"), JSON.stringify(requests, null, 2));
-    if (passed) for (const directory of ["h", "u", "x", "scratch", "driver", "business-python", "gateway", "offline-deps"])
+    if (passed) for (const directory of ["h", "u", "peer", "x", "scratch", "driver", "business-python", "gateway", "offline-deps"])
       await rm(join(base, directory), { recursive: true, force: true, maxRetries: 3 });
     if (passed) for (const path of ["generate.cjs", "Xauthority", "fixture.json", "chat-ready.json", "provider-waiting.json", "library/.git"])
       await rm(join(base, path), { recursive: true, force: true });

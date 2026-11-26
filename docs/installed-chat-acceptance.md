@@ -71,13 +71,23 @@ The harness enables `PKM_COMPATIBILITY_LIVE_SWITCH=1` only in the isolated
 candidate host. It opens Settings → MCP, cancels once, then approves Original
 → bundled v5 → Original in the real workbench modal. It verifies both live
 relay instance IDs and the same Original library without reloading. Repair
-probes are intentionally separate.
+probes are intentionally separate. The fixture then starts a second real
+VS Code window under the same isolated account and root, with the flag
+unset. That window must report custody unavailable and refuse native MCP
+startup without replacing the owner's marker.
 
-Do not enable this route by default yet. A second window cannot join the
-owning host's authority, and direct Original clients outside the relay do
-not participate in its custody guard. Clean shutdown is covered; automatic
-handoff and crash recovery are not. Changing protocol dispatch does not
-revert writes or migrate storage.
+The experimental switch requires a local, private root with an exact native
+account binding. Settings status is passive: refreshing neither enrolls
+the window nor changes the selected backend. Packaged cold stdio and live
+relays arbitrate on the same root guard. A cold client cannot start while
+a live owner holds custody, and a live owner cannot start over a running
+cold client or its unconfirmed shutdown marker.
+
+There is no flag-free enrollment yet. A second window cannot attach, and
+previous packages and direct Original clients do not participate in this
+guard. The guard does not show that those clients have drained. Automatic
+handoff and crash recovery are not qualified. Changing protocol dispatch
+does not revert writes or migrate storage.
 
 ```sh
 node tests/installed-compatibility-chat.mjs --same-profile-upgrade \

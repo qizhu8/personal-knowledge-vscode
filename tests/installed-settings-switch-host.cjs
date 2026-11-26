@@ -20,6 +20,19 @@ async function run() {
     const extension = vscode.extensions.getExtension("uone.personal-knowledge");
     assert(extension && extension.packageJSON.version === "5.0.0");
     await extension.activate();
+    if (process.env.PKM_SWITCH_PEER === "1") {
+      assert.equal(process.env.PKM_COMPATIBILITY_LIVE_SWITCH, undefined);
+      const status = await vscode.commands.executeCommand("_personalKnowledge.pkmCompatibilityRouteStatus");
+      assert.equal(status.phase, "unavailable");
+      assert.equal(status.reason, "custodyUnavailable");
+      assert.equal(status.selected, null);
+      await assert.rejects(() => Promise.resolve(vscode.commands.executeCommand("personalKnowledge.startPkmMcp")),
+        /Compatibility custody belongs to another window or requires recovery/);
+      write("settings-peer-refused.json", { hostPid: process.pid, status, nativeStartRefused: true });
+      await until(() => fs.existsSync(path.join(base, "close-settings-peer")));
+      await vscode.commands.executeCommand("workbench.action.quit");
+      return;
+    }
     await vscode.commands.executeCommand("personalKnowledge.startPkmMcp");
     await vscode.commands.executeCommand("personalKnowledge.openApiChat");
     const first = await until(async () => {
@@ -61,9 +74,17 @@ async function run() {
     assert.notEqual(first.native.version, v5.native.version);
     assert.equal(first.native.version, returned.native.version);
     write("installed-settings-switch.json", { hostPid: process.pid, first, cancelled, v5, returned });
+    await until(() => fs.existsSync(path.join(base, "settings-peer-refused.json")));
+    const whilePeerOpen = await observe("original");
+    for (const role of ["native", "chat"]) {
+      assert.deepEqual(whilePeerOpen[role].routeRuntime, returned[role].routeRuntime);
+      assert.deepEqual(whilePeerOpen[role].originalConnection, returned[role].originalConnection);
+    }
+    write("settings-owner-after-peer.json", whilePeerOpen);
     await until(() => fs.existsSync(path.join(base, "close-settings-candidate")));
     await vscode.commands.executeCommand("workbench.action.quit");
   } catch (error) {
-    write("upgrade-failure.json", { message: error.message, stack: error.stack });
+    write(process.env.PKM_SWITCH_PEER === "1" ? "settings-peer-failure.json" : "upgrade-failure.json",
+      { message: error.message, stack: error.stack });
   }
 }
