@@ -185,10 +185,27 @@ test("Original ↔ bundled v5 on existing pkm relays; interrupted Original write
   assert.equal(value(await call(clients[1].client, "mcp_lifecycle_quiesce")).phase, "drained");
   assert.match(JSON.stringify(await call(clients[0].client, "note_read", { slug: "Entry" })), /Written through v5/);
   assert.equal(authority.status().automaticReplay, false);
-  await Promise.all(clients.map(({ client }) => client.close()));
   const firstOwned = authority.status().originalConnections;
-  await authority.close();
+  const workbenchPid = firstOwned.find(item => item.role === "workbench").runtime.pid;
+  let draining, paused = true;
+  process.kill(workbenchPid, "SIGSTOP");
+  try {
+    const pending = call(clients[0].client, "note_read", { slug: "Entry" });
+    const deadline = Date.now() + 2_500;
+    while (!authority.status().inFlight && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(authority.status().inFlight, 1);
+    draining = authority.close();
+    assert.equal(authority.status().phase, "draining");
+    const status = value(await call(clients[0].client, "mcp_lifecycle_status"));
+    assert.equal(status.acceptingNewCalls, false);
+    assert.equal((await call(clients[0].client, "note_read", { slug: "Entry" })).isError, true);
+    process.kill(workbenchPid, "SIGCONT");
+    paused = false;
+    assert.match(JSON.stringify(await pending), /Written through v5/);
+  } finally { if (paused) process.kill(workbenchPid, "SIGCONT"); }
+  await draining;
   closed = true;
+  await Promise.all(clients.map(({ client }) => client.close()));
   for (const { supervisorPid, runtime } of firstOwned) {
     assert.throws(() => process.kill(supervisorPid, 0), { code: "ESRCH" });
     assert.throws(() => process.kill(runtime.pid, 0), { code: "ESRCH" });

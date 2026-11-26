@@ -94,6 +94,10 @@ relays arbitrate on the same root guard. A cold client cannot start while
 a live owner holds custody, and a live owner cannot start over a running
 cold client or its unconfirmed shutdown marker.
 
+On clean host shutdown the live gateway stops accepting new work, waits
+for admitted calls to finish, and confirms Original adapter exit before
+releasing custody. A drain timeout leaves custody pending, with no replay.
+
 There is no flag-free enrollment yet. A second window cannot attach, and
 previous packages and direct Original clients do not participate in this
 guard. The guard does not show that those clients have drained. Automatic

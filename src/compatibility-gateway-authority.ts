@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
+import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { compatibilityMcpConfiguration, connectCompatibilityMcp } from "./compatibility-mcp.js";
 import { acquireCompatibilityGatewayCustody, type LegacySharedFence } from "./compatibility-gateway-custody.js";
@@ -78,7 +79,7 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
     .map(role => [role, randomBytes(32).toString("hex")])) as Record<Role, string>;
   const relayIdentity = Object.freeze({ generation: serviceId, runtimeBuild: createHash("sha256")
     .update(JSON.stringify(["pkm.compatibility-relay/v1", bundled.runtimeBuild, config.legacy.runtimeBuild])).digest("hex") });
-  let accepting = true, switching = false, inFlight = 0, closed = false, uncertain = false;
+  let accepting = true, switching = false, inFlight = 0, stopping = false, closed = false, uncertain = false;
   let selectionRevision = randomUUID();
   let mode = initialMode;
   const originalUncertain = () => Math.max(0, ...[...originals.values()].map(item => item.identity.health.uncertainCalls));
@@ -126,9 +127,9 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
   }
   const localStatus = (session: Session) => ({
     schema: "pkm.mcp.lifecycle/v1", ...relayIdentity,
-    instanceId: session.id, acceptingNewCalls: session.accepting && available() && !switching,
+    instanceId: session.id, acceptingNewCalls: session.accepting && available() && !switching && !stopping,
     phase: !available() ? "action-required" : session.accepting
-      ? switching ? "draining" : "accepting" : session.inFlight ? "draining" : "drained",
+      ? switching || stopping ? "draining" : "accepting" : session.inFlight ? "draining" : "drained",
     inFlight: session.inFlight, uncertainCalls: Math.max(Number(uncertain), originalUncertain()),
     controlError: "", automaticReplay: false,
   });
@@ -173,7 +174,7 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
   async function invoke(session: Session, name: string, args: Json) {
     if (name === "mcp_lifecycle_quiesce") session.accepting = false;
     if (name === "mcp_lifecycle_status" || name === "mcp_lifecycle_quiesce") return toolResult(localStatus(session));
-    if (!available() || switching || !session.accepting)
+    if (!available() || switching || stopping || !session.accepting)
       return refused("BUSY: Gateway unavailable or draining; no call dispatched. No request was replayed.");
     session.inFlight++; inFlight++;
     try {
@@ -212,7 +213,7 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
       const input = await body(req);
       if (!uuid(input.clientId)) return reply(400, { error: "Expected exact relay session." });
       if (req.url === "/shared/enroll") {
-        if (!available() || switching || sessions.has(input.clientId) || sessions.size >= 64)
+        if (!available() || switching || stopping || sessions.has(input.clientId) || sessions.size >= 64)
           return reply(409, { error: "Cannot enroll relay." });
         sessions.set(input.clientId, { id: input.clientId, role, accepting: true, inFlight: 0 });
         return reply(200, { instructions: facades.get(role)!.instructions });
@@ -265,7 +266,7 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
 
   const identity = (value: CompatibilityDispatchMode) => value === "original" ? config.legacy : bundled;
   function assertSwitchable(expected: CompatibilitySwitchExpectation, target: CompatibilityDispatchMode) {
-    if (!available() || switching || inFlight || originalInFlight()
+    if (!available() || switching || stopping || inFlight || originalInFlight()
       || mode !== expected.mode || selectionRevision !== expected.selectionRevision || mode === target
       || target !== "original" && target !== "bundled-v5")
       throw new Error("Gateway selection changed or outstanding work blocks switching; no switch applied.");
@@ -285,7 +286,7 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
         if (target === "bundled-v5") await verifyBundled(role);
       }));
       for (const result of results) if (result.status === "rejected") throw result.reason;
-      if (!available() || inFlight || originalInFlight()) throw new Error("Gateway no longer accepts handoff.");
+      if (!available() || stopping || inFlight || originalInFlight()) throw new Error("Gateway no longer accepts handoff.");
       // Linearization point: both existing relays resolve the same active reference.
       mode = target;
       selectionRevision = randomUUID();
@@ -299,7 +300,7 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
       return { mode, generation, runtimeBuild };
     });
     return { mode, generation: active.generation, runtimeBuild: active.runtimeBuild, selectionRevision, candidates, inFlight,
-      phase: !available() ? "action-required" : switching ? "draining" : "accepting",
+      phase: !available() ? "action-required" : switching || stopping ? "draining" : "accepting",
       uncertain: uncertain || originalUncertain() > 0, automaticReplay: false,
       originalBuild: config.legacy.runtimeBuild, storageEngine: "original", storageMigrated: false,
       originalConnections: roles.map(role => ({ role, supervisorPid: original(role).adapterPid,
@@ -314,7 +315,7 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
       const generation = status().generation;
       const session: Session = { id: randomUUID(), role: "workbench", accepting: true, inFlight: 0 };
       const assertCurrent = () => {
-        if (!session.accepting || !available() || switching || revision !== selectionRevision)
+        if (!session.accepting || !available() || switching || stopping || revision !== selectionRevision)
           throw new Error("The browser gateway binding is no longer current.");
       };
       assertCurrent();
@@ -342,13 +343,21 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
     },
     // Not a management credential; never expose to Webviews, settings, or browsers.
     relay(role: Role) {
-      if (!roles.includes(role) || closed) throw new Error("Unknown or closed compatibility relay.");
+      if (!roles.includes(role) || stopping || closed) throw new Error("Unknown or closed compatibility relay.");
       return { origin, serviceId, token: tokens[role] };
     },
     relayIdentity, approveSwitch, status,
     close() {
-      if (switching || inFlight) return Promise.reject(new Error("Cannot close while gateway work is outstanding."));
+      stopping = true;
       return closing ??= (async () => {
+        const deadline = performance.now() + 30_000;
+        while (switching || inFlight || originalInFlight()) {
+          if (performance.now() >= deadline) {
+            accepting = false;
+            throw new Error("Gateway drain was not confirmed; Original custody requires explicit recovery.");
+          }
+          await delay(25);
+        }
         accepting = false; closed = true;
         const outcomes = await Promise.allSettled([
           new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
