@@ -101,13 +101,15 @@ node tests/installed-compatibility-chat.mjs --same-profile-upgrade \
   --candidate-sha256="$SHA256"
 ```
 
-The installed report separates activation from feature qualification. The
-disposable 4.0.27 → 5.0.0 fixture verified sign-in, exact panel bytes, remembered
-reload, predecessor Note inventory and detail, write denial, native transcript
-denial/consent, and explicit revocation. The running Original search did not
-return the predecessor hit, and the fixture did not establish an eligible
-visible read-only native Chat for browser Send/Stop. Neither is counted as
-installed browser parity.
+The installed gate requires the actual predecessor Note to appear in canonical
+Original search and requires a browser Send and exact Stop after reload.
+The fixture gracefully retires its detached 4.0.27 retrieval worker after the
+predecessor exits, so 5.0.0 indexes the unchanged predecessor library rather
+than querying the old empty corpus. This is safe only in the fixture’s private
+profile and process/network namespace: production does not retire other
+owners' workers. The fixture opens the persisted Chat and changes its
+permission mode through the real Workbench UI, then uses native Send consent
+and verifies that Stop closes the held loopback model stream.
 
 The internal Note body edit contract is in `legacy/src/knowledge/filestore.ts`:
 `readOriginalNoteBodyForEdit(relative)` returns the body, exact file SHA-256,

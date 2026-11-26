@@ -441,6 +441,39 @@ exports.run=async()=>{
       while (oldClients() && Date.now() < shutdownDeadline) await wait(100);
       assert(!oldClients(),
         "A fixture gateway or Original MCP is still alive; do not install the candidate.");
+      if (installedBrowser) {
+        // The predecessor can leave its detached retrieval worker alive with
+        // the empty pre-Note corpus. Only retire this fixture-owned endpoint,
+        // after its only Workbench and old clients have exited.
+        const retrieval = join(base, "u/User/globalStorage/uone.personal-knowledge/retrieval");
+        const workers = (await Promise.all((await readdir(retrieval)).map(async key =>
+          /^[a-f0-9]{16}$/.test(key) ? file(join(retrieval, key, "worker.json")).then(endpoint =>
+            endpoint && { ...endpoint, state: join(retrieval, key) }) : null))).filter(Boolean);
+        assert(workers.length <= 1, "Ambiguous private predecessor retrieval worker");
+        if (workers.length) {
+          const { pid, port, token, state } = workers[0];
+          assert(Number.isSafeInteger(pid) && pid > 1 && Number.isSafeInteger(port) && port > 0 && port < 65536 && typeof token === "string");
+          const processArgs = await readFile(`/proc/${pid}/cmdline`, "utf8").catch(error => {
+            if (error.code === "ENOENT") return "";
+            throw error;
+          });
+          if (processArgs) {
+            const args = processArgs.split("\0");
+            const scriptIndex = args.findIndex(arg => arg.endsWith("/retrieval_worker.py"));
+            const script = scriptIndex < 0 ? "" : await realpath(args[scriptIndex].replace("/proc/self/", `/proc/${pid}/`));
+            const stateArg = script && await realpath(args[scriptIndex + 1].replace("/proc/self/", `/proc/${pid}/`));
+            assert(script.startsWith(`${state}/runtimes/`) && stateArg === state &&
+              (await readFile(script)).equals(await readFile(join(installed, "resources/retrieval_worker.py"))),
+              "Unexpected predecessor retrieval process in private namespace");
+            const shutdown = await fetch(`http://127.0.0.1:${port}/shutdown`, { method: "POST",
+              headers: { "X-PKM-Retrieval-Token": token }, redirect: "error", signal: AbortSignal.timeout(5000) });
+            assert(shutdown.ok && (await shutdown.json()).ok, "Private predecessor retrieval worker declined retirement");
+            const retired = Date.now() + 15000;
+            while (await stat(`/proc/${pid}`).catch(() => undefined) && Date.now() < retired) await wait(100);
+            assert(!(await stat(`/proc/${pid}`).catch(() => undefined)), "Private predecessor retrieval worker did not exit");
+          }
+        }
+      }
       await writeFile(join(base, "driver/accept.cjs"),
         await readFile(join(here, settingsSwitch ? "installed-settings-switch-host.cjs" : "installed-compatible-upgrade-host.cjs"), "utf8"));
       checked(cli, ["--no-sandbox", `--user-data-dir=${base}/u`, `--extensions-dir=${base}/x`,
@@ -537,7 +570,12 @@ exports.registerApiChatShell = (...args) => {
         assert.deepEqual(clients.chat.gateway, { generation: upgradeEvidence.generation, runtimeBuild: upgradeEvidence.liveBuild });
         upgradeEvidence.clients = clients;
         if (transcript) upgradeEvidence.transcript = await file(join(base, "upgrade-transcript.json"));
-        if (installedBrowser) upgradeEvidence.browser = await file(join(base, "upgrade-browser.json"));
+        if (installedBrowser) {
+          upgradeEvidence.browser = await file(join(base, "upgrade-browser.json"));
+          assert.equal(upgradeEvidence.browser?.predecessorNoteSearchReadOnly, true, "Browser must find the real predecessor Note");
+          assert.equal(upgradeEvidence.browser?.nativeSendAndStopAfterReload, true, "Browser must complete and stop real native Chat turns");
+          assert.equal(upgradeEvidence.browser?.fixtureProviderAborted, true, "Stop must close the fixture provider stream");
+        }
         assert.equal(await readFile(join(library, "notes/InstalledGatewayNote.md"), "utf8"), hostEvidence.originalNote);
         assert.deepEqual(errors, []);
         await writeFile(join(base, "close-candidate"), "");

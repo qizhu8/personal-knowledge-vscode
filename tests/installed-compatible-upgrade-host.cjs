@@ -176,6 +176,17 @@ print(json.dumps(tools["api_chat_send"](sys.argv[3], sys.argv[4], sys.argv[5], s
       assert.equal(receipt.result?.reply?.content, "BUNDLED_GATEWAY_ACCEPTED");
       stage("chat-final-read-receipt");
       if (process.env.PKM_UPGRADE_BROWSER === "1") {
+        const searchDeadline = Date.now() + 30_000;
+        let standard;
+        do {
+          standard = await read("search_notes", { query: "InstalledGatewayNote", limit: 100, detail: "standard" });
+          if (standard.hits?.some(hit => hit.skill_id === "note:InstalledGatewayNote")) break;
+          await delay(250);
+        } while (Date.now() < searchDeadline);
+        const standardHasNote = standard.hits?.some(hit => hit.skill_id === "note:InstalledGatewayNote") === true;
+        stage("native-note-search", { standardOk: standard.ok, standardCode: standard.code ?? null,
+          standardHitCount: standard.hits?.length ?? null, standardHasNote });
+        assert(standardHasNote, "Original indexed search did not return the predecessor Note before browser enrollment");
         const url = await vscode.commands.executeCommand("personalKnowledge.openOriginalBrowser");
         assert.match(url, /^http:\/\/127\.0\.0\.1:\d+\/webview\/$/);
         const token = await vscode.env.clipboard.readText();
@@ -189,8 +200,10 @@ print(json.dumps(tools["api_chat_send"](sys.argv[3], sys.argv[4], sys.argv[5], s
         const focused = path.join(base, "browser-focus-request");
         while (!fs.existsSync(focused) && Date.now() < until) await delay(100);
         assert(fs.existsSync(focused), "Browser evidence did not reach native Chat focus.");
+        await vscode.commands.executeCommand("workbench.action.focusAuxiliaryBar");
+        await vscode.commands.executeCommand("workbench.view.extension.personalKnowledgeChat");
         await vscode.commands.executeCommand("personalKnowledge.apiChat.focus");
-        await vscode.commands.executeCommand("personalKnowledge.openApiChat", process.env.PKM_UPGRADE_CHAT);
+        stage("browser-workbench-focused");
         const ready = path.join(base, "browser-revoke-request");
         while (!fs.existsSync(ready) && Date.now() < until) await delay(100);
         assert(fs.existsSync(ready), "Browser evidence did not reach revocation.");

@@ -18,12 +18,13 @@ with sync_playwright() as playwright:
             cdp = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{fixture['port']}", timeout=500)
             editor = next((p for c in cdp.contexts for p in c.pages if "workbench" in p.url), None)
             if editor:
-                editor.get_by_text("Copy sign-in token and open", exact=True).click(timeout=500)
                 break
+            cdp.close()
         except Error:
             time.sleep(0.1)
     else:
-        raise AssertionError("Installed browser launcher did not present its opt-in picker")
+        raise AssertionError("Private installed Workbench did not expose CDP")
+    editor.get_by_text("Copy sign-in token and open", exact=True).click(timeout=90000)
     enrollment = base / "browser-enrollment.json"
     while not enrollment.exists() and time.monotonic() < deadline:
         time.sleep(0.1)
@@ -52,11 +53,11 @@ with sync_playwright() as playwright:
         (base / "browser-note-read").touch()
         search = page.get_by_role("searchbox", name="Search Notes")
         with page.expect_response(lambda r: r.url == url + "message" and
-                                  (r.request.post_data_json or {}).get("q") == "genuine") as hits:
-            search.fill("genuine")
-        searched = hits.value.ok and any(item["path"] == "InstalledGatewayNote.md" for item in hits.value.json()["items"])
-        if not searched:
-            print("Installed Original Note search did not return the predecessor hit:", hits.value.status, flush=True)
+                                  (r.request.post_data_json or {}).get("q") == "InstalledGatewayNote") as hits:
+            search.fill("InstalledGatewayNote")
+        assert hits.value.ok, f"Original Note search returned HTTP {hits.value.status}"
+        assert any(item["path"] == "InstalledGatewayNote.md" for item in hits.value.json()["items"]), \
+            "Browser must find the real predecessor Note through Original search"
         page.reload(wait_until="networkidle")
         expect(search).to_be_visible()
         assert page.evaluate("""async body => (await fetch("/webview/message", {
@@ -89,50 +90,56 @@ with sync_playwright() as playwright:
         until = time.monotonic() + 20
         desktop_chat = None
         while desktop_chat is None and time.monotonic() < until:
-            desktop_chat = next((frame for frame in editor.frames if frame.locator("#permissions").is_visible()), None)
+            desktop_chat = next((frame for frame in editor.frames if frame.locator("#list-new").is_visible()
+                                 or frame.locator("#prompt").is_visible()), None)
             if desktop_chat is None:
                 time.sleep(0.1)
-        sent_and_stopped = False
         if desktop_chat is None:
-            target_status = page.evaluate("""async chatId => (await fetch("/webview/message", {
-                method: "POST", headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({command: "originalChatTarget", chatId})
-            })).status""", grant["chatId"])
-            assert target_status == 409, f"Ineligible owner must not issue a Send ticket (HTTP {target_status})"
-        else:
-            desktop_chat.locator("#permissions").click()
-            desktop_chat.locator("#permission-mode").select_option("read-only")
-            desktop_chat.locator("#permissions").click()
-            draft = page.get_by_label("Message")
-            send = page.get_by_role("button", name="Send", exact=True)
-            stop = page.get_by_role("button", name="Stop", exact=True)
-            draft.fill("INSTALLED_BROWSER_COMPLETE")
-            send.click()
-            expect(dialog).to_contain_text("INSTALLED_BROWSER_COMPLETE")
-            dialog.get_by_role("button", name="Send once", exact=True).click()
-            expect(page.locator("#chat-turn-state")).to_contain_text("Turn completed", timeout=25000)
-            assert (base / "browser-provider-completed").exists()
-            draft.fill("CANCEL_INSTALLED_BROWSER")
-            send.click()
-            expect(dialog).to_contain_text("CANCEL_INSTALLED_BROWSER")
-            dialog.get_by_role("button", name="Send once", exact=True).click()
-            expect(stop).to_be_enabled(timeout=20000)
-            page.reload(wait_until="domcontentloaded")
-            expect(stop).to_be_enabled(timeout=15000)
-            stop.click()
-            expect(page.locator("#chat-turn-state")).to_contain_text("upstream cancellation is not confirmed")
-            until = time.monotonic() + 10
-            while not (base / "browser-provider-closed").exists() and time.monotonic() < until:
-                time.sleep(0.1)
-            assert (base / "browser-provider-closed").exists()
-            sent_and_stopped = True
-
-        if not searched:
-            page.goto(url, wait_until="networkidle")
-            with page.expect_response(lambda r: r.url == url + "message" and
-                                      (r.request.post_data_json or {}).get("q") == "InstalledGatewayNote") as hits:
-                page.get_by_role("searchbox", name="Search Notes").fill("InstalledGatewayNote")
-            searched = hits.value.ok and any(item["path"] == "InstalledGatewayNote.md" for item in hits.value.json()["items"])
+            facts = []
+            for window in (p for c in cdp.contexts for p in c.pages if "workbench" in p.url):
+                facts.append({
+                    "auxiliary": window.locator("#workbench\\.parts\\.auxiliarybar").is_visible(),
+                    "iframeCount": window.locator("iframe").count(),
+                    "frames": [{
+                        "list": frame.locator("#list-new").count(),
+                        "prompt": frame.locator("#prompt").count(),
+                        "loading": frame.locator("#pkm-chat-loading").is_visible(),
+                        "warning": frame.locator("#pkm-host-warning").is_visible(),
+                    } for frame in window.frames],
+                })
+            (base / "browser-workbench-blocked.json").write_text(json.dumps(facts))
+            raise AssertionError("PKM Chat must be visible in the actual native Workbench")
+        predecessor = desktop_chat.locator(f'.chat-list-open[data-chat-id="{grant["chatId"]}"]')
+        if not predecessor.is_visible():
+            desktop_chat.get_by_role("button", name="Back to Chat List").click()
+        predecessor.click()
+        expect(desktop_chat.locator("#messages")).to_contain_text("BUNDLED_GATEWAY_ACCEPTED")
+        desktop_chat.locator("#permissions").click()
+        desktop_chat.locator("#permission-mode").select_option("read-only")
+        expect(desktop_chat.locator("#permission-mode")).to_have_value("read-only")
+        desktop_chat.locator("#permissions").click()
+        draft = page.get_by_label("Message")
+        send = page.get_by_role("button", name="Send", exact=True)
+        stop = page.get_by_role("button", name="Stop", exact=True)
+        draft.fill("INSTALLED_BROWSER_COMPLETE")
+        send.click()
+        expect(dialog).to_contain_text("INSTALLED_BROWSER_COMPLETE")
+        dialog.get_by_role("button", name="Send once", exact=True).click()
+        expect(page.locator("#chat-turn-state")).to_contain_text("Turn completed", timeout=25000)
+        assert (base / "browser-provider-completed").exists(), "Browser Send must reach the fixture model"
+        draft.fill("CANCEL_INSTALLED_BROWSER")
+        send.click()
+        expect(dialog).to_contain_text("CANCEL_INSTALLED_BROWSER")
+        dialog.get_by_role("button", name="Send once", exact=True).click()
+        expect(stop).to_be_enabled(timeout=20000)
+        page.reload(wait_until="domcontentloaded")
+        expect(stop).to_be_enabled(timeout=15000)
+        stop.click()
+        expect(page.locator("#chat-turn-state")).to_contain_text("upstream cancellation is not confirmed")
+        until = time.monotonic() + 10
+        while not (base / "browser-provider-closed").exists() and time.monotonic() < until:
+            time.sleep(0.1)
+        assert (base / "browser-provider-closed").exists(), "Browser Stop must close the held model stream"
 
         (base / "browser-revoke-request").touch()
         editor.get_by_text("Revoke browser access", exact=True).click(timeout=10000)
@@ -149,8 +156,8 @@ with sync_playwright() as playwright:
             raise AssertionError("Revoked session still serves the installed bundle")
         (base / "upgrade-browser.json").write_text(json.dumps({
             "installedActivation": True, "exactBundle": True, "rememberedReload": True,
-            "predecessorNoteSearchReadOnly": searched, "nativeTranscriptDenialAndConsent": True, "revoked": True,
-            "nativeSendAndStopAfterReload": sent_and_stopped, "fixtureProviderAborted": sent_and_stopped,
+            "predecessorNoteSearchReadOnly": True, "nativeTranscriptDenialAndConsent": True, "revoked": True,
+            "nativeSendAndStopAfterReload": True, "fixtureProviderAborted": True,
         }))
     finally:
         browser.close()
