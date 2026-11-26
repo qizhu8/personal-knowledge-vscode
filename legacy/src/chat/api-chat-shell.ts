@@ -113,6 +113,8 @@ export function registerApiChatShell(context: vscode.ExtensionContext, load: (si
     ReturnType<typeof bindBrowserChatTurns>;
   approveDetachedTextTurn(grant: BrowserChatGrant, chatId: string, text: string,
     assertCurrent: (grant: BrowserChatGrant) => void): ReturnType<ApiChatView["approveDetachedTextTurn"]>;
+  approveDetachedConversation(grant: BrowserChatGrant, chatId: string,
+    assertCurrent: (grant: BrowserChatGrant) => void): ReturnType<ApiChatView["approveDetachedConversation"]>;
   drainManagedWriter(): Promise<void>;
   portalChatBindings(): Promise<Array<{ id: string; title: string }>>;
   preparePortalMutationPolicy(chatId: string): Promise<void>;
@@ -337,6 +339,19 @@ export function registerApiChatShell(context: vscode.ExtensionContext, load: (si
       if (browserSendPromptOpen) return;
       browserSendPromptOpen = true;
       try { return await (backend as ApiChatView).approveDetachedTextTurn(pinned, chatId, text, assertOwner); }
+      finally { browserSendPromptOpen = false; }
+    },
+    async approveDetachedConversation(grant, chatId, assertCurrent) {
+      const pinned = Object.freeze({ ...grant });
+      const assertOwner = () => {
+        if (!assertChatHost || managedWriterFenced || !backend) throw new Error("Open the Original PKM Chat first.");
+        assertCurrent(pinned);
+        assertChatHost(pinned);
+      };
+      assertOwner();
+      if (browserSendPromptOpen) return;
+      browserSendPromptOpen = true;
+      try { return await (backend as ApiChatView).approveDetachedConversation(pinned, chatId, assertOwner); }
       finally { browserSendPromptOpen = false; }
     },
     drainManagedWriter: async () => {

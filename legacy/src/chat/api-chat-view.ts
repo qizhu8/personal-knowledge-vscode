@@ -15,7 +15,8 @@ import { bundledMcpBuildIdentity } from "../mcp/mcp-lifecycle";
 import { ApiChatMessage, streamApiChat, chatToolRoundLimit, defaultLoopExemptTools, ChatToolLoopNotice, ChatToolLoopDecision } from "./api-chat-client";
 import { dispatchNativeChatModel, type NativeChatModelDispatch } from "./native-chat-model-dispatch";
 import { nativeChatIdentityPrompt, nativeTaskInputPrompt, toolFreeChatInstruction } from "./native-chat-prompt";
-import { approveDetachedOriginalTextTurn } from "./detached-original-text-turn";
+import { approveDetachedOriginalConversation, approveDetachedOriginalTextTurn, assertApprovedConversationCurrent,
+  detachedConversationLimits } from "./detached-original-text-turn";
 import { ApiChatStore, ApiConversation, ApiChatStatus, ApiChatProgress, ChatMessage, ChatDelegation, apiChatStatus, apiChatProjection, apiChatDiagnostics, apiChatContextSummary, apiChatCreditUsage, chatHistoryPage, apiChatHarnessSnapshot, verifyHarnessArtifacts, settleProgressSteps } from "./api-chat-store";
 import { BaselineEventKind, recordBaselineEvent } from "../runtime/pkm-baseline";
 import { ChatBudgetExceededError, modelProfiles, assertModelAvailable, estimateInputTokens, validateBudget, validActivityCreditLimit, estimateCost, ChatModelProfile, ChatTokenUsage, parseThinkingBudget } from "./api-chat-models";
@@ -608,15 +609,15 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     return { title: chat.title, stamp: store.browserTurnRevision(chat, this.captureExecution(chat).digest) };
   }
 
-  approveDetachedTextTurn(grant: import("./browser-chat-transcript").BrowserChatGrant, chatId: string, text: string,
+  private detachedTurnOptions(grant: import("./browser-chat-transcript").BrowserChatGrant, chatId: string,
     assertCurrent: () => void) {
     this.browserChatTurnTarget(grant.workspaceRoot, chatId);
     const chat = this.chat!, store = this.store!, execution = this.captureExecution(chat), settings = this.settings(chat);
     if (settings.provider === "vscode") throw new Error("The selected model needs the VS Code host.");
     if (this.personaStore().user()) throw new Error("A user Profile needs the VS Code Chat host.");
     for (const alias of settings.profiles.filter(item => item.model === settings.model)) assertModelAvailable(alias);
-    return approveDetachedOriginalTextTurn({
-      chatId, text, grant, execution, namespace: store.namespace,
+    return {
+      chatId, grant, execution, namespace: store.namespace,
       model: { ...settings, provider: settings.provider, profile: settings.selectedProfile },
       assertNativeOwner: () => {
         assertCurrent();
@@ -625,12 +626,40 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         if (this.personaStore().user() || this.captureExecution(this.chat!).digest !== execution.digest || JSON.stringify(fresh) !== JSON.stringify(settings))
           throw new Error("The Original Chat context changed.");
       },
+    };
+  }
+
+  approveDetachedTextTurn(grant: import("./browser-chat-transcript").BrowserChatGrant, chatId: string, text: string,
+    assertCurrent: () => void) {
+    return approveDetachedOriginalTextTurn({
+      ...this.detachedTurnOptions(grant, chatId, assertCurrent), text,
       async confirm({ chatId, title, provider, model, endpoint, text }) {
         return await vscode.window.showWarningMessage("Authorize this one Original Chat message after VS Code closes?", {
           modal: true, detail: `${title.slice(0, 120)} (${chatId})\n${provider}: ${model} at ${endpoint}\nExisting Task instructions and this exact text may be sent to that provider. This browser can read this sent message and its saved reply only. No tools, attachments or recall. The approval expires after 15 minutes or any unrelated Chat edit.\n\n${JSON.stringify(text)}`,
         }, "Authorize exact message") === "Authorize exact message";
       },
     });
+  }
+
+  async approveDetachedConversation(grant: import("./browser-chat-transcript").BrowserChatGrant, chatId: string,
+    assertCurrent: () => void) {
+    const options = this.detachedTurnOptions(grant, chatId, assertCurrent);
+    const approval = await approveDetachedOriginalConversation({
+      ...options,
+      async confirm({ chatId, title, provider, model, endpoint }) {
+        return await vscode.window.showWarningMessage("Authorize this Original Chat conversation after VS Code closes?", {
+          modal: true, detail: `${title.slice(0, 120)} (${chatId})\n${provider}: ${model} at ${endpoint}\nThis browser can send up to ${detachedConversationLimits.maxTurns} new messages and read their saved replies for up to 24 hours. Existing Task instructions and these new exchanges may be sent to this provider. Tools, attachments and recall are disabled. The provider credential is saved privately for this approved Chat only. An unrelated Chat edit, service restart or revocation invalidates the conversation.`,
+        }, "Authorize conversation") === "Authorize conversation";
+      },
+    });
+    if (!approval) return;
+    options.assertNativeOwner();
+    const providerKey = await this.readApiKey(AbortSignal.timeout(10_000));
+    options.assertNativeOwner();
+    assertApprovedConversationCurrent(approval);
+    if (!providerKey || providerKey.length > 8192 || /[\x00-\x20\x7f]/.test(providerKey))
+      throw new Error("The selected provider needs a private API credential before enabling detached Chat.");
+    return Object.freeze({ approval, providerKey });
   }
 
   async sendBrowserChatTurn(root: string, chatId: string, text: string, admission: BrowserTurnAdmission) {

@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const { join, dirname, isAbsolute } = require("node:path");
+const { join, dirname, isAbsolute, relative } = require("node:path");
 const { createHash, randomBytes, randomUUID } = require("node:crypto");
 const { execFileSync, fork, spawn } = require("node:child_process");
 const { once } = require("node:events");
@@ -162,7 +162,7 @@ function installFixture(installed) {
   return version;
 }
 
-for (const mode of ["read", "send", "stop"])
+for (const mode of ["read", "send", "stop", "conversation", "revocation"])
 test(`packaged PKM daemon ${mode} on the Original Chat over TLS after native writer exits`, { timeout: 60_000 }, async t => {
   const f = fixture();
   const installRoot = join(__dirname, `.transcript-install-${randomUUID()}`);
@@ -170,22 +170,30 @@ test(`packaged PKM daemon ${mode} on the Original Chat over TLS after native wri
   f.installed = join(installRoot, "uone.personal-knowledge-fixture");
   f.grant.chatHostId = randomUUID();
   const children = [];
+  let drainProvisioned;
   t.after(async () => {
     for (const child of children) if (child.exitCode === null && child.signalCode === null) {
       const done = once(child, "exit");
       child.kill();
       await done;
     }
-    fs.rmSync(f.home, { recursive: true, force: true });
-    fs.rmSync(installRoot, { recursive: true, force: true });
+    try { await drainProvisioned?.(); }
+    finally {
+      fs.rmSync(f.home, { recursive: true, force: true });
+      fs.rmSync(installRoot, { recursive: true, force: true });
+    }
   });
   const options = { knowledgeRoot: f.grant.workspaceRoot, globalStoragePath: f.globalStoragePath,
     extensionVersion: installFixture(f.installed),
     serviceEntryPath: join(f.installed, "dist/runtime/pkm-service-entry.js") };
   const { pkmServiceIdentity } = load("runtime/pkm-service");
   const { PKM_SERVICE_TRANSCRIPT_PROVISION } = load("runtime/pkm-service-browser-transcript");
-  const env = { PATH: process.env.PATH, HOME: join(".", f.home.slice(__dirname.length + 1)), PKM_SERVICE_TEST_LIFECYCLE_MS: "50" };
+  const conversation = mode === "conversation" || mode === "revocation";
+  const cwd = conversation ? dirname(options.serviceEntryPath) : __dirname;
+  const env = { PATH: process.env.PATH, HOME: relative(cwd, f.home), PKM_SERVICE_TEST_LIFECYCLE_MS: "50" };
   const fixtureEntry = join(__dirname, "fixture-detached-browser-chat.js");
+  const admin = operation => execFileSync(process.execPath, [fixtureEntry,
+    JSON.stringify({ installed: f.installed, [operation]: options })], { env, cwd, timeout: 5000 });
   const ready = async child => {
     children.push(child);
     return Promise.race([once(child, "message").then(([data]) => data),
@@ -197,6 +205,7 @@ test(`packaged PKM daemon ${mode} on the Original Chat over TLS after native wri
   await new Promise(resolve => pin.close(resolve));
   const origin = `https://127.0.0.1:${port}`;
   let modelCalls = 0, providerKey, providerStarted, providerClosed;
+  const providerInputs = [];
   if (mode !== "read") {
     const text = `fixture ${mode}`;
     f.namespace = createHash("sha256").update(pathToFileURL(f.grant.workspaceRoot).href).digest("hex").slice(0, 16);
@@ -209,20 +218,27 @@ test(`packaged PKM daemon ${mode} on the Original Chat over TLS after native wri
       let raw = "";
       for await (const chunk of req) raw += chunk;
       const request = JSON.parse(raw);
+      const input = request.messages.at(-1).content;
       if (req.url !== "/v1/chat/completions" || req.headers.authorization !== `Bearer ${providerKey}` ||
-          request.model !== "fixture-model" || request.tools || request.messages.at(-1).content !== text) {
+          request.model !== "fixture-model" || request.tools ||
+          (!conversation && input !== text)) {
         res.writeHead(400).end();
         return;
       }
-      res.once("close", closed);
+      providerInputs.push(request.messages);
+      const hold = mode === "stop" || input === "hold detached";
+      if (hold) res.once("close", closed);
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: `saved fixture reply ${providerKey}` } }] })}\n\n`);
-      started();
-      if (mode === "send") res.end('data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+      if (hold) started();
+      else {
+      if (mode === "send") { started(); res.once("close", closed); }
+        res.end('data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+      }
     }).listen(0, "127.0.0.1");
     t.after(() => { model.closeAllConnections(); model.close(); });
     await once(model, "listening");
-    f.turn = { text, model: { provider: "openai-compatible", endpoint: `http://127.0.0.1:${model.address().port}/v1`,
+    f.turn = { text, conversation, model: { provider: "openai-compatible", endpoint: `http://127.0.0.1:${model.address().port}/v1`,
       apiVersion: "2024-06-01", contextWindow: 8192, maxOutputTokens: 512, timeoutMs: 12000,
       profile: { id: "fixture", label: "Fixture", model: "fixture-model", status: "active", contextWindow: 8192, maxOutputTokens: 512 } } };
   }
@@ -230,7 +246,7 @@ test(`packaged PKM daemon ${mode} on the Original Chat over TLS after native wri
   execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
     "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1", "-keyout", keyPath, "-out", certPath],
   { env, stdio: "ignore" });
-  const native = fork(fixtureEntry, [JSON.stringify(f)], { env, cwd: __dirname });
+  const native = fork(fixtureEntry, [JSON.stringify(f)], { env, cwd });
   const exited = once(native, "exit");
   const { chatId: nativeChat, otherId, approval } = await ready(native);
 
@@ -238,30 +254,40 @@ test(`packaged PKM daemon ${mode} on the Original Chat over TLS after native wri
   const root = fs.statSync(options.knowledgeRoot);
   const cert = fs.readFileSync(certPath, "utf8"), token = randomBytes(32).toString("base64url");
   const file = join(identity.serviceDirectory, PKM_SERVICE_TRANSCRIPT_PROVISION);
-  fs.mkdirSync(identity.serviceDirectory, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(file, JSON.stringify({
+  const provision = {
     schema: "pkm.service-browser-transcript/v1", serviceIdentity: identity.identity,
     root: options.knowledgeRoot, rootDevice: root.dev, rootInode: root.ino, actorId: f.grant.actorId,
     generation: f.grant.generation, chatHostId: f.grant.chatHostId, namespace: f.namespace, chatId: nativeChat,
     address: "127.0.0.1", port, httpsOrigin: origin, cert, key: fs.readFileSync(keyPath, "utf8"), token,
     ...(approval ? { turn: { approval, providerKey } } : {}),
-  }), { mode: 0o600 });
-  const daemon = spawn(process.execPath, [options.serviceEntryPath, JSON.stringify(options)], {
-    env, cwd: __dirname, stdio: ["ignore", "pipe", "pipe"],
-  });
-  children.push(daemon);
-  let startupError = "";
-  daemon.stderr.on("data", chunk => { startupError += chunk; });
-  const stopped = once(daemon, "exit");
+  };
   const metadata = join(identity.serviceDirectory, "endpoint.json");
-  for (let i = 0; i < 200 && !fs.existsSync(metadata); ++i) {
-    assert.equal(daemon.exitCode, null, `daemon exited before publishing its private endpoint: ${startupError}`);
-    await delay(25);
+  let stopped;
+  if (conversation) {
+    drainProvisioned = () => { if (fs.existsSync(metadata)) admin("drain"); };
+    native.send({ service: options, provision });
+    assert.equal((await exited)[0], 0);
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+    assert.notEqual(JSON.parse(fs.readFileSync(metadata)).pid, native.pid);
+  } else {
+    fs.mkdirSync(identity.serviceDirectory, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(file, JSON.stringify(provision), { mode: 0o600 });
+    const daemon = spawn(process.execPath, [options.serviceEntryPath, JSON.stringify(options)], {
+      env, cwd, stdio: ["ignore", "pipe", "pipe"],
+    });
+    children.push(daemon);
+    let startupError = "";
+    daemon.stderr.on("data", chunk => { startupError += chunk; });
+    stopped = once(daemon, "exit");
+    for (let i = 0; i < 200 && !fs.existsSync(metadata); ++i) {
+      assert.equal(daemon.exitCode, null, `daemon exited before publishing its private endpoint: ${startupError}`);
+      await delay(25);
+    }
+    assert.equal(JSON.parse(fs.readFileSync(metadata)).pid, daemon.pid);
+    native.send({ service: options });
+    assert.equal((await exited)[0], 0);
+    assert.equal(JSON.parse(fs.readFileSync(metadata)).pid, daemon.pid);
   }
-  assert.equal(JSON.parse(fs.readFileSync(metadata)).pid, daemon.pid);
-  native.send(options);
-  assert.equal((await exited)[0], 0);
-  assert.equal(JSON.parse(fs.readFileSync(metadata)).pid, daemon.pid);
   const tls = (path, body, headers = {}) => new Promise((resolve, reject) => {
     const req = request(`${origin}${path}`, { ca: cert, agent: false, method: body === undefined ? "GET" : "POST",
       headers: { origin, "content-type": "application/json", ...headers } }, res => {
@@ -310,6 +336,60 @@ test(`packaged PKM daemon ${mode} on the Original Chat over TLS after native wri
     nativeConsent.revoke(nativeChat);
     assert.equal((await send({ ...read, cursor: page.nextCursor })).status, 409);
     assert.deepEqual(JSON.parse((await send({ command: "chatList" })).raw).items, []);
+  } else if (mode === "revocation") {
+    const ref = JSON.parse((await send({ command: "originalChatTarget", chatId: nativeChat })).raw);
+    const pending = send({ ...ref, command: "originalChatSend", text: "hold detached" });
+    await providerStarted;
+    admin("revoke");
+    assert.equal(fs.existsSync(file), false);
+    await providerClosed;
+    await pending;
+    const saved = new ApiChatStore(join(f.grant.workspaceRoot, ".pkm", "state"), f.namespace).load(nativeChat, false);
+    assert.equal(saved.sessionId, approval.sessionId);
+    assert.equal(saved.progress.attemptId, ref.turnId);
+    assert.equal(saved.progress.status, "cancelled");
+    assert.equal(saved.messages.at(-1).status, "cancelled");
+    try { assert.notEqual((await send(read)).status, 200); }
+    catch (error) { assert.equal(error.code, "ECONNREFUSED"); }
+    assert.equal(modelCalls, 1);
+  } else if (mode === "conversation") {
+    const target = { command: "originalChatTarget", chatId: nativeChat };
+    const nextTarget = async () => {
+      const result = await send(target);
+      assert.equal(result.status, 200);
+      return JSON.parse(result.raw);
+    };
+    const post = (ref, text) => send({ ...ref, command: "originalChatSend", text });
+    for (const text of ["first arbitrary round", "different second round"]) {
+      assert.equal(JSON.parse((await post(await nextTarget(), text)).raw).status, "completed");
+    }
+    assert(providerInputs[1].some(message => message.role === "assistant" && message.content === "saved fixture reply [redacted]"));
+    assert(providerInputs[1].some(message => message.role === "user" && message.content === "first arbitrary round"));
+    const ref = await nextTarget(), pending = post(ref, "hold detached");
+    await providerStarted;
+    await delay(100);
+    assert.equal(JSON.parse((await send({ command: "originalChatStop", chatId: ref.chatId, turnId: ref.turnId })).raw).status, "stop-requested");
+    assert.equal(JSON.parse((await pending).raw).status, "cancelled");
+    await providerClosed;
+    const result = await send(read);
+    assert.equal(result.status, 200);
+    assert.equal(result.raw.includes(providerKey), false);
+    const { messages } = JSON.parse(result.raw);
+    assert.equal(messages.length, 6);
+    assert.deepEqual(messages.filter(message => message.role === "user").map(message => message.content),
+      ["first arbitrary round", "different second round", "hold detached"]);
+    assert.equal(messages.at(-1).status, "cancelled");
+    const stale = await nextTarget();
+    const store = new ApiChatStore(join(f.grant.workspaceRoot, ".pkm", "state"), f.namespace);
+    const saved = store.load(nativeChat, false);
+    assert.equal(saved.sessionId, approval.sessionId);
+    assert.equal(saved.progress.attemptId, ref.turnId);
+    saved.title = "concurrent native edit";
+    store.save(saved);
+    assert.equal(JSON.parse((await post(stale, "must not dispatch")).raw).status, "not-sent");
+    assert.equal((await send(target)).status, 409);
+    assert.equal((await send(read)).status, 409);
+    assert.equal(modelCalls, 3);
   } else {
     const target = { command: "originalChatTarget", chatId: nativeChat };
     assert.equal((await send({ ...target, chatId: otherId })).status, 409);
@@ -347,7 +427,14 @@ test(`packaged PKM daemon ${mode} on the Original Chat over TLS after native wri
   }
 
   // The administrative client must reuse the live daemon; drain closes TLS as well as local IPC.
-  execFileSync(process.execPath, [fixtureEntry, JSON.stringify({ installed: f.installed, drain: options })], { env, cwd: __dirname, timeout: 5000 });
-  assert.equal((await stopped)[0], 0);
+  if (stopped) {
+    admin("drain");
+    assert.equal((await stopped)[0], 0);
+  } else {
+    await drainProvisioned();
+    for (let i = 0; i < 200 && fs.existsSync(metadata); ++i) await delay(25);
+    assert.equal(fs.existsSync(metadata), false, "HTTPS daemon did not finish shutting down");
+    drainProvisioned = undefined;
+  }
   await assert.rejects(tls("/webview/"), /ECONNREFUSED/);
 });

@@ -2,6 +2,11 @@ const { join } = require("node:path");
 const { once } = require("node:events");
 
 async function main(fixture) {
+  if (fixture.revoke) {
+    const { revokeBrowserHttps } = require(join(fixture.installed, "dist/runtime/pkm-browser-https-provision"));
+    await revokeBrowserHttps(fixture.revoke);
+    return;
+  }
   if (fixture.drain) {
     const { PkmServiceClient } = require(join(fixture.installed, "dist/runtime/pkm-service"));
     const client = await PkmServiceClient.connect({ ...fixture.drain, execute: async () => { throw Error("Unexpected sync"); } });
@@ -22,7 +27,8 @@ async function main(fixture) {
   let approval;
   if (fixture.turn) {
     const { captureExecutionContext } = require(join(installed, "dist/chat/execution-context"));
-    const { approveDetachedOriginalTextTurn } = require(join(installed, "dist/chat/detached-original-text-turn"));
+    const { approveDetachedOriginalTextTurn, approveDetachedOriginalConversation } =
+      require(join(installed, "dist/chat/detached-original-text-turn"));
     const { pathToFileURL } = require("node:url");
     const root = grant.workspaceRoot;
     Object.assign(chat, { permissionMode: "read-only", includeHistory: false, builtinTools: [], vscodeTools: [],
@@ -32,18 +38,27 @@ async function main(fixture) {
     const execution = captureExecutionContext(grant.chatHostId, [{ uri: {
       scheme: "file", fsPath: root, toString: () => pathToFileURL(root).href,
     } }], root, true, "read-only");
-    approval = await approveDetachedOriginalTextTurn({ grant, namespace, chatId: chat.id, text: fixture.turn.text,
-      execution, model: fixture.turn.model, assertNativeOwner() {}, async confirm() { return true; } });
+    const options = { grant, namespace, chatId: chat.id, execution, model: fixture.turn.model, assertNativeOwner() {},
+      async confirm() { return true; } };
+    approval = fixture.turn.conversation ? await approveDetachedOriginalConversation(options)
+      : await approveDetachedOriginalTextTurn({ ...options, text: fixture.turn.text });
   }
   const other = store.create();
   const native = bindNativeBrowserChatTranscriptConsent(authority, async () => true);
   if (!await native.allow(chat.id)) throw new Error("Fixture native approval did not persist.");
   if (!await native.allow(other.id)) throw new Error("Second fixture native approval did not persist.");
   process.send({ chatId: chat.id, otherId: other.id, approval });
-  const [service] = await once(process, "message");
-  const { PkmServiceClient } = require(join(installed, "dist/runtime/pkm-service"));
-  const client = await PkmServiceClient.connect({ ...service, execute: async () => { throw Error("Unexpected sync"); } });
-  client.dispose();
+  const [{ service, provision }] = await once(process, "message");
+  if (provision) {
+    const { provisionBrowserHttps } = require(join(installed, "dist/runtime/pkm-browser-https-provision"));
+    await provisionBrowserHttps(service, provision, () => {
+      if (!process.connected) throw Error("The native fixture lost its setup authority.");
+    });
+  } else {
+    const { PkmServiceClient } = require(join(installed, "dist/runtime/pkm-service"));
+    const client = await PkmServiceClient.connect({ ...service, execute: async () => { throw Error("Unexpected sync"); } });
+    client.dispose();
+  }
   process.disconnect();
 }
 

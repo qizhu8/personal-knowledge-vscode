@@ -14,7 +14,8 @@ const hook = registerHooks({ resolve(specifier, context, next) {
   if (specifier === "vscode") throw Error("Detached turns cannot load the VS Code API");
   return next(specifier, context);
 } });
-const { approveDetachedOriginalTextTurn, bindDetachedOriginalTextTurn } = load("detached-original-text-turn");
+const { approveDetachedOriginalTextTurn, approveDetachedOriginalConversation,
+  bindDetachedOriginalTextTurn } = load("detached-original-text-turn");
 const { captureExecutionContext } = load("execution-context");
 const { ApiChatStore } = load("api-chat-store");
 hook.deregister();
@@ -35,8 +36,10 @@ test("plain-Node Original Chat owner admits one exact native-approved turn and s
   store.startTask(chat, "Existing Original Task");
   const sessionId = chat.sessionId;
   const requests = [];
-  let resolveClosed;
+  let resolveClosed, expiryStarted, expiryClosed;
   const closed = new Promise(resolve => { resolveClosed = resolve; });
+  const expiring = new Promise(resolve => { expiryStarted = resolve; });
+  const disconnectedOnExpiry = new Promise(resolve => { expiryClosed = resolve; });
   const server = createServer(async (req, res) => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
@@ -45,6 +48,10 @@ test("plain-Node Original Chat owner admits one exact native-approved turn and s
     res.writeHead(200, { "content-type": "text/event-stream" });
     res.write('data: {"choices":[{"index":0,"delta":{"content":"fixture output"}}]}\n\n');
     if (body.messages.at(-1).content === "hold") res.once("close", resolveClosed);
+    else if (body.messages.at(-1).content === "hold until expiry") {
+      res.once("close", expiryClosed);
+      expiryStarted();
+    }
     else res.end('data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
   }).listen(0, "127.0.0.1");
   t.after(() => { server.closeAllConnections(); server.close(); });
@@ -103,4 +110,27 @@ test("plain-Node Original Chat owner admits one exact native-approved turn and s
   assert.equal(settled.messages.at(-1).taskId, sessionId);
   assert.match(requests[1].messages[1].content, /Original current-task instruction.*\nfinish/);
   assert.deepEqual(store.list().map(row => row.id), [chat.id]);
+
+  const conversation = await approveDetachedOriginalConversation({ grant, namespace, chatId: chat.id, execution, model,
+    assertNativeOwner() {}, async confirm() { return true; } });
+  const now = Date.now();
+  let clock = now;
+  const mock = t.mock.method(Date, "now", () => clock);
+  try {
+    const expiresAt = now + 5_000;
+    const expiringOwner = bind({ ...conversation, expiresAt });
+    const target = expiringOwner.getSendTarget(grant, { chatId: chat.id });
+    const inFlight = expiringOwner.sendChatTurn(grant, { ...target, text: "hold until expiry" });
+    await expiring;
+    clock = expiresAt;
+    await assert.rejects(inFlight, /unavailable/);
+    await disconnectedOnExpiry;
+    assert.throws(() => expiringOwner.getSendTarget(grant, { chatId: chat.id }), /unavailable/);
+    assert.throws(() => expiringOwner.readSettledReply(chat.id), /unavailable/);
+    const cancelled = store.load(chat.id, false);
+    assert.equal(cancelled.progress.attemptId, target.turnId);
+    assert.equal(cancelled.progress.status, "cancelled");
+    assert.equal(cancelled.messages.at(-1).status, "cancelled");
+    assert.equal(cancelled.sessionId, sessionId);
+  } finally { mock.mock.restore(); }
 });

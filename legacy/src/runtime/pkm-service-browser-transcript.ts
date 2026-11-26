@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { isIP } from "node:net";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { BrowserChatGrant } from "../chat/browser-chat-transcript";
-import type { DetachedOriginalTextApproval } from "../chat/detached-original-text-turn";
+import type { DetachedOriginalApproval } from "../chat/detached-original-text-turn";
 import { verifyNextPayload } from "./next-payload-verifier";
 
 /** Provisioned outside the service by its trusted owner; never created by HTTP, IPC or boot arguments. */
@@ -29,7 +29,7 @@ export interface PkmServiceTranscriptProvision {
   cert: string;
   key: string;
   token: string;
-  turn?: { approval: DetachedOriginalTextApproval; providerKey: string };
+  turn?: { approval: DetachedOriginalApproval; providerKey: string };
 }
 
 export async function startServiceBrowserTranscript(options: {
