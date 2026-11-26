@@ -92,6 +92,12 @@ browser-admitted turn. Browser Chat creation and review remain unavailable.
 
 ### Independent HTTPS setup
 
+Network browser access is disabled by default and must be enabled manually.
+Installing, starting or updating the extension does not itself authorize a
+network listener. The HTTPS hostname identifies the machine actually
+deploying the service, not necessarily the VS Code client or development
+machine. SSH-key-based protection is not currently implemented.
+
 The separate **PKM HTTPS** status item and **PKM: Configure Independent HTTPS
 Browser Access** command configure the persistent service, including on a
 Linux Remote-SSH extension host. They do not use port forwarding or bind the
@@ -149,6 +155,12 @@ node tests/installed-compatibility-chat.mjs --same-profile-upgrade \
 
 The installed gate requires the actual predecessor Note to appear in canonical
 Original search and requires a browser Send and exact Stop after reload.
+It then drives the real native HTTPS setup command, separately approves
+conversation/transcript/Notes access, and checks the exact TLS-served bundle,
+Original Note creation/body editing, two distinct Chat attempts and native
+revocation. A fresh native grant is retained for a second Chromium process
+after the actual Workbench exits: that process must still read/edit the same
+Note, Send, Stop after reload and revoke its provision before VS Code restarts.
 The fixture gracefully retires its detached 4.0.27 retrieval worker after the
 predecessor exits, so 5.0.0 indexes the unchanged predecessor library rather
 than querying the old empty corpus. This is safe only in the fixture’s private
