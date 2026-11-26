@@ -61,8 +61,10 @@ running turn; an unknown outcome requires inspecting the owning Chat, never
 replaying Send. This does not enable public MCP or mailbox writes.
 
 Original `update_note` carries no expected revision/digest;
-the browser denies Note writes rather than substituting a read-then-write
-check. Ordinary mailbox `send`/`cancel`, Chat creation, and tool review remain
+the gateway-backed browser denies Note writes rather than substituting a
+read-then-write check. The independently provisioned service can instead bind
+the actual Original filestore's private create/body-CAS operations after
+separate native Notes authorization. Ordinary mailbox `send`/`cancel`, Chat creation, and tool review remain
 unavailable here. Original tool approvals stay in the
 owning Chat webview; browser sign-in grants no approval authority.
 
@@ -88,12 +90,45 @@ ordinary Chat in VS Code, leave it visible and idle, and set it to **Read-only**
 Each Send needs its own native confirmation; Stop targets only that
 browser-admitted turn. Browser Chat creation and review remain unavailable.
 
-The HTTPS listener is a transport component, not a deployment mode. It serves
-only `/webview` and never exposes the MCP or management API. The installed
-extension still opens only its local loopback listener. Independent access
-requires a persistent owner for the same library and Chat permissions;
-pointing HTTPS at the current extension-host callback cannot provide Chat
-when that host is stopped.
+### Independent HTTPS setup
+
+The separate **PKM HTTPS** status item and **PKM: Configure Independent HTTPS
+Browser Access** command configure the persistent service, including on a
+Linux Remote-SSH extension host. They do not use port forwarding or bind the
+browser listener to the VS Code host lifetime. Enter the exact public HTTPS
+origin, a specific local interface IP, and the absolute server-side PEM
+certificate and owner-only private-key paths. The certificate must identify
+the public hostname and be currently valid. DNS, certificate issuance,
+firewall changes and public deployment are not performed automatically.
+
+Choose an existing Chat, open it in the native Chat view, and explicitly
+approve the bounded conversation authorization and transcript disclosure.
+The native view must be visible and idle in supported read-only, tool-free
+HTTP-provider mode; VS Code-hosted models cannot execute after VS Code exits.
+Provider credentials stay server-side in the owner-only service provision,
+not the browser, URLs or ordinary extension settings.
+
+The final Notes consent offers **Read and edit Notes**, **Read Notes only**,
+or **Chat only**. Notes authorization covers ordinary Notes across the same
+Knowledge Root and expires no later than the conversation authorization.
+Write access permits new Notes and body-only edits, not metadata changes,
+System Notes or Work Items. Editing uses the Original owner-side digest and
+revision CAS under the same Markdown mutation lock as desktop/MCP writes;
+a stale draft is rejected rather than overwriting a concurrent change.
+
+Setup safely drains and restarts the singleton service only after validating
+the TLS binding, then copies the sign-in token to the clipboard and opens
+`/webview/chat` without including the token in the URL. A failed startup
+removes the newly published provision so setup can be retried. Reuse the
+command to copy the token again or choose **Revoke HTTPS access**. Removing
+the provision invalidates browser requests and cancels admitted generation
+when its authorization is rechecked. The HTTPS listener serves only
+`/webview`; it never publishes MCP or management endpoints.
+
+The setup and TLS transport have separate focused checks. Installed
+production qualification must exercise this native command and its resulting
+service; writing a fixture provision alone is not evidence that native setup
+or an externally reachable deployment has passed.
 
 `tests/compatibility-chat-browser.test.mjs` exercises the route against a
 disposable Original gateway and production Chat controller running in a test
@@ -140,10 +175,11 @@ panel’s draft precheck is separate and does not itself enforce CAS.
 GitHub Sync’s live `applyLocalChanges` and `replaceGitHubSyncFilesAtomically`
 in `legacy/src/sync/github-sync.ts` now take the same lock for Markdown
 areas, including snapshot checks, replacement, deletion, and guarded
-rollback. Fetching and checkout staging stay outside the lock. Browser
-writes are not enabled: raw `file:` editors, external Git, and older or
-otherwise uncoordinated writers can bypass it. Activation must exclude
-such writers; a browser-side precheck cannot do that.
+rollback. Fetching and checkout staging stay outside the lock. Authorized
+HTTPS Note writes require these cooperating owner primitives. Raw `file:`
+editors, external Git, and older or otherwise uncoordinated writers can
+bypass the lock and are not certified concurrent writers. A browser-side
+precheck cannot turn them into cooperating owners.
 
 The sign-in page exchanges the token for a revocable, path-scoped, HttpOnly
 session cookie; remember sets an eight-hour maximum instead of a browser-session

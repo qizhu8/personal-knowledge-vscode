@@ -12,6 +12,7 @@ import type { BrowserChatGrant } from "../chat/browser-chat-transcript";
 import { MCP_ATTRIBUTION_ENV } from "../mcp/mcp-attribution";
 import { MCP_LIFECYCLE_SCHEMA, waitForManagedMcpDrain } from "../mcp/mcp-lifecycle";
 import { verifyNextPayload } from "./next-payload-verifier";
+import { registerBrowserHttpsActivation } from "./pkm-browser-https-activation";
 
 type Route = (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
 type Read = (input: {operation: string; version: 1; arguments: Record<string, unknown>}) => Promise<unknown>;
@@ -117,6 +118,7 @@ export function registerOriginalBrowserActivation(context: vscode.ExtensionConte
   root(): string; select(): Promise<SelectedChatGateway & { liveRelay: boolean }>; chat: Shell;
   bindBrowserReads(): Promise<Awaited<ReturnType<typeof openGateway>> | undefined>;
 }) {
+  registerBrowserHttpsActivation(context, options);
   if (vscode.env.remoteName || vscode.env.uiKind !== vscode.UIKind.Desktop) return;
   let disposed = false, epoch = 0, opening = false;
   let active: { url: string; token: string; current(): void; close(): Promise<void> } | undefined;

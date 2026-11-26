@@ -516,6 +516,12 @@ function cleanupEndpoint(identity: ServiceIdentity, metadata: EndpointMetadata):
   const current = readMetadata(identity);
   if (current?.nonce === metadata.nonce) fs.unlinkSync(metadataPath(identity));
 }
+export async function withPkmServiceLifecycleLock<T>(options: PkmServiceBootOptions, work: () => Promise<T>): Promise<T> {
+  const identity = pkmServiceIdentity(options);
+  prepareDirectories(identity);
+  return lifecycleLock(identity, work);
+}
+
 async function ensureService(options: PkmServiceClientOptions): Promise<RpcPeer> {
   const identity = pkmServiceIdentity(options);
   prepareDirectories(identity);

@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 
 from playwright.sync_api import Error, expect, sync_playwright
+from installed_https_browser import verify_https_setup
 
 
 fixture = json.loads(Path(sys.argv[1]).read_text())
@@ -154,10 +155,12 @@ with sync_playwright() as playwright:
             time.sleep(0.1)
         else:
             raise AssertionError("Revoked session still serves the installed bundle")
+        https = verify_https_setup(editor, browser, base, grant["chatId"], Path(grant["bundle"]))
         (base / "upgrade-browser.json").write_text(json.dumps({
             "installedActivation": True, "exactBundle": True, "rememberedReload": True,
             "predecessorNoteSearchReadOnly": True, "nativeTranscriptDenialAndConsent": True, "revoked": True,
             "nativeSendAndStopAfterReload": True, "fixtureProviderAborted": True,
+            "independentHttps": https,
         }))
     finally:
         browser.close()

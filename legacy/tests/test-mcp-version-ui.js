@@ -37,14 +37,24 @@ assert(managedProfile, "automatic managed-profile reload must remain explicitly 
 const managedProfileText = managedProfile.getText(extensionAst);
 assert.match(managedProfileText, /activateManagedProfileWriter\([\s\S]*restartReady: \(\) => installations\.ready\(\)[\s\S]*canRestart: \(\) => !managedHostBusy\(\)[\s\S]*restart: async \(\) => \{ await vscode\.commands\.executeCommand\("workbench\.action\.reloadWindow"\); \}/,
   "managed-profile reload must remain bound to its enrolled writer and readiness/busy checks");
-const permittedReloadScopes = [hostRuntime, managedProfile].sort((a, b) => b.pos - a.pos);
+const managedHostReload = activation.body.statements.find(statement => ts.isVariableStatement(statement)
+  && statement.declarationList.declarations.some(declaration => ts.isIdentifier(declaration.name)
+    && declaration.name.text === "reloadManagedHost"));
+assert(managedHostReload, "explicit current-host drain and reload registration must exist");
+assert.match(managedHostReload.getText(extensionAst),
+  /ownedReloadOwner && ownedReloadRoot && managedSessionId === undefined \? createManagedHostReload\(/,
+  "current-host reload must be bound to the enrolled owner and must not bypass a managed session");
+assert.match(managedHostReload.getText(extensionAst),
+  /modal: true[\s\S]*"Drain and reload"\) === "Drain and reload"[\s\S]*await drainManagedHost\([\s\S]*reload: async \(\) =>/,
+  "current-host reload must retain explicit confirmation and its managed drain callback");
+const permittedReloadScopes = [hostRuntime, managedProfile, managedHostReload].sort((a, b) => b.pos - a.pos);
 const otherExtensionCode = permittedReloadScopes.reduce(
   (text, node) => text.slice(0, node.pos) + text.slice(node.end), extensionTs);
 assert.doesNotMatch(otherExtensionCode,
   /executeCommand\([^\n]*(reloadWindow|reload)/i,
   "MCP maintenance and other paths must not add uncoordinated window reloads");
 const hostRuntimeText = hostRuntime.getText(extensionAst);
-assert.match(hostRuntimeText, /if \(registry\.poll\(installed\?\.buildId, isBusy\(\)\)\) \{[\s\S]{0,350}executeCommand\("workbench\.action\.reloadWindow"\)/,
+assert.match(hostRuntimeText, /if \(!drainPromptPending && registry\.poll\(installed\?\.buildId, isBusy\(\)\)\) \{[\s\S]{0,350}executeCommand\("workbench\.action\.reloadWindow"\)/,
   "coordinated reload must require the registry's validated request and busy-state gate");
 assert.match(hostRuntimeText, /registerCommand\("personalKnowledge\.reloadAllHosts"[\s\S]*showWarningMessage[\s\S]*modal: true[\s\S]*if \(answer !== "Reload registered windows"\) return;[\s\S]*registry\.requestReload/,
   "a coordinated reload request must require explicit modal confirmation");
@@ -339,7 +349,7 @@ assert(extensionTs.includes('if (!configuredPath) panels.instances.get(webviewPa
 assert(extensionTs.includes('const initialResolution = resolvedStorePath(context)'));
 assert(extensionTs.includes('case "pkmSkillInjectAll"'));
 assert(extensionTs.includes('case "reconfigureKnowledgeRoot"'));
-assert(extensionTs.includes('registerCommand("personalKnowledge.reconfigureKnowledgeRoot"'));
+assert(extensionTs.includes('registerRootReconfigurationCommand("personalKnowledge.reconfigureKnowledgeRoot"'));
 assert(extensionTs.includes('registerCommand("personalKnowledge.reconfigureEnvironmentsRoot"'));
 assert(extensionTs.includes('registerCommand("personalKnowledge.reconfigureMcpRuntimePath"'));
 assert(extensionTs.includes('registerCommand("personalKnowledge.reconfigureMcpServerPath"'));

@@ -217,6 +217,10 @@
         "title": "PKM: Open Action Workbench in Browser"
       },
       {
+        "command": "personalKnowledge.configureBrowserHttps",
+        "title": "PKM: Configure Independent HTTPS Browser Access"
+      },
+      {
         "command": "personalKnowledge.configureActionWorkspace",
         "title": "PKM: Select Action Working Directory"
       },

@@ -29,6 +29,7 @@ export interface PkmServiceTranscriptProvision {
   cert: string;
   key: string;
   token: string;
+  notes?: { expiresAt: number; allowWrite: boolean };
   turn?: { approval: DetachedOriginalApproval; providerKey: string };
 }
 
@@ -59,7 +60,7 @@ export async function startServiceBrowserTranscript(options: {
     provision = JSON.parse(fs.readFileSync(fd, "utf8"));
   } finally { fs.closeSync(fd); }
   const { schema, serviceIdentity, root, rootDevice, rootInode, actorId, generation, chatHostId,
-    namespace, chatId, token, address, port, httpsOrigin, cert, key, managedWriterSession, turn } = provision;
+    namespace, chatId, token, address, port, httpsOrigin, cert, key, managedWriterSession, turn, notes } = provision;
   const uri = typeof httpsOrigin === "string" ? URL.parse(httpsOrigin) : null;
   if (schema !== "pkm.service-browser-transcript/v1" || serviceIdentity !== path.basename(options.serviceDirectory) ||
       root !== options.knowledgeRoot || managedWriterSession !== options.managedWriterSession ||
@@ -128,8 +129,19 @@ export async function startServiceBrowserTranscript(options: {
     });
   }
   const transcript = bindDetachedBrowserChatTranscript({ grant, namespace, assertCurrent });
+  let originalNotes: ReturnType<typeof import("./pkm-browser-original-notes").bindOriginalBrowserNotes> | undefined;
+  if (notes !== undefined) {
+    if (!Number.isSafeInteger(notes.expiresAt) || notes.expiresAt <= Date.now() ||
+        notes.expiresAt > Date.now() + 24 * 60 * 60_000 || typeof notes.allowWrite !== "boolean")
+      throw new Error("Invalid private PKM Notes authorization.");
+    const { bindOriginalBrowserNotes } = require("./pkm-browser-original-notes") as
+      typeof import("./pkm-browser-original-notes");
+    originalNotes = bindOriginalBrowserNotes({ root, ...notes, withWriter: work => options.withWriter(async () => work()),
+      assertCurrent: () => assertCurrent(grant) });
+  }
   const route = await createOriginalBrowserRoute({ token, grant, assertCurrent, transcriptOnly: true, detachedChatId: chatId,
     ...(turns ? { chatTurns: turns } : {}),
+    ...(originalNotes ? { originalNotes } : {}),
     async readChatTranscript(supplied: BrowserChatGrant, input: { chatId: string; cursor?: string; limit?: number }) {
       try { return await transcript(supplied, input); }
       catch (error) {

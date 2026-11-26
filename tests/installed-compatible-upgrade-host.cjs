@@ -196,7 +196,7 @@ print(json.dumps(tools["api_chat_send"](sys.argv[3], sys.argv[4], sys.argv[5], s
         fs.writeFileSync(enrollment, JSON.stringify({ url, token, chatId: process.env.PKM_UPGRADE_CHAT,
           bundle: path.join(extension.extensionPath, "dist/webview/panel.js"),
         }), { mode: 0o600, flag: "wx" });
-        const until = Date.now() + 105_000;
+        const until = Date.now() + 180_000;
         const focused = path.join(base, "browser-focus-request");
         while (!fs.existsSync(focused) && Date.now() < until) await delay(100);
         assert(fs.existsSync(focused), "Browser evidence did not reach native Chat focus.");
@@ -209,7 +209,17 @@ print(json.dumps(tools["api_chat_send"](sys.argv[3], sys.argv[4], sys.argv[5], s
         assert(fs.existsSync(ready), "Browser evidence did not reach revocation.");
         await vscode.commands.executeCommand("personalKnowledge.openOriginalBrowser");
         const evidence = path.join(base, "upgrade-browser.json");
-        while (!fs.existsSync(evidence) && Date.now() < until) await delay(100);
+        while (!fs.existsSync(evidence) && Date.now() < until) {
+          const httpsEnrollment = path.join(base, "https-enrollment.json");
+          if (fs.existsSync(path.join(base, "https-enrollment-request")) && !fs.existsSync(httpsEnrollment)) {
+            const token = await vscode.env.clipboard.readText();
+            if (/^[A-Za-z0-9_-]{43}$/.test(token)) {
+              fs.writeFileSync(httpsEnrollment, JSON.stringify({ token }), { mode: 0o600, flag: "wx" });
+              await vscode.env.clipboard.writeText("");
+            }
+          }
+          await delay(100);
+        }
         assert(fs.existsSync(evidence), "Browser evidence did not verify revocation.");
       }
       // Maintenance can intentionally fence a live Chat adapter even when repair is rejected.
