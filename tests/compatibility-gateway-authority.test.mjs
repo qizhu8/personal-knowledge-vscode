@@ -46,7 +46,11 @@ test("Original ↔ bundled v5 on existing pkm relays; interrupted Original write
     hostId: randomUUID(), editorSessionId: randomUUID(), extensionHostPid: process.pid };
   const chatAttribution = { ...workbenchAttribution, source: "pkm-chat", scope: "chat", chatId: randomUUID() };
   let confirm = true;
-  const host = { workbenchAttribution, chatAttribution, confirm: async () => confirm, acquireLegacyFence(root) {
+  let chatBusy = false, chatStartsDuringApproval = false;
+  const host = { workbenchAttribution, chatAttribution, hasActiveChatWork: () => chatBusy, async confirm() {
+    if (chatStartsDuringApproval) chatBusy = true;
+    return confirm;
+  }, acquireLegacyFence(root) {
     assertLinuxRootStillLegacyWritable(root);
     return acquireLinuxRootWriterFence(root, "shared", 500);
   } };
@@ -130,6 +134,13 @@ test("Original ↔ bundled v5 on existing pkm relays; interrupted Original write
   };
   const originalVersion = await sharedVersion("original");
   const firstObservation = authority.status();
+  chatBusy = true;
+  await assert.rejects(authority.approveSwitch(firstObservation, "bundled-v5"), /outstanding work/);
+  chatBusy = false;
+  chatStartsDuringApproval = true;
+  await assert.rejects(authority.approveSwitch(firstObservation, "bundled-v5"), /outstanding work/);
+  assert.equal(authority.status().selectionRevision, firstObservation.selectionRevision);
+  chatStartsDuringApproval = chatBusy = false;
   const browser = authority.bindBrowserReads();
   const args = { operation: "mcp.tool.get_note", version: 1, arguments: { slug: "Entry" } };
   assert.match(JSON.stringify(await browser.read(args)), /Original business content/);

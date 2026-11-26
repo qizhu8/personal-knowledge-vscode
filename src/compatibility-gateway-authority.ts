@@ -45,6 +45,7 @@ export interface CompatibilityGatewayHost {
   workbenchAttribution: Readonly<Json>;
   chatAttribution: Readonly<Json>;
   assertAllowed?(): void;
+  hasActiveChatWork?(): boolean;
   confirm(review: { from: CompatibilityDispatchMode; to: CompatibilityDispatchMode; runtimeBuild: string }): Promise<boolean>;
 }
 
@@ -266,7 +267,7 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
 
   const identity = (value: CompatibilityDispatchMode) => value === "original" ? config.legacy : bundled;
   function assertSwitchable(expected: CompatibilitySwitchExpectation, target: CompatibilityDispatchMode) {
-    if (!available() || switching || stopping || inFlight || originalInFlight()
+    if (!available() || switching || stopping || inFlight || originalInFlight() || host.hasActiveChatWork?.()
       || mode !== expected.mode || selectionRevision !== expected.selectionRevision || mode === target
       || target !== "original" && target !== "bundled-v5")
       throw new Error("Gateway selection changed or outstanding work blocks switching; no switch applied.");
@@ -286,7 +287,8 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
         if (target === "bundled-v5") await verifyBundled(role);
       }));
       for (const result of results) if (result.status === "rejected") throw result.reason;
-      if (!available() || stopping || inFlight || originalInFlight()) throw new Error("Gateway no longer accepts handoff.");
+      if (!available() || stopping || inFlight || originalInFlight() || host.hasActiveChatWork?.())
+        throw new Error("Gateway no longer accepts handoff.");
       // Linearization point: both existing relays resolve the same active reference.
       mode = target;
       selectionRevision = randomUUID();

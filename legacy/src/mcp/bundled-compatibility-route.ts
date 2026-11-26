@@ -44,7 +44,8 @@ function hasPendingOwner(root: string) {
 export function createBundledCompatibilityRoute(options: {
   extensionPath: string; storage: string;
   root(): string; managed(): string; python(): string; assertAllowed(): void;
-  live?: { assertAdmittedRoot(): void; confirm(review: { from: Mode; to: Mode; runtimeBuild: string }): Promise<boolean> };
+  live?: { assertAdmittedRoot(): void; hasActiveChatWork(): boolean;
+    confirm(review: { from: Mode; to: Mode; runtimeBuild: string }): Promise<boolean> };
 }) {
   let selected: ReturnType<typeof select> | undefined;
   let phase: "pending" | "selected" | "unavailable" = "pending";
@@ -130,7 +131,7 @@ export function createBundledCompatibilityRoute(options: {
       assertLinuxRootStillLegacyWritable(root);
       return acquireLinuxRootWriterFence(root, "shared", 1_000);
     }, workbenchAttribution: attribution("vscode-provider"), chatAttribution: attribution("pkm-chat"),
-    assertAllowed: selection.assertCurrent,
+    assertAllowed: selection.assertCurrent, hasActiveChatWork: options.live!.hasActiveChatWork,
     confirm: options.live!.confirm }, "original");
   }
   function assertLaunchAdmission() {
@@ -187,11 +188,12 @@ export function createBundledCompatibilityRoute(options: {
           return { serviceId: authority.relayIdentity.generation, selectionRevision: status.selectionRevision,
             active: { mode: status.mode, phase: status.phase, generation: status.generation, runtimeBuild: status.runtimeBuild,
               backendPid: process.pid, inFlight: status.inFlight, uncertain: Number(status.uncertain),
-              backgroundActive: 0, backgroundUncertain: 0 },
+              backgroundActive: Number(options.live!.hasActiveChatWork()), backgroundUncertain: 0 },
             candidates: status.candidates.map(item => ({ ...item, compatible: true })) };
         };
         const current = snapshot();
         if (message.command === "mcpBackendSwitchRead") { send(current); return true; }
+        if (current.active.backgroundActive) { send({ ...current, error: "backgroundWork" }); return true; }
         const target = current.candidates.find(item => item.generation === message.generation && item.runtimeBuild === message.runtimeBuild);
         if (!target || message.serviceId !== current.serviceId || message.activeGeneration !== current.active.generation
           || message.selectionRevision !== current.selectionRevision) { send({ ...current, error: "selectionChanged" }); return true; }

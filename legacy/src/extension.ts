@@ -15301,6 +15301,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   performanceStateDir = path.join(context.globalStorageUri.fsPath, "performance");
   configureCopilotSdk({ storageDir: context.globalStorageUri.fsPath });
   log.init(context);
+  let apiChat: ReturnType<typeof registerApiChatShell> | undefined;
   const gatewayRoute = compatibilityRoute = process.platform === "linux" && Number(context.extension.packageJSON.version.split(".")[0]) === 5
     && process.env.PKM_MANAGED_WRITER_SESSION === undefined && readAccountMcpBinding()?.registrationOwner !== "manual-user"
     ? createBundledCompatibilityRoute({
@@ -15311,7 +15312,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (vscode.env.remoteName || binding?.registrationOwner !== "native-provider"
           || binding.knowledgeRoot !== root || !accountKnowledgeSecurity(root).private)
           throw new Error("Live switching requires a locally owned, private Knowledge Root configured for native pkm.");
-      }, async confirm(review) {
+      }, hasActiveChatWork: () => apiChat?.isBusy ?? true, async confirm(review) {
         const label = (mode: string) => mode === "original" ? "Original MCP" : "Bundled v5 MCP";
         return await vscode.window.showWarningMessage(`Switch pkm from ${label(review.from)} to ${label(review.to)}?`,
           { modal: true, detail: "Workbench and PKM Chat keep the same connections and Original library. This does not roll back storage or replay calls." },
@@ -15329,7 +15330,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }) : undefined;
   if (gatewayRoute) context.subscriptions.push(vscode.commands.registerCommand(
     "_personalKnowledge.pkmCompatibilityRouteStatus", () => gatewayRoute.status()));
-  let apiChat: ReturnType<typeof registerApiChatShell> | undefined;
   setChatStartupTrace(message => log.startup(`${message} (activation+${Date.now() - activationStartedAt}ms)`));
   try {
     apiChat = registerApiChatShell(context, async signal => {

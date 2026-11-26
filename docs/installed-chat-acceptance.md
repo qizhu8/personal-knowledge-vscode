@@ -89,6 +89,8 @@ account binding. Settings status is passive: refreshing neither enrolls
 the window nor changes the selected backend. During an approved switch,
 Settings receives the authority's draining phase with the previously active
 backend; the new backend is shown only after verification and selection.
+Active native Chat work blocks switching, including a turn started while
+the confirmation dialog is open.
 Packaged cold stdio and live
 relays arbitrate on the same root guard. A cold client cannot start while
 a live owner holds custody, and a live owner cannot start over a running
