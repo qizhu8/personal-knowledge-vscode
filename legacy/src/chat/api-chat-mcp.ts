@@ -20,6 +20,12 @@ export interface ManagedChatMcp {
   close(): Promise<void>;
 }
 
+export interface SelectedChatGateway {
+  command: string; args: string[]; cwd: string; version: string; generation: string;
+  runtimeBuild: string; originalBuild: string;
+  assertCurrent(): void;
+}
+
 async function withMcpDiscoveryDeadline<T>(
   signal: AbortSignal, timeoutMs: number, discover: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
@@ -54,6 +60,129 @@ function closeOwnedManagedTransport(transport: StdioClientTransport): Promise<vo
     child.once("exit", onExit);
     child.stdin!.end();
   });
+}
+
+export async function connectSelectedChatGateway(
+  gateway: SelectedChatGateway, signal: AbortSignal, chatId?: string,
+): Promise<ManagedChatMcp> {
+  gateway.assertCurrent();
+  const client = new Client({ name: "pkm-chat-gateway", version: "1.0.0" });
+  const transport = new StdioClientTransport({
+    command: gateway.command, args: gateway.args, cwd: gateway.cwd, stderr: "inherit",
+    env: managedMcpAttributionEnv({ ELECTRON_RUN_AS_NODE: "1" }, "pkm-chat", chatId),
+  });
+  let instance: string | undefined, closing: Promise<void> | undefined, closed = false, draining = false, drained = false;
+  let exit: Promise<void> | undefined;
+  const control = async (name: string, arguments_: Record<string, unknown>, requestSignal?: AbortSignal) => {
+    const result = await client.callTool({ name, arguments: arguments_ }, undefined, { timeout: 10_000, signal: requestSignal });
+    if (result.isError) throw new Error(`Selected gateway ${name} failed.`);
+    const text = Array.isArray(result.content)
+      ? result.content.map(part => part?.type === "text" && typeof part.text === "string" ? part.text : "").join("")
+      : "";
+    const value = result.structuredContent ?? JSON.parse(text);
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid gateway observation.");
+    return value;
+  };
+  const verify = (state: any) => {
+    if (state?.schema !== MCP_LIFECYCLE_SCHEMA || state.runtimeBuild !== gateway.runtimeBuild
+      || state.generation !== gateway.generation || typeof state.instanceId !== "string"
+      || instance && instance !== state.instanceId)
+      throw new Error("Selected gateway connection identity changed.");
+  };
+  const close = () => {
+    draining = true;
+    if (closed) return Promise.resolve();
+    return closing ??= (async () => {
+      if (instance && !drained) {
+        const observe = async (name: string, args: Record<string, never>) => {
+          const value = await control(name, args);
+          verify(value);
+          return value;
+        };
+        await observe("mcp_lifecycle_quiesce", {});
+        const boundary = await waitForManagedMcpDrain(observe, 30_000);
+        if (boundary.state !== "drained") throw new Error(boundary.reason);
+        drained = true;
+      }
+      if (transport.pid) {
+        exit ??= closeOwnedManagedTransport(transport);
+        await boundedLifecycleRead(exit, 30_000);
+      }
+      await client.close();
+      signal.removeEventListener("abort", onAbort);
+      closed = true;
+    })().catch(error => {
+      closing = undefined;
+      throw new Error(`Selected gateway exit is unconfirmed; no call was replayed. ${String(error)}`);
+    });
+  };
+  const onAbort = () => { void close().catch(error => console.error("PKM Chat gateway drain:", error)); };
+  const operations = new Map<string, { id: string; readOnly: boolean }>();
+  const catalog: ManagedChatMcp["catalog"] = [];
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    await withMcpDiscoveryDeadline(signal, 30_000, async discovery => {
+      await client.connect(transport, { signal: discovery, timeout: 30_000 });
+      const version = await control("check_version", {}, discovery);
+      verify(version.runtime);
+      const backend = version.backend;
+      if (version.version !== gateway.version || backend?.architecture !== "v5-mcp-with-original-business-adapter"
+        || backend.storageEngine !== "original" || backend.storageMigrated !== false
+        || backend.runtimeBuild !== gateway.originalBuild || backend.health?.phase !== "accepting"
+        || backend.health.uncertainCalls !== 0 || version.runtime.phase !== "accepting"
+        || version.runtime.acceptingNewCalls !== true || version.runtime.uncertainCalls !== 0 || version.runtime.inFlight !== 0)
+        throw new Error("Selected gateway is not bound to the Original generation.");
+      instance = version.runtime.instanceId;
+      let offset = 0, revision: string | undefined;
+      for (let pages = 0;; pages++) {
+        if (pages >= 512) throw new Error("Gateway catalogue exceeded its bound.");
+        const page = await control("capabilities_list", { path: "mcp.tool", offset, limit: 10, ...(revision ? { revision } : {}) }, discovery);
+        if (!Array.isArray(page.operations) || !Number.isSafeInteger(page.total) || page.total < 1 || page.total > 4096
+          || page.total !== backend.operations || page.offset !== offset || !/^[0-9a-f]{64}$/.test(page.revision)
+          || revision && page.revision !== revision) throw new Error("Gateway catalogue changed during discovery.");
+        revision = page.revision;
+        for (const entry of page.operations) {
+          if (typeof entry?.id !== "string") throw new Error("Invalid Original tool identity.");
+          const contract = await control("capabilities_describe", { operation: entry.id }, discovery);
+          const leaf = contract.transportName;
+          if (typeof leaf !== "string" || !/^[a-zA-Z0-9_]+$/.test(leaf) || contract.id !== entry.id
+            || contract.id !== `mcp.tool.${leaf}` || contract.version !== 1 || contract.revision !== revision
+            || typeof contract.readOnly !== "boolean" || !contract.inputSchema || typeof contract.inputSchema !== "object"
+            || JSON.stringify(contract.inputSchema).length > 16_000)
+            throw new Error("Invalid Original tool contract.");
+          const name = `mcp_pkm_${leaf}`;
+          if (operations.has(name)) throw new Error("Duplicate Original tool.");
+          operations.set(name, { id: entry.id, readOnly: contract.readOnly });
+          catalog.push({ name, description: typeof contract.description === "string" ? contract.description : "",
+            inputSchema: contract.inputSchema, managed: true, hints: { readOnlyHint: contract.readOnly } });
+        }
+        if (page.nextOffset === null) break;
+        if (!Number.isSafeInteger(page.nextOffset) || page.nextOffset <= offset) throw new Error("Gateway discovery did not progress.");
+        offset = page.nextOffset;
+      }
+      if (operations.size !== backend.operations) throw new Error("Incomplete Original tool catalogue.");
+      gateway.assertCurrent();
+    });
+    if (signal.aborted || draining) throw new Error("Gateway discovery cancelled.");
+    return { generation: gateway.generation, catalog, close,
+      async invoke(name, input, requestSignal) {
+        gateway.assertCurrent();
+        const operation = operations.get(name);
+        if (!operation || draining || signal.aborted || requestSignal.aborted) throw new Error("Selected gateway unavailable; no call sent.");
+        try {
+          const result = await client.callTool({ name: operation.readOnly ? "capability_read" : "capability_call",
+            arguments: { operation: operation.id, version: 1, arguments: input } }, undefined, { signal: requestSignal, timeout: 60_000 });
+          if (result.isError) throw new Error(JSON.stringify(result.content).slice(0, 1000));
+          return JSON.stringify(result);
+        } catch (error) {
+          throw new Error(`Selected gateway operation failed; execution may have occurred. Do not retry automatically. ${String(error)}`);
+        }
+      },
+    };
+  } catch (error) {
+    await close().catch(failure => console.error("PKM Chat gateway discovery cleanup:", failure));
+    throw error;
+  }
 }
 
 /** This is the configured PKM service, not a name-based substitute for an arbitrary native tool. */

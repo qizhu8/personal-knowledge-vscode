@@ -74,7 +74,8 @@ function retainedRuntimeFiles() {
   return [...found].map(file => path.relative(base, file).split(path.sep).join("/")).sort();
 }
 
-function stage(output = target, { production = false, extensionVersion } = {}) {
+function stage(output = target, { production = false, extensionVersion, browserWebview = production &&
+  fs.existsSync(path.join(legacy, "dist", "webview", "panel.js")) } = {}) {
   output = path.resolve(output);
   const relative = path.relative(root, output), parent = path.dirname(output);
   if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)
@@ -127,6 +128,13 @@ function stage(output = target, { production = false, extensionVersion } = {}) {
       ["compat", [".py", ".cjs", ".json"]], ["compute", [".py"]],
       ["domain", [".py"]], ["browser", [".mjs", ".html", ".css"]],
     ]) copyTree(path.join(root, name), path.join(runtime, name), file => extensions.includes(path.extname(file)));
+    if (browserWebview) {
+      if (!production) throw new Error("Packaged browser assets require production payload custody.");
+      const { stageBrowserWebview, stageBrowserAdapters } = require("./stage-browser-webview.cjs");
+      const browser = path.join(runtime, "browser");
+      stageBrowserAdapters(path.join(root, "browser"), browser);
+      stageBrowserWebview(path.join(legacy, "dist", "webview"), path.join(browser, "webview"), extensionVersion, copyTree);
+    }
     for (const name of ["managed-migration.mjs", "managed-launch-client.mjs", "managed-launcher.py",
       "python-bootstrap.py", "python-dependencies.py"])
       copyTree(path.join(root, "experimental", name), path.join(runtime, "experimental", name));
@@ -155,6 +163,7 @@ function stage(output = target, { production = false, extensionVersion } = {}) {
     }
     const files = inventory(output);
     const requiredFiles = ["check.cjs", "server/dist/cli.js", "server/dist/managed-client-child.js",
+      "server/dist/compatibility-mcp-cli.js",
       "server/dist/native-vscode-chat-retained.cjs",
       "server/dist/active-vscode-migration-host.js",
       "server/dist/legacy-import-cli.js", "server/dist/storage-worker.js",
@@ -201,6 +210,6 @@ if (require.main === module) {
   if (process.argv[2] !== "stage" || process.argv.length > 4
     || process.argv[3] !== undefined && process.argv[3] !== "--payload")
     throw new Error("Usage: node scripts/stage-runtime.cjs stage [--payload]");
-  stage(target, { production: process.argv[3] === "--payload" });
+  stage(target, { production: process.argv[3] === "--payload", browserWebview: process.argv[3] === "--payload" });
 }
 module.exports = { stage, target, retainedRuntimeFiles };

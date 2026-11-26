@@ -6,7 +6,8 @@ const { createHash, randomUUID } = require("node:crypto");
 
 const project = path.resolve(__dirname, "..");
 const dist = process.env.PKM_TEST_DIST || path.join(project, "dist");
-const nextDist = process.env.PKM_NEXT_DIST || path.join(project, "next-server/dist");
+const core = path.resolve(project, "..");
+const nextDist = process.env.PKM_NEXT_DIST || path.join(core, "dist");
 const { LegacyRootUpgradeCheck } = require(path.join(dist, "runtime/legacy-root-upgrade"));
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
 
@@ -26,9 +27,9 @@ test("default-root assessment uses the verified real inspector without modifying
     const original = fs.readFileSync(path.join(root, "notes", "example.md"));
     write(path.join(extension, "package.json"), JSON.stringify({ version: "fixture" }));
     copy(nextDist, path.join(payload, "server/dist"));
-    copy(path.join(project, "next-server/node_modules"), path.join(payload, "server/node_modules"));
+    copy(path.join(core, "node_modules"), path.join(payload, "server/node_modules"));
     for (const name of ["package.json", "package-lock.json"])
-      copy(path.join(project, "next-server", name), path.join(payload, "server", name));
+      copy(path.join(core, name), path.join(payload, "server", name));
     write(path.join(payload, "server/compat/legacy-compact-mcp.py"), "");
     write(path.join(payload, "resources/note_inventory.py"), "");
     write(path.join(payload, "check.cjs"), "");
@@ -59,6 +60,7 @@ test("default-root assessment uses the verified real inspector without modifying
     assert.equal(check.check(), first);
     const result = await first;
     assert.equal(result.state, "blocked", result.detail);
+    assert.equal(result.verifiedPayloadBuildId, sha(JSON.stringify(files)));
     assert.equal(result.cutoverAuthorized, false);
     assert(result.blockers.some(item => item.code === "direct-adoption-unqualified"));
     assert(result.blockers.some(item => item.code === "writer-isolation-unverified"));
@@ -81,6 +83,7 @@ test("default-root assessment uses the verified real inspector without modifying
     fs.renameSync(root, oldRoot);
     fs.mkdirSync(root);
     assert.equal(check.status().state, "unavailable");
+    assert.equal(check.status().verifiedPayloadBuildId, undefined);
     assert.equal(check.status().managedHandoff.binding, "unknown");
     const replaced = await pendingReplacement;
     assert.equal(replaced.state, "unavailable");
@@ -100,6 +103,7 @@ test("default-root assessment uses the verified real inspector without modifying
     fs.appendFileSync(path.join(payload, "server/dist/legacy-import.js"), "\n// changed");
     const invalid = await check.check();
     assert.equal(invalid.state, "unavailable");
+    assert.equal(invalid.verifiedPayloadBuildId, undefined);
     assert.equal(invalid.cutoverAuthorized, false);
     assert.deepEqual(fs.readFileSync(path.join(root, "notes", "example.md")), original);
     current = false;

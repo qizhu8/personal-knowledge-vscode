@@ -45,6 +45,7 @@ function verifyCachedTab(source, functionName, cacheName, updatedAtName, renderN
     [loadingName]: () => calls.push(["loading"]),
     tabCacheIsFresh: value => value === 100,
     ask: (...args) => calls.push(["ask", ...args]),
+    requestMcpBackend: action => calls.push(["backend", action]),
   };
   vm.createContext(context);
   vm.runInContext(`${functionSource(source, functionName)};this.show=${functionName}`, context);
@@ -65,7 +66,8 @@ function verifyCachedTab(source, functionName, cacheName, updatedAtName, renderN
     `${functionName} must show loading only when no cached data exists`);
 }
 
-verifyCachedTab(mcp, "showMcpTab", "mcpStatusCache", "mcpStatusUpdatedAt", "renderMcpPane", "renderMcpLoading", "mcpStatus");
+verifyCachedTab(mcp, "showMcpTab", "mcpStatusCache", "mcpStatusUpdatedAt", "renderMcpPane", "renderMcpLoading", "mcpStatus",
+  [["backend", "Read"]]);
 verifyCachedTab(skillRouter, "showSkillRouterTab", "skillRouterStatusCache", "skillRouterStatusUpdatedAt", "renderSkillRouterPane", "renderSkillRouterLoading", "skillRouterStatus",
   [["ask", "retrievalSolutions", {}, null, true]]);
 

@@ -135,6 +135,12 @@ test("two actual enrolled MCP clients share one writer through approved handoff,
   await assert.rejects(sharedManagedRequest({ ...binding, serviceId: randomUUID() }, "/shared/status"), /identity/);
   assert.deepEqual(service.status().protocols, { coreHttp: false, browserChat: false, mcp: "native-compact" });
   assert(!service.status().enabledOperationIds.includes("mcp.tool.api_chat"));
+  const browser = await fetch(`${service.url}/webview/`, { headers: { authorization: `Bearer ${business}` } });
+  assert.equal(browser.status, 501);
+  assert.deepEqual(await browser.json(), {
+    error: "Browser unavailable: the native public MCP backend does not expose a compatible browser authority.",
+    backendAbi: "pkm.mcp.api/1", effect: "not-committed",
+  });
 
   for (let index = 0; index < 2; index++) {
     const transport = new StdioClientTransport({ command: process.execPath,

@@ -21,9 +21,19 @@ if (rehearsal) {
   require("./package-next-rehearsal").packageRehearsal(
     path.join(root, `pkm-next-rehearsal-${manifest.version}.vsix`), { env });
 } else {
+  const core = path.resolve(root, "..");
+  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+  if (env.PKM_PACKAGE_PREBUILT !== "1") {
+    run(npm, ["run", "build"]);
+    run(process.execPath, ["tests/test-ui-build-artifacts.js"]);
+    env.PKM_PACKAGE_PREBUILT = "1";
+  }
+  run(npm, ["--prefix", core, "run", "build"]);
   let staged = false;
   try {
-    require("./next-rehearsal-runtime").stage(path.join(root, "next-runtime"), { production: true });
+    require("../../scripts/stage-runtime.cjs").stage(path.join(root, "next-runtime"), {
+      production: true, extensionVersion: manifest.version, browserWebview: true,
+    });
     staged = true;
     env.PKM_PACKAGE_NEXT_PAYLOAD_STAGED = "1";
     run(npx, ["vsce", "package", "--out", output]);

@@ -17,7 +17,7 @@ import { sameKnowledgeRoot } from "./github-sync-coordinator";
 import { GitHubSyncContentIssue, GitHubSyncContentRepairError, inspectConflictMarkers } from "./github-sync-content-repair";
 import { GitHubSyncBaseEvidence, verifyGitHubSyncBaseDigest } from "./github-sync-base-integrity";
 import { planGitHubSyncPublication } from "./github-sync-publication-plan";
-import { isMarkdownAssetDirectory, rewriteMarkdownAssetReferences } from "../knowledge/markdown-assets";
+import { isMarkdownAssetDirectory, rewriteMarkdownAssetReferences, withMarkdownAssetMutation } from "../knowledge/markdown-assets";
 import { GitHubSyncDeferredError } from "./github-sync-scheduler";
 import { validatePersona, portablePersonaPath, withPersonaRepositoryMutation, validatePortablePersonaChanges } from "../chat/persona-profiles";
 import { githubSyncProfilesAuthorized, githubSyncProfilesSelected } from "./github-sync-profiles";
@@ -2149,9 +2149,12 @@ export async function restoreGitHubRemoteFiles(
       ? managedPath(path.join(storeRoot, ".pkm", "state"), `agent-snapshots/${file.slice("agentSnapshots/".length)}`)
       : managedPath(storeRoot, file),
   }));
-  const conflicts = destinations.filter(item => fs.existsSync(item.destination)).map(item => item.file);
+  const snapshots = destinations.map(item => ({
+    ...item, original: fs.existsSync(item.destination) ? fs.readFileSync(item.destination) : undefined,
+  }));
+  const conflicts = snapshots.filter(item => item.original !== undefined).map(item => item.file);
   if (conflicts.length && !overwrite) return { restored: [], conflicts };
-  const contents = await Promise.all(destinations.map(async item => ({
+  const contents = await Promise.all(snapshots.map(async item => ({
     ...item,
     content: await readGitHubRemoteFile(target, checkoutRoot, commit, item.file, 8 * 1024 * 1024)
   })));
@@ -2160,7 +2163,9 @@ export async function restoreGitHubRemoteFiles(
       id: "", label: "", cat: "", isPrivate: false, destination: item.file, content: item.content.toString("utf8"),
     })) throw new Error(`System content is excluded from GitHub Sync restore: ${item.file}`);
   }
-  replaceGitHubSyncFilesAtomically(contents.map(item => ({ destination: item.destination, content: item.content })), "GitHub Sync restore", storeRoot);
+  replaceGitHubSyncFilesAtomically(contents.map(({ destination, content, original }) => ({
+    destination, content, guard: { original },
+  })), "GitHub Sync restore", storeRoot);
   return { restored: restorePaths, conflicts };
 }
 
@@ -2756,12 +2761,20 @@ function withActionSyncMutationUnlocked<T>(storeRoot:string | undefined, destina
   } finally { fs.closeSync(descriptor); fs.unlinkSync(lock); }
 }
 
+function withLiveSyncMutation<T>(storeRoot: string | undefined, destinations: string[], apply: () => T): T {
+  const mutate = () => withActionSyncMutation(storeRoot, destinations, apply);
+  // Hold the root's Markdown lock across guards, writes/deletes, and guarded rollback.
+  return storeRoot && destinations.some(destination =>
+    /^(?:notes|skills|papers)(?:[\\/]|$)/i.test(path.relative(storeRoot, destination)))
+    ? withMarkdownAssetMutation(storeRoot, mutate) : mutate();
+}
+
 export function replaceGitHubSyncFilesAtomically(
   replacements: Array<{ destination: string; content: Buffer | undefined; guard?: { original: Buffer | undefined } }>,
   operation = "GitHub Sync",
   actionStoreRoot?:string
 ): void {
-  withActionSyncMutation(actionStoreRoot, replacements.map(item => item.destination), () => {
+  withLiveSyncMutation(actionStoreRoot, replacements.map(item => item.destination), () => {
     if (actionStoreRoot) validatePortablePersonaChanges(actionStoreRoot, replacements.map(item => ({
       relative:path.relative(actionStoreRoot, item.destination).replace(/\\/g, "/"), content:item.content,
     })));
@@ -2826,7 +2839,7 @@ class GitHubSyncLocalChangeError extends Error {
 
 function applyLocalChanges(...args:Parameters<typeof applyLocalChangesUnlocked>):ReturnType<typeof applyLocalChangesUnlocked> {
   const [storeRoot, writes, deletes] = args;
-  return withActionSyncMutation(storeRoot, storeRoot ? [...writes, ...deletes].map(item => syncLocalPath(storeRoot, item.file.path)) : [],
+  return withLiveSyncMutation(storeRoot, storeRoot ? [...writes, ...deletes].map(item => syncLocalPath(storeRoot, item.file.path)) : [],
     () => applyLocalChangesUnlocked(...args));
 }
 

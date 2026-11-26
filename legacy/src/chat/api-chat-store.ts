@@ -1322,6 +1322,24 @@ export class ApiChatStore {
     if (chat.paused || session.nativeChat?.paused === true) throw new Error("This Session is paused. Resume it before sending another request.");
   }
 
+  browserTurnRevision(chat: ApiConversation, executionDigest: string): string {
+    const current = this.resolveChat(chatPkmUrl(this.namespace, chat.id));
+    if (current.revision !== chat.revision || current.sessionId !== chat.sessionId)
+      throw new Error("The browser Chat revision is stale.");
+    const session = current.sessionId ? fs.readFileSync(path.join(this.stateDirectory, "agent-sessions", `${current.sessionId}.json`)) : "";
+    if (session && ["stopped", "completed"].includes(JSON.parse(session.toString()).status))
+      throw new Error("The browser Chat session is closed.");
+    return createHash("sha256").update(JSON.stringify([current.id, current.revision, current.sessionId, executionDigest]))
+      .update(session).digest("hex");
+  }
+
+  admitBrowserTurn(chat: ApiConversation, expected: string, executionDigest: string): void {
+    withCrossProcessLockSync(path.join(this.stateDirectory, "api-chats", "chats.lock"), "Chat history", () => {
+      if (this.browserTurnRevision(chat, executionDigest) !== expected) throw new Error("The browser Chat revision is stale.");
+      this.saveUnlocked(chat, false);
+    });
+  }
+
   list(includeTrash = false): Array<{ id: string; workspaceNamespace: string; title: string; updatedAt: string; status: ApiChatStatus; groupId: string; trashedAt?: string; workerParentChatId?: string; workerTreeId?: string; workerManager?: boolean; activityCreditLimit?: number; activityBudgetBypass?: "session" }> {
     const placements = this.library.read().placements;
     const chats: ReturnType<ApiChatStore["list"]> = [];

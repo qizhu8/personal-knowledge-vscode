@@ -53,6 +53,14 @@ def main(after=None):
                     time.sleep(0.1)
                 raise AssertionError(f"No actual installed webview containing {selector}")
 
+            if "--transcript-consent" in sys.argv:
+                approval = page.get_by_role("button", name="Share transcript", exact=True)
+                expect(approval).to_be_visible(timeout=60000)
+                expect(page.locator(".monaco-dialog-box")).to_contain_text("Read-only")
+                approval.click()
+                expect(approval).not_to_be_visible(timeout=10000)
+                return
+
             chat = frame_with("#list-new", 80)
             chat.locator("#list-new").click()
             expect(chat.locator("#prompt")).to_be_visible(timeout=30000)
@@ -62,13 +70,14 @@ def main(after=None):
             chat.locator("#permissions").click()
             chat.locator("#permission-mode").select_option("ask")
             chat.locator("#permissions").click()
-            chat.locator("#chat-actions-toggle").click()
-            chat.locator("#task").click()
-            quick_input = page.locator(".quick-input-widget input").first
-            expect(quick_input).to_be_visible(timeout=15000)
-            quick_input.fill("Installed gateway acceptance Task")
-            quick_input.press("Enter")
-            expect(chat.locator("#harness-summary")).to_be_visible(timeout=15000)
+            if "--populate" not in sys.argv:
+                chat.locator("#chat-actions-toggle").click()
+                chat.locator("#task").click()
+                quick_input = page.locator(".quick-input-widget input").first
+                expect(quick_input).to_be_visible(timeout=15000)
+                quick_input.fill("Installed gateway acceptance Task")
+                quick_input.press("Enter")
+                expect(chat.locator("#harness-summary")).to_be_visible(timeout=15000)
             chat.locator("#prompt").fill(
                 "Create the isolated InstalledGatewayNote, then read it and validate the terminal read receipt.")
             chat.locator("#send").click()
@@ -77,13 +86,15 @@ def main(after=None):
             while time.monotonic() < until:
                 if chat.locator("#messages").get_by_text(re.compile("^INSTALLED_GATEWAY_ACCEPTED:")).count():
                     break
-                approval = chat.locator(".approval")
-                if approval.count() and approval.first.is_visible():
-                    text = approval.first.inner_text()
+                approval = chat.locator(".approval").filter(
+                    has=chat.get_by_role("button", name=re.compile(r"Allow once|^Approve$"))).first
+                button = approval.get_by_role("button", name=re.compile(r"Allow once|^Approve$")).first
+                if button.is_visible() and button.is_enabled():
+                    text = approval.inner_text()
                     if text[:2000] not in approvals:
                         approvals.append(text[:2000])
                         print("Actual installed Chat approval:", text[:250], flush=True)
-                    approval.first.get_by_role("button", name=re.compile(r"Allow once|^Approve$")).first.click()
+                    button.click()
                 if chat.locator("#error").is_visible():
                     raise AssertionError(chat.locator("#error").inner_text())
                 dialogs()
@@ -93,6 +104,11 @@ def main(after=None):
                 timeout=1000)
             expect(chat.locator("#messages")).to_have_attribute("aria-busy", "false", timeout=15000)
             assert any("Run PKM add_note?" in approval for approval in approvals), approvals
+            if "--populate" in sys.argv:
+                (base / "browser-done.json").write_text(json.dumps({
+                    "namedWriteApproval": True, "approvals": approvals, "realInstalledWebview": True,
+                }))
+                return
             page.screenshot(path=str(base / "installed-chat-accepted.png"), full_page=True)
             chat.locator("#visualization").click()
             harness = frame_with(".pkm-harness")
@@ -112,9 +128,9 @@ def main(after=None):
             expect(chat.locator("#messages")).to_have_attribute("aria-busy", "true", timeout=15000)
             until = time.monotonic() + 20
             while not (base / "provider-waiting.json").exists() and time.monotonic() < until:
-                approval = chat.locator(".approval")
-                if approval.count() and approval.first.is_visible():
-                    approval.first.get_by_role("button", name="Allow once", exact=True).click()
+                approval = chat.locator(".approval").get_by_role("button", name="Allow once", exact=True).first
+                if approval.is_visible() and approval.is_enabled():
+                    approval.click()
                 page.wait_for_timeout(100)
             assert (base / "provider-waiting.json").exists(), "Cancel never reached the local provider"
             chat.locator("#stop").click()

@@ -7,7 +7,11 @@ import { mkdir, readFile, writeFile, rm, symlink, readdir } from "node:fs/promis
 import { join, resolve, extname } from "node:path";
 import { test } from "node:test";
 import { build } from "esbuild";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { stageCompatibilityMcp } from "../scripts/stage-compatibility-mcp.mjs";
+import { createOriginalBrowserRoute } from "../dist/browser-original-owner.js";
+import { compatibilityMcpValue } from "./compatibility-mcp-fixture.mjs";
 
 const original = resolve(process.env.PKM_COMPATIBILITY_EXTENSION || "../personal-knowledge-vscode");
 const require = createRequire(join(original, "package.json"));
@@ -28,12 +32,15 @@ test("real Chromium PKM Chat creates, approves, updates and validates original N
   const root = join(base, "library"), managed = join(root, "mcp-server"), home = join(base, "home"), runtime = join(base, "python");
   await mkdir(base, { mode: 0o700 });
   await writeFile(join(base, "package.json"), '{"type":"commonjs"}\n');
-  let connection, provider, harness;
+  let connection, provider, harness, control, routeGateway, nativeTurnView;
   const servers = [], sockets = [];
   t.after(async () => {
     await provider?.drainManagedWriter();
     provider?.dispose();
+    nativeTurnView?.dispose();
     await connection?.close();
+    control?.dispose();
+    await routeGateway?.close();
     harness?.dispose();
     for (const socket of sockets) socket.terminate();
     for (const server of servers) {
@@ -44,6 +51,7 @@ test("real Chromium PKM Chat creates, approves, updates and validates original N
   });
   for (const directory of [join(root, "notes"), join(root, "skills"), join(root, "papers"), home, join(runtime, "bin")])
     await mkdir(directory, { recursive: true, mode: 0o700 });
+  await writeFile(join(root, "notes/PredecessorNote.md"), "---\ntitle: Predecessor Note\n---\noriginalbrowserreadmarker\n");
   await symlink(python, join(runtime, "bin/python"));
   await symlink(join(original, "node_modules"), join(base, "node_modules"));
   const generator = join(base, "generate.cjs");
@@ -70,6 +78,7 @@ extensionPath:${JSON.stringify(original)},globalStorageUri:{fsPath:${JSON.string
   const compiled = join(base, "chat.cjs");
   await build({ stdin: { contents: `
 export {ApiChatView} from ${JSON.stringify(join(original, "src/chat/api-chat-view.ts"))};
+export {ApiChatAgentControl} from ${JSON.stringify(join(original, "src/chat/agent-control.ts"))};
 export {connectManagedChatMcp,createVscodeTools} from ${JSON.stringify(join(original, "src/chat/api-chat-mcp.ts"))};
 export {setStorePath} from ${JSON.stringify(join(original, "src/knowledge/filestore.ts"))};
 export {createNativeHarnessServer} from ${JSON.stringify(join(original, "src/runtime/native-harness-server.ts"))};
@@ -83,9 +92,16 @@ export {apiChatSessionHarnessSnapshot,verifyHarnessArtifacts} from ${JSON.string
       const input = await body(request);
       requests.push(input);
       const results = input.messages.filter(message => message.role === "tool");
-      const tools = input.tools.map(tool => tool.function.name);
       let step;
       const last = input.messages.filter(message => message.role === "user").at(-1)?.content;
+      if (typeof last === "string" && last.startsWith("Browser turn ")) {
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write('data: {"choices":[{"index":0,"delta":{"content":"Owner model response"}}]}\n\n');
+        if (last !== "Browser turn held until exact Stop")
+          response.end('data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+        return;
+      }
+      const tools = input.tools.map(tool => tool.function.name);
       if (typeof last === "string" && last.includes("CANCEL_GATEWAY")) {
         response.writeHead(200, { "content-type": "text/event-stream" });
         response.write(": held until the real browser Stop aborts HTTP\n\n");
@@ -256,6 +272,159 @@ window.dispatchEvent(new MessageEvent("message",{data:message}))};`;
   assert.match(note, /Updated by browser Chat via the v5 gateway/);
   assert(!(await readdir(root)).includes("core.sqlite"));
   await provider.drainManagedWriter();
+  // The release gate reads the same persisted Chat via the real AgentControl file queue and MCP tools.
+  const tmpBefore = process.env.TMPDIR;
+  process.env.TMPDIR = base;
+  try {
+    control = new api.ApiChatAgentControl(join(root, ".pkm/state"), { workspacePaths: [root] },
+      (operation, args) => provider.runHostWriter(() => provider.agentControl(operation, args), operation === "cancel"));
+  } finally {
+    if (tmpBefore === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = tmpBefore;
+  }
+  routeGateway = new Client({ name: "original-browser-test", version: "1" });
+  await routeGateway.connect(new StdioClientTransport({ ...selected.launch, stderr: "pipe" }));
+  const token = randomUUID(), bundle = resolve("legacy/dist/webview");
+  const grant = { actorId: "isolated-browser", workspaceRoot: root, generation: target.runtimeBuild, chatHostId: control.hostId };
+  let authorized = true;
+  const assertCurrent = captured => {
+    assert(authorized);
+    assert.deepEqual(captured, grant);
+    selected.gateway.assertCurrent();
+  };
+  // Optional cross-lane integration proof: run the real reader from the owner checkout,
+  // using the same actual persisted Chat as the IPC path above.
+  let readChatTranscript, chatTurns, nativeTurnStore;
+  const nativeReader = process.env.PKM_TEST_ORIGINAL_TRANSCRIPT_READER;
+  if (nativeReader) {
+    chat.messages.unshift(...Array.from({ length: 20 }, (_, sequence) => ({
+      id: randomUUID(), role: "user", status: "complete", content: `Earlier saved fixture message ${sequence + 1}`,
+    })));
+    provider.store.save(chat);
+    const compiledReader = join(base, "owner-transcript.cjs");
+    await build({ entryPoints: [resolve(nativeReader)], outfile: compiledReader, bundle: true,
+      platform: "node", format: "cjs", logLevel: "silent" });
+    const { createBrowserChatTranscriptReader } = require(compiledReader);
+    let confirmations = 0;
+    readChatTranscript = createBrowserChatTranscriptReader(grant, {
+      assertCurrent,
+      async load(captured, id) {
+        assertCurrent(captured);
+        assert.equal(id, chat.id);
+        return provider.store.load(id, false);
+      },
+      async confirm(_title, id) {
+        assert.equal(id, chat.id);
+        return ++confirmations === 2; // The fixture declines, allows, then declines after reload.
+      },
+    });
+    const nativeTurns = process.env.PKM_TEST_ORIGINAL_TURN_OWNER;
+    if (nativeTurns) {
+      const ownerExtension = resolve(nativeTurns);
+      const fromOwner = createRequire(join(ownerExtension, "package.json"));
+      const ownerHost = { ...host, workspace: { ...host.workspace,
+        workspaceFolders: [{ uri: uri(root), name: "fixture", index: 0 }] } };
+      let ApiChatView, ApiChatStore, HostWriterAdmission, bindBrowserChatTurns;
+      try {
+        Module._load = function (id, ...args) { return id === "vscode" ? ownerHost : load.call(this, id, ...args); };
+        ({ ApiChatView } = fromOwner("./dist/chat/api-chat-view"));
+        ({ ApiChatStore } = fromOwner("./dist/chat/api-chat-store"));
+        ({ bindBrowserChatTurns } = fromOwner("./dist/chat/browser-chat-turns"));
+        ({ HostWriterAdmission } = fromOwner("./dist/runtime/host-writer-admission"));
+        fromOwner("./dist/knowledge/filestore").setStorePath(root);
+      } finally { Module._load = load; }
+      nativeTurnView = new ApiChatView({ ...context, extensionPath: ownerExtension });
+      nativeTurnStore = new ApiChatStore(join(root, ".pkm/state"), provider.store.namespace);
+      nativeTurnView.store = nativeTurnStore;
+      const adopted = nativeTurnStore.load(chat.id, false);
+      Object.assign(adopted, { permissionMode: "read-only", builtinTools: [], includeHistory: false });
+      nativeTurnStore.save(adopted);
+      nativeTurnView.chat = adopted;
+      nativeTurnView.chats.set(adopted.id, adopted);
+      nativeTurnView.view = { visible: true, webview: { postMessage: async () => true } };
+      const admission = new HostWriterAdmission(root, () => root);
+      nativeTurnView.setHostWriterObserver((work, cancellation) =>
+        cancellation ? admission.observeCancellation(work) : admission.observe("chat", work));
+      const otherWindow = new ApiChatStore(join(root, ".pkm/state"), nativeTurnStore.namespace);
+      chatTurns = bindBrowserChatTurns(grant, {
+        assertCurrent,
+        target: id => nativeTurnView.browserChatTurnTarget(root, id),
+        async confirm(_title, id, text) {
+          assert.equal(id, chat.id);
+          if (text === "Browser turn stale revision") {
+            const edited = otherWindow.load(id, false);
+            edited.title = "Renamed during send confirmation";
+            otherWindow.save(edited);
+            nativeTurnView.chat = nativeTurnStore.load(id, false);
+            nativeTurnView.chats.set(id, nativeTurnView.chat);
+            return true;
+          }
+          return text !== "Decline this send";
+        },
+        async send(id, text, admitted) {
+          try { return await nativeTurnView.sendBrowserChatTurn(root, id, text, admitted); }
+          catch (error) { hostErrors.push(error.message); throw error; }
+        },
+      });
+    }
+  }
+  const previousBundle = process.env.PKM_BROWSER_WEBVIEW_DIR;
+  process.env.PKM_BROWSER_WEBVIEW_DIR = bundle;
+  let route;
+  try {
+    route = await createOriginalBrowserRoute({
+      token, grant, assertCurrent, readChatTranscript, chatTurns,
+      async capabilityRead(captured, args) {
+        assertCurrent(captured);
+        const reply = await routeGateway.callTool({ name: "capability_read", arguments: args });
+        if (reply.isError) throw Error("Original capability rejected");
+        return compatibilityMcpValue(reply);
+      },
+    }, { allowDevelopment: true });
+  } finally {
+    if (previousBundle === undefined) delete process.env.PKM_BROWSER_WEBVIEW_DIR;
+    else process.env.PKM_BROWSER_WEBVIEW_DIR = previousBundle;
+  }
+  const release = createServer(async (req, res) => {
+    if (await route(req, res)) return;
+    res.writeHead(404).end();
+  });
+  await listen(release); servers.push(release);
+  const baseUrl = `http://127.0.0.1:${release.address().port}/webview/`;
+  const releaseBrowser = spawn("python3", ["-B", resolve("tests/webview-original-owner.py")],
+    { env: { ...process.env, TMPDIR: base }, stdio: ["pipe", "ignore", "pipe"] });
+  let releaseError = "";
+  releaseBrowser.stderr.on("data", bytes => { releaseError += bytes; });
+  releaseBrowser.stdin.end(JSON.stringify({ url: baseUrl, token, bundle, chatId: chat.id,
+    nativeTranscript: !!readChatTranscript, nativeTurns: !!chatTurns }));
+  assert.equal(await new Promise(resolve => releaseBrowser.once("close", resolve)), 0,
+    releaseError.split("\n").filter(line => !line.includes(token)).join("\n") + "\nHost errors: " + JSON.stringify(hostErrors));
+  if (chatTurns) {
+    const saved = nativeTurnStore.load(chat.id, false).messages;
+    assert(!saved.some(message => message.content === "Browser turn stale revision"));
+    assert(!saved.some(message => message.content === "Decline this send"));
+    assert(saved.some(message => message.role === "assistant" && message.content === "Owner model response" && message.status === "complete"));
+    assert.equal(saved.at(-1).status, "cancelled");
+    for (const prompt of ["Browser turn held until exact Stop", "Browser turn finish normally", "Browser turn stale revision"])
+      assert.equal(requests.filter(request => request.messages.at(-1)?.content === prompt).length, prompt.includes("stale") ? 0 : 1);
+  }
+  assert.match(await readFile(join(root, "notes/PredecessorNote.md"), "utf8"), /originalbrowserreadmarker/);
+  assert(!(await readdir(root)).includes("core.sqlite"));
+  const headers = { "content-type": "application/json", origin: new URL(baseUrl).origin };
+  const login = await fetch(`${baseUrl}session`, {
+    method: "POST", headers, body: JSON.stringify({ token, remember: true }),
+  });
+  assert.equal(login.status, 200);
+  const cookie = login.headers.get("set-cookie").split(";")[0];
+  authorized = false;
+  const revoked = await fetch(`${baseUrl}message`, {
+    method: "POST", headers: { ...headers, cookie },
+    body: JSON.stringify({ command: "list", q: "", caseSensitive: false }),
+  });
+  assert.equal(revoked.status, 503);
+  const drain = await routeGateway.callTool({ name: "mcp_lifecycle_quiesce", arguments: {} });
+  assert.equal(compatibilityMcpValue(drain).phase, "drained");
+  await routeGateway.close(); routeGateway = undefined;
   connection = await api.connectManagedChatMcp(selected.launch, new AbortController().signal, managed,
     { knowledgeRoot: root, gateway: selected.gateway });
   const localTools = api.createVscodeTools(["mcp_pkm_get_note"], host, async () => {}, undefined, connection);

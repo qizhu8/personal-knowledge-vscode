@@ -328,6 +328,10 @@ test("warm capabilities_search latency compares this gateway with the direct act
 
 test("incompatible component version refuses even when same-version original generation reloads are allowed", { timeout: 120000 }, async t => {
   const f = await fixture(t);
+  const { client: original } = await f.connect(true);
+  const originalLifecycle = async () => value(await original.callTool({ name: "mcp_lifecycle_status", arguments: {} }));
+  const before = await originalLifecycle();
+  assert.equal(before.acceptingNewCalls, true);
   const path = f.target.args[0], config = JSON.parse(await readFile(path));
   assert.equal(config.legacy.compatibleUpdates, true);
   const component = Object.keys(config.legacy.components)[0];
@@ -337,8 +341,15 @@ test("incompatible component version refuses even when same-version original gen
   await writeFile(path, bytes, { mode: 0o600 });
   f.target.args[1] = hash(bytes);
   await assert.rejects(f.connect(), /COMPATIBILITY_ADAPTER_IDENTITY_MISMATCH/);
+  const after = await originalLifecycle();
+  assert.equal(after.instanceId, before.instanceId);
+  assert.equal(after.acceptingNewCalls, true);
+  const read = await original.callTool({ name: "get_note", arguments: { slug: "Entry" } });
+  assert.notEqual(read.isError, true);
+  assert.match(JSON.stringify(read), /Original business content/);
   assert.match(await readFile(join(f.root, "notes/Entry.md"), "utf8"), /Original business content/);
   assert(!(await readdir(f.root)).includes("core.sqlite"));
+  await f.close(original);
 });
 
 test("fault-injected adapter exit fences new work and retains unknown writes without replay or false drain", { timeout: 120000 }, async t => {

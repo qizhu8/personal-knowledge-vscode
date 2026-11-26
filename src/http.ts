@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { CoreError, type Actor } from "./contracts.js";
 import type { Core } from "./core.js";
 import { loadBrowserAssets } from "./browser-host.js";
+import { createBrowserReleaseGate } from "./browser-release-gate.js";
 
 async function body(req: IncomingMessage, maximum = Number.POSITIVE_INFINITY): Promise<unknown> {
   const chunks: Buffer[] = [];
@@ -22,6 +23,7 @@ export async function startHttp(core: Core, token: string, actor: Actor, port = 
   lifecycle?: { activity(): { active: number; uncertain: number } }) {
   if (token.length < 32) throw new CoreError("INVALID_CONFIGURATION", "PKM_NEXT_TOKEN must contain at least 32 characters.");
   const { assets, headers: staticHeaders } = await loadBrowserAssets();
+  const gate = await createBrowserReleaseGate(token, !!human);
   let active = 0;
   const instanceId = randomUUID();
   let accepting = true;
@@ -36,6 +38,16 @@ export async function startHttp(core: Core, token: string, actor: Actor, port = 
     if (req.headers.host !== host || req.socket.remoteAddress !== "127.0.0.1"
       || req.headers.origin !== undefined && req.headers.origin !== `http://${host}`) {
       reply(403, { error: { code: "ACCESS_DENIED", message: "Only exact same-origin loopback requests are supported.", effect: "not-committed" } }); return;
+    }
+    if (gate && (req.url === "/webview" || req.url?.startsWith("/webview/"))) {
+      if (active >= 32) { reply(503, { error: { code: "BUSY", message: "HTTP admission limit reached.", effect: "not-committed" } }); return; }
+      active++;
+      try { await gate(req, res, { accepting: () => accepting, dispatch: (method, args) => core.dispatch(method, args, actor) }); }
+      finally {
+        active--;
+        if (!active) { for (const ready of drained) ready(); drained.clear(); }
+      }
+      return;
     }
     const assetPath = req.url === "/" ? "/index.html" : req.url;
     const asset = assets.get(assetPath ?? "");

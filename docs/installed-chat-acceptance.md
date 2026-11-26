@@ -62,6 +62,120 @@ Verified on 2026-11-20: the complete scenario passed using VS Code 1.143.0,
 shipped extension 4.0.27 and selected gateway 0.1.0. This closes this installed
 Chat/Harness acceptance gap only; it is not full migration or production cutover.
 
+## Same-profile compatibility candidate
+
+```sh
+node tests/installed-compatibility-chat.mjs --same-profile-upgrade \
+  --candidate-vsix=/absolute/personal-knowledge-5.0.0.vsix \
+  --candidate-sha256=<exact-reviewed-vsix-sha256>
+```
+
+This mode runs the genuine 4.0.27 Chat/gateway workflow first. It closes the
+predecessor normally and refuses to install while a fixture gateway or its
+Original MCP is still visible. It then installs the same-ID candidate into
+the *same* private profile, without editing the settings or reseeding
+SecretStorage. The candidate must report its actual managed build through
+live `pkm.check_version`, read the predecessor's Note through canonical
+`pkm.capability_read`, and open the retained Note and Chat surfaces. Its
+rejected repair must remove its own maintenance markers while keeping the
+same reader available. This last assertion concerns scoped runtime
+maintenance, not rollback of the Knowledge Root or an installed VSIX.
+
+On 2026-11-25 the `bf99ea52…` candidate passed this fixture. Connected
+`check_version` reported Original `2.19.0` with build `73f4be37…`, distinct
+from the predecessor's Original and v5-gateway builds. The rejected repair
+left the same connection instance accepting and able to reread the Note;
+an independent wrong-component gateway test also left its Original reader
+available. Post-upgrade Chat evidence is reopening the predecessor Chat,
+not replaying the predecessor model/tool sequence in the candidate.
+
+The 4.0.27 gateway switch and the 5.0.0 managed generation are different
+milestones. The latter remains on Original storage and does not carry the
+selected predecessor gateway forward: the candidate's standard
+`registerNativeMcpProvider` uses `mcpServerDefinitionData(true)` and its Chat
+constructs the Original runtime independently. Reusing the gateway in the
+candidate requires a single verified target authority shared by these two
+launch paths, an owned drain/rejection path, and an installed compatible
+candidate. A separately staged gateway or `_personalKnowledge.legacyRootUpgradeStatus`
+is not that authority. Settings must not offer a production switch until it
+exists. Original-root adoption additionally needs independent qualification
+of all writers, custody, recovery and rollback.
+
+### Bundled compatibility gateway candidate
+
+Use the same command with `--bundled-gateway` to qualify the default
+Linux route. This mode starts genuine 4.0.27 on its Original managed MCP,
+creates a Note through its installed Chat and approval UI, then closes it
+before installing the same-ID candidate. It does not repeat the separate
+4.0.27 hot-switch/Harness/Stop scenario above. The candidate must expose
+the existing `mcp_pkm_check_version` tool, identify the bundled v5 gateway
+with an Original backend, and read the earlier Note from both native MCP
+and the reopened Chat. The fixture requires unchanged settings and root
+identity and the same pinned selection for the two stdio clients.
+
+The `44e31ace…` candidate passed VSIX verification and the native half
+of this acceptance: live `mcp_pkm_check_version` reported gateway build
+`e70e96a1…` with Original storage, native `capability_read` read the
+predecessor Note, and rejected runtime repair preserved the same reader
+and released both scoped markers. The preceding `e278b3f1…` build
+initialized, but VS Code registered its tools as `mcp_pkm-v5_*` because
+its MCP initialize response used `pkm-v5`; the corrected bundled route
+explicitly uses the `pkm` wire name. The separately launched facade
+keeps its existing identity.
+
+The same `44e31ace…` VSIX subsequently passed both clients and restart
+(`installed-chat-a887e165…`). The test separates native Note read from
+sidebar focus, discovers the owning workspace Host through
+`api_chat_capabilities`, and calls the shipped same-user Chat IPC client
+once. The installed Host admitted the request, executed a model turn,
+read the original Note via Chat's `pkm` connection, and returned a
+terminal `succeeded` receipt. The two stdio clients used the same pinned
+gateway generation and build. After normal editor closure and confirmed
+exit of old stdio clients, the same profile reopened, reported the same
+build in a fresh generation and instance, and read the Note through
+native `pkm` again.
+
+A separate incompatible Original-component start was rejected while the
+same Original reader stayed accepting and could still read its Note.
+Neither test qualifies installed rollback, production hot switching,
+the native VS Code mutation path for Chat submission, or storage
+migration. The full legacy package test suite was not green in the
+shared build environment.
+
+For the owner-side transcript probe add `--browser-transcript` to the bundled
+gateway fixture. It binds the installed Original Chat Shell directly through
+`bindBrowserChatTranscript(grant, assertCurrent)`; production browser
+activation is separate. The trusted route supplies the same authenticated
+actor, root, generation and live Chat Host ID for each call. The owner asks
+for native consent before releasing the exact Chat's stored text, then pages
+in chronological order, 1–20 entries and at most 512 KiB of serialized
+messages per page. It refuses oversized single messages rather than clipping
+them; PKM Chat still displays those locally. Only `id`, `role`, `content`,
+`status` and optional `recordedAt` are returned. Continuation cursors expire
+after two minutes and cannot cross a Chat, bound reader or transcript change.
+This callback is not advertised as an MCP operation and grants no remote writes.
+
+The transcript probe passed in isolated Linux VS Code 1.143.0 fixture
+`installed-chat-28420905-e61c-4427-83e4-afcf986ea114` with candidate VSIX
+SHA-256 `5e87c958f097b8f6b6aafbf2fc109d12bda02b98e36a4a77b9cc915809441cce`.
+After upgrading from the genuine 4.0.27 predecessor in the same profile,
+the live owner rejected an arbitrary host ID and unrelated Chat ID, then
+returned both predecessor messages in order across two pages after the actual
+VS Code **Share transcript** modal was accepted. The fixture adds a capture-only
+hook to the disposable installed shell module to obtain the in-process callback;
+it does not alter transcript authority, consent, or storage. This is not a test
+of a production browser endpoint. Native MCP and Chat still passed against the
+bundled gateway, and native MCP read the predecessor Note after restart.
+
+The candidate's `_personalKnowledge.pkmCompatibilityRouteStatus` reports
+`pending`, `selected`, or `unavailable`, with the selected generation,
+gateway version/build, and Original build when known. `selected` is a
+cold launch selection, not evidence that either client is connected.
+There are no switch candidates or switch command in this slice. Manual
+registrations and managed-writer sessions are out of scope. Original still
+owns storage; this neither authorizes cutover nor qualifies Next writer
+adoption.
+
 ## Separate native high-level Chat candidate
 
 The experimental host has a separate bounded installed acceptance:

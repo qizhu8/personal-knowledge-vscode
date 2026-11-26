@@ -210,6 +210,7 @@ export function createNativePublicFacade(backend: NativePublicBackend, options: 
   adapterCatalog?: NativePublicCatalog;
   adapterIdentity?: Readonly<Record<string, unknown>>;
   toolSurface?: "compact" | "hybrid";
+  serverName?: "pkm";
   availability?: { enabledOperationIds: string[]; disabledOperationIds: string[]; limitations: string[] };
 }) {
   if ((options.profile ?? process.env.PKM_CAPABILITY_PROFILE ?? "compact") !== "compact")
@@ -388,7 +389,7 @@ Browse this paged action catalog when search keywords are unknown. For document 
         throw new Error("INVALID_ARGUMENT: Pin version 1 and provide object arguments");
       const args = parse(name, definition.inputSchema, input ?? {});
       if (name === "check_version") return result({
-        name: publicName, version: "0.1.0", components: options.manifest.components,
+        name: options.serverName ?? publicName, version: "0.1.0", components: options.manifest.components,
         enabled_feature_domains: [], capabilities: ["managed-lifecycle-v1"], experimental: true, runtime: lifecycle.status(),
         ...(options.availability ? { availability: options.availability } : {}),
         ...(options.adapterIdentity ? { backend: options.adapterIdentity } : {}),
@@ -450,7 +451,7 @@ export async function startNativePublicMcp(backend: NativePublicBackend,
   const stdio = transport ? boundary : createNativePublicStdio();
   const wire = transport ?? stdio!.transport;
   const facade = createNativePublicFacade(backend, options);
-  const server = new Server({ name: publicName, version: "0.1.0" },
+  const server = new Server({ name: options.serverName ?? publicName, version: "0.1.0" },
     { capabilities: { tools: {} }, ...(facade.instructions ? { instructions: facade.instructions } : {}) });
   server.oninitialized = () => options.deployment?.initialized();
   server.setRequestHandler(ListToolsRequestSchema, async () => options.deployment

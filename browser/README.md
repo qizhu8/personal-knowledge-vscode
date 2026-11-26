@@ -1,5 +1,151 @@
 # Browser migration boundary
 
+## Uone Webview release gate
+
+The same-ID package stages the built extension Webview and browser adapter in
+`extension/next-runtime/server/browser/`. The packaged HTTP runtime resolves
+that fixed location relative to its own code, checks served bytes against the
+production payload manifest, and does not consult `PKM_BROWSER_WEBVIEW_DIR`.
+The stable VSIX verifier requires the packaged browser bundle and compares its
+actual panel HTML, CSS, and JavaScript with the extension's desktop assets.
+No extension activation changes or extra browser service are required for an
+already configured compatible HTTP runtime. Open `/webview/` on the origin
+reported by the packaged `next-runtime/server/dist/cli.js http --data
+<isolated-workspace>` or by the packaged shared manager configured for
+`standalone-core`; sign in with that service's business token. Requests
+use the manager's existing generation, admission, revocation, and receipt
+handling; no child credential reaches the browser. The existing browser
+client at `/` is unchanged. Source development remains explicitly opt-in:
+build both trees, then point `PKM_BROWSER_WEBVIEW_DIR` at the absolute
+`legacy/dist/webview` path before starting checkout HTTP.
+
+The qualified shared-manager ABI is `pkm.shared-core-http/v1`. Bare
+`pkm.mcp.api/1` still returns unavailable for `/webview/`; a tool catalog or
+status relay is not a browser authority.
+
+### Original-backed read route and activation handoff
+
+The packaged runtime exports `createOriginalBrowserRoute` from
+`server/dist/browser-original-owner.js`. The Original owner activation can
+mount its returned request handler on its exact `127.0.0.1` origin before
+generic routing (the handler returns `false` outside `/webview`). Supply a
+browser token provisioned for one actor and a pinned grant with `actorId`,
+canonical `workspaceRoot`, selected `generation`, and, for Chat, the exact
+local `chatHostId`. `assertCurrent(grant)` must check token revocation, actor
+access to this root, the live selected gateway and its generation. Supply
+`capabilityRead(grant, input)` over the *already bound* gateway: issue only
+`capability_read`, reject errors, unwrap the Original tool result, and check
+the same grant inside the gateway admission boundary. Dispose the route on
+selection change; do not rebuild it by choosing another owner. Installed mode
+uses the immutable asset path and does not opt into checkout assets.
+This module does not activate a gateway, register VS Code commands, or expose
+the MCP credential or a generic MCP endpoint.
+
+The route reads the actual Original Note inventory, lexical search and Note
+body, and uses the existing Original Chat Host's IPC receipts to list saved
+conversations and display their bounded latest replies when no transcript
+callback is installed. To enable transcript sharing, pass the private
+`readChatTranscript` returned by `apiChat.bindBrowserChatTranscript(grant,
+assertCurrent)` into `createOriginalBrowserRoute`. The browser never requests
+the first page automatically: the reader requires native confirmation for
+that exact Chat and issues opaque snapshot-bound cursors for later pages.
+With this callback, denied or expired pages never fall back to mailbox
+replies. This callback is not the tool-approval route.
+
+For text-only turns, activation can also pass `chatTurns:
+apiChat.bindBrowserChatTurns(grant, assertCurrent)` alongside the transcript
+callback. The browser records the owner's exact Chat/turn IDs before Send,
+keeps only those IDs in tab storage, and checks that receipt on reload.
+The owner requires native approval for the exact text. Stop targets only that
+running turn; an unknown outcome requires inspecting the owning Chat, never
+replaying Send. This does not enable public MCP or mailbox writes.
+
+Original `update_note` carries no expected revision/digest;
+the browser denies Note writes rather than substituting a read-then-write
+check. Ordinary mailbox `send`/`cancel`, Chat creation, and tool review remain
+unavailable here. Original tool approvals stay in the
+owning Chat webview; browser sign-in grants no approval authority. Shared
+activation is not wired by this module.
+
+`tests/compatibility-chat-browser.test.mjs` exercises the route against a
+disposable Original gateway and production Chat controller running in a test
+host. To exercise browser Send and exact Stop as well, set
+`PKM_TEST_ORIGINAL_TRANSCRIPT_READER` to the owner's
+`legacy/src/chat/browser-chat-transcript.ts` and `PKM_TEST_ORIGINAL_TURN_OWNER`
+to the owner's built `legacy/` directory. This uses the real owner writer
+and loopback model, with the native modal choice supplied by the fixture.
+It supplements, but is not, installed activation qualification.
+
+The internal Note body edit contract is in `legacy/src/knowledge/filestore.ts`:
+`readOriginalNoteBodyForEdit(relative)` returns the body, exact file SHA-256,
+and opaque revision; `compareAndSwapOriginalNoteBody(relative, expected, body)`
+requires both pins and returns `ORIGINAL_NOTE_EDIT_CONFLICT` on a stale draft.
+The owner supplies the exact selected root, actor admission, and path. This
+changes only an existing ordinary Note body; it preserves frontmatter and
+rejects System Notes, Todo Boards, and legacy Work Item blocks. The opaque
+revision is not the YAML `revision` or the Original MCP content hash.
+
+The comparison and replacement hold `markdown-assets.lock` from
+`legacy/src/knowledge/markdown-assets.ts`. Desktop `saveNote` and
+`KnowledgeContentFileSystem.writeFile` in `legacy/src/extension.ts` use
+`noteUpsert`; MCP `update_note` uses `knowledge_mutations.py` and
+`knowledge_mutations.js` to call the same locked filestore. The desktop
+panel’s draft precheck is separate and does not itself enforce CAS.
+GitHub Sync’s live `applyLocalChanges` and `replaceGitHubSyncFilesAtomically`
+in `legacy/src/sync/github-sync.ts` now take the same lock for Markdown
+areas, including snapshot checks, replacement, deletion, and guarded
+rollback. Fetching and checkout staging stay outside the lock. Browser
+writes are not enabled: raw `file:` editors, external Git, and older or
+otherwise uncoordinated writers can bypass it. Activation must exclude
+such writers; a browser-side precheck cannot do that.
+
+The sign-in page exchanges the token for a revocable, path-scoped, HttpOnly
+session cookie; remember sets an eight-hour maximum instead of a browser-session
+cookie. Sessions are held in memory and die on restart. The token is not stored
+in browser storage or passed in navigation URLs. The authenticated page uses the
+built `panel.html`, `panel.css`, and byte-identical `panel.js`. The browser
+adapter handles only explicit operations, under the same Core actor as the HTTP
+host; the cookie is not accepted by `/v1`, management, or human-review routes.
+The Webview's inline script handlers and `eval` are not enabled in the browser.
+Only the original inline style attributes are admitted for layout.
+
+Notes support list, open, create, edit Markdown content, and literal search,
+with at most 100 displayed results. Edits use the original detail's document
+ID, revision, and SHA, plus a pinned workspace scan; stale writes fail without
+replacing newer content. Title/category moves, metadata-only editing, Board
+editing, rich resources, and other desktop surfaces are outside this gate.
+On an uncertain Note write the draft stays open; there is no automatic replay.
+
+The Webview's **PKM Chat** button opens `/webview/chat`. It uses the same Core
+actor for chat lists, durable transcripts, revision-checked send, and
+revision-checked stop. Reload reconnects to the selected conversation; it
+does not start a new turn. Generation is unavailable without an admitted
+model. Chat links to the existing `/human-review` desk when the host exposes
+it. The business session cannot enroll or decide: the human needs the
+existing, separately authorized enrollment and exact review policy. Stop
+does not roll back effects already dispatched.
+
+Run the release qualification after both builds:
+
+```sh
+node --test tests/webview-release-gate.test.mjs tests/batch06-browser.test.mjs
+```
+
+For the same-ID packaging check, after `npm run build` and
+`npm --prefix legacy run build`, run `node scripts/stage-runtime.cjs stage
+--payload`, move the new `next-runtime` under the disposable `legacy/`
+packaging root, then run `vsce package` there with
+`PKM_PACKAGE_PREBUILT=1 PKM_PACKAGE_NEXT_PAYLOAD_STAGED=1`. Set
+`PKM_TEST_BROWSER_VSIX` to the archive path when running
+`tests/webview-release-gate.test.mjs`. The test extracts the real VSIX,
+verifies its production payload, rejects a changed asset, and runs its
+packaged shared manager and staged Core without a development bundle path.
+
+The tests use Chromium via Python Playwright on both standalone and a real
+shared-manager loopback origin. They compare served bundle bytes, verify Note
+CAS and independent Core/disk readback, and exercise durable send/stop against
+an isolated deterministic loopback provider, not a production model.
+
 The Browser Knowledge surface uses only capabilities advertised by the authenticated
 native host. Literal Note, Skill, and Research search is read-only; results are
 opened through the corresponding Core read operation and checked against the

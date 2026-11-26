@@ -9,6 +9,7 @@ export type LegacyRootUpgradeStatus = {
   blockers: Array<{ code: string; count: number }>;
   detail: string;
   managedHandoff: ManagedHandoffEvidence;
+  verifiedPayloadBuildId?: string;
 };
 
 export type ManagedHandoffEvidence = {
@@ -37,7 +38,7 @@ const [verifier, extension, root] = process.argv.slice(1);
       throw new Error("invalid-inspection");
     counts[blocker.code] = (counts[blocker.code] || 0) + 1;
   }
-  process.stdout.write(JSON.stringify({ ready: false, blockers: counts }));
+  process.stdout.write(JSON.stringify({ ready: false, blockers: counts, buildId: payload.buildId }));
 })().catch(error => {
   process.stderr.write(error && error.message === "runtime-too-old" ? "runtime-too-old" : "inspection-failed");
   process.exitCode = 1;
@@ -108,9 +109,9 @@ export class LegacyRootUpgradeCheck {
         managedHandoff = { binding: "unknown", preexistingAndExternalWriters: "unknown", cutoverAuthorized: false };
       }
     }
-    if (this.inspectedRoot && !this.sameInspectedRoot()) {
-      return { ...this.current, state: "unavailable", managedHandoff, blockers: [],
-        detail: "The configured Knowledge Root changed since inspection; no handoff was attempted." };
+    if (this.disposed || this.inspectedRoot && !this.sameInspectedRoot()) {
+      return { ...this.current, state: "unavailable", managedHandoff, blockers: [], verifiedPayloadBuildId: undefined,
+        detail: "The configured Knowledge Root changed or the host stopped; no handoff was attempted." };
     }
     return { ...this.current, managedHandoff, blockers: this.current.blockers.map(blocker => ({ ...blocker })) };
   }
@@ -129,12 +130,12 @@ export class LegacyRootUpgradeCheck {
     const identity = path.isAbsolute(this.root) ? this.rootIdentity() : undefined;
     if (!identity) {
       this.inspectedRoot = undefined;
-      this.current = { ...this.current, state: "unavailable", blockers: [],
+      this.current = { ...this.current, state: "unavailable", blockers: [], verifiedPayloadBuildId: undefined,
         detail: "The configured Knowledge Root changed or is not absolute; no handoff was attempted." };
       return Promise.resolve(this.status());
     }
     this.inspectedRoot = identity;
-    this.current = { ...this.current, state: "checking", blockers: [],
+    this.current = { ...this.current, state: "checking", blockers: [], verifiedPayloadBuildId: undefined,
       detail: "Inspecting the existing root read-only; no handoff is in progress." };
     const task = new Promise<LegacyRootUpgradeStatus>(resolve => {
       const finish = (error: Error | null, stdout: string, stderr: string) => {
@@ -149,9 +150,10 @@ export class LegacyRootUpgradeCheck {
               : "Read-only assessment failed or timed out; the payload, root or runtime may be unavailable or changing. Existing workflows remain unchanged." };
         } else {
           try {
-            const result = JSON.parse(stdout) as { ready: unknown; blockers: Record<string, unknown> };
+            const result = JSON.parse(stdout) as { ready: unknown; blockers: Record<string, unknown>; buildId: unknown };
             if (result.ready !== false || !result.blockers || typeof result.blockers !== "object"
-              || Array.isArray(result.blockers)) throw new Error("invalid");
+              || Array.isArray(result.blockers) || typeof result.buildId !== "string"
+              || !/^[0-9a-f]{64}$/.test(result.buildId)) throw new Error("invalid");
             const blockers = Object.entries(result.blockers).map(([code, count]) => {
               if (!/^[A-Za-z0-9_-]{1,100}$/.test(code) || !Number.isSafeInteger(count) || (count as number) < 1)
                 throw new Error("invalid");
@@ -159,7 +161,7 @@ export class LegacyRootUpgradeCheck {
             });
             if (!blockers.some(blocker => blocker.code === "direct-adoption-unqualified"))
               throw new Error("invalid");
-            this.current = { ...this.current, state: "blocked", blockers,
+            this.current = { ...this.current, state: "blocked", blockers, verifiedPayloadBuildId: result.buildId,
               detail: "No automatic original-root cutover is authorized. Continue using the existing PKM workflows; no action is needed now. Reloading this window does not complete the migration: the current host and its writers are not yet qualified for a coordinated handoff, and writer isolation, workflow parity and recovery remain unqualified. Do not terminate unrelated processes or delete or move your Knowledge Root or its state. Run this status command again when a supported migration becomes available." };
           } catch {
             this.current = { ...this.current, state: "unavailable", blockers: [],

@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { stageCompatibilityMcp } from "../scripts/stage-compatibility-mcp.mjs";
 import { createOverviewModel } from "./installed-chat-overview.mjs";
 
@@ -35,27 +36,42 @@ if (!process.argv.includes("--inside")) {
   const options = {};
   for (const argument of process.argv.slice(2)) {
     if (argument === "--chat-overview" && !options.overview) options.overview = true;
+    else if (argument === "--same-profile-upgrade" && !options.upgrade) options.upgrade = true;
+    else if (argument === "--bundled-gateway" && !options.gateway) options.gateway = true;
+    else if (argument === "--browser-transcript" && !options.transcript) options.transcript = true;
     else if (argument.startsWith("--candidate-vsix=") && !options.candidate)
       options.candidate = resolve(argument.slice("--candidate-vsix=".length));
     else if (argument.startsWith("--candidate-sha256=") && !options.sha256)
       options.sha256 = argument.slice("--candidate-sha256=".length);
     else throw Error(`Unknown or repeated installed acceptance argument: ${argument}`);
   }
-  if (options.overview) assert(options.candidate && /^[a-f0-9]{64}$/.test(options.sha256),
-    "Task-overview acceptance requires an explicitly pinned candidate VSIX.");
-  else assert(!options.candidate && !options.sha256, "Candidate pins require --chat-overview.");
+  assert(!(options.overview && options.upgrade));
+  assert(!options.gateway || options.upgrade);
+  assert(!options.transcript || options.gateway);
+  if (options.overview || options.upgrade) assert(options.candidate && /^[a-f0-9]{64}$/.test(options.sha256),
+    "Installed acceptance requires an explicitly pinned candidate VSIX.");
+  else assert(!options.candidate && !options.sha256, "Candidate pins require an explicit candidate acceptance mode.");
   const editor = process.env.PKM_PROFILE_CODE || "/home/yuwang8/.cache/pkm-vscode-test/vscode-linux-x64-1.143.0/code";
   const xvfb = process.env.PKM_PROFILE_XVFB || "/home/yuwang8/.cache/pkm-vscode-test/tools/xvfb/usr/bin/Xvfb";
   const browserPython = checked("python3", ["-c", "import sys,playwright;print(sys.executable)"]);
   const businessPython = process.env.PKM_TEST_PYTHON || "/home/yuwang8/pkm-envs/personal-knowledge-vscode-dev/bin/python";
-  checked("unshare", ["-Urn", process.execPath, fileURLToPath(import.meta.url), "--inside",
-    editor, xvfb, browserPython, businessPython, options.overview ? "chat-overview" : "",
-    options.candidate || "", options.sha256 || ""], { stdio: "inherit", timeout: options.overview ? 480_000 : 300_000,
+  const command = [process.execPath, fileURLToPath(import.meta.url), "--inside",
+    editor, xvfb, browserPython, businessPython, options.overview ? "chat-overview" : options.upgrade ? "same-profile-upgrade" : "",
+    options.candidate || "", options.sha256 || "", options.gateway ? "bundled-gateway" : "", options.transcript ? "browser-transcript" : ""];
+  const require = createRequire(import.meta.url);
+  const namespace = options.upgrade
+    ? require("../legacy/scripts/run-next-trial-private-display.js").privateNamespaceArgs(command)
+    : ["-Urn", ...command];
+  checked("unshare", namespace, { stdio: "inherit", timeout: options.overview || options.upgrade ? 480_000 : 300_000,
     env: { PATH: process.env.PATH || "" } });
 } else {
-  const [editor, xvfb, browserPython, businessPython, overviewMarker, candidateVsix, candidateSha256] = process.argv.slice(3);
+  const [editor, xvfb, browserPython, businessPython, overviewMarker, candidateVsix, candidateSha256, gatewayMarker, transcriptMarker] = process.argv.slice(3);
   const overview = overviewMarker === "chat-overview";
-  if (overviewMarker) assert(overview && candidateVsix && /^[a-f0-9]{64}$/.test(candidateSha256));
+  const upgrade = overviewMarker === "same-profile-upgrade";
+  const bundledGateway = upgrade && gatewayMarker === "bundled-gateway";
+  const transcript = bundledGateway && transcriptMarker === "browser-transcript";
+  if (upgrade) assert((await readFile("/proc/1/cmdline", "utf8")).split("\0").includes("pkm-private-init"));
+  if (overviewMarker) assert((overview || upgrade) && candidateVsix && /^[a-f0-9]{64}$/.test(candidateSha256));
   const vsix = overview ? candidateVsix : shippedVsix;
   process.umask(0o077);
   const base = resolve(project, `.pkm-test-evidence/installed-chat-${randomUUID()}`);
@@ -67,9 +83,9 @@ if (!process.argv.includes("--inside")) {
   const overviewModel = overview ? createOverviewModel({ base }) : undefined;
   try {
     assert.equal(createHash("sha256").update(await readFile(shippedVsix)).digest("hex"), shippedSha);
-    if (overview) {
-      assert.equal(await realpath(vsix), resolve(vsix));
-      assert.equal(createHash("sha256").update(await readFile(vsix)).digest("hex"), candidateSha256);
+    if (overview || upgrade) {
+      assert.equal(await realpath(candidateVsix), resolve(candidateVsix));
+      assert.equal(createHash("sha256").update(await readFile(candidateVsix)).digest("hex"), candidateSha256);
     }
     for (const directory of ["h", "u/User", "x", "driver", "scratch/runtime", "offline-deps", "library/notes",
       "library/skills", "library/papers", "business-python/bin"])
@@ -77,7 +93,9 @@ if (!process.argv.includes("--inside")) {
     process.chdir(base);
     const short = `/proc/${process.pid}/cwd`;
     const env = { PATH: process.env.PATH || "", HOME: join(base, "h"), USERPROFILE: join(base, "h"),
-      TMPDIR: join(base, "scratch"), TMP: join(base, "scratch"), TEMP: join(base, "scratch"),
+      TMPDIR: upgrade ? "/proc/self/cwd/scratch" : join(base, "scratch"),
+      TMP: upgrade ? "/proc/self/cwd/scratch" : join(base, "scratch"),
+      TEMP: upgrade ? "/proc/self/cwd/scratch" : join(base, "scratch"),
       XDG_CONFIG_HOME: `${short}/h/config`, XDG_DATA_HOME: `${short}/h/data`,
       XDG_CACHE_HOME: `${short}/h/cache`, XDG_RUNTIME_DIR: `${short}/scratch/runtime`,
       HTTP_PROXY: "http://127.0.0.1:1", HTTPS_PROXY: "http://127.0.0.1:1", ALL_PROXY: "http://127.0.0.1:1",
@@ -101,7 +119,8 @@ if (!process.argv.includes("--inside")) {
     checked("git", ["init", "--quiet", library], { env });
     const runtime = join(base, "business-python");
     await writeFile(join(runtime, "bin/python"),
-      `#!/bin/sh\nexec ${JSON.stringify(businessPython)} "$@"\n`, { mode: 0o700 });
+      `#!/bin/sh\n${upgrade ? 'if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then exit 90; fi\n' : ""}export PYTHONPATH=${JSON.stringify(env.PYTHONPATH)}\nexec ${JSON.stringify(businessPython)} "$@"\n`,
+      { mode: 0o700 });
     checked(join(runtime, "bin/python"), ["-c", "import fastmcp,prompt_manager,websockets,adaptive_skill_retrieval,cryptography"], { env });
     // Only preprovisioning uses the existing configuration facade. The acceptance below
     // activates the unchanged CLI-installed extension with the real VS Code API.
@@ -120,6 +139,8 @@ extensionPath:${JSON.stringify(installed)},globalStorageUri:{fsPath:${JSON.strin
     const stage = await stageCompatibilityMcp({ extension: installed, knowledgeRoot: library,
       managedRoot: managed, python: businessPython, destination: join(base, "gateway") });
     const target = JSON.parse(await readFile(stage.targetPath, "utf8"));
+    const noteText = bundledGateway ? "Created by genuine installed 4.0.27 PKM Chat."
+      : "Created by installed PKM Chat through the selected v5 gateway.";
     let chatGatewayProcess;
     const captureChatGateway = async () => {
       const candidates = checked("ps", ["-eo", "pid=,args="], { env }).split("\n")
@@ -153,6 +174,42 @@ extensionPath:${JSON.stringify(installed)},globalStorageUri:{fsPath:${JSON.strin
         const input = JSON.parse(Buffer.concat(chunks).toString());
         if (overviewModel && await overviewModel.handle(request, response, input)) return;
         const last = input.messages.filter(message => message.role === "user").at(-1)?.content;
+        if (typeof last === "string" && last.includes("BUNDLED_GATEWAY_READBACK")) {
+          const user = input.messages.findLastIndex(message => message.role === "user" && message.content === last);
+          const results = input.messages.slice(user + 1).filter(message => message.role === "tool");
+          await appendFile(join(base, "upgrade-milestones.jsonl"), JSON.stringify({
+            at: new Date().toISOString(), name: "chat-model-round", results: results.length,
+          }) + "\n");
+          const sequence = [["find_vscode_tools", { query: "mcp_pkm_get_note" }],
+            ["invoke_vscode_tool", { name: "mcp_pkm_get_note", input: { slug: "InstalledGatewayNote" } }]];
+          const step = sequence[results.length];
+          if (!step) {
+            assert(results.at(-1).content.includes(noteText));
+            const processArgs = checked("ps", ["-eo", "pid=,args="], { env }).split("\n")
+              .filter(line => line.includes("/uone.personal-knowledge-5.0.0/next-runtime/server/dist/compatibility-mcp-cli.js"));
+            const receipts = [];
+            for (const line of processArgs) {
+              const pid = Number(line.trim().split(/\s+/)[0]);
+              const vars = (await readFile(`/proc/${pid}/environ`, "utf8")).split("\0");
+              const arg = vars.find(item => item.startsWith("PKM_MCP_LAUNCH_ATTRIBUTION="));
+              const argv = (await readFile(`/proc/${pid}/cmdline`, "utf8")).split("\0");
+              if (!arg || !argv[1]?.endsWith("/compatibility-mcp-cli.js")) continue;
+              const source = JSON.parse(arg.slice("PKM_MCP_LAUNCH_ATTRIBUTION=".length)).source;
+              receipts.push({ source, gateway: JSON.parse(await readFile(argv[2], "utf8")).gateway });
+            }
+            const native = receipts.find(receipt => receipt.source === "vscode-provider");
+            const chat = receipts.find(receipt => receipt.source === "pkm-chat");
+            assert(native && chat);
+            assert.deepEqual(chat.gateway, native.gateway);
+            await writeFile(join(base, "upgrade-gateway-clients.json"), JSON.stringify({ native, chat }));
+          }
+          response.writeHead(200, { "content-type": "text/event-stream" });
+          response.end(`data: ${JSON.stringify({ choices: [{ delta: step ? { tool_calls: [{ index: 0,
+            id: `bundled-call-${results.length}`, type: "function", function: { name: step[0], arguments: JSON.stringify(step[1]) } }] }
+            : { content: "BUNDLED_GATEWAY_ACCEPTED" }, finish_reason: null }] })}\n\n` +
+            `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: step ? "tool_calls" : "stop" }] })}\n\ndata: [DONE]\n\n`);
+          return;
+        }
         requests.push({ tools: input.tools?.map(tool => tool.function.name),
           toolResults: input.messages.filter(message => message.role === "tool") });
         if (typeof last === "string" && last.includes("CANCEL_INSTALLED")) {
@@ -165,21 +222,21 @@ extensionPath:${JSON.stringify(installed)},globalStorageUri:{fsPath:${JSON.strin
         const sequence = [
           ["find_vscode_tools", { query: "mcp_pkm_add_note" }],
           ["invoke_vscode_tool", { name: "mcp_pkm_add_note", input: { title: "InstalledGatewayNote",
-            content: "Created by installed PKM Chat through the selected v5 gateway." } }],
+            content: noteText } }],
           ["record_harness", { kind: "validation", stepId: "installed-readback", status: "start",
             summary: "Read the original Note after the approved installed Chat write" }],
           ["find_vscode_tools", { query: "mcp_pkm_get_note" }],
           ["invoke_vscode_tool", { name: "mcp_pkm_get_note", input: { slug: "InstalledGatewayNote" } }],
           ["record_harness", { kind: "validation", stepId: "installed-readback", status: "complete",
             summary: "Installed Note readback confirms the requested content", evidenceCallIds: ["installed-call-4"] }],
-        ];
+        ].slice(0, bundledGateway ? 2 : undefined);
         const results = requests.at(-1).toolResults, count = results.length, step = sequence[count];
         if (count === 2) assert(!JSON.parse(results.at(-1).content).error,
           `Actual approved Note write failed: ${results.at(-1).content.slice(0, 2000)}`);
-        if (count === 2) await captureChatGateway();
+        if (count === 2 && !bundledGateway) await captureChatGateway();
         if (step) assert(input.tools.some(tool => tool.function.name === step[0]), `Missing actual Chat tool ${step[0]}`);
-        if (count === 5) assert.match(results.at(-1).content, /Created by installed PKM Chat through the selected v5 gateway/);
-        if (!step) assert.match(results.at(-1).content, /"ok":true/);
+        if (count === 5) assert(results.at(-1).content.includes(noteText));
+        if (!step && !bundledGateway) assert.match(results.at(-1).content, /"ok":true/);
         response.writeHead(200, { "content-type": "text/event-stream" });
         response.end(`data: ${JSON.stringify({ choices: [{ delta: step ? { tool_calls: [{ index: 0,
           id: `installed-call-${count}`, type: "function", function: { name: step[0], arguments: JSON.stringify(step[1]) } }] }
@@ -224,7 +281,7 @@ exports.run=async()=>{
   let actualContext;
   main.activate=async function(context,...args){
    actualContext=context;assert.equal(context.extensionMode,vscode.ExtensionMode.Production);
-   await context.globalState.update("pkm.mcpHotSwitchEnabled.v1",true);
+   ${bundledGateway ? "" : 'await context.globalState.update("pkm.mcpHotSwitchEnabled.v1",true);'}
    await context.secrets.store("personalKnowledge.aiApiKey","isolated-installed-provider");
    return activate.call(this,context,...args);
   };
@@ -233,13 +290,17 @@ exports.run=async()=>{
   assert(actualContext&&extension.isActive);
   assert(fs.realpathSync(actualContext.globalStorageUri.fsPath).startsWith(path.join(base,"u")));
   progress("starting-native-managed");
-  await vscode.commands.executeCommand("personalKnowledge.startPkmMcp");
-  progress("selecting-v5-gateway");
+  const original=await vscode.commands.executeCommand("personalKnowledge.startPkmMcp");
+  ${bundledGateway ? `
+  const native=await vscode.lm.invokeTool("mcp_pkm_check_version",{input:{}},undefined);
+  const live=JSON.parse(native.content.map(part=>part.value??"").join(""));
+  fs.writeFileSync(path.join(base,"native.json"),JSON.stringify({original:{runtime:live}}));
+  ` : `progress("selecting-v5-gateway");
   const switched=await vscode.commands.executeCommand("personalKnowledge.switchMcpRuntime",${JSON.stringify(stage.targetPath)});
   assert.equal(switched.runtime.version,"0.1.0");
   const verified=await vscode.commands.executeCommand("personalKnowledge.verifyMcpRuntime");
   assert.equal(verified.runtime.version,"0.1.0");
-  fs.writeFileSync(path.join(base,"native.json"),JSON.stringify({switched,verified}));
+  fs.writeFileSync(path.join(base,"native.json"),JSON.stringify({original,switched,verified}));`}
   progress("opening-installed-chat");
   await vscode.commands.executeCommand("personalKnowledge.openApiChat");
   fs.writeFileSync(path.join(base,"chat-ready.json"),'{"ready":true}');
@@ -248,14 +309,21 @@ exports.run=async()=>{
   while(!fs.existsSync(path.join(base,"browser-done.json"))&&Date.now()<deadline)await new Promise(r=>setTimeout(r,100));
   assert(fs.existsSync(path.join(base,"browser-done.json")),"Installed browser acceptance did not finish");
   const note=fs.readFileSync(path.join(library,"notes/InstalledGatewayNote.md"),"utf8");
-  assert.match(note,/Created by installed PKM Chat through the selected v5 gateway/);
-  const sessionDirectory=path.join(library,".pkm/state/agent-sessions");
+  assert(note.includes(${JSON.stringify(noteText)}));
+  ${bundledGateway ? `
+  const chatRoot=path.join(library,".pkm/state/api-chats");
+  const records=fs.readdirSync(chatRoot,{recursive:true}).filter(n=>n.endsWith(".json"))
+    .map(n=>JSON.parse(fs.readFileSync(path.join(chatRoot,n),"utf8")));
+  const session={nativeChat:records.find(r=>JSON.stringify(r).includes("INSTALLED_GATEWAY_ACCEPTED"))};
+  assert(session.nativeChat?.id,"Installed predecessor must persist its Chat");
+  const snapshot=undefined;
+  ` : `const sessionDirectory=path.join(library,".pkm/state/agent-sessions");
   const records=fs.readdirSync(sessionDirectory).filter(n=>n.endsWith(".json")).map(n=>JSON.parse(fs.readFileSync(path.join(sessionDirectory,n),"utf8")));
   const session=records.find(r=>JSON.stringify(r).includes("INSTALLED_GATEWAY_ACCEPTED"));
   assert(session,"Installed Chat must have persisted its real native Session");
   const snapshot=await vscode.commands.executeCommand("personalKnowledge.readNativeHarness","snapshot",{sessionId:session.sessionId});
   assert(snapshot&&snapshot.origin==="pkm-native");
-  assert(JSON.stringify(snapshot).includes("installed-call-4"));
+  assert(JSON.stringify(snapshot).includes("installed-call-4"));`}
   const overviewEvidence=${overview
     ? "await overviewApi.runInstalledOverviewHost({base,installed,library,vscode,context:actualContext,observation:overviewObservation,requireInstalled:require})"
     : "undefined"};
@@ -265,6 +333,8 @@ exports.run=async()=>{
    ...(overviewEvidence?{taskOverview:overviewEvidence}:{})
   }));
   progress("complete");
+  ${upgrade ? `while(!fs.existsSync(path.join(base,"close-predecessor")))await new Promise(r=>setTimeout(r,200));
+  await vscode.commands.executeCommand("workbench.action.closeWindow");` : ""}
  }catch(error){fs.writeFileSync(path.join(base,"host-failure.json"),JSON.stringify({message:error.message,stack:error.stack}));throw error}
  finally{overviewObservation?.restore()}
 };
@@ -289,15 +359,15 @@ exports.run=async()=>{
     const port = portSocket.address().port;
     await new Promise(done => portSocket.close(done));
     await writeFile(join(base, "fixture.json"), JSON.stringify({ base, port }));
-    app = spawn(editor, [library, "--no-sandbox", "--new-window", `--user-data-dir=${short}/u`,
+    const launchArgs = [library, "--no-sandbox", "--new-window", `--user-data-dir=${short}/u`,
       `--extensions-dir=${base}/x`, `--extensionDevelopmentPath=${short}/driver`,
       "--disable-gpu", "--disable-dev-shm-usage",
       "--disable-telemetry", "--disable-updates", "--skip-welcome", "--skip-release-notes",
-      "--password-store=basic", `--remote-debugging-port=${port}`, "--remote-debugging-address=127.0.0.1"],
-    { env: appEnv, stdio: ["ignore", "pipe", "pipe"] });
+      "--password-store=basic", `--remote-debugging-port=${port}`, "--remote-debugging-address=127.0.0.1"];
+    app = spawn(editor, launchArgs, { env: appEnv, stdio: ["ignore", "pipe", "pipe"] });
     for (const stream of [app.stdout, app.stderr]) stream.on("data", bytes => logs.push(bytes.toString()));
     browser = spawn(browserPython, ["-B", join(here, overview ? "installed-chat-overview-browser.py"
-      : "installed-compatibility-chat.py"), join(base, "fixture.json")],
+      : "installed-compatibility-chat.py"), join(base, "fixture.json"), ...(bundledGateway ? ["--populate"] : [])],
       { env: appEnv, stdio: ["ignore", "pipe", "pipe"] });
     let browserOutput = "";
     for (const stream of [browser.stdout, browser.stderr]) stream.on("data", bytes => {
@@ -318,30 +388,128 @@ exports.run=async()=>{
       assert.deepEqual(overviewProvider.failures, []);
       assert.deepEqual(overviewProvider.pending, []);
     }
-    assert(cancelled, "Actual Stop must abort the deterministic HTTP provider");
+    if (!bundledGateway) assert(cancelled, "Actual Stop must abort the deterministic HTTP provider");
     assert(!(await readdir(library)).includes("core.sqlite"));
     const browserEvidence = await file(join(base, "browser-done.json"));
-    assert(browserEvidence.namedWriteApproval && browserEvidence.harnessCheck && browserEvidence.harnessEnd && browserEvidence.cancelled);
+    assert(browserEvidence.namedWriteApproval);
+    if (!bundledGateway) assert(browserEvidence.harnessCheck && browserEvidence.harnessEnd && browserEvidence.cancelled);
     const hostEvidence = await file(join(base, "host-evidence.json"));
-    if (chatGatewayProcess.chatId)
+    if (chatGatewayProcess?.chatId)
       assert.equal(hostEvidence.nativeSession.nativeChat.id, chatGatewayProcess.chatId);
     const accepted = hostEvidence.nativeSession.nativeChat.messages.find(message => message.content?.includes("INSTALLED_GATEWAY_ACCEPTED"));
     assert.equal(accepted.status, "complete");
     assert(accepted.toolCalls.every(call => call.status === "complete"));
-    assert.deepEqual(accepted.harnessReports.at(-1).evidenceCallIds, ["installed-call-4"]);
-    assert.equal(hostEvidence.nativeSession.nativeChat.messages.at(-1).status, "cancelled");
+    if (!bundledGateway) {
+      assert.deepEqual(accepted.harnessReports.at(-1).evidenceCallIds, ["installed-call-4"]);
+      assert.equal(hostEvidence.nativeSession.nativeChat.messages.at(-1).status, "cancelled");
+    }
     assert.notEqual(spawnSync("git", ["-C", library, "rev-parse", "--verify", "HEAD"],
       { env, stdio: "ignore" }).status, 0, "The synthetic library must remain commit-free");
+    let upgradeEvidence;
+    if (upgrade) {
+      const { original, verified } = await file(join(base, "native.json"));
+      assert.match(original.runtime.runtime.runtimeBuild, /^[0-9a-f]{64}$/);
+      if (!bundledGateway) assert.equal(verified.runtime.runtime.runtimeBuild, target.runtimeBuild);
+      const settings = join(base, "u/User/settings.json");
+      const [oldRoot, oldSettings] = await Promise.all([stat(library), readFile(settings, "utf8")]);
+      await writeFile(join(base, "close-predecessor"), "");
+      const shutdownDeadline = Date.now() + 40_000;
+      while (app.exitCode === null && app.signalCode === null && Date.now() < shutdownDeadline) await wait(100);
+      assert.equal(app.exitCode, 0, "Predecessor must close normally before installation.");
+      const oldClients = () => checked("ps", ["-eo", "args="], { env }).split("\n")
+        .some(line => line.includes(target.entry.path) || line.includes(join(managed, "server.py")));
+      while (oldClients() && Date.now() < shutdownDeadline) await wait(100);
+      assert(!oldClients(),
+        "A fixture gateway or Original MCP is still alive; do not install the candidate.");
+      await writeFile(join(base, "driver/accept.cjs"),
+        await readFile(join(here, "installed-compatible-upgrade-host.cjs"), "utf8"));
+      checked(cli, ["--no-sandbox", `--user-data-dir=${base}/u`, `--extensions-dir=${base}/x`,
+        "--install-extension", candidateVsix, "--force"], { env });
+      if (transcript) {
+        const installed = join(base, "x", "uone.personal-knowledge-5.0.0");
+        const manifest = await file(join(installed, "package.json"));
+        assert.deepEqual([manifest.publisher, manifest.name, manifest.version], ["Uone", "personal-knowledge", "5.0.0"]);
+        // The restored sidebar can activate the installed extension before the driver.
+        // Only capture the actual shell return; leave authority, storage and consent unmodified.
+        const shell = join(installed, "dist/chat/api-chat-shell.js");
+        const original = await readFile(shell, "utf8");
+        await writeFile(shell, original + `
+const fixtureRegister = exports.registerApiChatShell;
+exports.registerApiChatShell = (...args) => {
+    const shell = fixtureRegister(...args);
+    if (process.env.PKM_UPGRADE_TRANSCRIPT === "1") globalThis[Symbol.for("pkm.test.captureOriginalChatShell")] = shell;
+    return shell;
+};
+`);
+      }
+      app = spawn(editor, launchArgs, {
+        env: { ...appEnv, PKM_UPGRADE_BASE: base, PKM_UPGRADE_CHAT: hostEvidence.nativeSession.nativeChat.id,
+          PKM_UPGRADE_GATEWAY: bundledGateway ? "1" : "0", PKM_UPGRADE_TRANSCRIPT: transcript ? "1" : "0" },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      for (const stream of [app.stdout, app.stderr]) stream.on("data", bytes => logs.push(bytes.toString()));
+      if (transcript) {
+        browser = spawn(browserPython, ["-B", join(here, "installed-compatibility-chat.py"), join(base, "fixture.json"), "--transcript-consent"],
+          { env: appEnv, stdio: "inherit" });
+      }
+      const candidateDeadline = Date.now() + 100_000;
+      while (!(upgradeEvidence = await file(join(base, "upgrade-host.json")))) {
+        const failure = await file(join(base, "upgrade-failure.json"));
+        if (failure) throw Error(`Installed upgrade host: ${JSON.stringify(failure)}`);
+        if (app.exitCode !== null || app.signalCode !== null || Date.now() > candidateDeadline)
+          throw Error("Candidate did not verify the live native pkm connection.");
+        await wait(100);
+      }
+      assert.notEqual(upgradeEvidence.liveBuild, original.runtime.runtime.runtimeBuild);
+      if (!bundledGateway) assert.notEqual(upgradeEvidence.liveBuild, target.runtimeBuild);
+      if (bundledGateway) {
+        const clients = await file(join(base, "upgrade-gateway-clients.json"));
+        assert.deepEqual(clients.chat.gateway, { generation: upgradeEvidence.generation, runtimeBuild: upgradeEvidence.liveBuild });
+        upgradeEvidence.clients = clients;
+        if (transcript) upgradeEvidence.transcript = await file(join(base, "upgrade-transcript.json"));
+        assert.equal(await readFile(join(library, "notes/InstalledGatewayNote.md"), "utf8"), hostEvidence.originalNote);
+        assert.deepEqual(errors, []);
+        await writeFile(join(base, "close-candidate"), "");
+        const closeDeadline = Date.now() + 40_000;
+        while (app.exitCode === null && app.signalCode === null && Date.now() < closeDeadline) await wait(100);
+        assert.equal(app.exitCode, 0, "Candidate must close normally before restart.");
+        const gatewayAlive = () => checked("ps", ["-eo", "args="], { env }).split("\n").some(line =>
+          line.includes(join(base, "x")) && line.includes("/compatibility-mcp-cli.js"));
+        while ((oldClients() || gatewayAlive()) && Date.now() < closeDeadline) await wait(100);
+        assert(!oldClients() && !gatewayAlive(), "Prior stdio clients must exit before restart.");
+        app = spawn(editor, launchArgs, { env: { ...appEnv, PKM_UPGRADE_BASE: base,
+          PKM_UPGRADE_GATEWAY: "1", PKM_UPGRADE_RESTART: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+        for (const stream of [app.stdout, app.stderr]) stream.on("data", bytes => logs.push(bytes.toString()));
+        const restartDeadline = Date.now() + 60_000;
+        while (!(upgradeEvidence.restart = await file(join(base, "upgrade-restart.json")))) {
+          const failure = await file(join(base, "upgrade-failure.json"));
+          if (failure) throw Error(`Installed restart: ${JSON.stringify(failure)}`);
+          assert(Date.now() < restartDeadline && app.exitCode === null, "Candidate restart did not verify native Note read.");
+          await wait(100);
+        }
+        assert.equal(upgradeEvidence.restart.build, upgradeEvidence.liveBuild);
+        assert.notEqual(upgradeEvidence.restart.instance, upgradeEvidence.instance);
+        assert.notEqual(upgradeEvidence.restart.generation, upgradeEvidence.generation);
+      }
+      assert.equal(await readFile(settings, "utf8"), oldSettings);
+      const newRoot = await stat(library);
+      assert.deepEqual([newRoot.dev, newRoot.ino], [oldRoot.dev, oldRoot.ino]);
+      upgradeEvidence = { ...upgradeEvidence, predecessorBuild: original.runtime.runtime.runtimeBuild,
+        predecessorGatewayBuild: bundledGateway ? null : target.runtimeBuild,
+        candidateVsixSha256: candidateSha256, sameRootAndSettings: true };
+    }
     const report = { passed: true, shippedVsixSha256: shippedSha, shippedVersion: manifest.version,
       extensionInstallation: overview ? "VS Code CLI installed explicitly pinned controlled candidate; Production activation"
         : "VS Code CLI installed unchanged shipped VSIX; Production activation",
       ...(overview ? { candidateVsixSha256: candidateSha256, taskOverview: hostEvidence.taskOverview,
         overviewProvider } : {}),
+      ...(upgrade ? { upgrade: upgradeEvidence } : {}),
       execution: "real installed VS Code/Electron Chromium webviews, native MCP, Chat IPC and original business adapter",
       model: "deterministic loopback OpenAI-compatible SSE fixture, synthetic isolated SecretStorage token",
       isolation: "new user/network namespace, loopback only, isolated HOME/user-data/extensions/library",
       preparatoryFacade: "managed MCP manifest preprovisioning only; not the acceptance host",
-      gatewayRuntimeBuild: target.runtimeBuild, actualChatGatewayProcess: chatGatewayProcess,
+      gatewayRuntimeBuild: bundledGateway ? upgradeEvidence.liveBuild : target.runtimeBuild,
+      actualChatGatewayProcess: chatGatewayProcess,
       storageMigrated: false, liveProfileTouched: false, fixtureGitCommits: 0,
       providerAbortedByStop: cancelled, browser: browserEvidence };
     await writeFile(join(base, "accepted.json"), JSON.stringify(report, null, 2));

@@ -1,0 +1,53 @@
+:root {
+  color-scheme: dark;
+  --vscode-font-family: "Segoe UI", sans-serif;
+  --vscode-editor-font-family: ui-monospace, monospace;
+  --vscode-foreground: #e5e9e7;
+  --vscode-descriptionForeground: #abb9b4;
+  --vscode-editor-background: #172321;
+  --vscode-editor-foreground: #e5e9e7;
+  --vscode-sideBar-background: #1d2b28;
+  --vscode-panel-border: #42605a;
+  --vscode-focusBorder: #83cbb6;
+  --vscode-textLink-foreground: #a4d8c8;
+  --vscode-input-background: #101c19;
+  --vscode-input-foreground: #e5e9e7;
+  --vscode-input-border: #42605a;
+  --vscode-button-background: #245c4e;
+  --vscode-button-foreground: #fff;
+  --vscode-button-hoverBackground: #286d5c;
+  --vscode-list-hoverBackground: #29403b;
+  --vscode-list-activeSelectionBackground: #31544b;
+  --vscode-list-activeSelectionForeground: #fff;
+}
+.pkm-sign-in { margin: 0; min-height: 100vh; display: grid; align-items: center; padding: 0 8vw; background: #172321; color: #e5e9e7; font: 1rem/1.5 Georgia, serif; }
+.pkm-sign-in main { max-width: 29rem; border-inline-start: 2px solid #83cbb6; padding-inline-start: clamp(1.25rem, 5vw, 3rem); }
+.pkm-sign-in h1 { margin: 0; font-size: clamp(2.5rem, 7vw, 4.5rem); line-height: 1; font-weight: normal; }
+.pkm-kicker { color: #a4d8c8; font: .76rem ui-monospace, monospace; letter-spacing: .14em; }
+.pkm-sign-in form { margin-top: 2rem; display: grid; gap: .75rem; }
+.pkm-sign-in input[type=password], .pkm-sign-in button { border: 1px solid #83cbb6; border-radius: .2rem; padding: .6rem .8rem; font: inherit; }
+.pkm-sign-in button { width: fit-content; background: #a4d8c8; color: #172321; cursor: pointer; }
+.pkm-sign-in [role=alert] { margin: 0; min-height: 1.5em; color: #ffc9ac; }
+#browser-release-status { padding: .2rem .55rem; margin-inline-start: auto; }
+.pkm-chat { margin: 0; font: 14px/1.5 var(--vscode-font-family); background: var(--vscode-editor-background); color: var(--vscode-foreground); }
+.pkm-chat-bar { display: flex; padding: .75rem 1rem; gap: 1.25rem; align-items: baseline; flex-wrap: wrap; border-bottom: 1px solid var(--vscode-panel-border); }
+.pkm-chat a { color: var(--vscode-textLink-foreground); }
+#chat-review { margin-inline-start: auto; color: var(--vscode-descriptionForeground); }
+.pkm-chat main { display: grid; grid-template-columns: minmax(9rem, 17rem) minmax(0, 1fr); min-height: calc(100dvh - 3rem); }
+.pkm-chat aside { background: var(--vscode-sideBar-background); padding: 1rem; }
+.pkm-chat h2 { font-size: .85rem; text-transform: uppercase; letter-spacing: .12em; }
+.pkm-chat-thread { padding: 1rem clamp(.8rem, 4vw, 3rem); min-width: 0; display: flex; flex-direction: column; max-width: 64rem; }
+.pkm-chat h1 { margin: 0; font-size: 1.4rem; overflow-wrap: anywhere; }
+.pkm-chat button { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: 1px solid var(--vscode-input-border); padding: .3rem .6rem; font: inherit; }
+.pkm-chat button:not(:disabled) { cursor: pointer; }
+.pkm-chat button:disabled { opacity: .5; }
+#chat-list { display: grid; gap: .3rem; padding: .75rem 0; }
+#chat-list button { background: transparent; text-align: start; overflow-wrap: anywhere; }
+#chat-list button[aria-current=true] { background: var(--vscode-list-activeSelectionBackground); }
+#chat-state { color: var(--vscode-descriptionForeground); }
+#chat-transcript { flex: 1; min-height: 10rem; max-height: 62dvh; overflow-y: auto; }
+#chat-transcript article { border-inline-start: 2px solid var(--vscode-panel-border); padding: .5rem .75rem; margin: .75rem 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+#chat-transcript p { margin: .2rem 0; }
+#chat-composer { display: grid; gap: .4rem; margin-top: 1rem; }
+#chat-input { resize: vertical; font: inherit; color: inherit; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); padding: .5rem; }
+@media (max-width: 38rem) { .pkm-chat main { grid-template-columns: 1fr; } #chat-list { max-height: 8rem; overflow: auto; } }

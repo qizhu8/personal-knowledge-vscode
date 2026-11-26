@@ -5,11 +5,12 @@ import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult } fr
 import { sharedManagedRequest, type SharedManagedBinding } from "./shared-managed-client.js";
 
 /** Stable front door: existing MCP sessions survive a manager-owned compatible backend handoff. */
-export async function startSharedManagedRelay(binding: SharedManagedBinding) {
+export async function startSharedManagedRelay(binding: SharedManagedBinding, serverName = "pkm-v5-shared-isolated") {
   const clientId = randomUUID();
-  await sharedManagedRequest(binding, "/shared/enroll", { clientId });
-  const server = new Server({ name: "pkm-v5-shared-isolated", version: "0.1.0" },
-    { capabilities: { tools: {} } });
+  const enrollment = await sharedManagedRequest(binding, "/shared/enroll", { clientId });
+  const server = new Server({ name: serverName, version: "0.1.0" },
+    { capabilities: { tools: {} }, ...(serverName === "pkm" && typeof enrollment.instructions === "string"
+      ? { instructions: enrollment.instructions } : {}) });
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const result = await sharedManagedRequest(binding, "/shared/tools", { clientId });
     return { tools: result.tools };

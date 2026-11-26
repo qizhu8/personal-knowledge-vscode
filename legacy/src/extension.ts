@@ -155,7 +155,8 @@ import {
   resolveMcpPython, validateMcpPython, writeMcpFeatureDomainConfig, writeActionWorkspaceConfig, trashKnowledgeFileViaMcp,
 } from "./mcp/mcp";
 import { nativeMcpCwdUri } from "./mcp/mcp-native-location";
-import { configureManagedMcpAttribution } from "./mcp/mcp-attribution";
+import { createBundledCompatibilityRoute } from "./mcp/bundled-compatibility-route";
+import { configureManagedMcpAttribution, managedMcpAttributionEnv } from "./mcp/mcp-attribution";
 import { readAccountMcpBinding, writeAccountMcpBinding, accountKnowledgeSecurity } from "./mcp/mcp-account-binding";
 import { assertNoManualPkm, copilotMcpConfigPath, copilotMcpDefinition, inspectCopilotMcpRegistration, parseNativeMcpConfiguration, registerCopilotMcp, inspectVscodeMcpRegistration, registerVscodeMcp } from "./mcp/mcp-client-registration";
 import { scheduleRestoredWebviewRecovery } from "./ui/webview-restoration";
@@ -4583,12 +4584,19 @@ async function registerCopilotMcpUserConfig(): Promise<boolean> {
   return true;
 }
 
-function registerNativeMcpProvider(context: vscode.ExtensionContext): void {
+function registerNativeMcpProvider(context: vscode.ExtensionContext, route?: ReturnType<typeof createBundledCompatibilityRoute>): void {
   const api = vscode as any;
   if (typeof api.lm?.registerMcpServerDefinitionProvider !== "function" || typeof api.McpStdioServerDefinition !== "function") return;
   const changed = new vscode.EventEmitter<void>();
   _mcpDefinitionsChanged = changed;
   const createDefinition = () => {
+    if (route) {
+      const selected = route.launch();
+      const env = managedMcpAttributionEnv({ ELECTRON_RUN_AS_NODE: "1" });
+      const definition = new api.McpStdioServerDefinition("pkm", selected.command, selected.args, env, selected.runtimeBuild);
+      definition.cwd = nativeMcpCwdUri(context.extensionUri, selected.cwd, vscode.Uri.file);
+      return definition;
+    }
     const data = mcpServerDefinitionData(true);
     const definition = new api.McpStdioServerDefinition(data.label, data.command, data.args, data.env || {}, data.version);
     definition.cwd = nativeMcpCwdUri(context.extensionUri, data.cwd, vscode.Uri.file);
@@ -4602,7 +4610,7 @@ function registerNativeMcpProvider(context: vscode.ExtensionContext): void {
         return [createDefinition()];
       } catch (error) {
         log.warn(`PKM MCP definition unavailable: ${error instanceof Error ? error.message : String(error)}`);
-        void offerPkmMcpConfiguration(context, error instanceof Error ? error.message : String(error)).catch(error => log.warn(`PKM MCP configuration failed: ${error instanceof Error ? error.message : String(error)}`));
+        if (!route) void offerPkmMcpConfiguration(context, error instanceof Error ? error.message : String(error)).catch(error => log.warn(`PKM MCP configuration failed: ${error instanceof Error ? error.message : String(error)}`));
         return [];
       }
     },
@@ -4617,6 +4625,10 @@ function registerNativeMcpProvider(context: vscode.ExtensionContext): void {
   context.subscriptions.push(changed, api.lm.registerMcpServerDefinitionProvider("personalKnowledge.pkm", provider));
   context.subscriptions.push(registerHostWriterCommand("personalKnowledge.startPkmMcp", async () => {
     if (vscode.workspace.isTrusted === false) throw new Error("PKM MCP requires a trusted workspace.");
+    if (route) {
+      await maintainPkmIntegration(context);
+      route.launch();
+    }
     const runtime = mcpRuntimeStatus();
     if (!getStorePath() || !runtime.healthy || !mcpStatus().installed) throw new Error("PKM MCP is not ready. Check or repair its runtime in Config.");
     refreshMcpDefinitions();
@@ -15281,6 +15293,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   performanceStateDir = path.join(context.globalStorageUri.fsPath, "performance");
   configureCopilotSdk({ storageDir: context.globalStorageUri.fsPath });
   log.init(context);
+  const gatewayRoute = process.platform === "linux" && Number(context.extension.packageJSON.version.split(".")[0]) === 5
+    && process.env.PKM_MANAGED_WRITER_SESSION === undefined && readAccountMcpBinding()?.registrationOwner !== "manual-user"
+    ? createBundledCompatibilityRoute({
+      extensionPath: context.extensionPath, storage: context.globalStorageUri.fsPath,
+      root: getStorePath, managed: managedMcpServerDirectory, python: resolveMcpPython,
+      assertAllowed() {
+        if (!vscode.workspace.isTrusted || !getStorePath() || process.env.PKM_MANAGED_WRITER_SESSION !== undefined
+          || hasManagedRetrievalSession(getStorePath()))
+          throw new Error("Bundled compatibility routing requires a trusted Original root outside managed writer sessions.");
+        const binding = readAccountMcpBinding();
+        if (binding && (binding.registrationOwner !== "native-provider" || binding.knowledgeRoot !== fs.realpathSync(getStorePath())))
+          throw new Error("The existing account binding belongs to a different or manual MCP route.");
+        if (!mcpStatus().current) throw new Error("The packaged Original business runtime is not ready.");
+      },
+    }) : undefined;
+  if (gatewayRoute) context.subscriptions.push(vscode.commands.registerCommand(
+    "_personalKnowledge.pkmCompatibilityRouteStatus", () => gatewayRoute.status()));
   let apiChat: ReturnType<typeof registerApiChatShell> | undefined;
   setChatStartupTrace(message => log.startup(`${message} (activation+${Date.now() - activationStartedAt}ms)`));
   try {
@@ -15292,7 +15321,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (integrationMaintenanceState !== "ready") {
           throw new Error(`PKM MCP preparation ${integrationMaintenanceState}: ${integrationMaintenanceError}`);
         }
-      });
+      }, gatewayRoute?.launch);
       chat.setHostWriterObserver((work, cancellation) => cancellation
         ? observeHostChatCancellation(work) : observeHostWriter("chat", work));
       return chat;
@@ -15945,7 +15974,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         .catch(error => log.warn(`Subscription host update failed: ${(error as Error).message}`));
     } else sharedMarket.startBackground();
   } catch (error: any) { log.warn(`subscription init failed: ${error?.message || error}`); }
-  registerNativeMcpProvider(context);
+  registerNativeMcpProvider(context, gatewayRoute);
   if (process.env.PKM_EXPERIMENTAL_NEXT_MCP_WORKSPACE !== undefined
     && typeof (vscode as any).lm?.registerMcpServerDefinitionProvider === "function"
     && typeof (vscode as any).McpStdioServerDefinition === "function") {
