@@ -252,7 +252,7 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
   try {
     for (const role of roles) {
       custody.assertHeld();
-      const adapter = await connectCompatibilityMcp(config, { attribution: attributions[role] });
+      const adapter = await connectCompatibilityMcp(config, { attribution: attributions[role], custodyGrant: custody.launchGrant });
       originals.set(role, adapter);
       adapter.onFailure(() => { accepting = false; });
       if (!isDeepStrictEqual((adapter.originalVersion.runtime as Json).attribution, attributions[role]))

@@ -47,7 +47,7 @@ const contractSchema = z.object({
 });
 
 /** One original business adapter, not a second database/storage owner. */
-export async function connectCompatibilityMcp(input: unknown, launch?: { attribution: Readonly<Json> }) {
+export async function connectCompatibilityMcp(input: unknown, launch?: { attribution: Readonly<Json>; custodyGrant?: string }) {
   const config = compatibilityMcpConfiguration.parse(input);
   for (const root of [config.knowledgeRoot, config.managedRoot]) {
     if (realpathSync(root) !== root || !lstatSync(root).isDirectory())
@@ -64,6 +64,7 @@ export async function connectCompatibilityMcp(input: unknown, launch?: { attribu
     cwd: config.knowledgeRoot,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", PKM_NODE_EXECUTABLE: config.node.path,
       PKM_CAPABILITY_PROFILE: "compact", PYTHONDONTWRITEBYTECODE: "1",
+      PKM_COMPATIBILITY_LAUNCH_GRANT: launch?.custodyGrant ?? "",
       ...(launch ? { PKM_MCP_LAUNCH_ATTRIBUTION: JSON.stringify(launch.attribution) } : {}) },
     stderr: "inherit",
   });

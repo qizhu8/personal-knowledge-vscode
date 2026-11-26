@@ -445,7 +445,8 @@ test("actual generated unified FastMCP performs Skill writes from owned runtime 
   fs.cpSync(path.join(repository, "resources"), path.join(extension, "resources"), { recursive: true });
   fs.cpSync(path.join(repository, "modules/pkm-memory-engine/src"), path.join(extension, "modules/pkm-memory-engine/src"), { recursive: true });
   const store = path.join(root, "store");
-  fs.mkdirSync(store);
+  fs.mkdirSync(store, { mode: 0o755 });
+  fs.mkdirSync(path.join(store, ".pkm", "state"), { recursive: true, mode: 0o700 });
   const configuration = { mcpServerPath: managed, mcpRuntimePath: require("./dev-paths").testVenv };
   const mcp = sourceModule("src/mcp/mcp.ts", {
     vscode: { workspace: { getConfiguration: () => ({ get: (name, fallback) => configuration[name] ?? fallback }) } },
@@ -464,8 +465,9 @@ import asyncio, json, os, pathlib, sys
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 async def main():
-    async with Client(StdioTransport(sys.executable, [sys.argv[1]], cwd=str(pathlib.Path(sys.argv[1]).parent),
-                                     env={**os.environ, "PKM_NODE_EXECUTABLE": sys.argv[2]}), timeout=5) as client:
+    transport = StdioTransport(sys.executable, [sys.argv[1]], cwd=str(pathlib.Path(sys.argv[1]).parent),
+                               env={**os.environ, "PKM_NODE_EXECUTABLE": sys.argv[2]})
+    async with Client(transport, timeout=5) as client:
         tools = [tool.name for tool in await client.list_tools()]
         version = (await client.call_tool("check_version", {})).structured_content
         runtime = (await client.call_tool("mcp_lifecycle_status", {})).structured_content
@@ -486,6 +488,7 @@ async def main():
             "operation":"memory.record.get", "version":1, "arguments":{"id":memory["id"]}})).structured_content["result"]
         assert recalled["revision"] == memory["revision"]
         print(json.dumps({"version":version,"runtime":runtime,"tools":tools,"deferred":deferred}))
+    await transport.close()
 asyncio.run(main())
 `;
   const result = JSON.parse(execFileSync(require("./dev-paths").testPython, ["-c", script, generated.serverPath, process.execPath], {

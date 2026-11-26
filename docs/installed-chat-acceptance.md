@@ -67,17 +67,24 @@ Chat/Harness acceptance gap only; it is not full migration or production cutover
 ### Installed Settings live-switch qualification
 
 Add `--bundled-gateway --settings-switch` to the same-profile command below.
-The harness enables `PKM_COMPATIBILITY_LIVE_SWITCH=1` only in the isolated
-candidate host. It opens Settings → MCP, cancels once, then approves Original
+No feature flag is set: production native routing owns the live gateway in the
+isolated Linux profile. It opens Settings → MCP, cancels once, then approves Original
 → bundled v5 → Original in the real workbench modal. It verifies both live
 relay instance IDs and the same Original library without reloading. Repair
 probes are intentionally separate. In the same window, the fixture opens the
 bundled Webview in Chromium, signs in, and searches for and opens the retained
 Note on both backends. It verifies that the previous browser grant can no
 longer read after each switch. The fixture then starts a second real
-VS Code window under the same isolated account and root, with the flag
-unset. That window must report custody unavailable and refuse native MCP
+VS Code window under the same isolated account and root.
+That window must report custody unavailable and refuse native MCP
 startup without replacing the owner's marker.
+
+On 2026-11-26 the flag-free production archive
+`3e0f78c6110b5584425a0c51fc4453f137ecc819e675b945215278febf98ab0e`
+passed this installed scenario after the genuine 4.0.27 same-profile upgrade.
+Evidence: `.pkm-test-evidence/installed-chat-845d10f8-12f0-4691-9689-8e2261161179/accepted.json`.
+Both connected relay identities and their Original connections remained stable
+through cancellation and Original → bundled v5 → Original.
 
 The diagnostic archive `f310657f…` passed this combined test, including
 the visible draining phase in both directions. The browser check here

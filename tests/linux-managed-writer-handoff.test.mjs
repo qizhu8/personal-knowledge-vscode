@@ -140,7 +140,14 @@ test("new managed launcher holds the root fence until EOF and refuses restart af
   const env = { ...process.env, HOME: project, TMPDIR: scratch, PYTHONDONTWRITEBYTECODE: "1" };
   await copyFile(join(project, "resources", "root_writer_fence.py"), join(directory, "root_writer_fence.py"));
   await writeFile(join(directory, "server.py"),
-    `import pathlib, sys\npathlib.Path(${JSON.stringify(ready)}).write_text("ready")\nsys.stdin.read()\n`);
+    `import pathlib, sys
+class Lifecycle:
+ def status(self):
+  return {"phase":"drained","acceptingNewCalls":False,"inFlight":0,"uncertainCalls":0}
+_MCP_LIFECYCLE = Lifecycle()
+pathlib.Path(${JSON.stringify(ready)}).write_text("ready")
+sys.stdin.read()
+`);
   const digest = async file => createHash("sha256").update(await readFile(file)).digest("hex");
   const manifest = {
     schema: "pkm.mcp.lifecycle/v1", generation, managedRoot: managed, version: "1.0.0",
@@ -174,6 +181,103 @@ test("new managed launcher holds the root fence until EOF and refuses restart af
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
     await exited;
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("production launcher drains before live custody, inhibits external restarts, scopes grants and quarantines crashes", {
+  skip: process.platform !== "linux", timeout: 30000,
+}, async () => {
+  const { acquireCompatibilityGatewayCustody } = await import("../dist/compatibility-gateway-custody.js");
+  const { acquireLinuxRootWriterFence: fence } = require(join(dist, "runtime/linux-root-writer-fence.js"));
+  const scratch = join(tests, `.managed-live-custody-${randomUUID()}`);
+  const root = join(scratch, "knowledge"), managed = join(scratch, "managed"), generation = randomUUID();
+  const directory = join(managed, "generations", generation), ready = join(root, "ready");
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await mkdir(root, { mode: 0o700 });
+  await chmod(root, 0o755);
+  await copyFile(join(project, "resources/root_writer_fence.py"), join(directory, "root_writer_fence.py"));
+  await writeFile(join(directory, "server.py"), `
+import os, pathlib, sys
+class Lifecycle:
+ def status(self):
+  return {"phase":"drained","acceptingNewCalls":False,"inFlight":0,"uncertainCalls":0}
+_MCP_LIFECYCLE = Lifecycle()
+assert "PKM_COMPATIBILITY_LAUNCH_GRANT" not in os.environ
+pathlib.Path(${JSON.stringify(ready)}).write_text("ready")
+sys.stdin.read()
+`);
+  const files = {};
+  for (const name of ["server.py", "root_writer_fence.py"])
+    files[name] = createHash("sha256").update(await readFile(join(directory, name))).digest("hex");
+  const manifest = { schema: "pkm.mcp.lifecycle/v1", generation, managedRoot: managed, version: "1.0.0",
+    components: { knowledge: "1.0.0", chat: "1.0.0", recipes: "1.0.0", agent_sessions: "1.0.0" }, files };
+  await writeFile(join(directory, "manifest.json"), JSON.stringify(manifest));
+  await writeFile(join(managed, "active-generation.json"), JSON.stringify({ schema: manifest.schema, generation }));
+  const launcher = join(managed, "server.py");
+  await writeFile(launcher, managedMcpLauncher(manifest, root));
+  const env = { PATH: process.env.PATH, PYTHONDONTWRITEBYTECODE: "1" }, children = [];
+  function start(grant) {
+    const child = spawn("python3", [launcher], { env: { ...env,
+      ...(grant ? { PKM_COMPATIBILITY_LAUNCH_GRANT: grant } : {}) }, stdio: ["pipe", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", bytes => { stderr += bytes; });
+    const exited = new Promise(resolve => child.once("close", code => resolve({ code, stderr })));
+    children.push({ child, exited });
+    return { child, exited };
+  }
+  const acquire = () => acquireCompatibilityGatewayCustody(root, root => {
+    const old = fence(root, "exclusive", 500);
+    try { old.assertHeld(); } finally { old.release(); }
+    return fence(root, "shared", 500);
+  });
+  let custody;
+  try {
+    const old = start();
+    assert.equal(await waitForFile(ready), "ready");
+    await assert.rejects(acquire(), /already held/);
+    old.child.stdin.end();
+    const drained = await old.exited;
+    assert.equal(drained.code, 0, drained.stderr);
+    await rm(ready);
+    await chmod(root, 0o775);
+    await assert.rejects(acquire(), /without group\/other writes/);
+    const unsafe = await start().exited;
+    assert.notEqual(unsafe.code, 0);
+    assert.match(unsafe.stderr, /without group\/other writes/);
+    await chmod(root, 0o755);
+    custody = await acquire();
+    for (const grant of [undefined, "0".repeat(64)]) {
+      const refused = await start(grant).exited;
+      assert.notEqual(refused.code, 0);
+      assert.match(refused.stderr, /inhibited.*custody.*manual\/external/i);
+      await assert.rejects(readFile(ready), { code: "ENOENT" });
+    }
+    const own = start(custody.launchGrant);
+    assert.equal(await waitForFile(ready), "ready");
+    own.child.stdin.end();
+    const closed = await own.exited;
+    assert.equal(closed.code, 0, closed.stderr);
+    const staleGrant = custody.launchGrant;
+    await custody.release(false); custody = undefined;
+    const abandoned = await start(staleGrant).exited;
+    assert.notEqual(abandoned.code, 0);
+    assert.match(abandoned.stderr, /explicit recovery/);
+    await assert.rejects(acquire(), /explicit recovery/);
+    await rm(join(root, ".pkm/state/compatibility-gateway/owner-pending.json"));
+    await rm(ready);
+    const crashed = start();
+    await waitForFile(ready);
+    crashed.child.kill("SIGKILL");
+    await crashed.exited;
+    await assert.rejects(acquire(), /explicit recovery/);
+    const restart = await start().exited;
+    assert.notEqual(restart.code, 0);
+    assert.match(restart.stderr, /unknown outcome.*recovery/);
+  } finally {
+    for (const { child } of children) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await Promise.all(children.map(({ exited }) => exited));
+    await custody?.release(false);
     await rm(scratch, { recursive: true, force: true });
   }
 });

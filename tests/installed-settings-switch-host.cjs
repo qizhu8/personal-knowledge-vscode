@@ -19,6 +19,7 @@ async function run() {
   try {
     const extension = vscode.extensions.getExtension("uone.personal-knowledge");
     assert(extension && extension.packageJSON.version === "5.0.0");
+    assert.equal(process.env.PKM_COMPATIBILITY_LIVE_SWITCH, undefined);
     await extension.activate();
     if (process.env.PKM_SWITCH_PEER === "1") {
       assert.equal(process.env.PKM_COMPATIBILITY_LIVE_SWITCH, undefined);

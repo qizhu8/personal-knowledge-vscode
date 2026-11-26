@@ -72,6 +72,29 @@ truthfully identifies the original business runtime, reports
 
 ## Native, Chat and CLI selection
 
+On same-ID v5 Linux profiles (local or Remote-SSH), the native `pkm` provider
+and PKM Chat use one live gateway without an environment opt-in. Settings → MCP
+can switch Original ↔ bundled v5 without replacing either client connection.
+Both backends continue to use Original's storage; no migration or rollback is
+performed. Admission requires the canonical owner-owned root, without
+group/other writes, bound to this profile's
+native provider. Manual/external MCP registrations are unsupported and refused;
+the switch does not rewrite external client configuration.
+
+The managed Original launcher holds a shared custody guard through its entire
+lifetime. Live ownership takes the exclusive guard, durably inhibits restarts,
+and proves that cooperating old writers released the root fence before starting
+its own adapters. Only those adapters receive a private, root/owner-scoped launch
+grant, consumed before business code runs. Unverified drains, crashed writers and
+abandoned live-owner markers require explicit recovery; they never trigger an
+Original fallback or automatic replay. Close an old cooperating client cleanly
+before retrying an admission refusal. Older uninstrumented/external launchers
+are not qualified participants.
+Read/execute access on a root (for example `0755`) does not itself prevent
+admission; its custody ancestry must also deny group/other writes when other
+users can traverse that root. Custody markers and control directories remain
+private. Admission never changes the root's permissions.
+
 The native provider and PKM Chat use the reviewed target selected in the v4 host.
 Copilot CLI has a separate user configuration at `~/.copilot/mcp-config.json`.
 Selecting the native provider does not silently rewrite that file. After explicit

@@ -15307,17 +15307,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ? createBundledCompatibilityRoute({
       extensionPath: context.extensionPath, storage: context.globalStorageUri.fsPath,
       root: getStorePath, managed: managedMcpServerDirectory, python: resolveMcpPython,
-      live: process.env.PKM_COMPATIBILITY_LIVE_SWITCH === "1" ? { assertAdmittedRoot() {
+      live: { assertAdmittedRoot() {
         const root = getStorePath(), binding = readAccountMcpBinding();
-        if (vscode.env.remoteName || binding?.registrationOwner !== "native-provider"
-          || binding.knowledgeRoot !== root || !accountKnowledgeSecurity(root).private)
-          throw new Error("Live switching requires a locally owned, private Knowledge Root configured for native pkm.");
+        const stat = fs.lstatSync(root);
+        if (vscode.env.remoteName && vscode.env.remoteName !== "ssh-remote" || binding?.registrationOwner !== "native-provider"
+          || binding.knowledgeRoot !== root || !stat.isDirectory() || stat.isSymbolicLink()
+          || stat.uid !== process.getuid?.() || (stat.mode & 0o022) !== 0)
+          throw new Error("Live switching requires this Linux or Remote-SSH profile's canonical, owner-write-only Knowledge Root configured for native pkm. Manual/external MCP routes are unsupported.");
       }, hasActiveChatWork: () => apiChat?.isBusy ?? true, async confirm(review) {
         const label = (mode: string) => mode === "original" ? "Original MCP" : "Bundled v5 MCP";
         return await vscode.window.showWarningMessage(`Switch pkm from ${label(review.from)} to ${label(review.to)}?`,
           { modal: true, detail: "Workbench and PKM Chat keep the same connections and Original library. This does not roll back storage or replay calls." },
           "Switch backend") === "Switch backend";
-      } } : undefined,
+      } },
       assertAllowed() {
         if (!vscode.workspace.isTrusted || !getStorePath() || process.env.PKM_MANAGED_WRITER_SESSION !== undefined
           || hasManagedRetrievalSession(getStorePath()))
@@ -15342,7 +15344,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           throw new Error(`PKM MCP preparation ${integrationMaintenanceState}: ${integrationMaintenanceError}`);
         }
       }, gatewayRoute ? () => gatewayRoute.launch("chat") : undefined);
-      if (process.env.PKM_COMPATIBILITY_LIVE_SWITCH === "1" && gatewayRoute)
+      if (gatewayRoute)
         context.subscriptions.push(vscode.commands.registerCommand("_personalKnowledge.observeChatGateway",
           () => chat.observeLiveGateway()));
       chat.setHostWriterObserver((work, cancellation) => cancellation

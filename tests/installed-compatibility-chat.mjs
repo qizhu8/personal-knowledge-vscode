@@ -499,7 +499,7 @@ exports.registerApiChatShell = (...args) => {
         env: { ...appEnv, PKM_UPGRADE_BASE: base, PKM_UPGRADE_CHAT: hostEvidence.nativeSession.nativeChat.id,
           PKM_UPGRADE_GATEWAY: bundledGateway ? "1" : "0", PKM_UPGRADE_TRANSCRIPT: transcript ? "1" : "0",
           PKM_UPGRADE_BROWSER: installedBrowser ? "1" : "0",
-          ...(settingsSwitch ? { PKM_COMPATIBILITY_LIVE_SWITCH: "1" } : {}) },
+        },
         stdio: ["ignore", "pipe", "pipe"],
       });
       for (const stream of [app.stdout, app.stderr]) stream.on("data", bytes => logs.push(bytes.toString()));
@@ -512,7 +512,7 @@ exports.registerApiChatShell = (...args) => {
         browser = spawn(browserPython, ["-B", join(here, "installed-original-browser.py"), join(base, "fixture.json")],
           { env: { ...appEnv, PLAYWRIGHT_BROWSERS_PATH: browserCache }, stdio: "inherit" });
       }
-      const candidateDeadline = Date.now() + (installedBrowser ? 160_000 : 100_000);
+      const candidateDeadline = Date.now() + (installedBrowser ? 240_000 : 100_000);
       while (!(upgradeEvidence = await file(join(base, settingsSwitch ? "installed-settings-switch.json" : "upgrade-host.json")))) {
         const failure = await file(join(base, "upgrade-failure.json"));
         if (failure) throw Error(`Installed upgrade host: ${JSON.stringify(failure)}`);

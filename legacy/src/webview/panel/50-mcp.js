@@ -12,7 +12,7 @@ let mcpBackendPending = '';
 let mcpBackendDeadline;
 
 const mcpBackendCopy = {
-  unbound: ['The host has no verified live-switch binding for this pkm entry. Its current configuration is unchanged.', '主机未为当前 pkm 条目提供已验证的实时切换绑定。现有配置不变。'],
+  unbound: ['Live switching requires this Linux or Remote-SSH profile’s native pkm provider. Manual/external registrations and unverified routes are unsupported. The current configuration is unchanged.', '实时切换需要当前 Linux 或 Remote-SSH 配置的原生 pkm 提供程序。不支持手动、外部或未经验证的路由。现有配置不变。'],
   notAdmitted: ['This window does not own a live-switch session. Refresh does not start a relay or change the backend.', '此窗口未拥有实时切换会话。刷新不会启动中继或更改后端。'],
   relayUnverified: ['Both Workbench pkm and PKM Chat must have verified live connections before switching. Connect them, then refresh.', '切换前需要验证工作台 pkm 和 PKM Chat 的实时连接。连接后请刷新。'],
   custodyUnavailable: ['This Knowledge Root is reserved by another session or needs recovery. This window cannot start a second route or switch the backend.', '此知识库根目录已由其他会话保留或需要恢复。此窗口无法启动第二条路由或切换后端。'],
