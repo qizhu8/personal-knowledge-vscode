@@ -3,7 +3,7 @@ import { lstatSync, realpathSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
-import { createBrowserReleaseGate, type BrowserCommand } from "./browser-release-gate.js";
+import { createBrowserReleaseGate, type BrowserCommand, type BrowserReleaseGateOptions } from "./browser-release-gate.js";
 import { CoreError } from "./contracts.js";
 import { checkedDocumentPath, documentPath } from "./document-path.js";
 
@@ -59,7 +59,7 @@ const note = (row: z.infer<typeof noteRow>) => ({
   type: /^[a-z0-9-]+$/.test(row.type) ? row.type : "general", updated_at: row.updated_at,
 });
 
-export async function createOriginalBrowserRoute(owner: OriginalBrowserOwner, { allowDevelopment = false } = {}) {
+export async function createOriginalBrowserRoute(owner: OriginalBrowserOwner, options: BrowserReleaseGateOptions = {}) {
   const grant = Object.freeze({ ...owner.grant });
   if (!grant.actorId.trim() || !isAbsolute(grant.workspaceRoot) || realpathSync(grant.workspaceRoot) !== grant.workspaceRoot
       || !grant.generation || !owner.token ||
@@ -69,7 +69,7 @@ export async function createOriginalBrowserRoute(owner: OriginalBrowserOwner, { 
   const readChatTranscript = grant.chatHostId ? owner.readChatTranscript?.bind(owner) : undefined;
   const turns = readChatTranscript ? owner.chatTurns : undefined;
   let sending = false;
-  const gate = await createBrowserReleaseGate(owner.token, false, allowDevelopment);
+  const gate = await createBrowserReleaseGate(owner.token, false, { ...options, allowDevelopment: options.allowDevelopment ?? false });
   if (!gate) throw new Error("Original browser bundle unavailable.");
   const root = lstatSync(grant.workspaceRoot);
   if (!root.isDirectory()) throw new Error("Invalid Original browser root.");
@@ -222,14 +222,5 @@ export async function createOriginalBrowserRoute(owner: OriginalBrowserOwner, { 
       throw unavailable("Original owner did not return the expected browser read.");
     } finally { pending--; }
   };
-  return async (req: IncomingMessage, res: ServerResponse) => {
-    if (req.url !== "/webview" && !req.url?.startsWith("/webview/")) return false;
-    const host = `127.0.0.1:${req.socket.localPort}`;
-    if (req.socket.localAddress !== "127.0.0.1" || req.socket.remoteAddress !== "127.0.0.1" ||
-        req.headers.host !== host || req.headers.origin !== undefined && req.headers.origin !== `http://${host}`) {
-      res.writeHead(403, { "Cache-Control": "no-store" }).end();
-      return true;
-    }
-    return gate(req, res, { accepting: authorized, authorized, readOriginal });
-  };
+  return (req: IncomingMessage, res: ServerResponse) => gate(req, res, { accepting: authorized, authorized, readOriginal });
 }

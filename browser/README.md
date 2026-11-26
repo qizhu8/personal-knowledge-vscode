@@ -88,6 +88,13 @@ ordinary Chat in VS Code, leave it visible and idle, and set it to **Read-only**
 Each Send needs its own native confirmation; Stop targets only that
 browser-admitted turn. Browser Chat creation and review remain unavailable.
 
+The HTTPS listener is a transport component, not a deployment mode. It serves
+only `/webview` and never exposes the MCP or management API. The installed
+extension still opens only its local loopback listener. Independent access
+requires a persistent owner for the same library and Chat permissions;
+pointing HTTPS at the current extension-host callback cannot provide Chat
+when that host is stopped.
+
 `tests/compatibility-chat-browser.test.mjs` exercises the route against a
 disposable Original gateway and production Chat controller running in a test
 host. To exercise browser Send and exact Stop as well, set

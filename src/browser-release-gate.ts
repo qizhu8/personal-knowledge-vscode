@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isAbsolute, join } from "node:path";
+import { TLSSocket } from "node:tls";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { CoreError } from "./contracts.js";
@@ -125,7 +126,26 @@ export type BrowserCoreDispatch = (method: "capability_read" | "capability_call"
 export type BrowserCommand = z.infer<typeof command>;
 type BrowserContext = { accepting: () => boolean; authorized?: () => boolean } &
   ({ dispatch: BrowserCoreDispatch } | { readOriginal: (input: BrowserCommand, current: () => boolean) => Promise<unknown> });
-export async function createBrowserReleaseGate(token: string, reviewAvailable: boolean, allowDevelopment = true) {
+export type BrowserReleaseGateOptions = {
+  allowDevelopment?: boolean;
+  /** Exact serialized HTTPS origin (no trailing slash). The caller must serve the handler over direct TLS. */
+  httpsOrigin?: string;
+};
+
+function parseHttpsOrigin(value: string) {
+  const origin = URL.parse(value);
+  if (!origin || origin.protocol !== "https:" || origin.origin !== value ||
+      !(origin.hostname.startsWith("[") || /^[a-z0-9.-]+$/.test(origin.hostname))) {
+    throw new Error("Browser HTTPS policy requires an exact serialized HTTPS origin.");
+  }
+  return origin;
+}
+
+/** Creates a route handler; the caller owns the listener, dispatch and service lifecycle. */
+export async function createBrowserReleaseGate(token: string, reviewAvailable: boolean,
+  options: boolean | BrowserReleaseGateOptions = true) {
+  const allowDevelopment = typeof options === "boolean" ? options : options.allowDevelopment ?? true;
+  const https = typeof options !== "boolean" && options.httpsOrigin !== undefined ? parseHttpsOrigin(options.httpsOrigin) : undefined;
   const source = await browserAssets(allowDevelopment);
   if (!source) return undefined;
   const { version, adapter, bundle, names } = source;
@@ -175,6 +195,16 @@ export async function createBrowserReleaseGate(token: string, reviewAvailable: b
         "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", ...headers });
       res.end(req.method === "HEAD" ? undefined : content);
     };
+    // Transport comes from the socket, never from Forwarded or X-Forwarded-*.
+    const tls = req.socket instanceof TLSSocket && req.socket.encrypted === true;
+    const host = https?.host ?? `127.0.0.1:${req.socket.localPort}`;
+    const origin = https?.origin ?? `http://${host}`;
+    if ((https ? !tls : tls || req.socket.localAddress !== "127.0.0.1" || req.socket.remoteAddress !== "127.0.0.1") ||
+        req.headersDistinct.host?.length !== 1 || req.headers.host !== host ||
+        (req.headers.origin !== undefined && req.headers.origin !== origin)) {
+      reply(403, "{}");
+      return true;
+    }
     const sid = (req.headers.cookie ?? "").split(/;\s*/).find(value => value.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
     const authorized = context.authorized ?? (() => true);
     const signedIn = () => authorized() && sid !== undefined && (sessions.get(sid) ?? 0) > Date.now();
@@ -209,7 +239,7 @@ export async function createBrowserReleaseGate(token: string, reviewAvailable: b
         return true;
       }
       if (req.method !== "POST" || !["session", "sign-out", "message"].includes(route)) reply(404, "{}");
-      else if (req.headers.origin !== `http://${req.headers.host}` || req.headers["content-type"] !== json) reply(403, "{}");
+      else if (req.headers.origin !== origin || req.headers["content-type"] !== json) reply(403, "{}");
       else if (route === "sign-out") {
         if (sid) sessions.delete(sid);
         reply(200, "{}", json, { "Set-Cookie": cookie("", "; Max-Age=0") });

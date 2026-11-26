@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -8,6 +9,9 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { httpCall, invocation, nativeWorkspace } from "./batch06-manager-fixtures.mjs";
+import { startBrowserHttpsListener } from "../dist/browser-https-listener.js";
+import { createOriginalBrowserRoute } from "../dist/browser-original-owner.js";
+import { createBrowserReleaseGate } from "../dist/browser-release-gate.js";
 import { initialize } from "../dist/storage.js";
 import { startSharedManagedServer } from "../dist/shared-managed-server.js";
 import { sharedManagedRequest } from "../dist/shared-managed-client.js";
@@ -23,6 +27,120 @@ async function gate(start) {
     else process.env.PKM_BROWSER_WEBVIEW_DIR = prior;
   }
 }
+
+async function browserTransport(t, handler, tls) {
+  let port;
+  if (tls) {
+    const listener = await startBrowserHttpsListener({ address: "127.0.0.1", port: 0, tls, route: handler });
+    t.after(() => listener.close());
+    port = listener.port;
+  } else {
+    const server = createServer(async (req, res) => {
+      if (!await handler(req, res)) res.writeHead(404).end();
+    });
+    t.after(() => new Promise(ok => server.close(ok)));
+    await new Promise((ok, reject) => server.once("error", reject).listen(0, "127.0.0.1", ok));
+    port = server.address().port;
+  }
+  return {
+    origin: `http://127.0.0.1:${port}`,
+    request(path, headers = {}, body) {
+      return new Promise((ok, reject) => {
+        const request = tls ? httpsRequest : httpRequest;
+        const req = request({ host: "127.0.0.1", port, path, headers, agent: false,
+          method: body === undefined ? "GET" : "POST", ...(tls && { ca: tls.cert, servername: "pkm.test" }) }, res => {
+          const chunks = [];
+          res.on("data", chunk => chunks.push(chunk));
+          res.on("error", reject);
+          res.on("end", () => ok({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString() }));
+        });
+        req.on("error", reject);
+        req.end(body === undefined ? undefined : JSON.stringify(body));
+      });
+    },
+  };
+}
+
+test("browser transport: explicit HTTPS rejects non-origin configuration", async () => {
+  for (const httpsOrigin of ["", "http://pkm.test", "https://*.pkm.test", "https://pkm.test/webview/",
+    "https://pkm.test/", "https://user@pkm.test", "https://pkm.test?query", "https://pkm.test#fragment"]) {
+    await assert.rejects(createBrowserReleaseGate("fixture", false, { httpsOrigin }), /exact serialized HTTPS origin/);
+  }
+});
+
+test("browser transport: default HTTP still requires exact loopback Host and same-origin JSON POST", async t => {
+  const token = randomUUID();
+  const handler = await gate(() => createBrowserReleaseGate(token, false));
+  const { origin, request } = await browserTransport(t, (req, res) => handler(req, res, { accepting: () => true, dispatch: async () => {
+    throw new Error("Unexpected dispatch");
+  } }));
+  const body = { token, remember: false };
+  const type = { "content-type": "application/json" };
+  assert.equal((await request("/webview/")).status, 200);
+  assert.equal((await request("/webview/", { host: new URL(origin).host.replace("127.0.0.1", "localhost") })).status, 403);
+  assert.equal((await request("/webview/session", type, body)).status, 403);
+  assert.equal((await request("/webview/session", { ...type, origin: origin.replace("http:", "https:") }, body)).status, 403);
+  assert.equal((await request("/webview/session", { ...type, origin }, body)).status, 200);
+});
+
+test("browser transport: direct HTTPS serves authenticated Original Webview and Chat without trusting proxy headers", async t => {
+  const directory = join(import.meta.dirname, `.webview-tls-${randomUUID()}`);
+  await mkdir(directory, { mode: 0o700 });
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const key = join(directory, "key.pem"), cert = join(directory, "cert.pem");
+  execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+    "-subj", "/CN=pkm.test", "-addext", "subjectAltName=DNS:pkm.test", "-keyout", key, "-out", cert], { stdio: "pipe" });
+  const token = randomUUID(), origin = "https://pkm.test:8443";
+  const chatId = randomUUID();
+  const page = { chatId, start: 0, total: 1, nextCursor: null,
+    messages: [{ id: "message", role: "assistant", content: "Existing Chat reply", status: "complete" }] };
+  let authorized = true, calls = 0;
+  const handler = await gate(() => createOriginalBrowserRoute({
+    token,
+    grant: { actorId: "fixture", workspaceRoot: directory, generation: "fixture", chatHostId: randomUUID() },
+    assertCurrent() { if (!authorized) throw new Error("Grant revoked"); },
+    async capabilityRead() { throw new Error("Unexpected gateway request"); },
+    async readChatTranscript(_grant, input) {
+      calls++;
+      assert.deepEqual(input, { chatId, cursor: undefined, limit: 20 });
+      return page;
+    },
+  }, { allowDevelopment: true, httpsOrigin: origin }));
+  const { request } = await browserTransport(t, handler, { key: await readFile(key), cert: await readFile(cert) });
+  const http = await browserTransport(t, handler);
+  const host = new URL(origin).host, headers = { host, origin, "content-type": "application/json" };
+  const forwarded = { forwarded: `proto=https;host="${host}"`, "x-forwarded-host": host, "x-forwarded-proto": "https" };
+  const signIn = { token, remember: true };
+  assert.equal((await request("/mcp", headers, {})).status, 404);
+  assert.equal((await http.request("/webview/session", { ...headers, ...forwarded }, signIn)).status, 403);
+  assert.equal((await request("/webview/", { host: "other.test", ...forwarded })).status, 403);
+  assert.equal((await request("/webview/chat", { host, origin: "https://other.test" })).status, 403);
+  assert.equal((await request("/webview/chat", { host })).status, 303);
+  assert.equal((await request("/webview/panel.js", { host })).status, 404);
+  for (const invalid of [{ origin: undefined }, { origin: "null" }, { origin: `http://${host}` },
+    { origin: "https://pkm.test" }, { "content-type": "text/plain" }]) {
+    const invalidHeaders = { ...headers, ...invalid };
+    if (invalidHeaders.origin === undefined) delete invalidHeaders.origin;
+    assert.equal((await request("/webview/session", invalidHeaders, signIn)).status, 403);
+  }
+  const session = await request("/webview/session", headers, signIn);
+  assert.equal(session.status, 200);
+  assert.match(session.headers["set-cookie"][0], /; Path=\/webview\/; HttpOnly; Secure; SameSite=Strict; Max-Age=\d+$/);
+  const cookie = session.headers["set-cookie"][0].split(";")[0];
+  assert.match((await request("/webview/", { host, cookie })).body, /id="pkm-original-browser"/);
+  assert.match((await request("/webview/chat", { host, cookie })).body, /<title>PKM Chat<\/title>/);
+  const message = { command: "chatMessages", id: chatId };
+  assert.equal((await request("/webview/message", { ...headers, cookie, origin: "https://other.test" }, message)).status, 403);
+  assert.equal(calls, 0);
+  assert.deepEqual(JSON.parse((await request("/webview/message", { ...headers, cookie }, message)).body), page);
+  authorized = false;
+  assert.equal((await request("/webview/message", { ...headers, cookie }, message)).status, 503);
+  authorized = true;
+  assert.equal((await request("/webview/sign-out", { ...headers, cookie }, {})).status, 200);
+  assert.equal((await request("/webview/message", { ...headers, cookie }, message)).status, 401);
+  assert.equal(calls, 1);
+});
+
 async function qualify(t, { url, token, root, thread, enrollment, webview = bundle }) {
   const bytes = await readFile(resolve(webview, "panel.js"));
   assert.equal((await fetch(`${url}/webview/panel.js`)).status, 404);
