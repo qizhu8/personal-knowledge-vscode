@@ -144,6 +144,57 @@ test("Original ↔ bundled v5 on existing pkm relays; interrupted Original write
     return versions.map(read => read.version);
   };
   const originalVersion = await sharedVersion("original");
+  const repairProbe = join(f.base, "reject-active-repair.cjs");
+  const repairMarkers = [join(f.managed, "runtime-maintenance.json"), `${join(f.base, "python")}.pkm-maintenance.json`];
+  await writeFile(repairProbe, `
+const fs = require("node:fs"), Module = require("node:module"), ts = require("typescript");
+const filename = ${JSON.stringify(new URL("../legacy/dist/mcp/mcp.js", import.meta.url).pathname)};
+const configuration = { mcpServerPath: ${JSON.stringify(f.managed)}, mcpRuntimePath: ${JSON.stringify(join(f.base, "python"))} };
+const vscode = { workspace: { isTrusted: true, workspaceFolders: [],
+ getConfiguration: () => ({ get: (name, fallback) => configuration[name] ?? fallback }) } };
+const load = Module._load;
+Module._load = function(name, ...args) { return name === "vscode" ? vscode : load.call(this, name, ...args); };
+require(${JSON.stringify(new URL("../legacy/dist/knowledge/filestore.js", import.meta.url).pathname)}).setStorePath(${JSON.stringify(f.root)});
+const write = fs.writeFileSync, markers = ${JSON.stringify(repairMarkers)};
+let published = 0;
+fs.writeFileSync = function(filename, ...args) {
+ const result = write.call(this, filename, ...args);
+ if (markers.includes(String(filename))) {
+  published++;
+  // Let the real Original lifecycle monitor observe any transient marker.
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 400);
+ }
+ return result;
+};
+const mcp = new Module(filename, module);
+mcp.filename = filename;
+mcp.paths = Module._nodeModulePaths(require("node:path").dirname(filename));
+mcp._compile(ts.transpileModule(fs.readFileSync(${JSON.stringify(new URL("../legacy/src/mcp/mcp.ts", import.meta.url).pathname)}, "utf8"), {
+ compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true },
+}).outputText, filename);
+mcp.exports.ensureMcpRuntime(undefined).then(() => {
+ throw Error("Active-client repair must refuse.");
+}, error => {
+ if (!error.message.includes("close/reconnect all managed PKM clients")) throw error;
+ console.log(JSON.stringify({ rejected: true, published, markersRemoved: markers.every(marker => !fs.existsSync(marker)) }));
+}).catch(error => { console.error(error); process.exitCode = 1; });
+`);
+  const repair = JSON.parse((await promisify(execFile)(process.execPath, [repairProbe], {
+    cwd: f.base, env: { ...process.env, HOME: join(f.base, "home") }, timeout: 15_000,
+  })).stdout);
+  assert.equal(repair.rejected, true);
+  assert.equal(repair.markersRemoved, true);
+  for (const { runtime } of authority.status().originalConnections) {
+    const actual = JSON.parse(await readFile(join(f.managed, "instances", `${runtime.instanceId}.json`), "utf8"));
+    assert.deepEqual({ phase: actual.phase, accepting: actual.acceptingNewCalls, uncertain: actual.uncertainCalls },
+      { phase: "accepting", accepting: true, uncertain: 0 }, "Rejected repair must preserve actual Original admission.");
+  }
+  await sharedVersion("original");
+  const retainedNote = value(await call(workbench.client, "capability_read", {
+    operation: "mcp.tool.get_note", version: 1, arguments: { slug: "Entry" },
+  }));
+  assert.match(JSON.stringify(retainedNote), /Original business content/);
+  assert.equal(repair.published, 0, "A rejected repair must not transiently fence the stable Original adapters.");
   const firstObservation = authority.status();
   chatBusy = true;
   await assert.rejects(authority.approveSwitch(firstObservation, "bundled-v5"), /outstanding work/);

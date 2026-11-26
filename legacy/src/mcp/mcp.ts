@@ -557,24 +557,28 @@ async function ensureMcpRuntimeLocked(context: vscode.ExtensionContext, report: 
     const marker = path.join(directory, "runtime-maintenance.json");
     const runtimeMarker = `${mcpRuntimePath()}.pkm-maintenance.json`;
     const record = JSON.stringify({ schema: "pkm.mcp.maintenance/v1", pid: process.pid }) + "\n";
+    const assertIdle = () => {
+      const processes = mcpProcessStatus(true);
+      const instances = managedMcpLifecycleStatus(directory).instances;
+      const observedInstances = instances.some(instance => {
+        if (!Number.isSafeInteger(instance.pid) || instance.pid <= 0) return true;
+        try { process.kill(instance.pid, 0); return true; }
+        catch (error: any) { return error?.code !== "ESRCH"; }
+      });
+      const mayHaveExistingRuntime = fs.existsSync(mcpRuntimePath()) || fs.existsSync(path.join(directory, "server.py"));
+      if ((!processes.available && mayHaveExistingRuntime) || processes.running || observedInstances) {
+        throw new Error("PKM MCP runtime repair is action-required: close/reconnect all managed PKM clients and let in-flight writes finish before changing shared Python dependencies. "
+          + "Legacy/uninstrumented processes have unknown drain state. No process was killed and no call was replayed. "
+          + (!processes.available ? "Process inspection is unavailable; choose a new empty managed runtime path instead of modifying a possibly active environment." : processes.detail));
+      }
+    };
+    // Original treats maintenance markers as a permanent admission fence, even
+    // when a rejected repair immediately removes them.
+    assertIdle();
     fs.writeFileSync(runtimeMarker, record, { mode: 0o600 });
     try {
       fs.writeFileSync(marker, record, { mode: 0o600 });
-      {
-        const processes = mcpProcessStatus(true);
-        const instances = managedMcpLifecycleStatus(directory).instances;
-        const observedInstances = instances.some(instance => {
-          if (!Number.isSafeInteger(instance.pid) || instance.pid <= 0) return true;
-          try { process.kill(instance.pid, 0); return true; }
-          catch (error: any) { return error?.code !== "ESRCH"; }
-        });
-        const mayHaveExistingRuntime = fs.existsSync(mcpRuntimePath()) || fs.existsSync(path.join(directory, "server.py"));
-        if ((!processes.available && mayHaveExistingRuntime) || processes.running || observedInstances) {
-          throw new Error("PKM MCP runtime repair is action-required: close/reconnect all managed PKM clients and let in-flight writes finish before changing shared Python dependencies. "
-            + "Legacy/uninstrumented processes have unknown drain state. No process was killed and no call was replayed. "
-            + (!processes.available ? "Process inspection is unavailable; choose a new empty managed runtime path instead of modifying a possibly active environment." : processes.detail));
-        }
-      }
+      assertIdle();
       return await ensureMcpRuntimeFiles(context, report);
     } finally {
       fs.rmSync(marker, { force: true });

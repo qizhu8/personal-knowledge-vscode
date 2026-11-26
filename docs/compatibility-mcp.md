@@ -107,6 +107,12 @@ gap. Normal window disposal does not drain the independent HTTPS service;
 reopening a native owner safely drains/readmits its persistent successor while
 retaining its private HTTPS provision.
 
+Runtime repair checks for existing clients before publishing maintenance
+markers: Original treats even a transient marker as a permanent admission fence.
+A repair refused for active or unknown clients therefore leaves their accepting
+state, identities and Note reads intact. An admitted repair still publishes both
+markers and repeats the client check before changing shared dependencies.
+
 The native provider and PKM Chat use the reviewed target selected in the v4 host.
 Copilot CLI has a separate user configuration at `~/.copilot/mcp-config.json`.
 Selecting the native provider does not silently rewrite that file. After explicit
