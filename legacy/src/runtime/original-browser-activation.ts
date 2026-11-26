@@ -101,7 +101,7 @@ async function openGateway(gateway: SelectedChatGateway) {
         throw new Error("Original browser gateway could not complete its read.");
       }
     };
-    return { read, assertCurrent, close };
+    return { generation: gateway.generation, read, assertCurrent, close };
   } catch (error) {
     await close().catch(() => undefined);
     throw error;
@@ -115,9 +115,9 @@ export async function closeOriginalBrowserActivation() {
 
 export function registerOriginalBrowserActivation(context: vscode.ExtensionContext, options: {
   root(): string; select(): Promise<SelectedChatGateway & { liveRelay: boolean }>; chat: Shell;
+  bindBrowserReads(): Promise<Awaited<ReturnType<typeof openGateway>> | undefined>;
 }) {
-  if (vscode.env.remoteName || vscode.env.uiKind !== vscode.UIKind.Desktop ||
-      process.env.PKM_COMPATIBILITY_LIVE_SWITCH === "1") return;
+  if (vscode.env.remoteName || vscode.env.uiKind !== vscode.UIKind.Desktop) return;
   let disposed = false, epoch = 0, opening = false;
   let active: { url: string; token: string; current(): void; close(): Promise<void> } | undefined;
   let draining: Promise<void> | undefined, drainFailed = false;
@@ -153,15 +153,15 @@ export function registerOriginalBrowserActivation(context: vscode.ExtensionConte
       if (!pin.isDirectory()) throw new Error("Original Knowledge Root is unavailable.");
       const folders = () => JSON.stringify(vscode.workspace.workspaceFolders?.map(folder => folder.uri.toString()) ?? []);
       const pinnedFolders = folders();
-      const selected = await options.select();
-      if (selected.liveRelay) throw new Error("PKM Browser is unavailable while the live MCP relay owns this library.");
-      // The selected launch already verifies the full installed payload; pin
-      // the browser entry as part of that same immutable payload inventory.
       const payload = verifyNextPayload(context.extensionPath);
       const runtime = require(join(payload.root, "server/dist/browser-original-owner.js")) as {
         createOriginalBrowserRoute(input: object): Promise<Route>;
       };
-      const bound = await openGateway(selected);
+      const bound = await options.bindBrowserReads() ?? await (async () => {
+        const selected = await options.select();
+        if (selected.liveRelay) throw new Error("The live PKM browser binding is unavailable.");
+        return openGateway(selected);
+      })();
       gateway = bound;
       let revoked = false;
       const current = () => {
@@ -187,7 +187,7 @@ export function registerOriginalBrowserActivation(context: vscode.ExtensionConte
         catch { /* Notes can be bound without a discoverable Chat owner. */ }
       }
       let grant = Object.freeze({ actorId: `local-browser:${randomUUID()}`, workspaceRoot: root,
-        generation: selected.generation, chatHostId });
+        generation: bound.generation, chatHostId });
       const assertCurrent = (supplied: BrowserChatGrant) => {
         current();
         if (supplied.actorId !== grant.actorId || supplied.workspaceRoot !== grant.workspaceRoot

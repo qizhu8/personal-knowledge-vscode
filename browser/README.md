@@ -72,7 +72,11 @@ Original root and the selected bundled compatibility gateway, select
 the freshly issued token into the loopback page. This is a separate,
 allowlisted read connection to the same selected Original generation, not a
 generic MCP proxy or a standalone Core server. Cold compatibility routing
-only; remote hosts and opt-in live switching are intentionally excluded.
+only; remote hosts are intentionally excluded. With opt-in live switching,
+the browser binds to the existing owner through an in-process read grant. It
+does not launch a cold adapter or receive relay credentials. Starting a
+handoff can revoke that grant; after changing backends, reopen PKM Browser
+from the extension and sign in again.
 Use **Revoke browser access** in the same picker to close the listener and
 invalidate its token and cookies. A change to the trusted workspace, bound
 root, or observed owner also closes the binding. Remember does not survive

@@ -8,6 +8,7 @@ import { createNativePublicFacade } from "./native-public-mcp.js";
 import { directModuleTools } from "./native-public-mcp-module-tools.js";
 
 type Json = Record<string, unknown>;
+type ToolResult = Awaited<ReturnType<ReturnType<typeof createNativePublicFacade>["invoke"]>>;
 const object = (value: unknown): value is Json => !!value && typeof value === "object" && !Array.isArray(value);
 const uuid = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value);
 const digest = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
@@ -131,8 +132,8 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
     inFlight: session.inFlight, uncertainCalls: Math.max(Number(uncertain), originalUncertain()),
     controlError: "", automaticReplay: false,
   });
-  const toolResult = (value: Json) => ({ content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value });
-  const refused = (message: string) => ({ content: [{ type: "text", text: message }], isError: true });
+  const toolResult = (value: Json): ToolResult => ({ content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value });
+  const refused = (message: string): ToolResult => ({ content: [{ type: "text", text: message }], isError: true });
 
   async function invokeOriginal(role: Role, name: string, args: Json) {
     const upstream = original(role);
@@ -305,6 +306,39 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
   }
   let closing: Promise<void> | undefined;
   return {
+    bindBrowserReads() {
+      const operations = new Set(["list_notes", "search_notes", "get_note", "api_chat_capabilities",
+        "api_chat_list", "api_chat_get", "api_chat_request_get"].map(name => `mcp.tool.${name}`));
+      const revision = selectionRevision;
+      const generation = status().generation;
+      const session: Session = { id: randomUUID(), role: "workbench", accepting: true, inFlight: 0 };
+      const assertCurrent = () => {
+        if (!session.accepting || !available() || switching || revision !== selectionRevision)
+          throw new Error("The browser gateway binding is no longer current.");
+      };
+      assertCurrent();
+      return {
+        generation, assertCurrent,
+        async read(input: { operation: string; version: number; arguments: Json }) {
+          assertCurrent();
+          const contract = original(session.role).catalog.contracts.find(entry => entry.id === input.operation);
+          if (input.version !== 1 || !operations.has(input.operation) || !contract?.readOnly)
+            throw new Error("The operation is not in the browser read grant.");
+          const result = await invoke(session, "capability_read", {
+            operation: input.operation, version: 1, arguments: input.arguments,
+          });
+          assertCurrent();
+          if (result.isError) throw new Error("The browser gateway read failed.");
+          if (result.structuredContent !== undefined) return result.structuredContent;
+          if (input.operation === "mcp.tool.search_notes" && result.content.length === 0) return [];
+          const block = result.content[0];
+          if (result.content.length !== 1 || block?.type !== "text" || block.text.length > 2_000_000)
+            throw new Error("The browser gateway returned an unsupported read result.");
+          return JSON.parse(block.text) as unknown;
+        },
+        async close() { session.accepting = false; },
+      };
+    },
     // Not a management credential; never expose to Webviews, settings, or browsers.
     relay(role: Role) {
       if (!roles.includes(role) || closed) throw new Error("Unknown or closed compatibility relay.");

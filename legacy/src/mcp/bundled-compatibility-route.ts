@@ -15,6 +15,10 @@ type Authority = {
   status(): Selection & { generation: string; runtimeBuild: string; phase: string; inFlight: number; uncertain: boolean;
     candidates: { mode: Mode; generation: string; runtimeBuild: string }[] };
   approveSwitch(expected: Selection, mode: Mode): Promise<{ applied: boolean }>;
+  bindBrowserReads(): {
+    generation: string; assertCurrent(): void; close(): Promise<void>;
+    read(input: { operation: string; version: number; arguments: Record<string, unknown> }): Promise<unknown>;
+  };
   close(): Promise<void>;
 };
 const importPayload = new Function("url", "return import(url)") as (url: string) => Promise<any>;
@@ -135,6 +139,13 @@ export function createBundledCompatibilityRoute(options: {
   }
   return {
     assertLaunchAdmission,
+    async bindBrowserReads() {
+      if (!options.live) return undefined;
+      if (!starting) throw new Error("Start the existing PKM connection before opening PKM Browser.");
+      const selection = getSelected();
+      const bound = (await starting).bindBrowserReads();
+      return { ...bound, assertCurrent() { selection.assertCurrent(); bound.assertCurrent(); } };
+    },
     async launch(role: "workbench" | "chat" = "workbench") {
       try {
         assertLaunchAdmission();

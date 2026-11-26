@@ -130,6 +130,10 @@ test("Original ↔ bundled v5 on existing pkm relays; interrupted Original write
   };
   const originalVersion = await sharedVersion("original");
   const firstObservation = authority.status();
+  const browser = authority.bindBrowserReads();
+  const args = { operation: "mcp.tool.get_note", version: 1, arguments: { slug: "Entry" } };
+  assert.match(JSON.stringify(await browser.read(args)), /Original business content/);
+  await assert.rejects(browser.read({ ...args, operation: "mcp.tool.update_note" }), /browser read grant/);
   const originalPid = authority.status().originalConnections[0].runtime.pid;
   process.kill(originalPid, "SIGSTOP");
   const pending = call(clients[0].client, "note_read", { slug: "Entry" });
@@ -153,7 +157,11 @@ test("Original ↔ bundled v5 on existing pkm relays; interrupted Original write
   await sharedVersion("original");
   await authority.approveSwitch(firstObservation, "bundled-v5");
   const v5Version = await sharedVersion("bundled-v5");
-  const args = { operation: "mcp.tool.get_note", version: 1, arguments: { slug: "Entry" } };
+  await assert.rejects(browser.read(args), /no longer current/);
+  const reboundBrowser = authority.bindBrowserReads();
+  assert.match(JSON.stringify(await reboundBrowser.read(args)), /Written through Original/);
+  await reboundBrowser.close();
+  await assert.rejects(reboundBrowser.read(args), /no longer current/);
   assert.match(JSON.stringify(await call(clients[1].client, "capability_read", args)), /Written through Original/);
   const wrote = await call(clients[1].client, "note_modify", { slug: "Entry", content: "Written through v5." });
   assert.notEqual(wrote.isError, true, JSON.stringify(wrote));

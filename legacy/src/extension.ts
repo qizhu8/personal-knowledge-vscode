@@ -15349,7 +15349,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         ? observeHostChatCancellation(work) : observeHostWriter("chat", work));
       return chat;
     });
-    if (gatewayRoute) registerOriginalBrowserActivation(context, { root: getStorePath, select: gatewayRoute.launch, chat: apiChat });
+    if (gatewayRoute) registerOriginalBrowserActivation(context, { root: getStorePath, select: gatewayRoute.launch,
+      bindBrowserReads: gatewayRoute.bindBrowserReads, chat: apiChat });
     portalChatContext = (chatId, label) => {
       if (!apiChat) throw new Error("PKM Chat is unavailable.");
       return apiChat.portalContext(chatId, label);
