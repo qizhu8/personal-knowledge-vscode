@@ -64,8 +64,25 @@ Original `update_note` carries no expected revision/digest;
 the browser denies Note writes rather than substituting a read-then-write
 check. Ordinary mailbox `send`/`cancel`, Chat creation, and tool review remain
 unavailable here. Original tool approvals stay in the
-owning Chat webview; browser sign-in grants no approval authority. Shared
-activation is not wired by this module.
+owning Chat webview; browser sign-in grants no approval authority.
+
+On local Linux VS Code with the installed same-ID v5 extension, a trusted
+Original root and the selected bundled compatibility gateway, select
+**PKM Browser** in the status bar, then **Copy sign-in token and open**. Paste
+the freshly issued token into the loopback page. This is a separate,
+allowlisted read connection to the same selected Original generation, not a
+generic MCP proxy or a standalone Core server. Cold compatibility routing
+only; remote hosts and opt-in live switching are intentionally excluded.
+Use **Revoke browser access** in the same picker to close the listener and
+invalidate its token and cookies. A change to the trusted workspace, bound
+root, or observed owner also closes the binding. Remember does not survive
+revocation or VS Code shutdown.
+
+Chat requires the exact native owner in the selected workspace. Transcript
+sharing requires native consent. To send from the browser, open the existing
+ordinary Chat in VS Code, leave it visible and idle, and set it to **Read-only**.
+Each Send needs its own native confirmation; Stop targets only that
+browser-admitted turn. Browser Chat creation and review remain unavailable.
 
 `tests/compatibility-chat-browser.test.mjs` exercises the route against a
 disposable Original gateway and production Chat controller running in a test
@@ -75,6 +92,22 @@ host. To exercise browser Send and exact Stop as well, set
 to the owner's built `legacy/` directory. This uses the real owner writer
 and loopback model, with the native modal choice supplied by the fixture.
 It supplements, but is not, installed activation qualification.
+
+To run the disposable installed path against a built, hash-pinned v5 VSIX:
+
+```sh
+node tests/installed-compatibility-chat.mjs --same-profile-upgrade \
+  --bundled-gateway --installed-browser --candidate-vsix="$VSIX" \
+  --candidate-sha256="$SHA256"
+```
+
+The installed report separates activation from feature qualification. The
+disposable 4.0.27 → 5.0.0 fixture verified sign-in, exact panel bytes, remembered
+reload, predecessor Note inventory and detail, write denial, native transcript
+denial/consent, and explicit revocation. The running Original search did not
+return the predecessor hit, and the fixture did not establish an eligible
+visible read-only native Chat for browser Send/Stop. Neither is counted as
+installed browser parity.
 
 The internal Note body edit contract is in `legacy/src/knowledge/filestore.ts`:
 `readOriginalNoteBodyForEdit(relative)` returns the body, exact file SHA-256,

@@ -40,6 +40,7 @@ if (!process.argv.includes("--inside")) {
     else if (argument === "--bundled-gateway" && !options.gateway) options.gateway = true;
     else if (argument === "--browser-transcript" && !options.transcript) options.transcript = true;
     else if (argument === "--settings-switch" && !options.settings) options.settings = true;
+    else if (argument === "--installed-browser" && !options.browser) options.browser = true;
     else if (argument.startsWith("--candidate-vsix=") && !options.candidate)
       options.candidate = resolve(argument.slice("--candidate-vsix=".length));
     else if (argument.startsWith("--candidate-sha256=") && !options.sha256)
@@ -49,18 +50,21 @@ if (!process.argv.includes("--inside")) {
   assert(!(options.overview && options.upgrade));
   assert(!options.gateway || options.upgrade);
   assert(!options.transcript || options.gateway);
-  assert(!options.settings || options.gateway && !options.transcript);
+  assert([options.settings, options.browser, options.transcript].filter(Boolean).length <= 1);
+  assert(!(options.settings || options.browser) || options.gateway);
   if (options.overview || options.upgrade) assert(options.candidate && /^[a-f0-9]{64}$/.test(options.sha256),
     "Installed acceptance requires an explicitly pinned candidate VSIX.");
   else assert(!options.candidate && !options.sha256, "Candidate pins require an explicit candidate acceptance mode.");
   const editor = process.env.PKM_PROFILE_CODE || "/home/yuwang8/.cache/pkm-vscode-test/vscode-linux-x64-1.143.0/code";
   const xvfb = process.env.PKM_PROFILE_XVFB || "/home/yuwang8/.cache/pkm-vscode-test/tools/xvfb/usr/bin/Xvfb";
   const browserPython = checked("python3", ["-c", "import sys,playwright;print(sys.executable)"]);
+  const browserCache = options.browser ? checked(browserPython, ["-B", "-c",
+    "from pathlib import Path; from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print(Path(p.chromium.executable_path).parents[2]); p.stop()"]) : "";
   const businessPython = process.env.PKM_TEST_PYTHON || "/home/yuwang8/pkm-envs/personal-knowledge-vscode-dev/bin/python";
   const command = [process.execPath, fileURLToPath(import.meta.url), "--inside",
     editor, xvfb, browserPython, businessPython, options.overview ? "chat-overview" : options.upgrade ? "same-profile-upgrade" : "",
     options.candidate || "", options.sha256 || "", options.gateway ? "bundled-gateway" : "",
-    options.transcript ? "browser-transcript" : options.settings ? "settings-switch" : ""];
+    options.transcript ? "browser-transcript" : options.settings ? "settings-switch" : options.browser ? "installed-browser" : "", browserCache];
   const require = createRequire(import.meta.url);
   const namespace = options.upgrade
     ? require("../legacy/scripts/run-next-trial-private-display.js").privateNamespaceArgs(command)
@@ -68,12 +72,14 @@ if (!process.argv.includes("--inside")) {
   checked("unshare", namespace, { stdio: "inherit", timeout: options.overview || options.upgrade ? 480_000 : 300_000,
     env: { PATH: process.env.PATH || "" } });
 } else {
-  const [editor, xvfb, browserPython, businessPython, overviewMarker, candidateVsix, candidateSha256, gatewayMarker, transcriptMarker] = process.argv.slice(3);
+  const [editor, xvfb, browserPython, businessPython, overviewMarker, candidateVsix, candidateSha256, gatewayMarker,
+    transcriptMarker, browserCache] = process.argv.slice(3);
   const overview = overviewMarker === "chat-overview";
   const upgrade = overviewMarker === "same-profile-upgrade";
   const bundledGateway = upgrade && gatewayMarker === "bundled-gateway";
   const transcript = bundledGateway && transcriptMarker === "browser-transcript";
   const settingsSwitch = bundledGateway && transcriptMarker === "settings-switch";
+  const installedBrowser = bundledGateway && transcriptMarker === "installed-browser";
   if (upgrade) assert((await readFile("/proc/1/cmdline", "utf8")).split("\0").includes("pkm-private-init"));
   if (overviewMarker) assert((overview || upgrade) && candidateVsix && /^[a-f0-9]{64}$/.test(candidateSha256));
   const vsix = overview ? candidateVsix : shippedVsix;
@@ -178,6 +184,13 @@ extensionPath:${JSON.stringify(installed)},globalStorageUri:{fsPath:${JSON.strin
         const input = JSON.parse(Buffer.concat(chunks).toString());
         if (overviewModel && await overviewModel.handle(request, response, input)) return;
         const last = input.messages.filter(message => message.role === "user").at(-1)?.content;
+        if (installedBrowser && last === "INSTALLED_BROWSER_COMPLETE") {
+          response.writeHead(200, { "content-type": "text/event-stream" });
+          response.end('data: {"choices":[{"delta":{"content":"Installed browser turn completed"},"finish_reason":null}]}\n\n' +
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+          await writeFile(join(base, "browser-provider-completed"), "");
+          return;
+        }
         if (typeof last === "string" && last.includes("BUNDLED_GATEWAY_READBACK")) {
           const user = input.messages.findLastIndex(message => message.role === "user" && message.content === last);
           const results = input.messages.slice(user + 1).filter(message => message.role === "tool");
@@ -197,7 +210,7 @@ extensionPath:${JSON.stringify(installed)},globalStorageUri:{fsPath:${JSON.strin
               const vars = (await readFile(`/proc/${pid}/environ`, "utf8")).split("\0");
               const arg = vars.find(item => item.startsWith("PKM_MCP_LAUNCH_ATTRIBUTION="));
               const argv = (await readFile(`/proc/${pid}/cmdline`, "utf8")).split("\0");
-              if (!arg || !argv[1]?.endsWith("/compatibility-mcp-cli.js")) continue;
+              if (!arg || arg === "PKM_MCP_LAUNCH_ATTRIBUTION=" || !argv[1]?.endsWith("/compatibility-mcp-cli.js")) continue;
               const source = JSON.parse(arg.slice("PKM_MCP_LAUNCH_ATTRIBUTION=".length)).source;
               receipts.push({ source, gateway: JSON.parse(await readFile(argv[2], "utf8")).gateway });
             }
@@ -220,7 +233,10 @@ extensionPath:${JSON.stringify(installed)},globalStorageUri:{fsPath:${JSON.strin
           response.writeHead(200, { "content-type": "text/event-stream" });
           response.write(": waiting for actual installed Stop\n\n");
           await writeFile(join(base, "provider-waiting.json"), '{"waiting":true}');
-          response.on("close", () => { cancelled = true; });
+          response.on("close", () => {
+            cancelled = true;
+            if (installedBrowser && last === "CANCEL_INSTALLED_BROWSER") void writeFile(join(base, "browser-provider-closed"), "");
+          });
           return;
         }
         const sequence = [
@@ -449,6 +465,7 @@ exports.registerApiChatShell = (...args) => {
       app = spawn(editor, launchArgs, {
         env: { ...appEnv, PKM_UPGRADE_BASE: base, PKM_UPGRADE_CHAT: hostEvidence.nativeSession.nativeChat.id,
           PKM_UPGRADE_GATEWAY: bundledGateway ? "1" : "0", PKM_UPGRADE_TRANSCRIPT: transcript ? "1" : "0",
+          PKM_UPGRADE_BROWSER: installedBrowser ? "1" : "0",
           ...(settingsSwitch ? { PKM_COMPATIBILITY_LIVE_SWITCH: "1" } : {}) },
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -458,12 +475,17 @@ exports.registerApiChatShell = (...args) => {
           join(base, "fixture.json"), ...(transcript ? ["--transcript-consent"] : [])],
           { env: appEnv, stdio: "inherit" });
       }
-      const candidateDeadline = Date.now() + 100_000;
+      if (installedBrowser) {
+        browser = spawn(browserPython, ["-B", join(here, "installed-original-browser.py"), join(base, "fixture.json")],
+          { env: { ...appEnv, PLAYWRIGHT_BROWSERS_PATH: browserCache }, stdio: "inherit" });
+      }
+      const candidateDeadline = Date.now() + (installedBrowser ? 160_000 : 100_000);
       while (!(upgradeEvidence = await file(join(base, settingsSwitch ? "installed-settings-switch.json" : "upgrade-host.json")))) {
         const failure = await file(join(base, "upgrade-failure.json"));
         if (failure) throw Error(`Installed upgrade host: ${JSON.stringify(failure)}`);
-        if (app.exitCode !== null || app.signalCode !== null || settingsSwitch && browser.exitCode !== null && browser.exitCode !== 0
-          || Date.now() > candidateDeadline)
+        if ((installedBrowser || settingsSwitch) && browser.exitCode !== null && browser.exitCode !== 0)
+          throw Error("Installed browser driver failed.");
+        if (app.exitCode !== null || app.signalCode !== null || Date.now() > candidateDeadline)
           throw Error("Candidate did not verify the live native pkm connection.");
         await wait(100);
       }
@@ -515,6 +537,7 @@ exports.registerApiChatShell = (...args) => {
         assert.deepEqual(clients.chat.gateway, { generation: upgradeEvidence.generation, runtimeBuild: upgradeEvidence.liveBuild });
         upgradeEvidence.clients = clients;
         if (transcript) upgradeEvidence.transcript = await file(join(base, "upgrade-transcript.json"));
+        if (installedBrowser) upgradeEvidence.browser = await file(join(base, "upgrade-browser.json"));
         assert.equal(await readFile(join(library, "notes/InstalledGatewayNote.md"), "utf8"), hostEvidence.originalNote);
         assert.deepEqual(errors, []);
         await writeFile(join(base, "close-candidate"), "");
@@ -575,6 +598,7 @@ exports.registerApiChatShell = (...args) => {
     await writeFile(join(base, "editor.log"), logs.join(""));
     if (inference) { inference.closeAllConnections(); await new Promise(done => inference.close(done)); }
     await writeFile(join(base, "provider-evidence.json"), JSON.stringify(requests, null, 2));
+    await rm(join(base, "browser-enrollment.json"), { force: true });
     if (passed) for (const directory of ["h", "u", "peer", "x", "scratch", "driver", "business-python", "gateway", "offline-deps"])
       await rm(join(base, directory), { recursive: true, force: true, maxRetries: 3 });
     if (passed) for (const path of ["generate.cjs", "Xauthority", "fixture.json", "chat-ready.json", "provider-waiting.json", "library/.git"])

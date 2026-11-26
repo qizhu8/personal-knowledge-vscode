@@ -32,6 +32,7 @@ import { ExtensionHostRegistry, loadedExtensionBuild, readInstalledExtensionBuil
 import { activateManagedProfileWriter, observeManagedProfileInstallations } from "./runtime/managed-profile-activation";
 import { LegacyRootUpgradeCheck } from "./runtime/legacy-root-upgrade";
 import { HostWriterAdmission } from "./runtime/host-writer-admission";
+import { closeOriginalBrowserActivation, registerOriginalBrowserActivation } from "./runtime/original-browser-activation";
 import { drainManagedHost } from "./runtime/managed-host-drain";
 import { createManagedHostReload } from "./runtime/managed-host-reload";
 import { HostDrainRequests, hostDrainRootFingerprint } from "./runtime/host-drain-requests";
@@ -15348,6 +15349,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         ? observeHostChatCancellation(work) : observeHostWriter("chat", work));
       return chat;
     });
+    if (gatewayRoute) registerOriginalBrowserActivation(context, { root: getStorePath, select: gatewayRoute.launch, chat: apiChat });
     portalChatContext = (chatId, label) => {
       if (!apiChat) throw new Error("PKM Chat is unavailable.");
       return apiChat.portalContext(chatId, label);
@@ -17456,6 +17458,7 @@ function startFileWatcher(context: vscode.ExtensionContext): void {
 }
 
 export async function deactivate(): Promise<void> {
+  await closeOriginalBrowserActivation();
   await compatibilityRoute?.dispose().catch(() => { console.error("PKM compatibility custody remains unconfirmed."); });
   compatibilityRoute = undefined;
   retrievalSolutionDisposed = true;

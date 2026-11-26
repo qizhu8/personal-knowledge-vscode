@@ -175,8 +175,31 @@ print(json.dumps(tools["api_chat_send"](sys.argv[3], sys.argv[4], sys.argv[5], s
       assert.equal(receipt.result?.reply?.status, "complete", JSON.stringify(receipt));
       assert.equal(receipt.result?.reply?.content, "BUNDLED_GATEWAY_ACCEPTED");
       stage("chat-final-read-receipt");
+      if (process.env.PKM_UPGRADE_BROWSER === "1") {
+        const url = await vscode.commands.executeCommand("personalKnowledge.openOriginalBrowser");
+        assert.match(url, /^http:\/\/127\.0\.0\.1:\d+\/webview\/$/);
+        const token = await vscode.env.clipboard.readText();
+        assert.match(token, /^[A-Za-z0-9_-]{43}$/);
+        await vscode.env.clipboard.writeText("");
+        const enrollment = path.join(base, "browser-enrollment.json");
+        fs.writeFileSync(enrollment, JSON.stringify({ url, token, chatId: process.env.PKM_UPGRADE_CHAT,
+          bundle: path.join(extension.extensionPath, "dist/webview/panel.js"),
+        }), { mode: 0o600, flag: "wx" });
+        const until = Date.now() + 105_000;
+        const focused = path.join(base, "browser-focus-request");
+        while (!fs.existsSync(focused) && Date.now() < until) await delay(100);
+        assert(fs.existsSync(focused), "Browser evidence did not reach native Chat focus.");
+        await vscode.commands.executeCommand("personalKnowledge.apiChat.focus");
+        await vscode.commands.executeCommand("personalKnowledge.openApiChat", process.env.PKM_UPGRADE_CHAT);
+        const ready = path.join(base, "browser-revoke-request");
+        while (!fs.existsSync(ready) && Date.now() < until) await delay(100);
+        assert(fs.existsSync(ready), "Browser evidence did not reach revocation.");
+        await vscode.commands.executeCommand("personalKnowledge.openOriginalBrowser");
+        const evidence = path.join(base, "upgrade-browser.json");
+        while (!fs.existsSync(evidence) && Date.now() < until) await delay(100);
+        assert(fs.existsSync(evidence), "Browser evidence did not verify revocation.");
+      }
       // Maintenance can intentionally fence a live Chat adapter even when repair is rejected.
-      // Verify ordinary Chat continuity before probing maintenance on the native reader.
       await verifyRejectedRepair();
     }
     fs.writeFileSync(path.join(base, "upgrade-host.json"), JSON.stringify({
