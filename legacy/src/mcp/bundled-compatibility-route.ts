@@ -13,6 +13,7 @@ type Authority = {
   relayIdentity: { generation: string; runtimeBuild: string };
   relay(role: "workbench" | "chat"): { origin: string; serviceId: string; token: string };
   status(): Selection & { generation: string; runtimeBuild: string; phase: string; inFlight: number; uncertain: boolean;
+    missingRelays: ("workbench" | "chat")[];
     candidates: { mode: Mode; generation: string; runtimeBuild: string }[] };
   approveSwitch(expected: Selection, mode: Mode, onDraining?: () => void): Promise<{ applied: boolean }>;
   bindBrowserReads(): {
@@ -189,10 +190,12 @@ export function createBundledCompatibilityRoute(options: {
             active: { mode: status.mode, phase: status.phase, generation: status.generation, runtimeBuild: status.runtimeBuild,
               backendPid: process.pid, inFlight: status.inFlight, uncertain: Number(status.uncertain),
               backgroundActive: Number(options.live!.hasActiveChatWork()), backgroundUncertain: 0 },
-            candidates: status.candidates.map(item => ({ ...item, compatible: true })) };
+            candidates: status.candidates.map(item => ({ ...item, compatible: true })),
+            ...(status.missingRelays.length ? { error: "relayUnverified" } : {}) };
         };
         const current = snapshot();
         if (message.command === "mcpBackendSwitchRead") { send(current); return true; }
+        if (current.error) { send(current); return true; }
         if (current.active.backgroundActive) { send({ ...current, error: "backgroundWork" }); return true; }
         const target = current.candidates.find(item => item.generation === message.generation && item.runtimeBuild === message.runtimeBuild);
         if (!target || message.serviceId !== current.serviceId || message.activeGeneration !== current.active.generation

@@ -216,6 +216,13 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
       if (req.url === "/shared/enroll") {
         if (!available() || switching || stopping || sessions.has(input.clientId) || sessions.size >= 64)
           return reply(409, { error: "Cannot enroll relay." });
+        inFlight++;
+        try {
+          if (mode === "original") await original(role).observeVersion({}, true);
+          else await verifyBundled(role);
+        } finally { inFlight--; }
+        if (!available() || switching || stopping || sessions.has(input.clientId) || sessions.size >= 64)
+          return reply(409, { error: "Cannot enroll relay." });
         sessions.set(input.clientId, { id: input.clientId, role, accepting: true, inFlight: 0 });
         return reply(200, { instructions: facades.get(role)!.instructions });
       }
@@ -266,11 +273,14 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
   }
 
   const identity = (value: CompatibilityDispatchMode) => value === "original" ? config.legacy : bundled;
+  const missingRelays = () => roles.filter(role =>
+    ![...sessions.values()].some(session => session.role === role && session.accepting));
   function assertSwitchable(expected: CompatibilitySwitchExpectation, target: CompatibilityDispatchMode) {
     if (!available() || switching || stopping || inFlight || originalInFlight() || host.hasActiveChatWork?.()
       || mode !== expected.mode || selectionRevision !== expected.selectionRevision || mode === target
       || target !== "original" && target !== "bundled-v5")
       throw new Error("Gateway selection changed or outstanding work blocks switching; no switch applied.");
+    if (missingRelays().length) throw new Error("Both native PKM relays must verify their live backend before switching.");
   }
   async function approveSwitch(expected: CompatibilitySwitchExpectation, target: CompatibilityDispatchMode, onDraining?: () => void) {
     expected = { ...expected };
@@ -287,7 +297,7 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
         if (target === "bundled-v5") await verifyBundled(role);
       }));
       for (const result of results) if (result.status === "rejected") throw result.reason;
-      if (!available() || stopping || inFlight || originalInFlight() || host.hasActiveChatWork?.())
+      if (!available() || stopping || inFlight || originalInFlight() || host.hasActiveChatWork?.() || missingRelays().length)
         throw new Error("Gateway no longer accepts handoff.");
       // Linearization point: both existing relays resolve the same active reference.
       mode = target;
@@ -301,7 +311,7 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
       const { generation, runtimeBuild } = identity(mode);
       return { mode, generation, runtimeBuild };
     });
-    return { mode, generation: active.generation, runtimeBuild: active.runtimeBuild, selectionRevision, candidates, inFlight,
+    return { mode, generation: active.generation, runtimeBuild: active.runtimeBuild, selectionRevision, candidates, inFlight, missingRelays: missingRelays(),
       phase: !available() ? "action-required" : switching || stopping ? "draining" : "accepting",
       uncertain: uncertain || originalUncertain() > 0, automaticReplay: false,
       originalBuild: config.legacy.runtimeBuild, storageEngine: "original", storageMigrated: false,

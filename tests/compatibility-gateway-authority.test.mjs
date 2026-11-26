@@ -91,7 +91,12 @@ test("Original ↔ bundled v5 on existing pkm relays; interrupted Original write
     assert.equal(client.getServerVersion().name, "pkm");
     return { client, transport, pid: transport.pid };
   }
-  const clients = await Promise.all(["workbench", "chat"].map(role => connect(role, authority)));
+  assert.deepEqual(authority.status().missingRelays, ["workbench", "chat"]);
+  const workbench = await connect("workbench", authority);
+  assert.deepEqual(authority.status().missingRelays, ["chat"]);
+  await assert.rejects(authority.approveSwitch(authority.status(), "bundled-v5"), /Both native PKM relays/);
+  const clients = [workbench, await connect("chat", authority)];
+  assert.deepEqual(authority.status().missingRelays, []);
   const call = (client, name, args = {}) => client.callTool({ name, arguments: args }, undefined, { timeout: 5_000 });
   let originalInstances, relayInstances, publicTools, discovery;
   const sharedVersion = async mode => {
