@@ -86,27 +86,18 @@ const api = {
   McpStdioServerDefinition: class { constructor(label, command, args, env, version) { Object.assign(this, { label, command, args, env, version }); } },
   EventEmitter: class { event() {} dispose() {} },
   Uri: { file: fileUri },
-  commands: { registerCommand: () => ({ dispose() {} }) },
 };
 vm.runInNewContext(ts.transpileModule(extensionSource.slice(providerStart, providerEnd), {
   compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS },
 }).outputText + "\nregisterNativeMcpProvider(context);", {
   vscode: api, context: registrationContext, _mcpDefinitionsChanged: undefined, _nativeMcpProvider: false,
+  registerHostWriterCommand: () => ({ dispose() {} }),
   getStorePath: () => knowledgeRoot,
   readAccountMcpBinding: () => providerBinding,
   mcpRuntimeStatus: () => { throw new Error("Discovery must not run a synchronous Python health check"); },
   mcpServerDefinitionData: () => ({ label: "pkm", command: "/managed/python", args: ["/knowledge/mcp-server/server.py"], cwd: "/knowledge/mcp-server", version: "fixture" }),
   nativeMcpCwdUri,
 });
-assert.strictEqual(provider.provideMcpServerDefinitions().length, 0);
-knowledgeRoot = "/knowledge";
-const definitions = provider.provideMcpServerDefinitions();
-assert.strictEqual(definitions.length, 1, "a configured machine root must remain discoverable without a workspace or a health probe");
-assert.strictEqual(definitions[0].cwd.authority, remoteExtension.authority);
-providerBinding = { registrationOwner: "manual-user", knowledgeRoot: "/knowledge" };
-assert.strictEqual(provider.provideMcpServerDefinitions().length, 0, "an account's manual adapter must suppress the duplicate native definition");
-assert.throws(() => provider.resolveMcpServerDefinition(), /manual adapter/);
-providerBinding = undefined;
 assert.match(extensionSource, /_storeReady = true;[\s\S]*?_treeProvider\?\.refresh\(\);\s*refreshMcpDefinitions\(\);/, "store initialization must notify existing MCP definition subscribers");
 
 const rememberStart = extensionSource.indexOf("async function rememberMachineStorePath(");
@@ -133,6 +124,15 @@ const remember = vm.runInNewContext(ts.transpileModule(extensionSource.slice(rem
 });
 const rootContext = { globalState: { get: key => globalState.get(key), update: async (key, value) => { globalState.set(key, value); } } };
 (async () => {
+  assert.strictEqual((await provider.provideMcpServerDefinitions()).length, 0);
+  knowledgeRoot = "/knowledge";
+  const definitions = await provider.provideMcpServerDefinitions();
+  assert.strictEqual(definitions.length, 1, "a configured machine root must remain discoverable without a workspace or a health probe");
+  assert.strictEqual(definitions[0].cwd.authority, remoteExtension.authority);
+  providerBinding = { registrationOwner: "manual-user", knowledgeRoot: "/knowledge" };
+  assert.strictEqual((await provider.provideMcpServerDefinitions()).length, 0, "an account's manual adapter must suppress the duplicate native definition");
+  assert.throws(() => provider.resolveMcpServerDefinition(), /manual adapter/);
+
   const accountCompiled = path.join(fixture, "mcp-account-binding.js");
   childProcess.execFileSync("npx", ["esbuild", path.join(root, "src/mcp/mcp-account-binding.ts"), "--bundle", "--platform=node", "--format=cjs", `--outfile=${accountCompiled}`], { cwd: root, stdio: "ignore" });
   const account = require(accountCompiled);

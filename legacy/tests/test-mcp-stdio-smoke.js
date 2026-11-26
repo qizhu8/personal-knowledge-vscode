@@ -63,7 +63,7 @@ try {
   for (const name of ["recipe_runtime.py", "action_runtime.py", "action_modules.py", "action_authoring.py", "action_monitoring.py", "action_azuredevops.py", "action_run_store.py", "action_recovery.py", "action_components.py", "recipe_health.py", "agent_session_runtime.py", "api_chat_control.py", "mcp_call_guard.py", "diagnostic_log.py"]) {
     fs.copyFileSync(path.join(repositoryRoot, "resources", name), path.join(moduleDirectory, name));
   }
-  for (const name of ["knowledge_recovery.py", "knowledge_mutations.py", "knowledge_mutations.js", "todo_api.py", "capability_api.py", "note_inventory.py", "knowledge_snapshots.py", "asset_classification.py", "asset_classification.js"]) {
+  for (const name of ["node_runtime.py", "root_writer_fence.py", "knowledge_recovery.py", "knowledge_mutations.py", "knowledge_mutations.js", "todo_api.py", "capability_api.py", "note_inventory.py", "knowledge_snapshots.py", "asset_classification.py", "asset_classification.js"]) {
     fs.copyFileSync(path.join(repositoryRoot, "resources", name), path.join(moduleDirectory, name));
   }
 
