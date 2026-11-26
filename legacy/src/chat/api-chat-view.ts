@@ -16,7 +16,7 @@ import { ApiChatMessage, streamApiChat, chatToolRoundLimit, defaultLoopExemptToo
 import { dispatchNativeChatModel, type NativeChatModelDispatch } from "./native-chat-model-dispatch";
 import { nativeChatIdentityPrompt, nativeTaskInputPrompt, toolFreeChatInstruction } from "./native-chat-prompt";
 import { approveDetachedOriginalConversation, approveDetachedOriginalTextTurn, assertApprovedConversationCurrent,
-  detachedConversationLimits } from "./detached-original-text-turn";
+  detachedActivityCreditError, detachedConversationLimits } from "./detached-original-text-turn";
 import { ApiChatStore, ApiConversation, ApiChatStatus, ApiChatProgress, ChatMessage, ChatDelegation, apiChatStatus, apiChatProjection, apiChatDiagnostics, apiChatContextSummary, apiChatCreditUsage, chatHistoryPage, apiChatHarnessSnapshot, verifyHarnessArtifacts, settleProgressSteps } from "./api-chat-store";
 import { BaselineEventKind, recordBaselineEvent } from "../runtime/pkm-baseline";
 import { ChatBudgetExceededError, modelProfiles, assertModelAvailable, estimateInputTokens, validateBudget, validActivityCreditLimit, estimateCost, ChatModelProfile, ChatTokenUsage, parseThinkingBudget } from "./api-chat-models";
@@ -616,15 +616,17 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
     if (settings.provider === "vscode") throw new Error("The selected model needs the VS Code host.");
     if (this.personaStore().user()) throw new Error("A user Profile needs the VS Code Chat host.");
     for (const alias of settings.profiles.filter(item => item.model === settings.model)) assertModelAvailable(alias);
+    const settingsSnapshot = JSON.stringify(settings);
+    const { provider, endpoint, apiVersion, selectedProfile, contextWindow, maxOutputTokens, timeoutMs, activityCreditLimit } = settings;
     return {
-      chatId, grant, execution, namespace: store.namespace,
-      model: { ...settings, provider: settings.provider, profile: settings.selectedProfile },
+      chatId, grant, execution, namespace: store.namespace, activityCreditLimit,
+      model: { provider, endpoint, apiVersion, profile: selectedProfile, contextWindow, maxOutputTokens, timeoutMs },
       assertNativeOwner: () => {
         assertCurrent();
         this.browserChatTurnTarget(grant.workspaceRoot, chatId);
         const fresh = this.settings(this.chat);
-        if (this.personaStore().user() || this.captureExecution(this.chat!).digest !== execution.digest || JSON.stringify(fresh) !== JSON.stringify(settings))
-          throw new Error("The Original Chat context changed.");
+        if (this.personaStore().user() || this.captureExecution(this.chat!).digest !== execution.digest || JSON.stringify(fresh) !== settingsSnapshot)
+          throw new Error("The Original Chat context or native model settings changed. Restart HTTPS setup to review the current settings.");
       },
     };
   }
@@ -644,11 +646,12 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
   async approveDetachedConversation(grant: import("./browser-chat-transcript").BrowserChatGrant, chatId: string,
     assertCurrent: () => void) {
     const options = this.detachedTurnOptions(grant, chatId, assertCurrent);
+    if (options.activityCreditLimit !== -1) throw new Error(detachedActivityCreditError);
     const approval = await approveDetachedOriginalConversation({
-      ...options,
+      ...options, nativeSettings: { activityCreditLimit: options.activityCreditLimit, toolPolicy: "none" },
       async confirm({ chatId, title, provider, model, endpoint }) {
         return await vscode.window.showWarningMessage("Authorize this Original Chat conversation after VS Code closes?", {
-          modal: true, detail: `${title.slice(0, 120)} (${chatId})\n${provider}: ${model} at ${endpoint}\nThis browser can send up to ${detachedConversationLimits.maxTurns} new messages and read their saved replies for up to 24 hours. Existing Task instructions and these new exchanges may be sent to this provider. Tools, attachments and recall are disabled. The provider credential is saved privately for this approved Chat only. An unrelated Chat edit, service restart or revocation invalidates the conversation.`,
+          modal: true, detail: `${title.slice(0, 120)} (${chatId})\n${provider}: ${model} at ${endpoint}\nThis browser can send up to ${detachedConversationLimits.maxTurns} new messages and read their saved replies for up to 24 hours, using this Chat's effective Unlimited activity credit setting. Existing Task instructions and these new exchanges may be sent to this provider. The browser cannot use native tools, attachments or recall; native settings are unchanged. The provider credential is saved privately for this approved Chat only. An unrelated Chat edit, service restart or revocation invalidates the conversation.`,
         }, "Authorize conversation") === "Authorize conversation";
       },
     });

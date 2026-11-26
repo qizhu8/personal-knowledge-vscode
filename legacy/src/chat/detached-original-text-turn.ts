@@ -22,6 +22,8 @@ type Provider = Readonly<{
   maxOutputTokens: number;
   timeoutMs: number;
 }>;
+type NativeConversationSettings = Readonly<{ activityCreditLimit: -1; toolPolicy: "none" }>;
+export const detachedActivityCreditError = "Detached access requires an Unlimited activity credit limit. To opt in, choose Unlimited in the Chat library's Credit limit menu for this Chat.";
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const unavailable = () => Error("The pre-authorized Original Chat turn is unavailable.");
@@ -48,6 +50,7 @@ export interface DetachedOriginalTextApproval extends DetachedOriginalApprovalBa
 }
 export interface DetachedOriginalConversationApproval extends DetachedOriginalApprovalBase {
   scope: "conversation";
+  nativeSettings?: NativeConversationSettings;
   issuedAt: number;
   maxTurns: number;
   initialMessageCount: number;
@@ -63,22 +66,33 @@ function freezeTree<T>(value: T): T {
   return value;
 }
 
-function prepare(chat: ApiConversation, namespace: string, model: Provider, text: string, continuationAt = chat.messages.length): ApiChatMessage[] {
+function prepare(chat: ApiConversation, namespace: string, model: Provider, text: string,
+  continuationAt = chat.messages.length, nativeSettings?: NativeConversationSettings): ApiChatMessage[] {
   const toolFree = chat.toolSelection ? ["builtin", "vscode"].every(source => chat.toolSelection!.disabledSources.includes(source))
     : chat.builtinTools?.length === 0 && chat.vscodeTools?.length === 0;
-  if (!chat.sessionId || chat.workspaceNamespace !== namespace || chat.permissionMode !== "read-only" ||
-      chat.includeHistory !== false || chat.activityCreditLimit !== -1 || chat.activityBudgetBypass ||
-      chat.workflowMode && chat.workflowMode !== "chat" || !toolFree || chat.mcpServers?.some(server => server.enabled) ||
-      chat.context.length || Object.values(chat.agentContext || {}).some(items => items.length) ||
+  if (!chat.sessionId) throw Error("Start a Task in this Original Chat before authorizing a detached conversation.");
+  if (chat.workspaceNamespace !== namespace || chat.permissionMode !== "read-only" ||
+      chat.includeHistory !== false || chat.workflowMode && chat.workflowMode !== "chat")
+    throw Error("Open a read-only Chat in its original workspace and turn off history recall before authorizing detached access.");
+  if ((chat.activityCreditLimit ?? nativeSettings?.activityCreditLimit) !== -1) throw Error(detachedActivityCreditError);
+  if (chat.activityBudgetBypass) throw Error("Re-enable the Chat's activity limits before configuring detached access.");
+  if (!nativeSettings && !toolFree) throw Error("Exact-message approval requires native tools to be disabled.");
+  if (chat.mcpServers?.some(server => server.enabled))
+    throw Error("Disable the Chat's configured MCP servers before authorizing detached access.");
+  if (chat.context.length || Object.values(chat.agentContext || {}).some(items => items.length) ||
       chat.images?.length || chat.queuedInputs?.length || chat.workerState || chat.workerActivity ||
       chat.agentProfileId || chat.workGoal || chat.debugRequest || currentHarnessTask(chat) || chat.taskContextCheckpoints?.length ||
-      chat.plans?.length || chat.modelProvider !== model.provider || chat.modelProfileId !== model.profile.id ||
+      chat.plans?.length)
+    throw Error("Choose an idle Chat without attachments, extra context, Profiles, work goals, or plans for detached access.");
+  if ((chat.modelProvider ?? (nativeSettings && model.provider)) !== model.provider ||
+      (chat.modelProfileId ?? (nativeSettings && model.profile.id)) !== model.profile.id ||
       chat.contextWindow !== undefined && chat.contextWindow !== model.contextWindow ||
       chat.maxOutputTokens !== undefined && chat.maxOutputTokens !== model.maxOutputTokens)
-    throw unavailable();
+    throw Error("The saved Chat model settings do not match the native selection. Reopen the Chat before configuring detached access.");
   const inputs = chat.messages.filter(message => message.taskId === chat.sessionId);
   if (inputs.some(message => message.images?.length || message.workerEventIds?.length || message.portalSource ||
-      message.portalReview || message.role === "user" && message.status !== "complete")) throw unavailable();
+      message.portalReview || message.role === "user" && message.status !== "complete"))
+    throw Error("Choose an existing Task without attached, delegated, or unfinished inputs for detached access.");
   const messages: ApiChatMessage[] = [{ role: "system", content: toolFreeChatInstruction + nativeChatIdentityPrompt(chat, namespace) },
     ...chat.messages.slice(0, continuationAt).filter(message => message.taskId === chat.sessionId && message.role === "user").map(message => ({
       role: "user" as const, content: nativeTaskInputPrompt(message.id, message.content),
@@ -105,12 +119,21 @@ export async function approveDetachedOriginalTextTurn(options: ApprovalOptions &
 }
 
 export async function approveDetachedOriginalConversation(options: ApprovalOptions & {
+  nativeSettings?: NativeConversationSettings;
   confirm(detail: ApprovalDetail): Promise<boolean>;
 }): Promise<DetachedOriginalConversationApproval | undefined> {
-  const pinned = await approveOriginal(options, " ", options.confirm);
+  const nativeSettings = captureNativeConversationSettings(options.nativeSettings);
+  const pinned = await approveOriginal(options, " ", options.confirm, nativeSettings);
   if (!pinned) return;
   return freezeTree({ ...pinned.base, scope: "conversation", issuedAt: pinned.issuedAt,
-    maxTurns: detachedConversationLimits.maxTurns, initialMessageCount: pinned.messageCount });
+    maxTurns: detachedConversationLimits.maxTurns, initialMessageCount: pinned.messageCount,
+    ...(nativeSettings ? { nativeSettings } : {}) });
+}
+
+function captureNativeConversationSettings(settings?: NativeConversationSettings): NativeConversationSettings | undefined {
+  if (settings === undefined) return;
+  if (settings?.activityCreditLimit !== -1 || settings.toolPolicy !== "none") throw unavailable();
+  return { activityCreditLimit: -1, toolPolicy: "none" };
 }
 
 export function assertApprovedConversationCurrent(approval: DetachedOriginalConversationApproval): void {
@@ -124,7 +147,8 @@ export function assertApprovedConversationCurrent(approval: DetachedOriginalConv
   if (store.browserTurnRevision(chat, execution.digest) !== approval.revision) throw unavailable();
 }
 
-async function approveOriginal(options: ApprovalOptions, text: string, confirm: (detail: ApprovalDetail) => Promise<boolean>) {
+async function approveOriginal(options: ApprovalOptions, text: string, confirm: (detail: ApprovalDetail) => Promise<boolean>,
+  nativeSettings?: NativeConversationSettings) {
   const { namespace, chatId } = options, grant = { ...options.grant };
   const execution = structuredClone(options.execution), model = structuredClone(options.model);
   if (!uuid.test(chatId) || !grant.chatHostId || !uuid.test(grant.chatHostId) ||
@@ -132,16 +156,19 @@ async function approveOriginal(options: ApprovalOptions, text: string, confirm: 
       !execution.trusted || execution.permissionMode !== "read-only" || execution.knowledgeRoot !== grant.workspaceRoot ||
       sha(execution.workspaceUris.join("|")).slice(0, 16) !== namespace ||
       !execution.workspacePaths.every((path, index) => execution.workspaceUris[index].startsWith("file:") && realpathSync(path) === path))
-    throw unavailable();
-  const endpoint = new URL(model.endpoint);
+    throw Error("Detached access needs a trusted, read-only Original Chat with an active HTTP model in its original workspace.");
+  let endpoint: URL;
+  try { endpoint = new URL(model.endpoint); }
+  catch { throw Error("Configure the selected model's HTTPS endpoint in PKM settings before enabling detached access."); }
   if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash ||
-      endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && ["127.0.0.1", "[::1]", "localhost"].includes(endpoint.hostname))) throw unavailable();
+      endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && ["127.0.0.1", "[::1]", "localhost"].includes(endpoint.hostname)))
+    throw Error("Use an HTTPS model endpoint without credentials, query, or fragment (HTTP is allowed only on loopback).");
   options.assertNativeOwner();
   const store = new ApiChatStore(join(grant.workspaceRoot, ".pkm", "state"), namespace);
   const root = lstatSync(grant.workspaceRoot);
   const chat = store.resolveChat(chatPkmUrl(namespace, chatId));
   store.assertRunnable(chat, undefined, execution);
-  prepare(chat, namespace, model, text);
+  prepare(chat, namespace, model, text, undefined, nativeSettings);
   const revision = store.browserTurnRevision(chat, execution.digest);
   if (!await confirm({ title: chat.title, chatId, provider: model.provider, model: model.profile.model, endpoint: model.endpoint })) return;
   options.assertNativeOwner();
@@ -163,6 +190,7 @@ export function bindDetachedOriginalTextTurn(privateApproval: DetachedOriginalAp
 }) {
   const approval = structuredClone(privateApproval);
   const conversation = "scope" in approval ? approval : undefined;
+  const nativeSettings = captureNativeConversationSettings(conversation?.nativeSettings);
   const exact = "approvedTextHash" in approval ? approval.approvedTextHash : undefined;
   if (!uuid.test(approval.approvalId) || !Number.isSafeInteger(approval.chatRevision) ||
       !Number.isSafeInteger(approval.expiresAt) || approval.shareReply !== true ||
@@ -204,7 +232,7 @@ export function bindDetachedOriginalTextTurn(privateApproval: DetachedOriginalAp
       if (!permits(text)) throw unavailable();
       const chat = target(id);
       const admissionStamp = expected;
-      const messages = prepare(chat, namespace, model, text, conversation?.initialMessageCount);
+      const messages = prepare(chat, namespace, model, text, conversation?.initialMessageCount, nativeSettings);
       const apiKey = await owner.readProviderKey(structuredClone(model), admission.signal);
       if (typeof apiKey !== "string" || (!apiKey && new URL(model.endpoint).protocol === "https:")) throw unavailable();
       admission.assertUnchanged();

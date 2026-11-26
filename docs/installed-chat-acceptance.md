@@ -226,8 +226,15 @@ The optional private provision field `turn` binds one native approval to the
 exact browser grant, Chat revision, Task Session, message and provider, with
 its scoped `providerKey`. The daemon holds writer custody through settlement.
 Approval explicitly includes readback of that sent message and its saved
-reply; it does not refresh or widen the prior transcript receipt. There is
-no routine gateway provisioning UI for this private owner contract.
+reply; it does not refresh or widen the prior transcript receipt.
+
+The native PKM HTTPS setup can also authorize up to eight tool-free turns in
+24 hours on the same Original Task Session. It pins the native effective HTTP
+model and profile, including inherited defaults, without rewriting the Chat.
+The effective activity credit limit must be Unlimited; the detached adapter
+does not enforce finite activity credit limits. To opt in, use **Credit limit**
+in the native Chat library menu for that Chat. Native tool settings remain
+unchanged and the detached browser cannot use them.
 
 To qualify the actual candidate rather than a staged checkout payload, run
 `node --test tests/test-browser-chat-transcript.js` from `legacy/` with

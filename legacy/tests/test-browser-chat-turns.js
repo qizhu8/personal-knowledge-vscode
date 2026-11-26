@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { createHash, randomUUID } = require("node:crypto");
-const { mkdirSync, rmSync } = require("node:fs");
+const { mkdirSync, readFileSync, rmSync } = require("node:fs");
 const { createServer } = require("node:http");
 const { join, resolve } = require("node:path");
 const Module = require("node:module");
@@ -33,12 +33,13 @@ test("native browser Send and exact Stop use the existing store, writer and stre
   const cfg = { aiEndpoint: `http://127.0.0.1:${server.address().port}/v1`, aiModel: "fixture",
     apiChatModelProfiles: [{ id: "fixture", status: "active", contextWindow: 8192, maxOutputTokens: 1024 }] };
   const notices = [];
+  let consent = () => undefined, keyReads = 0;
   const vscode = {
     env: { language: "en" },
     workspace: { isTrusted: true, workspaceFolders: [folder], onDidChangeConfiguration: disposable,
       getConfiguration: () => ({ get: (name, fallback) => cfg[name] ?? fallback }) },
     window: { showErrorMessage: async message => { notices.push(message); }, showInformationMessage: async () => {},
-      showWarningMessage: async message => { notices.push(message); } },
+      showWarningMessage: async (message, options, action) => { notices.push(message); return consent(options, action); } },
     lm: { tools: [] }, commands: { executeCommand: async () => undefined },
   };
   const load = Module._load;
@@ -53,7 +54,8 @@ test("native browser Send and exact Stop use the existing store, writer and stre
     setStorePath(root);
     const host = new HostWriterAdmission(root, () => root);
     const context = { extensionPath: resolve(__dirname, ".."), globalStorageUri: { fsPath: root }, globalState: { get: (_, fallback) => fallback, update: async () => {} },
-      workspaceState: { get: () => undefined, update: async () => {} }, secrets: { get: async () => "local-fixture" } };
+      workspaceState: { get: () => undefined, update: async () => {} },
+      secrets: { get: async () => { keyReads++; return "local-fixture"; } } };
     view = new ApiChatView(context);
     view.setHostWriterObserver((work, cancellation) => cancellation ? host.observeCancellation(work) : host.observe("chat", work));
     const namespace = createHash("sha256").update(folder.uri.toString()).digest("hex").slice(0, 16);
@@ -142,4 +144,58 @@ test("native browser Send and exact Stop use the existing store, writer and stre
   assert.equal(afterRace.title, snapshot.title);
   assert.equal(afterRace.messages.length, 6);
   assert.equal(view.chat.messages.length, 6, "a rejected draft must not become the visible Chat");
+
+  await t.test("native consent pins inherited settings without changing the saved Chat", async () => {
+    const { bindDetachedOriginalTextTurn } = require(join(build, "chat/detached-original-text-turn"));
+    const inherited = store.create();
+    Object.assign(inherited, { permissionMode: "read-only", includeHistory: false });
+    store.save(inherited);
+    store.startTask(inherited, "Legacy Task");
+    view.chat = inherited;
+    view.chats.set(inherited.id, inherited);
+    const file = store.file(inherited.id), before = readFileSync(file, "utf8");
+    const inheritedFields = ["activityCreditLimit", "modelProvider", "modelProfileId", "builtinTools", "vscodeTools", "toolSelection"];
+    const assertInherited = raw => {
+      for (const field of inheritedFields) assert.equal(Object.hasOwn(JSON.parse(raw), field), false, field);
+    };
+    assertInherited(before);
+    const secretReadsBefore = keyReads;
+    let modals = 0;
+    const approve = () => view.approveDetachedConversation(grant, inherited.id, () => {});
+    consent = () => { modals++; };
+    await assert.rejects(approve(), /requires an Unlimited activity credit limit.*Credit limit menu/);
+    assert.equal(modals, 0);
+    cfg.apiChatActivityCreditLimit = -1;
+    cfg.apiChatProvider = "openai-compatible";
+    assert.equal(await approve(), undefined);
+    assert.equal(modals, 1);
+    for (const [key, changed] of [["apiChatActivityCreditLimit", 25], ["aiModel", "different-profile"]]) {
+      const previous = cfg[key];
+      consent = (_options, action) => { cfg[key] = changed; return action; };
+      await assert.rejects(approve(), /native model settings changed/);
+      cfg[key] = previous;
+    }
+    assert.equal(keyReads, secretReadsBefore, "do not read the key after a refusal or a settings change");
+    consent = (options, action) => {
+      assert.match(options.detail, /Unlimited activity credit.*browser cannot use native tools/s);
+      return action;
+    };
+    const { approval, providerKey } = await approve();
+    assert.equal(keyReads, secretReadsBefore + 1);
+    assert.equal(approval.model.provider, "openai-compatible");
+    assert.equal(approval.model.profile.id, "fixture");
+    assert.deepEqual(approval.nativeSettings, { activityCreditLimit: -1, toolPolicy: "none" });
+    assert.equal(readFileSync(file, "utf8"), before, "approval must not rewrite native settings");
+    const detached = bindDetachedOriginalTextTurn(approval, {
+      assertCurrent: current => assert.deepEqual(current, grant),
+      readProviderKey: async () => providerKey,
+      withWriter: work => work(),
+    });
+    const ref = detached.getSendTarget(grant, { chatId: inherited.id });
+    assert.equal((await detached.sendChatTurn(grant, { ...ref, text: "send with native defaults" })).status, "completed");
+    assert.equal(requests.at(-1).model, "fixture");
+    assert.equal(requests.at(-1).tools, undefined);
+    assert.equal(store.load(inherited.id, false).sessionId, approval.sessionId);
+    assertInherited(readFileSync(file, "utf8"));
+  });
 });

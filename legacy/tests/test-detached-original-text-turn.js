@@ -70,7 +70,7 @@ test("plain-Node Original Chat owner admits one exact native-approved turn and s
   const noTools = store.load(chat.id, false);
   noTools.vscodeTools = ["copilot_listDirectory"];
   store.save(noTools);
-  await assert.rejects(approve("not eligible"), /unavailable/);
+  await assert.rejects(approve("not eligible"), /requires native tools to be disabled/);
   noTools.vscodeTools = [];
   store.save(noTools);
   const approval = await approve("finish");
