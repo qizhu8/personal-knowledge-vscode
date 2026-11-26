@@ -42,6 +42,7 @@ async function body(req: IncomingMessage) {
 
 export interface CompatibilityGatewayHost {
   acquireLegacyFence(root: string): LegacySharedFence;
+  acquireCustody?(root: string): ReturnType<typeof acquireCompatibilityGatewayCustody>;
   workbenchAttribution: Readonly<Json>;
   chatAttribution: Readonly<Json>;
   assertAllowed?(): void;
@@ -68,7 +69,8 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
   if (attributions.workbench.source !== "vscode-provider" || attributions.workbench.scope !== "shared-host"
     || attributions.chat.source !== "pkm-chat" || !["shared-host", "chat"].includes(String(attributions.chat.scope)))
     throw new Error("Distinct exact Original launch attribution is required.");
-  const custody = await acquireCompatibilityGatewayCustody(config.knowledgeRoot, root => host.acquireLegacyFence(root));
+  const custody = await (host.acquireCustody?.(config.knowledgeRoot)
+    ?? acquireCompatibilityGatewayCustody(config.knowledgeRoot, root => host.acquireLegacyFence(root)));
   const originals = new Map<Role, Awaited<ReturnType<typeof connectCompatibilityMcp>>>();
   const original = (role: Role) => originals.get(role)!;
   type Session = { id: string; role: Role; accepting: boolean; inFlight: number };

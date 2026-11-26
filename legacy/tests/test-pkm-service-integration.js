@@ -50,6 +50,7 @@ class FakeClient {
 }
 const context = vm.createContext({
   PkmServiceClient: FakeClient,
+  compatibilityRoute: undefined,
   githubSyncScheduler: undefined, githubSyncCoordinatorStatePath: undefined,
   githubSyncTasks: new Map(), githubSyncForceUpdateAudit: new Map(),
   path, os, randomUUID, createHash, sameKnowledgeRoot, githubSyncResultIsNoChange, GitHubSyncConflictError, GitHubSyncExtensionCompatibilityError, PkmServiceRecoveryPersistenceError,

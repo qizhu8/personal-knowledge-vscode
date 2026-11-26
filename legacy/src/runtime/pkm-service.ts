@@ -522,6 +522,34 @@ export async function withPkmServiceLifecycleLock<T>(options: PkmServiceBootOpti
   return lifecycleLock(identity, work);
 }
 
+/** Reserve the singleton startup gap while native custody drains a verified predecessor. */
+export async function withPkmServiceNativeAdmission<T>(options: PkmServiceBootOptions,
+  work: (drainPredecessor: () => Promise<void>) => Promise<T>): Promise<T> {
+  const identity = pkmServiceIdentity(options);
+  prepareDirectories(identity);
+  return lifecycleLock(identity, () => work(async () => {
+    const previous = readMetadata(identity);
+    if (previous) {
+      if (!alive(previous.pid))
+        throw new Error("The previous PKM service has an unknown exit; native admission requires explicit recovery.");
+      const peer = await compatiblePeer(previous, options.extensionVersion);
+      try {
+        if (peer.serviceMethods && !peer.serviceMethods.has("drain"))
+          throw new Error("The previous PKM service cannot verify a safe-idle drain; native admission was refused.");
+        await peer.request("drain", undefined, LONG_TIMEOUT);
+      } finally { peer.close(); }
+      const deadline = Date.now() + SHORT_TIMEOUT;
+      while (alive(previous.pid) || readMetadata(identity)?.nonce === previous.nonce) {
+        if (Date.now() >= deadline)
+          throw new Error("The previous PKM service did not finish its verified drain; no native writer was started.");
+        await delay(25);
+      }
+      if (readMetadata(identity))
+        throw new Error("The PKM service identity changed during native admission; no native writer was started.");
+    }
+  }));
+}
+
 async function ensureService(options: PkmServiceClientOptions): Promise<RpcPeer> {
   const identity = pkmServiceIdentity(options);
   prepareDirectories(identity);

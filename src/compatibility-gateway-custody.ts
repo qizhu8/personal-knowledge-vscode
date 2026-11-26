@@ -32,7 +32,8 @@ async function rootDirectory(root: string) {
   return { directory, identity };
 }
 
-async function acquireRoute(root: string, mode: "live" | "cold", acquireLegacyFence?: (root: string) => LegacySharedFence) {
+async function acquireRoute(root: string, mode: "live" | "cold",
+  acquireLegacyFence?: (root: string) => LegacySharedFence | Promise<LegacySharedFence>) {
   let guard: Awaited<ReturnType<typeof acquireSharedManagerControlGuard>> | undefined;
   let fence: LegacySharedFence | undefined;
   try {
@@ -59,7 +60,7 @@ async function acquireRoute(root: string, mode: "live" | "cold", acquireLegacyFe
     // A crash leaves the durable marker; an orderly admission refusal can undo it.
     try {
       if (mode === "live") {
-        fence = acquireLegacyFence?.(root);
+        fence = await acquireLegacyFence?.(root);
         if (fence?.mode !== "shared" || fence.root !== root) throw new Error("Original shared writer fence required.");
         fence.assertHeld();
       }
@@ -93,7 +94,8 @@ async function acquireRoute(root: string, mode: "live" | "cold", acquireLegacyFe
 }
 
 /** Reuse Original's shared writer fence; exclusive here would deadlock Original's own writes. */
-export function acquireCompatibilityGatewayCustody(root: string, acquireLegacyFence: (root: string) => LegacySharedFence) {
+export function acquireCompatibilityGatewayCustody(root: string,
+  acquireLegacyFence: (root: string) => LegacySharedFence | Promise<LegacySharedFence>) {
   return acquireRoute(root, "live", acquireLegacyFence);
 }
 

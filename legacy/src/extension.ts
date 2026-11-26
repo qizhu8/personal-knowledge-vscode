@@ -2703,6 +2703,8 @@ async function recoverGitHubSyncServiceResults(context: vscode.ExtensionContext,
 }
 
 function configureGitHubSyncScheduler(context: vscode.ExtensionContext): void {
+  try { compatibilityRoute?.assertLaunchAdmission(); }
+  catch (error) { log.warn(`PKM service startup refused by native admission: ${String(error)}`); return; }
   let createdCoordinator = false;
   const coordinatorStatePath = githubSyncCoordinatorStateDirectory(context);
   if (githubSyncScheduler && githubSyncCoordinatorStatePath !== coordinatorStatePath) {
@@ -15307,6 +15309,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ? createBundledCompatibilityRoute({
       extensionPath: context.extensionPath, storage: context.globalStorageUri.fsPath,
       root: getStorePath, managed: managedMcpServerDirectory, python: resolveMcpPython,
+      service: () => ({ knowledgeRoot: getStorePath(), globalStoragePath: context.globalStorageUri.fsPath,
+        extensionVersion: String(context.extension.packageJSON.version),
+        serviceEntryPath: path.join(context.extensionPath, "dist/runtime/pkm-service-entry.js") }),
       live: { assertAdmittedRoot() {
         const root = getStorePath(), binding = readAccountMcpBinding();
         const stat = fs.lstatSync(root);
@@ -15604,6 +15609,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   if (configuredPath) {
     fsSetStorePath(configuredPath);
     storageSetStorePath(configuredPath);
+    if (gatewayRoute && readAccountMcpBinding()?.registrationOwner === "native-provider") {
+      try { await gatewayRoute.prepareCustody(); }
+      catch (error) { log.warn(`Native root admission unavailable: ${String(error)}`); }
+    }
     setPrivacyStoreRoot(configuredPath);
     setKnowledgeGroupStoreRoot(configuredPath);
     try { hostWriterAdmission ||= new HostWriterAdmission(configuredPath, getStorePath); }

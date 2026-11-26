@@ -584,6 +584,97 @@ test("unregistered PKM Sync service holds its fence until a real drain completes
   }
 });
 
+test("native custody safely drains real 4.0.27 service, inhibits peer drains, and readmits a persistent successor", {
+  skip: process.platform !== "linux", timeout: 60000,
+}, async () => {
+  const scratch = join(tests, `.native-service-admission-${randomUUID()}`);
+  const root = join(scratch, "knowledge"), storage = join(scratch, "storage");
+  const currentVersion = JSON.parse(await readFile(join(project, "package.json"), "utf8")).version;
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  await mkdir(storage, { mode: 0o700 });
+  await mkdir(join(scratch, "home"), { mode: 0o700 });
+  const home = await open(join(scratch, "home"), "r");
+  const env = { ...process.env, HOME: `/proc/${process.pid}/fd/${home.fd}`, TMPDIR: scratch };
+  delete env.PKM_MANAGED_WRITER_SESSION;
+  const archive = resolve(tests, "../../personal-knowledge-vscode/personal-knowledge-4.0.27.vsix");
+  assert.equal(createHash("sha256").update(await readFile(archive)).digest("hex"),
+    "d9deb3f1664496342ee1397c78748cb020fdf65aac0978bbbb43b880d5d2f1be");
+  const unpack = spawnSync("unzip", ["-q", archive, "extension/dist/*", "-d", scratch], { encoding: "utf8" });
+  assert.equal(unpack.status, 0, unpack.stderr);
+  await writeFile(join(scratch, "extension/package.json"), '{"type":"commonjs","version":"4.0.27"}');
+  const previous = spawn(process.execPath, ["-e", `
+    const [modulePath, root, storage] = process.argv.slice(1);
+    require(modulePath).startPkmService({ knowledgeRoot: root, globalStoragePath: storage, extensionVersion: "4.0.27" })
+      .then(async service => { console.log("ready"); await service.stopped; process.exit(0); })
+      .catch(error => { console.error(error); process.exit(1); });
+  `, join(scratch, "extension/dist/runtime/pkm-service.js"), root, storage],
+  { env, stdio: ["ignore", "pipe", "pipe"] });
+  let stderr = "";
+  previous.stderr.on("data", bytes => { stderr += bytes; });
+  const exited = new Promise(resolve => previous.once("close", (code, signal) => resolve({ code, signal })));
+  try {
+    await new Promise((resolveReady, reject) => {
+      const timer = setTimeout(() => reject(new Error(`Predecessor service did not start: ${stderr}`)), 10_000);
+      previous.stdout.once("data", () => { clearTimeout(timer); resolveReady(); });
+      previous.once("exit", () => { clearTimeout(timer); reject(new Error(`Predecessor service exited: ${stderr}`)); });
+    });
+    const runner = join(scratch, "admit.cjs");
+    await writeFile(runner, `
+const assert = require("node:assert/strict"), fs = require("node:fs");
+const { withPkmServiceNativeAdmission, PkmServiceClient, pkmServiceIdentity } = require(${JSON.stringify(join(dist, "runtime/pkm-service.js"))});
+const { acquireLinuxRootWriterFence: fence } = require(${JSON.stringify(join(dist, "runtime/linux-root-writer-fence.js"))});
+const options = { knowledgeRoot: ${JSON.stringify(root)}, globalStoragePath: ${JSON.stringify(storage)},
+ extensionVersion: ${JSON.stringify(currentVersion)}, serviceEntryPath: ${JSON.stringify(join(dist, "runtime/pkm-service-entry.js"))}, execute: async () => {} };
+(async () => {
+ const { acquireCompatibilityGatewayCustody } = await import(${JSON.stringify(pathToFileURL(join(nextDist, "compatibility-gateway-custody.js")).href)});
+ const acquire = () => withPkmServiceNativeAdmission(options, drain =>
+  acquireCompatibilityGatewayCustody(options.knowledgeRoot, async root => {
+   await drain();
+   const exclusive = fence(root, "exclusive", 500);
+   try { exclusive.assertHeld(); } finally { exclusive.release(); }
+   return fence(root, "shared", 500);
+  }));
+ assert.throws(() => fence(options.knowledgeRoot, "exclusive", 100), /fence|readiness/);
+ let custody, client;
+ try {
+  custody = await acquire();
+  client = await PkmServiceClient.connect(options);
+  const identity = pkmServiceIdentity(options);
+  const metadata = () => JSON.parse(fs.readFileSync(require("node:path").join(identity.serviceDirectory, "endpoint.json")));
+  const pid = metadata().pid;
+  await assert.rejects(acquire(), /already held/);
+  await client.configure([]);
+  assert.equal(metadata().pid, pid);
+  await custody.release(true); custody = undefined;
+  client.dispose(); client = undefined;
+  process.kill(pid, 0);
+  assert.throws(() => fence(options.knowledgeRoot, "exclusive", 100), /fence|readiness/);
+  custody = await acquire();
+  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  console.log(JSON.stringify({ predecessorDrained: true, exclusivePreflight: true,
+   peerDrainInhibited: true, successorSurvivedHostRelease: true, persistentSuccessorReadmitted: true }));
+ } finally {
+  if (client) { await client.drain(); client.dispose(); }
+  await custody?.release(true);
+ }
+})().catch(error => { console.error(error); process.exitCode = 1; });
+`);
+    const controller = spawn(process.execPath, [runner], { cwd: project, env, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "", errors = "";
+    controller.stdout.on("data", bytes => { output += bytes; });
+    controller.stderr.on("data", bytes => { errors += bytes; });
+    const result = await new Promise(resolve => controller.once("close", code => resolve(code)));
+    assert.equal(result, 0, errors);
+    assert.equal(JSON.parse(output.trim()).persistentSuccessorReadmitted, true);
+    assert.deepEqual(await exited, { code: 0, signal: null }, stderr);
+  } finally {
+    if (previous.exitCode === null && previous.signalCode === null) previous.kill("SIGTERM");
+    await exited;
+    await home.close();
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
 test("original 4.0.22 Sync service does not hold the current Next writer fence", {
   skip: process.platform !== "linux" || !process.env.PKM_ORIGINAL_VSIX, timeout: 30000,
 }, async () => {

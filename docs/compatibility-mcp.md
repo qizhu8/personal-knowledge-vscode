@@ -95,6 +95,18 @@ admission; its custody ancestry must also deny group/other writes when other
 users can traverse that root. Custody markers and control directories remain
 private. Admission never changes the root's permissions.
 
+Native activation prepares this custody before its own retrieval and singleton
+service writers start. Under that reservation and the existing singleton
+lifecycle lock, it asks a verified same-profile/root predecessor service
+(including protocol-v1 4.0.27) to perform its administrative safe-idle drain.
+It waits for that process and endpoint to exit, then still takes the exclusive
+root-writer preflight; it never kills the daemon or substitutes a health check
+for drain proof. Unknown exits and unsupported drain protocols refuse admission.
+The lifecycle lock prevents a reconnect from restarting the singleton in that
+gap. Normal window disposal does not drain the independent HTTPS service;
+reopening a native owner safely drains/readmits its persistent successor while
+retaining its private HTTPS provision.
+
 The native provider and PKM Chat use the reviewed target selected in the v4 host.
 Copilot CLI has a separate user configuration at `~/.copilot/mcp-config.json`.
 Selecting the native provider does not silently rewrite that file. After explicit

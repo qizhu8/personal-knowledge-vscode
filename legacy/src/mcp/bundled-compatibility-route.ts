@@ -6,9 +6,11 @@ import { MCP_LIFECYCLE_SCHEMA, readManagedMcpManifest } from "./mcp-lifecycle";
 import { verifyNextPayload } from "../runtime/next-payload-verifier";
 import { acquireLinuxRootWriterFence, assertLinuxRootStillLegacyWritable } from "../runtime/linux-root-writer-fence";
 import { MCP_ATTRIBUTION_ENV, managedMcpAttributionEnv } from "./mcp-attribution";
+import { withPkmServiceNativeAdmission, type PkmServiceBootOptions } from "../runtime/pkm-service";
 
 type Mode = "original" | "bundled-v5";
 type Selection = { mode: Mode; selectionRevision: string };
+type Custody = { launchGrant?: string; assertHeld(): void; release(clean: boolean): Promise<void> };
 type Authority = {
   relayIdentity: { generation: string; runtimeBuild: string };
   relay(role: "workbench" | "chat"): { origin: string; serviceId: string; token: string };
@@ -45,13 +47,56 @@ function hasPendingOwner(root: string) {
 export function createBundledCompatibilityRoute(options: {
   extensionPath: string; storage: string;
   root(): string; managed(): string; python(): string; assertAllowed(): void;
+  service?(): PkmServiceBootOptions;
   live?: { assertAdmittedRoot(): void; hasActiveChatWork(): boolean;
     confirm(review: { from: Mode; to: Mode; runtimeBuild: string }): Promise<boolean> };
 }) {
   let selected: ReturnType<typeof select> | undefined;
   let phase: "pending" | "selected" | "unavailable" = "pending";
   let starting: Promise<Authority> | undefined;
+  let preparing: Promise<Custody> | undefined;
+  let preparedRoot: string | undefined;
+  let admissionError: unknown;
   let busy = false, disposed = false;
+  function acquireLegacyFence(root: string) {
+    assertLinuxRootStillLegacyWritable(root);
+    let preflight;
+    try { preflight = acquireLinuxRootWriterFence(root, "exclusive", 1_000); }
+    catch (error) {
+      const detail = error instanceof Error ? error.message : "Writer fence unavailable.";
+      throw new Error(`Could not verify that cooperating Original writers have drained: ${detail}`);
+    }
+    try { preflight.assertHeld(); } finally { preflight.release(); }
+    return acquireLinuxRootWriterFence(root, "shared", 1_000);
+  }
+  async function prepareCustody() {
+    if (!options.live) return undefined;
+    if (disposed) throw new Error("Compatibility gateway disposed.");
+    options.live.assertAdmittedRoot();
+    const root = options.root();
+    if (preparing) {
+      if (preparedRoot !== root) throw new Error("Native admission root changed; reload explicitly.");
+      const custody = await preparing;
+      custody.assertHeld();
+      return custody;
+    }
+    preparedRoot = root;
+    admissionError = undefined;
+    preparing = (async () => {
+      const payload = verifyNextPayload(options.extensionPath);
+      const { acquireCompatibilityGatewayCustody } = await importPayload(
+        pathToFileURL(path.join(payload.root, "server/dist/compatibility-gateway-custody.js")).href);
+      const acquire = (drain?: () => Promise<void>) => acquireCompatibilityGatewayCustody(root, async () => {
+        await drain?.();
+        options.live!.assertAdmittedRoot();
+        if (options.root() !== root) throw new Error("Native admission root changed.");
+        return acquireLegacyFence(root);
+      }) as Promise<Custody>;
+      return options.service ? withPkmServiceNativeAdmission(options.service(), acquire) : acquire();
+    })();
+    try { return await preparing; }
+    catch (error) { admissionError = error; phase = "unavailable"; throw error; }
+  }
   function select() {
     options.assertAllowed();
     const root = options.root(), managed = options.managed();
@@ -128,28 +173,25 @@ export function createBundledCompatibilityRoute(options: {
       JSON.parse(managedMcpAttributionEnv({}, source)[MCP_ATTRIBUTION_ENV]);
     return startCompatibilityGatewayAuthority(selection.config, { generation: selection.generation,
       runtimeBuild: selection.runtimeBuild, managedRoot: selection.cwd, createFacade: createNativePublicFacade, assertVerified },
-    { acquireLegacyFence(root: string) {
-      assertLinuxRootStillLegacyWritable(root);
-      // Check for cooperating predecessor writers while the packaged route guard is held.
-      // This does not inhibit older launchers that do not honor that guard.
-      let preflight;
-      try { preflight = acquireLinuxRootWriterFence(root, "exclusive", 1_000); }
-      catch (error) {
-        const detail = error instanceof Error ? error.message : "Writer fence unavailable.";
-        throw new Error(`Could not verify that cooperating Original writers have drained: ${detail}`);
-      }
-      try { preflight.assertHeld(); } finally { preflight.release(); }
-      return acquireLinuxRootWriterFence(root, "shared", 1_000);
+    { acquireLegacyFence, async acquireCustody(root: string) {
+      if (root !== options.root()) throw new Error("Native admission root changed.");
+      return prepareCustody();
     }, workbenchAttribution: attribution("vscode-provider"), chatAttribution: attribution("pkm-chat"),
     assertAllowed: selection.assertCurrent, hasActiveChatWork: options.live!.hasActiveChatWork,
     confirm: options.live!.confirm }, "original");
   }
   function assertLaunchAdmission() {
-    if (!starting && hasPendingOwner(options.root()))
+    if (admissionError) {
+      if (hasPendingOwner(options.root()))
+        throw new Error("Compatibility custody belongs to another window or requires recovery. No fallback was started.");
+      throw admissionError;
+    }
+    if (!starting && !preparing && hasPendingOwner(options.root()))
       throw new Error("Compatibility custody belongs to another window or requires recovery. No fallback was started.");
   }
   return {
     assertLaunchAdmission,
+    prepareCustody,
     async bindBrowserReads() {
       if (!options.live) return undefined;
       if (!starting) throw new Error("Start the existing PKM connection before opening PKM Browser.");
@@ -160,6 +202,7 @@ export function createBundledCompatibilityRoute(options: {
     async launch(role: "workbench" | "chat" = "workbench") {
       try {
         assertLaunchAdmission();
+        await prepareCustody();
         const selection = getSelected();
         if (options.live) {
           const authority = await (starting ??= startAuthority(selection));
@@ -225,10 +268,11 @@ export function createBundledCompatibilityRoute(options: {
     async dispose() {
       disposed = true;
       if (starting) await (await starting).close();
+      else if (preparing && !admissionError) await (await preparing).release(true);
     },
     status() {
       let blockedByCustody = false;
-      try { blockedByCustody = !starting && hasPendingOwner(options.root()); }
+      try { blockedByCustody = !starting && (!preparing || Boolean(admissionError)) && hasPendingOwner(options.root()); }
       catch { blockedByCustody = true; }
       if (selected) {
         try { selected.assertCurrent(); }
