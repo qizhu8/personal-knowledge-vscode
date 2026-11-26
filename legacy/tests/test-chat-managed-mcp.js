@@ -406,7 +406,7 @@ test("owned MCP EOF timeout never signals the drained process and can observe it
 test("Chat managed discovery keys its reuse boundary by generation and disposes through safe close", () => {
   const source = fs.readFileSync(path.resolve(__dirname, "../src/chat/api-chat-view.ts"), "utf8");
   assert.match(source, /connection\.generation === generation/);
-  assert.match(source, /connectManagedChatMcp\(launch, controller\.signal, managedMcpServerDirectory\(\), \{ knowledgeRoot: root \}\)/);
+  assert.match(source, /gateway\s*\? await connectSelectedChatGateway\(gateway, controller\.signal\)\s*: await connectManagedChatMcp\(mcpServerDefinitionData\(\), controller\.signal, managedMcpServerDirectory\(\), \{ knowledgeRoot: root \}\)/);
   assert.match(source, /await old\.connection\.close\(\);\s*old\.controller\.abort\(\)/);
   assert.match(source, /managed\.connection\.close\(\)\.then\(\(\) => managed\.controller\.abort\(\)\)/);
 });

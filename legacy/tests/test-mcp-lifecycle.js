@@ -97,7 +97,7 @@ test("registry preserves additive attribution but legacy/malformed metadata neve
 test("source UI renders escaped reported attribution and honest legacy/shared boundaries", () => {
   const vm = require("node:vm");
   const source = fs.readFileSync(path.resolve(__dirname, "../src/webview/panel/50-mcp.js"), "utf8");
-  const context = vm.createContext({ vscode:{getState:()=>({})}, esc: value => String(value).replace(/</g, "&lt;").replace(/>/g, "&gt;") });
+  const context = vm.createContext({ window:{addEventListener() {}}, vscode:{getState:()=>({})}, esc: value => String(value).replace(/</g, "&lt;").replace(/>/g, "&gt;") });
   vm.runInContext(source, context);
   assert.match(context.mcpLaunchAttributionHtml(undefined, true), /unverified.*legacy/);
   assert.match(context.mcpLaunchAttributionHtml({ schema: attribution.MCP_ATTRIBUTION_SCHEMA,
