@@ -210,7 +210,14 @@
     nativeChecking = true; update();
     try { applyNative(ref, (await call("originalChatStatus", ref)).status); }
     catch { applyNative(ref, "unknown"); }
-    finally { nativeChecking = false; update(); }
+    finally {
+      nativeChecking = false;
+      if (sameNative(ref) && !nativeDone(nativeStatus) && nativeStatus !== "unknown") {
+        clearTimeout(nativeTimer);
+        nativeTimer = setTimeout(() => { void checkNative(ref); }, 850);
+      }
+      update();
+    }
   }
   check.addEventListener("click", () => { void checkNative(); });
   async function startNative() {
