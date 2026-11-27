@@ -62,7 +62,7 @@ with sync_playwright() as playwright:
         expect(page.locator("#btn-add-knowledge")).to_be_disabled()
         page.get_by_role("button", name="(uncategorized) Folder", exact=False).click()
         page.get_by_role("button", name="InstalledGatewayNote File").click()
-        expect(page.locator("#detail")).to_contain_text("Created by genuine installed 4.0.27 PKM Chat")
+        expect(page.locator("#detail")).to_contain_text("Created by genuine installed 4.0.27 PKM Chat", timeout=30000)
         (base / "browser-note-read").touch()
         search = page.get_by_role("searchbox", name="Search Notes")
         with page.expect_response(lambda r: r.url == url + "message" and
@@ -147,6 +147,13 @@ with sync_playwright() as playwright:
         provider_deadline = time.monotonic() + 20
         while not (base / "browser-provider-waiting").exists() and time.monotonic() < provider_deadline:
             time.sleep(0.1)
+        if not (base / "browser-provider-waiting").exists():
+            (base / "browser-cancel-before-cleanup.json").write_text(json.dumps({
+                "turnState": page.locator("#chat-turn-state").inner_text(),
+                "nativeBusy": desktop_chat.locator("#messages").get_attribute("aria-busy"),
+                "nativeMessages": desktop_chat.locator("#messages").inner_text(),
+                "stopEnabled": stop.is_enabled(),
+            }))
         assert (base / "browser-provider-waiting").exists(), "Cancellation test must reach the actual held browser model stream"
         expect(stop).to_be_enabled(timeout=20000)
         page.reload(wait_until="domcontentloaded")

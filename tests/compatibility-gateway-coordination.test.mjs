@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
-import { fork } from "node:child_process";
+import { fork, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { once } from "node:events";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { joinCompatibilityGatewayPeer, prepareCompatibilityGatewayAdmission, startOrJoinCompatibilityGateway } from "../dist/compatibility-gateway-coordination.js";
+import { joinCompatibilityGatewayPeer, prepareCompatibilityGatewayAdmission, requestCompatibilityOwner, startOrJoinCompatibilityGateway } from "../dist/compatibility-gateway-coordination.js";
 import { acquireCompatibilityGatewayCustody } from "../dist/compatibility-gateway-custody.js";
 import { createNativePublicFacade } from "../dist/native-public-mcp.js";
 import { compatibilityMcpFixture as fixture, compatibilityMcpValue as value } from "./compatibility-mcp-fixture.mjs";
@@ -16,6 +17,72 @@ import { compatibilityMcpFixture as fixture, compatibilityMcpValue as value } fr
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const { acquireLinuxRootWriterFence } = createRequire(import.meta.url)("../legacy/dist/runtime/linux-root-writer-fence.js");
+
+async function idleOwner(t) {
+  const worker = spawn(process.execPath, ["-e", `
+    const { createServer } = require("node:http");
+    let connections = 0, requests = 0, mutations = 0, idleSocket;
+    const server = createServer(async (req, res) => {
+      for await (const chunk of req) {}
+      requests++;
+      if (req.url === "/host/switch") {
+        mutations++;
+        res.socket.destroy();
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json",
+        "Connection": req.headers.connection === "close" ? "close" : "keep-alive",
+        "Keep-Alive": "timeout=5" });
+      res.end(JSON.stringify({ connections, requests, mutations }));
+      idleSocket = req.socket;
+    });
+    server.keepAliveTimeout = 60000;
+    server.keepAliveTimeoutBuffer = 0;
+    process.on("message", command => {
+      if (command === "stall") {
+        idleSocket.setTimeout(10);
+        process.send({ stalled: true });
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+      }
+    });
+    server.on("connection", () => connections++);
+    server.listen(0, "127.0.0.1", () => process.send({ port: server.address().port }));
+  `], { stdio: ["ignore", "ignore", "inherit", "ipc"] });
+  t.after(async () => {
+    if (worker.exitCode === null && worker.signalCode === null) {
+      const exited = once(worker, "exit");
+      worker.kill("SIGTERM");
+      await exited;
+    }
+  });
+  const [ready] = await once(worker, "message");
+  return { origin: `http://127.0.0.1:${ready.port}`, token: "a".repeat(64), serviceId: randomUUID(),
+    async stall() {
+      const stalled = once(worker, "message");
+      worker.send("stall");
+      await stalled;
+    } };
+}
+
+test("private owner RPC does not reuse an idle socket whose timeout expired while the owner was stalled", { timeout: 10000 }, async t => {
+  const endpoint = await idleOwner(t);
+  const first = await requestCompatibilityOwner(endpoint, "/host/probe", {});
+  await endpoint.stall();
+  // A request reaches the blocked owner after its idle deadline, before it can send the FIN.
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
+  const second = await requestCompatibilityOwner(endpoint, "/host/probe", {});
+  assert.equal(first.connections, 1);
+  assert.equal(second.connections, 2);
+  assert.equal(second.requests, 2);
+});
+
+test("private owner RPC never replays an admitted mutation whose response connection is lost", { timeout: 10000 }, async t => {
+  const endpoint = await idleOwner(t);
+  await assert.rejects(requestCompatibilityOwner(endpoint, "/host/switch", {}), /Private owner request \/host\/switch failed/);
+  const observed = await requestCompatibilityOwner(endpoint, "/host/probe", {});
+  assert.equal(observed.mutations, 1);
+  assert.equal(observed.requests, 2);
+});
 
 test("authenticated native and external peers share selection, writability, drain and honest Original attribution", { timeout: 120_000 }, async t => {
   const f = await fixture(t);

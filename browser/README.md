@@ -38,17 +38,25 @@ Private owner transport errors identify the failed RPC route. The owner-only
 compatibility bootstrap directory's `service.log` records interrupted admitted
 requests and independent-service fail-closed reasons. These diagnostics do not
 replay a request or establish that an interrupted write completed.
+Authenticated loopback owner/peer RPCs use fresh HTTP connections: an idle
+socket's timeout can expire while its host is stalled, before that host processes
+the next request. Avoiding reuse prevents this stale-socket race without retrying
+the RPC. A lost admitted response still fails explicitly and is never replayed.
 
 ## Uone Webview release gate
 
-The dedicated native Chat core gate runs the pinned 5.0.0 candidate, not the
+The dedicated native Chat core gate runs the pinned 5.0.1 candidate, not the
 removed experimental runtime-switch command:
 
 ```sh
 node tests/installed-compatibility-chat.mjs --chat-core \
-  --candidate-vsix=legacy/personal-knowledge-5.0.0.vsix \
+  --candidate-vsix=legacy/personal-knowledge-5.0.1.vsix \
   --candidate-sha256=<exact-archive-sha256>
 ```
+
+Candidate version checks come from the SHA-256-pinned archive manifest and must
+match the actual installation. The 5.0.1 patch is distinct from earlier 5.0.0
+builds; qualification of a candidate does not update an existing installation.
 
 It uses real installed VS Code Chat Webviews with a synthetic loopback model
 and isolated HOME, configuration and Knowledge Root. It verifies named Note

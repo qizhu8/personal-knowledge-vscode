@@ -36,7 +36,9 @@ exports.activate = () => {
   }
   setImmediate(() => void (async () => {
     const extension = vscode.extensions.getExtension("Uone.personal-knowledge");
-    assert.equal(extension.packageJSON.version, "5.0.0");
+    const candidateVersion = process.env.PKM_UPGRADE_CANDIDATE_VERSION;
+    assert.match(candidateVersion || "", /^5\.\d+\.\d+$/);
+    assert.equal(extension.packageJSON.version, candidateVersion);
     assert.equal(vscode.extensions.getExtension("pkm-nonproduction.pkm-v5"), undefined);
     const transcript = process.env.PKM_UPGRADE_TRANSCRIPT === "1";
     await extension.activate();
@@ -80,7 +82,7 @@ exports.activate = () => {
       assert.equal(version.dispatchMode, "original", "Production activation must preserve Original as the initial backend");
       assert.equal(version.version, mcp.UNIFIED_MCP_VERSION);
       assert.equal(version.runtime.runtimeBuild, originalBuild);
-      assert.equal(version.runtime.extensionVersion, "5.0.0");
+      assert.equal(version.runtime.extensionVersion, candidateVersion);
       assert.match(version.routeRuntime.runtimeBuild, /^[a-f0-9]{64}$/);
       assert.equal(version.routeRuntime.phase, "accepting");
       assert.equal(version.originalConnection.attribution.source, "vscode-provider");

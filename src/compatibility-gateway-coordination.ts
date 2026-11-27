@@ -127,7 +127,8 @@ async function request(endpoint: Json, route: string, input: Json) {
   try {
     res = await fetch(endpoint.origin + route, { method: "POST",
       headers: { authorization: `Bearer ${endpoint.token}`, "x-pkm-service-id": endpoint.serviceId,
-        "content-type": "application/json" }, body: JSON.stringify(input), signal: AbortSignal.timeout(90_000),
+        // Do not reuse idle sockets whose deadline may expire while an admitted host is stalled.
+        "content-type": "application/json", connection: "close" }, body: JSON.stringify(input), signal: AbortSignal.timeout(90_000),
       redirect: "error" });
   } catch (error) {
     if (error instanceof Error && error.cause instanceof Error)
@@ -140,6 +141,8 @@ async function request(endpoint: Json, route: string, input: Json) {
   if (!res.ok) throw new Error(typeof result?.detail === "string" ? result.detail : "Owner or peer unavailable; no replay.");
   return result;
 }
+export { request as requestCompatibilityOwner };
+
 async function privateServer(handler: (route: string, input: Json) => Promise<unknown>,
   abandoned?: (route: string) => void) {
   const serviceId = randomUUID(), token = randomBytes(32).toString("hex");

@@ -84,6 +84,7 @@ if (!process.argv.includes("--inside")) {
   const transcript = bundledGateway && transcriptMarker === "browser-transcript";
   const settingsSwitch = bundledGateway && transcriptMarker === "settings-switch";
   const installedBrowser = bundledGateway && transcriptMarker === "installed-browser";
+  let candidateVersion;
   if (upgrade) assert((await readFile("/proc/1/cmdline", "utf8")).split("\0").includes("pkm-private-init"));
   if (overviewMarker) assert((candidateChat || upgrade) && candidateVsix && /^[a-f0-9]{64}$/.test(candidateSha256));
   const vsix = candidateChat ? candidateVsix : shippedVsix;
@@ -100,6 +101,10 @@ if (!process.argv.includes("--inside")) {
     if (candidateChat || upgrade) {
       assert.equal(await realpath(candidateVsix), resolve(candidateVsix));
       assert.equal(createHash("sha256").update(await readFile(candidateVsix)).digest("hex"), candidateSha256);
+      const candidate = JSON.parse(checked("unzip", ["-p", candidateVsix, "extension/package.json"]));
+      assert.deepEqual([candidate.publisher, candidate.name], ["Uone", "personal-knowledge"]);
+      assert.match(candidate.version, /^5\.\d+\.\d+$/);
+      candidateVersion = candidate.version;
     }
     for (const directory of ["h", "u/User", "x", "driver", "scratch/runtime", "offline-deps", "library/notes",
       "library/skills", "library/papers", "business-python/bin"])
@@ -123,7 +128,8 @@ if (!process.argv.includes("--inside")) {
     assert.equal(installedNames.length, 1);
     const installed = await realpath(join(base, "x", installedNames[0]));
     const manifest = JSON.parse(await readFile(join(installed, "package.json"), "utf8"));
-    assert.equal(manifest.version, candidateChat ? "5.0.0" : "4.0.27");
+    assert.equal(manifest.version, candidateChat ? candidateVersion : "4.0.27");
+    if (candidateVersion) env.PKM_UPGRADE_CANDIDATE_VERSION = candidateVersion;
     const wheel = join(installed, "resources/vendor/adaptive_skill_retrieval-0.3.0.dev2026100504-py3-none-any.whl");
     checked(businessPython, ["-m", "pip", "--disable-pip-version-check", "install",
       "--no-index", "--no-deps", "--target", join(base, "offline-deps"), wheel], { env });
@@ -539,9 +545,9 @@ exports.run=async()=>{
       checked(cli, ["--no-sandbox", `--user-data-dir=${base}/u`, `--extensions-dir=${base}/x`,
         "--install-extension", candidateVsix, "--force"], { env });
       if (transcript) {
-        const installed = join(base, "x", "uone.personal-knowledge-5.0.0");
+        const installed = join(base, "x", `uone.personal-knowledge-${candidateVersion}`);
         const manifest = await file(join(installed, "package.json"));
-        assert.deepEqual([manifest.publisher, manifest.name, manifest.version], ["Uone", "personal-knowledge", "5.0.0"]);
+        assert.deepEqual([manifest.publisher, manifest.name, manifest.version], ["Uone", "personal-knowledge", candidateVersion]);
         // The restored sidebar can activate the installed extension before the driver.
         // Only capture the actual shell return; leave authority, storage and consent unmodified.
         const shell = join(installed, "dist/chat/api-chat-shell.js");
@@ -584,6 +590,7 @@ exports.registerApiChatShell = (...args) => {
       }
       if (settingsSwitch) {
         upgradeEvidence.candidateVsixSha256 = candidateSha256;
+        upgradeEvidence.candidateVersion = candidateVersion;
         const ownerFile = join(library, ".pkm/state/compatibility-gateway/owner-pending.json");
         const owner = await readFile(ownerFile, "utf8");
         const rendezvousFile = join(library, ".pkm/state/compatibility-gateway/owner-live.json");

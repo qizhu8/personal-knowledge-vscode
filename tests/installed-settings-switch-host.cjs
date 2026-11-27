@@ -28,7 +28,8 @@ async function run(context) {
   }
   try {
     const extension = vscode.extensions.getExtension("uone.personal-knowledge");
-    assert(extension && extension.packageJSON.version === "5.0.0");
+    assert.match(process.env.PKM_UPGRADE_CANDIDATE_VERSION || "", /^5\.\d+\.\d+$/);
+    assert(extension && extension.packageJSON.version === process.env.PKM_UPGRADE_CANDIDATE_VERSION);
     assert.equal(process.env.PKM_COMPATIBILITY_LIVE_SWITCH, undefined);
     await extension.activate();
     if (process.env.PKM_SWITCH_UNMANAGED === "1") {
