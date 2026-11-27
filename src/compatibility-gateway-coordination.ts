@@ -131,7 +131,7 @@ async function request(endpoint: Json, route: string, input: Json) {
       redirect: "error" });
   } catch (error) {
     if (error instanceof Error && error.cause instanceof Error)
-      throw new Error(`Private owner request failed: ${error.cause.message}`, { cause: error });
+      throw new Error(`Private owner request ${route} failed: ${error.cause.message}`, { cause: error });
     throw error;
   }
   const text = await res.text();
@@ -158,7 +158,14 @@ async function privateServer(handler: (route: string, input: Json) => Promise<un
         return reply(403, { error: "Private admitted hosts only." });
       const input = await body(req), route = req.url ?? "";
       let terminal = false;
-      const disconnected = () => { if (!terminal) abandoned?.(route); };
+      const disconnected = () => {
+        if (!terminal) {
+          console.error("Private admitted request disconnected before its result:", {
+            route, requestComplete: req.complete, listening: server.listening,
+          });
+          abandoned?.(route);
+        }
+      };
       res.once("close", disconnected);
       try {
         const result = await handler(route, input);
@@ -204,7 +211,7 @@ function binding(input: unknown, bundled: VerifiedCompatibilityGateway) {
 export async function startOrJoinCompatibilityGateway(input: unknown, bundled: VerifiedCompatibilityGateway,
   host: CompatibilityGatewayHost, admission: CompatibilityGatewayAdmission,
   initialMode: CompatibilityDispatchMode = "original",
-  service?: { headless: true; onIdle(): void; onFailure?(): void }) {
+  service?: { headless: true; onIdle(): void; onFailure?(error: unknown): void }) {
   const config = compatibilityMcpConfiguration.parse(input);
   bundled.assertVerified(); host.assertAllowed?.(); admission.assertHeld();
   if (admission.kind === "peer")
@@ -251,7 +258,7 @@ export async function startOrJoinCompatibilityGateway(input: unknown, bundled: V
       custody.assertHeld(); processHeld(member.process);
       if (member.leaving || !refreshing && member.callback && Date.now() - member.checked > 5_000) throw denied();
       member.host.assertAllowed?.();
-    } catch { selection.failed = true; throw denied(); }
+    } catch (error) { selection.failed = true; throw new Error(denied().message, { cause: error }); }
   };
   async function add(id: string, memberHost: CompatibilityGatewayHost,
     process: Member["process"], callback?: Json, readOnly = false) {
@@ -281,9 +288,10 @@ export async function startOrJoinCompatibilityGateway(input: unknown, bundled: V
   async function probeAll() {
     const entries = [...members.values()].filter(member => !member.leaving);
     const outcomes = await Promise.allSettled(entries.map(probe));
-    if (outcomes.some((outcome, index) => outcome.status === "rejected"
-      && members.get(entries[index]!.id) === entries[index] && !entries[index]!.leaving)) {
-      selection.failed = true; throw denied();
+    const failed = outcomes.find((outcome, index) => outcome.status === "rejected"
+      && members.get(entries[index]!.id) === entries[index] && !entries[index]!.leaving);
+    if (failed?.status === "rejected") {
+      selection.failed = true; throw new Error(denied().message, { cause: failed.reason });
     }
     for (const [id, reservation] of reservations) {
       try {
@@ -498,8 +506,9 @@ export async function startOrJoinCompatibilityGateway(input: unknown, bundled: V
       await publishDescriptor(config.knowledgeRoot, { ...binding(input, bundled), ...(service ? { independentService: true } : {}) }, custody, endpoint);
     }
     timer = setInterval(() => {
-      if (!closing) void probeAll().then(() => { if (selection.failed) service?.onFailure?.(); })
-        .catch(() => service?.onFailure?.());
+      if (!closing) void probeAll().then(() => {
+        if (selection.failed) service?.onFailure?.(new Error("Compatibility selection failed closed."));
+      }).catch(error => service?.onFailure?.(error));
     }, 1_000);
     timer.unref();
   } catch (error) {

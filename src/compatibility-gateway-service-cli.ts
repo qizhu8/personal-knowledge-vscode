@@ -48,8 +48,9 @@ let uncertainAdmission = false, prepared = false, committed = false;
 const notify = (command: string, detail?: string) => process.send?.({ command, nonce: boot.nonce, ...(detail ? { detail } : {}) });
 let manager: { close(): Promise<void>; failClosed(): Promise<void>; isIdle(): boolean } | undefined;
 let closing: Promise<void> | undefined;
-const stop = (failed = false) => {
+const stop = (failed = false, reason?: unknown) => {
   if (!failed && manager && !manager.isIdle()) return Promise.resolve();
+  if (failed && !closing) console.error("Independent compatibility service failed closed:", reason);
   return closing ??= (async () => {
   if (manager) await (failed ? manager.failClosed() : manager.close());
   })();
@@ -58,11 +59,13 @@ process.on("message", input => {
   if (input && typeof input === "object" && "nonce" in input && input.nonce === boot.nonce
   && "command" in input) {
     if (input.command === "committed") committed = true;
-    if (input.command === "abort" && prepared && !committed) void stop(true).catch(() => { process.exitCode = 1; });
+    if (input.command === "abort" && prepared && !committed)
+      void stop(true, "Native admission aborted.").catch(() => { process.exitCode = 1; });
   }
 });
 process.on("disconnect", () => {
-  if (prepared && !committed) void stop(true).catch(() => { process.exitCode = 1; });
+  if (prepared && !committed)
+    void stop(true, "Native admission channel disconnected before commit.").catch(() => { process.exitCode = 1; });
 });
 try {
   const custody = await acquireCompatibilityGatewayCustody(boot.configuration.knowledgeRoot, async root => {
@@ -103,12 +106,14 @@ try {
     headless: true, onIdle() {
       void stop().catch(error => { console.error(error.message); process.exitCode = 1; });
     },
-    onFailure() { void stop(true).catch(error => { console.error(error.message); process.exitCode = 1; }); },
+    onFailure(error) {
+      void stop(true, error).catch(error => { console.error(error.message); process.exitCode = 1; });
+    },
   });
   if (!("failClosed" in started)) throw new Error("Independent service did not acquire its own custody.");
   manager = started;
-  process.on("SIGINT", () => { void stop(true).catch(() => { process.exitCode = 1; }); });
-  process.on("SIGTERM", () => { void stop(true).catch(() => { process.exitCode = 1; }); });
+  process.on("SIGINT", () => { void stop(true, "SIGINT").catch(() => { process.exitCode = 1; }); });
+  process.on("SIGTERM", () => { void stop(true, "SIGTERM").catch(() => { process.exitCode = 1; }); });
   prepared = true;
   notify("ready");
 } catch (error) {

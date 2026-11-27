@@ -81,6 +81,7 @@ with sync_playwright() as playwright:
             "Both Workbench pkm and PKM Chat", timeout=40000)
         expect(frame.locator('[data-settings-panel="mcp"] #mcp-lifecycle')).to_have_count(0)
         expect(frame.locator('[data-settings-panel="debug"] #mcp-lifecycle')).to_have_count(1)
+        expect(frame.locator(".mcp-backend-observed small")).to_have_text("In flight 0 · Uncertain 0", timeout=40000)
         active.evaluate("""el => {
             const slot = el.closest('#mcp-backend-slot');
             slot.quietRefreshMutations = 0;

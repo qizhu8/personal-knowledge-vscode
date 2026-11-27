@@ -9,6 +9,31 @@ exports.activate = () => {
   const base = process.env.PKM_UPGRADE_BASE;
   const stage = (name, facts = {}) => fs.appendFileSync(path.join(base, "upgrade-milestones.jsonl"),
     JSON.stringify({ at: new Date().toISOString(), name, ...facts }) + "\n");
+  if (process.env.PKM_UPGRADE_BROWSER === "1") {
+    const fetch = globalThis.fetch;
+    globalThis.fetch = async (...args) => {
+      const started = Date.now();
+      try { return await fetch(...args); }
+      catch (error) {
+        const url = new URL(args[0] instanceof Request ? args[0].url : args[0]);
+        if (url.hostname === "127.0.0.1" && url.pathname.startsWith("/host/")) {
+          const cause = error.cause;
+          stage("private-request-failed", { route: url.pathname, elapsedMs: Date.now() - started,
+            code: cause?.code, bytesRead: cause?.socket?.bytesRead, bytesWritten: cause?.socket?.bytesWritten });
+          try {
+            const probe = await fetch(new URL("/host/probe", url), {
+              method: "POST", headers: args[1].headers, body: "{}", signal: AbortSignal.timeout(2000),
+            });
+            await probe.arrayBuffer();
+            stage("private-owner-after-failure", { status: probe.status });
+          } catch (probeError) {
+            stage("private-owner-after-failure", { code: probeError.cause?.code, name: probeError.name });
+          }
+        }
+        throw error;
+      }
+    };
+  }
   setImmediate(() => void (async () => {
     const extension = vscode.extensions.getExtension("Uone.personal-knowledge");
     assert.equal(extension.packageJSON.version, "5.0.0");

@@ -34,6 +34,11 @@ backend or substitutes the Chat grant. An agent session which cached a
 pre-start or removed-extension launch must reconnect or start a new session;
 changing a saved CLI entry cannot rewrite that inherited snapshot.
 
+Private owner transport errors identify the failed RPC route. The owner-only
+compatibility bootstrap directory's `service.log` records interrupted admitted
+requests and independent-service fail-closed reasons. These diagnostics do not
+replay a request or establish that an interrupted write completed.
+
 ## Uone Webview release gate
 
 The same-ID package stages the built extension Webview and browser adapter in
