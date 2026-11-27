@@ -1,5 +1,21 @@
 # Browser migration boundary
 
+The native Settings **MCP > Live backend** card and target list show the
+verified MCP protocol version, separately from the extension version.
+Generation identifiers and build SHA256 values are available under the
+collapsed **Diagnostic details** section; switching still verifies the exact
+generation and digest, not just the displayed version.
+Opening or restoring Settings automatically reads backend status and checks
+again every 30 seconds once a backend is observed (10 seconds before startup).
+Background checks are silent, skip hidden pages and tabs, and do not redraw
+unchanged status. The card distinguishes
+loading, a backend that has not started, a failed status/load with its error,
+and a verified MCP version. Status reads do not start or switch a backend.
+An unknown switch outcome still requires explicit review and is never replayed.
+The managed lifecycle instance table (PIDs, generations and launch attribution)
+is in **Debug**, not the main MCP panel. Actionable lifecycle warnings still
+offer **Review lifecycle**, which opens that diagnostic tab.
+
 ## Uone Webview release gate
 
 The same-ID package stages the built extension Webview and browser adapter in
@@ -96,7 +112,36 @@ Network browser access is disabled by default and must be enabled manually.
 Installing, starting or updating the extension does not itself authorize a
 network listener. The HTTPS hostname identifies the machine actually
 deploying the service, not necessarily the VS Code client or development
-machine. SSH-key-based protection is not currently implemented.
+machine. Public network access and SSH-key tunnel access are distinct,
+explicit choices; neither is enabled by extension installation.
+
+For SSH-key protection select **Configure SSH-key tunnel access** in **PKM
+HTTPS**. The wizard fixes the server listener to `127.0.0.1` and accepts only
+an HTTPS `localhost` or `127.0.0.1` origin. Use a certificate valid and trusted
+for that browser-side hostname; TLS verification is not disabled. Enter the
+deployment server's SSH hostname or configured client alias, not the editor's
+hostname. Existing Chat/Notes consent, sign-in token and revocation still apply.
+
+Use **Copy SSH tunnel command** and run it on the browser machine. Once the
+tunnel is running, choose **Copy HTTPS sign-in token and open**. Setup does not
+launch the tunnel or open an unreachable browser page automatically. The command
+uses OpenSSH public-key-only authentication, strict known-host checking and
+local-loopback forwarding, for example:
+
+```sh
+ssh -N -S none -o ControlMaster=no -o ExitOnForwardFailure=yes -o BatchMode=yes -o PreferredAuthentications=publickey -o PubkeyAuthentication=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o StrictHostKeyChecking=yes -L 127.0.0.1:8443:127.0.0.1:8443 user@pkm-server
+```
+
+Prepare SSH keys and trusted host keys using your normal administrator workflow;
+unknown host keys, missing public-key access and occupied local ports fail
+explicitly. Existing multiplexed SSH sessions are not reused. PKM does not read SSH private keys, start SSH/sshd, alter SSH
+configuration, issue certificates or open firewall ports. SSH config aliases
+can specify a nondefault SSH port and identity. The browser sign-in token is
+copied separately; it never appears in the tunnel command. Anyone already
+running on the deployment server can still reach its loopback listener, so
+HTTPS/token authorization remains required. Closing the tunnel disconnects that
+browser machine but does not revoke the server provision; use **Revoke HTTPS
+access** to revoke it. Real server deployment remains a separate manual action.
 
 The separate **PKM HTTPS** status item and **PKM: Configure Independent HTTPS
 Browser Access** command configure the persistent service, including on a

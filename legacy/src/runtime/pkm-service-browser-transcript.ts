@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { BrowserChatGrant } from "../chat/browser-chat-transcript";
 import type { DetachedOriginalApproval } from "../chat/detached-original-text-turn";
 import { verifyNextPayload } from "./next-payload-verifier";
+import { browserSshTunnelCommand, type BrowserSshTunnel } from "./pkm-browser-ssh-tunnel";
 
 /** Provisioned outside the service by its trusted owner; never created by HTTP, IPC or boot arguments. */
 export const PKM_SERVICE_TRANSCRIPT_PROVISION = "browser-transcript-v1.json";
@@ -26,6 +27,7 @@ export interface PkmServiceTranscriptProvision {
   address: string;
   port: number;
   httpsOrigin: string;
+  sshTunnel?: BrowserSshTunnel;
   cert: string;
   key: string;
   token: string;
@@ -74,6 +76,7 @@ export async function startServiceBrowserTranscript(options: {
       !uri || uri.protocol !== "https:" || uri.origin !== httpsOrigin || Number(uri.port || 443) !== port ||
       typeof cert !== "string" || typeof key !== "string")
     throw new Error("Invalid PKM transcript provision.");
+  if (provision.sshTunnel !== undefined) browserSshTunnelCommand(provision.sshTunnel, address, httpsOrigin);
   let revoked = false;
   const assertProvisionCurrent = () => {
     try {

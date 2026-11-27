@@ -11,6 +11,7 @@ import { chatPkmUrl } from "../knowledge/knowledge-locator";
 import { pkmServiceIdentity, type PkmServiceBootOptions } from "./pkm-service";
 import { PKM_SERVICE_TRANSCRIPT_PROVISION, type PkmServiceTranscriptProvision } from "./pkm-service-browser-transcript";
 import { provisionBrowserHttps, revokeBrowserHttps } from "./pkm-browser-https-provision";
+import { browserSshTunnelCommand, type BrowserSshTunnel } from "./pkm-browser-ssh-tunnel";
 
 type BoundReader = { read(input: { operation: string; version: number; arguments: Record<string, unknown> }): Promise<unknown>;
   assertCurrent(): void; close(): Promise<void> };
@@ -66,8 +67,8 @@ export function registerBrowserHttpsActivation(context: vscode.ExtensionContext,
       if (!vscode.workspace.isTrusted || !options.root()) throw new Error("A trusted PKM workspace is required.");
       const current = readExisting();
       const action = await vscode.window.showQuickPick(current
-        ? ["Copy HTTPS sign-in token and open", "Revoke HTTPS access"]
-        : ["Configure independent HTTPS Chat"], { title: "PKM HTTPS" });
+        ? ["Copy HTTPS sign-in token and open", ...(current.sshTunnel ? ["Copy SSH tunnel command"] : []), "Revoke HTTPS access"]
+        : ["Configure independent HTTPS Chat", "Configure SSH-key tunnel access"], { title: "PKM HTTPS" });
       if (!action) return;
       if (action === "Revoke HTTPS access") {
         await revokeBrowserHttps(boot());
@@ -76,22 +77,51 @@ export function registerBrowserHttpsActivation(context: vscode.ExtensionContext,
         return;
       }
       if (current) {
+        if (action === "Copy SSH tunnel command") {
+          await vscode.env.clipboard.writeText(browserSshTunnelCommand(current.sshTunnel!, current.address, current.httpsOrigin));
+          void vscode.window.showInformationMessage("SSH command copied. Run it on the browser's machine, then copy the HTTPS sign-in token separately. SSH keys and trusted host keys must already be configured.");
+          return;
+        }
         await vscode.env.clipboard.writeText(current.token);
         await vscode.env.openExternal(vscode.Uri.parse(`${current.httpsOrigin}/webview/chat`));
         return current.httpsOrigin;
       }
+      const tunneled = action === "Configure SSH-key tunnel access";
       const httpsOrigin = await vscode.window.showInputBox({ title: "PKM HTTPS address",
-        prompt: "Exact HTTPS origin reachable from your other devices, for example https://pkm.example.com:8443",
+        prompt: tunneled
+          ? "Browser-side HTTPS origin, for example https://127.0.0.1:8443. The server certificate must identify this loopback hostname."
+          : "Exact HTTPS origin reachable from your other devices, for example https://pkm.example.com:8443",
         ignoreFocusOut: true, validateInput(value) {
-          try { const uri = new URL(value); if (uri.protocol === "https:" && uri.origin === value) return undefined; } catch {}
-          return "Enter an exact HTTPS origin without a path, credentials or trailing slash.";
+          try {
+            const uri = new URL(value);
+            if (uri.protocol === "https:" && uri.origin === value
+              && (!tunneled || ["localhost", "127.0.0.1"].includes(uri.hostname))) return undefined;
+          } catch {}
+          return tunneled ? "Enter an exact HTTPS localhost or 127.0.0.1 origin."
+            : "Enter an exact HTTPS origin without a path, credentials or trailing slash.";
         } });
       if (!httpsOrigin) return;
-      const address = await vscode.window.showInputBox({ title: "PKM HTTPS server interface",
+      const address = tunneled ? "127.0.0.1" : await vscode.window.showInputBox({ title: "PKM HTTPS server interface",
         prompt: "IP address on this Linux server to bind. No firewall or DNS changes will be made.",
         ignoreFocusOut: true, validateInput: value => isIP(value) && !["0.0.0.0", "::"].includes(value)
           ? undefined : "Enter a specific local interface IP address, not a wildcard." });
       if (!address) return;
+      let sshTunnel: BrowserSshTunnel | undefined;
+      if (tunneled) {
+        const host = await vscode.window.showInputBox({ title: "PKM SSH server",
+          prompt: "Deployment server SSH hostname/alias, optionally user@host, as configured on the browser machine. No SSH key will be read.",
+          ignoreFocusOut: true, validateInput(value) {
+            try { browserSshTunnelCommand({ host: value }, address, httpsOrigin); return undefined; }
+            catch (error) { return error instanceof Error ? error.message : "Invalid SSH server."; }
+          } });
+        if (!host) return;
+        sshTunnel = { host };
+        const command = browserSshTunnelCommand(sshTunnel, address, httpsOrigin);
+        const choice = await vscode.window.showInformationMessage("Configure loopback-only PKM access through your own SSH tunnel?", {
+          modal: true, detail: `${command}\n\nRun this on the browser machine. OpenSSH enforces public-key authentication and strict host-key checking; prepare trusted host keys and SSH keys yourself. PKM does not read SSH keys, start ssh/sshd, open firewall ports or weaken TLS verification. HTTPS and the browser sign-in token are still required.`,
+        }, "Continue with SSH tunnel");
+        if (choice !== "Continue with SSH tunnel") return;
+      }
       const cert = await readPem("Select the HTTPS certificate on the PKM server", false);
       if (!cert) return;
       const key = await readPem("Select the owner-only HTTPS private key on the PKM server", true);
@@ -141,6 +171,7 @@ export function registerBrowserHttpsActivation(context: vscode.ExtensionContext,
         root, rootDevice: rootStat.dev, rootInode: rootStat.ino, actorId: grant.actorId, generation: grant.generation,
         chatHostId: grant.chatHostId!, namespace, chatId: selected.chatId,
         address, port: Number(new URL(httpsOrigin).port || 443), httpsOrigin, cert, key,
+        ...(sshTunnel ? { sshTunnel } : {}),
         token: randomBytes(32).toString("base64url"), turn,
         ...(process.env.PKM_MANAGED_WRITER_SESSION ? { managedWriterSession: process.env.PKM_MANAGED_WRITER_SESSION } : {}),
         ...(notesChoice === "Chat only" ? {} : {
@@ -151,7 +182,8 @@ export function registerBrowserHttpsActivation(context: vscode.ExtensionContext,
       await provisionBrowserHttps(service, provision, assertCurrent);
       badge.text = "$(lock) PKM HTTPS: configured";
       await vscode.env.clipboard.writeText(provision.token);
-      await vscode.env.openExternal(vscode.Uri.parse(`${httpsOrigin}/webview/chat`));
+      if (sshTunnel) void vscode.window.showInformationMessage("SSH tunnel access configured on server loopback only. Use PKM HTTPS → Copy SSH tunnel command on the browser machine; this clipboard currently contains the separate browser sign-in token.");
+      if (!sshTunnel) await vscode.env.openExternal(vscode.Uri.parse(`${httpsOrigin}/webview/chat`));
       return httpsOrigin;
     } catch (error) {
       void vscode.window.showErrorMessage(`PKM HTTPS setup failed: ${error instanceof Error ? error.message : "Unknown failure."}`);

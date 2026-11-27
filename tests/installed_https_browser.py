@@ -3,6 +3,7 @@ import json
 import socket
 import subprocess
 import time
+from pathlib import Path
 
 from playwright.sync_api import expect
 
@@ -27,12 +28,23 @@ def verify_https_setup(editor, browser, base, chat_id, bundle):
         quick.locator(".monaco-list-row").filter(has_text="Configure Independent HTTPS Browser Access").first.click()
 
     dialog = editor.locator(".monaco-dialog-box")
-    def authorize():
+    def authorize(tunneled=False):
         command()
-        editor.get_by_text("Configure independent HTTPS Chat", exact=True).click()
+        editor.get_by_text("Configure SSH-key tunnel access" if tunneled else "Configure independent HTTPS Chat", exact=True).click()
         quick = editor.locator(".quick-input-widget")
+        prompts = [("PKM HTTPS address", origin)]
+        if tunneled:
+            prompts.append(("PKM SSH server", "pkm-installed-fixture"))
+        else:
+            prompts.append(("PKM HTTPS server interface", "127.0.0.1"))
+        for title, value in prompts:
+            expect(quick.get_by_text(title, exact=True)).to_be_visible(timeout=20000)
+            quick.locator("input").fill(value)
+            editor.keyboard.press("Enter")
+        if tunneled:
+            expect(dialog).to_contain_text("StrictHostKeyChecking=yes")
+            dialog.get_by_role("button", name="Continue with SSH tunnel", exact=True).click()
         for title, value in [
-            ("PKM HTTPS address", origin), ("PKM HTTPS server interface", "127.0.0.1"),
             ("Select the HTTPS certificate on the PKM server", str(cert)),
             ("Select the owner-only HTTPS private key on the PKM server", str(key)),
         ]:
@@ -131,14 +143,19 @@ def verify_https_setup(editor, browser, base, chat_id, bundle):
             try { return (await fetch("/webview/panel.js", {cache: "no-store"})).ok; }
             catch { return false; }
         }""")
-        detached = authorize()
+        detached = authorize(tunneled=True)
+        provision = json.loads(Path(detached["provisionPath"]).read_text())
+        assert provision["address"] == "127.0.0.1"
+        assert provision["sshTunnel"] == {"host": "pkm-installed-fixture"}
+        assert provision["httpsOrigin"] == origin
         detached.update({"origin": origin, "chatId": chat_id, "bundle": str(bundle), "base": str(base)})
         retained = base / "https-detached-enrollment.json"
         with retained.open("x", encoding="utf8") as file:
             json.dump(detached, file)
         retained.chmod(0o600)
         return {"nativeSetup": True, "exactTlsBundle": True, "sameOriginalNotesCreateAndEdit": True,
-                "multiRoundChatWithoutNativePrompts": True, "reopenedSavedReply": True, "nativeRevoke": True}
+                "multiRoundChatWithoutNativePrompts": True, "reopenedSavedReply": True, "nativeRevoke": True,
+                "sshKeyTunnelWizard": True, "tunnelLoopbackHttpsConfigured": True}
     except Exception:
         (base / "installed-https-browser.txt").write_text(page.locator("body").inner_text())
         (base / "installed-https-network.txt").write_text("\n".join(diagnostics))

@@ -50,6 +50,7 @@ function fixture(t) {
     if (name === "./pkm-service") return service;
     if (name === "./pkm-service-browser-transcript") return { PKM_SERVICE_TRANSCRIPT_PROVISION: "browser-transcript-v1.json" };
     if (name === "./cross-process-lock") return require("../dist/runtime/cross-process-lock");
+    if (name === "./pkm-browser-ssh-tunnel") return require("../dist/runtime/pkm-browser-ssh-tunnel");
     return require(name);
   } }, { filename: "pkm-browser-https-provision.js" });
   return { ...module.exports, provision, calls, file, setConnectHook: hook => { connectHook = hook; } };
@@ -84,6 +85,21 @@ test("setup validates TLS/root/interface before draining and rechecks native con
     if (++checks === 2) throw Error("Native consent changed");
   }), /Native consent changed/);
   assert.deepEqual(f.calls, ["connect", "drain", "dispose"]);
+  assert.equal(fs.existsSync(f.file), false);
+});
+
+test("SSH tunnel provisioning enforces loopback-only HTTPS before starting or draining a service", async t => {
+  const f = fixture(t);
+  for (const change of [{ address: "192.0.2.10" }, { httpsOrigin: "https://server.example:8443" },
+    { sshTunnel: { host: "-oProxyCommand=bad" } }, { sshTunnel: { host: "server;bad" } }]) {
+    await assert.rejects(f.provisionBrowserHttps({}, { ...f.provision, sshTunnel: { host: "pkm-server" }, ...change }, () => {}));
+    assert.deepEqual(f.calls, []);
+  }
+  await f.provisionBrowserHttps({}, { ...f.provision, sshTunnel: { host: "user@pkm-server" } }, () => {});
+  const saved = JSON.parse(fs.readFileSync(f.file, "utf8"));
+  assert.equal(saved.address, "127.0.0.1");
+  assert.equal(saved.sshTunnel.host, "user@pkm-server");
+  await f.revokeBrowserHttps({});
   assert.equal(fs.existsSync(f.file), false);
 });
 

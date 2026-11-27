@@ -6,6 +6,7 @@ import { isIP } from "node:net";
 import { PkmServiceClient, pkmServiceIdentity, withPkmServiceLifecycleLock, type PkmServiceBootOptions } from "./pkm-service";
 import { PKM_SERVICE_TRANSCRIPT_PROVISION, type PkmServiceTranscriptProvision } from "./pkm-service-browser-transcript";
 import { withCrossProcessLock } from "./cross-process-lock";
+import { browserSshTunnelCommand } from "./pkm-browser-ssh-tunnel";
 
 export async function provisionBrowserHttps(options: PkmServiceBootOptions,
   provision: PkmServiceTranscriptProvision, assertCurrent: () => void): Promise<void> {
@@ -13,6 +14,7 @@ export async function provisionBrowserHttps(options: PkmServiceBootOptions,
   if (provision.serviceIdentity !== identity.identity || provision.root !== identity.knowledgeRoot)
     throw new Error("The HTTPS service does not match the selected PKM account and Knowledge Root.");
   const origin = new URL(provision.httpsOrigin);
+  if (provision.sshTunnel !== undefined) browserSshTunnelCommand(provision.sshTunnel, provision.address, provision.httpsOrigin);
   const root = fs.lstatSync(identity.knowledgeRoot);
   if (!root.isDirectory() || root.dev !== provision.rootDevice || root.ino !== provision.rootInode ||
       !isIP(provision.address) || ["0.0.0.0", "::"].includes(provision.address) ||
