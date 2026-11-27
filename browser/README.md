@@ -41,6 +41,31 @@ replay a request or establish that an interrupted write completed.
 
 ## Uone Webview release gate
 
+The dedicated native Chat core gate runs the pinned 5.0.0 candidate, not the
+removed experimental runtime-switch command:
+
+```sh
+node tests/installed-compatibility-chat.mjs --chat-core \
+  --candidate-vsix=legacy/personal-knowledge-5.0.0.vsix \
+  --candidate-sha256=<exact-archive-sha256>
+```
+
+It uses real installed VS Code Chat Webviews with a synthetic loopback model
+and isolated HOME, configuration and Knowledge Root. It verifies named Note
+write approval/readback, Harness Check/End and actual upstream cancellation,
+then multi-round model context, per-Chat drafts, saved history/draft recovery
+across a real extension-host restart, a visible HTTP 401 failure and a fresh
+successful next turn. Saved failed turns must remain failed; no uncertain tool
+write is automatically replayed. This is not live-model quality evaluation or
+complete Chat qualification. The older `--chat-overview` lane separately
+requires its Task overview UI; absence of that UI is not a passing result.
+
+For API-backed Chats, an empty VS Code model catalog now allows the documented
+Memory-model fallback to the Chat's configured API model. The fallback logs the
+unavailable catalog and records the actual HTTP model in Memory accounting.
+Cancellation, discovery transport errors and VS Code-backed Chats still fail
+explicitly instead of silently selecting another provider.
+
 The same-ID package stages the built extension Webview and browser adapter in
 `extension/next-runtime/server/browser/`. The packaged HTTP runtime resolves
 that fixed location relative to its own code, checks served bytes against the

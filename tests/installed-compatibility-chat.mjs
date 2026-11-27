@@ -36,6 +36,7 @@ if (!process.argv.includes("--inside")) {
   const options = {};
   for (const argument of process.argv.slice(2)) {
     if (argument === "--chat-overview" && !options.overview) options.overview = true;
+    else if (argument === "--chat-core" && !options.core) options.core = true;
     else if (argument === "--same-profile-upgrade" && !options.upgrade) options.upgrade = true;
     else if (argument === "--bundled-gateway" && !options.gateway) options.gateway = true;
     else if (argument === "--browser-transcript" && !options.transcript) options.transcript = true;
@@ -48,11 +49,12 @@ if (!process.argv.includes("--inside")) {
     else throw Error(`Unknown or repeated installed acceptance argument: ${argument}`);
   }
   assert(!(options.overview && options.upgrade));
+  assert(!(options.core && (options.overview || options.upgrade)));
   assert(!options.gateway || options.upgrade);
   assert(!options.transcript || options.gateway);
   assert([options.settings, options.browser, options.transcript].filter(Boolean).length <= 1);
   assert(!(options.settings || options.browser) || options.gateway);
-  if (options.overview || options.upgrade) assert(options.candidate && /^[a-f0-9]{64}$/.test(options.sha256),
+  if (options.overview || options.core || options.upgrade) assert(options.candidate && /^[a-f0-9]{64}$/.test(options.sha256),
     "Installed acceptance requires an explicitly pinned candidate VSIX.");
   else assert(!options.candidate && !options.sha256, "Candidate pins require an explicit candidate acceptance mode.");
   const editor = process.env.PKM_PROFILE_CODE || "/home/yuwang8/.cache/pkm-vscode-test/vscode-linux-x64-1.143.0/code";
@@ -62,27 +64,29 @@ if (!process.argv.includes("--inside")) {
     "from pathlib import Path; from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print(Path(p.chromium.executable_path).parents[2]); p.stop()"]) : "";
   const businessPython = process.env.PKM_TEST_PYTHON || "/home/yuwang8/pkm-envs/personal-knowledge-vscode-dev/bin/python";
   const command = [process.execPath, fileURLToPath(import.meta.url), "--inside",
-    editor, xvfb, browserPython, businessPython, options.overview ? "chat-overview" : options.upgrade ? "same-profile-upgrade" : "",
+    editor, xvfb, browserPython, businessPython, options.overview ? "chat-overview" : options.core ? "chat-core" : options.upgrade ? "same-profile-upgrade" : "",
     options.candidate || "", options.sha256 || "", options.gateway ? "bundled-gateway" : "",
     options.transcript ? "browser-transcript" : options.settings ? "settings-switch" : options.browser ? "installed-browser" : "", browserCache];
   const require = createRequire(import.meta.url);
   const namespace = options.upgrade
     ? require("../legacy/scripts/run-next-trial-private-display.js").privateNamespaceArgs(command)
     : ["-Urn", ...command];
-  checked("unshare", namespace, { stdio: "inherit", timeout: options.overview || options.upgrade ? 480_000 : 300_000,
+  checked("unshare", namespace, { stdio: "inherit", timeout: options.overview || options.core || options.upgrade ? 480_000 : 300_000,
     env: { PATH: process.env.PATH || "" } });
 } else {
   const [editor, xvfb, browserPython, businessPython, overviewMarker, candidateVsix, candidateSha256, gatewayMarker,
     transcriptMarker, browserCache] = process.argv.slice(3);
   const overview = overviewMarker === "chat-overview";
+  const core = overviewMarker === "chat-core";
+  const candidateChat = overview || core;
   const upgrade = overviewMarker === "same-profile-upgrade";
   const bundledGateway = upgrade && gatewayMarker === "bundled-gateway";
   const transcript = bundledGateway && transcriptMarker === "browser-transcript";
   const settingsSwitch = bundledGateway && transcriptMarker === "settings-switch";
   const installedBrowser = bundledGateway && transcriptMarker === "installed-browser";
   if (upgrade) assert((await readFile("/proc/1/cmdline", "utf8")).split("\0").includes("pkm-private-init"));
-  if (overviewMarker) assert((overview || upgrade) && candidateVsix && /^[a-f0-9]{64}$/.test(candidateSha256));
-  const vsix = overview ? candidateVsix : shippedVsix;
+  if (overviewMarker) assert((candidateChat || upgrade) && candidateVsix && /^[a-f0-9]{64}$/.test(candidateSha256));
+  const vsix = candidateChat ? candidateVsix : shippedVsix;
   process.umask(0o077);
   const base = resolve(project, `.pkm-test-evidence/installed-chat-${randomUUID()}`);
   await mkdir(base, { recursive: true, mode: 0o700 });
@@ -93,7 +97,7 @@ if (!process.argv.includes("--inside")) {
   const overviewModel = overview ? createOverviewModel({ base }) : undefined;
   try {
     assert.equal(createHash("sha256").update(await readFile(shippedVsix)).digest("hex"), shippedSha);
-    if (overview || upgrade) {
+    if (candidateChat || upgrade) {
       assert.equal(await realpath(candidateVsix), resolve(candidateVsix));
       assert.equal(createHash("sha256").update(await readFile(candidateVsix)).digest("hex"), candidateSha256);
     }
@@ -119,7 +123,7 @@ if (!process.argv.includes("--inside")) {
     assert.equal(installedNames.length, 1);
     const installed = await realpath(join(base, "x", installedNames[0]));
     const manifest = JSON.parse(await readFile(join(installed, "package.json"), "utf8"));
-    assert.equal(manifest.version, "4.0.27");
+    assert.equal(manifest.version, candidateChat ? "5.0.0" : "4.0.27");
     const wheel = join(installed, "resources/vendor/adaptive_skill_retrieval-0.3.0.dev2026100504-py3-none-any.whl");
     checked(businessPython, ["-m", "pip", "--disable-pip-version-check", "install",
       "--no-index", "--no-deps", "--target", join(base, "offline-deps"), wheel], { env });
@@ -183,6 +187,39 @@ extensionPath:${JSON.stringify(installed)},globalStorageUri:{fsPath:${JSON.strin
         }
         const input = JSON.parse(Buffer.concat(chunks).toString());
         if (overviewModel && await overviewModel.handle(request, response, input)) return;
+        if (core) {
+          if (!input.tools?.length) {
+            const system = input.messages?.[0]?.content;
+            let reply;
+            if (system?.startsWith("Extract concise, retrieval-ready User Profile fragments")) reply = '{"fragments":[]}';
+            else if (system?.startsWith("Select applicable user requirements")) reply = '{"matches":[]}';
+            else if (system?.includes("CURRENT user input")) reply = '{"focus":[]}';
+            else if (system?.includes("Extract at most")) reply = '{"statements":[]}';
+            if (reply !== undefined) {
+              response.writeHead(200, { "content-type": "text/event-stream" });
+              response.end(`data: ${JSON.stringify({ choices: [{ delta: { content: reply }, finish_reason: null }] })}\n\n`
+                + 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+              return;
+            }
+          }
+          const last = input.messages?.filter(message => message.role === "user").at(-1)?.content;
+          if (typeof last === "string" && last.startsWith("CORE_")) {
+            const history = input.messages.filter(message => message.role === "assistant").map(message => message.content);
+            requests.push({ core: last, history });
+            if (last === "CORE_FAIL") {
+              response.writeHead(401, { "content-type": "application/json" });
+              response.end('{"error":{"message":"Isolated Chat core authentication failure"}}');
+            } else {
+              if (last === "CORE_SECOND") assert(history.some(text => text?.includes("CORE_FIRST_REPLY")),
+                "Second turn must include the first persisted assistant reply");
+              const reply = `${last}_REPLY`;
+              response.writeHead(200, { "content-type": "text/event-stream" });
+              response.end(`data: ${JSON.stringify({ choices: [{ delta: { content: reply }, finish_reason: null }] })}\n\n`
+                + 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+            }
+            return;
+          }
+        }
         const last = input.messages.filter(message => message.role === "user").at(-1)?.content;
         if (installedBrowser && last === "INSTALLED_BROWSER_COMPLETE") {
           response.writeHead(200, { "content-type": "text/event-stream" });
@@ -238,7 +275,7 @@ extensionPath:${JSON.stringify(installed)},globalStorageUri:{fsPath:${JSON.strin
         const results = requests.at(-1).toolResults, count = results.length, step = sequence[count];
         if (count === 2) assert(!JSON.parse(results.at(-1).content).error,
           `Actual approved Note write failed: ${results.at(-1).content.slice(0, 2000)}`);
-        if (count === 2 && !bundledGateway) await captureChatGateway();
+        if (count === 2 && !bundledGateway && !candidateChat) await captureChatGateway();
         if (step) assert(input.tools.some(tool => tool.function.name === step[0]), `Missing actual Chat tool ${step[0]}`);
         if (count === 5) assert(results.at(-1).content.includes(noteText));
         if (!step && !bundledGateway) assert.match(results.at(-1).content, /"ok":true/);
@@ -274,9 +311,38 @@ exports.activate=()=>{setImmediate(()=>exports.run().catch(error=>console.error(
 exports.run=async()=>{
  const base=${JSON.stringify(base)},installed=${JSON.stringify(installed)},library=${JSON.stringify(library)};
  const progress=stage=>fs.writeFileSync(path.join(base,"progress.json"),JSON.stringify({stage}));
+ ${core ? `
+ const finishCore=async(initial)=>{
+  const coreDeadline=Date.now()+180000;
+  while(!fs.existsSync(path.join(base,"chat-core-done.json"))&&Date.now()<coreDeadline)await new Promise(r=>setTimeout(r,100));
+  assert(fs.existsSync(path.join(base,"chat-core-done.json")),"Installed core Chat journey did not finish");
+  const coreEvidence=JSON.parse(fs.readFileSync(path.join(base,"chat-core-done.json"),"utf8"));
+  const coreRoot=path.join(library,".pkm/state/api-chats");
+  const coreRecords=fs.readdirSync(coreRoot,{recursive:true}).filter(n=>n.endsWith(".json"))
+    .map(n=>JSON.parse(fs.readFileSync(path.join(coreRoot,n),"utf8")));
+  const coreChat=coreRecords.find(r=>r.id===coreEvidence.chatId);
+  assert(coreChat,"Core Chat must be persisted in the actual Knowledge Root");
+  for(const marker of ["CORE_FIRST_REPLY","CORE_SECOND_REPLY","CORE_RECOVER_REPLY"])
+    assert(coreChat.messages.some(m=>m.content.includes(marker)&&m.status==="complete"),marker);
+  assert(coreChat.messages.some(m=>m.status==="failed"),"Failed turn must remain honest in saved history");
+  assert.notEqual(initial.extensionHostPid,process.pid,"Core acceptance requires a real restarted extension host");
+  fs.writeFileSync(path.join(base,"host-evidence.json"),JSON.stringify({...initial,coreChat:{...coreEvidence,reloadedExtensionHostPid:process.pid}}));
+  progress("complete");
+ };
+ ` : ""}
  let overviewObservation,overviewApi;
  try{
   const extension=vscode.extensions.getExtension("uone.personal-knowledge");
+  ${core ? `
+  const initialPath=path.join(base,"chat-core-initial-host.json");
+  if(fs.existsSync(initialPath)){
+   assert(extension);
+   assert.equal(fs.realpathSync(extension.extensionPath),installed);
+   await extension.activate();
+   await finishCore(JSON.parse(fs.readFileSync(initialPath,"utf8")));
+   return;
+  }
+  ` : ""}
   assert(extension&&!extension.isActive,"Installed extension must be captured before its real activation");
   assert.equal(fs.realpathSync(extension.extensionPath),installed);
   ${overview ? `
@@ -286,7 +352,7 @@ exports.run=async()=>{
   let actualContext;
   main.activate=async function(context,...args){
    actualContext=context;assert.equal(context.extensionMode,vscode.ExtensionMode.Production);
-   ${bundledGateway ? "" : 'await context.globalState.update("pkm.mcpHotSwitchEnabled.v1",true);'}
+   ${bundledGateway || candidateChat ? "" : 'await context.globalState.update("pkm.mcpHotSwitchEnabled.v1",true);'}
    await context.secrets.store("personalKnowledge.aiApiKey","isolated-installed-provider");
    return activate.call(this,context,...args);
   };
@@ -296,9 +362,11 @@ exports.run=async()=>{
   assert(fs.realpathSync(actualContext.globalStorageUri.fsPath).startsWith(path.join(base,"u")));
   progress("starting-native-managed");
   const original=await vscode.commands.executeCommand("personalKnowledge.startPkmMcp");
-  ${bundledGateway ? `
+  ${bundledGateway || candidateChat ? `
   const native=await vscode.lm.invokeTool("mcp_pkm_check_version",{input:{}},undefined);
   const live=JSON.parse(native.content.map(part=>part.value??"").join(""));
+  ${candidateChat ? `assert.equal(live.dispatchMode,"original");
+  assert.equal(live.originalConnection.attribution.source,"vscode-provider");` : ""}
   fs.writeFileSync(path.join(base,"native.json"),JSON.stringify({original:{runtime:live}}));
   ` : `progress("selecting-v5-gateway");
   const switched=await vscode.commands.executeCommand("personalKnowledge.switchMcpRuntime",${JSON.stringify(stage.targetPath)});
@@ -332,11 +400,15 @@ exports.run=async()=>{
   const overviewEvidence=${overview
     ? "await overviewApi.runInstalledOverviewHost({base,installed,library,vscode,context:actualContext,observation:overviewObservation,requireInstalled:require})"
     : "undefined"};
-  fs.writeFileSync(path.join(base,"host-evidence.json"),JSON.stringify({
-   extensionMode:"Production",installedExtensionPath:installed,actualVsCodeApi:true,
+  const initialEvidence={
+   extensionMode:"Production",installedExtensionPath:installed,actualVsCodeApi:true,extensionHostPid:process.pid,
    nativeMcpVerified:true,originalNote:note,nativeSession:session,harnessSnapshot:snapshot,
    ...(overviewEvidence?{taskOverview:overviewEvidence}:{})
-  }));
+  };
+  ${core ? `
+  fs.writeFileSync(initialPath,JSON.stringify(initialEvidence));
+  await finishCore(initialEvidence);
+  ` : 'fs.writeFileSync(path.join(base,"host-evidence.json"),JSON.stringify(initialEvidence));'}
   progress("complete");
   ${upgrade ? `while(!fs.existsSync(path.join(base,"close-predecessor")))await new Promise(r=>setTimeout(r,200));
   await vscode.commands.executeCommand("workbench.action.closeWindow");` : ""}
@@ -371,14 +443,14 @@ exports.run=async()=>{
       "--password-store=basic", `--remote-debugging-port=${port}`, "--remote-debugging-address=127.0.0.1"];
     app = spawn(editor, launchArgs, { env: appEnv, stdio: ["ignore", "pipe", "pipe"] });
     for (const stream of [app.stdout, app.stderr]) stream.on("data", bytes => logs.push(bytes.toString()));
-    browser = spawn(browserPython, ["-B", join(here, overview ? "installed-chat-overview-browser.py"
+    browser = spawn(browserPython, ["-B", join(here, core ? "installed-chat-core-browser.py" : overview ? "installed-chat-overview-browser.py"
       : "installed-compatibility-chat.py"), join(base, "fixture.json"), ...(bundledGateway ? ["--populate"] : [])],
       { env: appEnv, stdio: ["ignore", "pipe", "pipe"] });
     let browserOutput = "";
     for (const stream of [browser.stdout, browser.stderr]) stream.on("data", bytes => {
       browserOutput += bytes; process.stdout.write(bytes);
     });
-    const deadline = Date.now() + (overview ? 360_000 : 180_000);
+    const deadline = Date.now() + (candidateChat ? 360_000 : 180_000);
     while (!(await file(join(base, "host-evidence.json")))) {
       const failure = await file(join(base, "host-failure.json"));
       if (failure) throw Error(`Real installed host: ${JSON.stringify(failure)}`);
@@ -389,6 +461,9 @@ exports.run=async()=>{
     }
     assert.deepEqual(errors, []);
     const overviewProvider = overviewModel ? await overviewModel.flush() : undefined;
+    if (core) assert.deepEqual(requests.filter(request => request.core).map(request => request.core),
+      ["CORE_FIRST", "CORE_SECOND", "CORE_FAIL", "CORE_RECOVER"],
+      "Core Chat must issue each requested turn exactly once, including the failed turn");
     if (overviewProvider) {
       assert.deepEqual(overviewProvider.failures, []);
       assert.deepEqual(overviewProvider.pending, []);
@@ -631,17 +706,18 @@ exports.registerApiChatShell = (...args) => {
         predecessorGatewayBuild: bundledGateway ? null : target.runtimeBuild,
         candidateVsixSha256: candidateSha256, sameRootAndSettings: true };
     }
-    const report = { passed: true, shippedVsixSha256: shippedSha, shippedVersion: manifest.version,
-      extensionInstallation: overview ? "VS Code CLI installed explicitly pinned controlled candidate; Production activation"
+    const report = { passed: true, shippedVsixSha256: shippedSha, shippedVersion: "4.0.27",
+      extensionInstallation: candidateChat ? "VS Code CLI installed explicitly pinned controlled candidate; Production activation"
         : "VS Code CLI installed unchanged shipped VSIX; Production activation",
-      ...(overview ? { candidateVsixSha256: candidateSha256, taskOverview: hostEvidence.taskOverview,
-        overviewProvider } : {}),
+      ...(candidateChat ? { candidateVsixSha256: candidateSha256, candidateVersion: manifest.version,
+        ...(overview ? { taskOverview: hostEvidence.taskOverview, overviewProvider } : { coreChat: hostEvidence.coreChat }) } : {}),
       ...(upgrade ? { upgrade: upgradeEvidence } : {}),
       execution: "real installed VS Code/Electron Chromium webviews, native MCP, Chat IPC and original business adapter",
       model: "deterministic loopback OpenAI-compatible SSE fixture, synthetic isolated SecretStorage token",
       isolation: "new user/network namespace, loopback only, isolated HOME/user-data/extensions/library",
       preparatoryFacade: "managed MCP manifest preprovisioning only; not the acceptance host",
       gatewayRuntimeBuild: settingsSwitch ? upgradeEvidence.v5.native.runtime.runtimeBuild
+        : candidateChat ? (await file(join(base,"native.json"))).original.runtime.runtime.runtimeBuild
         : bundledGateway ? upgradeEvidence.liveBuild : target.runtimeBuild,
       actualChatGatewayProcess: chatGatewayProcess,
       storageMigrated: false, liveProfileTouched: false, fixtureGitCommits: 0,

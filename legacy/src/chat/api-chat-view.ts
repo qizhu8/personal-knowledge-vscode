@@ -35,7 +35,7 @@ import { executeMemoryOperation } from "../capabilities/memory-operations";
 import { todoReadApiNames } from "../knowledge/todo-api-contract";
 import { actionRequest } from "../ui/action-browser";
 import { connectApiChatMcp, connectManagedChatMcp, connectSelectedChatGateway, type SelectedChatGateway, ManagedChatMcp, mcpUrl, ApiChatMcpServer, vscodeToolCatalog, createVscodeTools, groupVscodeTools, pkmToolSets } from "./api-chat-mcp";
-import { assertVscodeModelCallable, discoverVscodeModels, isVscodeModelAccessError, streamVscodeChat, vscodeModelProfile, VscodeChatModel } from "./api-chat-vscode";
+import { assertVscodeModelCallable, discoverVscodeModels, isVscodeModelAccessError, streamVscodeChat, vscodeModelProfile, VscodeChatModel, VscodeModelsUnavailableError } from "./api-chat-vscode";
 import { CopilotSdkSummaryBudgetError, discoverCopilotSdkModels } from "./api-chat-copilot-sdk";
 import type { ChatModelActivity } from "./api-chat-client";
 import { runFixtureChatAcceptance } from "./api-chat-acceptance";
@@ -1139,7 +1139,13 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         const find = (id: string) => this.vscodeModels.find(model => vscodeModelProfile(model).id === id);
         const target = configured.startsWith("vscode:") ? configured : settings.selectedProfile.id;
         if (!find(target)) {
-          this.vscodeModels = await this.availableVscodeModels(signal);
+          try { this.vscodeModels = await this.availableVscodeModels(signal); }
+          catch (error) {
+            if (signal.aborted || settings.provider === "vscode" || !(error instanceof VscodeModelsUnavailableError)) throw error;
+            console.warn(`PKM Chat Memory: configured VS Code model is unavailable; using the Chat API model ${settings.model}. ${error.message}`);
+            onActivity?.({ operation: "model-access", label: "Memory: configured VS Code model unavailable; using the Chat API model", status: "failed" });
+            this.vscodeModels = [];
+          }
         }
         onDiscovery?.(this.vscodeModels);
         // A missing lightweight model falls back to the Chat's own VS Code model; the receipt shows which one ran.
