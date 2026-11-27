@@ -48,7 +48,7 @@ export const builtinToolCatalog = [
   { name: "record_harness", label: "Record task / planning / validation", permission: "Explicit current-task observations only; does not execute or complete the managed Task" },
   { name: "list_chats", label: "List Chats", permission: "Read-only workspace Chat IDs, titles and status; no conversation bodies" },
   { name: "ask_chat", label: "Ask another Chat", permission: "Approval required; one idle target per turn; no recursive delegation or automatic Tasks" },
-  { name: "spawn_workers", label: "Spawn parallel workers", permission: "Shared task-tree budget; automatic small batches, explicit approval above threshold; child tools retain permissions" },
+  { name: "spawn_workers", label: "Spawn parallel workers", permission: "Shared task-tree budget; automatic within configured threshold, explicit approval above threshold; child tools retain permissions" },
   { name: "pkm_search", label: "Search PKM knowledge", permission: "Read-only local knowledge and cached subscription titles" },
   { name: "pkm_read", label: "Read PKM knowledge", permission: "Read-only bounded local knowledge and cached subscription content" },
   { name: "note_todo_read", label: "Read Todo Board / Work Items", permission: "Read-only structured Board / legacy Note Work Items and discovery" },

@@ -49,7 +49,7 @@ import { recallScopedChatMemory, scopedMemorySegment } from "./chat-memory-scope
 import { ChatContextPlanner, AutomaticChatContext, ContextCandidateLimitError, AUTOMATIC_KNOWLEDGE_INPUT_BUDGET, type ContextTokenMeasurement } from "./chat-context";
 import { guardRetrievalCandidates } from "../retrieval/retrieval-provider";
 import { passageReferenceGroup, refineRuleCandidates } from "../retrieval/retrieval-passages";
-import { workerLimits, workerIsDescendant, WorkerEvent, WorkerPhase, WorkerDecisionReason } from "./worker-tree";
+import { configuredWorkerLimits, workerIsDescendant, WorkerEvent, WorkerPhase, WorkerDecisionReason } from "./worker-tree";
 import { chatRetrievalReceipt, ChatKnowledgeRetriever, ChatRetrievalCandidate, ChatRetrievalInvocation, validChatRetrievalInvocation } from "./chat-retrieval";
 import { knowledgeCandidatePriority, parseRetrievalSelection, requireLearningAcknowledgment, retrievalJudgmentInput } from "./chat-retrieval-learning";
 import { handleChatLibraryAction } from "./library-actions";
@@ -1791,7 +1791,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         const recent = [...new Map(treeSlots.map(slot => [slot.chatId, slot])).values()].slice(-200);
         const nodes = [node(rootChatId), ...recent.map(slot => node(slot.chatId, slot.parentChatId, slot.receiptId, slot.title))];
         const config = vscode.workspace.getConfiguration("personalKnowledge");
-        const limits = workerLimits(config.get<number>("apiChatAutomaticWorkers", 3), config.get<number>("apiChatMaximumWorkers", 10));
+        const limits = configuredWorkerLimits(config);
         return { rootChatId, nodes, activeWorkers: this.store!.workerTrees.count(id), quota: this.store!.workerTrees.quota(id, limits), maximum: limits.maximum,
           ...(treeSlots.length > 200 ? { warning: "Showing the latest 200 worker identities; earlier receipts remain in activity history." } : {}) };
       }
@@ -4012,7 +4012,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
         const checkScopes = () => assertIndependentWorkerScopes(tasks,
           chat.messages.flatMap(message => message.delegations || []).filter(record => record.status === "running"));
         checkScopes();
-        const limits = workerLimits(config.get<number>("apiChatAutomaticWorkers", 3), config.get<number>("apiChatMaximumWorkers", 10));
+        const limits = configuredWorkerLimits(config);
         const treeId = chat.workerActivity?.treeId || chat.workerState?.treeId || this.store!.workerTrees.create(chat.id);
         const pendingEvents = triggeringEvents;
         if (!targets && workerEvents && (pendingEvents.some(event => event!.phase === "failed" || event!.reason)
@@ -4251,7 +4251,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
           const treeId = chat.workerActivity?.treeId || chat.workerState!.treeId;
           const slots = this.store!.workerTrees.members(treeId).filter(slot => !slot.released);
           const config = vscode.workspace.getConfiguration("personalKnowledge");
-          const limits = workerLimits(config.get<number>("apiChatAutomaticWorkers", 3), config.get<number>("apiChatMaximumWorkers", 10));
+          const limits = configuredWorkerLimits(config);
           return JSON.stringify({ treeId, activeWorkers: slots.length, approvedQuota: this.store!.workerTrees.quota(treeId, limits),
             workers: slots.slice(Number(offset), Number(offset) + 50).map(slot => {
               const target = this.store!.resolveChat(slot.chatId);
@@ -4616,7 +4616,7 @@ export class ApiChatView implements vscode.WebviewViewProvider, vscode.Disposabl
       };
       const sampleWorkerBudget = (ledger: import("./chat-budget-ledger").ChatBudgetLedger) => {
         const cfg = vscode.workspace.getConfiguration("personalKnowledge");
-        const limits = workerLimits(cfg.get<number>("apiChatAutomaticWorkers", 3), cfg.get<number>("apiChatMaximumWorkers", 10));
+        const limits = configuredWorkerLimits(cfg);
         const treeId = chat.workerActivity?.treeId || chat.workerState?.treeId;
         recordChatWorkerBudget(ledger, { treeId, active: treeId ? this.store!.workerTrees.count(treeId) : 0,
           quota: treeId ? this.store!.workerTrees.quota(treeId, limits) : limits.automatic, maximum: limits.maximum });

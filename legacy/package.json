@@ -1349,14 +1349,14 @@
         },
         "personalKnowledge.apiChatAutomaticWorkers": {
           "type": "integer",
-          "default": 3,
+          "default": 50,
           "minimum": 0,
           "maximum": 1000,
           "description": "Automatically approved concurrent worker capacity per task tree. Must not exceed apiChatMaximumWorkers. Recursive managers share the same capacity. Increased approved capacity persists and can be reused."
         },
         "personalKnowledge.apiChatMaximumWorkers": {
           "type": "integer",
-          "default": 10,
+          "default": 50,
           "minimum": 1,
           "maximum": 1000,
           "description": "Hard concurrent worker capacity for the entire Chat task tree, including recursive workers and assignments to existing Chats. Only capacity increases need explicit approval, even with Allow All. Resolved activities release capacity; blockers and unresolved failures retain it."
