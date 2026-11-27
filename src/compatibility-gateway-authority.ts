@@ -404,7 +404,8 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
             operation: input.operation, version: 1, arguments: input.arguments,
           });
           assertCurrent();
-          if (result.isError) throw new Error("The browser gateway read failed.");
+          if (result.isError) throw new Error(result.content.filter(item => item.type === "text")
+            .map(item => item.text).join("\n") || "The browser gateway read failed.");
           if (result.structuredContent !== undefined) return result.structuredContent;
           if (input.operation === "mcp.tool.search_notes" && result.content.length === 0) return [];
           const block = result.content[0];

@@ -138,7 +138,9 @@ export async function createOriginalBrowserRoute(owner: OriginalBrowserOwner, op
         if (!capabilityRead || !current()) throw unavailable("Original browser grant is no longer current.");
         let value: unknown;
         try { value = await capabilityRead(grant, { operation: `mcp.tool.${operation}`, version: 1, arguments: args }); }
-        catch { throw unavailable("Original owner did not return a verified read."); }
+        catch (error) {
+          throw unavailable(`Original owner did not return a verified read. ${error instanceof Error ? error.message : "Read failed."}`);
+        }
         if (!current()) throw unavailable("Original browser grant is no longer current.");
         return value;
       };

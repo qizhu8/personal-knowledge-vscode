@@ -123,13 +123,22 @@ async function body(req: IncomingMessage) {
 }
 async function request(endpoint: Json, route: string, input: Json) {
   if (!loopback(endpoint.origin) || !hex(endpoint.token) || !uuid(endpoint.serviceId)) throw denied();
-  const res = await fetch(endpoint.origin + route, { method: "POST",
-    headers: { authorization: `Bearer ${endpoint.token}`, "x-pkm-service-id": endpoint.serviceId,
-      "content-type": "application/json" }, body: JSON.stringify(input), signal: AbortSignal.timeout(90_000),
-    redirect: "error" });
+  let res: Response;
+  try {
+    res = await fetch(endpoint.origin + route, { method: "POST",
+      headers: { authorization: `Bearer ${endpoint.token}`, "x-pkm-service-id": endpoint.serviceId,
+        "content-type": "application/json" }, body: JSON.stringify(input), signal: AbortSignal.timeout(90_000),
+      redirect: "error" });
+  } catch (error) {
+    if (error instanceof Error && error.cause instanceof Error)
+      throw new Error(`Private owner request failed: ${error.cause.message}`, { cause: error });
+    throw error;
+  }
   const text = await res.text();
-  if (text.length > 2_000_000 || !res.ok) throw denied();
-  return JSON.parse(text) as Json;
+  if (text.length > 2_000_000) throw denied();
+  const result = JSON.parse(text) as Json;
+  if (!res.ok) throw new Error(typeof result?.detail === "string" ? result.detail : "Owner or peer unavailable; no replay.");
+  return result;
 }
 async function privateServer(handler: (route: string, input: Json) => Promise<unknown>,
   abandoned?: (route: string) => void) {
@@ -156,7 +165,10 @@ async function privateServer(handler: (route: string, input: Json) => Promise<un
         terminal = true;
         reply(200, result);
       } finally { terminal = true; res.off("close", disconnected); }
-    } catch { reply(409, { error: "Owner or peer unavailable; no replay." }); }
+    } catch (error) {
+      reply(409, { error: "Owner or peer unavailable; no replay.",
+        detail: error instanceof Error ? error.message : "The private owner request failed." });
+    }
   });
   server.headersTimeout = 5_000;
   server.requestTimeout = 10_000;

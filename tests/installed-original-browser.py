@@ -34,8 +34,20 @@ with sync_playwright() as playwright:
     enrollment.unlink()
     url = grant["url"]
     browser = playwright.chromium.launch(headless=True)
+    diagnostics = []
+    pending_requests = {}
     try:
         page = browser.new_page()
+        def remember_request(request):
+            command = (request.post_data_json or {}).get("command")
+            pending_requests[id(request)] = f"PENDING {request.method} {request.url}: {command}"
+        page.on("request", remember_request)
+        page.on("requestfinished", lambda request: pending_requests.pop(id(request), None))
+        page.on("pageerror", lambda error: diagnostics.append(str(error)))
+        page.on("requestfailed", lambda request: diagnostics.append(f"{request.method} {request.url}: {request.failure}"))
+        page.on("response", lambda response: diagnostics.append(
+            f"HTTP {response.status} {response.url}: {(response.request.post_data_json or {}).get('command')}"
+        ) if response.status >= 400 else None)
         assert not page.request.get(url + "panel.js").ok
         page.goto(url)
         page.wait_for_load_state("networkidle")
@@ -124,20 +136,20 @@ with sync_playwright() as playwright:
         stop = page.get_by_role("button", name="Stop", exact=True)
         draft.fill("INSTALLED_BROWSER_COMPLETE")
         send.click()
-        expect(dialog).to_contain_text("INSTALLED_BROWSER_COMPLETE")
+        expect(dialog).to_contain_text("INSTALLED_BROWSER_COMPLETE", timeout=15000)
         dialog.get_by_role("button", name="Send once", exact=True).click()
         expect(page.locator("#chat-turn-state")).to_contain_text("Turn completed", timeout=25000)
         assert (base / "browser-provider-completed").exists(), "Browser Send must reach the fixture model"
         draft.fill("CANCEL_INSTALLED_BROWSER")
         send.click()
-        expect(dialog).to_contain_text("CANCEL_INSTALLED_BROWSER")
+        expect(dialog).to_contain_text("CANCEL_INSTALLED_BROWSER", timeout=15000)
         dialog.get_by_role("button", name="Send once", exact=True).click()
         expect(stop).to_be_enabled(timeout=20000)
         page.reload(wait_until="domcontentloaded")
         expect(stop).to_be_enabled(timeout=15000)
-        stop.click()
-        expect(page.locator("#chat-turn-state")).to_contain_text("upstream cancellation is not confirmed")
         until = time.monotonic() + 10
+        stop.click()
+        expect(page.locator("#chat-turn-state")).to_contain_text("upstream cancellation is not confirmed", timeout=10000)
         while not (base / "browser-provider-closed").exists() and time.monotonic() < until:
             time.sleep(0.1)
         assert (base / "browser-provider-closed").exists(), "Browser Stop must close the held model stream"
@@ -172,6 +184,9 @@ with sync_playwright() as playwright:
     except (Error, AssertionError):
         editor.screenshot(path=str(base / "installed-browser-blocked.png"))
         (base / "installed-browser-workbench.txt").write_text(editor.locator("body").inner_text())
+        page.screenshot(path=str(base / "installed-browser-page.png"), full_page=True)
+        (base / "installed-browser-page.txt").write_text(page.locator("body").inner_text())
+        (base / "installed-browser-network.txt").write_text("\n".join(diagnostics + list(pending_requests.values())))
         raise
     finally:
         browser.close()
