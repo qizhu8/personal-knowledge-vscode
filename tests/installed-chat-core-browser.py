@@ -7,7 +7,7 @@ import time
 import traceback
 from pathlib import Path
 
-from playwright.sync_api import expect
+from playwright.sync_api import Error as PlaywrightError, expect
 
 
 def run_core(page):
@@ -17,9 +17,14 @@ def run_core(page):
         until = time.monotonic() + 30
         while time.monotonic() < until:
             for frame in page.frames:
-                if not frame.is_detached() and frame.locator("#chats").count():
-                    if frame.locator("#chats").is_visible() or frame.locator("#library-view").is_visible():
-                        return frame
+                try:
+                    if not frame.is_detached() and frame.locator("#chats").count():
+                        if frame.locator("#chats").is_visible() or frame.locator("#library-view").is_visible():
+                            return frame
+                except PlaywrightError as error:
+                    if "Frame was detached" not in str(error) or not frame.is_detached():
+                        raise
+                    print("Chat frame detached during Reload discovery; waiting for its replacement", file=sys.stderr)
             page.wait_for_timeout(100)
         raise AssertionError("Installed Chat interface was not restored")
 

@@ -197,6 +197,7 @@ test("scripted agent receives a real worker's final result and human alias on th
   const calls = [];
   const request = async (method, params) => { calls.push({ method, params }); return execute(["--api", store], { method, params }); };
   try {
+    fs.mkdirSync(store, { mode: 0o700 });
     await execute(["--configure-workspace", store, temporary]);
     const definition = await request("definition_get", { action_id: "core.delay" });
     let round = 0, observed, text = "";
