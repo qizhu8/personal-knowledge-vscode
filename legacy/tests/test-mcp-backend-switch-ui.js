@@ -62,6 +62,8 @@ test("Settings keeps selection separate from manager observations and locks unkn
   ui.selectMcpBackend(first);
   ui.requestMcpBackend("Apply");
   assert.equal(sent[3].activePid, 200);
+  assert.doesNotMatch(slot.innerHTML, /confirmed completion/,
+    "A new switch must not report the previous switch as completed while the current result is pending.");
   reply(4, { active: active(second, "accepting", 200), serviceId, candidates, outcome: "unknownOutcome" });
   assert.match(slot.innerHTML, /do not retry or replay/);
   assert(applyDisabled());

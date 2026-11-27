@@ -133,6 +133,7 @@ function requestMcpBackend(action, background = false) {
   const target = candidates.find(item => item.compatible && item.generation === mcpBackendSelection && item.generation !== active?.generation);
   if (action === 'Apply' && (!target || !active?.backendPid || active.phase !== 'accepting' || mcpBackendView.error
     || mcpBackendView.outcome === 'unknownOutcome' || active.uncertain || active.backgroundUncertain || active.backgroundActive)) return;
+  if (action === 'Apply') mcpBackendView = { ...mcpBackendView, outcome:undefined };
   mcpBackendPending = action;
   mcpBackendBackgroundRead = action === 'Read' && background;
   const requestId = ++mcpBackendRequest;
