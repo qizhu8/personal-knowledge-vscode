@@ -78,8 +78,10 @@ can switch Original ↔ bundled v5 without replacing either client connection.
 Both backends continue to use Original's storage; no migration or rollback is
 performed. Admission requires the canonical owner-owned root, without
 group/other writes, bound to this profile's
-native provider. Manual/external MCP registrations are unsupported and refused;
-the switch does not rewrite external client configuration.
+native provider. Windows on the same canonical Original root join its admitted
+owner, retaining their own Original connections and host/Chat attribution.
+Different roots remain independent. Unknown/unmanaged Original clients remain
+refused; the switch does not silently rewrite external client configuration.
 
 The managed Original launcher holds a shared custody guard through its entire
 lifetime. Live ownership takes the exclusive guard, durably inhibits restarts,
@@ -95,6 +97,34 @@ admission; its custody ancestry must also deny group/other writes when other
 users can traverse that root. Custody markers and control directories remain
 private. Admission never changes the root's permissions.
 
+An independently detached compatibility service owns custody, not an extension
+host. Native activation reserves a window's lifecycle with that service without
+starting any Original adapter or MCP relay. The service publishes private
+`owner-live.json` during its verified reservation, so another window can prepare
+admission before MCP startup. Explicit client Start enrolls its own adapters;
+an explicit Start retry can revalidate a newly ready service without Reload.
+Enrollment checks its root inode, custody-marker hash, owner PID/start ticks and
+boot identity, exact Original generation/build and bundled build, then performs
+an authenticated loopback handshake. A peer never takes or bypasses `owner.guard`,
+receives no custody launch grant, and cannot remove the pending marker. Its
+host-only callback proves live admission/background activity and supplies native
+confirmation. Each admitted native window confirms a switch; all windows'
+Original work, browser reads, relay enrollment and CLI calls must be idle before
+the shared dispatch reference changes. New work is refused during verification.
+The actual drain transition is delivered through the authenticated native
+callback, correlated to the pending switch and selection revision, before
+verification and its terminal result. It is not inferred from a status-poll race
+or fabricated while waiting for confirmation.
+Lost transports or crashed/unknown owners or peers fence admission without replay.
+Orderly window close or Reload drains only that window's adapters. Other
+windows' admitted work, connections, identities and shared selection remain
+intact; a reopened window joins the same service and selected backend. Lifecycle
+departure waits for concurrent enrollment/switch management rather than treating
+ordinary contention as a crash. Only the service's confirmed final-participant
+drain releases its durable pending marker. Lost bootstrap admission, a crashed
+service or an unacknowledged participant loss instead retains the recovery
+fence: no automatic takeover, marker deletion, inferred result or replay occurs.
+
 Native activation prepares this custody before its own retrieval and singleton
 service writers start. Under that reservation and the existing singleton
 lifecycle lock, it asks a verified same-profile/root predecessor service
@@ -103,9 +133,10 @@ It waits for that process and endpoint to exit, then still takes the exclusive
 root-writer preflight; it never kills the daemon or substitutes a health check
 for drain proof. Unknown exits and unsupported drain protocols refuse admission.
 The lifecycle lock prevents a reconnect from restarting the singleton in that
-gap. Normal window disposal does not drain the independent HTTPS service;
-reopening a native owner safely drains/readmits its persistent successor while
-retaining its private HTTPS provision.
+gap. Normal window disposal does not drain the independent HTTPS service.
+Reopening a window joins an existing compatibility service; if no compatibility
+participants remain, a new verified admission safely drains/readmits the HTTPS
+successor while retaining its private provision.
 
 Runtime repair checks for existing clients before publishing maintenance
 markers: Original treats even a transient marker as a permanent admission fence.
@@ -116,9 +147,54 @@ markers and repeats the client check before changing shared dependencies.
 The native provider and PKM Chat use the reviewed target selected in the v4 host.
 Copilot CLI has a separate user configuration at `~/.copilot/mcp-config.json`.
 Selecting the native provider does not silently rewrite that file. After explicit
-user approval and a private byte backup, its `pkm` command can use the target's
-Node executable and `[entry.path, ...args]`; keep other server entries and the
-existing `tools` policy unchanged.
+user approval, its `pkm` command can use the verified payload's Node executable
+and `[server/dist/compatibility-gateway-peer-cli.js, canonicalRoot,
+exactOriginalGeneration, exactOriginalBuild, exactBundledBuild, "--writable"]`;
+use `"--read-only"` when the reviewed owner is read-only. Keep other
+server entries, JSONC comments and the existing `tools` policy unchanged.
+The native route's `managedPeerDefinition()` supplies these exact root/installed
+pins without starting or reserving a backend. If an authority is already bound,
+its current accepting status is also verified. The reviewed definition
+explicitly preserves the owner's configured writability rather
+than silently downgrading existing CLI capabilities. The CLI joins as a distinct
+verified external participant; `check_version.routeRuntime.participant` reports
+its external source, process identity and effective writability. Original's
+existing attribution schema truthfully remains `standalone/unknown`: no native
+host identity is invented and Original's exact pins/schema are not weakened.
+External writes use the same capability grants, worker-token checks, Original
+executors and shared drain ledger as native calls. External peers cannot start
+an owner or switch backends. An explicitly read-only peer refuses mutation,
+and a read-only owner refuses a writable enrollment with `READ_ONLY_OWNER`.
+Four-pin historical CLI launches remain read-only; new reviewed definitions
+always include an explicit access flag.
+
+A missing owner (including a root containing only `owner.guard`) reports
+`COMPATIBILITY_OWNER_UNAVAILABLE`, never a cold fallback. The new verified
+native admission must first reserve the independent service; the old
+process-local installation cannot provide the new authenticated rendezvous.
+SDK hosts may reuse `joinCompatibilityGatewayPeer(root, binding, host)` with the
+same binding, `relayRoles:["workbench"]`, supported standalone attribution and
+`externalPeer:{writable:true}` (or `false`) for an explicitly reviewed external
+participant.
+
+Native provider enumeration uses metadata-only `describeLaunch()`; only server
+resolution/explicit Start calls `launch()`. Settings reads also never start a
+relay, authority or Original backend. Registering a CLI definition before native
+startup is therefore safe, but launching that CLI still reports unavailable
+until the authenticated owner rendezvous is ready. Standalone metadata builders
+must pass `executable` matching the native host's actual verified executable:
+its path/digest are part of the bundled build pin. For a VSCode executable,
+the caller supplies `ELECTRON_RUN_AS_NODE=1`; metadata contains no credentials.
+Use the actual Remote-SSH server Node when building a definition for that host,
+not a different Node selected by the standalone shell.
+
+A restored non-read-only PKM Chat legitimately starts managed tool discovery
+when its view becomes ready. Settings therefore reports that verified active
+Original backend even before a separate Workbench MCP Start; it must not pretend
+the backend is cold. Passive discovery/Settings reads remain side-effect-free
+when no client has started. Installed restored-profile qualification checks the
+actual Chat startup trace and attribution, then waits for both client relays to
+be verified before measuring unchanged scheduled-refresh rendering.
 
 New CLI/agent chats then discover the selected gateway. An already-running
 conversation may still have its previous launch descriptor and private socket
@@ -126,6 +202,71 @@ cached; a native reload or editing the CLI file is not proof that this old
 conversation refreshed. Verify `check_version`, backend identity and the tool
 inventory through the actual new chat's MCP tools. Do not label a direct SDK
 probe as proof of that conversation's inherited connection.
+
+## Explicit manual compatibility-custody recovery (Linux)
+
+Recovery is **not automatic takeover**, adapter restart, journal repair, or
+replay. A crashed service leaves its durable admission fence. Do not remove
+`owner.guard`, pending markers, writer-session directories, or operation records.
+First close the affected native/CLI participants explicitly; do not kill an
+unrelated process or use a PID alone as death proof.
+
+Use the **same verified installed payload's Node and recovery entry**, with the
+canonical root that the operator actually reviewed. For example, with the
+absolute installed paths substituted:
+
+```sh
+"/verified/node" "/verified/next-runtime/server/dist/compatibility-gateway-recovery-cli.js" inspect "/canonical/library"
+"/verified/node" "/verified/next-runtime/server/dist/compatibility-gateway-recovery-cli.js" recover "/canonical/library" --confirm REVIEW_SHA256
+```
+
+For an extension-host executable used as Node, supply `ELECTRON_RUN_AS_NODE=1`.
+Inspection is read-only and returns `recoverable`, owner/peer process pins,
+unresolved operation IDs/labels and evidence paths, blockers, and
+`reviewSha256`. It does not disclose rendezvous credentials or tool arguments.
+Review those details before supplying the exact digest to `recover`; a stale
+review requires another inspection and confirmation.
+
+The recovery command acquires the existing exclusive custody guard and Original
+root-writer fence, then repeats the complete review, including immediately before
+publication. The owner and every outstanding participant must be proven dead
+using Linux PID **and start ticks and boot identity**. Live processes, replacement
+PIDs, different boots, unreadable identities, another writer, malformed/older
+uninstrumented custody, and competing recovery are refused. No process is killed
+and no root permissions or client configurations are changed.
+
+Custody now journals predecessor admission before requesting drain. Participant
+admission, observed background activity, coordinator management operations and
+relay business calls receive durable begin/terminal evidence before effects can
+be forgotten. A clean close cannot discard outstanding evidence. A crash with
+an unterminated call or uncertain predecessor drain is **not recoverable by this
+command**, even after every process exits. The refusal identifies the operation
+and retained evidence for qualified offline outcome reconciliation; do not retry
+it, invent a completion record, or describe refusal as successful recovery.
+Independent `original-pending-*`, cold adapters, and native
+`managed-writer-session`, `managed-writer-session-compatible`, or their lock are
+also outside this command's authority and require their own verified manual
+resolution. Presence of those native journals remains a blocker even if their
+individual operations might be complete; this command does not certify or clear
+them.
+
+For a proven dead, idle, fully instrumented compatibility service with no
+independent journal blockers, recovery archives the exact owner descriptor,
+pending marker and reviewed receipt in a new private `recovered-*` directory.
+The owner's `evidence-*` directory is retained unchanged. The pending marker's
+atomic final archive is the restart-release point, under both held guards.
+Interrupted archival remains fail-closed; inspect again rather than deleting
+partial evidence. Recovery itself never starts a service or selects a backend.
+Only a subsequent explicit native Start admits a new verified service, initially
+in Original mode; verify the original Note read and then perform the usual
+reviewed Original ↔ bundled-v5 switch.
+
+`tests/compatibility-gateway-service.test.mjs` exercises this complete isolated
+CLI workflow (crash, live-peer refusal, close peers, inspect, digest confirmation,
+archive verification, explicit restart, original Note read, v5 and back). It also
+crashes an actually admitted Original write and verifies actionable refusal with
+its begin evidence retained. These are isolated fixtures, not a claim that a real
+user library or independent native journals were repaired.
 
 ## Cancellation, failure and shutdown
 
@@ -171,6 +312,7 @@ Run:
 
 ```sh
 node --experimental-transform-types --test --test-concurrency=1 tests/compatibility-mcp.test.mjs
+PKM_COMPATIBILITY_EXTENSION="$PWD/legacy" node --test --test-concurrency=1 tests/compatibility-gateway-authority.test.mjs tests/compatibility-gateway-coordination.test.mjs
 npx --no-install tsc -p tsconfig.json --noEmit
 ```
 

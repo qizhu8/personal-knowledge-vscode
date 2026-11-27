@@ -303,7 +303,15 @@ copilotSandbox.updateGlobalMcpWarning({ installed:true, current:true, lifecycle:
 assert.equal(hidden.has("hidden"), true, "unverified observations alone must not become a permanent global warning");
 assert.equal(copilotElements["mcp-global-warning-text"].textContent, "");
 assert.match(lifecycleHtml, /^<details id="mcp-lifecycle"/, "connection verification detail is collapsed and neutral");
-assert.match(lifecycleHtml, /id="mcp-lifecycle" open/, "actual draining/uncertain instances remain visible");
+assert.match(lifecycleHtml, /id="mcp-lifecycle" tabindex="-1" open/, "actual draining/uncertain instances remain visible in Debug");
+assert.match(panelJs, /<section data-settings-panel="debug">\$\{renderLoadProfiling\(data\)\}\$\{renderMcpLifecycle\(data\?\.lifecycle\)\}/,
+  "Instance identifiers and lifecycle tables belong only to the Debug panel.");
+let reviewedSubtab;
+copilotSandbox.selectSettingsSubtab = (owner, tab) => { reviewedSubtab = { owner, tab }; };
+copilotSandbox.document.querySelector = () => null;
+copilotSandbox.requestAnimationFrame = () => {};
+copilotSandbox.openMcpSetup("lifecycle");
+assert.deepEqual(reviewedSubtab, { owner: "mcp", tab: "debug" }, "Review lifecycle opens Debug rather than the main MCP tab.");
 copilotSandbox.updateGlobalMcpWarning({ installed:true, current:true, lifecycle });
 assert.equal(hidden.has("hidden"), false, "actual drain/uncertainty still raises an actionable warning");
 assert.equal(regenerate.textContent, "Review lifecycle", "uncertain writes require review, not regeneration");

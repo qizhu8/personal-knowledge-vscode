@@ -77,7 +77,7 @@ async function main() {
   const merged = await register(inspect());
   assert.strictEqual(fs.readFileSync(merged.backup, "utf8"), originalText, "backup must preserve the original bytes");
   const expected = { ...unrelated, mcpServers: { ...unrelated.mcpServers, pkm: definition } };
-  assert.deepStrictEqual(JSON.parse(fs.readFileSync(filename, "utf8")), expected);
+  assert.deepStrictEqual(registration.parseNativeMcpConfiguration(fs.readFileSync(filename, "utf8")), expected);
   if (process.platform !== "win32") {
     assert.strictEqual(fs.statSync(filename).mode & 0o777, 0o600);
     assert.strictEqual(fs.statSync(merged.backup).mode & 0o777, 0o600);
@@ -88,10 +88,42 @@ async function main() {
   assert.strictEqual(inspect().state, "conflict");
   await assert.rejects(register(inspect()), /existing pkm entry/);
   assert.strictEqual(fs.readFileSync(filename, "utf8"), conflict, "conflicts must preserve existing tool selection");
+  const oldDefinition = { ...definition, command: "/old/pkm-node", tools: ["check_version"] };
+  const oldJsonc = '\uFEFF{\r\n  // Keep registration notes\r\n  "settings": {"retained":true},\r\n  "mcpServers": {"pkm": ' + JSON.stringify(oldDefinition) + ',},\r\n}\r\n';
+  fs.writeFileSync(filename, oldJsonc);
+  const reviewedOld = inspect();
+  assert.deepStrictEqual(registration.reviewCopilotMcpReplacement(filename), oldDefinition);
+  assert.strictEqual(reviewedOld.state, "conflict", "Valid JSONC must not be misreported as invalid.");
+  const migrated = await registration.registerCopilotMcp(definition, reviewedOld.revision, filename, oldDefinition);
+  assert.strictEqual(migrated.registration.state, "matching");
+  assert.strictEqual(fs.readFileSync(migrated.backup, "utf8"), oldJsonc);
+  const migratedText = fs.readFileSync(filename, "utf8");
+  assert(migratedText.startsWith("\uFEFF") && migratedText.includes("// Keep registration notes"));
+  assert(migratedText.includes("\r\n"), "Migration retains the configuration's line endings.");
+  const migratedConfig = registration.parseNativeMcpConfiguration(migratedText);
+  assert.deepStrictEqual(migratedConfig.mcpServers.pkm.tools, ["check_version"], "Migration never expands existing tool approvals.");
+  assert.strictEqual(migratedConfig.mcpServers.pkm.command, definition.command);
+  assert.strictEqual(migratedConfig.settings.retained, true);
+  await assert.rejects(registration.registerCopilotMcp(definition, reviewedOld.revision, filename, oldDefinition), /changed/);
+  const distinctOld = { ...oldDefinition, args: ["/old/legacy.py"] };
+  write({ mcpServers: { pkm: distinctOld, "new-pkm-alias": definition } });
+  const aliasReview = inspect();
+  const aliasedText = fs.readFileSync(filename, "utf8");
+  await assert.rejects(registration.registerCopilotMcp(definition, aliasReview.revision, filename, distinctOld), /equivalent PKM launch/);
+  assert.strictEqual(fs.readFileSync(filename, "utf8"), aliasedText, "Reviewed replacement must not duplicate an existing target alias.");
   for (const name of ["pkm-alias", "PKM"]) {
     write({ mcpServers: { [name]: definition } });
     assert.strictEqual(inspect().state, "conflict", `must reject duplicate registration ${name}`);
   }
+  const peerDefinition = { ...definition, args: ["/extension/compatibility-gateway-peer-cli.js",
+    "/knowledge", "generation", "original-build", "bundled-build", "--writable"] };
+  write({ mcpServers: { unrelated: { type: "local", command: "other-mcp", args: ["--writable"] } } });
+  assert.strictEqual(registration.inspectCopilotMcpRegistration(peerDefinition, filename).state, "missing",
+    "A generic writable flag is not a PKM launch identity.");
+  write({ mcpServers: { oldPeer: { ...peerDefinition, args: ["/older/compatibility-gateway-peer-cli.js",
+    "/knowledge", "old-generation", "old-original", "old-bundled", "--read-only"] } } });
+  assert.strictEqual(registration.inspectCopilotMcpRegistration(peerDefinition, filename).state, "conflict",
+    "An old peer for the same root must not be duplicated under a new alias.");
   for (const text of ["{", "[]", "null", '{"mcpServers":[]}', '{"mcpServers":null}', '{"mcpServers":{},"mcpServers":{}}']) {
     fs.writeFileSync(filename, text);
     assert.strictEqual(inspect().state, "invalid");
@@ -155,7 +187,7 @@ async function main() {
   const mcpFile = ts.createSourceFile("mcp.ts", mcpSource, ts.ScriptTarget.Latest, true);
   const definitionFunction = mcpFile.statements.find(value => ts.isFunctionDeclaration(value) && value.name?.text === "mcpServerDefinitionData");
   const definitionSandbox = {
-    exports: {}, fs: { existsSync: () => true }, path,
+    exports: {}, fs: { existsSync: () => true }, path, process,
     managedMcpServerDirectory: () => "/knowledge/mcp-server",
     mcpRuntimePythonPath: () => "/runtime/bin/python", mcpStdioCommand: (command, args) => ({ command, args }),
     UNIFIED_MCP_VERSION: "test",
@@ -173,7 +205,8 @@ async function main() {
   }
   const nativeCommand = functionText("configureNativeMcpDiscovery");
   assert(manifest.dependencies["jsonc-parser"], "JSONC parsing is a production runtime dependency");
-  assert(fs.readFileSync(path.join(root, ".vscodeignore"), "utf8").includes("!node_modules/jsonc-parser/**"), "VSIX must retain the JSONC parser and its runtime implementation files");
+  assert(!fs.readFileSync(path.join(root, ".vscodeignore"), "utf8").split(/\r?\n/).includes("node_modules/jsonc-parser/**"),
+    "VSIX must not exclude the production JSONC parser.");
   assert(nativeCommand.includes("assertNoManualPkm") && nativeCommand.includes("showInformationMessage"));
   assert(!nativeCommand.includes("workbench.mcp.startServer"), "registration must not start or trust MCP");
   let confirmation;
@@ -294,8 +327,11 @@ async function main() {
 
   let writerCalls = 0;
   let cliState = "missing";
+  commandSandbox.process = { ...process, platform: "win32" };
+  commandSandbox.compatibilityRoute = undefined;
   commandSandbox.copilotMcpDefinition = registration.copilotMcpDefinition;
   commandSandbox.inspectCopilotMcpRegistration = () => ({ state: cliState, revision: "reviewed", path: filename, detail: "review conflict" });
+  commandSandbox.reviewCopilotMcpReplacement = () => { throw new Error("review conflict"); };
   commandSandbox.mcpStatus = () => ({ installed: true });
   commandSandbox.registerCopilotMcp = async (value, revision) => {
     assert.deepStrictEqual(value, definition);
@@ -312,6 +348,25 @@ async function main() {
   cliState = "conflict";
   await assert.rejects(commandSandbox.registerUser(), /review conflict/);
   assert.strictEqual(writerCalls, 0);
+  commandSandbox.reviewCopilotMcpReplacement = () => oldDefinition;
+  userChoice = undefined;
+  await commandSandbox.registerUser();
+  assert.strictEqual(writerCalls, 0, "Cancelling explicit replacement does not migrate a conflicting launch.");
+  assert(confirmation.includes("Existing tool selections are retained"));
+  userChoice = "Replace Reviewed PKM Registration";
+  commandSandbox.registerCopilotMcp = async (value, revision, target, existing) => {
+    assert.deepStrictEqual(value, definition);
+    assert.strictEqual(revision, "reviewed");
+    assert.strictEqual(target, filename);
+    assert.deepStrictEqual(existing, oldDefinition);
+    writerCalls++;
+    return { changed: true };
+  };
+  await commandSandbox.registerUser();
+  assert.strictEqual(writerCalls, 1, "Replacement requires the distinct explicit confirmation.");
+  writerCalls = 0;
+  userChoice = "Register User Configuration";
+  commandSandbox.registerCopilotMcp = async () => { writerCalls++; return { changed: true }; };
   cliState = "matching";
   await commandSandbox.registerUser();
   assert.strictEqual(writerCalls, 0);
@@ -324,6 +379,16 @@ async function main() {
   await commandSandbox.registerUser();
   assert.strictEqual(writerCalls, 1);
   assert.strictEqual(selectedOwner, "native-provider", "CLI registration must not suppress native VS Code ownership");
+  let peerReviews = 0;
+  commandSandbox.process = process;
+  commandSandbox.compatibilityRoute = { managedPeerDefinition: async () => { peerReviews++; return launch; } };
+  commandSandbox.mcpServerDefinitionData = () => { throw new Error("Managed CLI registration must not fall back to a cold Original launch."); };
+  await commandSandbox.registerUser();
+  assert.strictEqual(peerReviews, 2, "Managed peer launch is verified before and after native confirmation.");
+  commandSandbox.compatibilityRoute.managedPeerDefinition = async () => { throw new Error("Managed peer owner unavailable"); };
+  const beforeUnavailable = writerCalls;
+  await assert.rejects(commandSandbox.registerUser(), /owner unavailable/);
+  assert.strictEqual(writerCalls, beforeUnavailable, "Unavailable managed ownership must not write a cold fallback.");
   console.log("MCP client registration: Windows launch/env, native startup ownership, JSONC conflict checks, user-only safe merge, backups, idempotence, revision fencing and symlink rejection OK");
 }
 

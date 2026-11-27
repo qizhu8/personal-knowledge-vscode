@@ -45,13 +45,61 @@ with sync_playwright() as playwright:
         deadline = time.monotonic() + 25
         while time.monotonic() < deadline:
             for frame in page.frames:
+                if frame.is_detached():
+                    continue
                 tab = frame.locator('[data-settings-owner="mcp"] [data-settings-tab="mcp"]')
-                if tab.count() and tab.first.is_visible():
-                    return frame, tab.first
+                try:
+                    if tab.count() and tab.first.is_visible():
+                        return frame, tab.first
+                except Error:
+                    if frame.is_detached():
+                        continue
+                    raise
             time.sleep(0.1)
         raise AssertionError("Actual PKM Settings webview not found")
 
     try:
+        wait_for("settings-awaiting-start.json", initial=True)
+        frame, tab = settings_frame()
+        tab.click()
+        active = frame.locator(".mcp-backend-observed")
+        restored = json.loads((base / "settings-restored-startup.json").read_text())
+        assert restored["source"] == "restored-chat-ready"
+        assert restored["observed"]["originalConnection"]["attribution"]["source"] == "pkm-chat"
+        assert any("PKM Chat first state:" in line for line in restored["startupTrace"])
+        assert any("PKM MCP discovery: elapsedMs=" in line for line in restored["startupTrace"])
+        expect(active).to_contain_text("Original MCP · Accepting calls", timeout=15000)
+        expect(active).to_contain_text("MCP version v2.19.0")
+        (base / "settings-ui-before-start.json").write_text(json.dumps({
+            "restoredChatStartedBeforeExplicitNativeStart": True, "verifiedLaunchSource": restored["source"],
+        }))
+        wait_for("settings-native-started.json", initial=True)
+        expect(active).to_contain_text("MCP version v2.19.0", timeout=30000)
+        expect(frame.locator("#mcp-backend-target")).to_be_enabled(timeout=15000)
+        expect(frame.locator(".mcp-backend-feedback")).not_to_contain_text(
+            "Both Workbench pkm and PKM Chat", timeout=40000)
+        expect(frame.locator('[data-settings-panel="mcp"] #mcp-lifecycle')).to_have_count(0)
+        expect(frame.locator('[data-settings-panel="debug"] #mcp-lifecycle')).to_have_count(1)
+        active.evaluate("""el => {
+            const slot = el.closest('#mcp-backend-slot');
+            slot.quietRefreshMutations = 0;
+            slot.quietRefreshObserver = new MutationObserver(records => {
+                slot.quietRefreshMutations += records.length;
+            });
+            slot.quietRefreshObserver.observe(slot, {childList: true, subtree: true, attributes: true});
+        }""")
+        page.wait_for_timeout(31000)
+        expect(frame.locator(".mcp-backend-feedback")).not_to_contain_text("Reading manager status")
+        mutations = active.evaluate("""el => {
+            const slot = el.closest('#mcp-backend-slot');
+            slot.quietRefreshObserver.disconnect();
+            return slot.quietRefreshMutations;
+        }""")
+        assert mutations == 0, f"Unchanged backend status redrew the installed UI {mutations} times"
+        (base / "settings-ui-auto-status.json").write_text(json.dumps({
+            "startupWithoutManualRefresh": True, "restoredWebview": True, "originalVersion": "2.19.0",
+            "lifecycleOnlyInDebug": True, "quietRefreshMutations": mutations,
+        }))
         wait_for("settings-observed-original.json", initial=True)
         web = playwright.chromium.launch(headless=True)
 
@@ -122,6 +170,8 @@ with sync_playwright() as playwright:
             expect(frame.locator(".mcp-backend-feedback")).to_contain_text(
                 "confirmed completion" if accept else "cancelled", timeout=20000)
             expect(active).to_contain_text(target_label if accept else active_label)
+            expect(active).to_contain_text(
+                "MCP version v0.1.0" if accept and target_label == "Bundled v5 MCP" else "MCP version v2.19.0")
             drain = active.evaluate("""el => {
                 const slot = el.closest('#mcp-backend-slot');
                 slot.stopDrainObservation();

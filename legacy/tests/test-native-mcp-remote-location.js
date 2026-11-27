@@ -129,6 +129,36 @@ const rootContext = { globalState: { get: key => globalState.get(key), update: a
   const definitions = await provider.provideMcpServerDefinitions();
   assert.strictEqual(definitions.length, 1, "a configured machine root must remain discoverable without a workspace or a health probe");
   assert.strictEqual(definitions[0].cwd.authority, remoteExtension.authority);
+  let described = 0, launched = 0;
+  const route = {
+    describeLaunch() {
+      described++;
+      return { command: "/verified/node", args: ["/verified/relay.js"], env: {},
+        cwd: "/control", runtimeBuild: "verified-relay" };
+    },
+    async launch() {
+      launched++;
+      return { ...this.describeLaunch(), env: { PKM_SHARED_TOKEN: "private-resolved-token" } };
+    },
+  };
+  vm.runInNewContext(ts.transpileModule(extensionSource.slice(providerStart, providerEnd), {
+    compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS },
+  }).outputText + "\nregisterNativeMcpProvider(context, route);", {
+    vscode: api, context: registrationContext, route, _mcpDefinitionsChanged: undefined, _nativeMcpProvider: false,
+    registerHostWriterCommand: () => ({ dispose() {} }),
+    getStorePath: () => knowledgeRoot, readAccountMcpBinding: () => providerBinding,
+    nativeMcpCwdUri, managedMcpAttributionEnv: env => env,
+    fs: { realpathSync: value => value },
+  });
+  const pending = await provider.provideMcpServerDefinitions();
+  assert.strictEqual(pending.length, 1);
+  assert.strictEqual(described, 1);
+  assert.strictEqual(launched, 0, "native definition enumeration must not start a relay, authority or Original backend");
+  assert.strictEqual(pending[0].env.PKM_SHARED_TOKEN, undefined, "discovery must not publish a live relay credential");
+  const resolved = await provider.resolveMcpServerDefinition();
+  assert.strictEqual(launched, 1, "only server resolution/start may launch the admitted authority");
+  assert.strictEqual(resolved.env.PKM_SHARED_TOKEN, "private-resolved-token");
+  assert.strictEqual(resolved.version, pending[0].version);
   providerBinding = { registrationOwner: "manual-user", knowledgeRoot: "/knowledge" };
   assert.strictEqual((await provider.provideMcpServerDefinitions()).length, 0, "an account's manual adapter must suppress the duplicate native definition");
   assert.throws(() => provider.resolveMcpServerDefinition(), /manual adapter/);

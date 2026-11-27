@@ -109,6 +109,8 @@ test("Original ↔ bundled v5 on existing pkm relays; interrupted Original write
     const target = mode === "original" ? config.legacy : bundled;
     const versions = await Promise.all(clients.map(async ({ client, transport, pid }) => {
       const read = value(await call(client, "check_version"));
+      assert.equal(authority.status().version, read.version);
+      assert.equal(authority.status().candidates.find(item => item.mode === mode).version, read.version);
       assert.equal(transport.pid, pid);
       assert.equal(read.runtime.generation, target.generation);
       assert.equal(read.runtime.runtimeBuild, target.runtimeBuild);

@@ -3,8 +3,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vscode = require("vscode");
 
-exports.activate = () => setImmediate(() => void run());
-async function run() {
+exports.activate = context => setImmediate(() => void run(context));
+async function run(context) {
   const base = process.env.PKM_UPGRADE_BASE;
   const write = (name, value) => fs.writeFileSync(path.join(base, name), JSON.stringify(value));
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -21,7 +21,7 @@ async function run() {
     assert(extension && extension.packageJSON.version === "5.0.0");
     assert.equal(process.env.PKM_COMPATIBILITY_LIVE_SWITCH, undefined);
     await extension.activate();
-    if (process.env.PKM_SWITCH_PEER === "1") {
+    if (process.env.PKM_SWITCH_UNMANAGED === "1") {
       assert.equal(process.env.PKM_COMPATIBILITY_LIVE_SWITCH, undefined);
       const status = await vscode.commands.executeCommand("_personalKnowledge.pkmCompatibilityRouteStatus");
       assert.equal(status.phase, "unavailable");
@@ -34,7 +34,86 @@ async function run() {
       await vscode.commands.executeCommand("workbench.action.quit");
       return;
     }
+    if (process.env.PKM_SWITCH_PEER === "1") {
+      await vscode.commands.executeCommand("personalKnowledge.startPkmMcp");
+      await vscode.commands.executeCommand("personalKnowledge.openApiChat");
+      const observed = await until(async () => {
+        try { return await observe("original"); } catch { return undefined; }
+      });
+      const status = await vscode.commands.executeCommand("_personalKnowledge.pkmCompatibilityRouteStatus");
+      assert.equal(status.phase, "selected");
+      assert.equal(observed.native.originalConnection.attribution.extensionHostPid, process.pid);
+      assert.equal(observed.chat.originalConnection.attribution.extensionHostPid, process.pid);
+      write("settings-peer-admitted.json", { hostPid: process.pid, status, observed, nativeStartAdmitted: true });
+      const departure = await until(() => {
+        if (fs.existsSync(path.join(base, "close-settings-peer"))) return "close";
+        if (fs.existsSync(path.join(base, "settings-owner-closing.json"))) return "owner";
+        return undefined;
+      });
+      if (departure === "owner") {
+        const owner = JSON.parse(fs.readFileSync(path.join(base, "settings-owner-closing.json"), "utf8"));
+        await until(() => {
+          try { process.kill(owner.hostPid, 0); return false; }
+          catch (error) { if (error.code === "ESRCH") return true; throw error; }
+        });
+        const afterOwner = await observe("original");
+        for (const role of ["native", "chat"]) {
+          assert.deepEqual(afterOwner[role].originalConnection, observed[role].originalConnection);
+          assert.deepEqual(afterOwner[role].routeRuntime, observed[role].routeRuntime);
+        }
+        write("settings-peer-after-owner.json", { hostPid: process.pid, departedHostPid: owner.hostPid, observed: afterOwner });
+        await vscode.commands.executeCommand("personalKnowledge.setupMcp");
+        write("settings-peer-owner-departure-ready.json", { hostPid: process.pid });
+        const peerPhase = async (label, mode) => {
+          const action = await until(() => fs.existsSync(path.join(base, "close-settings-peer")) ? "close"
+            : fs.existsSync(path.join(base, `settings-peer-switch-${label}.json`)) ? "switch" : undefined);
+          if (action === "close") return undefined;
+          const result = await observe(mode);
+          for (const role of ["native", "chat"]) {
+            assert.deepEqual(result[role].originalConnection, observed[role].originalConnection);
+            assert.equal(result[role].routeRuntime.instanceId, observed[role].routeRuntime.instanceId);
+          }
+          write(`settings-peer-observed-${label}.json`, result);
+          return result;
+        };
+        const v5 = await peerPhase("v5", "bundled-v5");
+        if (v5) {
+          const returned = await peerPhase("returned", "original");
+          if (returned) write("settings-peer-owner-departure.json", { afterOwner, v5, returned,
+            peerRemainedOperational: true, bothBackendsRead: true, identitiesPreserved: true });
+        }
+      }
+      await until(() => fs.existsSync(path.join(base, "close-settings-peer")));
+      await vscode.commands.executeCommand("workbench.action.quit");
+      return;
+    }
+    await vscode.commands.executeCommand("personalKnowledge.setupMcp");
+    await vscode.commands.executeCommand("workbench.action.webview.reloadWebviewAction");
+    const restoredStartup = await until(() => {
+      const directory = path.dirname(context.logUri.fsPath);
+      const files = fs.readdirSync(directory, { recursive: true }).filter(name => name.endsWith(".log"));
+      for (const filename of files) {
+        const text = fs.readFileSync(path.join(directory, filename), "utf8");
+        if (text.includes("PKM Chat first state:") && text.includes("PKM MCP discovery: elapsedMs=")) return text;
+      }
+      return undefined;
+    });
+    const restoredStatus = await vscode.commands.executeCommand("_personalKnowledge.pkmCompatibilityRouteStatus");
+    assert.equal(restoredStatus.phase, "selected");
+    const restoredChat = await vscode.commands.executeCommand("_personalKnowledge.observeChatGateway");
+    assert.equal(restoredChat.dispatchMode, "original");
+    assert.equal(restoredChat.version, "2.19.0");
+    assert.equal(restoredChat.originalConnection.attribution.source, "pkm-chat");
+    assert.equal(restoredChat.originalConnection.attribution.extensionHostPid, process.pid);
+    write("settings-restored-startup.json", { source: "restored-chat-ready", hostPid: process.pid,
+      status: restoredStatus, observed: restoredChat,
+      startupTrace: restoredStartup.split("\n").filter(line =>
+        /PKM Chat first state:|PKM MCP preparation|PKM MCP discovery/.test(line)) });
+    write("settings-awaiting-start.json", { hostPid: process.pid });
+    await until(() => fs.existsSync(path.join(base, "settings-ui-before-start.json")));
     await vscode.commands.executeCommand("personalKnowledge.startPkmMcp");
+    write("settings-native-started.json", { hostPid: process.pid });
+    await until(() => fs.existsSync(path.join(base, "settings-ui-auto-status.json")), Date.now() + 100_000);
     await vscode.commands.executeCommand("personalKnowledge.openApiChat");
     const first = await until(async () => {
       try { return await observe("original"); } catch { return undefined; }
@@ -90,7 +169,7 @@ async function run() {
     const browser = JSON.parse(fs.readFileSync(path.join(base, "settings-browser-coexistence.json"), "utf8"));
     assert.deepEqual(browser, { bothBackendsRead: true, grantsRevokedOnSwitch: true });
     write("installed-settings-switch.json", { hostPid: process.pid, first, cancelled, v5, returned, browser });
-    await until(() => fs.existsSync(path.join(base, "settings-peer-refused.json")));
+    await until(() => fs.existsSync(path.join(base, "settings-peer-admitted.json")));
     const whilePeerOpen = await observe("original");
     for (const role of ["native", "chat"]) {
       assert.deepEqual(whilePeerOpen[role].routeRuntime, returned[role].routeRuntime);
@@ -98,6 +177,7 @@ async function run() {
     }
     write("settings-owner-after-peer.json", whilePeerOpen);
     await until(() => fs.existsSync(path.join(base, "close-settings-candidate")));
+    write("settings-owner-closing.json", { hostPid: process.pid });
     await vscode.commands.executeCommand("workbench.action.quit");
   } catch (error) {
     write(process.env.PKM_SWITCH_PEER === "1" ? "settings-peer-failure.json" : "upgrade-failure.json",

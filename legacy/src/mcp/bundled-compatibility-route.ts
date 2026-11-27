@@ -1,4 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -10,15 +11,20 @@ import { withPkmServiceNativeAdmission, type PkmServiceBootOptions } from "../ru
 
 type Mode = "original" | "bundled-v5";
 type Selection = { mode: Mode; selectionRevision: string };
-type Custody = { launchGrant?: string; assertHeld(): void; release(clean: boolean): Promise<void> };
+type Custody = { kind: "owner" | "peer"; launchGrant?: string; assertHeld(): void; release(clean: boolean): Promise<void> };
 type Authority = {
   relayIdentity: { generation: string; runtimeBuild: string };
   relay(role: "workbench" | "chat"): { origin: string; serviceId: string; token: string };
-  status(): Selection & { generation: string; runtimeBuild: string; phase: string; inFlight: number; uncertain: boolean;
+  status(): Promise<Selection & { generation: string; runtimeBuild: string; version: string; phase: string; inFlight: number; uncertain: boolean;
+    backgroundActive?: number; authorityPid?: number;
     missingRelays: ("workbench" | "chat")[];
-    candidates: { mode: Mode; generation: string; runtimeBuild: string }[] };
-  approveSwitch(expected: Selection, mode: Mode, onDraining?: () => void): Promise<{ applied: boolean }>;
-  bindBrowserReads(): {
+    candidates: { mode: Mode; generation: string; runtimeBuild: string; version: string }[] }>;
+  approveSwitch(expected: Selection, mode: Mode,
+    onDraining?: (status?: Awaited<ReturnType<Authority["status"]>>) => void | Promise<void>): Promise<{ applied: boolean }>;
+  bindBrowserReads(): Promise<{
+    generation: string; assertCurrent(): void; close(): Promise<void>;
+    read(input: { operation: string; version: number; arguments: Record<string, unknown> }): Promise<unknown>;
+  }> | {
     generation: string; assertCurrent(): void; close(): Promise<void>;
     read(input: { operation: string; version: number; arguments: Record<string, unknown> }): Promise<unknown>;
   };
@@ -45,7 +51,7 @@ function hasPendingOwner(root: string) {
 }
 
 export function createBundledCompatibilityRoute(options: {
-  extensionPath: string; storage: string;
+  extensionPath: string; storage: string; executable?: string;
   root(): string; managed(): string; python(): string; assertAllowed(): void;
   service?(): PkmServiceBootOptions;
   live?: { assertAdmittedRoot(): void; hasActiveChatWork(): boolean;
@@ -83,19 +89,92 @@ export function createBundledCompatibilityRoute(options: {
     preparedRoot = root;
     admissionError = undefined;
     preparing = (async () => {
-      const payload = verifyNextPayload(options.extensionPath);
-      const { acquireCompatibilityGatewayCustody } = await importPayload(
-        pathToFileURL(path.join(payload.root, "server/dist/compatibility-gateway-custody.js")).href);
-      const acquire = (drain?: () => Promise<void>) => acquireCompatibilityGatewayCustody(root, async () => {
-        await drain?.();
-        options.live!.assertAdmittedRoot();
-        if (options.root() !== root) throw new Error("Native admission root changed.");
-        return acquireLegacyFence(root);
+      const selection = getSelected();
+      const { reserveCompatibilityGatewayPeer } = await importPayload(
+        pathToFileURL(path.join(selection.payload.root, "server/dist/compatibility-gateway-coordination.js")).href);
+      const binding = { originalGeneration: selection.config.legacy.generation,
+        originalBuild: selection.config.legacy.runtimeBuild, bundledBuild: selection.runtimeBuild };
+      const reserve = () => reserveCompatibilityGatewayPeer(root, binding, {
+        workbenchAttribution: {}, chatAttribution: {}, acquireLegacyFence,
+        assertAllowed: selection.assertCurrent, hasActiveChatWork: options.live!.hasActiveChatWork,
+        confirm: options.live!.confirm,
       }) as Promise<Custody>;
-      return options.service ? withPkmServiceNativeAdmission(options.service(), acquire) : acquire();
+      if (hasPendingOwner(root)) {
+        for (let count = 0; count < 40 && !fs.existsSync(path.join(root, ".pkm/state/compatibility-gateway/owner-live.json")); count++)
+          await new Promise(resolve => setTimeout(resolve, 50));
+        return reserve();
+      }
+      const boot = async (drain?: () => Promise<void>) => {
+        if (hasPendingOwner(root)) return reserve();
+        const entry = pin(path.join(selection.payload.root, "server/dist/compatibility-gateway-service-cli.js"));
+        const nonce = randomBytes(32).toString("hex");
+        const filename = path.join(selection.cwd, `service-${nonce}.json`);
+        const bytes = JSON.stringify({ schema: "pkm.compatibility-gateway-service/v1", configuration: selection.config,
+          extensionPath: options.extensionPath, payloadBuild: selection.payload.buildId, nonce,
+          verifier: pin(path.join(options.extensionPath, "dist/runtime/next-payload-verifier.js")),
+          fence: pin(path.join(options.extensionPath, "dist/runtime/linux-root-writer-fence.js")) });
+        fs.writeFileSync(filename, bytes, { mode: 0o600, flag: "wx" });
+        const log = fs.openSync(path.join(selection.cwd, "service.log"),
+          fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND | fs.constants.O_NOFOLLOW, 0o600);
+        const logStat = fs.fstatSync(log);
+        if (!logStat.isFile() || logStat.uid !== process.getuid?.() || (logStat.mode & 0o7777) !== 0o600 || logStat.nlink !== 1) {
+          fs.closeSync(log); throw new Error("Compatibility service log must be a private owner-owned file.");
+        }
+        const env: NodeJS.ProcessEnv = { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
+        delete env[MCP_ATTRIBUTION_ENV];
+        delete env.PKM_COMPATIBILITY_CUSTODY_GRANT;
+        delete env.PKM_COMPATIBILITY_LAUNCH_GRANT;
+        delete env.PKM_SHARED_TOKEN;
+        const child = spawn(selection.command, [entry.path, filename, hash(bytes)], {
+          cwd: selection.cwd, env, detached: true, stdio: ["ignore", log, log, "ipc"],
+        });
+        fs.closeSync(log);
+        let requested = false;
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const timeout = setTimeout(() => { child.send?.({ command: "abort", nonce }); reject(new Error("Compatibility service admission timed out; no second owner was started.")); }, 90_000);
+            child.once("error", reject);
+            child.once("exit", () => { clearTimeout(timeout); reject(new Error("Compatibility service admission failed. No fallback was started.")); });
+            child.on("message", async input => {
+              if (!input || typeof input !== "object" || !("nonce" in input) || input.nonce !== nonce || !("command" in input)) return;
+              if (input.command === "drain") {
+                if (requested) return;
+                requested = true;
+                try {
+                  await drain?.(); selection.assertCurrent();
+                  child.send?.({ command: "drained", nonce });
+                } catch { child.send?.({ command: "refused", nonce }); }
+              }
+              if (input.command === "ready") { clearTimeout(timeout); resolve(); }
+              if (input.command === "failed") {
+                clearTimeout(timeout);
+                reject(new Error("detail" in input ? String(input.detail) : "Compatibility service admission failed."));
+              }
+            });
+          });
+          const custody = await reserve();
+          await new Promise<void>((resolve, reject) => child.send({ command: "committed", nonce }, error => error ? reject(error) : resolve()));
+          child.disconnect(); child.unref();
+          return custody;
+        } catch (error) {
+          if (child.connected) { child.send?.({ command: "abort", nonce }); child.disconnect(); }
+          child.unref();
+          if (hasPendingOwner(root)) {
+            for (let count = 0; count < 40 && !fs.existsSync(path.join(root, ".pkm/state/compatibility-gateway/owner-live.json")); count++)
+              await new Promise(resolve => setTimeout(resolve, 50));
+            return reserve();
+          }
+          throw error;
+        }
+      };
+      return options.service ? withPkmServiceNativeAdmission(options.service(), boot) : boot();
     })();
     try { return await preparing; }
-    catch (error) { admissionError = error; phase = "unavailable"; throw error; }
+    catch (error) {
+      admissionError = error; phase = "unavailable";
+      preparing = undefined; preparedRoot = undefined;
+      throw error;
+    }
   }
   function select() {
     options.assertAllowed();
@@ -109,11 +188,13 @@ export function createBundledCompatibilityRoute(options: {
     fs.mkdirSync(options.storage, { recursive: true, mode: 0o700 });
     const storage = fs.realpathSync(options.storage);
     const storageStat = fs.lstatSync(storage);
-    if (!storageStat.isDirectory() || storageStat.uid !== process.getuid?.()
-      || (storageStat.mode & 0o022) !== 0 || inside(root, storage) || inside(storage, root))
-      throw new Error("Compatibility control must be separate from the Knowledge Root.");
+    if (!storageStat.isDirectory()) throw new Error(`Compatibility control is not a directory: ${storage}`);
+    if (storageStat.uid !== process.getuid?.()) throw new Error(`Compatibility control is not owned by the current account: ${storage}`);
+    if ((storageStat.mode & 0o022) !== 0) throw new Error(`Compatibility control is group/other writable: ${storage}`);
+    if (inside(root, storage) || inside(storage, root))
+      throw new Error(`Compatibility control overlaps the Knowledge Root: ${storage}`);
     const payload = verifyNextPayload(options.extensionPath);
-    const node = pin(process.execPath);
+    const node = pin(options.executable ?? process.execPath);
     const supervisor = pin(path.join(options.extensionPath, "resources/next_mcp_subreaper.py"));
     const entry = pin(path.join(payload.root, "server/dist/compatibility-mcp-cli.js"));
     const launcher = pin(path.join(managed, "server.py"));
@@ -161,8 +242,8 @@ export function createBundledCompatibilityRoute(options: {
   async function startAuthority(selection: ReturnType<typeof select>): Promise<Authority> {
     const relay = pin(path.join(selection.payload.root, "server/dist/compatibility-gateway-relay.js"));
     const from = (file: string) => importPayload(pathToFileURL(path.join(selection.payload.root, "server/dist", file)).href);
-    const [{ startCompatibilityGatewayAuthority }, { createNativePublicFacade }] = await Promise.all([
-      from("compatibility-gateway-authority.js"), from("native-public-mcp.js"),
+    const [{ startOrJoinCompatibilityGateway }, { createNativePublicFacade }] = await Promise.all([
+      from("compatibility-gateway-coordination.js"), from("native-public-mcp.js"),
     ]);
     const assertVerified = () => {
       selection.assertCurrent();
@@ -171,32 +252,57 @@ export function createBundledCompatibilityRoute(options: {
     };
     const attribution = (source: "vscode-provider" | "pkm-chat") =>
       JSON.parse(managedMcpAttributionEnv({}, source)[MCP_ATTRIBUTION_ENV]);
-    return startCompatibilityGatewayAuthority(selection.config, { generation: selection.generation,
+    const custody = await prepareCustody();
+    return startOrJoinCompatibilityGateway(selection.config, { generation: selection.generation,
       runtimeBuild: selection.runtimeBuild, managedRoot: selection.cwd, createFacade: createNativePublicFacade, assertVerified },
     { acquireLegacyFence, async acquireCustody(root: string) {
       if (root !== options.root()) throw new Error("Native admission root changed.");
       return prepareCustody();
     }, workbenchAttribution: attribution("vscode-provider"), chatAttribution: attribution("pkm-chat"),
     assertAllowed: selection.assertCurrent, hasActiveChatWork: options.live!.hasActiveChatWork,
-    confirm: options.live!.confirm }, "original");
+    confirm: options.live!.confirm }, custody, "original");
   }
   function assertLaunchAdmission() {
     if (admissionError) {
+      // Revalidate a newly available managed owner on an explicit Start retry.
+      // Unknown owners still fail the authenticated custody handshake.
+      if (options.live) return;
       if (hasPendingOwner(options.root()))
         throw new Error("Compatibility custody belongs to another window or requires recovery. No fallback was started.");
       throw admissionError;
     }
-    if (!starting && !preparing && hasPendingOwner(options.root()))
+    if (!options.live && !starting && !preparing && hasPendingOwner(options.root()))
       throw new Error("Compatibility custody belongs to another window or requires recovery. No fallback was started.");
   }
   return {
     assertLaunchAdmission,
     prepareCustody,
+    describeLaunch() {
+      const selection = getSelected();
+      if (!options.live) return { ...selection, liveRelay: false as const, env: {} as Record<string, string> };
+      return { ...selection, liveRelay: true as const,
+        runtimeBuild: hash(JSON.stringify(["pkm.compatibility-relay/v1", selection.runtimeBuild, selection.config.legacy.runtimeBuild])),
+        args: [path.join(selection.payload.root, "server/dist/compatibility-gateway-relay.js")],
+        env: {} as Record<string, string> };
+    },
+    async managedPeerDefinition(): Promise<{ command: string; args: string[] }> {
+      if (!options.live) throw new Error("Managed CLI peers require the supported native PKM route.");
+      const selection = getSelected();
+      if (starting) {
+        const status = await (await starting).status();
+        if (status.phase !== "accepting" || status.uncertain) throw new Error("The native PKM owner is not verified.");
+      }
+      return { command: selection.command,
+        args: [path.join(selection.payload.root, "server/dist/compatibility-gateway-peer-cli.js"),
+          selection.config.knowledgeRoot, selection.config.legacy.generation,
+          selection.config.legacy.runtimeBuild, selection.runtimeBuild,
+          selection.config.writable ? "--writable" : "--read-only"] };
+    },
     async bindBrowserReads() {
       if (!options.live) return undefined;
       if (!starting) throw new Error("Start the existing PKM connection before opening PKM Browser.");
       const selection = getSelected();
-      const bound = (await starting).bindBrowserReads();
+      const bound = await (await starting).bindBrowserReads();
       return { ...bound, assertCurrent() { selection.assertCurrent(); bound.assertCurrent(); } };
     },
     async launch(role: "workbench" | "chat" = "workbench") {
@@ -219,6 +325,9 @@ export function createBundledCompatibilityRoute(options: {
         return { ...selection, liveRelay: false as const, env: {} as Record<string, string> };
       } catch (error) {
         phase = "unavailable";
+        if (starting) {
+          try { await starting; } catch { starting = undefined; }
+        }
         throw error;
       }
     },
@@ -230,22 +339,24 @@ export function createBundledCompatibilityRoute(options: {
       busy = true;
       try {
         if (!starting) {
-          send({ error: hasPendingOwner(options.root()) ? "custodyUnavailable" : "notAdmitted" });
+          send(admissionError ? { error: "loadingFailed",
+            detail: admissionError instanceof Error ? admissionError.message : String(admissionError) }
+            : { error: !preparing && hasPendingOwner(options.root()) ? "custodyUnavailable" : "notAdmitted" });
           return true;
         }
         const selection = getSelected();
         const authority = await starting;
         selection.assertCurrent();
-        const snapshot = () => {
-          const status = authority.status();
+        const snapshot = async (observed?: Awaited<ReturnType<Authority["status"]>>) => {
+          const status = observed ?? await authority.status();
           return { serviceId: authority.relayIdentity.generation, selectionRevision: status.selectionRevision,
-            active: { mode: status.mode, phase: status.phase, generation: status.generation, runtimeBuild: status.runtimeBuild,
-              backendPid: process.pid, inFlight: status.inFlight, uncertain: Number(status.uncertain),
-              backgroundActive: Number(options.live!.hasActiveChatWork()), backgroundUncertain: 0 },
+            active: { mode: status.mode, version: status.version, phase: status.phase, generation: status.generation, runtimeBuild: status.runtimeBuild,
+              backendPid: status.authorityPid ?? process.pid, inFlight: status.inFlight, uncertain: Number(status.uncertain),
+              backgroundActive: status.backgroundActive ?? Number(options.live!.hasActiveChatWork()), backgroundUncertain: 0 },
             candidates: status.candidates.map(item => ({ ...item, compatible: true })),
             ...(status.missingRelays.length ? { error: "relayUnverified" } : {}) };
         };
-        const current = snapshot();
+        const current = await snapshot();
         if (message.command === "mcpBackendSwitchRead") { send(current); return true; }
         if (current.error) { send(current); return true; }
         if (current.active.backgroundActive) { send({ ...current, error: "backgroundWork" }); return true; }
@@ -255,12 +366,11 @@ export function createBundledCompatibilityRoute(options: {
         try {
           const result = await authority.approveSwitch(
             { mode: current.active.mode, selectionRevision: current.selectionRevision }, target.mode,
-            () => send({ progress: true, active: snapshot().active }));
-          send({ ...snapshot(), outcome: result.applied ? "completed" : "cancelled" });
-        } catch { send({ ...snapshot(), error: "refused" }); }
-      } catch {
-        try { send({ error: hasPendingOwner(options.root()) ? "custodyUnavailable" : "statusUnavailable" }); }
-        catch { send({ error: "statusUnavailable" }); }
+            async observed => { await send({ progress: true, active: (await snapshot(observed)).active }); });
+          send({ ...await snapshot(), outcome: result.applied ? "completed" : "cancelled" });
+        } catch { send({ ...await snapshot(), error: "refused" }); }
+      } catch (error) {
+        send({ error: "loadingFailed", detail: error instanceof Error ? error.message : String(error) });
       }
       finally { busy = false; }
       return true;

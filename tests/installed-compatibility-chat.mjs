@@ -495,7 +495,7 @@ exports.registerApiChatShell = (...args) => {
         browser = spawn(browserPython, ["-B", join(here, "installed-original-browser.py"), join(base, "fixture.json")],
           { env: { ...appEnv, PLAYWRIGHT_BROWSERS_PATH: browserCache }, stdio: "inherit" });
       }
-      const candidateDeadline = Date.now() + (installedBrowser ? 240_000 : 100_000);
+      const candidateDeadline = Date.now() + (installedBrowser ? 240_000 : settingsSwitch ? 180_000 : 100_000);
       while (!(upgradeEvidence = await file(join(base, settingsSwitch ? "installed-settings-switch.json" : "upgrade-host.json")))) {
         const failure = await file(join(base, "upgrade-failure.json"));
         if (failure) throw Error(`Installed upgrade host: ${JSON.stringify(failure)}`);
@@ -509,23 +509,34 @@ exports.registerApiChatShell = (...args) => {
         upgradeEvidence.candidateVsixSha256 = candidateSha256;
         const ownerFile = join(library, ".pkm/state/compatibility-gateway/owner-pending.json");
         const owner = await readFile(ownerFile, "utf8");
+        const rendezvousFile = join(library, ".pkm/state/compatibility-gateway/owner-live.json");
+        const rendezvous = await readFile(rendezvousFile, "utf8");
+        assert.equal(JSON.parse(rendezvous).independentService, true);
         await mkdir(join(base, "peer/User"), { recursive: true, mode: 0o700 });
         await writeFile(join(base, "peer/User/settings.json"), oldSettings);
+        const peerSocket = (await import("node:net")).createServer();
+        await new Promise(done => peerSocket.listen(0, "127.0.0.1", done));
+        const peerPort = peerSocket.address().port;
+        await new Promise(done => peerSocket.close(done));
+        await writeFile(join(base, "peer-fixture.json"), JSON.stringify({ base, port: peerPort }));
         peer = spawn(editor, launchArgs.filter(arg => !arg.startsWith("--user-data-dir=") && !arg.startsWith("--remote-debugging-"))
-          .concat(`--user-data-dir=${short}/peer`), {
+          .concat(`--user-data-dir=${short}/peer`, `--remote-debugging-port=${peerPort}`, "--remote-debugging-address=127.0.0.1"), {
           env: { ...appEnv, PKM_UPGRADE_BASE: base, PKM_SWITCH_PEER: "1" }, stdio: ["ignore", "pipe", "pipe"],
         });
         for (const stream of [peer.stdout, peer.stderr]) stream.on("data", bytes => logs.push(bytes.toString()));
-        const peerDeadline = Date.now() + 40_000;
-        let refusal;
-        while (!(refusal = await file(join(base, "settings-peer-refused.json")))) {
+        browser = spawn(browserPython, ["-B", join(here, "installed-settings-peer-departure.py"), join(base, "peer-fixture.json")],
+          { env: { ...appEnv, PLAYWRIGHT_BROWSERS_PATH: browserCache }, stdio: "inherit" });
+        const peerDeadline = Date.now() + 180_000;
+        let admitted;
+        while (!(admitted = await file(join(base, "settings-peer-admitted.json")))) {
           const failure = await file(join(base, "settings-peer-failure.json"));
           if (failure) throw Error(`Installed second window: ${JSON.stringify(failure)}`);
           if (peer.exitCode !== null || peer.signalCode !== null || Date.now() > peerDeadline)
-            throw Error("Installed second window did not verify its custody refusal.");
+            throw Error("Installed second window did not verify its managed admission.");
           await wait(100);
         }
-        assert.notEqual(refusal.hostPid, upgradeEvidence.hostPid);
+        assert.notEqual(admitted.hostPid, upgradeEvidence.hostPid);
+        assert.equal(admitted.nativeStartAdmitted, true);
         assert.equal(await readFile(ownerFile, "utf8"), owner);
         while (!(await file(join(base, "settings-owner-after-peer.json")))) {
           const failure = await file(join(base, "upgrade-failure.json"));
@@ -533,17 +544,31 @@ exports.registerApiChatShell = (...args) => {
           if (Date.now() > peerDeadline) throw Error("The original owner did not verify continuity while the second window was open.");
           await wait(100);
         }
-        await writeFile(join(base, "close-settings-peer"), "");
-        while (peer.exitCode === null && peer.signalCode === null && Date.now() < peerDeadline) await wait(100);
-        assert.equal(peer.exitCode, 0, "Competing window must close normally.");
-        upgradeEvidence.peer = refusal;
-        assert.equal(await readFile(join(library, "notes/InstalledGatewayNote.md"), "utf8"), hostEvidence.originalNote);
-        assert.equal(await readFile(settings, "utf8"), oldSettings);
-        assert.equal((await stat(library)).ino, oldRoot.ino);
         await writeFile(join(base, "close-settings-candidate"), "");
         const closeDeadline = Date.now() + 40_000;
         while (app.exitCode === null && app.signalCode === null && Date.now() < closeDeadline) await wait(100);
-        assert.equal(app.exitCode, 0, "Settings candidate must close normally.");
+        assert.equal(app.exitCode, 0, "Initiating Settings window must close normally while its peer stays open.");
+        let departure;
+        while (!(departure = await file(join(base, "settings-peer-owner-departure.json")))) {
+          const failure = await file(join(base, "settings-peer-failure.json"));
+          if (failure) throw Error(`Surviving installed window: ${JSON.stringify(failure)}`);
+          if (browser.exitCode !== null && browser.exitCode !== 0) throw Error("Surviving installed Settings driver failed.");
+          assert(peer.exitCode === null && peer.signalCode === null && Date.now() < peerDeadline,
+            "Surviving installed window did not verify both backends after initiating-window exit.");
+          await wait(100);
+        }
+        assert.equal(departure.peerRemainedOperational, true);
+        assert.equal(departure.bothBackendsRead, true);
+        assert.equal(departure.identitiesPreserved, true);
+        assert.equal(await readFile(ownerFile, "utf8"), owner);
+        assert.equal(await readFile(rendezvousFile, "utf8"), rendezvous);
+        await writeFile(join(base, "close-settings-peer"), "");
+        while (peer.exitCode === null && peer.signalCode === null && Date.now() < peerDeadline) await wait(100);
+        assert.equal(peer.exitCode, 0, "Managed peer must close normally.");
+        upgradeEvidence.peer = { ...admitted, ownerDeparture: departure };
+        assert.equal(await readFile(join(library, "notes/InstalledGatewayNote.md"), "utf8"), hostEvidence.originalNote);
+        assert.equal(await readFile(settings, "utf8"), oldSettings);
+        assert.equal((await stat(library)).ino, oldRoot.ino);
         await assert.rejects(stat(join(library, ".pkm/state/compatibility-gateway/owner-pending.json")), { code: "ENOENT" });
       } else {
       assert.notEqual(upgradeEvidence.liveBuild, original.runtime.runtime.runtimeBuild);

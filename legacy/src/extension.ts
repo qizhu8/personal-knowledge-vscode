@@ -159,7 +159,7 @@ import { nativeMcpCwdUri } from "./mcp/mcp-native-location";
 import { createBundledCompatibilityRoute } from "./mcp/bundled-compatibility-route";
 import { configureManagedMcpAttribution, managedMcpAttributionEnv } from "./mcp/mcp-attribution";
 import { readAccountMcpBinding, writeAccountMcpBinding, accountKnowledgeSecurity } from "./mcp/mcp-account-binding";
-import { assertNoManualPkm, copilotMcpConfigPath, copilotMcpDefinition, inspectCopilotMcpRegistration, parseNativeMcpConfiguration, registerCopilotMcp, inspectVscodeMcpRegistration, registerVscodeMcp } from "./mcp/mcp-client-registration";
+import { assertNoManualPkm, copilotMcpConfigPath, copilotMcpDefinition, inspectCopilotMcpRegistration, parseNativeMcpConfiguration, registerCopilotMcp, reviewCopilotMcpReplacement, inspectVscodeMcpRegistration, registerVscodeMcp } from "./mcp/mcp-client-registration";
 import { scheduleRestoredWebviewRecovery } from "./ui/webview-restoration";
 import {
   disconnectPkmSkill, retirePkmSkillProjections,
@@ -4564,25 +4564,33 @@ async function configurePkmMcp(context: vscode.ExtensionContext): Promise<boolea
 
 async function registerCopilotMcpUserConfig(): Promise<boolean> {
   if (!_storeReady || !getStorePath()) throw new Error("Configure this extension host's Knowledge Root first.");
-  const launch = mcpServerDefinitionData();
+  const reviewedLaunch = async () => {
+    if (process.platform !== "linux") return mcpServerDefinitionData();
+    if (!compatibilityRoute) throw new Error("Native PKM admission unavailable; no cold CLI fallback.");
+    return { ...await compatibilityRoute.managedPeerDefinition(), env: { ELECTRON_RUN_AS_NODE: "1" } };
+  };
+  const launch = await reviewedLaunch();
   if (!mcpStatus().installed) throw new Error("Generate the managed MCP server before registering Copilot CLI.");
   const definition = copilotMcpDefinition(launch);
   const reviewed = inspectCopilotMcpRegistration(definition);
-  if (reviewed.state === "invalid" || reviewed.state === "conflict") throw new Error(reviewed.detail);
+  if (reviewed.state === "invalid") throw new Error(reviewed.detail);
+  const existing = reviewed.state === "conflict" ? reviewCopilotMcpReplacement(reviewed.path) : undefined;
   if (reviewed.state === "matching") {
     void vscode.window.showInformationMessage(`${reviewed.detail} Run copilot mcp list and copilot mcp get pkm in this account, then verify check_version in a new chat.`);
     return true;
   }
   const host = extensionHostDescription(process.platform, os.hostname(), vscode.env.remoteName || "");
+  const action = existing ? "Replace Reviewed PKM Registration" : "Register User Configuration";
   const selected = await vscode.window.showInformationMessage(
-    "Register PKM in this host account's Copilot CLI user configuration?",
-    { modal: true, detail: `${host}\n${reviewed.path}\nKnowledge Root: ${getStorePath()}\nCommand: ${launch.command}\nArguments: ${JSON.stringify(launch.args)}\nEnvironment: ${JSON.stringify(launch.env || {})}\n\nAdds only mcpServers.pkm (type local, tools ["*"]). Existing configuration is backed up beside the file; unrelated entries are preserved and conflicting entries are rejected. No project configuration, VS Code registration, server startup or trust approval is performed. A running CLI may notice this configuration; its normal consent rules still apply. In Remote SSH this does not register the local Windows account. Custom CLI --config-dir settings and clients already inheriting pkm must be reviewed separately.` },
-    "Register User Configuration",
+    existing ? "Migrate the reviewed PKM CLI registration to this host's managed launch?"
+      : "Register PKM in this host account's Copilot CLI user configuration?",
+    { modal: true, detail: `${host}\n${reviewed.path}\nKnowledge Root: ${getStorePath()}\nCommand: ${launch.command}\nArguments: ${JSON.stringify(launch.args)}\nEnvironment: ${JSON.stringify(definition.env || {})}\n\n${existing ? `Replaces only the reviewed mcpServers.pkm launch. Existing tool selections are retained: ${JSON.stringify(existing.tools)}.` : 'Adds only mcpServers.pkm (type local, tools ["*"]).'} Existing configuration is backed up beside the file; unrelated entries and comments are preserved. No project configuration, VS Code registration, server startup or trust approval is performed. A running CLI may notice this configuration; its normal consent rules still apply. In Remote SSH this does not register the local Windows account. Custom CLI --config-dir settings and clients already inheriting pkm must be reviewed separately.` },
+    action,
   );
-  if (selected !== "Register User Configuration") return false;
-  const currentLaunch = mcpServerDefinitionData();
+  if (selected !== action) return false;
+  const currentLaunch = await reviewedLaunch();
   if (JSON.stringify(copilotMcpDefinition(currentLaunch)) !== JSON.stringify(definition)) throw new Error("The managed MCP launch changed during review. Review CLI registration again.");
-  const result = await registerCopilotMcp(definition, reviewed.revision!);
+  const result = await registerCopilotMcp(definition, reviewed.revision!, reviewed.path, existing);
   void vscode.window.showInformationMessage(`Copilot CLI user configuration ${result.changed ? "written" : "already matches"}.${result.backup ? ` Backup: ${result.backup}.` : ""} Discovery is not yet verified: run copilot mcp list and copilot mcp get pkm on this host, then start a new CLI chat and call check_version.`);
   return true;
 }
@@ -4593,9 +4601,9 @@ function registerNativeMcpProvider(context: vscode.ExtensionContext, route?: Ret
   if (typeof api.lm?.registerMcpServerDefinitionProvider !== "function" || typeof api.McpStdioServerDefinition !== "function") return;
   const changed = new vscode.EventEmitter<void>();
   _mcpDefinitionsChanged = changed;
-  const createDefinition = async () => {
+  const createDefinition = async (resolve = false) => {
     if (route) {
-      const selected = await route.launch();
+      const selected = resolve ? await route.launch() : route.describeLaunch();
       const env = managedMcpAttributionEnv({ ELECTRON_RUN_AS_NODE: "1", ...selected.env });
       const definition = new api.McpStdioServerDefinition("pkm", selected.command, selected.args, env, selected.runtimeBuild);
       definition.cwd = nativeMcpCwdUri(context.extensionUri, selected.cwd, vscode.Uri.file);
@@ -4623,7 +4631,7 @@ function registerNativeMcpProvider(context: vscode.ExtensionContext, route?: Ret
       if (binding && (binding.registrationOwner !== "native-provider" || binding.knowledgeRoot !== fs.realpathSync(getStorePath()))) {
         throw new Error("PKM MCP binding changed or belongs to a manual adapter. Use explicit account setup; this window cannot adopt another binding.");
       }
-      return createDefinition();
+      return createDefinition(true);
     },
   };
   context.subscriptions.push(changed, api.lm.registerMcpServerDefinitionProvider("personalKnowledge.pkm", provider));

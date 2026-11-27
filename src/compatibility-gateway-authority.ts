@@ -17,7 +17,7 @@ const control = new Set(["check_version", "mcp_lifecycle_status", "mcp_lifecycle
 
 /**
  * Host-verified executable gateway, not a new Original writer. Selection is
- * deliberately process-local; there is no management endpoint on the relay.
+ * owned by the admitted host; management credentials never reach tool relays.
  */
 export interface VerifiedCompatibilityGateway {
   readonly generation: string;
@@ -41,6 +41,9 @@ async function body(req: IncomingMessage) {
 }
 
 export interface CompatibilityGatewayHost {
+  relayRoles?: readonly ("workbench" | "chat")[];
+  externalPeer?: { writable: boolean; memberId?: string;
+    process?: { pid: number; startTimeTicks: string; bootId: string } };
   acquireLegacyFence(root: string): LegacySharedFence;
   acquireCustody?(root: string): ReturnType<typeof acquireCompatibilityGatewayCustody>;
   workbenchAttribution: Readonly<Json>;
@@ -52,10 +55,17 @@ export interface CompatibilityGatewayHost {
 
 export type CompatibilityDispatchMode = "original" | "bundled-v5";
 export type CompatibilitySwitchExpectation = { mode: CompatibilityDispatchMode; selectionRevision: string };
+export interface CompatibilityGatewaySelection {
+  mode: CompatibilityDispatchMode;
+  selectionRevision: string;
+  switching: boolean;
+  failed: boolean;
+}
 export type CompatibilityGatewayAuthority = Awaited<ReturnType<typeof startCompatibilityGatewayAuthority>>;
 
 export async function startCompatibilityGatewayAuthority(input: unknown, bundled: VerifiedCompatibilityGateway,
-  host: CompatibilityGatewayHost, initialMode: CompatibilityDispatchMode = "bundled-v5") {
+  host: CompatibilityGatewayHost, initialMode: CompatibilityDispatchMode = "bundled-v5",
+  shared?: CompatibilityGatewaySelection) {
   const config = compatibilityMcpConfiguration.parse(input);
   if (config.legacy.compatibleUpdates || config.gateway.generation !== bundled.generation
     || config.gateway.runtimeBuild !== bundled.runtimeBuild || config.managedRoot !== bundled.managedRoot
@@ -64,10 +74,17 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
     throw new Error("Exact Original and bundled v5 bindings are required.");
   bundled.assertVerified();
   type Role = "workbench" | "chat";
-  const roles = ["workbench", "chat"] as const;
+  const roles = host.relayRoles ?? ["workbench", "chat"] as const;
+  if (!roles.includes("workbench") || new Set(roles).size !== roles.length
+    || roles.some(role => !["workbench", "chat"].includes(role))) throw new Error("Invalid relay roles.");
   const attributions = { workbench: structuredClone(host.workbenchAttribution), chat: structuredClone(host.chatAttribution) };
-  if (attributions.workbench.source !== "vscode-provider" || attributions.workbench.scope !== "shared-host"
-    || attributions.chat.source !== "pkm-chat" || !["shared-host", "chat"].includes(String(attributions.chat.scope)))
+  const readOnlyCli = !config.writable && roles.length === 1 && attributions.workbench.source === "standalone"
+    && attributions.workbench.scope === "unknown";
+  const external = !!shared && roles.length === 1 && host.externalPeer?.writable === config.writable
+    && attributions.workbench.source === "standalone" && attributions.workbench.scope === "unknown";
+  if (!readOnlyCli && !external && (attributions.workbench.source !== "vscode-provider" || attributions.workbench.scope !== "shared-host")
+    || roles.includes("chat") && (attributions.chat.source !== "pkm-chat"
+      || !["shared-host", "chat"].includes(String(attributions.chat.scope))))
     throw new Error("Distinct exact Original launch attribution is required.");
   const custody = await (host.acquireCustody?.(config.knowledgeRoot)
     ?? acquireCompatibilityGatewayCustody(config.knowledgeRoot, root => host.acquireLegacyFence(root)));
@@ -77,14 +94,15 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
   const sessions = new Map<string, Session>();
   type Facade = ReturnType<typeof createNativePublicFacade>;
   const facades = new Map<Role, Facade>();
+  const bundledVersions = new Map<Role, string>();
   const shortcuts = new Map<Role, ReturnType<typeof directModuleTools>>();
   const serviceId = randomUUID(), tokens = Object.fromEntries(roles
     .map(role => [role, randomBytes(32).toString("hex")])) as Record<Role, string>;
   const relayIdentity = Object.freeze({ generation: serviceId, runtimeBuild: createHash("sha256")
     .update(JSON.stringify(["pkm.compatibility-relay/v1", bundled.runtimeBuild, config.legacy.runtimeBuild])).digest("hex") });
   let accepting = true, switching = false, inFlight = 0, stopping = false, closed = false, uncertain = false;
-  let selectionRevision = randomUUID();
-  let mode = initialMode;
+  const selection = shared ?? { mode: initialMode, selectionRevision: randomUUID(), switching: false, failed: false };
+  const currentMode = () => selection.mode;
   const originalUncertain = () => Math.max(0, ...[...originals.values()].map(item => item.identity.health.uncertainCalls));
   const originalInFlight = () => [...originals.values()].reduce((total, item) => total + item.identity.health.inFlight, 0);
 
@@ -110,13 +128,15 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
     }
   }
   async function verifyBundled(role: Role) {
-    const { backend, runtime } = version(await facades.get(role)!.invoke("check_version", {}));
+    const observed = version(await facades.get(role)!.invoke("check_version", {}));
+    const { backend, runtime } = observed;
     if (!object(backend) || backend.storageEngine !== "original" || backend.storageMigrated !== false
       || backend.runtimeBuild !== config.legacy.runtimeBuild || backend.generation !== config.legacy.generation
       || backend.catalogRevision !== original(role).identity.catalogRevision
       || !object(runtime) || runtime.generation !== bundled.generation || runtime.runtimeBuild !== bundled.runtimeBuild
-      || runtime.phase !== "accepting" || runtime.controlError)
+      || runtime.phase !== "accepting" || runtime.controlError || typeof observed.version !== "string" || !observed.version)
       throw new Error("Gateway did not report the pinned Original authority and exact live generation.");
+    bundledVersions.set(role, observed.version);
   }
   function version(result: Awaited<ReturnType<ReturnType<typeof createNativePublicFacade>["invoke"]>>) {
     const value = result.structuredContent ?? JSON.parse(result.content.filter(part => part.type === "text").map(part => part.text).join(""));
@@ -125,16 +145,19 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
   }
   function available() {
     try { host.assertAllowed?.(); custody.assertHeld(); } catch { accepting = false; }
-    return accepting && !uncertain && !closed && originals.size === roles.length
+    return accepting && !selection.failed && !uncertain && !closed && originals.size === roles.length
       && [...originals.values()].every(item => item.identity.health.phase === "accepting") && !originalUncertain();
   }
   const localStatus = (session: Session) => ({
     schema: "pkm.mcp.lifecycle/v1", ...relayIdentity,
-    instanceId: session.id, acceptingNewCalls: session.accepting && available() && !switching && !stopping,
+    instanceId: session.id, acceptingNewCalls: session.accepting && available() && !switching && !selection.switching && !stopping,
     phase: !available() ? "action-required" : session.accepting
-      ? switching || stopping ? "draining" : "accepting" : session.inFlight ? "draining" : "drained",
+      ? switching || selection.switching || stopping ? "draining" : "accepting" : session.inFlight ? "draining" : "drained",
     inFlight: session.inFlight, uncertainCalls: Math.max(Number(uncertain), originalUncertain()),
     controlError: "", automaticReplay: false,
+    ...(host.externalPeer ? { participant: { source: "external", writable: config.writable,
+      memberId: host.externalPeer.memberId, process: host.externalPeer.process,
+      verifiedBy: "authenticated-owner-rendezvous" } } : {}),
   });
   const toolResult = (value: Json): ToolResult => ({ content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value });
   const refused = (message: string): ToolResult => ({ content: [{ type: "text", text: message }], isError: true });
@@ -177,27 +200,50 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
   async function invoke(session: Session, name: string, args: Json) {
     if (name === "mcp_lifecycle_quiesce") session.accepting = false;
     if (name === "mcp_lifecycle_status" || name === "mcp_lifecycle_quiesce") return toolResult(localStatus(session));
-    if (!available() || switching || stopping || !session.accepting)
+    if (!available() || switching || selection.switching || stopping || !session.accepting)
       return refused("BUSY: Gateway unavailable or draining; no call dispatched. No request was replayed.");
+    // Admission evidence must reach stable storage before any adapter dispatch.
     session.inFlight++; inFlight++;
+    let evidence: string | undefined;
+    let completed = false;
     try {
+      evidence = await custody.beginRecoveryEvidence?.("operation", `relay:${session.role}:${name}`);
+      if (!available() || switching || selection.switching || stopping || !session.accepting) {
+        completed = true;
+        return refused("BUSY: Gateway unavailable or draining; no call dispatched. No request was replayed.");
+      }
       if (name === "check_version") {
-        const observed = mode === "original" ? await original(session.role).observeVersion(args)
+        const observed = currentMode() === "original" ? await original(session.role).observeVersion(args)
           : version(await facades.get(session.role)!.invoke(name, args));
         const upstream = original(session.role).originalVersion.runtime as Json;
-        return toolResult({ ...observed, dispatchMode: mode,
+        const result = toolResult({ ...observed, dispatchMode: currentMode(),
           routeRuntime: { ...localStatus(session), inFlight: session.inFlight - 1 },
           originalConnection: { instanceId: upstream.instanceId, attribution: upstream.attribution } });
+        completed = true;
+        return result;
       }
-      return mode === "original" ? await invokeOriginal(session.role, name, args)
+      const result = currentMode() === "original" ? await invokeOriginal(session.role, name, args)
         : await facades.get(session.role)!.invoke(name, args);
+      completed = true;
+      return result;
     }
     catch {
-      // These facades throw for pre-dispatch validation as well as dispatch failures.
-      // Original owns the dispatch receipt; loss of that channel is sticky.
-      uncertain ||= originalUncertain() > 0;
+      // Validation can throw before dispatch. Original owns the dispatch receipt:
+      // its accepting/settled channel distinguishes refusal from unknown effects.
+      uncertain ||= originalUncertain() > 0 || !evidence && !!custody.beginRecoveryEvidence;
+      completed = !uncertain && [...originals.values()].every(item => item.identity.health.phase === "accepting");
+      if (uncertain && shared) shared.failed = true;
       return refused("Gateway call failed. Do not retry an uncertain effect.");
-    } finally { session.inFlight--; inFlight--; }
+    } finally {
+      try {
+        if (evidence && completed && !uncertain && !originalUncertain())
+          await custody.completeRecoveryEvidence(evidence);
+      } catch {
+        uncertain = true;
+        if (shared) shared.failed = true;
+        throw new Error("Recovery receipt was not durable; no outcome may be inferred or replayed.");
+      } finally { session.inFlight--; inFlight--; }
+    }
   }
 
   let origin = "";
@@ -216,14 +262,14 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
       const input = await body(req);
       if (!uuid(input.clientId)) return reply(400, { error: "Expected exact relay session." });
       if (req.url === "/shared/enroll") {
-        if (!available() || switching || stopping || sessions.has(input.clientId) || sessions.size >= 64)
+        if (!available() || switching || selection.switching || stopping || sessions.has(input.clientId) || sessions.size >= 64)
           return reply(409, { error: "Cannot enroll relay." });
         inFlight++;
         try {
-          if (mode === "original") await original(role).observeVersion({}, true);
+          if (currentMode() === "original") await original(role).observeVersion({}, true);
           else await verifyBundled(role);
         } finally { inFlight--; }
-        if (!available() || switching || stopping || sessions.has(input.clientId) || sessions.size >= 64)
+        if (!available() || switching || selection.switching || stopping || sessions.has(input.clientId) || sessions.size >= 64)
           return reply(409, { error: "Cannot enroll relay." });
         sessions.set(input.clientId, { id: input.clientId, role, accepting: true, inFlight: 0 });
         return reply(200, { instructions: facades.get(role)!.instructions });
@@ -233,13 +279,15 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
       if (req.url === "/shared/leave") {
         session.accepting = false;
         sessions.delete(input.clientId);
-        if (session.inFlight) uncertain = true;
+        if (session.inFlight) { uncertain = true; if (shared) shared.failed = true; }
         return reply(200, {});
       }
       if (req.url === "/shared/tools") return reply(200, { tools: facades.get(role)!.definitions });
       if (req.url === "/shared/call" && typeof input.name === "string" && object(input.arguments)) {
         let terminal = false;
-        const disconnected = () => { if (!terminal && !control.has(input.name as string)) uncertain = true; };
+        const disconnected = () => {
+          if (!terminal && !control.has(input.name as string)) { uncertain = true; if (shared) shared.failed = true; }
+        };
         res.once("close", disconnected);
         const result = await invoke(session, input.name, input.arguments);
         terminal = true;
@@ -256,7 +304,7 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
       custody.assertHeld();
       const adapter = await connectCompatibilityMcp(config, { attribution: attributions[role], custodyGrant: custody.launchGrant });
       originals.set(role, adapter);
-      adapter.onFailure(() => { accepting = false; });
+      adapter.onFailure(() => { accepting = false; if (shared) shared.failed = true; });
       if (!isDeepStrictEqual((adapter.originalVersion.runtime as Json).attribution, attributions[role]))
         throw new Error("Actual Original launch attribution does not match the host-owned client role.");
     }
@@ -278,8 +326,8 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
   const missingRelays = () => roles.filter(role =>
     ![...sessions.values()].some(session => session.role === role && session.accepting));
   function assertSwitchable(expected: CompatibilitySwitchExpectation, target: CompatibilityDispatchMode) {
-    if (!available() || switching || stopping || inFlight || originalInFlight() || host.hasActiveChatWork?.()
-      || mode !== expected.mode || selectionRevision !== expected.selectionRevision || mode === target
+    if (!available() || switching || selection.switching || stopping || inFlight || originalInFlight() || host.hasActiveChatWork?.()
+      || currentMode() !== expected.mode || selection.selectionRevision !== expected.selectionRevision || currentMode() === target
       || target !== "original" && target !== "bundled-v5")
       throw new Error("Gateway selection changed or outstanding work blocks switching; no switch applied.");
     if (missingRelays().length) throw new Error("Both native PKM relays must verify their live backend before switching.");
@@ -302,19 +350,21 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
       if (!available() || stopping || inFlight || originalInFlight() || host.hasActiveChatWork?.() || missingRelays().length)
         throw new Error("Gateway no longer accepts handoff.");
       // Linearization point: both existing relays resolve the same active reference.
-      mode = target;
-      selectionRevision = randomUUID();
+      selection.mode = target;
+      selection.selectionRevision = randomUUID();
     } finally { switching = false; }
     return { applied: true, status: status() };
   }
   function status() {
-    const active = identity(mode);
+    const mode = currentMode(), active = identity(mode);
     const candidates = (["original", "bundled-v5"] as const).map(mode => {
       const { generation, runtimeBuild } = identity(mode);
-      return { mode, generation, runtimeBuild };
+      const version = mode === "original" ? original("workbench").originalVersion.version : bundledVersions.get("workbench")!;
+      return { mode, generation, runtimeBuild, version };
     });
-    return { mode, generation: active.generation, runtimeBuild: active.runtimeBuild, selectionRevision, candidates, inFlight, missingRelays: missingRelays(),
-      phase: !available() ? "action-required" : switching || stopping ? "draining" : "accepting",
+    return { mode, version: candidates.find(item => item.mode === mode)!.version,
+      generation: active.generation, runtimeBuild: active.runtimeBuild, selectionRevision: selection.selectionRevision, candidates, inFlight, missingRelays: missingRelays(),
+      phase: !available() ? "action-required" : switching || selection.switching || stopping ? "draining" : "accepting",
       uncertain: uncertain || originalUncertain() > 0, automaticReplay: false,
       originalBuild: config.legacy.runtimeBuild, storageEngine: "original", storageMigrated: false,
       originalConnections: roles.map(role => ({ role, supervisorPid: original(role).adapterPid,
@@ -322,14 +372,24 @@ export async function startCompatibilityGatewayAuthority(input: unknown, bundled
   }
   let closing: Promise<void> | undefined;
   return {
+    async verifyHandoff(target: CompatibilityDispatchMode) {
+      if (!shared || !selection.switching || !available() || stopping || inFlight || originalInFlight()
+        || host.hasActiveChatWork?.() || missingRelays().length) throw new Error("Gateway no longer accepts handoff.");
+      bundled.assertVerified();
+      for (const role of roles) {
+        await original(role).observeVersion({}, true);
+        if (target === "bundled-v5") await verifyBundled(role);
+      }
+      if (!available() || stopping || inFlight || originalInFlight()) throw new Error("Gateway no longer accepts handoff.");
+    },
     bindBrowserReads() {
       const operations = new Set(["list_notes", "search_notes", "get_note", "api_chat_capabilities",
         "api_chat_list", "api_chat_get", "api_chat_request_get"].map(name => `mcp.tool.${name}`));
-      const revision = selectionRevision;
+      const revision = selection.selectionRevision;
       const generation = status().generation;
       const session: Session = { id: randomUUID(), role: "workbench", accepting: true, inFlight: 0 };
       const assertCurrent = () => {
-        if (!session.accepting || !available() || switching || stopping || revision !== selectionRevision)
+        if (!session.accepting || !available() || switching || selection.switching || stopping || revision !== selection.selectionRevision)
           throw new Error("The browser gateway binding is no longer current.");
       };
       assertCurrent();
