@@ -121,7 +121,7 @@ export function registerOriginalBrowserActivation(context: vscode.ExtensionConte
   registerBrowserHttpsActivation(context, options);
   if (vscode.env.remoteName || vscode.env.uiKind !== vscode.UIKind.Desktop) return;
   let disposed = false, epoch = 0, opening = false;
-  let active: { url: string; token: string; current(): void; close(): Promise<void> } | undefined;
+  let active: { url: string; token: string; current(): void; verify(): Promise<void>; close(): Promise<void> } | undefined;
   let draining: Promise<void> | undefined, drainFailed = false;
   const invalidate = () => {
     epoch++;
@@ -139,7 +139,8 @@ export function registerOriginalBrowserActivation(context: vscode.ExtensionConte
   badge.show();
   const start = async () => {
     if (active) {
-      try { active.current(); return active; }
+      const existing = active;
+      try { await existing.verify(); return existing; }
       catch { invalidate(); }
     }
     if (opening || disposed) throw new Error("PKM Browser is unavailable.");
@@ -240,7 +241,14 @@ export function registerOriginalBrowserActivation(context: vscode.ExtensionConte
         }).finally(() => { checking = false; });
       }, 1000);
       watch.unref();
-      active = { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/webview/`, token, current, close };
+      active = { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/webview/`, token, current, close,
+        async verify() {
+          current();
+          const id = await observedChatHost();
+          current();
+          if (id !== grant.chatHostId) throw new Error("The browser Chat host changed.");
+        },
+      };
       try { current(); } catch (error) { invalidate(); gateway = undefined; throw error; }
       return active;
     } catch (error) {
@@ -273,7 +281,10 @@ export function registerOriginalBrowserActivation(context: vscode.ExtensionConte
           await vscode.env.openExternal(vscode.Uri.parse(binding.url));
           return binding.url;
         }
-      } catch { void vscode.window.showWarningMessage("PKM Browser unavailable. Verify the trusted Original Knowledge Root and selected gateway."); }
+      } catch (error) {
+        void vscode.window.showWarningMessage(`PKM Browser unavailable. ${error instanceof Error ? error.message : "Verify the trusted Original Knowledge Root and selected gateway."}`);
+        throw error;
+      }
       finally { presenting = false; }
     }));
 }

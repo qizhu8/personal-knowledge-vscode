@@ -89,12 +89,14 @@ Original root and the selected bundled compatibility gateway, select
 **PKM Browser** in the status bar, then **Copy sign-in token and open**. Paste
 the freshly issued token into the loopback page. This is a separate,
 allowlisted read connection to the same selected Original generation, not a
-generic MCP proxy or a standalone Core server. Cold compatibility routing
-only; remote hosts are intentionally excluded. With opt-in live switching,
-the browser binds to the existing owner through an in-process read grant. It
+generic MCP proxy or a standalone Core server. This local-browser command
+excludes remote hosts; use the explicit HTTPS command for those. With live switching,
+the browser binds to the existing authenticated owner through a read grant. It
 does not launch a cold adapter or receive relay credentials. Starting a
 handoff can revoke that grant; after changing backends, reopen PKM Browser
-from the extension and sign in again.
+from the extension and sign in again. Reopening verifies the existing grant
+against its actual owner before reuse, so a revoked pre-switch grant is
+replaced instead of reopening its stale URL. This adds no background polling.
 Use **Revoke browser access** in the same picker to close the listener and
 invalidate its token and cookies. A change to the trusted workspace, bound
 root, or observed owner also closes the binding. Remember does not survive
