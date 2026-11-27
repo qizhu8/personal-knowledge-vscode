@@ -15,7 +15,8 @@ let mcpBackendBackgroundRead = false;
 
 const mcpBackendCopy = {
   unbound: ['Live switching requires this Linux or Remote-SSH profile’s native pkm provider. Manual/external registrations and unverified routes are unsupported. The current configuration is unchanged.', '实时切换需要当前 Linux 或 Remote-SSH 配置的原生 pkm 提供程序。不支持手动、外部或未经验证的路由。现有配置不变。'],
-  notAdmitted: ['The backend has not started in this window. Start PKM MCP to connect; status updates automatically without starting a relay or changing the backend.', '此窗口的后端尚未启动。启动 PKM MCP 后即可连接；状态会自动更新，不会自行启动中继或更改后端。'],
+  notAdmitted: ['The backend has not started in this window. Configured native MCP starts automatically after preparation; status reads do not start a relay or change the backend.', '此窗口的后端尚未启动。已配置的原生 MCP 会在准备完成后自动启动；状态读取不会自行启动中继或更改后端。'],
+  preparing: ['Preparing the configured MCP backend automatically. Status updates without manual refresh.', '正在自动准备已配置的 MCP 后端，无需手工开启或刷新。'],
   relayUnverified: ['Both Workbench pkm and PKM Chat must have verified live connections before switching. Status updates automatically as they connect.', '切换前需要验证工作台 pkm 和 PKM Chat 的实时连接；连接后状态会自动更新。'],
   custodyUnavailable: ['This Knowledge Root is reserved by another session or needs recovery. This window cannot start a second route or switch the backend.', '此知识库根目录已由其他会话保留或需要恢复。此窗口无法启动第二条路由或切换后端。'],
   statusUnavailable: ['Manager status could not be verified.', '无法验证管理器状态。'],
@@ -42,7 +43,7 @@ function renderMcpBackendSwitch() {
   const options = candidates.filter(item => item.generation !== active?.generation
     || pending === 'Apply' && item.generation === mcpBackendSelection);
   const target = options.find(item => item.compatible && item.generation === mcpBackendSelection);
-  const loading = !active && !error;
+  const loading = !active && (!error || error === 'preparing');
   const phase = !active ? loading ? helpText('Loading backend status…', '正在加载后端状态…')
     : error === 'notAdmitted' ? helpText('Backend not started', '后端未启动')
     : helpText('Backend status failed', '后端状态获取失败') : {
@@ -283,14 +284,29 @@ function updateGlobalMcpWarning(data) {
   const action = banner?.querySelector('.mcp-setup-action');
   if (!banner || !text) return;
   const presentation = mcpSetupPresentation(data);
-  const attention = data?.lifecycle?.instances?.some(instance => instance.heartbeatFresh === true
+  const attentionInstances = (data?.lifecycle?.instances || []).filter(instance => instance.heartbeatFresh === true
     && (['draining','action-required'].includes(instance.observedState) || instance.uncertainCalls > 0 || instance.controlError));
+  const attention = attentionInstances.length > 0;
+  const uncertain = attentionInstances.some(instance => instance.uncertainCalls > 0);
+  const oldRegistryErrors = attention && attentionInstances.every(instance =>
+    instance.generation && data?.lifecycle?.configuredGeneration
+    && instance.generation !== data.lifecycle.configuredGeneration
+    && instance.observedState === 'drained' && instance.inFlight === 0 && instance.uncertainCalls === 0
+    && instance.controlError === 'instance-registry-unavailable');
+  const attentionText = uncertain
+    ? helpText('An MCP call has an unconfirmed outcome. Check whether its write completed before retrying; do not replay uncertain writes.',
+      '有 MCP 调用的结果尚未确认。重试前请核实写入是否完成，不要重复提交。')
+    : oldRegistryErrors
+      ? helpText('Old MCP connections have stopped accepting calls but cannot update their status records. Check old client connections in Debug; this is not a report of an uncertain write.',
+        '旧 MCP 连接已停止接收调用，但无法更新状态记录。可在 Debug 查看旧客户端连接；这不是未确认写入的报告。')
+      : helpText('An MCP connection is draining or has a control error. Open Debug to inspect the affected connection and error.',
+        '有 MCP 连接正在排空或发生控制错误。请打开 Debug 查看对应连接及错误。');
   const visible = !['ready','unknown'].includes(presentation.kind) || attention;
   banner.hidden = !visible;
   if (visible) banner.classList.remove('hidden'); else banner.classList.add('hidden');
   banner.dataset.setupState = presentation.kind;
-  text.textContent = attention ? 'An MCP instance needs review. Do not replay uncertain writes.' : visible ? presentation.text : '';
-  if (action) { action.textContent = attention ? 'Review lifecycle' : presentation.label; action.onclick = attention ? () => openMcpSetup('lifecycle') : () => mcpSetupAction(action); }
+  text.textContent = attention ? attentionText : visible ? presentation.text : '';
+  if (action) { action.textContent = attention ? helpText('View connection details', '查看连接详情') : presentation.label; action.onclick = attention ? () => openMcpSetup('lifecycle') : () => mcpSetupAction(action); }
   const guide = banner.querySelector('.mcp-help-action');
   if (guide && guide !== action) guide.textContent = helpText('Setup guide', '配置指南');
 }

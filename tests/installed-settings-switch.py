@@ -59,7 +59,12 @@ with sync_playwright() as playwright:
         raise AssertionError("Actual PKM Settings webview not found")
 
     try:
-        wait_for("settings-awaiting-start.json", initial=True)
+        wait_for("settings-awaiting-status.json", initial=True)
+        native_start = json.loads((base / "settings-native-started.json").read_text())
+        assert native_start["source"] == "activation"
+        assert native_start["beforeSetupAndToolInvocation"] is True
+        assert native_start["explicitStartExecuted"] is False
+        assert any("PKM MCP automatic startup: ready" in line for line in native_start["startupTrace"])
         frame, tab = settings_frame()
         tab.click()
         active = frame.locator(".mcp-backend-observed")
@@ -70,10 +75,6 @@ with sync_playwright() as playwright:
         assert any("PKM MCP discovery: elapsedMs=" in line for line in restored["startupTrace"])
         expect(active).to_contain_text("Original MCP · Accepting calls", timeout=15000)
         expect(active).to_contain_text("MCP version v2.19.0")
-        (base / "settings-ui-before-start.json").write_text(json.dumps({
-            "restoredChatStartedBeforeExplicitNativeStart": True, "verifiedLaunchSource": restored["source"],
-        }))
-        wait_for("settings-native-started.json", initial=True)
         expect(active).to_contain_text("MCP version v2.19.0", timeout=30000)
         expect(frame.locator("#mcp-backend-target")).to_be_enabled(timeout=15000)
         expect(frame.locator(".mcp-backend-feedback")).not_to_contain_text(
@@ -83,8 +84,10 @@ with sync_playwright() as playwright:
         active.evaluate("""el => {
             const slot = el.closest('#mcp-backend-slot');
             slot.quietRefreshMutations = 0;
+            slot.quietRefreshSnapshots = [slot.innerHTML];
             slot.quietRefreshObserver = new MutationObserver(records => {
                 slot.quietRefreshMutations += records.length;
+                slot.quietRefreshSnapshots.push(slot.innerHTML);
             });
             slot.quietRefreshObserver.observe(slot, {childList: true, subtree: true, attributes: true});
         }""")
@@ -95,9 +98,15 @@ with sync_playwright() as playwright:
             slot.quietRefreshObserver.disconnect();
             return slot.quietRefreshMutations;
         }""")
+        if mutations:
+            (base / "settings-quiet-refresh-failure.json").write_text(json.dumps({
+                "mutations": mutations,
+                "snapshots": active.evaluate("el => el.closest('#mcp-backend-slot').quietRefreshSnapshots"),
+            }))
         assert mutations == 0, f"Unchanged backend status redrew the installed UI {mutations} times"
         (base / "settings-ui-auto-status.json").write_text(json.dumps({
             "startupWithoutManualRefresh": True, "restoredWebview": True, "originalVersion": "2.19.0",
+            "activationNativeAutostart": True, "explicitNativeStartExecuted": False,
             "lifecycleOnlyInDebug": True, "quietRefreshMutations": mutations,
         }))
         wait_for("settings-observed-original.json", initial=True)

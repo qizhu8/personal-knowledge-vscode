@@ -183,6 +183,86 @@ async function main() {
   await rememberSandbox.remember({ globalState: { get: key => globalState.get(key) } }, "/knowledge");
   assert.strictEqual(owner, "manual-user", "startup must not steal explicitly manual ownership");
 
+  let binding = { knowledgeRoot: "/knowledge", registrationOwner: "native-provider" };
+  let provider, startCommand, releaseMaintenance;
+  const nativeEvents = [];
+  const nativeSandbox = {
+    _mcpDefinitionsChanged: undefined, _nativeMcpProvider: false,
+    nativeMcpStarting: false, nativeMcpStartupError: "", integrationMaintenanceState: "idle", integrationMaintenanceError: "",
+    setImmediate,
+    fs: { realpathSync: value => value },
+    getStorePath: () => "/knowledge",
+    readAccountMcpBinding: () => binding,
+    managedMcpAttributionEnv: env => env,
+    nativeMcpCwdUri: () => ({}),
+    mcpRuntimeStatus: () => ({ healthy: true }),
+    mcpStatus: () => ({ installed: true }),
+    maintainPkmIntegration: async () => {
+      nativeEvents.push("maintain");
+      await new Promise(resolve => { releaseMaintenance = resolve; });
+      nativeSandbox.integrationMaintenanceState = "ready";
+    },
+    refreshMcpDefinitions: () => nativeEvents.push("refresh"),
+    registerHostWriterCommand: (_id, callback) => { startCommand = callback; return {}; },
+    log: { startup: message => nativeEvents.push(message), warn: message => nativeEvents.push(message) },
+    vscode: {
+      workspace: { isTrusted: true }, Uri: { file: () => ({}) },
+      EventEmitter: class { event() {} },
+      McpStdioServerDefinition: class { constructor(...args) { this.args = args; } },
+      lm: { registerMcpServerDefinitionProvider: (_id, value) => { provider = value; return {}; } },
+      commands: { executeCommand: async command => nativeEvents.push(command) },
+    },
+  };
+  vm.runInNewContext(functionText("registerNativeMcpProvider") + "\nthis.register = registerNativeMcpProvider;", nativeSandbox);
+  const nativeRoute = {
+    assertLaunchAdmission() { nativeEvents.push("admission"); },
+    describeLaunch() { nativeEvents.push("describe"); return { command: "/node", args: [], env: {}, runtimeBuild: "build", cwd: "/control" }; },
+    async launch() {
+      assert.equal(nativeSandbox.integrationMaintenanceState, "ready", "stale runtime must be prepared before launch");
+      nativeEvents.push("launch");
+      return this.describeLaunch();
+    },
+  };
+  const autoStart = nativeSandbox.register({ subscriptions: [], extensionUri: {} }, nativeRoute);
+  await provider.provideMcpServerDefinitions();
+  assert.deepEqual(nativeEvents, ["describe"], "provider enumeration must remain passive");
+  nativeEvents.length = 0;
+  for (const refused of [
+    { binding: undefined, trusted: true },
+    { binding: { knowledgeRoot: "/knowledge", registrationOwner: "manual-user" }, trusted: true },
+    { binding: { knowledgeRoot: "/different", registrationOwner: "native-provider" }, trusted: true },
+    { binding, trusted: false },
+  ]) {
+    const saved = binding;
+    binding = refused.binding; nativeSandbox.vscode.workspace.isTrusted = refused.trusted;
+    await autoStart();
+    assert.deepEqual(nativeEvents, [], "automatic startup cannot adopt an ineligible root or registration");
+    binding = saved;
+  }
+  nativeSandbox.vscode.workspace.isTrusted = true;
+  const automatic = autoStart(), explicit = startCommand();
+  assert.deepEqual(nativeEvents, ["admission", "maintain"], "concurrent startup must share preparation");
+  releaseMaintenance();
+  await Promise.all([automatic, explicit]);
+  assert.deepEqual(nativeEvents.slice(0, 6), ["admission", "maintain", "launch", "describe", "refresh", "workbench.mcp.startServer"]);
+  assert.equal(nativeEvents.filter(event => event === "workbench.mcp.startServer").length, 1);
+  assert.equal(nativeSandbox.nativeMcpStarting, false);
+  nativeEvents.length = 0;
+  nativeSandbox.maintainPkmIntegration = async () => {
+    nativeEvents.push("maintain-failed");
+    nativeSandbox.integrationMaintenanceState = "error";
+    nativeSandbox.integrationMaintenanceError = "runtime setup failed";
+  };
+  await assert.rejects(autoStart(), /runtime setup failed/);
+  assert.match(nativeSandbox.nativeMcpStartupError, /runtime setup failed/);
+  assert(!nativeEvents.includes("launch"), "failed maintenance cannot launch or report startup ready");
+  assert.equal(nativeSandbox.nativeMcpStarting, false);
+  nativeEvents.length = 0;
+  nativeSandbox.maintainPkmIntegration = async () => { nativeSandbox.integrationMaintenanceState = "ready"; };
+  await autoStart();
+  assert.equal(nativeSandbox.nativeMcpStartupError, "");
+  assert(nativeEvents.includes("workbench.mcp.startServer"), "a failed start must permit an explicit safe retry");
+
   const mcpSource = fs.readFileSync(path.join(root, "src/mcp/mcp.ts"), "utf8");
   const mcpFile = ts.createSourceFile("mcp.ts", mcpSource, ts.ScriptTarget.Latest, true);
   const definitionFunction = mcpFile.statements.find(value => ts.isFunctionDeclaration(value) && value.name?.text === "mcpServerDefinitionData");

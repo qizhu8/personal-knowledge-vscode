@@ -144,6 +144,10 @@ with sync_playwright() as playwright:
         send.click()
         expect(dialog).to_contain_text("CANCEL_INSTALLED_BROWSER", timeout=15000)
         dialog.get_by_role("button", name="Send once", exact=True).click()
+        provider_deadline = time.monotonic() + 20
+        while not (base / "browser-provider-waiting").exists() and time.monotonic() < provider_deadline:
+            time.sleep(0.1)
+        assert (base / "browser-provider-waiting").exists(), "Cancellation test must reach the actual held browser model stream"
         expect(stop).to_be_enabled(timeout=20000)
         page.reload(wait_until="domcontentloaded")
         expect(stop).to_be_enabled(timeout=15000)

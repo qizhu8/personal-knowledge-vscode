@@ -13,8 +13,26 @@ loading, a backend that has not started, a failed status/load with its error,
 and a verified MCP version. Status reads do not start or switch a backend.
 An unknown switch outcome still requires explicit review and is never replayed.
 The managed lifecycle instance table (PIDs, generations and launch attribution)
-is in **Debug**, not the main MCP panel. Actionable lifecycle warnings still
-offer **Review lifecycle**, which opens that diagnostic tab.
+is in **Debug**, not the main MCP panel. Actionable lifecycle warnings offer
+**View connection details**, which opens that diagnostic tab. The warning
+distinguishes an unconfirmed call outcome from a connection/control error.
+Old-generation drained connections that cannot update their status records
+are identified as old connections, not reported as uncertain writes.
+
+On activation, a trusted configured Linux/Remote-SSH workspace with this
+account's matching native-provider binding prepares its runtime and starts
+native PKM MCP automatically. Concurrent explicit Start requests share the same
+startup; manual registrations, unconfigured roots and untrusted workspaces are
+not adopted. Settings reads and provider enumeration remain passive. Independent
+HTTPS still requires explicit setup and enablement. After an explicitly reviewed
+crash recovery, a window retaining the departed owner's custody must reload
+before reconnecting; this is separate from Original/v5 hot switching.
+Once native startup has admitted the Workbench relay, passive provider metadata
+includes that relay's scoped launch environment for agent hosts which inherit
+the native definition directly. Enumeration never creates a grant, starts a
+backend or substitutes the Chat grant. An agent session which cached a
+pre-start or removed-extension launch must reconnect or start a new session;
+changing a saved CLI entry cannot rewrite that inherited snapshot.
 
 ## Uone Webview release gate
 

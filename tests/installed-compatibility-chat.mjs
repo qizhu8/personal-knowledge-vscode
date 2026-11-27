@@ -215,11 +215,13 @@ extensionPath:${JSON.stringify(installed)},globalStorageUri:{fsPath:${JSON.strin
         if (typeof last === "string" && last.includes("CANCEL_INSTALLED")) {
           response.writeHead(200, { "content-type": "text/event-stream" });
           response.write(": waiting for actual installed Stop\n\n");
-          await writeFile(join(base, "provider-waiting.json"), '{"waiting":true}');
           response.on("close", () => {
             cancelled = true;
             if (installedBrowser && last === "CANCEL_INSTALLED_BROWSER") void writeFile(join(base, "browser-provider-closed"), "");
           });
+          await writeFile(join(base, "provider-waiting.json"), '{"waiting":true}');
+          if (installedBrowser && last === "CANCEL_INSTALLED_BROWSER")
+            await writeFile(join(base, "browser-provider-waiting"), "");
           return;
         }
         const sequence = [

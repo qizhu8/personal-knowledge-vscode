@@ -16,6 +16,16 @@ async function run(context) {
     }
     throw new Error("Installed Settings switch observation timed out.");
   }
+  async function automaticStartup() {
+    return until(() => {
+      const directory = path.dirname(context.logUri.fsPath);
+      for (const filename of fs.readdirSync(directory, { recursive: true }).filter(name => name.endsWith(".log"))) {
+        const text = fs.readFileSync(path.join(directory, filename), "utf8");
+        if (text.includes("PKM MCP automatic startup: ready")) return text;
+      }
+      return undefined;
+    }, Date.now() + 120_000);
+  }
   try {
     const extension = vscode.extensions.getExtension("uone.personal-knowledge");
     assert(extension && extension.packageJSON.version === "5.0.0");
@@ -35,7 +45,7 @@ async function run(context) {
       return;
     }
     if (process.env.PKM_SWITCH_PEER === "1") {
-      await vscode.commands.executeCommand("personalKnowledge.startPkmMcp");
+      await automaticStartup();
       await vscode.commands.executeCommand("personalKnowledge.openApiChat");
       const observed = await until(async () => {
         try { return await observe("original"); } catch { return undefined; }
@@ -87,6 +97,10 @@ async function run(context) {
       await vscode.commands.executeCommand("workbench.action.quit");
       return;
     }
+    const automaticTrace = await automaticStartup();
+    write("settings-native-started.json", { hostPid: process.pid, source: "activation",
+      beforeSetupAndToolInvocation: true, explicitStartExecuted: false,
+      startupTrace: automaticTrace.split("\n").filter(line => line.includes("PKM MCP automatic startup: ready")) });
     await vscode.commands.executeCommand("personalKnowledge.setupMcp");
     await vscode.commands.executeCommand("workbench.action.webview.reloadWebviewAction");
     const restoredStartup = await until(() => {
@@ -109,10 +123,7 @@ async function run(context) {
       status: restoredStatus, observed: restoredChat,
       startupTrace: restoredStartup.split("\n").filter(line =>
         /PKM Chat first state:|PKM MCP preparation|PKM MCP discovery/.test(line)) });
-    write("settings-awaiting-start.json", { hostPid: process.pid });
-    await until(() => fs.existsSync(path.join(base, "settings-ui-before-start.json")));
-    await vscode.commands.executeCommand("personalKnowledge.startPkmMcp");
-    write("settings-native-started.json", { hostPid: process.pid });
+    write("settings-awaiting-status.json", { hostPid: process.pid });
     await until(() => fs.existsSync(path.join(base, "settings-ui-auto-status.json")), Date.now() + 100_000);
     await vscode.commands.executeCommand("personalKnowledge.openApiChat");
     const first = await until(async () => {

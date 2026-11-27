@@ -53,6 +53,7 @@ function hasPendingOwner(root: string) {
 export function createBundledCompatibilityRoute(options: {
   extensionPath: string; storage: string; executable?: string;
   root(): string; managed(): string; python(): string; assertAllowed(): void;
+  startupStatus?(): { pending: boolean; error?: string };
   service?(): PkmServiceBootOptions;
   live?: { assertAdmittedRoot(): void; hasActiveChatWork(): boolean;
     confirm(review: { from: Mode; to: Mode; runtimeBuild: string }): Promise<boolean> };
@@ -60,6 +61,7 @@ export function createBundledCompatibilityRoute(options: {
   let selected: ReturnType<typeof select> | undefined;
   let phase: "pending" | "selected" | "unavailable" = "pending";
   let starting: Promise<Authority> | undefined;
+  let workbenchRelay: ReturnType<Authority["relay"]> | undefined;
   let preparing: Promise<Custody> | undefined;
   let preparedRoot: string | undefined;
   let admissionError: unknown;
@@ -283,7 +285,9 @@ export function createBundledCompatibilityRoute(options: {
       return { ...selection, liveRelay: true as const,
         runtimeBuild: hash(JSON.stringify(["pkm.compatibility-relay/v1", selection.runtimeBuild, selection.config.legacy.runtimeBuild])),
         args: [path.join(selection.payload.root, "server/dist/compatibility-gateway-relay.js")],
-        env: {} as Record<string, string> };
+        env: workbenchRelay ? { PKM_SHARED_ORIGIN: workbenchRelay.origin,
+          PKM_SHARED_SERVICE_ID: workbenchRelay.serviceId, PKM_SHARED_TOKEN: workbenchRelay.token }
+          : {} as Record<string, string> };
     },
     async managedPeerDefinition(): Promise<{ command: string; args: string[] }> {
       if (!options.live) throw new Error("Managed CLI peers require the supported native PKM route.");
@@ -314,6 +318,7 @@ export function createBundledCompatibilityRoute(options: {
           const authority = await (starting ??= startAuthority(selection));
           selection.assertCurrent();
           const { origin, serviceId, token } = authority.relay(role);
+          if (role === "workbench") workbenchRelay = { origin, serviceId, token };
           phase = "selected";
           return {
             ...selection, ...authority.relayIdentity, liveRelay: true as const,
@@ -339,7 +344,10 @@ export function createBundledCompatibilityRoute(options: {
       busy = true;
       try {
         if (!starting) {
-          send(admissionError ? { error: "loadingFailed",
+          const startup = options.startupStatus?.();
+          send(startup?.pending ? { error: "preparing" }
+            : startup?.error ? { error: "loadingFailed", detail: startup.error }
+            : admissionError ? { error: "loadingFailed",
             detail: admissionError instanceof Error ? admissionError.message : String(admissionError) }
             : { error: !preparing && hasPendingOwner(options.root()) ? "custodyUnavailable" : "notAdmitted" });
           return true;

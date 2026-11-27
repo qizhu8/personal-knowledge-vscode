@@ -267,6 +267,7 @@ const copilotElements = {
   "mcp-copy-copilot-cfg": { disabled: true },
 };
 const copilotSandbox = {
+  helpText: english => english,
   window: {},
   vscode: { getState: () => ({}) },
   t: key => JSON.parse(fs.readFileSync(path.join(__dirname, "..", "resources/locales/en.json"), "utf8")).strings[key] || key,
@@ -314,7 +315,23 @@ copilotSandbox.openMcpSetup("lifecycle");
 assert.deepEqual(reviewedSubtab, { owner: "mcp", tab: "debug" }, "Review lifecycle opens Debug rather than the main MCP tab.");
 copilotSandbox.updateGlobalMcpWarning({ installed:true, current:true, lifecycle });
 assert.equal(hidden.has("hidden"), false, "actual drain/uncertainty still raises an actionable warning");
-assert.equal(regenerate.textContent, "Review lifecycle", "uncertain writes require review, not regeneration");
+assert.equal(regenerate.textContent, "View connection details", "uncertain writes require connection details, not regeneration");
+assert.match(copilotElements["mcp-global-warning-text"].textContent, /unconfirmed outcome/);
+copilotSandbox.updateGlobalMcpWarning({ installed:true, current:true, lifecycle:{
+  configuredGeneration:"generation-a",
+  instances:[{ generation:"generation-old", observedState:"drained", heartbeatFresh:true,
+    inFlight:0, uncertainCalls:0, controlError:"instance-registry-unavailable" }],
+} });
+assert.equal(hidden.has("hidden"), false, "old registry errors stay visible without inventing write uncertainty");
+assert.match(copilotElements["mcp-global-warning-text"].textContent, /Old MCP connections/);
+assert.match(copilotElements["mcp-global-warning-text"].textContent, /not a report of an uncertain write/);
+copilotSandbox.updateGlobalMcpWarning({ installed:true, current:true, lifecycle:{
+  configuredGeneration:"generation-a",
+  instances:[{ generation:"generation-a", observedState:"drained", heartbeatFresh:true,
+    inFlight:0, uncertainCalls:0, controlError:"instance-registry-unavailable" }],
+} });
+assert.match(copilotElements["mcp-global-warning-text"].textContent, /control error/);
+assert.doesNotMatch(copilotElements["mcp-global-warning-text"].textContent, /Old MCP/);
 copilotSandbox.updateGlobalMcpWarning({ installed:true, current:true });
 assert.equal(hidden.has("hidden"), true);
 for (const definition of [
