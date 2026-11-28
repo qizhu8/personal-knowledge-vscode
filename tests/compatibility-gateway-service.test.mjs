@@ -60,7 +60,7 @@ m=>{responses.push(m.data);if(m.data.progress)progress.push(m.data.active.phase)
 if(input.command==="metadata")result=await route.managedPeerDefinition();
 if(input.command==="close")await route.dispose();
 process.send({id:input.id,result});
-}catch(error){process.send({id:input.id,error:error.message});}
+}catch(error){process.send({id:input.id,error:input.command+": "+error.message});}
 finally{if(input.command==="close")process.disconnect();}
 });
 route.prepareCustody().then(()=>process.send({ready:true,pid:process.pid}),error=>{
@@ -124,6 +124,34 @@ process.send({startupError:error.message});process.disconnect();});
   const descriptor = () => readFile(join(f.root, ".pkm/state/compatibility-gateway/owner-live.json"), "utf8").then(JSON.parse);
   return { ...f, open, connect, call, descriptor, clients, workers };
 }
+
+test("three simultaneous cold native windows admit once and retain distinct live Original connections", { timeout: 180_000 }, async t => {
+  const f = await windows(t);
+  const workers = await Promise.all(["cold-first", "cold-second", "cold-third"].map(name => f.open(name)));
+  const daemon = await f.descriptor();
+  const connections = await Promise.all(workers.map(async worker => ({
+    worker, clients: await Promise.all(["workbench", "chat"].map(role => f.connect(worker, role))),
+  })));
+  const versions = await Promise.all(connections.flatMap(({ worker, clients }) =>
+    clients.map(async item => {
+      const version = value(await f.call(item, "check_version"));
+      assert.equal(version.originalConnection.attribution.extensionHostPid, worker.child.pid);
+      assert.equal(version.dispatchMode, "original");
+      return version;
+    })));
+  assert.equal(new Set(versions.map(version => version.originalConnection.instanceId)).size, 6);
+  for (const worker of workers) {
+    const status = await worker.rpc("status");
+    assert.equal(status.active.phase, "accepting");
+    assert.equal(status.active.uncertain, 0);
+  }
+  assert.equal((await f.descriptor()).process.pid, daemon.process.pid);
+  await Promise.all(connections.flatMap(({ clients }) => clients.map(item => item.client.close())));
+  // Keep the final owner drain separate from the overlapping peer departures.
+  await Promise.all(workers.slice(0, 2).map(async worker => { await worker.rpc("close"); await worker.exited; }));
+  await workers[2].rpc("close"); await workers[2].exited;
+  assert.equal(existsSync(join(f.root, ".pkm/state/compatibility-gateway/owner-pending.json")), false);
+});
 
 test("normal initiating-window close and Reload preserve the independent authority, peer work and selection", { timeout: 180_000 }, async t => {
   const f = await windows(t);

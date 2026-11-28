@@ -32,6 +32,30 @@ async function run(context) {
     assert(extension && extension.packageJSON.version === process.env.PKM_UPGRADE_CANDIDATE_VERSION);
     assert.equal(process.env.PKM_COMPATIBILITY_LIVE_SWITCH, undefined);
     await extension.activate();
+    if (process.env.PKM_COLD_WINDOW) {
+      const id = process.env.PKM_COLD_WINDOW;
+      assert(["first", "second", "third"].includes(id));
+      const trace = await automaticStartup();
+      await vscode.commands.executeCommand("personalKnowledge.openApiChat");
+      await until(async () => (await vscode.commands.getCommands(false)).includes("_personalKnowledge.observeChatGateway"));
+      await until(async () => {
+        const chat = await vscode.commands.executeCommand("_personalKnowledge.observeChatGateway");
+        return chat?.dispatchMode === "original";
+      }, Date.now() + 60_000);
+      const observed = await observe("original");
+      for (const role of ["native", "chat"]) {
+        assert.equal(observed[role].originalConnection.attribution.extensionHostPid, process.pid);
+        assert.equal(observed[role].runtime.extensionVersion, extension.packageJSON.version);
+        assert.equal(observed[role].routeRuntime.phase, "accepting");
+        assert.equal(observed[role].runtime.uncertainCalls, 0);
+      }
+      write(`native-cold-${id}.json`, { hostPid: process.pid, automaticReady: true,
+        explicitStartExecuted: false, observed,
+        startupTrace: trace.split("\n").filter(line => line.includes("PKM MCP automatic startup: ready")) });
+      await until(() => fs.existsSync(path.join(base, `close-native-cold-${id}`)), Date.now() + 180_000);
+      await vscode.commands.executeCommand("workbench.action.quit");
+      return;
+    }
     if (process.env.PKM_SWITCH_UNMANAGED === "1") {
       assert.equal(process.env.PKM_COMPATIBILITY_LIVE_SWITCH, undefined);
       const status = await vscode.commands.executeCommand("_personalKnowledge.pkmCompatibilityRouteStatus");

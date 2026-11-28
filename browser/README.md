@@ -42,21 +42,32 @@ Authenticated loopback owner/peer RPCs use fresh HTTP connections: an idle
 socket's timeout can expire while its host is stalled, before that host processes
 the next request. Avoiding reuse prevents this stale-socket race without retrying
 the RPC. A lost admitted response still fails explicitly and is never replayed.
+Concurrent native reservations, joins and departures are bounded and serialized
+by the authenticated owner. A window arriving while another is joining waits
+inside that owner instead of being rejected or replaying its request. Backend
+switches cannot start while admissions are queued. Final idle retirement waits
+for the departure's durable operation evidence to complete.
 
 ## Uone Webview release gate
 
-The dedicated native Chat core gate runs the pinned 5.0.1 candidate, not the
+The dedicated native Chat core gate runs the pinned 5.0.2 candidate, not the
 removed experimental runtime-switch command:
 
 ```sh
 node tests/installed-compatibility-chat.mjs --chat-core \
-  --candidate-vsix=legacy/personal-knowledge-5.0.1.vsix \
+  --candidate-vsix=legacy/personal-knowledge-5.0.2.vsix \
   --candidate-sha256=<exact-archive-sha256>
 ```
 
 Candidate version checks come from the SHA-256-pinned archive manifest and must
-match the actual installation. The 5.0.1 patch is distinct from earlier 5.0.0
+match the actual installation. The 5.0.2 patch is distinct from earlier 5.0.0/5.0.1
 builds; qualification of a candidate does not update an existing installation.
+Add `--native-cold-start` to the `--same-profile-upgrade --bundled-gateway
+--settings-switch` lane to launch three actual installed windows against an
+owner-free isolated root before the existing Settings journey. Each must reach
+automatic live-tools readiness without an explicit Start, retain distinct
+Workbench/Chat Original connections, and quit normally with clean final
+custody retirement. This does not restart or qualify a real user's live root.
 
 It uses real installed VS Code Chat Webviews with a synthetic loopback model
 and isolated HOME, configuration and Knowledge Root. It verifies named Note

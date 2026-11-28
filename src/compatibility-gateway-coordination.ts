@@ -256,6 +256,8 @@ export async function startOrJoinCompatibilityGateway(input: unknown, bundled: V
     });
   }
   let joining = false, closing = false, managementBusy = false;
+  let pendingAdmissions = 0;
+  let admissionQueue = Promise.resolve();
   const assertMember = (member: Member, refreshing = false) => {
     try {
       custody.assertHeld(); processHeld(member.process);
@@ -320,7 +322,7 @@ export async function startOrJoinCompatibilityGateway(input: unknown, bundled: V
   }
   async function approve(member: Member, expected: CompatibilitySwitchExpectation, target: CompatibilityDispatchMode,
     switchId?: string) {
-    if (managementBusy || joining || closing) throw denied();
+    if (managementBusy || joining || closing || pendingAdmissions) throw denied();
     managementBusy = true;
     const assertIdle = () => {
       const snapshot = status(member);
@@ -396,7 +398,6 @@ export async function startOrJoinCompatibilityGateway(input: unknown, bundled: V
         await departed(args.memberId);
         reservations.delete(args.memberId);
         const last = !!service && !members.size && !reservations.size;
-        if (last) setImmediate(() => service?.onIdle());
         return { last };
       }
       if (route === "/host/join") {
@@ -473,20 +474,22 @@ export async function startOrJoinCompatibilityGateway(input: unknown, bundled: V
           }
           members.delete(member.id);
           const last = !!service && !members.size && !reservations.size;
-          if (last) setImmediate(() => service?.onIdle());
           return { last };
         } catch (error) { selection.failed = true; throw error; }
         finally { joining = false; }
       }
       throw denied();
     };
-    const handler: HostHandler = async (route, args) => {
+    const perform: HostHandler = async (route, args) => {
       const tracked = ["/host/reserve", "/host/unreserve", "/host/join", "/host/leave",
         "/host/switch", "/host/browser-read"].includes(route);
       const evidence = tracked ? await custody.beginRecoveryEvidence("operation", route) : undefined;
       try {
         const result = await handle(route, args);
         if (evidence && !selection.failed) await custody.completeRecoveryEvidence(evidence);
+        if (service && ["/host/unreserve", "/host/leave"].includes(route)
+          && !members.size && !reservations.size && !selection.failed)
+          setImmediate(() => service.onIdle());
         return result;
       } catch (error) {
         // A terminal refusal (stale browser binding, busy switch, invalid join)
@@ -494,6 +497,18 @@ export async function startOrJoinCompatibilityGateway(input: unknown, bundled: V
         if (evidence && !selection.failed) await custody.completeRecoveryEvidence(evidence);
         throw error;
       }
+    };
+    const handler: HostHandler = (route, args) => {
+      if (!["/host/reserve", "/host/unreserve", "/host/join", "/host/leave"].includes(route))
+        return perform(route, args);
+      if (closing || selection.failed || pendingAdmissions >= 32
+        || managementBusy && ["/host/reserve", "/host/join"].includes(route))
+        return Promise.reject(denied());
+      pendingAdmissions++;
+      const result = admissionQueue.then(() => perform(route, args)).finally(() => { pendingAdmissions--; });
+      // Queue each admission once; terminal refusals must not poison the next admission.
+      admissionQueue = result.then(() => {}, () => {});
+      return result;
     };
     const abandoned = (route: string) => {
       if (["/host/join", "/host/leave", "/host/switch", "/host/browser-read"].includes(route)) selection.failed = true;
@@ -521,11 +536,11 @@ export async function startOrJoinCompatibilityGateway(input: unknown, bundled: V
     throw error;
   }
   async function closeManager() {
-      if (!selection.failed && (joining || managementBusy
+      if (!selection.failed && (joining || managementBusy || pendingAdmissions
         || (service ? members.size > 0 || reservations.size > 0 : members.size !== 1)))
         throw new Error("Peers remain admitted; owner custody is retained.");
       closing = true; clearInterval(timer);
-      while (joining || managementBusy) await new Promise(resolve => setTimeout(resolve, 10));
+      while (joining || managementBusy || pendingAdmissions) await new Promise(resolve => setTimeout(resolve, 10));
       let released = false;
       try {
         const outcomes = await Promise.allSettled([
@@ -549,7 +564,7 @@ export async function startOrJoinCompatibilityGateway(input: unknown, bundled: V
       try { return await result; } finally { clearInterval(progress); }
     },
     close: closeManager,
-    isIdle() { return !members.size && !reservations.size && !joining && !managementBusy; },
+    isIdle() { return !members.size && !reservations.size && !joining && !managementBusy && !pendingAdmissions; },
     failClosed() { selection.failed = true; return closeManager(); },
   };
 }

@@ -41,6 +41,7 @@ if (!process.argv.includes("--inside")) {
     else if (argument === "--bundled-gateway" && !options.gateway) options.gateway = true;
     else if (argument === "--browser-transcript" && !options.transcript) options.transcript = true;
     else if (argument === "--settings-switch" && !options.settings) options.settings = true;
+    else if (argument === "--native-cold-start" && !options.nativeCold) options.nativeCold = true;
     else if (argument === "--installed-browser" && !options.browser) options.browser = true;
     else if (argument.startsWith("--candidate-vsix=") && !options.candidate)
       options.candidate = resolve(argument.slice("--candidate-vsix=".length));
@@ -54,6 +55,7 @@ if (!process.argv.includes("--inside")) {
   assert(!options.transcript || options.gateway);
   assert([options.settings, options.browser, options.transcript].filter(Boolean).length <= 1);
   assert(!(options.settings || options.browser) || options.gateway);
+  assert(!options.nativeCold || options.settings, "Cold-start qualification requires the installed Settings lane.");
   if (options.overview || options.core || options.upgrade) assert(options.candidate && /^[a-f0-9]{64}$/.test(options.sha256),
     "Installed acceptance requires an explicitly pinned candidate VSIX.");
   else assert(!options.candidate && !options.sha256, "Candidate pins require an explicit candidate acceptance mode.");
@@ -66,7 +68,8 @@ if (!process.argv.includes("--inside")) {
   const command = [process.execPath, fileURLToPath(import.meta.url), "--inside",
     editor, xvfb, browserPython, businessPython, options.overview ? "chat-overview" : options.core ? "chat-core" : options.upgrade ? "same-profile-upgrade" : "",
     options.candidate || "", options.sha256 || "", options.gateway ? "bundled-gateway" : "",
-    options.transcript ? "browser-transcript" : options.settings ? "settings-switch" : options.browser ? "installed-browser" : "", browserCache];
+    options.transcript ? "browser-transcript" : options.settings ? "settings-switch" : options.browser ? "installed-browser" : "", browserCache,
+    options.nativeCold ? "native-cold-start" : ""];
   const require = createRequire(import.meta.url);
   const namespace = options.upgrade
     ? require("../legacy/scripts/run-next-trial-private-display.js").privateNamespaceArgs(command)
@@ -75,7 +78,7 @@ if (!process.argv.includes("--inside")) {
     env: { PATH: process.env.PATH || "" } });
 } else {
   const [editor, xvfb, browserPython, businessPython, overviewMarker, candidateVsix, candidateSha256, gatewayMarker,
-    transcriptMarker, browserCache] = process.argv.slice(3);
+    transcriptMarker, browserCache, coldMarker] = process.argv.slice(3);
   const overview = overviewMarker === "chat-overview";
   const core = overviewMarker === "chat-core";
   const candidateChat = overview || core;
@@ -84,6 +87,7 @@ if (!process.argv.includes("--inside")) {
   const transcript = bundledGateway && transcriptMarker === "browser-transcript";
   const settingsSwitch = bundledGateway && transcriptMarker === "settings-switch";
   const installedBrowser = bundledGateway && transcriptMarker === "installed-browser";
+  const nativeCold = settingsSwitch && coldMarker === "native-cold-start";
   let candidateVersion;
   if (upgrade) assert((await readFile("/proc/1/cmdline", "utf8")).split("\0").includes("pkm-private-init"));
   if (overviewMarker) assert((candidateChat || upgrade) && candidateVsix && /^[a-f0-9]{64}$/.test(candidateSha256));
@@ -94,6 +98,7 @@ if (!process.argv.includes("--inside")) {
   await writeFile(join(base, "package.json"), '{"type":"commonjs"}\n');
   console.log("INSTALLED_CHAT_EVIDENCE", base);
   let display, app, peer, browser, inference, passed = false;
+  const coldPeers = [];
   const errors = [], requests = [], logs = [];
   const overviewModel = overview ? createOverviewModel({ base }) : undefined;
   try {
@@ -491,7 +496,7 @@ exports.run=async()=>{
     }
     assert.notEqual(spawnSync("git", ["-C", library, "rev-parse", "--verify", "HEAD"],
       { env, stdio: "ignore" }).status, 0, "The synthetic library must remain commit-free");
-    let upgradeEvidence;
+    let upgradeEvidence, coldStartEvidence;
     if (upgrade) {
       const { original, verified } = await file(join(base, "native.json"));
       assert.match(original.runtime.runtime.runtimeBuild, /^[0-9a-f]{64}$/);
@@ -560,6 +565,68 @@ exports.registerApiChatShell = (...args) => {
     return shell;
 };
 `);
+      }
+      if (nativeCold) {
+        process.env.HOME = env.HOME;
+        assert(!await file(join(library, ".pkm/state/compatibility-gateway/owner-pending.json")),
+          "Cold-start qualification must begin without an existing native owner.");
+        const { withPkmServiceNativeAdmission } = createRequire(import.meta.url)(
+          join(base, "x", `uone.personal-knowledge-${candidateVersion}`, "dist/runtime/pkm-service.js"));
+        await withPkmServiceNativeAdmission({
+          knowledgeRoot: library, globalStoragePath: join(base, "u/User/globalStorage/uone.personal-knowledge"),
+          extensionVersion: candidateVersion,
+        }, async drain => { await drain(); });
+        for (const id of ["first", "second", "third"]) {
+          const profile = join(base, "cold", id);
+          await mkdir(join(profile, "User"), { recursive: true, mode: 0o700 });
+          await writeFile(join(profile, "User/settings.json"), oldSettings);
+        }
+        const startedAt = Date.now();
+        for (const id of ["first", "second", "third"]) {
+          const child = spawn(editor, launchArgs.filter(arg =>
+            !arg.startsWith("--user-data-dir=") && !arg.startsWith("--remote-debugging-"))
+            .concat(`--user-data-dir=${short}/cold/${id}`), {
+            env: { ...appEnv, PKM_UPGRADE_BASE: base, PKM_COLD_WINDOW: id }, stdio: ["ignore", "pipe", "pipe"],
+          });
+          coldPeers.push(child);
+          for (const stream of [child.stdout, child.stderr]) stream.on("data", bytes => logs.push(bytes.toString()));
+        }
+        const deadline = Date.now() + 180_000;
+        let receipts;
+        while (true) {
+          const failure = await file(join(base, "upgrade-failure.json"));
+          if (failure) throw Error(`Installed cold startup: ${JSON.stringify(failure)}`);
+          receipts = await Promise.all(["first", "second", "third"].map(id => file(join(base, `native-cold-${id}.json`))));
+          if (receipts.every(Boolean)) break;
+          assert(Date.now() < deadline && coldPeers.every(child => child.exitCode === null && child.signalCode === null),
+            "Three installed windows did not reach automatic live-tools readiness.");
+          await wait(100);
+        }
+        assert.equal(new Set(receipts.map(receipt => receipt.hostPid)).size, 3);
+        assert(receipts.every(receipt => receipt.explicitStartExecuted === false && receipt.automaticReady === true));
+        assert.equal(new Set(receipts.flatMap(receipt => ["native", "chat"].map(role =>
+          receipt.observed[role].originalConnection.instanceId))).size, 6);
+        const owner = await file(join(library, ".pkm/state/compatibility-gateway/owner-live.json"));
+        assert.equal(owner.independentService, true);
+        coldStartEvidence = { startedAt, completedAt: Date.now(), ownerPid: owner.process.pid, receipts };
+        for (let index = 0; index < coldPeers.length; index++) {
+          const id = ["first", "second", "third"][index], child = coldPeers[index];
+          await writeFile(join(base, `close-native-cold-${id}`), "");
+          const deadline = Date.now() + 40_000;
+          while (child.exitCode === null && child.signalCode === null && Date.now() < deadline) await wait(100);
+          assert.equal(child.exitCode, 0, "Each installed cold window must quit normally.");
+        }
+        const retired = Date.now() + 40_000;
+        while (await file(join(library, ".pkm/state/compatibility-gateway/owner-pending.json")) && Date.now() < retired)
+          await wait(100);
+        assert(!await file(join(library, ".pkm/state/compatibility-gateway/owner-pending.json")),
+          "The final installed cold window must retire native custody cleanly.");
+        await Promise.all(["first", "second", "third"].map(id => withPkmServiceNativeAdmission({
+          knowledgeRoot: library, globalStoragePath: join(base, "cold", id, "User/globalStorage/uone.personal-knowledge"),
+          extensionVersion: candidateVersion,
+        }, async drain => { await drain(); })));
+        coldStartEvidence.cleanFinalRetirement = true;
+        await writeFile(join(base, "native-cold-start.json"), JSON.stringify(coldStartEvidence));
       }
       app = spawn(editor, launchArgs, {
         env: { ...appEnv, PKM_UPGRADE_BASE: base, PKM_UPGRADE_CHAT: hostEvidence.nativeSession.nativeChat.id,
@@ -711,7 +778,8 @@ exports.registerApiChatShell = (...args) => {
       assert.deepEqual([newRoot.dev, newRoot.ino], [oldRoot.dev, oldRoot.ino]);
       upgradeEvidence = { ...upgradeEvidence, predecessorBuild: original.runtime.runtime.runtimeBuild,
         predecessorGatewayBuild: bundledGateway ? null : target.runtimeBuild,
-        candidateVsixSha256: candidateSha256, sameRootAndSettings: true };
+        candidateVsixSha256: candidateSha256, sameRootAndSettings: true,
+        ...(nativeCold ? { coldStart: coldStartEvidence } : {}) };
     }
     const report = { passed: true, shippedVsixSha256: shippedSha, shippedVersion: "4.0.27",
       extensionInstallation: candidateChat ? "VS Code CLI installed explicitly pinned controlled candidate; Production activation"
@@ -738,12 +806,12 @@ exports.registerApiChatShell = (...args) => {
       stage: await file(join(base, "progress.json")), providerErrors: errors }, null, 2));
     throw error;
   } finally {
-    await stop(browser); await stop(peer); await stop(app); await stop(display);
+    await stop(browser); await stop(peer); await Promise.all(coldPeers.map(stop)); await stop(app); await stop(display);
     await writeFile(join(base, "editor.log"), logs.join(""));
     if (inference) { inference.closeAllConnections(); await new Promise(done => inference.close(done)); }
     await writeFile(join(base, "provider-evidence.json"), JSON.stringify(requests, null, 2));
     await rm(join(base, "browser-enrollment.json"), { force: true });
-    if (passed) for (const directory of ["h", "u", "peer", "x", "scratch", "driver", "business-python", "gateway", "offline-deps"])
+    if (passed) for (const directory of ["h", "u", "peer", "cold", "x", "scratch", "driver", "business-python", "gateway", "offline-deps"])
       await rm(join(base, directory), { recursive: true, force: true, maxRetries: 3 });
     if (passed) for (const path of ["generate.cjs", "Xauthority", "fixture.json", "chat-ready.json", "provider-waiting.json", "library/.git"])
       await rm(join(base, path), { recursive: true, force: true });
