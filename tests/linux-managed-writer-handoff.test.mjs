@@ -140,7 +140,14 @@ test("new managed launcher holds the root fence until EOF and refuses restart af
   const env = { ...process.env, HOME: project, TMPDIR: scratch, PYTHONDONTWRITEBYTECODE: "1" };
   await copyFile(join(project, "resources", "root_writer_fence.py"), join(directory, "root_writer_fence.py"));
   await writeFile(join(directory, "server.py"),
-    `import pathlib, sys\npathlib.Path(${JSON.stringify(ready)}).write_text("ready")\nsys.stdin.read()\n`);
+    `import pathlib, sys
+class Lifecycle:
+ def status(self):
+  return {"phase":"drained","acceptingNewCalls":False,"inFlight":0,"uncertainCalls":0}
+_MCP_LIFECYCLE = Lifecycle()
+pathlib.Path(${JSON.stringify(ready)}).write_text("ready")
+sys.stdin.read()
+`);
   const digest = async file => createHash("sha256").update(await readFile(file)).digest("hex");
   const manifest = {
     schema: "pkm.mcp.lifecycle/v1", generation, managedRoot: managed, version: "1.0.0",
@@ -174,6 +181,103 @@ test("new managed launcher holds the root fence until EOF and refuses restart af
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
     await exited;
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("production launcher drains before live custody, inhibits external restarts, scopes grants and quarantines crashes", {
+  skip: process.platform !== "linux", timeout: 30000,
+}, async () => {
+  const { acquireCompatibilityGatewayCustody } = await import("../dist/compatibility-gateway-custody.js");
+  const { acquireLinuxRootWriterFence: fence } = require(join(dist, "runtime/linux-root-writer-fence.js"));
+  const scratch = join(tests, `.managed-live-custody-${randomUUID()}`);
+  const root = join(scratch, "knowledge"), managed = join(scratch, "managed"), generation = randomUUID();
+  const directory = join(managed, "generations", generation), ready = join(root, "ready");
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await mkdir(root, { mode: 0o700 });
+  await chmod(root, 0o755);
+  await copyFile(join(project, "resources/root_writer_fence.py"), join(directory, "root_writer_fence.py"));
+  await writeFile(join(directory, "server.py"), `
+import os, pathlib, sys
+class Lifecycle:
+ def status(self):
+  return {"phase":"drained","acceptingNewCalls":False,"inFlight":0,"uncertainCalls":0}
+_MCP_LIFECYCLE = Lifecycle()
+assert "PKM_COMPATIBILITY_LAUNCH_GRANT" not in os.environ
+pathlib.Path(${JSON.stringify(ready)}).write_text("ready")
+sys.stdin.read()
+`);
+  const files = {};
+  for (const name of ["server.py", "root_writer_fence.py"])
+    files[name] = createHash("sha256").update(await readFile(join(directory, name))).digest("hex");
+  const manifest = { schema: "pkm.mcp.lifecycle/v1", generation, managedRoot: managed, version: "1.0.0",
+    components: { knowledge: "1.0.0", chat: "1.0.0", recipes: "1.0.0", agent_sessions: "1.0.0" }, files };
+  await writeFile(join(directory, "manifest.json"), JSON.stringify(manifest));
+  await writeFile(join(managed, "active-generation.json"), JSON.stringify({ schema: manifest.schema, generation }));
+  const launcher = join(managed, "server.py");
+  await writeFile(launcher, managedMcpLauncher(manifest, root));
+  const env = { PATH: process.env.PATH, PYTHONDONTWRITEBYTECODE: "1" }, children = [];
+  function start(grant) {
+    const child = spawn("python3", [launcher], { env: { ...env,
+      ...(grant ? { PKM_COMPATIBILITY_LAUNCH_GRANT: grant } : {}) }, stdio: ["pipe", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", bytes => { stderr += bytes; });
+    const exited = new Promise(resolve => child.once("close", code => resolve({ code, stderr })));
+    children.push({ child, exited });
+    return { child, exited };
+  }
+  const acquire = () => acquireCompatibilityGatewayCustody(root, root => {
+    const old = fence(root, "exclusive", 500);
+    try { old.assertHeld(); } finally { old.release(); }
+    return fence(root, "shared", 500);
+  });
+  let custody;
+  try {
+    const old = start();
+    assert.equal(await waitForFile(ready), "ready");
+    await assert.rejects(acquire(), /already held/);
+    old.child.stdin.end();
+    const drained = await old.exited;
+    assert.equal(drained.code, 0, drained.stderr);
+    await rm(ready);
+    await chmod(root, 0o775);
+    await assert.rejects(acquire(), /without group\/other writes/);
+    const unsafe = await start().exited;
+    assert.notEqual(unsafe.code, 0);
+    assert.match(unsafe.stderr, /without group\/other writes/);
+    await chmod(root, 0o755);
+    custody = await acquire();
+    for (const grant of [undefined, "0".repeat(64)]) {
+      const refused = await start(grant).exited;
+      assert.notEqual(refused.code, 0);
+      assert.match(refused.stderr, /inhibited.*custody.*manual\/external/i);
+      await assert.rejects(readFile(ready), { code: "ENOENT" });
+    }
+    const own = start(custody.launchGrant);
+    assert.equal(await waitForFile(ready), "ready");
+    own.child.stdin.end();
+    const closed = await own.exited;
+    assert.equal(closed.code, 0, closed.stderr);
+    const staleGrant = custody.launchGrant;
+    await custody.release(false); custody = undefined;
+    const abandoned = await start(staleGrant).exited;
+    assert.notEqual(abandoned.code, 0);
+    assert.match(abandoned.stderr, /explicit recovery/);
+    await assert.rejects(acquire(), /explicit recovery/);
+    await rm(join(root, ".pkm/state/compatibility-gateway/owner-pending.json"));
+    await rm(ready);
+    const crashed = start();
+    await waitForFile(ready);
+    crashed.child.kill("SIGKILL");
+    await crashed.exited;
+    await assert.rejects(acquire(), /explicit recovery/);
+    const restart = await start().exited;
+    assert.notEqual(restart.code, 0);
+    assert.match(restart.stderr, /unknown outcome.*recovery/);
+  } finally {
+    for (const { child } of children) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await Promise.all(children.map(({ exited }) => exited));
+    await custody?.release(false);
     await rm(scratch, { recursive: true, force: true });
   }
 });
@@ -474,6 +578,97 @@ test("unregistered PKM Sync service holds its fence until a real drain completes
     await next.release();
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+    await exited;
+    await home.close();
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("native custody safely drains real 4.0.27 service, inhibits peer drains, and readmits a persistent successor", {
+  skip: process.platform !== "linux", timeout: 60000,
+}, async () => {
+  const scratch = join(tests, `.native-service-admission-${randomUUID()}`);
+  const root = join(scratch, "knowledge"), storage = join(scratch, "storage");
+  const currentVersion = JSON.parse(await readFile(join(project, "package.json"), "utf8")).version;
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  await mkdir(storage, { mode: 0o700 });
+  await mkdir(join(scratch, "home"), { mode: 0o700 });
+  const home = await open(join(scratch, "home"), "r");
+  const env = { ...process.env, HOME: `/proc/${process.pid}/fd/${home.fd}`, TMPDIR: scratch };
+  delete env.PKM_MANAGED_WRITER_SESSION;
+  const archive = resolve(tests, "../../personal-knowledge-vscode/personal-knowledge-4.0.27.vsix");
+  assert.equal(createHash("sha256").update(await readFile(archive)).digest("hex"),
+    "d9deb3f1664496342ee1397c78748cb020fdf65aac0978bbbb43b880d5d2f1be");
+  const unpack = spawnSync("unzip", ["-q", archive, "extension/dist/*", "-d", scratch], { encoding: "utf8" });
+  assert.equal(unpack.status, 0, unpack.stderr);
+  await writeFile(join(scratch, "extension/package.json"), '{"type":"commonjs","version":"4.0.27"}');
+  const previous = spawn(process.execPath, ["-e", `
+    const [modulePath, root, storage] = process.argv.slice(1);
+    require(modulePath).startPkmService({ knowledgeRoot: root, globalStoragePath: storage, extensionVersion: "4.0.27" })
+      .then(async service => { console.log("ready"); await service.stopped; process.exit(0); })
+      .catch(error => { console.error(error); process.exit(1); });
+  `, join(scratch, "extension/dist/runtime/pkm-service.js"), root, storage],
+  { env, stdio: ["ignore", "pipe", "pipe"] });
+  let stderr = "";
+  previous.stderr.on("data", bytes => { stderr += bytes; });
+  const exited = new Promise(resolve => previous.once("close", (code, signal) => resolve({ code, signal })));
+  try {
+    await new Promise((resolveReady, reject) => {
+      const timer = setTimeout(() => reject(new Error(`Predecessor service did not start: ${stderr}`)), 10_000);
+      previous.stdout.once("data", () => { clearTimeout(timer); resolveReady(); });
+      previous.once("exit", () => { clearTimeout(timer); reject(new Error(`Predecessor service exited: ${stderr}`)); });
+    });
+    const runner = join(scratch, "admit.cjs");
+    await writeFile(runner, `
+const assert = require("node:assert/strict"), fs = require("node:fs");
+const { withPkmServiceNativeAdmission, PkmServiceClient, pkmServiceIdentity } = require(${JSON.stringify(join(dist, "runtime/pkm-service.js"))});
+const { acquireLinuxRootWriterFence: fence } = require(${JSON.stringify(join(dist, "runtime/linux-root-writer-fence.js"))});
+const options = { knowledgeRoot: ${JSON.stringify(root)}, globalStoragePath: ${JSON.stringify(storage)},
+ extensionVersion: ${JSON.stringify(currentVersion)}, serviceEntryPath: ${JSON.stringify(join(dist, "runtime/pkm-service-entry.js"))}, execute: async () => {} };
+(async () => {
+ const { acquireCompatibilityGatewayCustody } = await import(${JSON.stringify(pathToFileURL(join(nextDist, "compatibility-gateway-custody.js")).href)});
+ const acquire = () => withPkmServiceNativeAdmission(options, drain =>
+  acquireCompatibilityGatewayCustody(options.knowledgeRoot, async root => {
+   await drain();
+   const exclusive = fence(root, "exclusive", 500);
+   try { exclusive.assertHeld(); } finally { exclusive.release(); }
+   return fence(root, "shared", 500);
+  }));
+ assert.throws(() => fence(options.knowledgeRoot, "exclusive", 100), /fence|readiness/);
+ let custody, client;
+ try {
+  custody = await acquire();
+  client = await PkmServiceClient.connect(options);
+  const identity = pkmServiceIdentity(options);
+  const metadata = () => JSON.parse(fs.readFileSync(require("node:path").join(identity.serviceDirectory, "endpoint.json")));
+  const pid = metadata().pid;
+  await assert.rejects(acquire(), /already held/);
+  await client.configure([]);
+  assert.equal(metadata().pid, pid);
+  await custody.release(true); custody = undefined;
+  client.dispose(); client = undefined;
+  process.kill(pid, 0);
+  assert.throws(() => fence(options.knowledgeRoot, "exclusive", 100), /fence|readiness/);
+  custody = await acquire();
+  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  console.log(JSON.stringify({ predecessorDrained: true, exclusivePreflight: true,
+   peerDrainInhibited: true, successorSurvivedHostRelease: true, persistentSuccessorReadmitted: true }));
+ } finally {
+  if (client) { await client.drain(); client.dispose(); }
+  await custody?.release(true);
+ }
+})().catch(error => { console.error(error); process.exitCode = 1; });
+`);
+    const controller = spawn(process.execPath, [runner], { cwd: project, env, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "", errors = "";
+    controller.stdout.on("data", bytes => { output += bytes; });
+    controller.stderr.on("data", bytes => { errors += bytes; });
+    const result = await new Promise(resolve => controller.once("close", code => resolve(code)));
+    assert.equal(result, 0, errors);
+    assert.equal(JSON.parse(output.trim()).persistentSuccessorReadmitted, true);
+    assert.deepEqual(await exited, { code: 0, signal: null }, stderr);
+  } finally {
+    if (previous.exitCode === null && previous.signalCode === null) previous.kill("SIGTERM");
     await exited;
     await home.close();
     await rm(scratch, { recursive: true, force: true });

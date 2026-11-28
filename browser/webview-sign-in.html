@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · Uone PKM</title>
+  <link rel="stylesheet" href="/webview/webview-theme.css">
+  <script defer src="/webview/webview-sign-in.js"></script>
+</head>
+<body class="pkm-sign-in">
+  <main>
+    <p class="pkm-kicker">UONE / PERSONAL KNOWLEDGE</p>
+    <h1>Open your library</h1>
+    <p>Use the token from this local PKM service.</p>
+    <form>
+      <label for="pkm-token">Server token</label>
+      <input id="pkm-token" type="password" maxlength="4096" autocomplete="off" required>
+      <label class="pkm-remember"><input id="pkm-remember" type="checkbox"> Remember this browser for up to 8 hours</label>
+      <button type="submit">Sign in</button>
+      <p role="alert"></p>
+    </form>
+  </main>
+</body>
+</html>

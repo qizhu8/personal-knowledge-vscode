@@ -10,7 +10,7 @@ test("unverified connection observation is not a permanent global MCP failure ba
   const hidden = new Set(), text = { textContent:"" }, regenerate = {};
   const banner = { dataset:{}, classList:{ add:key => hidden.add(key), remove:key => hidden.delete(key) }, querySelector:() => regenerate };
   const strings = JSON.parse(fs.readFileSync(path.join(root, "resources/locales/en.json"), "utf8")).strings;
-  const context = vm.createContext({ uiI18n:{resolved:"en"}, t:key=>strings[key]||key, vscode:{getState:()=>({})}, document:{ getElementById:id => id === "mcp-global-warning" ? banner : text } });
+  const context = vm.createContext({ window:{addEventListener() {}}, uiI18n:{resolved:"en"}, t:key=>strings[key]||key, vscode:{getState:()=>({})}, document:{ getElementById:id => id === "mcp-global-warning" ? banner : text } });
   vm.runInContext(fs.readFileSync(path.join(root, "src/webview/panel/06-help.js"), "utf8"), context);
   vm.runInContext(source + ";globalThis.update = updateGlobalMcpWarning", context);
   context.update({ installed:true, current:true, lifecycle:{ connectionState:"unverified", reason:"Connection not verified" } });

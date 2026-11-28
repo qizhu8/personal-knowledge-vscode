@@ -37,14 +37,24 @@ assert(managedProfile, "automatic managed-profile reload must remain explicitly 
 const managedProfileText = managedProfile.getText(extensionAst);
 assert.match(managedProfileText, /activateManagedProfileWriter\([\s\S]*restartReady: \(\) => installations\.ready\(\)[\s\S]*canRestart: \(\) => !managedHostBusy\(\)[\s\S]*restart: async \(\) => \{ await vscode\.commands\.executeCommand\("workbench\.action\.reloadWindow"\); \}/,
   "managed-profile reload must remain bound to its enrolled writer and readiness/busy checks");
-const permittedReloadScopes = [hostRuntime, managedProfile].sort((a, b) => b.pos - a.pos);
+const managedHostReload = activation.body.statements.find(statement => ts.isVariableStatement(statement)
+  && statement.declarationList.declarations.some(declaration => ts.isIdentifier(declaration.name)
+    && declaration.name.text === "reloadManagedHost"));
+assert(managedHostReload, "explicit current-host drain and reload registration must exist");
+assert.match(managedHostReload.getText(extensionAst),
+  /ownedReloadOwner && ownedReloadRoot && managedSessionId === undefined \? createManagedHostReload\(/,
+  "current-host reload must be bound to the enrolled owner and must not bypass a managed session");
+assert.match(managedHostReload.getText(extensionAst),
+  /modal: true[\s\S]*"Drain and reload"\) === "Drain and reload"[\s\S]*await drainManagedHost\([\s\S]*reload: async \(\) =>/,
+  "current-host reload must retain explicit confirmation and its managed drain callback");
+const permittedReloadScopes = [hostRuntime, managedProfile, managedHostReload].sort((a, b) => b.pos - a.pos);
 const otherExtensionCode = permittedReloadScopes.reduce(
   (text, node) => text.slice(0, node.pos) + text.slice(node.end), extensionTs);
 assert.doesNotMatch(otherExtensionCode,
   /executeCommand\([^\n]*(reloadWindow|reload)/i,
   "MCP maintenance and other paths must not add uncoordinated window reloads");
 const hostRuntimeText = hostRuntime.getText(extensionAst);
-assert.match(hostRuntimeText, /if \(registry\.poll\(installed\?\.buildId, isBusy\(\)\)\) \{[\s\S]{0,350}executeCommand\("workbench\.action\.reloadWindow"\)/,
+assert.match(hostRuntimeText, /if \(!drainPromptPending && registry\.poll\(installed\?\.buildId, isBusy\(\)\)\) \{[\s\S]{0,350}executeCommand\("workbench\.action\.reloadWindow"\)/,
   "coordinated reload must require the registry's validated request and busy-state gate");
 assert.match(hostRuntimeText, /registerCommand\("personalKnowledge\.reloadAllHosts"[\s\S]*showWarningMessage[\s\S]*modal: true[\s\S]*if \(answer !== "Reload registered windows"\) return;[\s\S]*registry\.requestReload/,
   "a coordinated reload request must require explicit modal confirmation");
@@ -257,6 +267,7 @@ const copilotElements = {
   "mcp-copy-copilot-cfg": { disabled: true },
 };
 const copilotSandbox = {
+  helpText: english => english,
   window: {},
   vscode: { getState: () => ({}) },
   t: key => JSON.parse(fs.readFileSync(path.join(__dirname, "..", "resources/locales/en.json"), "utf8")).strings[key] || key,
@@ -293,10 +304,34 @@ copilotSandbox.updateGlobalMcpWarning({ installed:true, current:true, lifecycle:
 assert.equal(hidden.has("hidden"), true, "unverified observations alone must not become a permanent global warning");
 assert.equal(copilotElements["mcp-global-warning-text"].textContent, "");
 assert.match(lifecycleHtml, /^<details id="mcp-lifecycle"/, "connection verification detail is collapsed and neutral");
-assert.match(lifecycleHtml, /id="mcp-lifecycle" open/, "actual draining/uncertain instances remain visible");
+assert.match(lifecycleHtml, /id="mcp-lifecycle" tabindex="-1" open/, "actual draining/uncertain instances remain visible in Debug");
+assert.match(panelJs, /<section data-settings-panel="debug">\$\{renderLoadProfiling\(data\)\}\$\{renderMcpLifecycle\(data\?\.lifecycle\)\}/,
+  "Instance identifiers and lifecycle tables belong only to the Debug panel.");
+let reviewedSubtab;
+copilotSandbox.selectSettingsSubtab = (owner, tab) => { reviewedSubtab = { owner, tab }; };
+copilotSandbox.document.querySelector = () => null;
+copilotSandbox.requestAnimationFrame = () => {};
+copilotSandbox.openMcpSetup("lifecycle");
+assert.deepEqual(reviewedSubtab, { owner: "mcp", tab: "debug" }, "Review lifecycle opens Debug rather than the main MCP tab.");
 copilotSandbox.updateGlobalMcpWarning({ installed:true, current:true, lifecycle });
 assert.equal(hidden.has("hidden"), false, "actual drain/uncertainty still raises an actionable warning");
-assert.equal(regenerate.textContent, "Review lifecycle", "uncertain writes require review, not regeneration");
+assert.equal(regenerate.textContent, "View connection details", "uncertain writes require connection details, not regeneration");
+assert.match(copilotElements["mcp-global-warning-text"].textContent, /unconfirmed outcome/);
+copilotSandbox.updateGlobalMcpWarning({ installed:true, current:true, lifecycle:{
+  configuredGeneration:"generation-a",
+  instances:[{ generation:"generation-old", observedState:"drained", heartbeatFresh:true,
+    inFlight:0, uncertainCalls:0, controlError:"instance-registry-unavailable" }],
+} });
+assert.equal(hidden.has("hidden"), false, "old registry errors stay visible without inventing write uncertainty");
+assert.match(copilotElements["mcp-global-warning-text"].textContent, /Old MCP connections/);
+assert.match(copilotElements["mcp-global-warning-text"].textContent, /not a report of an uncertain write/);
+copilotSandbox.updateGlobalMcpWarning({ installed:true, current:true, lifecycle:{
+  configuredGeneration:"generation-a",
+  instances:[{ generation:"generation-a", observedState:"drained", heartbeatFresh:true,
+    inFlight:0, uncertainCalls:0, controlError:"instance-registry-unavailable" }],
+} });
+assert.match(copilotElements["mcp-global-warning-text"].textContent, /control error/);
+assert.doesNotMatch(copilotElements["mcp-global-warning-text"].textContent, /Old MCP/);
 copilotSandbox.updateGlobalMcpWarning({ installed:true, current:true });
 assert.equal(hidden.has("hidden"), true);
 for (const definition of [
@@ -339,7 +374,7 @@ assert(extensionTs.includes('if (!configuredPath) panels.instances.get(webviewPa
 assert(extensionTs.includes('const initialResolution = resolvedStorePath(context)'));
 assert(extensionTs.includes('case "pkmSkillInjectAll"'));
 assert(extensionTs.includes('case "reconfigureKnowledgeRoot"'));
-assert(extensionTs.includes('registerCommand("personalKnowledge.reconfigureKnowledgeRoot"'));
+assert(extensionTs.includes('registerRootReconfigurationCommand("personalKnowledge.reconfigureKnowledgeRoot"'));
 assert(extensionTs.includes('registerCommand("personalKnowledge.reconfigureEnvironmentsRoot"'));
 assert(extensionTs.includes('registerCommand("personalKnowledge.reconfigureMcpRuntimePath"'));
 assert(extensionTs.includes('registerCommand("personalKnowledge.reconfigureMcpServerPath"'));

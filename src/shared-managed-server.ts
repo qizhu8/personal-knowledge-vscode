@@ -22,6 +22,8 @@ import { acquireSharedManagerControlGuard } from "./shared-manager-control.js";
 import { parseSharedCoreProfile } from "./shared-core-profile.js";
 import { connectSharedCoreBackend } from "./shared-core-supervisor.js";
 import { loadBrowserAssets } from "./browser-host.js";
+import { createBrowserReleaseGate, type BrowserCoreDispatch } from "./browser-release-gate.js";
+import { CoreError } from "./contracts.js";
 import { sharedManagementBodySha256 } from "./shared-managed-client.js";
 
 type Phase = "starting" | "accepting" | "draining" | "action-required" | "closed";
@@ -121,8 +123,10 @@ export async function startSharedManagedServer(options: {
   if (!uuid(workspaceId)) fail("Durable workspace identity is unavailable.");
   const root = await realpath(options.managedRoot);
   if (root !== options.managedRoot) fail("Canonical isolated managed root required.");
-  const guard = await acquireSharedManagerControlGuard(join(options.directory, "shared-manager.guard"));
   const backendKind = options.backendKind ?? "native-public-mcp";
+  const browser = backendKind === "standalone-core" ? await loadBrowserAssets() : undefined;
+  const webview = browser ? await createBrowserReleaseGate(options.token, true) : undefined;
+  const guard = await acquireSharedManagerControlGuard(join(options.directory, "shared-manager.guard"));
   const path = join(options.directory, "shared-manager.json");
   let state: State;
   try {
@@ -411,11 +415,12 @@ export async function startSharedManagedServer(options: {
     }
     await save();
   }
-  const browser = backendKind === "standalone-core" ? await loadBrowserAssets() : undefined;
   const inspect = async () => {
     if (backend?.control) backgroundChat = (await backend.control("status")).backgroundChat;
     return status();
   };
+  const coreAccepting = (owned: typeof backend) => owned?.kind === "standalone-core" && owned === backend
+    && state.phase === "accepting" && !transition && calls.size < 32;
   async function proxyCore(req: IncomingMessage, res: ServerResponse) {
     const owned = backend;
     const refuse = () => {
@@ -432,24 +437,29 @@ export async function startSharedManagedServer(options: {
       return;
     }
     if (owned !== backend || state.phase !== "accepting" || transition) return refuse();
-    const clientId = randomUUID();
-    const receipt: Receipt = { id: randomUUID(), clientId, tool: req.url!, generation: owned.generation, outcome: "pending" };
+    const human = req.url?.startsWith("/human-review") ?? false;
+    const headers: Record<string, string> = human ? {} : { authorization: `Bearer ${owned.token}` };
+    if (human && req.headers.authorization) headers.authorization = req.headers.authorization;
+    if (req.headers["content-type"]) headers["content-type"] = req.headers["content-type"];
+    if (req.headers.cookie) headers.cookie = req.headers.cookie;
+    if (req.headers.origin) headers.origin = owned.url!;
+    const response = await coreExchange(owned, req.url!, req.method!, headers, input);
+    res.writeHead(response.status, response.headers);
+    res.end(response.bytes);
+  }
+  async function coreExchange(owned: NonNullable<typeof backend>, path: string, method: string,
+    headers: Record<string, string>, input?: Buffer) {
+    const receipt: Receipt = { id: randomUUID(), clientId: randomUUID(), tool: path, generation: owned.generation, outcome: "pending" };
     state.receipts.push(receipt);
     const work = (async () => {
       await save();
       try {
         guard.assertHeld();
-        const human = req.url?.startsWith("/human-review") ?? false;
-        const headers: Record<string, string> = human ? {} : { authorization: `Bearer ${owned.token}` };
-        if (human && req.headers.authorization) headers.authorization = req.headers.authorization;
-        if (req.headers["content-type"]) headers["content-type"] = req.headers["content-type"];
-        if (req.headers.cookie) headers.cookie = req.headers.cookie;
-        if (req.headers.origin) headers.origin = owned.url!;
-        const response = await fetch(`${owned.url}${req.url}`, { method: req.method, headers, redirect: "error",
+        const response = await fetch(`${owned.url}${path}`, { method, headers, redirect: "error",
           ...(input === undefined ? {} : { body: new Uint8Array(input) }) });
         const bytes = Buffer.from(await response.arrayBuffer());
         let unknown = false;
-        if (req.url?.startsWith("/v1/")) {
+        if (path.startsWith("/v1/")) {
           const value = JSON.parse(bytes.toString("utf8"));
           unknown = value.error?.effect === "unknown";
         }
@@ -459,21 +469,20 @@ export async function startSharedManagedServer(options: {
         const observed = await owned.control!("status").catch(() => undefined);
         if (observed) backgroundChat = observed.backgroundChat;
         const cookies = response.headers.getSetCookie();
-        res.writeHead(response.status, { "Content-Type": response.headers.get("content-type") ?? "application/json",
+        return { status: response.status, headers: { "Content-Type": response.headers.get("content-type") ?? "application/json",
           "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-PKM-Service-Id": state.serviceId,
           ...(response.headers.has("content-security-policy") ? { "Content-Security-Policy": response.headers.get("content-security-policy")! } : {}),
-          ...(cookies.length ? { "Set-Cookie": cookies } : {}) });
-        res.end(bytes);
+          ...(cookies.length ? { "Set-Cookie": cookies } : {}) }, bytes };
       } catch {
         receipt.outcome = "unknown"; state.phase = "action-required"; await save();
-        res.writeHead(503, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-        res.end(JSON.stringify({ schema: "pkm.next-result/v1", requestId: receipt.id,
+        return { status: 503, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+          bytes: Buffer.from(JSON.stringify({ schema: "pkm.next-result/v1", requestId: receipt.id,
           error: { code: "NOT_AVAILABLE", message: `Shared Core outcome unknown; reconcile receipt ${receipt.id}. No replay.`,
-            effect: "unknown" } }));
+            effect: "unknown" } })) };
       }
     })();
     calls.add(work);
-    try { await work; } finally { calls.delete(work); }
+    try { return await work; } finally { calls.delete(work); }
   }
   const server = createServer(async (req, res) => {
     let businessDispatched = false;
@@ -488,6 +497,22 @@ export async function startSharedManagedServer(options: {
       if (req.headers.host !== host || req.socket.remoteAddress !== "127.0.0.1"
         || req.headers.origin !== undefined && req.headers.origin !== `http://${host}`)
         return reply(403, { error: "Exact same-origin loopback required.", effect: "not-committed" });
+      if (webview && (req.url === "/webview" || req.url?.startsWith("/webview/"))) {
+        const owned = backend;
+        const authorized = () => !state.revokedCredentials!.includes(credentialFingerprint);
+        const dispatch: BrowserCoreDispatch = async (method, args) => {
+          if (!owned || !coreAccepting(owned)) throw new CoreError("BUSY", "Shared Core changed or is not accepting.");
+          if (!authorized()) throw new CoreError("ACCESS_DENIED", "Shared business credential revoked.");
+          const response = await coreExchange(owned, `/v1/${method}`, "POST",
+            { authorization: `Bearer ${owned.token}`, "content-type": "application/json" }, Buffer.from(JSON.stringify(args)));
+          return JSON.parse(response.bytes.toString("utf8"));
+        };
+        await webview(req, res, { accepting: () => coreAccepting(owned), authorized, dispatch });
+        return;
+      }
+      if (backendKind !== "standalone-core" && (req.url === "/webview" || req.url?.startsWith("/webview/")))
+        return reply(501, { error: "Browser unavailable: the native public MCP backend does not expose a compatible browser authority.",
+          backendAbi: "pkm.mcp.api/1", effect: "not-committed" });
       const assetPath = req.url === "/" ? "/index.html" : req.url;
       const asset = browser?.assets.get(assetPath ?? "");
       if (asset && (req.method === "GET" || req.method === "HEAD")) {

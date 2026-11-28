@@ -8,6 +8,7 @@ import { resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import test from "node:test";
 import assert from "node:assert/strict";
+import vm from "node:vm";
 import { ProtocolClient, OPERATIONS } from "../browser/protocol.mjs";
 import { mount } from "../browser/workspace.mjs";
 
@@ -66,6 +67,43 @@ function deferred() {
   const promise = new Promise(done => { resolve = done; });
   return { promise, resolve };
 }
+
+test("native Stop keeps observing cancellation when a stale in-flight status consumes its timer", async () => {
+  const source = await readFile(new URL("../browser/webview-chat.js", import.meta.url), "utf8");
+  const pending = deferred(), timers = new Map(), calls = [];
+  let nextTimer = 0;
+  const ref = { chatId: "chat", turnId: "turn" };
+  const ui = {
+    nativeRef: ref, nativeStatus: "running", nativeChecking: false, nativeTimer: undefined,
+    sameNative: candidate => candidate === ref,
+    nativeDone: status => ["completed", "cancelled", "not-sent"].includes(status),
+    caps: { nativeTranscript: false }, selectedId: "chat", turnState: {}, update() {},
+    sessionStorage: { removeItem() {} }, check: { addEventListener() {} },
+    setTimeout(callback) { timers.set(++nextTimer, callback); return nextTimer; },
+    clearTimeout(id) { timers.delete(id); },
+    call(name) { calls.push(name); return calls.length === 1 ? pending.promise : Promise.resolve({ status: "cancelled" }); },
+  };
+  vm.createContext(ui);
+  vm.runInContext(source.slice(source.indexOf("  function applyNative("), source.indexOf("  async function startNative(")), ui);
+  const runTimer = () => {
+    const [id, callback] = timers.entries().next().value;
+    timers.delete(id); callback();
+  };
+  const checking = ui.checkNative(ref);
+  ui.applyNative(ref, "stop-requested");
+  runTimer();
+  assert.equal(timers.size, 0);
+  pending.resolve({ status: "running" });
+  await checking;
+  assert.equal(ui.nativeStatus, "stop-requested", "A stale response must not undo Stop.");
+  assert.equal(timers.size, 1, "Completion of an in-flight check must restore the consumed observation timer.");
+  runTimer();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(ui.nativeStatus, "cancelled");
+  assert.match(ui.turnState.textContent, /upstream cancellation is not confirmed/);
+  assert.equal(timers.size, 0);
+  assert.deepEqual(calls, ["originalChatStatus", "originalChatStatus"], "Observation never replays Stop or Send.");
+});
 
 test("generic Browser write pins survive reload without sensitive bodies, replacement dispatch or replay", async () => {
   const values = new Map(), storage = {

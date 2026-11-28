@@ -20,6 +20,7 @@ export const compatibilityMcpConfiguration = z.strictObject({
     compatibleUpdates: z.boolean().default(false),
   }),
   gateway: z.strictObject({ generation: z.string().uuid(), runtimeBuild: digest }),
+  serverName: z.literal("pkm").optional(),
   writable: z.boolean(),
 });
 type Configuration = z.infer<typeof compatibilityMcpConfiguration>;
@@ -46,7 +47,7 @@ const contractSchema = z.object({
 });
 
 /** One original business adapter, not a second database/storage owner. */
-export async function connectCompatibilityMcp(input: unknown) {
+export async function connectCompatibilityMcp(input: unknown, launch?: { attribution: Readonly<Json>; custodyGrant?: string }) {
   const config = compatibilityMcpConfiguration.parse(input);
   for (const root of [config.knowledgeRoot, config.managedRoot]) {
     if (realpathSync(root) !== root || !lstatSync(root).isDirectory())
@@ -62,7 +63,9 @@ export async function connectCompatibilityMcp(input: unknown) {
     args: ["-B", config.supervisor.path, config.python, "-B", config.legacy.launcher.path],
     cwd: config.knowledgeRoot,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", PKM_NODE_EXECUTABLE: config.node.path,
-      PKM_CAPABILITY_PROFILE: "compact", PYTHONDONTWRITEBYTECODE: "1" },
+      PKM_CAPABILITY_PROFILE: "compact", PYTHONDONTWRITEBYTECODE: "1",
+      PKM_COMPATIBILITY_LAUNCH_GRANT: launch?.custodyGrant ?? "",
+      ...(launch ? { PKM_MCP_LAUNCH_ATTRIBUTION: JSON.stringify(launch.attribution) } : {}) },
     stderr: "inherit",
   });
   let upstreamIdentity: { generation: unknown; instanceId: unknown; runtimeBuild: unknown } | undefined;
@@ -78,11 +81,11 @@ export async function connectCompatibilityMcp(input: unknown) {
   };
   client.onclose = () => { if (!closing && !closed) failed(unavailable()); };
   client.onerror = error => { if (!closed) failed(error); };
-  const call = async (name: string, args: Json, write = false): Promise<CallToolResult> => {
+  const call = async (name: string, args: Json, write = false, timeout = 600_000): Promise<CallToolResult> => {
     const id = Symbol(name);
     pending.set(id, write);
     try {
-      const response = CallToolResultSchema.parse(await client.callTool({ name, arguments: args }, undefined, { timeout: 600_000 }));
+      const response = CallToolResultSchema.parse(await client.callTool({ name, arguments: args }, undefined, { timeout }));
       uncertain.delete(id);
       return response;
     } catch (error) {
@@ -91,7 +94,7 @@ export async function connectCompatibilityMcp(input: unknown) {
       throw error;
     } finally { pending.delete(id); }
   };
-  const checkLegacy = (reply: Json) => {
+  const checkLegacy = (reply: Json, requireIdle = true) => {
     const runtime = reply.runtime, components = reply.components;
     const sameBuild = object(runtime) && runtime.generation === config.legacy.generation && runtime.runtimeBuild === config.legacy.runtimeBuild;
     if (reply.version !== config.legacy.version || !object(runtime)
@@ -103,7 +106,7 @@ export async function connectCompatibilityMcp(input: unknown) {
       || upstreamIdentity && (runtime.generation !== upstreamIdentity.generation
         || runtime.instanceId !== upstreamIdentity.instanceId || runtime.runtimeBuild !== upstreamIdentity.runtimeBuild)
       || runtime.phase !== "accepting" || runtime.acceptingNewCalls !== true
-      || runtime.inFlight !== 0 || runtime.uncertainCalls !== 0)
+      || requireIdle && (runtime.inFlight !== 0 || runtime.uncertainCalls !== 0))
       throw new Error("COMPATIBILITY_ADAPTER_IDENTITY_MISMATCH: Original adapter version/build changed; reconnect explicitly.");
   };
   try {
@@ -219,6 +222,15 @@ export async function connectCompatibilityMcp(input: unknown) {
     const health = () => ({ phase: closed ? "closed" : failure ? "unavailable" : admissionClosed ? "draining" : "accepting",
       inFlight: pending.size, uncertainCalls: uncertain.size, automaticReplay: false });
     return { backend, catalog, originalVersion, close, adapterPid: transport.pid,
+      async observeVersion(args: Json = {}, requireIdle = false) {
+        if (admissionClosed || failure) throw unavailable();
+        const reply = value(await call("check_version", args, false, 10_000));
+        try { checkLegacy(reply, false); }
+        catch (error) { failed(error); throw error; }
+        if (requireIdle && object(reply.runtime) && (reply.runtime.inFlight !== 0 || reply.runtime.uncertainCalls !== 0))
+          throw new Error("Original reports outstanding or uncertain calls; no switch applied.");
+        return reply;
+      },
       onFailure(listener: () => void) { listeners.add(listener); if (failure) listener(); },
       identity: Object.freeze({ architecture: "v5-mcp-with-original-business-adapter",
         storageEngine: "original", storageMigrated: false, operations: total, catalogRevision: revision,
@@ -301,7 +313,8 @@ export async function startCompatibilityMcp(input: unknown) {
       components: adapter.originalVersion.components, enabledFeatureDomains: [] };
     const server = await startNativePublicMcp(adapter.backend, {
       writable: config.writable, manifest, catalogProfile: "original-full", adapterCatalog: adapter.catalog,
-      adapterIdentity: adapter.identity, profile: "compact", toolSurface: "hybrid", closeBackend: async () => {},
+      adapterIdentity: adapter.identity, profile: "compact", toolSurface: "hybrid",
+      serverName: config.serverName, closeBackend: async () => {},
     }, boundary.transport, boundary);
     adapter.onFailure(() => { server.lifecycle.quiesce(); });
     return server;

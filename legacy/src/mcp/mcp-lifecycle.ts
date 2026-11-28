@@ -226,8 +226,61 @@ CHAT_SCHEMA_VERSION = ${JSON.stringify(manifest.components.chat)}
 RECIPE_SCHEMA_VERSION = ${JSON.stringify(manifest.components.recipes)}
 AGENT_SESSION_SCHEMA_VERSION = ${JSON.stringify(manifest.components.agent_sessions)}
 KNOWLEDGE_ROOT = ${JSON.stringify(knowledgeRoot)}
-import hashlib, json, os, pathlib, re, runpy, shutil, subprocess, sys, uuid
+import hashlib, json, os, pathlib, re, runpy, shutil, stat, subprocess, sys, uuid
 root = pathlib.Path(__file__).resolve().parent
+launch_grant = os.environ.pop("PKM_COMPATIBILITY_LAUNCH_GRANT", "")
+if sys.platform.startswith("linux") and KNOWLEDGE_ROOT:
+    import fcntl
+    knowledge = pathlib.Path(KNOWLEDGE_ROOT)
+    if not knowledge.is_absolute() or knowledge.resolve(strict=True) != knowledge:
+        raise SystemExit("PKM compatibility admission requires a canonical Knowledge Root.")
+    root_info = knowledge.lstat()
+    if root_info.st_uid != os.getuid() or root_info.st_mode & 0o022:
+        raise SystemExit("PKM compatibility admission requires an owner-owned Knowledge Root without group/other writes.")
+    custody = knowledge
+    for component in (".pkm", "state", "compatibility-gateway"):
+        custody = custody / component
+        custody.mkdir(mode=0o700, exist_ok=True)
+        info = custody.lstat()
+        forbidden = 0o077 if component == "compatibility-gateway" else (0o022 if root_info.st_mode & 0o077 else 0)
+        if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                or info.st_uid != os.getuid() or info.st_mode & forbidden):
+            raise SystemExit("PKM compatibility custody directory is unsafe.")
+    custody_fd = os.open(custody / "owner.guard", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    info = os.fstat(custody_fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_nlink != 1:
+        raise SystemExit("PKM compatibility custody guard is unsafe.")
+    marker = custody / "owner-pending.json"
+    try:
+        fcntl.flock(custody_fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        info = marker.lstat()
+        if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077 or info.st_nlink != 1 or info.st_size > 4096):
+            raise SystemExit("PKM compatibility owner marker is unsafe.")
+        owner = json.loads(marker.read_text(encoding="utf-8"))
+        identity = knowledge.stat()
+        if (owner.get("schema") != "pkm.compatibility-gateway-custody/v1"
+                or owner.get("root") != str(knowledge) or owner.get("device") != str(identity.st_dev)
+                or owner.get("inode") != str(identity.st_ino) or not re.fullmatch("[a-f0-9]{64}", launch_grant)
+                or hashlib.sha256(launch_grant.encode()).hexdigest() != owner.get("launchGrantSha256")):
+            raise SystemExit("PKM Original launcher is inhibited by live compatibility custody. Use this profile's native pkm connection; manual/external launch is unsupported.")
+    else:
+        if os.path.lexists(marker) or launch_grant:
+            raise SystemExit("PKM compatibility custody requires explicit recovery; no Original fallback was started.")
+        for pending in custody.glob("original-pending-*.json"):
+            info = pending.lstat()
+            if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_mode & 0o077 or info.st_nlink != 1 or info.st_size > 4096):
+                raise SystemExit("PKM Original drain evidence is unsafe; explicit recovery required.")
+            record = json.loads(pending.read_text(encoding="utf-8"))
+            try:
+                running = pathlib.Path("/proc") / str(int(record["pid"])) / "stat"
+                current = running.read_text().rsplit(")", 1)[1].split()[19]
+            except (FileNotFoundError, KeyError, ValueError):
+                raise SystemExit("PKM Original writer has an unknown outcome; explicit recovery required.")
+            if current != record.get("processStart"):
+                raise SystemExit("PKM Original writer has an unknown outcome; explicit recovery required.")
 if (root / "runtime-maintenance.json").exists():
     raise SystemExit("PKM runtime maintenance is action-required; wait for repair to finish before reconnecting.")
 baseline = json.loads((root / "active-generation.json").read_text(encoding="utf-8"))
@@ -255,6 +308,20 @@ sys.path.insert(0, str(directory))
 if sys.platform.startswith("linux") and KNOWLEDGE_ROOT:
     from root_writer_fence import legacy_writer
     with legacy_writer(KNOWLEDGE_ROOT):
+        pending_launch = None
+        if not launch_grant:
+            pending_launch = custody / ("original-pending-" + str(uuid.uuid4()) + ".json")
+            record = {"pid": os.getpid(),
+                      "processStart": pathlib.Path("/proc/self/stat").read_text().rsplit(")", 1)[1].split()[19]}
+            with os.fdopen(os.open(pending_launch, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "w") as output:
+                json.dump(record, output)
+                output.flush()
+                os.fsync(output.fileno())
+            sync_fd = os.open(custody, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fsync(sync_fd)
+            finally:
+                os.close(sync_fd)
         state = pathlib.Path(KNOWLEDGE_ROOT) / ".pkm" / "state"
         sessions = (state / "managed-writer-session", state / "managed-writer-session-compatible")
         registration = None
@@ -280,13 +347,22 @@ else m.completeManagedWriterOperation(root,JSON.parse(process.argv[4]));"""
             registration = json.loads(managed_session("begin", launch_id).stdout)
             os.environ["PKM_MANAGED_WRITER_SESSION"] = registration["sessionId"]
         runtime = runpy.run_path(str(directory / "server.py"), run_name="__main__")
-        if registration is not None:
+        if registration is not None or pending_launch is not None:
             lifecycle = runtime.get("_MCP_LIFECYCLE")
-            status = lifecycle.status() if lifecycle else {}
+            status = (lifecycle.quiesce() if callable(getattr(lifecycle, "quiesce", None))
+                      else lifecycle.status() if lifecycle else {})
             if (status.get("phase") not in ("drained", "retired") or status.get("acceptingNewCalls") is not False
-                    or status.get("inFlight") != 0 or status.get("uncertainCalls") != 0):
+                    or status.get("inFlight") != 0 or status.get("uncertainCalls") != 0 or status.get("controlError")):
                 raise RuntimeError("Managed MCP exit is not a verified drain; its operation remains unknown.")
-            managed_session("complete", json.dumps(registration))
+            if registration is not None:
+                managed_session("complete", json.dumps(registration))
+            if pending_launch is not None:
+                pending_launch.unlink()
+                sync_fd = os.open(custody, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    os.fsync(sync_fd)
+                finally:
+                    os.close(sync_fd)
 else:
     runpy.run_path(str(directory / "server.py"), run_name="__main__")
 `;

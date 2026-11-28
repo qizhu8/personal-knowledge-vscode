@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PKM Chat</title>
+  <link rel="stylesheet" href="/webview/codicon.css">
+  <link rel="stylesheet" href="/webview/webview-theme.css">
+  <script defer src="/webview/webview-chat.js"></script>
+</head>
+<body class="pkm-chat">
+  <header class="pkm-chat-bar">
+    <a href="/webview/"><span class="codicon codicon-library" aria-hidden="true"></span> Personal Knowledge</a>
+    <strong>PKM Chat</strong>
+    <span id="chat-review">Checking human review availability…</span>
+  </header>
+  <main>
+    <aside aria-label="Chat history">
+      <h2>History</h2>
+      <button id="chat-create" disabled>New Chat</button>
+      <div id="chat-list"></div>
+      <button id="chat-more" hidden>More chats</button>
+    </aside>
+    <section class="pkm-chat-thread" aria-labelledby="chat-title">
+      <h1 id="chat-title">Select a conversation</h1>
+      <p id="chat-state" role="status">Connecting to the PKM service…</p>
+      <button id="chat-share" type="button" hidden>Request transcript</button>
+      <div id="chat-transcript" aria-label="Transcript" tabindex="0"></div>
+      <form id="chat-composer">
+        <label for="chat-input">Message</label>
+        <textarea id="chat-input" rows="3" maxlength="100000" required disabled></textarea>
+        <div><button id="chat-send" disabled>Send</button> <button id="chat-stop" type="button" disabled>Stop</button>
+          <button id="chat-check" type="button" hidden>Check turn status</button></div>
+        <p id="chat-turn-state" role="status" hidden></p>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

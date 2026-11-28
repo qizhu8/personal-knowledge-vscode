@@ -12,10 +12,11 @@
 import { basename, dirname, join, resolve, sep } from "path";
 import {
   existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, rmSync, renameSync, cpSync,
-  lstatSync, openSync, closeSync, fstatSync, constants,
+  lstatSync, openSync, closeSync, readSync, fstatSync, fchmodSync, fsyncSync, constants,
 } from "fs";
 import { createHash, randomBytes } from "crypto";
 import { withLegacyLinuxRootWriter } from "../runtime/linux-root-writer-fence";
+import { withTrackedMarkdownMutation } from "./markdown-migration-fence";
 import { commandNoteWorkItem, NoteWorkItem, readNoteWorkItems, upsertNoteWorkItem, WorkItemActor } from "./note-work-items";
 import { commandTodoBoard, readTodoBoard, serializeTodoBoard, todoBoardFilename, todoBoardWorkers } from "./todo-board";
 import { compileKnowledgeIdentityV1, compileKnowledgeLinksV1, legacyKnowledgeAlias, nextKnowledgeIdentity, readKnowledgeIdentity } from "./knowledge-contracts";
@@ -23,7 +24,7 @@ import { KnowledgeSyncDeletionRecord, knowledgeDeletionFile, readKnowledgeSyncDe
 export type { KnowledgeSyncDeletionRecord } from "./knowledge-deletion-journal";
 import {
   assertMarkdownAssetsUnshared, assertMarkdownResourceTreeUnshared, checkedMarkdownPath, isMarkdownAssetDirectory, markdownAssetDirectory,
-  rebaseMarkdownAssets, referencedMarkdownAssets, saveMarkdownAsset, MarkdownAssetArea, withMarkdownAssetMutation, ownedMarkdownAssetPaths,
+  rebaseMarkdownAssets, referencedMarkdownAssets, saveMarkdownAsset, MarkdownAssetArea, withMarkdownAssetLock, withMarkdownAssetMutation, ownedMarkdownAssetPaths,
   migrateMarkdownAssetsForLifecycleUnlocked,
   previewMarkdownAssetMigration,
 } from "./markdown-assets";
@@ -179,7 +180,8 @@ export function writeKnowledgeMarkdown(area: "notes" | "skills" | "papers", rela
   });
 }
 
-function writeKnowledgeMarkdownUnlocked(area: "notes" | "skills" | "papers", relativePath: string, previousPath: string | undefined, content: string): void {
+function writeKnowledgeMarkdownUnlocked(area: "notes" | "skills" | "papers", relativePath: string, previousPath: string | undefined, content: string,
+  writeDocument: (full: string, content: string) => void = writeFileSync): void {
   const root = join(getStorePath(), area);
   const full = checkedMarkdownPath(root, relativePath);
   const moved = previousPath !== undefined && previousPath !== relativePath;
@@ -200,7 +202,7 @@ function writeKnowledgeMarkdownUnlocked(area: "notes" | "skills" | "papers", rel
     mkdirSync(resolve(full, ".."), { recursive: true });
     if (movingAssets) renameSync(oldAssets!, newAssets);
     try {
-      writeFileSync(full, content);
+      writeDocument(full, content);
       if (oldFull) rmSync(oldFull);
     } catch (error) {
       if (moved) rmSync(full, { force: true });
@@ -800,6 +802,142 @@ export function noteUpsert(row: {
   if (pinned) fm.pinned = true;
   writeKnowledgeMarkdown("notes", newRel, existing ? existing.slug + ".md" : undefined, serializeFrontmatter(fm, row.content ?? ""));
   return !existing;
+}
+
+export class NoteBodyEditConflict extends Error {
+  readonly code = "ORIGINAL_NOTE_EDIT_CONFLICT";
+  constructor() { super("The Note changed or disappeared. Reopen it before saving the draft."); }
+}
+
+/** Owner-only create: the existing title-derived filename is never overwritten or renamed. */
+export function createOriginalNoteNoOverwrite(row: {
+  title: string; content: string; type: string; tags: string[]; category: string;
+}, assertCurrent: () => void = () => {}): string {
+  const category = safeCategory(row.category);
+  if (category !== row.category || safeName(row.title) !== row.title || row.title === "." || row.title === "..")
+    throw Object.assign(new Error("Choose an exact valid Note name and category."), { code: "ORIGINAL_NOTES_INVALID" });
+  const relative = `${category ? category + "/" : ""}${row.title}.md`;
+  return withMarkdownAssetMutation(getStorePath(), () => {
+    assertCurrent();
+    if (noteGet(relNoExt(relative))) {
+      throw Object.assign(new Error("A Note with that name already exists."), { code: "ORIGINAL_NOTE_EXISTS" });
+    }
+    const identity = nextKnowledgeIdentity(undefined, "note", relNoExt(relative), relNoExt(relative));
+    const content = serializeFrontmatter({
+      schema: identity.schema, knowledgeId: identity.knowledgeId, revision: identity.revision, aliases: identity.aliases,
+      title: row.title, description: "", type: row.type, tags: row.tags, created: now(), links: [],
+    }, row.content);
+    if (parseFrontmatter(content).body !== row.content || readNoteWorkItems(content).items.length ||
+        relative.split("/").some(part => part.toLowerCase() === "system" || part.toLowerCase() === "_assets" ||
+          part.toLowerCase() === todoBoardFilename.toLowerCase() || isMarkdownAssetDirectory(part)))
+      throw Object.assign(new Error("Choose an ordinary Markdown Note."), { code: "ORIGINAL_NOTES_INVALID" });
+    writeKnowledgeMarkdownUnlocked("notes", relative, undefined, content, (full, text) => {
+      assertCurrent();
+      try { writeFileSync(full, text, { flag: "wx" }); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST")
+          throw Object.assign(new Error("A Note with that name already exists."), { code: "ORIGINAL_NOTE_EXISTS" });
+        throw error;
+      }
+    });
+    return relative;
+  });
+}
+
+const maxNoteBodyEditBytes = 512 * 1024;
+function noteBodyEditSnapshot(root: string, relative: string) {
+  const parts = relative.split("/");
+  if (!relative.endsWith(".md") || /[\\:\u0000-\u001f]/.test(relative)
+    || parts[0].toLowerCase() === "system"
+    || parts.some(part => part.toLowerCase() === "_assets" || isMarkdownAssetDirectory(part)))
+    throw new Error("Body edits require an exact editable Note path.");
+  const notes = join(root, "notes");
+  if (!lstatSync(notes).isDirectory()) throw new Error("Notes must be a real directory.");
+  const full = checkedMarkdownPath(notes, relative);
+  const statKey = (stat: ReturnType<typeof bigintStats>) =>
+    [stat.dev, stat.ino, stat.ctimeNs, stat.mtimeNs, stat.size, stat.nlink, stat.mode, stat.uid, stat.gid].join(":");
+  let bytes: Buffer, version: string, ownership: { mode: number; uid: bigint; gid: bigint };
+  try {
+    const stat = bigintStats(full);
+    if (!stat.isFile() || stat.nlink !== 1n || stat.size > BigInt(maxNoteBodyEditBytes))
+      throw new Error("Body edits require a bounded regular Note without hard links.");
+    const fd = openSync(full, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      if (statKey(fstatSync(fd, { bigint: true })) !== statKey(stat)) throw new NoteBodyEditConflict();
+      bytes = Buffer.alloc(Number(stat.size));
+      for (let offset = 0; offset < bytes.length;) {
+        const n = readSync(fd, bytes, offset, bytes.length - offset, offset);
+        if (!n) throw new NoteBodyEditConflict();
+        offset += n;
+      }
+      if (statKey(fstatSync(fd, { bigint: true })) !== statKey(stat) || statKey(bigintStats(full)) !== statKey(stat))
+        throw new NoteBodyEditConflict();
+    } finally { closeSync(fd); }
+    ownership = { mode: Number(stat.mode & 0o777n), uid: stat.uid, gid: stat.gid };
+    version = statKey(stat);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new NoteBodyEditConflict();
+    throw error;
+  }
+  const text = bytes.toString("utf8");
+  if (!Buffer.from(text).equals(bytes)) throw new Error("Body edits require UTF-8 Markdown.");
+  const { fm, body } = parseFrontmatter(text);
+  if (fm.documentKind === "todo-board" || existsSync(todoBoardPath(relative)) || readNoteWorkItems(text).items.length)
+    throw new Error("Use Work Item commands for this Note.");
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const revision = createHash("sha256").update(JSON.stringify([root, relative, version, sha256])).digest("hex");
+  return { body, sha256, revision, ownership, prefix: text.slice(0, text.length - body.length) };
+}
+
+function bigintStats(full: string) { return lstatSync(full, { bigint: true }); }
+
+/** Returns the body and its exact owner-side edit precondition from one fenced read. */
+export function readOriginalNoteBodyForEdit(relative: string): { body: string; sha256: string; revision: string } {
+  const root = getStorePath();
+  return withMarkdownAssetLock(root, () => {
+    const { body, sha256, revision } = noteBodyEditSnapshot(root, relative);
+    return { body, sha256, revision };
+  });
+}
+
+/** Internal owner primitive; the authenticated caller must hold admission to the selected root. */
+export function compareAndSwapOriginalNoteBody(relative: string, expected: { sha256: string; revision: string }, body: string,
+  assertCurrent: () => void = () => {}): void {
+  if (!/^[a-f0-9]{64}$/.test(expected.sha256) || !/^[a-f0-9]{64}$/.test(expected.revision)
+    || typeof body !== "string" || Buffer.byteLength(body) > maxNoteBodyEditBytes
+    || Buffer.from(body).toString("utf8") !== body)
+    throw new Error("Invalid Original Note body or edit precondition.");
+  const root = getStorePath();
+  withMarkdownAssetLock(root, () => {
+    const readCurrent = () => {
+      assertCurrent();
+      const current = noteBodyEditSnapshot(root, relative);
+      if (current.sha256 !== expected.sha256 || current.revision !== expected.revision) throw new NoteBodyEditConflict();
+      return current;
+    };
+    const current = readCurrent();
+    if (body === current.body) return;
+    const next = current.prefix + body;
+    if (Buffer.byteLength(next) > maxNoteBodyEditBytes || parseFrontmatter(next).body !== body
+      || readNoteWorkItems(next).items.length)
+      throw new Error("A body edit cannot introduce Note metadata or Work Items.");
+    withTrackedMarkdownMutation(root, () => writeKnowledgeMarkdownUnlocked("notes", relative, relative, next, (full, content) => {
+      const temporary = join(dirname(full), `.pkm-note-body-${randomBytes(12).toString("hex")}.tmp`);
+      const fd = openSync(temporary, "wx", 0o600);
+      try {
+        try {
+          const replacement = fstatSync(fd, { bigint: true });
+          if (replacement.uid !== current.ownership.uid || replacement.gid !== current.ownership.gid)
+            throw new Error("Cannot preserve Original Note ownership.");
+          writeFileSync(fd, content);
+          fchmodSync(fd, current.ownership.mode);
+          fsyncSync(fd);
+        } finally { closeSync(fd); }
+        readCurrent();
+        renameSync(temporary, full);
+      } finally { rmSync(temporary, { force: true }); }
+    }));
+  });
 }
 
 /** Toggle a single note's pinned flag (sorts it to the top of its own folder). */

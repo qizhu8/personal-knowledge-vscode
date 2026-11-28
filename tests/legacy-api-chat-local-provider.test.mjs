@@ -5,6 +5,50 @@ import { createRequire } from "node:module";
 import { createLegacyApiChatLocalProvider } from "../dist/legacy-api-chat-local-provider.js";
 const require = createRequire(import.meta.url);
 const { image } = require("../legacy/tests/next-trial-electron/api-chat-fixture.cjs");
+test("Memory uses the configured Chat API when the real VS Code catalog is empty, but preserves discovery errors and cancellation", async t => {
+  const Module = require("node:module"), load = Module._load;
+  const host = { workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) },
+    lm: { selectChatModels: async () => [] } };
+  let ApiChatView, models;
+  try {
+    Module._load = function (id, ...args) { return id === "vscode" ? host : load.call(this, id, ...args); };
+    ({ ApiChatView } = require("../legacy/dist/chat/api-chat-view.js"));
+    models = require("../legacy/dist/chat/api-chat-vscode.js");
+  } finally { Module._load = load; }
+  let calls = 0;
+  const server = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const input = JSON.parse(Buffer.concat(chunks).toString());
+    calls++;
+    assert.equal(input.model, "fixture-chat-model");
+    assert.equal(input.tools, undefined);
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end('data: {"choices":[{"delta":{"content":"{\\"focus\\":[]}"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });
+  let provider = "openai-compatible";
+  const owner = { vscodeModels: [], settings: () => ({ provider, model: "fixture-chat-model",
+    selectedProfile: { id: "vscode:fixture:missing" }, endpoint: `http://127.0.0.1:${server.address().port}/v1`,
+    contextWindow: 4096, timeoutMs: 2000 }),
+    availableVscodeModels: signal => models.discoverVscodeModels(host, signal),
+    readApiKey: async () => "synthetic-key" };
+  const request = { purpose: "intent", max_tokens: 100, messages: [{ role: "user", content: "Synthetic memory input" }] };
+  const run = signal => ApiChatView.prototype.runMemoryModel.call(owner, {}, request, signal, {});
+  const result = await run(new AbortController().signal);
+  assert.equal(result.text, '{"focus":[]}');
+  assert.equal(result.accounting.provider, "http");
+  assert.equal(result.accounting.modelId, "fixture-chat-model");
+  owner.availableVscodeModels = async () => { throw new Error("Synthetic catalog transport failure"); };
+  await assert.rejects(run(new AbortController().signal), /catalog transport failure/);
+  owner.availableVscodeModels = signal => models.discoverVscodeModels(host, signal);
+  provider = "vscode";
+  await assert.rejects(run(new AbortController().signal), /No VS Code models callable/);
+  provider = "openai-compatible";
+  await assert.rejects(run(AbortSignal.abort()), /cancelled/i);
+  assert.equal(calls, 1, "Only the documented HTTP Memory fallback may dispatch");
+});
 test("native loopback provider sends real PNG bytes and decodes fragmented UTF-8/CRLF SSE; incomplete results fail closed", async t => {
   let mode = "ok", calls = 0;
   const server = createServer(async (request, response) => {

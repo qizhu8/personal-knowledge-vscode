@@ -2977,12 +2977,17 @@ may coexist. These are coordination declarations, not filesystem sandboxing or
 new permissions: tools still use their original approvals, and undeclared actual
 effects cannot be certified or prevented by this ownership check.
 
-Defaults are **3 automatically approved concurrent workers** and **10 maximum** across
+Defaults are **50 automatically approved concurrent workers** and **50 maximum** across
 the entire tree, configured by `personalKnowledge.apiChatAutomaticWorkers` and
 `personalKnowledge.apiChatMaximumWorkers`. The automatic threshold must not
 exceed the hard maximum. Only increasing the approved capacity needs explicit
 approval, even under Allow All. An approved quota of six can be reused after
-resolution without asking again. Reservations and releases are persisted under
+resolution without asking again. Existing explicitly configured lower limits
+remain in effect; an unset automatic threshold is bounded by a lower explicit
+maximum. Explicitly inconsistent thresholds still fail rather than being
+silently corrected. The default permits autonomous capacity, not an obligation
+to create 50 workers or permission to bypass child-tool approval.
+Reservations and releases are persisted under
 a cross-process lock. Completed/cancelled temporary workers archive full results
 and tool evidence before their Chat is removed and capacity is released. Existing
 Chats retain their history/group and release their activity binding. Failed or
@@ -3272,7 +3277,10 @@ model and saved locally; check the server's data policies before enabling it.
 Only Streamable HTTP with optional bearer authentication is supported currently;
 stdio, legacy SSE, OAuth and automatic reuse of Copilot/Claude MCP connections are
 not supported. Ordinary model requests do not require MCP. Automatic Recipe
-execution/retrieval remains out of scope. Markdown is sanitized, remote images are
+authoring/execution and automatic Skill extraction are not yet implemented by
+the built-in Chat tools. Knowledge retrieval may read these resources but does
+not execute them. These are required follow-up capabilities, not covered by
+core Chat or worker-capacity acceptance. Markdown is sanitized, remote images are
 not loaded, and tool results are rendered as text, never executable HTML.
 
 ## Running Input

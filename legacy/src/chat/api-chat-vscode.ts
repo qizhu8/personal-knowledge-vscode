@@ -13,6 +13,7 @@ export interface VscodeChatModel extends vscode.LanguageModelChat {
 }
 
 class VscodeChatError extends Error {}
+export class VscodeModelsUnavailableError extends Error {}
 
 export function isVscodeModelAccessError(error: unknown): error is Error & { code: string } {
   return error instanceof Error && "code" in error && typeof error.code === "string" && ["NoPermissions", "NotFound"].includes(error.code);
@@ -74,7 +75,7 @@ export async function discoverVscodeModels(host = vscode, signal?: AbortSignal, 
     const [nativeModels, sdkModels] = signal ? await abortable(pending, signal) : await pending;
     const models = [...nativeModels.filter(model => model.vendor !== "copilotcli" && (!vendor || model.vendor === vendor)), ...sdkModels as unknown as VscodeChatModel[]];
     if (signal?.aborted) throw new Error("Request cancelled.");
-    if (!models.length) throw new Error("No VS Code models callable through the Language Model API are available. Copilot CLI catalog-only entries are excluded. Sign in to a request-capable provider or configure an API connection.");
+    if (!models.length) throw new VscodeModelsUnavailableError("No VS Code models callable through the Language Model API are available. Copilot CLI catalog-only entries are excluded. Sign in to a request-capable provider or configure an API connection.");
     return models;
   } catch (error) {
     if (signal?.aborted) throw new Error("Request cancelled.");

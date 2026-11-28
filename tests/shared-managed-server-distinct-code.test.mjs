@@ -87,6 +87,27 @@ test("distinct compiled Core versions survive A-B-A, official retirement, exact 
   await client.connect(transport);
   const origin = service.url, serviceId = service.serviceId, relayPid = transport.pid, managerPid = process.pid;
   const admin = { origin, serviceId, token: management };
+  const { createMcpBackendSwitch } = require("../legacy/dist/mcp/mcp-backend-switch.js");
+  let binding;
+  let approvedByHuman = true, requestId = 0;
+  const reviewed = [], switchCalls = [];
+  const settings = createMcpBackendSwitch({
+    getBinding: () => binding,
+    confirm: async review => { reviewed.push(review); return approvedByHuman; },
+  });
+  async function settingsRequest(action, input = {}) {
+    const id = ++requestId, replies = [];
+    assert.equal(await settings.handleMessage({ command: `mcpBackendSwitch${action}`, requestId: id, ...input }, reply => replies.push(reply)), true);
+    assert(replies.every(item => item.command === "mcpBackendSwitchResult" && item.data.requestId === id));
+    assert(!JSON.stringify(replies).includes(management));
+    assert(!JSON.stringify(replies).includes(origin));
+    return replies.at(-1).data;
+  }
+  assert.equal((await settingsRequest("Read")).error, "unbound");
+  binding = { serviceId, request: async (route, input) => {
+    if (route === "/manage/switch") switchCalls.push(input);
+    return sharedManagedRequest(admin, route, input);
+  } };
   const http = (method, body = {}) => new Promise((ready, reject) => {
     const request = httpRequest(`${origin}/v1/${method}`, { agent, method: "POST",
       headers: { authorization: `Bearer ${business}`, "content-type": "application/json" } }, response => {
@@ -122,9 +143,28 @@ test("distinct compiled Core versions survive A-B-A, official retirement, exact 
     const approval = await sharedManagedRequest(admin, "/manage/approve", { action, ...fields });
     return sharedManagedRequest(admin, `/manage/${action}`, { approvalId: approval.approvalId, ...fields });
   };
-  const change = async manifest => {
+  const change = async (manifest, checkCancellation = false) => {
     const oldPid = service.status().backendPid;
-    await manage("switch", { generation: manifest.generation });
+    const before = await settingsRequest("Read");
+    const target = before.candidates.find(item => item.generation === manifest.generation);
+    assert(target?.compatible);
+    assert.notEqual(before.active.generation, target.generation);
+    const selection = { serviceId, activeGeneration: before.active.generation, activePid: before.active.backendPid,
+      generation: target.generation, runtimeBuild: target.runtimeBuild };
+    if (checkCancellation) {
+      assert.equal((await settingsRequest("Apply", { ...selection, activePid: 0 })).error, "selectionChanged");
+      assert.equal(reviewed.length, 0);
+      approvedByHuman = false;
+      assert.equal((await settingsRequest("Apply", selection)).outcome, "cancelled");
+      assert.equal(switchCalls.length, 0);
+      assert.equal(service.status().backendPid, oldPid);
+      approvedByHuman = true;
+    }
+    const switched = await settingsRequest("Apply", selection);
+    assert.equal(switched.outcome, "completed");
+    assert.equal(switched.active.phase, "accepting");
+    assert.equal(switched.active.generation, manifest.generation);
+    assert.equal(switched.active.runtimeBuild, manifest.runtimeBuild);
     assert.throws(() => process.kill(oldPid, 0), { code: "ESRCH" });
     assert.notEqual(service.status().backendPid, oldPid);
   };
@@ -134,7 +174,7 @@ test("distinct compiled Core versions survive A-B-A, official retirement, exact 
     assert.throws(() => process.kill(oldPid, 0), { code: "ESRCH" });
     assert.deepEqual(await readdir(join(managedRoot, "generations")), [manifest.generation]);
   };
-  await change(second);
+  await change(second, true);
   await observe("B", "runtime-code-upgrade-proof:B", second);
   const sessionId = randomUUID(), operationId = randomUUID();
   const created = unwrap(await client.callTool({ name: "capability_call", arguments: {
@@ -162,6 +202,8 @@ test("distinct compiled Core versions survive A-B-A, official retirement, exact 
   assert.notEqual(restagedA.generation, first.generation);
   assert.equal(restagedA.runtimeBuild, first.runtimeBuild, "Exact verified A bytes return with a new UUID.");
   await change(restagedA);
+  assert.equal(switchCalls.length, 2);
+  assert.notEqual(switchCalls[0].operationId, switchCalls[1].operationId);
   await observe("A-restaged", "runtime-code-upgrade-proof:A", restagedA);
   await cleanup(restagedA);
   await observe("A-after-B-retirement", "runtime-code-upgrade-proof:A", restagedA);

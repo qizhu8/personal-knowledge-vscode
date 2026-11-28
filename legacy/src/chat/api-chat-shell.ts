@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
-import { randomBytes } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import type { ApiChatView } from "./api-chat-view";
 import { getStorePath } from "../knowledge/filestore";
 import { loadedExtensionBuild } from "../runtime/extension-host-runtime";
@@ -9,6 +9,9 @@ import { hostname } from "os";
 import { ApiChatAgentControl } from "./agent-control";
 import { registerVisualizationWindow } from "./visualization-window";
 import { withAsyncDeadline } from "../runtime/async-deadline";
+import { createBrowserChatTranscriptReader, type BrowserChatGrant } from "./browser-chat-transcript";
+import { bindBrowserChatTurns } from "./browser-chat-turns";
+import type { bindNativeBrowserChatTranscriptConsent } from "./detached-browser-chat-transcript";
 
 export const CHAT_STARTUP_TIMEOUT_MS = 180_000;
 
@@ -16,7 +19,7 @@ export const CHAT_STARTUP_TIMEOUT_MS = 180_000;
 export let chatStartupTrace: ((message: string) => void) | undefined;
 export function setChatStartupTrace(trace: ((message: string) => void) | undefined): void { chatStartupTrace = trace; }
 
-export function registerApiChatHost(context: vscode.ExtensionContext, handle: (operation: string, args: Record<string, unknown>) => Promise<unknown>, busy: () => boolean): void {
+export function registerApiChatHost(context: vscode.ExtensionContext, handle: (operation: string, args: Record<string, unknown>) => Promise<unknown>, busy: () => boolean) {
   let control: ApiChatAgentControl | undefined;
   let controlRoot: string | undefined;
   let registrationError = "";
@@ -41,8 +44,15 @@ export function registerApiChatHost(context: vscode.ExtensionContext, handle: (o
   };
   refreshControl();
   const timer = setInterval(refreshControl, 1000); timer.unref();
-  context.subscriptions.push({ dispose: () => { clearInterval(timer); control?.dispose(); } },
+  context.subscriptions.push({ dispose: () => { clearInterval(timer); control?.dispose(); control = undefined; } },
     vscode.workspace.onDidChangeConfiguration(event => { if (event.affectsConfiguration("personalKnowledge")) refreshControl(); }));
+  return (grant: BrowserChatGrant) => {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!control || grant.chatHostId !== control.hostId || grant.workspaceRoot !== controlRoot ||
+        getStorePath() !== controlRoot || !vscode.workspace.isTrusted ||
+        !folders?.some(folder => folder.uri.scheme === "file" && folder.uri.fsPath === controlRoot))
+      throw new Error("The granted Original Chat Host is no longer available.");
+  };
 }
 
 export function renderApiChat(view: vscode.WebviewView, context: vscode.ExtensionContext): void {
@@ -95,6 +105,16 @@ export interface OwnedChatViewBackend {
 export function registerApiChatShell(context: vscode.ExtensionContext, load: (signal: AbortSignal) => Promise<ApiChatView>,
   ownedView?: { load(signal: AbortSignal): Promise<OwnedChatViewBackend> }): {
   readonly isBusy: boolean;
+  bindBrowserChatTranscript(grant: BrowserChatGrant, assertCurrent: (grant: BrowserChatGrant) => void):
+    ReturnType<typeof createBrowserChatTranscriptReader>;
+  bindDetachedTranscriptConsent(grant: BrowserChatGrant, assertCurrent: (grant: BrowserChatGrant) => void):
+    { namespace: string } & ReturnType<typeof bindNativeBrowserChatTranscriptConsent>;
+  bindBrowserChatTurns(grant: BrowserChatGrant, assertCurrent: (grant: BrowserChatGrant) => void):
+    ReturnType<typeof bindBrowserChatTurns>;
+  approveDetachedTextTurn(grant: BrowserChatGrant, chatId: string, text: string,
+    assertCurrent: (grant: BrowserChatGrant) => void): ReturnType<ApiChatView["approveDetachedTextTurn"]>;
+  approveDetachedConversation(grant: BrowserChatGrant, chatId: string,
+    assertCurrent: (grant: BrowserChatGrant) => void): ReturnType<ApiChatView["approveDetachedConversation"]>;
   drainManagedWriter(): Promise<void>;
   portalChatBindings(): Promise<Array<{ id: string; title: string }>>;
   preparePortalMutationPolicy(chatId: string): Promise<void>;
@@ -115,6 +135,7 @@ export function registerApiChatShell(context: vscode.ExtensionContext, load: (si
   let loading: Promise<ApiChatView | OwnedChatViewBackend> | undefined;
   let loadingController: AbortController | undefined;
   let managedWriterFenced = false;
+  let browserSendPromptOpen = false;
   let attempt = 0;
   const busy = () => !!loading && !backend || backend?.isBusy === true;
   const getBackend = async () => {
@@ -234,11 +255,105 @@ export function registerApiChatShell(context: vscode.ExtensionContext, load: (si
     vscode.commands.registerCommand("personalKnowledge.testApiChatE2E", async () => callBackend(chat => chat.runAcceptance())),
     vscode.commands.registerCommand("personalKnowledge.exportMcpToolSets", async () => callBackend(chat => chat.exportMcpToolSets())),
   );
+  let assertChatHost: ReturnType<typeof registerApiChatHost> | undefined;
   if (!ownedView) {
     registerVisualizationWindow(context, legacyBackend);
-    registerApiChatHost(context, async (operation, args) => callBackend(chat => chat.agentControl(operation, args), operation === "cancel"), busy);
+    assertChatHost = registerApiChatHost(context, async (operation, args) => callBackend(chat => chat.agentControl(operation, args), operation === "cancel"), busy);
   }
   return { get isBusy() { return busy(); },
+    bindBrowserChatTurns(grant, assertCurrent) {
+      const assertOwner = (bound: BrowserChatGrant) => {
+        if (!assertChatHost || managedWriterFenced) throw new Error("Original Chat Host is unavailable.");
+        assertCurrent(bound);
+        assertChatHost(bound);
+      };
+      assertOwner(grant);
+      const root = grant.workspaceRoot;
+      const openBackend = () => {
+        if (ownedView || !backend) throw new Error("Open PKM Chat in VS Code first.");
+        return backend as ApiChatView;
+      };
+      return bindBrowserChatTurns(grant, {
+        assertCurrent: assertOwner,
+        target: chatId => openBackend().browserChatTurnTarget(root, chatId),
+        async confirm(title, chatId, text) {
+          if (browserSendPromptOpen) return false;
+          browserSendPromptOpen = true;
+          try {
+            return await vscode.window.showWarningMessage("Send this browser message from PKM Chat?",
+              { modal: true, detail: `${title.slice(0, 120)} (${chatId})\nThis uses the current read-only Chat and its configured model and context.\n\n${JSON.stringify(text)}` },
+              "Send once") === "Send once";
+          } finally { browserSendPromptOpen = false; }
+        },
+        send: (chatId, text, admission) => openBackend().sendBrowserChatTurn(root, chatId, text, admission),
+      });
+    },
+    bindBrowserChatTranscript(grant, assertCurrent) {
+      const assertOwner = (bound: BrowserChatGrant) => {
+        if (!assertChatHost || managedWriterFenced) throw new Error("Original Chat Host is unavailable.");
+        assertCurrent(bound);
+        assertChatHost(bound);
+      };
+      assertOwner(grant);
+      return createBrowserChatTranscriptReader(grant, {
+        assertCurrent: assertOwner,
+        async load(bound, chatId) {
+          const owner = await legacyBackend();
+          assertOwner(bound);
+          return owner.readBrowserChatTranscript(bound.workspaceRoot, chatId);
+        },
+        async confirm(title, chatId) {
+          return await vscode.window.showInformationMessage("Share this Chat’s transcript with the connected browser?",
+            { modal: true, detail: `${title.slice(0, 120)} (${chatId})\nRead-only: user and assistant messages, not tools, attachments or approvals. Changing the transcript invalidates remaining pages.` },
+            "Share transcript") === "Share transcript";
+        },
+      });
+    },
+    bindDetachedTranscriptConsent(grant, assertCurrent) {
+      const workspace = () => vscode.workspace.workspaceFolders?.map(folder => folder.uri.toString()).join("|");
+      const captured = workspace();
+      if (!captured) throw new Error("Original Chat workspace is unavailable.");
+      const assertOwner = (bound: BrowserChatGrant) => {
+        if (!assertChatHost || managedWriterFenced || workspace() !== captured)
+          throw new Error("Original Chat Host is unavailable.");
+        assertCurrent(bound);
+        assertChatHost(bound);
+      };
+      assertOwner(grant);
+      const namespace = createHash("sha256").update(captured).digest("hex").slice(0, 16);
+      const consent = (require("./detached-browser-chat-transcript") as typeof import("./detached-browser-chat-transcript"))
+        .bindNativeBrowserChatTranscriptConsent({ grant, namespace, assertCurrent: assertOwner }, async (title, chatId) =>
+          await vscode.window.showInformationMessage("Share this exact Chat transcript after VS Code closes?",
+            { modal: true, detail: `${title.slice(0, 120)} (${chatId})\nThis browser grant can read this saved transcript for up to 24 hours, even after VS Code closes. New Chat changes are not shared. No tools, attachments or approvals are shared.` },
+            "Share saved transcript") === "Share saved transcript");
+      return { namespace, ...consent };
+    },
+    async approveDetachedTextTurn(grant, chatId, text, assertCurrent) {
+      const pinned = Object.freeze({ ...grant });
+      const assertOwner = () => {
+        if (!assertChatHost || managedWriterFenced || !backend) throw new Error("Open the Original PKM Chat first.");
+        assertCurrent(pinned);
+        assertChatHost(pinned);
+      };
+      assertOwner();
+      if (browserSendPromptOpen) return;
+      browserSendPromptOpen = true;
+      try { return await (backend as ApiChatView).approveDetachedTextTurn(pinned, chatId, text, assertOwner); }
+      finally { browserSendPromptOpen = false; }
+    },
+    async approveDetachedConversation(grant, chatId, assertCurrent) {
+      const pinned = Object.freeze({ ...grant });
+      const assertOwner = () => {
+        if (!assertChatHost || managedWriterFenced || !backend) throw new Error("Open the Original PKM Chat first.");
+        assertCurrent(pinned);
+        assertChatHost(pinned);
+      };
+      assertOwner();
+      if (browserSendPromptOpen) return;
+      browserSendPromptOpen = true;
+      try { return await (backend as ApiChatView).approveDetachedConversation(pinned, chatId, assertOwner); }
+      finally { browserSendPromptOpen = false; }
+    },
     drainManagedWriter: async () => {
       managedWriterFenced = true;
       const current = backend || (loading ? await loading : undefined);

@@ -7,16 +7,17 @@ const http = require("node:http");
 const Module = require("node:module");
 const { randomUUID, createHash } = require("node:crypto");
 const { spawn } = require("node:child_process");
-const { WorkerTreeStore, workerLimits, workerIsDescendant } = require("../dist/chat/worker-tree");
+const { WorkerTreeStore, workerLimits, configuredWorkerLimits, workerIsDescendant } = require("../dist/chat/worker-tree");
 const { workGoalInputs, rootWorkCriterion } = require("../dist/chat/chat-work-goal");
 const fixtures = require("./fixtures/chat-context");
 const originalLoad = Module._load;
 let maximum = 10;
+let automatic = 3;
 let capabilityProfile = "legacy";
 const host = {
   env: { language: "en" },
   window: { showInformationMessage: async () => undefined, showWarningMessage: async () => undefined, showErrorMessage: async () => undefined },
-  workspace: { isTrusted: true, workspaceFolders: [], getConfiguration: () => ({ get: (key, fallback) => key === "apiChatMaximumWorkers" ? maximum : key === "apiChatCapabilityProfile" ? capabilityProfile : fallback }) },
+  workspace: { isTrusted: true, workspaceFolders: [], getConfiguration: () => ({ get: (key, fallback) => key === "apiChatMaximumWorkers" ? maximum ?? fallback : key === "apiChatAutomaticWorkers" ? automatic ?? fallback : key === "apiChatCapabilityProfile" ? capabilityProfile : fallback }) },
   lm: { tools: [] },
 };
 let ApiChatView;
@@ -28,8 +29,8 @@ try {
   ({ captureExecutionContext } = require("../dist/chat/execution-context"));
 } finally { Module._load = originalLoad; }
 
-async function until(predicate, label, diagnose) {
-  const deadline = Date.now() + 4000;
+async function until(predicate, label, diagnose, timeoutMs = 4000) {
+  const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
     if (Date.now() >= deadline) throw new Error(`Timed out: ${label}${diagnose ? `; ${JSON.stringify(diagnose())}` : ""}`);
     await new Promise(resolve => setTimeout(resolve, 5));
@@ -81,6 +82,7 @@ async function harness(t, respond) {
     await new Promise(resolve => server.close(resolve));
     fs.rmSync(directory, { recursive: true, force: true });
     maximum = 10;
+    automatic = 3;
     capabilityProfile = "legacy";
   });
   return { provider, root, requests, approvals, errors, privateDirectory, directory };
@@ -347,6 +349,32 @@ test("tree capacity: recursive reservations share a persistent quota and resolve
   const reused = store.reserve(id, root, Array(10).fill("Reused"), workerLimits(3, 10));
   assert.equal(reused.length, 10, "Previously approved capacity requires no new approval");
   assert.equal(store.count(id), 10);
+});
+
+test("50-worker capacity is recursive and reusable; lower explicit caps remain valid with the new schema default", t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-tree-fifty-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const store = new WorkerTreeStore(directory), root = randomUUID(), id = store.create(root);
+  const limits = configuredWorkerLimits({ get: (_key, fallback) => fallback });
+  const parents = store.reserve(id, root, ["Parent"], limits, undefined, undefined, [{ writeScope: [] }]);
+  const children = store.reserve(id, parents[0].chatId, Array.from({ length: 49 }, (_, index) => `Child ${index}`),
+    limits, undefined, undefined, Array.from({ length: 49 }, () => ({ writeScope: [] })));
+  assert.equal(new WorkerTreeStore(directory).count(id), 50);
+  const before = fs.readFileSync(path.join(directory, `${id}.json`));
+  assert.throws(() => store.reserve(id, children[0].chatId, ["51st"], limits, undefined, undefined, [{ writeScope: [] }]), /limit exceeded/);
+  assert(fs.readFileSync(path.join(directory, `${id}.json`)).equals(before), "Overflow must not mutate tree ownership");
+  store.release(id, children[0].receiptId);
+  assert.equal(store.reserve(id, parents[0].chatId, ["Replacement after release"], limits, undefined, undefined, [{ writeScope: [] }]).length, 1);
+  assert.equal(store.count(id), 50);
+
+  let explicitAutomatic;
+  const lower = { get: key => key === "apiChatMaximumWorkers" ? 4 : explicitAutomatic ?? 50,
+    inspect: () => ({ globalValue: explicitAutomatic }) };
+  const lowerId = store.create(randomUUID());
+  store.reserve(lowerId, store.rootChatId(lowerId), ["A", "B", "C", "D"], configuredWorkerLimits(lower));
+  assert.throws(() => store.reserve(lowerId, store.rootChatId(lowerId), ["E"], configuredWorkerLimits(lower)), /limit exceeded/);
+  explicitAutomatic = 5;
+  assert.throws(() => configuredWorkerLimits(lower), /Worker limits/);
 });
 
 test("tree ownership persists, contains recursive scopes, and rejects other active branches without mutation", t => {
@@ -824,6 +852,90 @@ test("three workers overlap; manager sleeps without polling and wakes after each
   for (const request of fixture.requests.filter(request => /^WORKER_/.test(request.messages.at(-1).content))) {
     assert(!JSON.stringify(request.messages).includes("ROOT_TASK"), "Workers have no hidden shared parent Memory");
   }
+});
+
+test("default policy dispatches 50 real overlapping inferences without expansion approval or manager polling", { timeout: 60000 }, async t => {
+  const gates = new Map();
+  const fixture = await harness(t, (payload, res) => {
+    const prompt = payload.messages.at(-1).content;
+    if (prompt === "FIFTY_ROOT") tool(res, "spawn_workers", { tasks: Array.from({ length: 50 }, (_, index) => ({
+      title: `Independent ${index}`, question: `FIFTY_CHILD_${index}`, writeScope: [],
+    })) });
+    else if (prompt.startsWith("FIFTY_CHILD_")) gates.set(prompt.split("\n")[0], res);
+    else answer(res, "Manager accepts completed worker results");
+  });
+  maximum = undefined; automatic = undefined;
+  const settings = fixture.provider.settings;
+  fixture.provider.settings = () => ({ ...settings(), timeoutMs: 60000 });
+  await fixture.provider.send("FIFTY_ROOT", fixture.root);
+  await until(() => gates.size === 50, "all 50 inferences opened", undefined, 30000);
+  const saved = fixture.provider.store.load(fixture.root.id, false);
+  assert(saved.workerState.sleeping);
+  assert.equal(fixture.provider.store.workerTrees.count(saved.workerState.treeId), 50);
+  assert.equal(fixture.requests.length, 51, "One manager dispatch plus exactly 50 child inferences");
+  assert.equal(fixture.approvals.length, 0);
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.equal(fixture.requests.length, 51, "Sleeping manager must not poll the model");
+  for (const [prompt, res] of gates) answer(res, `Completed ${prompt}`);
+  await until(() => fixture.provider.running.size === 0, "50 workers and manager settle", undefined, 30000);
+  const done = fixture.provider.store.load(fixture.root.id, false);
+  const records = done.messages.flatMap(message => message.delegations || []);
+  assert.equal(records.length, 50);
+  assert(records.every(record => record.status === "complete" && record.archived));
+  assert.equal(fixture.provider.store.workerTrees.count(saved.workerState.treeId), 0);
+  assert.deepEqual(fixture.errors, []);
+});
+
+test("Stop aborts all 50 active inference transports without waking the manager and releases resolved capacity", { timeout: 60000 }, async t => {
+  const gates = new Set(), closed = new Set();
+  const fixture = await harness(t, (payload, res) => {
+    const prompt = payload.messages.at(-1).content;
+    if (prompt === "STOP_FIFTY_ROOT") tool(res, "spawn_workers", { tasks: Array.from({ length: 50 }, (_, index) => ({
+      title: `Read-only ${index}`, question: `STOP_FIFTY_CHILD_${index}`, writeScope: [],
+    })) });
+    else {
+      assert(prompt.startsWith("STOP_FIFTY_CHILD_"), "Stop must not trigger a manager decision");
+      gates.add(res);
+      res.on("close", () => closed.add(res));
+    }
+  });
+  maximum = undefined; automatic = undefined;
+  const settings = fixture.provider.settings;
+  fixture.provider.settings = () => ({ ...settings(), timeoutMs: 60000 });
+  await fixture.provider.send("STOP_FIFTY_ROOT", fixture.root);
+  await until(() => gates.size === 50, "50 held child transports", undefined, 30000);
+  fixture.provider.chat = fixture.provider.store.load(fixture.root.id, false);
+  fixture.provider.chats.set(fixture.root.id, fixture.provider.chat);
+  const treeId = fixture.provider.chat.workerState.treeId;
+  await fixture.provider.handle({ type: "cancel" });
+  await until(() => fixture.provider.running.size === 0 && closed.size === 50
+    && fixture.provider.store.workerTrees.count(treeId) === 0, "all 50 cancellations resolve", undefined, 30000);
+  const stopped = fixture.provider.store.load(fixture.root.id, false);
+  const records = stopped.messages.flatMap(message => message.delegations || []);
+  assert.equal(records.length, 50);
+  assert(records.every(record => record.status === "cancelled" && record.archived));
+  assert.equal(apiChatStatus(stopped), "stopped");
+  assert.equal(stopped.workerState.events.length, 50);
+  assert.equal(fixture.requests.length, 51, "Cancelled manager must not wake or replace workers");
+});
+
+test("default policy rejects 51 workers before creating a child or requesting quota expansion", async t => {
+  const fixture = await harness(t, (payload, res) => {
+    const prompt = payload.messages.at(-1).content;
+    if (prompt === "OVERFLOW_ROOT") tool(res, "spawn_workers", { tasks: Array.from({ length: 51 }, (_, index) => ({
+      title: `Overflow ${index}`, question: `OVERFLOW_CHILD_${index}`, writeScope: [],
+    })) });
+    else {
+      assert.match(prompt, /Worker tree limit exceeded \(51 > 50\); no workers were spawned/);
+      answer(res, "The oversized batch was explicitly rejected");
+    }
+  });
+  maximum = undefined; automatic = undefined;
+  await fixture.provider.send("OVERFLOW_ROOT", fixture.root);
+  assert.equal(fixture.requests.length, 2, "Only the manager's request and its error-aware next round may execute");
+  assert.equal(fixture.approvals.length, 0);
+  assert.equal(fixture.provider.store.list().filter(chat => chat.workerParentChatId).length, 0);
+  assert.equal(fixture.provider.store.load(fixture.root.id, false).messages.flatMap(message => message.delegations || []).length, 0);
 });
 
 test("two ready siblings share one batch and dispatch without an intermediate manager request", async t => {

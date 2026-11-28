@@ -56,6 +56,20 @@ export function workerLimits(automatic: number, maximum: number): WorkerLimits {
   return { automatic, maximum };
 }
 
+export function configuredWorkerLimits(config: {
+  get<T>(key: string, fallback: T): T;
+  inspect?<T>(key: string): { globalValue?: T; workspaceValue?: T; workspaceFolderValue?: T;
+    globalLanguageValue?: T; workspaceLanguageValue?: T; workspaceFolderLanguageValue?: T } | undefined;
+}): WorkerLimits {
+  const maximum = config.get<number>("apiChatMaximumWorkers", 50);
+  const source = config.inspect?.<number>("apiChatAutomaticWorkers");
+  const explicit = source && [source.globalValue, source.workspaceValue, source.workspaceFolderValue,
+    source.globalLanguageValue, source.workspaceLanguageValue, source.workspaceFolderLanguageValue].some(value => value !== undefined);
+  const automatic = source && !explicit ? Math.min(50, maximum)
+    : config.get<number>("apiChatAutomaticWorkers", Math.min(50, maximum));
+  return workerLimits(automatic, maximum);
+}
+
 export class WorkerTreeStore {
   constructor(private readonly directory: string) {}
 

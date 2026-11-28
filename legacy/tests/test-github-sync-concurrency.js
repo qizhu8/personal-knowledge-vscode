@@ -9,6 +9,8 @@ const sync = require("../dist/sync/github-sync");
 const { GitHubSyncCoordinator } = require("../dist/sync/github-sync-coordinator");
 const { withCrossProcessLock } = require("../dist/runtime/cross-process-lock");
 const { validatePortablePersonaChanges } = require("../dist/chat/persona-profiles");
+const { withMarkdownAssetLock, withMarkdownAssetMutation } = require("../dist/knowledge/markdown-assets");
+const store = require("../dist/knowledge/filestore");
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate) {
@@ -31,17 +33,18 @@ function section(text, start, end, globals) {
 }
 
 function rollback(root) {
-  fs.mkdirSync(root);
-  const a = path.join(root, "a.md"), b = path.join(root, "b.md");
+  fs.mkdirSync(path.join(root, "notes"), { recursive: true });
+  const a = path.join(root, "notes/a.md"), b = path.join(root, "notes/b.md");
   for (const core of [false, true]) {
     fs.writeFileSync(a, "original-a");
     fs.writeFileSync(b, "original-b");
     let applied = false, injected = false;
     const syncSource = source("sync/github-sync.ts");
     const globals = {
-        path, os: { tmpdir: () => root }, validatePortablePersonaChanges,
+        path, os: { tmpdir: () => root }, validatePortablePersonaChanges, withMarkdownAssetMutation,
         fs: { ...fs, existsSync: destination => {
           if (applied && !injected && destination === b) {
+            assert(fs.existsSync(path.join(root, ".pkm/state/markdown-assets.lock")));
             injected = true;
             fs.writeFileSync(a, "external-edit-a");
             fs.writeFileSync(b, "external-edit-b");
@@ -62,15 +65,15 @@ function rollback(root) {
       core ? "interface GitHubSyncLocalWrite" : "export function replaceGitHubSyncFilesAtomically(",
       core ? "\ntype GitHubSyncEntityMap" : "\ninterface GitHubSyncLocalWrite", {
         ...globals, rollbackGitHubSyncMutation: rollbackHelper.rollbackGitHubSyncMutation,
-        withActionSyncMutation: mutationHelper.withActionSyncMutation,
+        withLiveSyncMutation: mutationHelper.withLiveSyncMutation,
       });
     assert.throws(() => core ? context.applyLocalChanges(root, [
-      { file: { path: "a.md", type: "notes" }, content: Buffer.from("remote-a"), expectedLocal: Buffer.from("original-a") },
-      { file: { path: "b.md", type: "notes" }, content: Buffer.from("remote-b"), expectedLocal: Buffer.from("original-b") },
+      { file: { path: "notes/a.md", type: "notes" }, content: Buffer.from("remote-a"), expectedLocal: Buffer.from("original-a") },
+      { file: { path: "notes/b.md", type: "notes" }, content: Buffer.from("remote-b"), expectedLocal: Buffer.from("original-b") },
     ], []) : context.replaceGitHubSyncFilesAtomically([
       { destination: a, content: Buffer.from("remote-a"), guard: { original: Buffer.from("original-a") } },
       { destination: b, content: Buffer.from("remote-b"), guard: { original: Buffer.from("original-b") } },
-    ]), /Concurrent edit preserved.*rollback refused/);
+    ], "fixture", root), /Concurrent edit preserved.*rollback refused/);
     assert(injected);
     assert.equal(fs.readFileSync(a, "utf8"), "external-edit-a");
     assert.equal(fs.readFileSync(b, "utf8"), "external-edit-b");
@@ -78,6 +81,56 @@ function rollback(root) {
     assert.equal(backups.length, core ? 2 : 1);
     for (const backup of backups) assert.equal(fs.readFileSync(path.join(root, backup, "original"), "utf8"), "original-a");
   }
+}
+
+async function noteCas(root) {
+  const file = path.join(root, "notes/Entry.md");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, "original");
+  store.setStorePath(root);
+  const before = store.readOriginalNoteBodyForEdit("Entry.md");
+  let child;
+  const outcome = new Promise((resolve, reject) => {
+    try {
+      withMarkdownAssetLock(root, () => {
+        child = spawn(process.execPath, ["-e", `
+          const [module, root, file] = process.argv.slice(1);
+          const sync = require(module);
+          try {
+            sync.replaceGitHubSyncFilesAtomically([{ destination: file, content: undefined,
+              guard: { original: Buffer.from("original") } }], "fixture", root);
+            process.exitCode = 2;
+          } catch (error) {
+            if (!error.message.includes("Local content changed at the mutation boundary")) throw error;
+          }
+        `, require.resolve("../dist/sync/github-sync"), root, file], { stdio: "inherit" });
+        child.once("error", reject);
+        child.once("close", code => code === 0 ? resolve() : reject(new Error(`Sync child exited with ${code}`)));
+        const state = path.join(root, ".pkm/state");
+        const deadline = Date.now() + 1500;
+        const wait = new Int32Array(new SharedArrayBuffer(4));
+        while (!fs.readdirSync(state).some(name => /^markdown-assets\.lock\..+\.pending$/.test(name))) {
+          assert(Date.now() < deadline, "Sync delete did not wait for the Original writer");
+          Atomics.wait(wait, 0, 0, 10);
+        }
+        assert.equal(fs.readFileSync(file, "utf8"), "original");
+        fs.writeFileSync(file, "newer owned content");
+      });
+    } catch (error) { child?.kill(); reject(error); }
+  });
+  await outcome;
+  assert.equal(fs.readFileSync(file, "utf8"), "newer owned content");
+  const draft = store.readOriginalNoteBodyForEdit("Entry.md");
+  sync.replaceGitHubSyncFilesAtomically([{ destination: file, content: Buffer.from("pulled"),
+    guard: { original: Buffer.from("newer owned content") } }], "fixture", root);
+  for (const pin of [before, draft]) {
+    assert.throws(() => store.compareAndSwapOriginalNoteBody("Entry.md", pin, "stale"), { code: "ORIGINAL_NOTE_EDIT_CONFLICT" });
+  }
+  const last = store.readOriginalNoteBodyForEdit("Entry.md");
+  sync.replaceGitHubSyncFilesAtomically([{ destination: file, content: undefined,
+    guard: { original: Buffer.from("pulled") } }], "fixture", root);
+  assert.throws(() => store.compareAndSwapOriginalNoteBody("Entry.md", last, "do not recreate"), { code: "ORIGINAL_NOTE_EDIT_CONFLICT" });
+  assert(!fs.existsSync(file));
 }
 
 async function intents(root) {
@@ -257,6 +310,7 @@ if (process.argv[2] === "--child") {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pkm-sync-concurrency-"));
     try {
       rollback(path.join(root, "rollback"));
+      await noteCas(path.join(root, "note-cas"));
       await intents(path.join(root, "intents"));
       await recipes(root);
       await locks(path.join(root, "locks"));

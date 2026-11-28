@@ -5,6 +5,174 @@ let mcpGeneratedCache = null;
 let mcpCompletionNotice = '';
 let mcpPendingSetupTarget = null;
 const mcpPathSizeCache = new Map();
+let mcpBackendView = {};
+let mcpBackendSelection = '';
+let mcpBackendRequest = 0;
+let mcpBackendPending = '';
+let mcpBackendDeadline;
+let mcpBackendRefreshTimer;
+let mcpBackendBackgroundRead = false;
+
+const mcpBackendCopy = {
+  unbound: ['Live switching requires this Linux or Remote-SSH profile’s native pkm provider. Manual/external registrations and unverified routes are unsupported. The current configuration is unchanged.', '实时切换需要当前 Linux 或 Remote-SSH 配置的原生 pkm 提供程序。不支持手动、外部或未经验证的路由。现有配置不变。'],
+  notAdmitted: ['The backend has not started in this window. Configured native MCP starts automatically after preparation; status reads do not start a relay or change the backend.', '此窗口的后端尚未启动。已配置的原生 MCP 会在准备完成后自动启动；状态读取不会自行启动中继或更改后端。'],
+  preparing: ['Preparing the configured MCP backend automatically. Status updates without manual refresh.', '正在自动准备已配置的 MCP 后端，无需手工开启或刷新。'],
+  relayUnverified: ['Both Workbench pkm and PKM Chat must have verified live connections before switching. Status updates automatically as they connect.', '切换前需要验证工作台 pkm 和 PKM Chat 的实时连接；连接后状态会自动更新。'],
+  custodyUnavailable: ['This Knowledge Root is reserved by another session or needs recovery. This window cannot start a second route or switch the backend.', '此知识库根目录已由其他会话保留或需要恢复。此窗口无法启动第二条路由或切换后端。'],
+  statusUnavailable: ['Manager status could not be verified.', '无法验证管理器状态。'],
+  loadingFailed: ['Backend loading failed. Resolve the reported error; status is checked again automatically.', '后端加载失败。请处理报告的错误；状态会自动重新检查。'],
+  candidatesUnavailable: ['The manager’s candidate inventory could not be verified. Refresh before switching.', '无法验证管理器的候选列表。请刷新后再切换。'],
+  busy: ['Another Settings operation is still in progress. Refresh when it finishes.', '另一项设置操作正在进行。请在操作完成后刷新。'],
+  bindingChanged: ['The host binding changed. Refresh before switching.', '主机绑定已变更。请刷新后再切换。'],
+  selectionChanged: ['The active backend or candidate changed. Review the refreshed state before switching.', '活动后端或候选项已变更。请检查刷新后的状态。'],
+  refreshRequired: ['Refresh the manager state before attempting another switch.', '尝试再次切换前，请刷新管理器状态。'],
+  notAccepting: ['The manager is not accepting calls; switching is unavailable.', '管理器未处于接收调用状态，无法切换。'],
+  uncertainWork: ['Uncertain work requires explicit review. Do not replay it.', '结果不确定的操作需要明确审核。请勿重放。'],
+  backgroundWork: ['Active background Chat work blocks switching.', '正在后台运行的聊天任务阻止切换。'],
+  unknownOutcome: ['The switch outcome is unconfirmed. Refresh to check the outcome; do not retry or replay.', '切换结果尚未确认。请刷新以检查结果；请勿重试或重放。'],
+  failed: ['The manager recorded a failed switch. Review its current lifecycle state; no request was replayed.', '管理器记录了切换失败。请检查当前生命周期状态；未重放任何请求。'],
+  refused: ['The manager refused this switch before applying it. Review current state and request fresh approval if needed.', '管理器在应用前拒绝了此次切换。请检查当前状态，必要时重新请求批准。'],
+  completed: ['The manager confirmed completion. The current backend is shown above.', '管理器已确认切换完成。当前后端显示在上方。'],
+  cancelled: ['Switch cancelled. No switch was sent.', '已取消切换，未发送切换请求。'],
+};
+
+function renderMcpBackendSwitch() {
+  const pending = mcpBackendBackgroundRead ? '' : mcpBackendPending;
+  const { active, candidates = [], rejected, error, outcome, serviceId, detail } = mcpBackendView;
+  const blocked = !active?.backendPid || active.phase !== 'accepting' || active.uncertain || active.backgroundActive || active.backgroundUncertain;
+  const options = candidates.filter(item => item.generation !== active?.generation
+    || pending === 'Apply' && item.generation === mcpBackendSelection);
+  const target = options.find(item => item.compatible && item.generation === mcpBackendSelection);
+  const loading = !active && (!error || error === 'preparing');
+  const phase = !active ? loading ? helpText('Loading backend status…', '正在加载后端状态…')
+    : error === 'notAdmitted' ? helpText('Backend not started', '后端未启动')
+    : helpText('Backend status failed', '后端状态获取失败') : {
+    starting: helpText('Starting', '正在启动'), accepting: helpText('Accepting calls', '正在接收调用'),
+    draining: helpText('Draining calls', '正在排空调用'), 'action-required': helpText('Action required', '需要处理'),
+    closed: helpText('Closed', '已关闭'),
+  }[active?.phase] || helpText('Backend status failed', '后端状态获取失败');
+  const unavailable = helpText('Version unavailable', '版本不可用');
+  const backendName = mode => mode === 'original' ? helpText('Original MCP', '原版 MCP')
+    : mode === 'bundled-v5' ? helpText('Bundled v5 MCP', '内置 v5 MCP') : '';
+  const canSwitch = target && !blocked && !error && outcome !== 'unknownOutcome' && !pending;
+  const messages = [...new Set([error, outcome, active?.uncertain || active?.backgroundUncertain ? 'uncertainWork'
+    : active?.backgroundActive ? 'backgroundWork' : ''].filter(key => mcpBackendCopy[key]))];
+  return `<section class="mcp-backend-switch" aria-labelledby="mcp-backend-title">
+    <header class="mcp-backend-heading"><div><h3 id="mcp-backend-title">${helpText('Live backend', '实时后端')}</h3>
+      <p>${helpText('Switch a compatible generation behind the same pkm entry. Changing the selection alone does nothing.', '在同一个 pkm 条目下切换兼容版本。仅选择版本不会应用变更。')}</p></div>
+      <button type="button" class="tbtn" id="mcp-backend-refresh" onclick="requestMcpBackend('Read')" ${pending ? 'disabled' : ''}>${helpText('Refresh status', '刷新状态')}</button>
+    </header>
+    <div class="mcp-backend-lanes">
+      <div class="mcp-backend-lane mcp-backend-observed">
+        <div class="mcp-backend-label">${active && !active.backendPid ? helpText('Last reported generation', '上次报告的版本')
+          : helpText('Manager-reported active', '管理器报告的活动版本')}</div>
+        <strong>${esc([backendName(active?.mode), phase].filter(Boolean).join(' · '))}</strong>
+        ${active ? `<span>${helpText('MCP version', 'MCP 版本')} ${esc(active.version ? `v${active.version}` : unavailable)}</span>` : ''}
+        ${active ? `<small>${helpText('In flight', '进行中')} ${esc(active.inFlight)} · ${helpText('Uncertain', '结果不确定')} ${esc(active.uncertain + active.backgroundUncertain)}</small>` : ''}
+      </div>
+      <div class="mcp-backend-lane">
+        <label class="mcp-backend-label" for="mcp-backend-target">${helpText('Switch target', '切换目标')}</label>
+        <select id="mcp-backend-target" onchange="selectMcpBackend(this.value)" ${error === 'unbound' || !options.length || pending ? 'disabled' : ''}>
+          <option value="">${options.some(item => item.compatible) ? helpText('Choose a staged generation…', '选择已暂存的版本…') : helpText('No compatible alternative', '没有兼容的备选版本')}</option>
+          ${options.map(item => `<option value="${esc(item.generation).replace(/"/g, '&quot;')}" ${item === target ? 'selected' : ''} ${item.compatible ? '' : 'disabled'}>${esc(backendName(item.mode) || helpText('MCP backend', 'MCP 后端'))} · ${esc(item.version ? `v${item.version}` : unavailable)}${item.compatible ? '' : ` · ${helpText('incompatible', '不兼容')}`}</option>`).join('')}
+        </select>
+        ${rejected ? `<small>${esc(rejected)} ${helpText('candidate(s) failed verification', '个候选项未通过验证')}</small>` : ''}
+        <button type="button" class="tbtn" id="mcp-backend-apply" onclick="requestMcpBackend('Apply')" ${canSwitch ? '' : 'disabled'}>${helpText('Review and switch', '审核并切换')}</button>
+      </div>
+    </div>
+    <div class="mcp-backend-feedback" role="status" aria-live="polite">
+      ${pending === 'Apply' ? `<p>${helpText('Waiting for host approval or the manager’s switch result…', '正在等待主机批准或管理器的切换结果…')}</p>` : ''}
+      ${messages.map(key => `<p>${helpText(...mcpBackendCopy[key])}</p>`).join('')}
+      ${detail ? `<p>${esc(detail)}</p>` : ''}
+    </div>
+    ${active?.runtimeBuild || serviceId ? `<details class="mcp-backend-service">
+      <summary>${helpText('Diagnostic details', '诊断详情')}</summary>
+      ${active?.generation ? `<small>${helpText('Generation', '运行代次')} <code>${esc(active.generation)}</code></small>` : ''}
+      ${active?.runtimeBuild ? `<small>${helpText('Build SHA256', '构建 SHA256')} <code>${esc(active.runtimeBuild)}</code></small>` : ''}
+      ${target ? `<small>${helpText('Target build SHA256', '目标构建 SHA256')} <code>${esc(target.runtimeBuild)}</code></small>` : ''}
+      ${serviceId ? `<small>${helpText('Bound service', '绑定的服务')} <code>${esc(serviceId)}</code></small>` : ''}
+    </details>` : ''}
+  </section>`;
+}
+
+function refreshMcpBackendSection() {
+  const slot = document.getElementById('mcp-backend-slot');
+  if (!slot) return;
+  const markup = renderMcpBackendSwitch();
+  if (slot.mcpBackendMarkup === markup) return;
+  const focus = slot.contains(document.activeElement) ? document.activeElement?.id : '';
+  const diagnosticsOpen = slot.querySelector?.('.mcp-backend-service')?.open;
+  slot.innerHTML = markup;
+  slot.mcpBackendMarkup = markup;
+  if (diagnosticsOpen) slot.querySelector('.mcp-backend-service')?.setAttribute('open', '');
+  if (focus) document.getElementById(focus)?.focus({ preventScroll:true });
+}
+
+function selectMcpBackend(generation) {
+  mcpBackendSelection = generation;
+  refreshMcpBackendSection();
+}
+
+function scheduleMcpBackendRefresh() {
+  clearTimeout(mcpBackendRefreshTimer);
+  if (mcpBackendView.outcome === 'unknownOutcome' || mcpBackendView.error === 'unknownOutcome') return;
+  mcpBackendRefreshTimer = setTimeout(() => {
+    const slot = document.getElementById('mcp-backend-slot');
+    if (state.tab !== 'mcp' || !slot) return;
+    if (document.hidden || slot.closest?.('[data-settings-panel]')?.hidden) {
+      scheduleMcpBackendRefresh();
+      return;
+    }
+    requestMcpBackend('Read', true);
+  }, mcpBackendView.active ? 30_000 : 10_000);
+}
+
+function requestMcpBackend(action, background = false) {
+  if (mcpBackendPending) return;
+  clearTimeout(mcpBackendRefreshTimer);
+  const { active, candidates = [], serviceId } = mcpBackendView;
+  const target = candidates.find(item => item.compatible && item.generation === mcpBackendSelection && item.generation !== active?.generation);
+  if (action === 'Apply' && (!target || !active?.backendPid || active.phase !== 'accepting' || mcpBackendView.error
+    || mcpBackendView.outcome === 'unknownOutcome' || active.uncertain || active.backgroundUncertain || active.backgroundActive)) return;
+  if (action === 'Apply') mcpBackendView = { ...mcpBackendView, outcome:undefined };
+  mcpBackendPending = action;
+  mcpBackendBackgroundRead = action === 'Read' && background;
+  const requestId = ++mcpBackendRequest;
+  refreshMcpBackendSection();
+  vscode.postMessage({ command:'mcpBackendSwitch' + action, requestId, ...(action === 'Apply'
+    ? { generation:target.generation, runtimeBuild:target.runtimeBuild, serviceId, activeGeneration:active.generation, activePid:active.backendPid,
+      selectionRevision:mcpBackendView.selectionRevision }
+    : {}) });
+  mcpBackendDeadline = setTimeout(() => {
+    if (requestId !== mcpBackendRequest || !mcpBackendPending) return;
+    mcpBackendPending = '';
+    mcpBackendBackgroundRead = false;
+    mcpBackendView = { error:action === 'Apply' ? 'unknownOutcome' : 'statusUnavailable' };
+    refreshMcpBackendSection();
+    scheduleMcpBackendRefresh();
+  }, action === 'Apply' ? 360_000 : 30_000);
+}
+
+window.addEventListener?.('message', event => {
+  const { command, data } = event.data || {};
+  if (command !== 'mcpBackendSwitchResult' || data?.requestId !== mcpBackendRequest) return;
+  if (data.progress) {
+    if (mcpBackendPending === 'Apply') mcpBackendView = { ...mcpBackendView, active:data.active };
+  } else {
+    clearTimeout(mcpBackendDeadline);
+    const background = mcpBackendBackgroundRead;
+    mcpBackendPending = '';
+    mcpBackendBackgroundRead = false;
+    if (!(background && data.error === 'busy')
+      && ((mcpBackendView.serviceId && data.serviceId !== mcpBackendView.serviceId) || data.active?.generation === mcpBackendSelection))
+      mcpBackendSelection = '';
+    mcpBackendView = background && data.error === 'busy' ? mcpBackendView
+      : background ? { ...data, outcome: mcpBackendView.outcome } : data;
+    if (data.active && !data.active.version) mcpBackendView.error = 'statusUnavailable';
+    scheduleMcpBackendRefresh();
+  }
+  refreshMcpBackendSection();
+});
 
 function beginMcpUiAction(command, payload, button) {
   mcpCompletionNotice = '';
@@ -27,13 +195,14 @@ function mcpI18nAttrs(key, params = {}) {
 }
 
 function renderMcpLoading() {
-  document.getElementById('detail').innerHTML = `<div class="settings-pane" data-settings-owner="mcp"><h2>Personal Knowledge Manager</h2>${settingsTabBar('mcp',[['general','General Setting'],['mcp','MCP'],['access','Agent feature access'],['debug','Debug']])}<section data-settings-panel="general"><p>${esc(document.getElementById('pkm-version')?.textContent || '')}</p><p role="status">Checking component health and paths in the background...</p></section><section data-settings-panel="mcp access debug"><p role="status">Status has not been received yet.</p></section></div>`;
+  document.getElementById('detail').innerHTML = `<div class="settings-pane" data-settings-owner="mcp"><h2>Personal Knowledge Manager</h2>${settingsTabBar('mcp',[['general','General Setting'],['mcp','MCP'],['access','Agent feature access'],['debug','Debug']])}<section data-settings-panel="general"><p>${esc(document.getElementById('pkm-version')?.textContent || '')}</p><p role="status">Checking component health and paths in the background...</p></section><section data-settings-panel="mcp"><div id="mcp-backend-slot">${renderMcpBackendSwitch()}</div></section><section data-settings-panel="mcp access debug"><p role="status">Status has not been received yet.</p></section></div>`;
   applySettingsSubtab('mcp');
 }
 
 function showMcpTab() {
   if (mcpStatusCache) renderMcpPane(mcpStatusCache); else renderMcpLoading();
   if (!tabCacheIsFresh(mcpStatusUpdatedAt)) ask('mcpStatus', {}, null, true);
+  requestMcpBackend('Read');
 }
 
 function mcpOnStatus(data) {
@@ -115,14 +284,29 @@ function updateGlobalMcpWarning(data) {
   const action = banner?.querySelector('.mcp-setup-action');
   if (!banner || !text) return;
   const presentation = mcpSetupPresentation(data);
-  const attention = data?.lifecycle?.instances?.some(instance => instance.heartbeatFresh === true
+  const attentionInstances = (data?.lifecycle?.instances || []).filter(instance => instance.heartbeatFresh === true
     && (['draining','action-required'].includes(instance.observedState) || instance.uncertainCalls > 0 || instance.controlError));
+  const attention = attentionInstances.length > 0;
+  const uncertain = attentionInstances.some(instance => instance.uncertainCalls > 0);
+  const oldRegistryErrors = attention && attentionInstances.every(instance =>
+    instance.generation && data?.lifecycle?.configuredGeneration
+    && instance.generation !== data.lifecycle.configuredGeneration
+    && instance.observedState === 'drained' && instance.inFlight === 0 && instance.uncertainCalls === 0
+    && instance.controlError === 'instance-registry-unavailable');
+  const attentionText = uncertain
+    ? helpText('An MCP call has an unconfirmed outcome. Check whether its write completed before retrying; do not replay uncertain writes.',
+      '有 MCP 调用的结果尚未确认。重试前请核实写入是否完成，不要重复提交。')
+    : oldRegistryErrors
+      ? helpText('Old MCP connections have stopped accepting calls but cannot update their status records. Check old client connections in Debug; this is not a report of an uncertain write.',
+        '旧 MCP 连接已停止接收调用，但无法更新状态记录。可在 Debug 查看旧客户端连接；这不是未确认写入的报告。')
+      : helpText('An MCP connection is draining or has a control error. Open Debug to inspect the affected connection and error.',
+        '有 MCP 连接正在排空或发生控制错误。请打开 Debug 查看对应连接及错误。');
   const visible = !['ready','unknown'].includes(presentation.kind) || attention;
   banner.hidden = !visible;
   if (visible) banner.classList.remove('hidden'); else banner.classList.add('hidden');
   banner.dataset.setupState = presentation.kind;
-  text.textContent = attention ? 'An MCP instance needs review. Do not replay uncertain writes.' : visible ? presentation.text : '';
-  if (action) { action.textContent = attention ? 'Review lifecycle' : presentation.label; action.onclick = attention ? () => openMcpSetup('lifecycle') : () => mcpSetupAction(action); }
+  text.textContent = attention ? attentionText : visible ? presentation.text : '';
+  if (action) { action.textContent = attention ? helpText('View connection details', '查看连接详情') : presentation.label; action.onclick = attention ? () => openMcpSetup('lifecycle') : () => mcpSetupAction(action); }
   const guide = banner.querySelector('.mcp-help-action');
   if (guide && guide !== action) guide.textContent = helpText('Setup guide', '配置指南');
 }
@@ -130,7 +314,8 @@ function updateGlobalMcpWarning(data) {
 function openMcpSetup(target) {
   const kind = target || (mcpSetupPresentation(mcpStatusCache).kind === 'python' ? 'python' : 'progress');
   mcpPendingSetupTarget = kind;
-  selectSettingsSubtab('mcp', 'mcp');
+  if (kind === 'lifecycle') selectSettingsSubtab('mcp', 'debug');
+  else selectSettingsSubtab('mcp', 'mcp');
   document.querySelector('.tab[data-tab="mcp"]')?.click();
   requestAnimationFrame(focusPendingMcpSetup);
 }
@@ -220,7 +405,7 @@ function renderMcpLifecycle(lifecycle) {
   const instances = Array.isArray(lifecycle.instances) ? lifecycle.instances : [];
   const attention = instances.some(instance => instance.heartbeatFresh === true
     && (['draining', 'action-required'].includes(instance.observedState) || instance.uncertainCalls > 0 || instance.controlError));
-  return `<details id="mcp-lifecycle"${attention ? ' open' : ''} style="border:1px solid ${attention ? '#f4b40066' : 'var(--border)'};border-radius:8px;padding:12px 14px;margin-bottom:16px;overflow-wrap:anywhere">
+  return `<details id="mcp-lifecycle" tabindex="-1"${attention ? ' open' : ''} style="border:1px solid ${attention ? '#f4b40066' : 'var(--border)'};border-radius:8px;padding:12px 14px;margin-bottom:16px;overflow-wrap:anywhere">
     <summary>${label('Title', 'Managed MCP lifecycle')} · ${instances.length}</summary>
     <p>${label('Boundary', 'Runtime prepared does not mean the actual client connection has been verified. Instance observations are not a client handshake.')}</p>
     <div>${esc(lifecycle.reason || lifecycle.connectionState || 'unverified')}</div>
@@ -462,6 +647,7 @@ function renderMcpPane(data) {
       </section>
       <section data-settings-panel="access">${renderMcpFeatureDomains(data)}</section>
       <section data-settings-panel="mcp">
+      <div id="mcp-backend-slot">${renderMcpBackendSwitch()}</div>
       <div style="background:var(--panel);border:1px solid ${data?.nativeMcpProvider ? '#4ade8066' : '#f4b40066'};border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:11px;line-height:1.6;color:var(--muted)">
         <strong data-i18n="config.definitionTitle">VS Code MCP definition</strong>
         <div><span data-i18n="config.source">Source</span>: <code>${data?.accountBinding?.registrationOwner ? esc(data.accountBinding.registrationOwner) : '<span data-i18n="config.stateMissing">Missing</span>'}</code></div>
@@ -510,7 +696,6 @@ function renderMcpPane(data) {
         </ul>
       </div>
 
-      ${renderMcpLifecycle(data?.lifecycle)}
       ${installed ? `
         <div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:16px">
           <div style="font-size:11px;color:var(--muted);margin-bottom:4px" data-i18n="config.serverLocation">Server location</div>
@@ -570,7 +755,7 @@ copilot mcp get pkm</pre>
         </ol>
         <p data-i18n="config.copilotRegistrationRemote">For Remote SSH, edit the remote account's configuration and run Copilot on that remote machine; do not run Linux paths on the local Windows client. If you move the runtime or server directory, update this registration. Do not add a duplicate VS Code user/workspace entry when its native provider already supplies pkm.</p>
       </div>
-      ${renderIntegrationGuide(data)}</section><section data-settings-panel="debug">${renderLoadProfiling(data)}</section>
+      ${renderIntegrationGuide(data)}</section><section data-settings-panel="debug">${renderLoadProfiling(data)}${renderMcpLifecycle(data?.lifecycle)}</section>
     </div>`;
 
   applySettingsSubtab('mcp');

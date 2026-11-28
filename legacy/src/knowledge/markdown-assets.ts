@@ -16,10 +16,13 @@ export interface MarkdownAsset {
   digest: string;
 }
 
-export function withMarkdownAssetMutation<T>(root: string, action: () => T): T {
+export function withMarkdownAssetLock<T>(root: string, action: () => T): T {
   return withLegacyLinuxRootWriter(root, () =>
-    withCrossProcessLockSync(path.join(root, ".pkm", "state", "markdown-assets.lock"), "Markdown resource mutation",
-      () => withTrackedMarkdownMutation(root, action)));
+    withCrossProcessLockSync(path.join(root, ".pkm", "state", "markdown-assets.lock"), "Markdown resource mutation", action));
+}
+
+export function withMarkdownAssetMutation<T>(root: string, action: () => T): T {
+  return withMarkdownAssetLock(root, () => withTrackedMarkdownMutation(root, action));
 }
 
 export interface MarkdownAssetDocument { area: MarkdownAssetArea; path: string; content: string; }

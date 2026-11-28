@@ -39,12 +39,24 @@ those processes; a centralized Remote Server is not a singleton Extension Host.
 - **PKM: Register Copilot CLI MCP (User)** previews the current host/account and
   launch, then adds only `mcpServers.pkm` to the default user
   `~/.copilot/mcp-config.json` after confirmation. The helper rejects conflicting
-  entries/aliases, malformed or ambiguous JSON, unsafe paths and stale review
-  revisions; preserves unrelated configuration; privately backs up existing
+  entries/aliases, malformed or ambiguous JSONC, unsafe paths and stale review
+  revisions; preserves unrelated configuration, comments and line endings; privately backs up existing
   bytes; and replaces the config through a same-directory atomic rename under a
   cooperative cross-process lock. Identical registrations are a no-op. The
   final revision check detects intervening external edits, but cannot lock out
   noncooperating external writers after that check.
+  Explicit migration may additionally provide the exact reviewed existing
+  definition to `registerCopilotMcp`; only that entry can then be replaced.
+  Existing tool selections are preserved, aliases still block replacement,
+  and both the reviewed definition and configuration revision must match.
+  The registration command offers **Replace Reviewed PKM Registration** for a
+  conflicting local launch with explicit tool selections; cancelling keeps the
+  old configuration. Unsupported extra settings require manual review.
+  On Linux the reviewed launch uses the verified managed peer entry, not a
+  separately pinned cold adapter. The entry checks the exact Original and
+  bundled runtime identity and joins an already admitted owner. Registration
+  itself does not start that owner, and missing native admission never falls
+  back to an independent Original process.
 - Config uses native startup guidance rather than a copyable Agent installation
   prompt. It no longer directs an agent to register a duplicate through Agency.
 - The former Settings **Inject / Update All** path is retired. The

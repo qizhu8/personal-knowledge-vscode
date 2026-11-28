@@ -1,13 +1,19 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { startCompatibilityMcp } from "./compatibility-mcp.js";
+import { compatibilityMcpConfiguration, startCompatibilityMcp } from "./compatibility-mcp.js";
+import { acquireColdCompatibilityGatewayCustody } from "./compatibility-gateway-custody.js";
 
 const [path, pin, ...extra] = process.argv.slice(2);
 let server: Awaited<ReturnType<typeof startCompatibilityMcp>> | undefined, stopping: Promise<void> | undefined;
+let custody: Awaited<ReturnType<typeof acquireColdCompatibilityGatewayCustody>> | undefined;
 let shutdownRequested = false;
 const stop = () => {
   shutdownRequested = true;
-  if (server) void (stopping ??= server.close()).catch(error => { console.error(error); process.exitCode = 1; });
+  if (server) void (stopping ??= (async () => {
+    let clean = false;
+    try { await server!.close(); clean = true; }
+    finally { await custody?.release(clean); }
+  })()).catch(error => { console.error(error); process.exitCode = 1; });
 };
 process.stdin.once("end", stop);
 process.on("SIGINT", stop);
@@ -24,9 +30,12 @@ try {
     bytes = readFileSync(fd);
   } finally { closeSync(fd); }
   if (createHash("sha256").update(bytes).digest("hex") !== pin) throw new Error("COMPATIBILITY_CONFIGURATION_CHANGED");
-  server = await startCompatibilityMcp(JSON.parse(bytes.toString("utf8")));
+  const config = compatibilityMcpConfiguration.parse(JSON.parse(bytes.toString("utf8")));
+  if (process.platform === "linux") custody = await acquireColdCompatibilityGatewayCustody(config.knowledgeRoot);
+  server = await startCompatibilityMcp(config);
   if (shutdownRequested || process.stdin.readableEnded) stop();
 } catch (error) {
+  await custody?.release(false).catch(cleanup => console.error(cleanup));
   console.error(error);
   process.exitCode = 1;
 }

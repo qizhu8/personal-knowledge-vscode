@@ -1,0 +1,237 @@
+const assert = require("node:assert/strict");
+const { test } = require("node:test");
+const { createHash, randomUUID } = require("node:crypto");
+const { mkdirSync, readFileSync, rmSync } = require("node:fs");
+const { createServer } = require("node:http");
+const { join, resolve } = require("node:path");
+const Module = require("node:module");
+const build = process.env.PKM_CHAT_TEST_BUILD || join(__dirname, "../dist");
+
+test("native browser Send and exact Stop use the existing store, writer and streaming transport", { timeout: 15_000 }, async t => {
+  const root = join(__dirname, "../../.migration-test-work", `browser-turn-${randomUUID()}`);
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const requests = [];
+  let streaming, releaseStreaming;
+  streaming = new Promise(resolve => { releaseStreaming = resolve; });
+  const server = createServer(async (req, res) => {
+    let data = "";
+    for await (const chunk of req) data += chunk;
+    const body = JSON.parse(data);
+    requests.push(body);
+    const text = body.messages.at(-1).content;
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "isolated model output" } }] })}\n\n`);
+    if (text.includes("hold stream")) releaseStreaming();
+    else if (text.includes("unknown result")) res.end();
+    else res.end('data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const folder = { uri: { fsPath: root, scheme: "file", toString: () => `file://${root}` }, name: "fixture", index: 0 };
+  const disposable = () => ({ dispose() {} });
+  const cfg = { aiEndpoint: `http://127.0.0.1:${server.address().port}/v1`, aiModel: "fixture",
+    apiChatModelProfiles: [{ id: "fixture", status: "active", contextWindow: 8192, maxOutputTokens: 1024 }] };
+  const notices = [];
+  let consent = () => undefined, keyReads = 0;
+  const vscode = {
+    env: { language: "en" },
+    workspace: { isTrusted: true, workspaceFolders: [folder], onDidChangeConfiguration: disposable,
+      getConfiguration: () => ({ get: (name, fallback) => cfg[name] ?? fallback }) },
+    window: { showErrorMessage: async message => { notices.push(message); }, showInformationMessage: async () => {},
+      showWarningMessage: async (message, options, action) => { notices.push(message); return consent(options, action); } },
+    lm: { tools: [] }, commands: { executeCommand: async () => undefined },
+  };
+  const load = Module._load;
+  Module._load = function (name, ...args) { return name === "vscode" ? vscode : load.call(this, name, ...args); };
+  let view, store, binding;
+  try {
+    const { ApiChatView } = require(join(build, "chat/api-chat-view"));
+    const { ApiChatStore } = require(join(build, "chat/api-chat-store"));
+    const { bindBrowserChatTurns } = require(join(build, "chat/browser-chat-turns"));
+    const { setStorePath } = require(join(build, "knowledge/filestore"));
+    const { HostWriterAdmission } = require(join(build, "runtime/host-writer-admission"));
+    setStorePath(root);
+    const host = new HostWriterAdmission(root, () => root);
+    const context = { extensionPath: resolve(__dirname, ".."), globalStorageUri: { fsPath: root }, globalState: { get: (_, fallback) => fallback, update: async () => {} },
+      workspaceState: { get: () => undefined, update: async () => {} },
+      secrets: { get: async () => { keyReads++; return "local-fixture"; } } };
+    view = new ApiChatView(context);
+    view.setHostWriterObserver((work, cancellation) => cancellation ? host.observeCancellation(work) : host.observe("chat", work));
+    const namespace = createHash("sha256").update(folder.uri.toString()).digest("hex").slice(0, 16);
+    store = new ApiChatStore(join(root, ".pkm", "state"), namespace);
+    view.store = store;
+    const chat = store.create();
+    Object.assign(chat, { permissionMode: "read-only", builtinTools: [], includeHistory: false });
+    store.save(chat);
+    store.startTask(chat, "Existing session");
+    view.chat = chat;
+    view.chats.set(chat.id, chat);
+    view.view = { visible: true, webview: { postMessage: async () => true } };
+    binding = { bindBrowserChatTurns, chat };
+  } finally { Module._load = load; }
+  t.after(() => view.dispose());
+  const { chat, bindBrowserChatTurns } = binding;
+  const grant = { actorId: "fixture", workspaceRoot: root, generation: "fixture", chatHostId: randomUUID() };
+  let approvals = 0, beforeApproval = () => {};
+  const owner = bindBrowserChatTurns(grant, {
+    assertCurrent: current => assert.deepEqual(current, grant),
+    target: id => view.browserChatTurnTarget(root, id),
+    confirm: async () => { approvals++; beforeApproval(); return true; },
+    async send(id, text, admitted) {
+      try { return await view.sendBrowserChatTurn(root, id, text, admitted); }
+      catch (error) { notices.push(error.stack); throw error; }
+    },
+  });
+
+  const target = () => owner.getSendTarget(grant, { chatId: chat.id });
+  const stale = target();
+  beforeApproval = () => {
+    const other = store.load(chat.id, false);
+    other.title = "Renamed during confirmation";
+    store.save(other);
+  };
+  assert.equal((await owner.sendChatTurn(grant, { ...stale, text: "do not send stale" })).status, "not-sent");
+  assert.equal(requests.length, 0);
+  assert.equal(store.load(chat.id, false).messages.length, 0);
+  view.chat = store.load(chat.id, false);
+  beforeApproval = () => {};
+
+  const first = target();
+  const finished = await owner.sendChatTurn(grant, { ...first, text: "finish normally" });
+  assert.equal(finished.status, "completed", JSON.stringify({ notices, requests: requests.length }));
+  assert.equal(owner.getChatTurn(grant, first).status, "completed");
+  assert.equal((await owner.sendChatTurn(grant, { ...first, text: "do not replay" })).status, "completed");
+  assert.equal(requests.length, 1);
+  const previous = target();
+  const second = target();
+  const pending = owner.sendChatTurn(grant, { ...second, text: "hold stream" });
+  await Promise.race([streaming, pending.then(result => assert.fail(JSON.stringify({ result, notices })))]);
+  assert.equal(owner.getChatTurn(grant, second).status, "running");
+  assert.throws(() => owner.stopChatTurn(grant, previous), /unavailable/);
+  assert.throws(() => owner.stopChatTurn(grant, { ...second, chatId: randomUUID() }), /unavailable/);
+  assert.equal(owner.getChatTurn(grant, second).status, "running");
+  assert.equal(owner.stopChatTurn(grant, second).status, "stop-requested");
+  assert.equal((await pending).status, "cancelled");
+  const saved = store.load(chat.id, false);
+  assert.deepEqual(saved.messages.filter(m => m.role === "assistant").map(m => [m.progress.attemptId, m.status]),
+    [[first.turnId, "complete"], [second.turnId, "cancelled"]]);
+  assert.equal(approvals, 3);
+  assert.equal(requests.length, 2);
+
+  const uncertain = target();
+  assert.equal((await owner.sendChatTurn(grant, { ...uncertain, text: "unknown result" })).status, "unknown");
+  assert.equal(owner.getChatTurn(grant, uncertain).status, "unknown");
+  assert.equal((await owner.sendChatTurn(grant, { ...uncertain, text: "unknown result" })).status, "unknown");
+  assert.equal(requests.length, 3, "an ambiguous provider result must not replay");
+  assert.equal(approvals, 4);
+
+  const raced = target();
+  const admit = store.admitBrowserTurn.bind(store);
+  const secondWindowStore = new store.constructor(join(root, ".pkm", "state"), store.namespace);
+  const snapshot = secondWindowStore.load(chat.id, false);
+  // Schedule a real second-store revision precisely between the UI check and
+  // the first durable admission, before the latter enters the writer lock.
+  const race = t.mock.method(store, "admitBrowserTurn", (...args) => {
+    snapshot.title = "Another window won at admission";
+    secondWindowStore.save(snapshot);
+    return admit(...args);
+  });
+  assert.equal((await owner.sendChatTurn(grant, { ...raced, text: "do not send after CAS loss" })).status, "unknown");
+  race.mock.restore();
+  assert.equal(requests.length, 3);
+  const afterRace = store.load(chat.id, false);
+  assert.equal(afterRace.title, snapshot.title);
+  assert.equal(afterRace.messages.length, 6);
+  assert.equal(view.chat.messages.length, 6, "a rejected draft must not become the visible Chat");
+
+  await t.test("native consent pins inherited settings without changing the saved Chat", async () => {
+    const { bindDetachedOriginalTextTurn } = require(join(build, "chat/detached-original-text-turn"));
+    const inherited = store.create();
+    Object.assign(inherited, { permissionMode: "read-only", includeHistory: false, builtinTools: [] });
+    store.save(inherited);
+    view.chat = inherited;
+    view.chats.set(inherited.id, inherited);
+    const native = bindBrowserChatTurns(grant, {
+      assertCurrent() {},
+      target: id => view.browserChatTurnTarget(root, id),
+      confirm: async () => true,
+      send: (id, text, admitted) => view.sendBrowserChatTurn(root, id, text, admitted),
+    });
+    const nativeRef = native.getSendTarget(grant, { chatId: inherited.id });
+    assert.equal((await native.sendChatTurn(grant, { ...nativeRef, text: "Ordinary native history before the Task" })).status, "completed",
+      JSON.stringify(notices.slice(-2)));
+    Object.assign(inherited, store.load(inherited.id, false));
+    view.chat = inherited;
+    view.chats.set(inherited.id, inherited);
+    assert.equal(inherited.messages.length, 2);
+    assert.equal(inherited.messages[1].status, "complete");
+    delete inherited.builtinTools;
+    store.save(inherited);
+    store.startTask(inherited, "Legacy Task");
+    const file = store.file(inherited.id), before = readFileSync(file, "utf8");
+    const inheritedFields = ["activityCreditLimit", "modelProvider", "modelProfileId", "builtinTools", "vscodeTools", "toolSelection"];
+    const assertInherited = raw => {
+      for (const field of inheritedFields) assert.equal(Object.hasOwn(JSON.parse(raw), field), false, field);
+    };
+    assertInherited(before);
+    const secretReadsBefore = keyReads;
+    let modals = 0;
+    const approve = () => view.approveDetachedConversation(grant, inherited.id, () => {});
+    consent = () => { modals++; };
+    await assert.rejects(approve(), /requires an Unlimited activity credit limit.*Credit limit menu/);
+    assert.equal(modals, 0);
+    cfg.apiChatActivityCreditLimit = -1;
+    cfg.apiChatProvider = "openai-compatible";
+    assert.equal(await approve(), undefined);
+    assert.equal(modals, 1);
+    for (const [key, changed] of [["apiChatActivityCreditLimit", 25], ["aiModel", "different-profile"]]) {
+      const previous = cfg[key];
+      consent = (_options, action) => { cfg[key] = changed; return action; };
+      await assert.rejects(approve(), /native model settings changed/);
+      cfg[key] = previous;
+    }
+    assert.equal(keyReads, secretReadsBefore, "do not read the key after a refusal or a settings change");
+    consent = (options, action) => {
+      assert.match(options.detail, /Unlimited activity credit.*browser cannot use native tools/s);
+      return action;
+    };
+    const { approval, providerKey } = await approve();
+    assert.equal(keyReads, secretReadsBefore + 1);
+    assert.equal(approval.model.provider, "openai-compatible");
+    assert.equal(approval.model.profile.id, "fixture");
+    assert.deepEqual(approval.nativeSettings, { activityCreditLimit: -1, toolPolicy: "none" });
+    assert.equal(readFileSync(file, "utf8"), before, "approval must not rewrite native settings");
+    const detached = bindDetachedOriginalTextTurn(approval, {
+      assertCurrent: current => assert.deepEqual(current, grant),
+      readProviderKey: async () => providerKey,
+      withWriter: work => work(),
+    });
+    const sent = ["send with native defaults", "another detached turn"];
+    for (const text of sent) {
+      const ref = detached.getSendTarget(grant, { chatId: inherited.id });
+      assert.equal((await detached.sendChatTurn(grant, { ...ref, text })).status, "completed");
+      const refreshed = store.load(inherited.id, false);
+      view.chat = refreshed;
+      view.chats.set(refreshed.id, refreshed);
+      const saved = readFileSync(file, "utf8");
+      const stamp = store.browserTurnRevision(refreshed, approval.execution.digest);
+      await view.handle({ type: "read", id: refreshed.id, value: refreshed.lastResultId });
+      assert.equal(detached.readSettledReply(refreshed.id).messages.at(-2).content, text);
+      assert.equal(store.load(refreshed.id, false).readResultId, refreshed.lastResultId);
+      assert.equal(store.list().find(row => row.id === refreshed.id).status, "completed");
+      assert.equal(readFileSync(file, "utf8"), saved, "viewing a result must not write Chat history");
+      assert.equal(store.browserTurnRevision(refreshed, approval.execution.digest), stamp);
+    }
+    assert.deepEqual(detached.readSettledReply(inherited.id).messages.filter(message => message.role === "user").map(message => message.content), sent);
+    assert.equal(requests.at(-1).model, "fixture");
+    assert.equal(requests.at(-1).tools, undefined);
+    assert.equal(store.load(inherited.id, false).sessionId, approval.sessionId);
+    assertInherited(readFileSync(file, "utf8"));
+    const edited = store.load(inherited.id, false);
+    edited.title = "An actual native edit";
+    store.save(edited);
+    assert.throws(() => detached.readSettledReply(inherited.id), /unavailable/);
+    assert.throws(() => detached.getSendTarget(grant, { chatId: inherited.id }), /unavailable/);
+  });
+});

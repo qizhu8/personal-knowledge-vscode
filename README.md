@@ -256,6 +256,60 @@ memory. Management uses its separate credential, pinned service UUID and an
 explicit single-use approval for the exact action/target; it is not an implicit
 business-token permission.
 
+Uone PKM Settings → MCP has a live backend switch control. The extension host
+must wire one `createMcpBackendSwitch({ getBinding, confirm })` adapter per
+activation, and pass existing panel messages to `handleMessage(msg, respond)`
+before the generic command dispatch (`if (await adapter.handleMessage(msg,
+respond)) return;`). `getBinding` must return the same
+`VerifiedMcpSwitchBinding` object until the existing `pkm` entry’s verified
+manager identity or authority changes. The binding is `{ serviceId, request }`;
+`request` wraps `sharedManagedRequest` with the independently verified manager
+origin and separate management credential. `confirm` must use a host-owned
+modal showing the service UUID, current generation, and exact target, and warn
+that all connected clients share the handoff and uncertain writes are not
+replayed. Do not send the binding or credentials to a Webview or browser.
+Without that binding, the control is read-only and reports live switching as
+unavailable. The Original storage compatibility gateway is not a shared manager
+binding and must not be offered as a compatible candidate.
+
+The [compatibility gateway authority](src/compatibility-gateway-authority.ts)
+is an Original-backed alternative, not an isolated shared-manager binding.
+It keeps two pinned Original adapters alive, one for each host-provisioned
+Workbench/Chat attribution, behind the existing `pkm` stdio relay transport.
+The exact modes are `original` (direct Original business dispatch) and
+`bundled-v5` (the verified v5 facade). Both use the same Original library;
+switching back changes protocol dispatch, not storage or prior writes.
+
+- **Install:** In a trusted Linux host, verify the staged executable payloads
+  and their separate private lifecycle directories. Call
+  `startCompatibilityGatewayAuthority(config, bundled, host, initialMode)`.
+  Supply the exact Original and bundled v5 pins, `compatibleUpdates: false`, normalized
+  Workbench and Chat descriptors from the existing attribution registry,
+  the legacy `acquireLinuxRootWriterFence(root, "shared")` callback (after
+  `assertLinuxRootStillLegacyWritable`), and a host-owned modal `confirm`.
+- **Launch:** Run verified `dist/compatibility-gateway-relay.js` over stdio.
+  Supply `{ origin, serviceId, token } = authority.relay("workbench" | "chat")`
+  only via `PKM_SHARED_ORIGIN`, `PKM_SHARED_SERVICE_ID`, and `PKM_SHARED_TOKEN`
+  in the child environment. Never persist or send these values to a Webview.
+  Verify `check_version.routeRuntime` against `authority.relayIdentity`, not
+  against either selected build. `check_version.runtime` is the actual mode's
+  observation; `originalConnection` reports Original's launch attribution.
+- **Approve and dispose:** Call `approveSwitch({ mode, selectionRevision },
+  targetMode)` with the reviewed `status()` and exact mode. No arbitrary
+  candidate path, token, or service endpoint is accepted. Close each owning relay after its local
+  drain; await `authority.close()` before releasing the owning host. Busy,
+  stale, or uncertain requests cannot switch. The root-scoped custody guard
+  excludes a second authority; the pending marker survives unconfirmed
+  effects or adapter exit. It is not a definitive operation receipt.
+
+Do not enable on the default installed route yet. The gate excludes competing
+authorities, not unmodified direct Original clients. Additional windows cannot
+attach to the owner's host-local credentials and must not silently launch an
+independent writer route. Launch attribution is pinned per role at start;
+different Chat IDs require a new upstream admission policy. Automatic
+post-crash recovery, independently detached descendants, alternate payload
+staging, same-entry activation and installed testing remain unqualified.
+
 The Extension's machine-scoped `pkm.nextHost.sharedServer` setting pins
 `origin`, `serviceId`, `backendKind` and optional staged `generation`. Its
 separate SecretStorage commands enroll business and management credentials.
@@ -1844,6 +1898,36 @@ using the existing workflows. The synthetic adoption commands are not an
 upgrade workaround.
 
 ### Linux legacy-writer handoff boundary
+
+The same-identity Linux compatibility candidate builds from `legacy/` as
+`Uone.personal-knowledge` 5.0.0, using the existing `dist/extension.js`, UI,
+configuration, and `personalKnowledge.pkm` provider. Its package stages the
+current pinned Core from the repository root, not the removed `legacy/next-server`
+tree. On ordinary startup with a configured root the existing read-only
+assessment verifies the embedded payload and publishes its build ID in
+`_personalKnowledge.legacyRootUpgradeStatus`. The ID is evidence of a completed
+assessment, not a running backend, and is omitted on failed or stale inspection.
+No separate extension, server, token, or settings writes are required for
+that assessment. This is a package and activation slice, not production
+writer migration; the existing routes are still legacy.
+
+To build the candidate for a disposable installed fixture, restore the root
+and `legacy/` lockfiles independently, run `npm --prefix legacy run build`, then
+`node legacy/scripts/package-extension.js --prebuilt`. Run
+`node tests/linux-default-host-installed.mjs legacy/personal-knowledge-5.0.0.vsix`
+with private Linux namespaces, Xvfb and VS Code available. An optional second
+argument is the hash-pinned published 4.0.22 VSIX for the predecessor step.
+Without that artifact this test checks installation and restart only. It
+does not prove an original account, live MCP calls, Chat history, or rollback.
+At the previous committed baseline the package command failed before creating
+a VSIX because `legacy/next-server/tsconfig.json` no longer existed.
+
+Settings must not offer a shared-manager generation as a production target:
+the existing `pkm` has no admitted production manager binding or candidate.
+The isolated manager supports distinct compatible generations within one
+backend kind (`native-compact` MCP or `canonical-core` MCP), neither of which
+is a qualified replacement for the existing `pkm` contract. Its verified
+candidate/switch endpoints are not original-root migration authority.
 
 The published 4.0.22 managed MCP maintenance marker fences calls in that
 managed profile, and quiescence drains one connected process. Neither covers a

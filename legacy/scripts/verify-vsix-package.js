@@ -12,8 +12,8 @@ assert(vsixPath && expectedVersion && ["stable", "pre-release"].includes(expecte
   "usage: verify-vsix-package.js <vsix> <version> <stable|pre-release>");
 
 function unzip(args) {
-  const result = spawnSync("unzip", args, { encoding: "utf8" });
-  assert.strictEqual(result.status, 0, result.stderr || `unzip ${args.join(" ")} failed`);
+  const result = spawnSync("unzip", args, { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+  assert.strictEqual(result.status, 0, result.error?.message || result.stderr || `unzip ${args.join(" ")} failed`);
   return result.stdout;
 }
 
@@ -38,7 +38,20 @@ assert.strictEqual(attributes.Id, "personal-knowledge", "VSIX identity must targ
 assert.strictEqual(attributes.Publisher, "Uone", "VSIX identity must target publisher Uone");
 assert.strictEqual(attributes.Version, expectedVersion, "VSIX manifest version must match the requested release");
 assert.strictEqual(packageJson.version, expectedVersion, "embedded package.json version must match the requested release");
+assert.strictEqual(packageJson.main, "./dist/extension.js", "VSIX must retain the Personal Knowledge host entry");
 assert.strictEqual(preRelease, expectedChannel === "pre-release", "VSIX channel marker must match the requested release channel");
+
+if (expectedChannel === "stable" && Number(expectedVersion.split(".")[0]) >= 5) {
+  const receipt = JSON.parse(unzip(["-p", vsixPath, "extension/next-runtime/manifest.json"]));
+  const browserPrefix = "server/browser/webview/";
+  assert(receipt.files[`${browserPrefix}release.json`], "Stable PKM v5 must include its pinned browser Webview");
+  for (const name of ["panel.html", "panel.css", "panel.js"]) {
+    const bytes = spawnSync("unzip", ["-p", vsixPath, `extension/dist/webview/${name}`], { maxBuffer: 32 * 1024 * 1024 });
+    assert.strictEqual(bytes.status, 0, `Cannot read the desktop Webview's ${name}`);
+    assert.strictEqual(receipt.files[`${browserPrefix}bundle/${name}`], createHash("sha256").update(bytes.stdout).digest("hex"),
+      `The browser and desktop Webview must ship the same ${name}`);
+  }
+}
 
 const buildInfo = JSON.parse(unzip(["-p", vsixPath, "extension/dist/build-info.json"]));
 assert.strictEqual(buildInfo.schema, "pkm.extension-build/v1");

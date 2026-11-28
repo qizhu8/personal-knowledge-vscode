@@ -61,7 +61,8 @@ test("cold and stale MCP navigation inspects status without maintenance; fresh n
   f.context.tabCacheIsFresh = updatedAt => updatedAt === 100;
   vm.runInContext("mcpStatusCache = null; mcpStatusUpdatedAt = 0", f.context);
   f.context.showMcpTab();
-  assert.equal(f.requests.at(-1).command, "mcpStatus");
+  assert(f.requests.some(request => request.command === "mcpStatus"));
+  assert(f.requests.every(request => ["mcpStatus", "mcpBackendSwitchRead"].includes(request.command)));
   assert(f.actions.includes("loading"));
   f.context.input = healthy();
   vm.runInContext("mcpStatusCache = input; mcpStatusUpdatedAt = 100", f.context);
@@ -131,7 +132,7 @@ test("unknown client health stays non-warning; active uncertain calls route to l
   const data = { ...healthy(), lifecycle:{instances:[{heartbeatFresh:true,uncertainCalls:1}]} };
   f.context.updateGlobalMcpWarning(data);
   assert(!f.banner.hidden);
-  assert.match(f.text.textContent, /Do not replay/);
+  assert.match(f.text.textContent, /do not replay/);
   f.button.onclick();
   assert(f.actions.includes("focus"));
   assert.equal(f.requests.length, 0);
